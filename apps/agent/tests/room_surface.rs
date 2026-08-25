@@ -59,7 +59,25 @@ struct Room {
     broker: shell::shell::collab_broker::BrokerHandle,
 }
 
+/// The agent's own log, when somebody asks for it.
+///
+/// Off unless `RUST_LOG` says otherwise, so a plain run is unchanged. It is
+/// here because what these tests exercise is a sequence of steps across
+/// applications, and when one of them stops early the assertion says which
+/// document is wrong while the log says which step never happened — and until
+/// now no test in this file could produce that second half at all.
+fn logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 fn room() -> Room {
+    logging();
     let dir = tempfile::tempdir().expect("tempdir");
     let json = dir.path().join("collab-json.sock");
     let capnp = dir.path().join("collab.sock");
@@ -1915,6 +1933,124 @@ fn an_instruction_opens_an_application_that_is_not_running() {
     // And nothing was written over the instruction. A refusal is the failure
     // this whole path exists to avoid, and it looks like success to a test
     // that only checks that the app came up.
+    no_addresses_written(&peers[0].doc);
+}
+
+/// **The film's beat, whole.** One sentence, three operations, and the
+/// application that performs the middle one is not running when the sentence
+/// is read.
+///
+/// This is the shape that had never been exercised end to end. The tests above
+/// cover the open on its own, and the crop-and-place on its own with both
+/// applications already in the room. Between them sits the case the request
+/// actually is: the operation that answers the middle clause cannot be named
+/// at planning time — nothing exports it yet — so it is carried unresolved,
+/// asked again against the survey taken after the open, and only then
+/// dispatched. Everything downstream of it depends on that: the crop is what
+/// the last step is handed.
+///
+/// Four assertions, because it can pass while being broken in four ways that
+/// look alike from a distance:
+///
+/// * the session was asked to open that application **once**. Three photo
+///   editors side by side is what asking again looks like from the room, and
+///   a run that opens one per attempt reads as an agent that cannot count.
+/// * the photo editor's own replica carries the crop — the middle clause was
+///   reached at all, which is what the re-ask exists for.
+/// * an image is on the page, under the heading the sentence named.
+/// * and it is the *cropped* image. Placing the original file also puts a
+///   picture on the page, and only one of the two is what was asked for.
+#[test]
+// Its last step carries content between two applications, so it writes to the
+// session's process-wide crossing ledger, which the tests around it read.
+#[serial_test::serial]
+fn one_instruction_opens_the_editor_crops_in_it_and_places_what_it_produced() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (path, w, h) = seed_photograph(files.path());
+
+    let room = room();
+    let queue = watching_for_opens(&room);
+    // Only the page. The photo editor is not in this room, so at the moment
+    // the sentence is read there is no crop anywhere to name.
+    let page_peer = Peer::new(
+        &room,
+        WORD_PROCESSOR,
+        "quinten",
+        page(
+            "Sound check",
+            Some(
+                r#"Scribe: open the photo editor and crop the photograph to "0.25,0.25,0.5,0.5" and place image below Sound check"#,
+            ),
+        ),
+        |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
+    );
+    let mut peers = vec![page_peer];
+
+    let mut started: Vec<String> = Vec::new();
+    let seen = run_room_that_opens(
+        agent_cfg(&room, granting(&["word-processor", "photos"]), None),
+        &mut peers,
+        &queue,
+        Duration::from_secs(60),
+        |app_id| {
+            started.push(app_id.to_string());
+            (app_id == PHOTO_EDITOR).then(|| {
+                Peer::new(&room, PHOTO_EDITOR, "mira", photo_doc(&path, w, h), |d| {
+                    !photos::doc::PhotosDoc::is_empty(d)
+                })
+            })
+        },
+    );
+
+    assert_eq!(
+        started,
+        vec![PHOTO_EDITOR.to_string()],
+        "the photo editor must be opened once for one piece of work, whatever \
+         else the run does"
+    );
+    assert_eq!(peers.len(), 2, "the photo editor never joined the room");
+    assert!(
+        seen.apps.contains(&"photos"),
+        "the agent finished without holding the app it opened, so the step \
+         after the open surveyed a room without it: it holds {:?}",
+        seen.apps
+    );
+
+    // The middle clause, in the application that owns what a crop means. It
+    // could only be named after the open, so this is the whole of the re-ask.
+    let edits = photos::doc::PhotosDoc::edits(&peers[1].doc);
+    assert!(
+        !edits.is_identity(),
+        "the photograph was never cropped, so the run stopped at the open and \
+         called that the answer: {edits:?}"
+    );
+    assert!(
+        (edits.crop.w - 0.5).abs() < 1e-6 && (edits.crop.h - 0.5).abs() < 1e-6,
+        "the crop is not the one the sentence quoted: {:?}",
+        edits.crop
+    );
+
+    // The last clause, in the other application, under the heading it named.
+    let kinds = block_kinds(&peers[0].doc);
+    let heading = kinds
+        .iter()
+        .position(|k| k == "heading")
+        .unwrap_or_else(|| panic!("no heading on the page: {kinds:?}"));
+    assert_eq!(
+        kinds.get(heading + 1).map(String::as_str),
+        Some("image"),
+        "nothing was placed under the heading the sentence named: {kinds:?}"
+    );
+
+    // And it is what the middle step produced, not the file it started from.
+    let (_, iw, ih) = placed_image(&peers[0].doc).expect("checked above");
+    assert_eq!(
+        (iw, ih),
+        ((w / 2) as i64, (h / 2) as i64),
+        "the placed image is {iw}x{ih}; the original is {w}x{h} and the crop \
+         asked for is half of each side — so the last step was handed the \
+         original rather than the result of the one before it"
+    );
     no_addresses_written(&peers[0].doc);
 }
 
