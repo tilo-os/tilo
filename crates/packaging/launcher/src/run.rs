@@ -792,15 +792,31 @@ pub fn run_with(
         resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // 2. Seccomp baseline → tmpfile → fd. The manifest names the profile;
-    // an unrecognised name resolves to the strict one, so log what was asked
-    // for alongside what was applied when the two differ.
-    let profile = manifest.sandbox.seccomp_profile();
-    if profile.as_str() != manifest.sandbox.seccomp {
+    // 2. Seccomp baseline → tmpfile → fd. The manifest *asks* for a profile
+    // and the image decides whether this package may have it; both ways of
+    // not getting what was asked for are worth a line, and they are
+    // different lines. An unrecognised name is a packaging mistake. A
+    // recognised weaker name from a package the image does not entitle is an
+    // app trying to lift a protection off itself, which is worth saying out
+    // loud whether it was an accident or not.
+    let decision =
+        crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
+    let profile = decision.applied;
+    if decision.refused {
+        eprintln!(
+            "qos-launcher: {} asked for seccomp profile {:?}, which the image does not \
+             entitle it to; applying {} (write-xor-execute enforced). Entitlement is \
+             decided by {}, not by the package.",
+            manifest.package_id,
+            decision.requested,
+            profile.as_str(),
+            crate::seccomp::JIT_POLICY_PATH,
+        );
+    } else if profile.as_str() != decision.requested {
         eprintln!(
             "qos-launcher: manifest asked for seccomp profile {:?}, which is not one we know; \
              applying {} (write-xor-execute enforced)",
-            manifest.sandbox.seccomp,
+            decision.requested,
             profile.as_str()
         );
     }
@@ -1195,6 +1211,7 @@ pub fn run_with(
         .unwrap_or_else(|| PathBuf::from("bwrap"));
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
+    clear_bwrap_environment(&mut cmd);
 
     // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
     // each service socket on the fd number the app was told to read.
@@ -1292,8 +1309,11 @@ pub fn run_with_captured(
     let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // Seccomp baseline, same manifest-named profile as `run_with`.
-    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile())?;
+    // Seccomp baseline, resolved against the image's entitlement policy
+    // exactly as `run_with` does. Two paths reaching different conclusions
+    // about the same package would make the capture path a way to run under
+    // a filter the launch path refuses.
+    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile(&manifest.package_id))?;
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
@@ -1390,6 +1410,7 @@ pub fn run_with_captured(
         .unwrap_or_else(|| PathBuf::from("bwrap"));
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
+    clear_bwrap_environment(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
@@ -1418,6 +1439,29 @@ pub fn run_with_captured(
     }
     let status = child.wait()?;
     Ok((status, buf))
+}
+
+/// Give `bwrap` itself an environment worth inheriting, so that a dropped
+/// `--clearenv` cannot silently become a leak.
+///
+/// The argv already carries `--clearenv`
+/// ([`crate::sandbox::push_clean_environment`]), and that is the mechanism
+/// that decides what the *app* sees. This is the second half of the same
+/// statement, made where the process is spawned rather than where its
+/// arguments are assembled: bwrap is handed nothing to pass on, so an argv
+/// that lost its flag — a refactor, a splice in the wrong order — fails
+/// closed with an app that finds an empty environment instead of quietly
+/// handing it the compositor's.
+///
+/// `PATH` survives because it is the one variable the spawn itself needs:
+/// `bwrap_bin` defaults to the bare name `bwrap`, and `Command` resolves a
+/// bare program name against the *child's* `PATH`. Clearing it outright
+/// turns every launch into `ENOENT`. It is the sandbox's own
+/// [`crate::sandbox::SANDBOX_PATH`], not the session's, so the value is one
+/// the app would have been given anyway.
+fn clear_bwrap_environment(cmd: &mut Command) {
+    cmd.env_clear();
+    cmd.env("PATH", crate::sandbox::SANDBOX_PATH);
 }
 
 /// Write the seccomp blob to a `memfd` so its fd outlives both the

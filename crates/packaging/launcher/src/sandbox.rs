@@ -172,6 +172,12 @@ pub fn wayland_bind_for(host_socket: &Path, uid: u32) -> WaylandBind {
 /// because an app should not be told about a door it is not allowed through.
 pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     push_bind(argv, "--ro-bind", &bind.host_socket, &bind.sandbox_socket);
+    // Belt and braces with [`push_clean_environment`], which has already
+    // emptied the environment this would be unsetting from. Kept because
+    // the two answer different questions — that one says what an app is
+    // given, this one says what this bind deliberately withholds — and a
+    // future caller that binds a socket without going through the argv
+    // builder should still not name the privileged one.
     argv.push("--setenv".to_string());
     argv.push("WAYLAND_DISPLAY".to_string());
     argv.push(bind.display_name.clone());
@@ -180,6 +186,102 @@ pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     argv.push(bind.sandbox_runtime_dir.display().to_string());
     argv.push("--unsetenv".to_string());
     argv.push(PRIVILEGED_WAYLAND_ENV.to_string());
+}
+
+/// The `PATH` a sandboxed app runs with.
+///
+/// Fixed rather than inherited: the launching session's `PATH` names host
+/// directories that are not in the sandbox's namespace, and one that *is* —
+/// a writable directory the user put on their own `PATH` — would decide
+/// which binary the app's `exec` finds. Three system directories, all
+/// read-only inside the sandbox, is what a package's entrypoint needs to
+/// find the tools its runtime bundle ships.
+pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// Variables a sandboxed app inherits from the launching session, when that
+/// session has them set.
+///
+/// This is the whole of what crosses the boundary, and it is an allowlist
+/// rather than a filter for the same reason `desktop_entry::launch` keeps
+/// one for the unconfined path: a deny-list is wrong the moment somebody
+/// adds a variable, and nobody notices, because the failure is silent and
+/// on the wrong side of nothing.
+///
+/// Everything here describes the *user* — how to render their language,
+/// their calendar, their terminal. Nothing here names a socket, a room, an
+/// identity or a path, because those reach the app through an explicit
+/// `--setenv` beside the bind that makes them reachable, and a variable
+/// naming something the app cannot open is worse than no variable: it is a
+/// promise the namespace does not keep.
+///
+/// `LANG` is load-bearing rather than cosmetic. The headless rigs under
+/// `scripts/headless-examples/` read an app's own text back off the screen,
+/// and an app that fell back to the C locale would answer in a language the
+/// rig is not looking for.
+pub const INHERITED_ENV: &[&str] = &[
+    // Locale. `LANGUAGE` is the GNU fallback chain, the `LC_*` set is
+    // per-category, and `LC_ALL` overrides all of them; a session that set
+    // only one of these gets only that one honoured, exactly as it would
+    // outside the sandbox.
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    // The user's clock. `/etc/localtime` is in the system profile, so an app
+    // with no `TZ` still resolves a zone; this is for the session that chose
+    // a different one.
+    "TZ",
+    // A CLI entrypoint's terminal. Absent for a GUI launch, which is why it
+    // is inherited-when-set rather than given a default.
+    "TERM",
+    "COLORTERM",
+];
+
+/// Empty the environment, then put back what the app is entitled to.
+///
+/// `bwrap` passes the parent's environment straight through unless it is
+/// told not to, and the parent here is the compositor: its Wayland socket,
+/// its collaboration broker, its identity path, and every `QOS_*` variable
+/// describing a confinement this process is on the other side of. None of
+/// that is the app's, and an app reading one would be reading the session's
+/// private wiring.
+///
+/// So the environment is *built*, not filtered. `--clearenv` first — bwrap
+/// keeps only what a later `--setenv` puts back, which is why this has to be
+/// the first thing in the argv — then `PATH`, then the [`INHERITED_ENV`]
+/// allowlist. Everything else an app gets is set beside the bind that makes
+/// it mean something: [`push_wayland_bind`] with the socket,
+/// [`crate::appdir::push_app_dir`] with the directory `HOME` points into,
+/// [`push_user_home`] only when a grant already covers the path it names.
+///
+/// The unconfined host path has done exactly this since it was written — see
+/// `desktop_entry::launch::HostLaunch::to_command`, which calls `env_clear`
+/// and rebuilds from an allowlist. This is the sandboxed path catching up
+/// with the one that has no sandbox.
+pub fn push_clean_environment(argv: &mut Vec<String>) {
+    argv.push("--clearenv".to_string());
+    argv.push("--setenv".to_string());
+    argv.push("PATH".to_string());
+    argv.push(SANDBOX_PATH.to_string());
+    for key in INHERITED_ENV {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        // A variable set to nothing is not a value an app can use, and
+        // carrying it over would make "unset" and "empty" two different
+        // states inside the sandbox for no reason.
+        if value.is_empty() {
+            continue;
+        }
+        argv.push("--setenv".to_string());
+        argv.push((*key).to_string());
+        argv.push(value.to_string_lossy().into_owned());
+    }
 }
 
 /// Env var the compositor uses to publish its privileged Wayland socket.
@@ -436,6 +538,12 @@ pub fn build_bwrap_argv_for_entry(
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
+
+    // The environment, before anything else. `--clearenv` keeps only what a
+    // *later* `--setenv` puts back, so every one of them below — and every
+    // one the callers in `run.rs` splice in afterwards — has to come after
+    // this line. See [`push_clean_environment`].
+    push_clean_environment(&mut argv);
 
     // Namespace + lifetime defaults.
     //
