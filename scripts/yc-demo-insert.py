@@ -88,7 +88,7 @@ timestamped video, so a bad take costs nothing but running it again.
   Fixed matters as much as undecorated. A resizable window whose request
   already covers most of the work area is auto-maximized on map, so the
   ask used to be granted by being overruled — and a frame thirty-four
-  rows too tall is a frame the caption band comes down over.
+  rows too tall is a frame the composer resamples to fit.
 """
 from __future__ import annotations
 
@@ -232,9 +232,9 @@ class WindowedSession(yc.Session):
     #: The compositor also publishes that size as fixed, which is what
     #: makes the ask reliable: a *resizable* window covering most of the
     #: work area is auto-maximized on map, so asking for the video's
-    #: 1920x1014 of a 1920x1048 work area was granted the whole 1048 and
-    #: every frame went into the film letterboxed with the caption band
-    #: over the bottom of it. Ask for what the video needs; it is granted.
+    #: 1920x1014 of a 1920x1048 work area was granted the whole 1048, and
+    #: every frame of the take was then resampled to fit the picture area
+    #: it should have matched. Ask for what the video needs; it is granted.
     window_size: str | None = None
     #: Whether a person's hands are on the keyboard for this session.
     #:
@@ -951,10 +951,10 @@ def main() -> int:
     # is the largest a window manager will grant without shrinking it.
     # That is true and is not the size the video wants: the work area
     # here is 1920x1048 against a picture area of 1920x1014, so every
-    # frame was thirty-four rows too tall, got scaled and letterboxed,
-    # and the band came down over the bottom of the picture. A fixed-size
-    # request is granted exactly (see `NIRIOS_WINIT_SIZE`), so the size
-    # to ask for is the one the clip is built at.
+    # frame was thirty-four rows too tall and the composer resampled all
+    # of them to fit. A fixed-size request is granted exactly (see
+    # `NIRIOS_WINIT_SIZE`), so the size to ask for is the one the clip is
+    # built at.
     if args.dry_run:
         session.size = f"{yc.VIDEO_W}x{yc.VIDEO_H - yc.BAND_H}"
     elif args.windowed:
