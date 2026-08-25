@@ -5433,17 +5433,27 @@ impl WorkspaceTree {
         None
     }
 
-    /// Mirror a `move_tab_across_strips` mutation into the doc. v1
-    /// captures the tab's identifying scalars from the source, deletes
-    /// it from the source list, and appends a fresh map (with the same
-    /// scalars) to the destination strip's first window-group's `tabs`
-    /// list. Returns `false` and is a no-op if the source tab or
-    /// destination strip aren't seeded into the doc.
+    /// Mirror a [`Self::move_tab_across_strips`] mutation into the doc:
+    /// capture the tab's scalars from the source, delete it there, and
+    /// append a fresh single-tab window group carrying them to the
+    /// destination strip.
+    ///
+    /// `new_group_id` is the id the cache gave that group, and the two
+    /// have to agree. They did not: the cache appended a new group while
+    /// this appended the tab to whatever group happened to be first on
+    /// the destination strip. Since the cache rebuild from the doc only
+    /// ever adds, reading the doc back put the tab in the first group
+    /// *as well as* the one the cache had made for it, and the same
+    /// window was open twice.
+    ///
+    /// Returns `false` and is a no-op if the source tab or destination
+    /// strip aren't seeded into the doc.
     pub fn doc_move_tab_across_strips(
         &mut self,
         src_strip: StripId,
         dst_strip: StripId,
         tab_id: u64,
+        new_group_id: GroupId,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         // Capture source.
@@ -5495,22 +5505,28 @@ impl WorkspaceTree {
                 else {
                     return false;
                 };
-                if self.doc.length(&groups_id) == 0 {
-                    return false;
-                }
-                let Some((_, first_group)) = self.doc.get(&groups_id, 0_usize).ok().flatten()
-                else {
+                // A new group at the end of the strip, exactly as the
+                // cache made it — same id, same single tab. Same shape
+                // as `doc_reorder_group_within_strip` writes.
+                let at = self.doc.length(&groups_id);
+                let Ok(group_entry) = self.doc.insert_object(&groups_id, at, ObjType::Map) else {
                     return false;
                 };
-                let tabs_id = match self.doc.get(&first_group, "tabs").ok().flatten() {
-                    Some((_, id)) => id,
-                    None => match self.doc.put_object(&first_group, "tabs", ObjType::List) {
-                        Ok(id) => id,
-                        Err(_) => return false,
-                    },
+                let _ = self
+                    .doc
+                    .put(&group_entry, "id", ScalarValue::Uint(new_group_id));
+                let _ = self
+                    .doc
+                    .put(&group_entry, "maximized", ScalarValue::Boolean(false));
+                let _ = self.doc.put(
+                    &group_entry,
+                    "width_permille",
+                    ScalarValue::Uint(WindowWidth::Normal.permille() as u64),
+                );
+                let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) else {
+                    return false;
                 };
-                let new_idx = self.doc.length(&tabs_id);
-                let Ok(tab_entry) = self.doc.insert_object(&tabs_id, new_idx, ObjType::Map) else {
+                let Ok(tab_entry) = self.doc.insert_object(&tabs_id, 0_usize, ObjType::Map) else {
                     return false;
                 };
                 let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
@@ -6247,6 +6263,344 @@ impl WorkspaceTree {
         }
     }
 
+    /// Take `tab_id` out of the tree, dropping the group that hosted it
+    /// when that leaves the group empty.
+    ///
+    /// The tree-side half of closing a window. Without it a close is a
+    /// widget-only fade: the tab is off screen but still in the tree, so
+    /// the next revision bump makes
+    /// [`crate::shell::overlay_host::ShellOverlayHost::resync_strips_from_tree`]
+    /// splice it straight back, a restart brings it back, and a peer
+    /// sharing the workspace keeps seeing a window the host closed.
+    ///
+    /// Advances `active_tab` off a tab that just went away and
+    /// `active_group` off a group that did, so nothing is left pointing
+    /// at something that no longer exists. Mirrors into the automerge
+    /// doc via [`Self::doc_remove_tab`] so the removal reaches peers and
+    /// survives a rebuild from the doc.
+    ///
+    /// Returns `true` when the tree changed. Idempotent: a second call
+    /// for the same id finds nothing and returns `false`, so a harvest
+    /// that runs twice over one close is harmless.
+    pub fn remove_tab(&mut self, tab_id: TabId) -> bool {
+        let mut hit: Option<(StripId, GroupId, bool)> = None;
+        'outer: for ws in self.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                for group in strip.window_groups.iter_mut() {
+                    let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
+                        continue;
+                    };
+                    group.tabs.remove(pos);
+                    if group.active_tab == tab_id {
+                        // Prefer whatever slid into the vacated slot,
+                        // then the one before it — the same neighbour
+                        // `TabBar::start_closing` promotes on the widget
+                        // side, so both layers front the same tab.
+                        group.active_tab = group
+                            .tabs
+                            .get(pos)
+                            .or_else(|| group.tabs.last())
+                            .map(|t| t.id)
+                            .unwrap_or(0);
+                    }
+                    let emptied = group.tabs.is_empty();
+                    hit = Some((strip.id, group.id, emptied));
+                    if emptied {
+                        let gid = group.id;
+                        strip.window_groups.retain(|g| g.id != gid);
+                    }
+                    break 'outer;
+                }
+            }
+        }
+        let Some((strip_id, group_id, emptied)) = hit else {
+            return false;
+        };
+        if emptied && self.active_group.get(&strip_id) == Some(&group_id) {
+            let fallback = self
+                .workspaces
+                .iter()
+                .flat_map(|ws| ws.strips.iter())
+                .find(|s| s.id == strip_id)
+                .and_then(|s| s.window_groups.last().map(|g| g.id));
+            match fallback {
+                Some(next) => {
+                    self.active_group.insert(strip_id, next);
+                }
+                None => {
+                    self.active_group.remove(&strip_id);
+                }
+            }
+        }
+        self.doc_remove_tab(tab_id);
+        true
+    }
+
+    /// Delete `tab_id`'s entry from the automerge doc, and the group
+    /// entry that held it when that group is left with no tabs.
+    ///
+    /// The doc twin of [`Self::remove_tab`]. Separate from it only
+    /// because everything else in this file keeps the cache write and
+    /// the doc write in separate functions. Silent no-op when the doc
+    /// isn't seeded for this tab — the cache write has already
+    /// happened, and a later [`Self::seed_doc_from_cache`] writes the
+    /// post-removal shape.
+    fn doc_remove_tab(&mut self, tab_id: TabId) -> bool {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let Some((groups_id, g_idx, tabs_id, t_idx)) = self.locate_tab_anywhere(tab_id) else {
+            return false;
+        };
+        if self.doc.delete(&tabs_id, t_idx).is_err() {
+            return false;
+        }
+        if self.doc.length(&tabs_id) == 0 {
+            let _ = self.doc.delete(&groups_id, g_idx);
+        }
+        true
+    }
+
+    /// Walk the doc to `tab_id` without being told which strip it is on.
+    /// Returns the strip's `window_groups` list, the index of the group
+    /// holding the tab, that group's `tabs` list, and the tab's index in
+    /// it — enough to delete the tab and, if it was the last one, the
+    /// group around it.
+    ///
+    /// [`Self::locate_tab`] needs a [`StripId`]; a close arrives from
+    /// the widget layer knowing only the tab.
+    fn locate_tab_anywhere(
+        &self,
+        tab_id: TabId,
+    ) -> Option<(automerge::ObjId, usize, automerge::ObjId, usize)> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let (_, workspaces_id) = self.doc.get(&ROOT, "workspaces").ok().flatten()?;
+        for ws_idx in 0..self.doc.length(&workspaces_id) {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                continue;
+            };
+            for s_idx in 0..self.doc.length(&strips_id) {
+                let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
+                    continue;
+                };
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    continue;
+                };
+                for g_idx in 0..self.doc.length(&groups_id) {
+                    let Some((_, group_entry)) = self.doc.get(&groups_id, g_idx).ok().flatten()
+                    else {
+                        continue;
+                    };
+                    let Some((_, tabs_id)) = self.doc.get(&group_entry, "tabs").ok().flatten()
+                    else {
+                        continue;
+                    };
+                    for t_idx in 0..self.doc.length(&tabs_id) {
+                        let Some((_, tab_entry)) = self.doc.get(&tabs_id, t_idx).ok().flatten()
+                        else {
+                            continue;
+                        };
+                        if let Some((Value::Scalar(v), _)) =
+                            self.doc.get(&tab_entry, "id").ok().flatten()
+                            && matches!(v.as_ref(), ScalarValue::Uint(id) if *id == tab_id)
+                        {
+                            return Some((groups_id, g_idx, tabs_id, t_idx));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Put `tab_id` in `dest_group` at `dest_index`, taking it out of
+    /// wherever the tree currently has it.
+    ///
+    /// The tree's only tab-move was [`Self::move_tab_across_strips`],
+    /// which refuses a move whose source and destination strips are the
+    /// same — so dropping a tab on a sibling's tab bar, on its tile, or
+    /// tearing it into a new group beside it changed the widget row and
+    /// nothing else. It looked right until the next revision bump, at
+    /// which point the resync rebuilt the row from a tree that still had
+    /// the tab in the group it came from, and the move undid itself.
+    ///
+    /// Removes *every* occurrence of the tab before inserting, so this
+    /// also collapses a tab that ended up listed twice. Prunes a source
+    /// group the move empties, and moves `active_tab` / `active_group`
+    /// off anything that went away. The tab becomes the destination
+    /// group's active tab, which is what the widget's
+    /// `insert_detached_tab` does on the other side of the same
+    /// gesture.
+    ///
+    /// Returns `true` when the tree changed. `false` when the tab is
+    /// already exactly there, when there is no such tab, or when there
+    /// is no such destination group — in the last case nothing is
+    /// removed either, so a destination that disappeared mid-gesture
+    /// costs the move, never the tab.
+    pub fn place_tab(&mut self, tab_id: TabId, dest_group: GroupId, dest_index: usize) -> bool {
+        // Look before leaping: resolve the destination first, so a
+        // missing one is a refusal rather than a deletion.
+        let dest_exists = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .any(|g| g.id == dest_group);
+        if !dest_exists {
+            return false;
+        }
+        let mut payload: Option<Tab> = None;
+        let mut occurrences: Vec<(GroupId, usize)> = Vec::new();
+        for group in self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+        {
+            if let Some(idx) = group.tabs.iter().position(|t| t.id == tab_id) {
+                if payload.is_none() {
+                    payload = Some(group.tabs[idx].clone());
+                }
+                occurrences.push((group.id, idx));
+            }
+        }
+        let Some(tab) = payload else { return false };
+        if occurrences.as_slice() == [(dest_group, dest_index)] {
+            return false;
+        }
+
+        // Take it out of everywhere it currently is.
+        let mut touched: Vec<GroupId> = Vec::new();
+        let mut emptied: Vec<(StripId, GroupId)> = Vec::new();
+        for ws in self.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                let strip_id = strip.id;
+                for group in strip.window_groups.iter_mut() {
+                    let before = group.tabs.len();
+                    group.tabs.retain(|t| t.id != tab_id);
+                    if group.tabs.len() == before {
+                        continue;
+                    }
+                    touched.push(group.id);
+                    if group.active_tab == tab_id {
+                        group.active_tab = group.tabs.first().map(|t| t.id).unwrap_or(0);
+                    }
+                    if group.tabs.is_empty() && group.id != dest_group {
+                        emptied.push((strip_id, group.id));
+                    }
+                }
+            }
+        }
+
+        // And put it where the drop said.
+        if let Some(group) = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| ws.strips.iter_mut())
+            .flat_map(|s| s.window_groups.iter_mut())
+            .find(|g| g.id == dest_group)
+        {
+            let at = dest_index.min(group.tabs.len());
+            group.tabs.insert(at, tab);
+            group.active_tab = tab_id;
+        }
+        if !touched.contains(&dest_group) {
+            touched.push(dest_group);
+        }
+
+        for (strip_id, group_id) in &emptied {
+            for ws in self.workspaces.iter_mut() {
+                if let Some(strip) = ws.strips.iter_mut().find(|s| s.id == *strip_id) {
+                    strip.window_groups.retain(|g| g.id != *group_id);
+                }
+            }
+            if self.active_group.get(strip_id) == Some(group_id) {
+                let fallback = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|ws| ws.strips.iter())
+                    .find(|s| s.id == *strip_id)
+                    .and_then(|s| s.window_groups.last().map(|g| g.id));
+                match fallback {
+                    Some(next) => {
+                        self.active_group.insert(*strip_id, next);
+                    }
+                    None => {
+                        self.active_group.remove(strip_id);
+                    }
+                }
+            }
+        }
+
+        // Mirror into the doc from the cache we just settled, so a peer
+        // and a rebuild-from-doc read the same placement.
+        for (_, group_id) in &emptied {
+            self.doc_remove_group(*group_id);
+        }
+        let surviving: Vec<(GroupId, Vec<Tab>)> = touched
+            .iter()
+            .filter(|gid| !emptied.iter().any(|(_, e)| e == *gid))
+            .filter_map(|gid| {
+                self.workspaces
+                    .iter()
+                    .flat_map(|ws| ws.strips.iter())
+                    .flat_map(|s| s.window_groups.iter())
+                    .find(|g| g.id == *gid)
+                    .map(|g| (g.id, g.tabs.clone()))
+            })
+            .collect();
+        for (group_id, tabs) in surviving {
+            self.doc_rewrite_group_tabs(group_id, &tabs);
+        }
+        true
+    }
+
+    /// Delete `group_id`'s entry from the doc's strip list.
+    ///
+    /// The doc twin of pruning a group out of the cache. Without it a
+    /// group the cache dropped comes back the next time the cache is
+    /// rebuilt from the doc.
+    fn doc_remove_group(&mut self, group_id: GroupId) -> bool {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
+            return false;
+        };
+        for ws_idx in 0..self.doc.length(&workspaces_id) {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                continue;
+            };
+            for s_idx in 0..self.doc.length(&strips_id) {
+                let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
+                    continue;
+                };
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    continue;
+                };
+                for g_idx in 0..self.doc.length(&groups_id) {
+                    let Some((_, group_entry)) = self.doc.get(&groups_id, g_idx).ok().flatten()
+                    else {
+                        continue;
+                    };
+                    if let Some((Value::Scalar(v), _)) =
+                        self.doc.get(&group_entry, "id").ok().flatten()
+                        && matches!(v.as_ref(), ScalarValue::Uint(id) if *id == group_id)
+                    {
+                        return self.doc.delete(&groups_id, g_idx).is_ok();
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Mirror a cross-strip tab drag-drop into the persisted tree (#151).
     ///
     /// The widget side of the cross-strip drag (`GroupRow::accept_cross_strip_drop`)
@@ -6290,6 +6644,22 @@ impl WorkspaceTree {
             // simply rebuilds the widget tree from the unchanged persisted
             // groups, which is the same outcome as a "drop in same strip
             // creates new group" interaction restoring after restart.
+            return false;
+        }
+        // Resolve the destination before touching the source. The
+        // source removal used to come first, and a destination that had
+        // gone away between the drag starting and this harvest tick
+        // left the removed tab with nowhere to go — the comment where
+        // the `false` is returned promised a re-attach that was never
+        // written, so the window the user dragged simply ceased to
+        // exist. There is nothing to recover from if we never take it
+        // out.
+        let dest_exists = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .any(|s| s.id == dest_strip_id);
+        if !dest_exists {
             return false;
         }
         // Phase 1: remove the tab from the source strip. We have to scan
@@ -6345,18 +6715,24 @@ impl WorkspaceTree {
             for strip in ws.strips.iter_mut() {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
-                    // Unit D: mirror the cache mutation into the doc.
-                    // The widget side has already accepted the drop;
-                    // the doc-side write keeps peer-sync coherent.
-                    self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
+                    // Mirror the cache mutation into the doc. The widget
+                    // side has already accepted the drop; the doc-side
+                    // write keeps peer-sync coherent.
+                    self.doc_move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        tab_id,
+                        new_group_id,
+                    );
                     return true;
                 }
             }
         }
-        // Destination strip not found — we already mutated the source.
-        // Returning `false` here would lose the tab, so re-attach it to
-        // the source strip's first group as a recovery (rare edge case;
-        // dest strip vanished between drag start and harvest tick).
+        // Unreachable: the destination was resolved before the source
+        // was touched, and nothing between the two mutates the strip
+        // set. Kept as a refusal rather than an `unreachable!` so a
+        // future caller that reorders the phases loses a move and not a
+        // window.
         false
     }
 

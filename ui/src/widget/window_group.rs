@@ -249,6 +249,19 @@ pub struct WindowGroup {
     /// to keep the `TileHost` shape stable and avoid a touch to
     /// `tile_host.rs`.
     closing_hosts: HashMap<u64, Instant>,
+    /// Tabs whose close the user has just asked for, drained once by
+    /// the shell. A close is a *widget* gesture — the close chip on a
+    /// pill, the chip on a maximized group, a chord — but a tab is a
+    /// thing the persisted tree owns, so the two have to be told the
+    /// same story or the tab comes back: the tree still lists it, and
+    /// the next revision bump re-splices it into this group.
+    ///
+    /// Published at the moment the fade is latched rather than when it
+    /// finishes, because the tab is already out of `bar.tabs()` by
+    /// then — the fade paints from `TabBar::closing_tabs`, and every
+    /// reconciler that compares widget against tree already reads the
+    /// tab as gone.
+    closed_tab_ids: Vec<u64>,
     /// Set when `maximized` flips, so `take_structure_dirty` requests a
     /// `build_layout` rebuild and the new flex_grow / width style takes
     /// effect on the cached taffy node.
@@ -336,6 +349,7 @@ impl WindowGroup {
             spawned_at: None,
             held_back: false,
             closing_hosts: HashMap::new(),
+            closed_tab_ids: Vec::new(),
             closing_at: None,
             style_dirty: false,
             built_active: Some(active_id),
@@ -408,6 +422,19 @@ impl WindowGroup {
     /// "keep painting" and "prune".
     pub fn is_closing(&self) -> bool {
         self.closing_at.is_some()
+    }
+
+    /// True while anything about this group is still fading out — the
+    /// group-level shrink, or a per-tab close whose host has not been
+    /// swept yet.
+    ///
+    /// Read by the shell's tree/widget reconcilers, which would
+    /// otherwise treat a group whose last tab just closed as a group
+    /// the tree has dropped and yank it off screen mid-fade, and treat
+    /// the same group as widget-only and write the empty husk back into
+    /// the tree.
+    pub fn close_in_flight(&self) -> bool {
+        self.closing_at.is_some() || !self.closing_hosts.is_empty()
     }
 
     /// How long the close fade has been running, or `None` if the
@@ -724,6 +751,11 @@ impl WindowGroup {
         // until the timestamp ages past `CLOSE_FADE_MS`. Drop both
         // sides together so the run loop quiets immediately.
         self.closing_hosts.remove(&tab_id);
+        // A tab that was mid-close and is now being carried somewhere
+        // else is not a closed tab. Retract the publication too, or the
+        // shell's close harvest deletes the tree entry out from under
+        // the group the tab just landed in.
+        self.closed_tab_ids.retain(|id| *id != tab_id);
         self.bar.finalize_close(tab_id);
         Some((desc, host))
     }
@@ -775,6 +807,7 @@ impl WindowGroup {
             spawned_at: None,
             held_back: false,
             closing_hosts: HashMap::new(),
+            closed_tab_ids: Vec::new(),
             closing_at: None,
             style_dirty: false,
             built_active: Some(active_id),
@@ -925,9 +958,37 @@ impl WindowGroup {
             return false;
         }
         if let Some(close_id) = self.bar.take_close() {
-            self.closing_hosts.entry(close_id).or_insert_with(Instant::now);
+            self.latch_close(close_id);
         }
         true
+    }
+
+    /// Start the host-level close fade for `id` and record the close so
+    /// the shell can take the tab out of the persisted tree.
+    ///
+    /// The single funnel for every route a tab closes by — the pill's
+    /// close chip, the maximized group's chip, a chord, a context menu.
+    /// They used to each poke `closing_hosts` directly, which is how
+    /// three of the four routes ended up with no way of telling anyone
+    /// the tab was gone.
+    fn latch_close(&mut self, id: u64) {
+        if self.closing_hosts.contains_key(&id) {
+            // Already fading — do not restart the curve, and do not
+            // publish the close twice.
+            return;
+        }
+        self.closing_hosts.insert(id, Instant::now());
+        self.closed_tab_ids.push(id);
+    }
+
+    /// Drain the ids of tabs closed since the last call.
+    ///
+    /// The shell harvests this each frame and removes each id from the
+    /// persisted [`crate::widget::TabDescriptor`]'s tree-side twin.
+    /// Take-pattern, like every other one-shot on this widget: a second
+    /// call sees an empty vec, so a close can't be applied twice.
+    pub fn take_closed_tabs(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.closed_tab_ids)
     }
 
     /// True while this group's `TabBar` has a drag in flight. Exposed so
@@ -1657,9 +1718,7 @@ impl Widget for WindowGroup {
                 // the interaction.
                 let active_id = self.bar.active_id();
                 self.bar.start_closing(active_id);
-                self.closing_hosts
-                    .entry(active_id)
-                    .or_insert_with(Instant::now);
+                self.latch_close(active_id);
                 self.maximized = false;
                 // Stash the new value for the shell to harvest into
                 // persisted state — without this writeback the click
@@ -1764,9 +1823,7 @@ impl Widget for WindowGroup {
         // fades out. We keep the `TileHost` in `self.hosts` for the
         // duration of `CLOSE_FADE_MS`, then the sweep above drops it.
         if let Some(close_id) = self.bar.take_close() {
-            self.closing_hosts
-                .entry(close_id)
-                .or_insert_with(Instant::now);
+            self.latch_close(close_id);
             *handled = true;
         }
 
