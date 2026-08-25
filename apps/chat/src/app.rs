@@ -376,7 +376,8 @@ pub struct ChatApp {
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
     pub(crate) hits: Vec<(Rect, Hit)>,
-    /// Which agent records have their reasoning open, by reply id.
+    /// Which agent records this reader has opened the reasoning on, by reply
+    /// id.
     ///
     /// A field on the app and not in the document, deliberately. Whether I
     /// have opened an explanation is a fact about where I am looking, not
@@ -384,6 +385,14 @@ pub struct ChatApp {
     /// else's disclosure open on my screen and write a change to the room
     /// every time anyone read one.
     pub(crate) open_reasoning: std::collections::HashSet<Id>,
+    /// And which this reader has folded away.
+    ///
+    /// Two sets rather than one because the default is not constant: see
+    /// [`ChatApp::reasoning_open`]. A single "opened" set could not express
+    /// folding an explanation that is open by default, so the one gesture a
+    /// reader has during the only stretch the explanation is on screen would
+    /// have done nothing.
+    pub(crate) closed_reasoning: std::collections::HashSet<Id>,
     pub(crate) last_mouse: Point,
     relayout: bool,
     /// True while either flap is mid-slide — drives `needs_animation_frame`
@@ -591,6 +600,7 @@ impl ChatApp {
             video,
             hits: Vec::new(),
             open_reasoning: std::collections::HashSet::new(),
+            closed_reasoning: std::collections::HashSet::new(),
             last_mouse: Point::ZERO,
             relayout: false,
             flap_animating: false,
@@ -1728,7 +1738,17 @@ impl ChatApp {
                 },
                 "",
                 Vec::new(),
-                None,
+                // A turn still in flight carries its explanation on the
+                // surface, so the capture shows the strip as somebody
+                // waiting on this agent actually sees it — the state line and
+                // the rows say what and which, and this is the only part that
+                // says why.
+                Some(AgentReasoning {
+                    route: AgentRoute::Model,
+                    why: "The lines under Logistics are a list of pairs, which \
+                          is a table with the header left implicit."
+                        .into(),
+                }),
             ),
             (
                 "u_aria",
@@ -2006,6 +2026,26 @@ impl ChatApp {
             .next_back()
     }
 
+    /// The record to draw under `m` in the timeline, if it has one.
+    ///
+    /// Ordinarily the agent's reply to it. What a person needs to see is that
+    /// the sentence *they* typed was picked up, and they are looking at their
+    /// own sentence in the channel, not at a thread they have not opened.
+    ///
+    /// A record that carries no parent is its own anchor. An instruction
+    /// written into a document was never a message here, so there is no
+    /// sentence in this channel for its record to sit under — and a strip
+    /// that can only be drawn beneath a message that does not exist is a
+    /// record nobody can read. Replies are not drawn in the timeline at all
+    /// (`model::group_messages` keeps to top-level messages), so this cannot
+    /// draw the same record twice.
+    pub(crate) fn timeline_record<'a>(&'a self, m: &'a Message) -> Option<&'a Message> {
+        if m.work.is_some() && m.is_top_level() {
+            return Some(m);
+        }
+        self.agent_record(&m.id)
+    }
+
     /// The label a message used for `user`, out of the body it was written in.
     ///
     /// The `@name` run a mention locates is the room's own answer at the
@@ -2035,11 +2075,46 @@ impl ChatApp {
     /// `is_agent` as a snapshot rather than asking the roster again later.
     /// Whether the reasoning on `reply`'s record is open on **this** screen.
     ///
-    /// Closed is the answer for every record nobody has opened, which is the
-    /// default and stays the default across a reload: the set is view state,
-    /// so a record arriving from the room never opens itself.
-    pub(crate) fn reasoning_open(&self, reply: &str) -> bool {
-        self.open_reasoning.contains(reply)
+    /// Open by default while the record is still moving, folded once it has
+    /// stopped. The two halves of that are different questions and only look
+    /// like one:
+    ///
+    /// While an agent is working, its account of why is the only thing in the
+    /// strip a reader can actually get anything out of. The state line says
+    /// it is busy, the rows say which operations went out, and neither
+    /// answers *why this* — and the stretch when nobody knows that is exactly
+    /// the stretch when there is nothing else on the screen to read. An
+    /// explanation nobody can reach without knowing there is a chevron to
+    /// press is, for that stretch, an explanation that was not given.
+    ///
+    /// Once the record is finished the outcome is the thing to read, and the
+    /// explanation folds back behind its chevron. That is what the collapse
+    /// was always for: a transcript of past turns with every one of these
+    /// opened is unreadable, and past turns are the finished ones.
+    ///
+    /// `in_flight` also carries whether the agent is still here, because a
+    /// record left behind by an agent that has gone is not moving either — it
+    /// is where the agent stopped, and it belongs with the finished ones.
+    ///
+    /// A reader's own click wins in both directions, which is what the second
+    /// set is for. Both are view state, so a record arriving from the room
+    /// never changes what anybody else has opened.
+    pub(crate) fn reasoning_open(&self, reply: &str, in_flight: bool) -> bool {
+        if self.open_reasoning.contains(reply) {
+            return true;
+        }
+        if self.closed_reasoning.contains(reply) {
+            return false;
+        }
+        in_flight
+    }
+
+    /// Whether `reply`'s record is still moving: unfinished, by an agent that
+    /// is still in the room. The one condition under which the reasoning is
+    /// worth putting on screen unasked.
+    pub(crate) fn record_in_flight(&self, reply: &Message) -> bool {
+        reply.work.as_ref().is_some_and(|w| !w.finished())
+            && self.agent_present(&reply.author)
     }
 
     pub(crate) fn agent_label(&self, reply: &Message) -> String {

@@ -310,12 +310,19 @@ pub struct AgentWork {
     /// One row per operation the agent **dispatched**, in the order it
     /// dispatched them.
     ///
-    /// Appended by the code that performs an operation, after the outcome is
-    /// known — never from the plan, and never from anything the model said
-    /// about what it was going to do. That is the entire point of the field:
-    /// a plan is an intention and a model can narrate an operation it never
-    /// ran, while an entry here exists only because a dispatch happened. See
+    /// Appended by the code that performs an operation, at the moment it
+    /// hands the operation over, and rewritten in place when the app answers
+    /// — never from the plan, and never from anything the model said about
+    /// what it was going to do. That is the entire point of the field: a plan
+    /// is an intention and a model can narrate an operation it never ran,
+    /// while an entry here exists only because a dispatch happened. See
     /// [`AgentStep`].
+    ///
+    /// Written at the dispatch rather than at the outcome because the outcome
+    /// is the slow half. Opening an application takes tens of seconds, and a
+    /// trace that only appended finished rows showed nothing for all of it
+    /// and then said everything at once — a receipt, where what a person
+    /// waiting needs is a progress report.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<AgentStep>,
 }
@@ -323,10 +330,10 @@ pub struct AgentWork {
 /// How the agent decided, for a person reading the thread.
 ///
 /// Recorded from the decision the agent actually took, so `route` cannot say
-/// a model chose when the deterministic floor did. It is shown collapsed:
-/// a transcript that opened every one of these would be unreadable, and the
-/// question "how did it decide" is one a reader asks about a particular turn
-/// rather than about all of them.
+/// a model chose when the deterministic floor did. It is shown while the
+/// record is still moving and folded once it has stopped — see
+/// [`ChatApp::reasoning_open`](crate::app::ChatApp::reasoning_open), which
+/// carries the reasoning for both halves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentReasoning {
     /// Which path reached the decision — a model, or the agent's own keyword
@@ -355,7 +362,8 @@ pub enum AgentRoute {
 /// Written from the dispatch path itself. Nothing constructs one of these
 /// from a plan, a model answer, or a sentence: a row is evidence that the
 /// agent tried to perform this operation on this resource, and its
-/// [`outcome`](Self::outcome) is what the attempt returned.
+/// [`outcome`](Self::outcome) is what the attempt returned — or
+/// [`AgentStepOutcome::Asked`] while it has not returned anything.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentStep {
     /// The resource the operation was addressed to, as the room addresses it.
@@ -370,6 +378,17 @@ pub struct AgentStep {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum AgentStepOutcome {
+    /// It has been handed to the app that owns it and has not answered.
+    ///
+    /// A claim about the *asking* and about nothing else, which is why it is
+    /// worded that way wherever it is read. It is written at the dispatch and
+    /// rewritten with whatever comes back, so a row resting here is an
+    /// operation that went out and never answered — true, and worth seeing.
+    ///
+    /// It is not a success and [`succeeded`](Self::succeeded) says so: the
+    /// question that method answers is whether the operation was carried out,
+    /// and an operation still in flight has not been.
+    Asked,
     /// It went through and changed the document.
     Applied,
     /// It went through and changed nothing. Ordinary — a proposal that
@@ -828,5 +847,25 @@ mod agent_record_tests {
         assert!(AgentStepOutcome::Applied.succeeded());
         assert!(AgentStepOutcome::NoChange.succeeded());
         assert!(!AgentStepOutcome::Refused { why: "no".into() }.succeeded());
+        // An operation that has been handed over and not answered has not
+        // been carried out. Counting it would make a row that exists to say
+        // "no answer yet" read as one of the things that went through.
+        assert!(!AgentStepOutcome::Asked.succeeded());
+    }
+
+    /// A row that is still in flight survives the wire, and says so.
+    ///
+    /// It crosses machines like any other: what one peer wrote when it handed
+    /// an operation over is what the next one reads while it waits. A variant
+    /// that did not round-trip would arrive as whatever `Deserialize` fell
+    /// back to, which is how "asked" becomes a claim about an outcome.
+    #[test]
+    fn a_row_that_has_not_answered_yet_survives_the_wire() {
+        let work = AgentWork::new(AgentWorkState::Waiting { app: "Photos".into() }, 42)
+            .with_trace(vec![step("photos:app", "Open Photos", AgentStepOutcome::Asked)]);
+        let json = serde_json::to_string(&work).expect("serialise");
+        assert!(json.contains("\"outcome\":\"asked\""), "wire shape: {json}");
+        let back: AgentWork = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, work);
     }
 }
