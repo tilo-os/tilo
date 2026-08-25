@@ -47,7 +47,7 @@
 use std::rc::Rc;
 
 use crate::shell::catalogue::{self, CatalogueApp};
-use crate::shell::chrome_state::{Chrome, OpenTarget};
+use crate::shell::chrome_state::{Chrome, OpenTarget, PendingPrompt};
 use crate::shell::i18n;
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationProgress, NotificationSeverity};
@@ -344,7 +344,7 @@ impl ApplicationsProvider {
 /// The package id of the file manager qOS ships as a system app.
 pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 
-/// Give the system file manager the user's home before it starts.
+/// Ask for the user's home on the system file manager's behalf.
 ///
 /// Every app gets one directory of its own, with `HOME` pointed inside
 /// it, and nothing else it was not granted. That is right for an app
@@ -352,115 +352,117 @@ pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 /// subject is the user's files: it opens on a folder containing nothing
 /// but its own dotfiles and reports, accurately, zero items.
 ///
-/// The grant is not a hole in that model, it is the model being used.
-/// It goes through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
-/// the permission prompt and the file-chooser portal write to, so it is
-/// a capability on the workspace like any other: it appears in the
-/// permissions UI, it can be revoked there, and it expires with the
-/// session rather than persisting. What it changes is who decides —
-/// the OS, for the file manager it ships, instead of a dialog asking the
-/// user to approve the file manager's access to files on first sight of
-/// an empty window.
+/// So the file manager needs the home — and *needing* it is not the same
+/// as being given it. This used to call
+/// [`Workspace::grant_app`](crate::shell::state::Workspace::grant_app)
+/// outright, and the package's own manifest disagreed with the code:
+/// `apps/file-explorer/qos-app.toml` says a file manager "has none by
+/// default: what it can reach is what the user granted it". A grant
+/// minted here is one the user was never asked about, and the home is
+/// not a small thing to hand over unasked — it holds
+/// `~/.config/qos/identity/primary.json`, the user's signing seed, and
+/// `~/.local/share/qos-rooms/*/*`, which is every other app's per-room
+/// state and therefore the whole of `plan/security.md`'s "an app opened
+/// in one room cannot read what it wrote in another".
+///
+/// It now raises the same [`PendingPrompt`] every other filesystem
+/// capability goes through: the overlay host renders it, the user
+/// answers it, and the answer decides the scope. The file manager is the
+/// app most likely to get a yes — that is not a reason to skip the
+/// asking.
 ///
 /// It names one package id rather than a rule about categories or
 /// manifests deliberately. A rule that could be satisfied by a
-/// third-party package would be a way to ask for the user's home by
-/// declaring the right thing about yourself; qOS ships exactly one file
-/// manager, and naming it is the narrower statement.
+/// third-party package would be a way to *cause a prompt* for the user's
+/// home by declaring the right thing about yourself; qOS ships exactly
+/// one file manager, and naming it is the narrower statement.
 ///
 /// Write, not read: renaming, deleting and creating folders are what a
 /// file manager is for, and a read-only grant would leave its toolbar
 /// full of affordances that fail.
-fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
-    let ws_id = {
+fn ask_user_home_for_file_manager(chrome: &Chrome, package_id: &str) {
+    let request = {
         let st = chrome.borrow();
-        if st.tree().active_workspace().is_none() {
+        let tree = st.tree();
+        if tree.active_workspace().is_none() {
             return;
         }
-        st.tree().active
+        let ws_id = tree.active;
+        file_manager_home_request(&tree, ws_id, package_id)
     };
-    let granted = {
-        let mut st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        grant_file_manager_home(&mut tree, ws_id, package_id)
+    let Some(capability) = request else {
+        return;
     };
-    if granted {
-        chrome.borrow_mut().bump();
+    let mut st = chrome.borrow_mut();
+    if st.queue_grant_prompt(PendingPrompt::new(package_id.to_string(), capability)) {
+        st.bump();
     }
 }
 
-/// [`grant_user_home_to_file_manager`] against a tree, for the launches
-/// that do not come from the palette.
+/// The capability the system file manager needs and does not have, or
+/// `None` when there is nothing to ask for.
 ///
-/// The file manager is started by more than one path — the palette, and
+/// Read-only against the tree on purpose: this decides *what to ask*, and
+/// nothing here may write a capability. The two callers — the palette,
+/// via [`ask_user_home_for_file_manager`], and
 /// [`crate::shell::peer_windows`] when a peer's window says the room has
-/// one open. Only the first used to mint the grant, so a file manager
-/// started on the room's behalf opened on its own sandbox directory and
-/// reported, accurately, that it was empty. The grant is a precondition
-/// of the app being usable at all, so it belongs with the launch rather
-/// than with the palette that happened to be the first caller.
+/// one open — both turn the answer into a prompt on the queue rather than
+/// into a grant.
 ///
-/// Returns whether a grant was added, so a caller with a repaint to do
-/// can skip it when there was nothing to change.
+/// `None` for any app but the file manager, for a machine with no home
+/// directory, for a workspace that has gone away, and — the ordinary
+/// case after the first time — for a file manager that may already read
+/// the home. That last check asks the capability model rather than
+/// re-deriving prefix logic, exactly as the portal's own check does, so
+/// an approved grant stops the prompt coming back every launch.
 ///
 /// # Minted per machine, and why that is not yet enough
 ///
-/// Every member mints their own, because the path names *this* machine's
-/// home and is meaningless on anybody else's. A member who only received
-/// a copy of somebody else's still got no `QOS_USER_HOME`
-/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`, which exports
-/// it only when the local `$HOME` is covered by a granted bind) and so
-/// still opened on their sandbox directory.
+/// Every member is asked on their own machine, because the path names
+/// *this* machine's home and is meaningless on anybody else's. A member
+/// who only received a copy of somebody else's still got no
+/// `QOS_USER_HOME` (`packaging/launcher/src/sandbox.rs`, `push_user_home`,
+/// which exports it only when the local `$HOME` is covered by a granted
+/// bind) and so still opened on their sandbox directory.
 ///
-/// This deliberately does **not** mirror the grant into the room
-/// document the way `GrantStoreHandle::insert` does. That is not
-/// sufficient to keep it off the wire, and the remaining hole is worth
-/// stating plainly rather than leaving to be rediscovered: the workspace
-/// projection writes `ws.capabilities` wholesale
-/// (`WorkspaceTree`'s doc write, `state.rs`), so the grant reaches every
-/// peer on the next persist regardless. A peer's sandbox then honours a
-/// path naming *this* machine's home directory.
-///
-/// Closing it needs a capability the projection knows not to ship — and
-/// one the doc-driven rebuild of `ws.capabilities` knows not to sweep,
-/// since that rebuild replaces the list with whatever the document holds.
-/// Both halves are a change to the capability model, not to this
-/// function, so it is recorded here rather than half-done.
-pub(crate) fn grant_file_manager_home(
-    tree: &mut crate::shell::state::WorkspaceTree,
+/// The grant an approval produces is still written by
+/// `record_app_grant`, and the workspace projection writes
+/// `ws.capabilities` wholesale (`WorkspaceTree`'s doc write, `state.rs`),
+/// so it reaches every peer on the next persist. Closing *that* needs a
+/// capability the projection knows not to ship — and one the doc-driven
+/// rebuild of `ws.capabilities` knows not to sweep, since that rebuild
+/// replaces the list with whatever the document holds. Both halves are a
+/// change to the capability model rather than to this function, so it is
+/// recorded here rather than half-done. What has changed is that the
+/// grant now exists only because the user said so.
+pub(crate) fn file_manager_home_request(
+    tree: &crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
-) -> bool {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+) -> Option<crate::shell::state::Capability> {
+    use crate::shell::state::{Capability, FsMode, GRANT_ONCE, ResourceRef, Verb};
 
     if package_id != SYSTEM_FILE_MANAGER {
-        return false;
+        return None;
     }
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == workspace) else {
-        return false;
-    };
-    // Asks the capability model rather than re-deriving prefix logic,
-    // exactly as the portal's own check does.
+    let home = dirs::home_dir()?;
+    let ws = tree.workspaces.iter().find(|w| w.id == workspace)?;
     let actor = ws.actor_for_app(package_id);
     if ws.allows(
         &actor,
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
         Verb::Read,
     ) {
-        return false;
+        return None;
     }
-    ws.grant_app(
-        package_id,
-        &Capability::Filesystem {
-            path: home,
-            mode: FsMode::ReadWrite,
-            scope: GRANT_SESSION,
-        },
-    );
-    true
+    // `GRANT_ONCE` is the placeholder every pusher uses: the prompt's own
+    // button is what escalates it to `Session` or `Always`. See
+    // `ChromeState::pending_grants`.
+    Some(Capability::Filesystem {
+        path: home,
+        mode: FsMode::ReadWrite,
+        scope: GRANT_ONCE,
+    })
 }
 
 pub(crate) fn launch_installed_app(
@@ -468,7 +470,7 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
-    grant_user_home_to_file_manager(chrome, package_id);
+    ask_user_home_for_file_manager(chrome, package_id);
     // The room may already have this app open here. If it does, the
     // window the person is asking for is on their screen already — put
     // it in front of them rather than starting a second copy of it
@@ -1345,6 +1347,128 @@ mod tests {
                 "{phase:?} must not read as an install: {body:?}"
             );
         }
+    }
+
+    /// A chrome whose tree holds one workspace, and has it active.
+    ///
+    /// [`chrome_rc`] builds a `WorkspaceTree::default()`, which has none —
+    /// fine for the scoring tests, and silently vacuous for anything about
+    /// capabilities, since every path here returns early when there is no
+    /// active workspace to grant against or ask about.
+    fn chrome_with_a_workspace() -> Chrome {
+        use crate::shell::state::{Workspace, WorkspaceId, next_id};
+        let ws = Workspace::test_default(WorkspaceId::from(next_id()), "test");
+        let ws_id = ws.id;
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            ..Default::default()
+        };
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        assert!(
+            chrome.borrow().tree().active_workspace().is_some(),
+            "the fixture must have an active workspace, or every capability \
+             assertion below passes without reaching the code it is about"
+        );
+        chrome
+    }
+
+    /// Whether the file manager may read `path` in the active workspace.
+    ///
+    /// Goes through `Workspace::allows`, the same call the sandbox's own
+    /// capability resolution bottoms out in, rather than counting entries
+    /// in the capability list.
+    fn may_read(chrome: &Chrome, app: &str, path: &std::path::Path) -> bool {
+        use crate::shell::state::{ResourceRef, Verb};
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let Some(ws) = tree.active_workspace() else {
+            return false;
+        };
+        ws.allows(
+            &ws.actor_for_app(app),
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Read,
+        )
+    }
+
+    /// The file manager's home is asked for, not taken.
+    ///
+    /// `apps/file-explorer/qos-app.toml` says a file manager "has none by
+    /// default: what it can reach is what the user granted it", and the
+    /// palette used to disagree with the package by minting the grant
+    /// before the launch. The home holds the user's signing seed and every
+    /// other app's per-room state, so "the OS decides, for the file manager
+    /// it ships" was deciding rather a lot.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_palette_asks_for_the_file_managers_home_rather_than_granting_it() {
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let chrome = chrome_with_a_workspace();
+
+        assert!(
+            !may_read(&chrome, SYSTEM_FILE_MANAGER, &home),
+            "fixture sanity: the file manager must start with no grant on the home"
+        );
+
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+
+        assert!(
+            !may_read(&chrome, SYSTEM_FILE_MANAGER, &home),
+            "opening the file manager must not mint the home grant; the user was \
+             never asked"
+        );
+        let st = chrome.borrow();
+        assert!(
+            st.pending_grants.iter().any(|p| {
+                p.app_id == SYSTEM_FILE_MANAGER
+                    && matches!(
+                        &p.capability,
+                        crate::shell::state::Capability::Filesystem { path, .. } if *path == home
+                    )
+            }),
+            "the file manager still needs the home, so the request must be in \
+             front of the user: {:?}",
+            st.pending_grants
+        );
+    }
+
+    /// Opening it twice asks once. The queue is a list of questions for a
+    /// person, and the same question twice is a person clicking through a
+    /// dialog they already answered.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn asking_twice_queues_one_question() {
+        let chrome = chrome_with_a_workspace();
+
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+
+        assert_eq!(
+            chrome.borrow().pending_grants.len(),
+            1,
+            "two launches of the file manager must leave one question on the queue"
+        );
+    }
+
+    /// No other package can cause the question to be asked. A rule a
+    /// third-party package could satisfy would be a way to put a prompt for
+    /// the user's home on their screen by declaring the right thing about
+    /// yourself.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn no_other_package_can_ask_for_the_home() {
+        let chrome = chrome_with_a_workspace();
+
+        ask_user_home_for_file_manager(&chrome, "dev.qos.notes");
+        ask_user_home_for_file_manager(&chrome, "com.example.files");
+
+        assert!(
+            chrome.borrow().pending_grants.is_empty(),
+            "only the file manager qOS ships may raise this: {:?}",
+            chrome.borrow().pending_grants
+        );
     }
 
     /// An app that is already here opens without a loading state — it

@@ -58,12 +58,21 @@
 //!   The practical effect is that a `Restrict` on `Scope::App(x)` in a
 //!   room stops x being started here by anybody's window, and a room whose
 //!   governance has not arrived yet starts nothing at all.
-//! - **What it may then reach.** Nothing new. The launch goes through
-//!   [`crate::shell::launcher`] like every other, so the app gets the
-//!   room's own capability list and `bwrap` binds it exactly one writable
-//!   directory, `<data home>/qos-rooms/<room>/<pkg>`. An app started this
-//!   way is inside the same sandbox as one started from the palette, with
-//!   the same grants — there is no path here that widens either.
+//! - **What it may then reach.** Nothing new, and nothing this path
+//!   decides. The launch goes through [`crate::shell::launcher`] like every
+//!   other, so the app gets the room's own capability list and `bwrap`
+//!   binds it exactly one writable directory,
+//!   `<data home>/qos-rooms/<room>/<pkg>`. An app started this way is
+//!   inside the same sandbox as one started from the palette, with the
+//!   same grants — there is no path here that widens either.
+//!
+//!   Where a launch *needs* something it has not been given, this path
+//!   asks rather than grants. The file manager and the user's home is the
+//!   case that exists (see [`open_for`]): the request goes onto
+//!   `ChromeState::pending_grants` and the local user answers it. A peer's
+//!   click must not be able to mint a capability on this machine — it is
+//!   the same reason [`admits`] asks the room's owner instead of taking the
+//!   arriving tab as its own authority.
 //!
 //! # One window per tab
 //!
@@ -88,6 +97,7 @@
 //! reason it is one.
 
 use crate::compositor::tab_binding::Placement;
+use crate::shell::chrome_state::PendingPrompt;
 use crate::shell::launcher;
 use crate::shell::state::{
     GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
@@ -111,6 +121,13 @@ struct Pending {
 /// Returns whether anything was decided, so the caller can repaint only
 /// when a card's text changed or a window is on its way.
 ///
+/// Capability requests these launches raise go onto `asks` rather than
+/// onto the workspace. Nothing in here may mint a grant: the person who
+/// caused this is a peer, on another machine, and a capability their click
+/// created on *this* one would be a decision the local user never made.
+/// The caller puts them on `ChromeState::pending_grants`, where the user
+/// answers them.
+///
 /// At most one launch per app id per call. The launcher correlates a
 /// launch with the window it produces by app id and keeps one note per
 /// package, so two launches of one app in flight at once would have the
@@ -118,7 +135,7 @@ struct Pending {
 /// tab. The tabs left unexamined keep their empty note and are picked up
 /// on the next call — which is why the caller re-runs while
 /// [`any_pending`] holds rather than once per sync round.
-pub fn examine(tree: &mut WorkspaceTree) -> bool {
+pub fn examine(tree: &mut WorkspaceTree, asks: &mut Vec<PendingPrompt>) -> bool {
     let todo = pending(tree);
     if todo.is_empty() {
         return false;
@@ -133,7 +150,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if tree.workspaces.get(item.workspace).is_none() {
             continue;
         }
-        let note = match open_for(tree, &item) {
+        let note = match open_for(tree, &item, asks) {
             Ok(()) => {
                 started.push(item.app_id.clone());
                 OPENING.to_string()
@@ -183,7 +200,11 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
 /// case, never a promise. An app that is not here is not "coming soon";
 /// it is not installed, and saying so is the difference between a user who
 /// knows what to do next and one who waits.
-fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
+fn open_for(
+    tree: &mut WorkspaceTree,
+    item: &Pending,
+    asks: &mut Vec<PendingPrompt>,
+) -> Result<(), String> {
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
@@ -192,18 +213,47 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     // Whatever a launch from the palette does *around* the launch has to
     // happen here too, or an app started on the room's behalf is not the
     // same app the person would have opened from the palette. The file
-    // manager's home grant is the one that bites: without it the window
-    // opens on its own sandbox directory, finds nothing but its dotfiles
-    // and says the folder is empty — which is what a guest's screen
-    // showed while the host's listed the same home's contents.
+    // manager's home is the one that bites: without it the window opens on
+    // its own sandbox directory, finds nothing but its dotfiles and says
+    // the folder is empty — which is what a guest's screen showed while
+    // the host's listed the same home's contents.
     //
-    // After `admits`, so nothing is granted for a launch the room has
+    // It is *asked for*, not granted. This is the one launch path nobody
+    // at this machine started: a peer opened a window, and the news of it
+    // arrived over the wire. A grant minted from that would be the user's
+    // home directory handed over by somebody else's click, which is
+    // exactly the shape of thing the capability model exists to stop —
+    // and the home holds this user's signing seed and every other app's
+    // per-room state. So the request goes on the same prompt queue a
+    // palette launch uses, and the user answers it here.
+    //
+    // The launch still happens. The app is not blocked on the answer; it
+    // opens confined to its own directory, which is what every app that
+    // has been granted nothing gets, and widens if and when the user says
+    // yes. Refusing the launch instead would take a window off the
+    // screen over a question about one directory.
+    //
+    // After `admits`, so nothing is even asked for a launch the room has
     // just refused.
-    crate::shell::search::providers::applications::grant_file_manager_home(
-        tree,
-        ws_id,
-        &item.app_id,
-    );
+    //
+    // One honest limit, worth stating rather than leaving to be found: an
+    // approval is written by `overlay_host::record_app_grant`, which writes
+    // to the *active* workspace. When the peer window arrived in a room the
+    // user is not currently looking at, the approval therefore lands on the
+    // one they are. That is a property of the prompt queue rather than of
+    // this path — every shell-raised prompt shares it — and fixing it means
+    // the queue carrying a workspace id, which is a change to the prompt
+    // model. It fails in the safe direction: a capability on a room the
+    // user was looking at when they said yes, never a wider one.
+    if let Some(capability) =
+        crate::shell::search::providers::applications::file_manager_home_request(
+            tree,
+            ws_id,
+            &item.app_id,
+        )
+    {
+        asks.push(PendingPrompt::new(item.app_id.clone(), capability));
+    }
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
@@ -407,59 +457,119 @@ mod tests {
         )
     }
 
-    /// A file manager started because a peer had one open can see the
-    /// user's home, exactly as one opened from the palette can.
+    /// Whether `asks` holds a request for `path` on `app`'s behalf.
+    fn asked_for(asks: &[PendingPrompt], app: &str, path: &std::path::Path) -> bool {
+        asks.iter().any(|p| {
+            p.app_id == app
+                && matches!(
+                    &p.capability,
+                    crate::shell::state::Capability::Filesystem { path: p, .. } if p == path
+                )
+        })
+    }
+
+    /// A peer's window opening does not mint a capability on this machine.
     ///
-    /// Every app is given one directory of its own and nothing else it
-    /// was not granted. For the app whose entire subject is the user's
-    /// files that means opening on a folder holding nothing but its own
-    /// dotfiles and reporting, accurately, that it is empty — which is
-    /// what a guest's screen showed while the host's listed the same
-    /// home's contents. The grant used to be minted only on the palette
-    /// path, and a peer's window does not come through it.
+    /// The file manager needs the user's home — every app is given one
+    /// directory of its own and nothing else it was not granted, and for
+    /// the app whose entire subject is the user's files that means opening
+    /// on a folder holding nothing but its own dotfiles. This path used to
+    /// answer that need by granting it outright, on a launch nobody at this
+    /// machine started: a peer clicked, and the news arrived over the wire.
     ///
-    /// Asserted through `examine` — the path a peer's window actually
-    /// takes — and against `Workspace::allows`, the same call the
-    /// sandbox's own capability resolution bottoms out in.
+    /// The home is not a small thing to hand over unasked. It holds
+    /// `~/.config/qos/identity/primary.json` — this user's signing seed —
+    /// and `~/.local/share/qos-rooms/*/*`, every other app's per-room
+    /// state, which is the whole of `plan/security.md`'s "an app opened in
+    /// one room cannot read what it wrote in another".
+    ///
+    /// So `examine` asks. Asserted against `Workspace::allows`, the same
+    /// call the sandbox's own capability resolution bottoms out in, and
+    /// against the queue the local user answers from.
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
+    fn a_peers_window_asks_for_the_home_rather_than_granting_it() {
         let home = dirs::home_dir().expect("the test machine has a home directory");
         let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
 
         assert!(
             !may_read(&tree.workspaces[0], FILES, &home),
             "fixture sanity: the file manager must start with no grant on the home, \
-             or this test cannot tell a granted one from a pre-granted one"
+             or this test cannot tell a minted grant from a pre-existing one"
         );
 
-        let _ = examine(&mut tree);
+        let mut asks = Vec::new();
+        let _ = examine(&mut tree, &mut asks);
 
         assert!(
-            may_read(&tree.workspaces[0], FILES, &home),
-            "a file manager started on the room's behalf must be able to read the \
-             user's home; without it the window opens on its sandbox directory and \
-             says the folder is empty"
+            !may_read(&tree.workspaces[0], FILES, &home),
+            "a peer's window opening must not mint a grant on this machine; the \
+             user's home was handed over without anybody here being asked"
+        );
+        assert!(
+            asked_for(&asks, FILES, &home),
+            "the file manager still needs the home, so the launch must put the \
+             request in front of the user rather than dropping it: {asks:?}"
         );
     }
 
-    /// The grant is for the file manager and nothing else. It names one
-    /// package id rather than a rule any package could satisfy.
+    /// The request the user is shown carries no authority of its own.
+    ///
+    /// A prompt on the queue is a question, and a question that had already
+    /// widened the workspace would be theatre. Asserted by checking the
+    /// capability's own scope: `GRANT_ONCE` is the placeholder every pusher
+    /// uses, and the prompt's button is what escalates it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_request_is_not_itself_a_standing_grant() {
+        let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
+
+        let mut asks = Vec::new();
+        let _ = examine(&mut tree, &mut asks);
+
+        let ask = asks.first().expect("the file manager asks for the home");
+        match &ask.capability {
+            crate::shell::state::Capability::Filesystem { scope, .. } => assert_eq!(
+                *scope,
+                crate::shell::state::GRANT_ONCE,
+                "a queued request must carry the placeholder scope; the user's \
+                 answer is what decides how long it lasts"
+            ),
+            other => panic!("the home request must be a filesystem capability: {other:?}"),
+        }
+        assert!(
+            tree.workspaces[0].capabilities.is_empty(),
+            "examine must write no capability at all: {:?}",
+            tree.workspaces[0].capabilities
+        );
+    }
+
+    /// Nothing is asked for, and nothing granted, for any app but the file
+    /// manager. It names one package id rather than a rule any package
+    /// could satisfy — otherwise a third-party package could raise a prompt
+    /// for the user's home by declaring the right thing about itself.
     #[test]
     #[serial_test::serial(process_env)]
     fn opening_another_app_for_the_room_grants_it_no_home() {
         let home = dirs::home_dir().expect("the test machine has a home directory");
         let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
 
-        let _ = examine(&mut tree);
+        let mut asks = Vec::new();
+        let _ = examine(&mut tree, &mut asks);
 
         assert!(
             !may_read(&tree.workspaces[0], APP, &home),
             "only the file manager gets the user's home; the word processor must not"
         );
+        assert!(
+            !asked_for(&asks, APP, &home),
+            "the word processor must not even raise the question: {asks:?}"
+        );
     }
 
-    /// Nothing is granted for a launch the room has just refused.
+    /// Nothing is granted, and nothing asked, for a launch the room has
+    /// just refused. A refusal that still put a permission prompt on the
+    /// user's screen would be asking about an app that is not opening.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_refused_file_manager_is_granted_nothing() {
@@ -468,11 +578,16 @@ mod tests {
         ws.owner = None;
         let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
 
-        let _ = examine(&mut tree);
+        let mut asks = Vec::new();
+        let _ = examine(&mut tree, &mut asks);
 
         assert!(
             !may_read(&tree.workspaces[0], FILES, &home),
             "a room that authorises no launch must not hand out the home either"
+        );
+        assert!(
+            asks.is_empty(),
+            "a refused launch must raise no prompt: {asks:?}"
         );
     }
 
@@ -632,7 +747,10 @@ mod tests {
         let mut ws = room_owned_by("quinten");
         ws.owner = None;
         let (mut tree, tab) = tree_with_peer_window(ws);
-        assert!(examine(&mut tree), "an unexamined window must be decided");
+        assert!(
+            examine(&mut tree, &mut Vec::new()),
+            "an unexamined window must be decided"
+        );
         let note = tree.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()

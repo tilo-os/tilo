@@ -9,6 +9,7 @@
 //   read  <path>                       read it, print OK/ERR
 //   readdir <path>                     list it, print OK/ERR
 //   env   <name>                       print the variable's value
+//   envall                             print every variable name it has
 //
 // Exit code is always 0 — the caller reads stdout. A test that asserted
 // on the exit code could not tell "denied" from "the fixture crashed".
@@ -55,6 +56,18 @@ fn main() {
         Some("env") => {
             let v = std::env::var(&args[1]).unwrap_or_else(|_| "<unset>".into());
             writeln!(out, "ENV {}={}", &args[1], v).unwrap()
+        }
+        // Names only, never values: the caller asserts on which variables
+        // reached the sandbox, and a value can be a socket path or a home
+        // directory that has no business in a test log. Read out of the real
+        // `environ` after `exec`, so this is what the process has rather than
+        // what the argv asked for.
+        Some("envall") => {
+            let mut names: Vec<String> = std::env::vars_os()
+                .map(|(k, _)| k.to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            writeln!(out, "ENVALL {}", names.join(",")).unwrap()
         }
         other => writeln!(out, "ERR unknown-command {other:?}").unwrap(),
     }
