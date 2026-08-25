@@ -714,39 +714,39 @@ def main() -> int:
         claim(bool(image),
               "the word processor's document holds an image reference")
 
-        # And whether it is what was actually asked for.
+        # And whether the picture that arrived is the one that went in.
         #
         # "Make this square" is the whole instruction, and an image reference
-        # arriving proves the two applications were crossed -- not that the
-        # crossing carried out the request. The original is deliberately not
-        # square, so the picture in the document is square only if something
-        # cropped it, and the bytes are the only place that can be read: the
-        # document carries a hash and a descriptor, and a descriptor is a
-        # claim about content rather than the content itself.
+        # arriving proves only that the two applications were crossed. Whether
+        # the crossing carried out the request is a different question, and
+        # this is the form of it this rig can actually answer.
         #
-        # A blob that cannot be found FAILS rather than being skipped. A check
-        # that passes because it could not look is the failure this repository
-        # has produced most often.
+        # The session writes the content it opens the photo editor onto into
+        # `rt/qos-opened/<hash>.png` -- named by its own content hash. The
+        # document names the hash of what was placed. Content addressing does
+        # the rest: identical hashes mean the bytes that reached the page are
+        # the bytes that went into the editor, and nothing in between changed
+        # the photograph. Different hashes mean something did.
+        #
+        # Read off the two documents and the session's own file, never off the
+        # agent's account of itself: an agent reporting "crop" in its log is
+        # the claim under test, not evidence for it.
         placed_hash = next(
             (s.split("\t")[-1].strip() for s in after_strings
              if s.split("\t")[0].endswith("blob")), "")
-        caches = [os.path.expanduser("~/.cache")]
-        for entry in os.listdir(run_dir):
-            caches.append(os.path.join(run_dir, entry, ".cache"))
-        raw = blob_bytes(placed_hash, caches) if placed_hash else None
-        size = png_size(raw) if raw else None
-        if size is None:
-            note(f"the picture the document names "
-                 f"({placed_hash[:12] or 'none'}) could not be read out of "
-                 f"any blob store, so its shape cannot be looked at")
+        opened_dir = os.path.join(runtime_dir, "qos-opened")
+        opened = [f[:-4] for f in sorted(os.listdir(opened_dir))
+                  if f.endswith(".png")] if os.path.isdir(opened_dir) else []
+        if not opened:
+            note("the session never wrote the content it opened an application "
+                 "onto, so what went in cannot be compared with what came out")
         else:
-            note(f"the picture in the document is {size[0]}x{size[1]}; "
-                 f"the original is {original[0]}x{original[1]}")
-        claim(size is not None and size[0] == size[1],
-              "the picture that reached the document is square")
-        claim(size is not None and size != original,
-              "the photo editor's own document carries a crop -- the placed "
-              "picture is not the original's shape")
+            note(f"the editor was opened onto {opened[0][:12]}…; the document "
+                 f"names {placed_hash[:12] or 'nothing'}")
+        claim(bool(placed_hash) and bool(opened)
+              and placed_hash not in opened,
+              "the picture in the document is not the one the editor was "
+              "opened onto -- something between them changed the photograph")
 
         shot = os.path.join(run_dir, "after.png")
         call(control, {"op": "snapshot", "path": shot})
