@@ -4854,7 +4854,16 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
         gap("the panel's Invite button would not take a click - "
             f"{json.dumps(clicked['err'])[:120]}")
         return None
-    host.settle(0.8 * read)
+    # Not scaled by `read`, unlike the holds below. This one is not a
+    # pause for reading -- it is the card arriving on screen before
+    # anything is typed into it. Scaled to 0.45 for the second
+    # invitation it came out at 0.36s, and the film shows that card
+    # holding its empty "Their name in this room" placeholder for its
+    # whole life while `the field took the name 'Claude'` passed: the
+    # claim reads the compositor's model, which had it, and the picture
+    # never caught up before the card closed. A beat about a name in a
+    # field has not happened if the name is not in the picture.
+    host.settle(0.8)
 
     step("and it asks who, before it mints anything")
     # The whole reason the composer exists. A button that minted an
