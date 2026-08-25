@@ -359,6 +359,54 @@ pub enum Action {
         prefix: &'static str,
         at_ms: &'static [u64],
     },
+    /// Open a hosted Photos tab showing `path`, the way opening a file does:
+    /// the path is written into the app's own document and the next `sync`
+    /// decodes it. Nothing here reaches past the app's own public surface.
+    OpenPhotograph {
+        title: &'static str,
+        path: &'static str,
+    },
+    /// Put an agent in the active room, with the standing to act in it.
+    ///
+    /// Without it every address it reaches for is refused by the capability
+    /// gate, and the roster has nothing to call it — so the frames would show
+    /// a desktop where nothing happened, correctly and uselessly.
+    SeedAgent {
+        id: &'static str,
+        name: &'static str,
+        /// The applications it may act in, by the namespace an address is
+        /// gated under (`photos.image:…` is gated as `photos`).
+        apps: &'static [&'static str],
+    },
+    /// Perform one of the focused app's exported operations, through the
+    /// **production** action catalogue — the same registry, gate and door an
+    /// agent reaches over the control socket.
+    ///
+    /// `id` is the address as a caller spells it: `<resource id>#<action id>`.
+    /// Nothing is simulated: the address is resolved against a freshly built
+    /// catalogue, the capability gate runs, and the app's own registry decodes
+    /// and applies the action to its own document. If any of that refuses, the
+    /// scenario says so and captures nothing — a mark drawn for an operation
+    /// that did not happen is the one outcome worse than no mark.
+    InvokeAppAction {
+        id: &'static str,
+        argument: Option<&'static str>,
+        /// Who is asking. `None` is the person at the keyboard; a name is an
+        /// agent, and resolves both the capabilities the gate checks and the
+        /// identity the change is committed and attributed under.
+        agent: Option<&'static str>,
+    },
+    /// Sample the mark on a touched resource at fixed points along its span,
+    /// capturing each as `prefix-<ms>`.
+    ///
+    /// Same escape as [`Action::SampleActionFlight`] and for the same reason:
+    /// one offscreen frame costs more wall time than the whole span, so
+    /// stepping frames catches only the two ends — which are precisely the
+    /// moments the mark is invisible.
+    SampleActionTouch {
+        prefix: &'static str,
+        at_ms: &'static [u64],
+    },
     SwitchWorkspace(usize),
     SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
@@ -852,6 +900,90 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             // one that starts the pan toward the destination.
             driver.step_frames(1);
             driver.relayout();
+        }
+        Action::OpenPhotograph { title, path } => {
+            let title = *title;
+            let path = *path;
+            // A window of its own, through the production launch path — the
+            // same one the launcher and the palette take. A tab appended to
+            // whatever group happened to be first would put the photograph
+            // behind somebody else's window, which is not how opening a file
+            // behaves and not what a viewer should be shown.
+            apply(
+                driver,
+                &Action::OpenHostedWindow {
+                    app: "Photos",
+                    title,
+                },
+                sink,
+            );
+            // Frames, not a bare relayout: the widget the tab names is built
+            // by the per-tick reconciler, which only a real update pass runs.
+            // Before it has, there is no app to hand the file to.
+            driver.step_frames(3);
+            driver.relayout();
+            if !driver.open_photograph(path) {
+                eprintln!(
+                    "scenario: no hosted Photos window took {path}; the frames                      after this show an empty viewer",
+                );
+            }
+            // And a real pump after, so `sync` decodes the file and the
+            // viewer lays the photograph out — which is what gives the
+            // resource a rect to be marked on. `step_frames` alone advances
+            // animation and never calls `sync`, so the viewer would sit on
+            // its empty state with the document plainly naming a file.
+            for _ in 0..3 {
+                driver.pump_apps();
+                driver.relayout();
+                let _ = driver.paint();
+            }
+            // One more paint, thrown away. The first frame that carries a
+            // decoded photograph is the frame vello discovers its per-frame
+            // buffers are too small on: it grows them and renders the *next*
+            // one correctly, but this one comes out an empty white rectangle
+            // and is written to disk without complaint. Painting once here
+            // means the capture that follows is the grown frame.
+            let _ = driver.paint();
+        }
+        Action::SeedAgent { id, name, apps } => driver.seed_agent(id, name, apps),
+        Action::InvokeAppAction {
+            id,
+            argument,
+            agent,
+        } => {
+            let id = *id;
+            // A pump first: the catalogue is built from what the focused app
+            // publishes *now*, and an app that has not synced has not decoded
+            // its file and publishes nothing.
+            driver.pump_apps();
+            driver.relayout();
+            match driver.invoke_app_action(id, *argument, *agent) {
+                Ok(()) => {
+                    // `update` is the pass that promotes a record into a mark:
+                    // it is the one that can ask the room what the participant
+                    // is called and whether it is an agent. And the app has to
+                    // re-render the photograph the action just changed, which
+                    // is `sync`'s half.
+                    driver.pump_apps();
+                    driver.relayout();
+                }
+                Err(e) => eprintln!(
+                    "scenario: {id} was not performed ({e}); there is nothing                      for the next frames to draw",
+                ),
+            }
+        }
+        Action::SampleActionTouch { prefix, at_ms } => {
+            for ms in at_ms.iter() {
+                if !shell::shell::action_touch::hold_at(
+                    std::time::Duration::from_millis(*ms),
+                ) {
+                    eprintln!("scenario: no touch on screen to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
         }
         Action::SampleActionFlight { prefix, at_ms } => {
             for ms in at_ms.iter() {
@@ -1628,8 +1760,93 @@ pub fn catalogue() -> Vec<Scenario> {
             },
         ],
     });
+    out.push(agent_touches_the_photograph());
     out.extend(catalogue_rest());
     return out;
+}
+
+/// Where the demo's photograph is written so an app can open it by path.
+///
+/// A real file on disk, because opening one is what the app does: the path
+/// goes into the document, `sync` reads the bytes, and the resource id the
+/// action surface publishes is minted from that path. A scenario that handed
+/// the app decoded pixels would produce an address nothing could be invoked
+/// at.
+fn demo_photograph_path() -> &'static str {
+    use std::io::Write;
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let dir = std::env::temp_dir().join("qos-shots");
+        std::fs::create_dir_all(&dir).expect("a directory to write the photograph into");
+        let path = dir.join("harbour.png");
+        let mut f = std::fs::File::create(&path).expect("the photograph to be writable");
+        f.write_all(&flight_test_content())
+            .expect("the photograph to be written");
+        path.to_string_lossy().into_owned()
+    })
+    .as_str()
+}
+
+/// An agent performing an operation on a photograph, marked on the
+/// photograph.
+///
+/// The frames this exists for. Everything a viewer is shown here is a
+/// consequence of a real invocation: the address `photos.image:<path>#crop`
+/// is resolved against the same catalogue the control socket serves, the
+/// capability gate runs, the app's own registry decodes the action and
+/// applies it to its own document — and only then is there a mark. Nothing is
+/// scripted; if the door refuses, the capture is of a desktop with nothing on
+/// it, which is what a refusal should look like.
+///
+/// Three beats, and the middle one is the whole feature:
+///
+/// * `01-opened` — Photos with the file it was opened with, at rest. The
+///   control frame: no mark, because nothing has been invoked yet.
+/// * `touch-*` — the crop, sampled across its span. The brackets converge on
+///   the *photograph* rather than on the window, and the chip says who and
+///   what.
+/// * `03-after` — the mark gone and the photograph cropped. The two together
+///   are what make the mark evidence rather than decoration: the picture
+///   really did change, and it changed where the mark was.
+fn agent_touches_the_photograph() -> Scenario {
+    let path = demo_photograph_path();
+    let address: &'static str =
+        Box::leak(format!("photos.image:{path}#crop").into_boxed_str());
+    Scenario {
+        name: "agent-touches-the-photograph",
+        description: "an operation an agent performed, marked on the resource \
+                      it was performed on",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SeedAgent {
+                id: "claude",
+                name: "Claude",
+                apps: &["photos"],
+            },
+            Action::OpenPhotograph {
+                title: "harbour.png",
+                path,
+            },
+            Action::Wait(10),
+            Action::Relayout,
+            Action::Snapshot("01-opened"),
+            Action::InvokeAppAction {
+                id: address,
+                // The region to keep, in the app's own normalized coordinates
+                // — the argument its `crop` spec advertises, spelled the way a
+                // caller reading that surface would spell it.
+                argument: Some("0.18,0.10,0.56,0.62"),
+                agent: Some("claude"),
+            },
+            Action::SampleActionTouch {
+                prefix: "touch",
+                at_ms: &[0, 90, 200, 400, 750, 1100, 1350, 1460],
+            },
+            Action::Wait(12),
+            Action::Relayout,
+            Action::Snapshot("03-after"),
+        ],
+    }
 }
 
 fn catalogue_rest() -> Vec<Scenario> {

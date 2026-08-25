@@ -6,11 +6,15 @@ mod key;
 mod render;
 mod geom;
 mod flight;
+mod touch;
 pub use key::{PointerSpace, PresenceKey, PathSegment, SelectionRange};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use flight::{
     draw_action_flight,
     ActionFlight, FlightPose, flight_rect, pose as flight_pose, FLIGHT_DURATION, FLIGHT_LONG_EDGE,
+};
+pub use touch::{
+    draw_action_touch, ActionTouch, TouchPose, pose as touch_pose, TOUCH_DURATION,
 };
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from

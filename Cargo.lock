@@ -13274,6 +13274,7 @@ dependencies = [
  "openh264",
  "os-actions",
  "parking_lot",
+ "photos",
  "png 0.18.1",
  "pollster",
  "postcard",

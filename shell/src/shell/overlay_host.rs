@@ -1532,6 +1532,7 @@ impl ShellOverlayHost {
         let mut app_types = qos_actions::ActionRegistry::new();
         word_processor::actions::register(&mut app_types);
         file_explorer::actions::register(&mut app_types);
+        photos::actions::register(&mut app_types);
         // And the same for the applications that are *not* in this process,
         // which on a real desktop is all of them. They publish over the socket
         // they already hold; this holds what they published. Empty until the
@@ -4192,6 +4193,115 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Turn what the door recorded into marks, naming each participant from
+    /// the room.
+    ///
+    /// The room is the only place that knows what to call somebody and whether
+    /// they are an agent — the door sees an actor id and nothing else — so the
+    /// two halves are joined here, on a frame that was going to render anyway.
+    ///
+    /// No panning, unlike a crossing. A crossing has a destination the desktop
+    /// can travel to; a touch is on a resource that either is on screen or is
+    /// not, and moving the strip because a background window changed would take
+    /// the person's view away from what they were doing.
+    fn pump_action_touches(&mut self) {
+        crate::shell::action_touch::retire(Instant::now());
+        if crate::shell::action_touch::pending_len() == 0 {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
+            Some(ws) => &ws.collaborators,
+            None => &[],
+        };
+        crate::shell::action_touch::promote(|id| {
+            match roster.iter().find(|c| c.id == id) {
+                Some(c) => (c.name.clone(), c.is_agent),
+                // Not in the roster: still a participant, still drawn, under
+                // the id the door reported and as a person. See
+                // `action_touch::promote`.
+                None => (id.to_string(), false),
+            }
+        });
+    }
+
+    /// Paint every touch on the resource it is about, above the application
+    /// showing it.
+    ///
+    /// The address is resolved here and not before: a resource's rect moves
+    /// with every pan, resize and relayout, and cropping a photograph moves
+    /// the very rect the crop was performed on.
+    ///
+    /// An address that resolves to nothing this frame draws nothing, which is
+    /// the honest answer for a window scrolled off the strip or on another
+    /// workspace — and the reason the mark can never be painted on a thing
+    /// nobody can see.
+    fn draw_action_touches(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let now = Instant::now();
+        if !crate::shell::action_touch::any_live() {
+            return;
+        }
+        let rects = self.resource_rects_on_screen();
+        if rects.is_empty() {
+            return;
+        }
+        crate::shell::action_touch::with_live(|touches| {
+            for t in touches {
+                let Some(progress) = t.touch.progress(now) else {
+                    continue;
+                };
+                let Some(rect) = rects.get(&t.touch.resource) else {
+                    continue;
+                };
+                ui::presence::draw_action_touch(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    &t.touch.actor,
+                    &t.name,
+                    &t.touch.action_label,
+                    t.touch.is_agent,
+                    *rect,
+                    progress,
+                );
+            }
+        });
+    }
+
+    /// Every resource on screen this frame, by address.
+    ///
+    /// Gathered from the group rows rather than by walking the whole tree,
+    /// because the rows are where a hosted application's rects surface: the
+    /// strip lays its groups out itself, so the app widget is not a `children`
+    /// of anything a walk from the root would reach. See
+    /// [`GroupRow::resource_rects`](ui::widget::GroupRow::resource_rects).
+    fn resource_rects_on_screen(&self) -> std::collections::HashMap<String, Rect> {
+        let mut out = std::collections::HashMap::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for (id, rect) in row.resource_rects() {
+                if rect.area() > 0.0 {
+                    out.entry(id).or_insert(rect);
+                }
+            }
+        }
+        out
+    }
+
     /// Paint every crossing in flight, above the applications it is crossing
     /// between.
     fn draw_action_flights(
@@ -5279,6 +5389,21 @@ impl ShellOverlayHost {
         Some(unsafe { &mut *ptr })
     }
 
+    /// Every strip's row at once, for a harness that has to reach the app in
+    /// whichever window is holding it rather than in a strip it named.
+    ///
+    /// The rows are disjoint — one per strip, each a distinct `Box<GroupRow>`
+    /// in the content tree — so handing out several `&mut` at once aliases
+    /// nothing.
+    pub fn group_rows_mut_for_tests(&mut self) -> Vec<&mut GroupRow> {
+        self.group_row_ptrs
+            .values()
+            // SAFETY: see field doc on `group_row_ptrs`. Each pointer is a
+            // different row, so no two of these alias.
+            .map(|&ptr| unsafe { &mut *ptr })
+            .collect()
+    }
+
     /// Select `tab` inside `group` on the live widget tree — the
     /// authoritative side for the active tab (the per-frame
     /// `harvest_active_tab_writeback` mirrors widgets into the tree, so
@@ -6277,7 +6402,31 @@ impl ShellOverlayHost {
         chrome: &crate::shell::chrome_state::ChromeState,
         doc: &automerge::AutoCommit,
     ) {
-        let caller = chrome.local_user_id.clone();
+        self.refresh_app_surfaces_as(chrome, doc, None)
+    }
+
+    /// [`Self::refresh_app_surfaces`], attributing what follows to `agent`
+    /// rather than to the person whose session this is.
+    ///
+    /// The caller published here becomes the Automerge actor the door commits
+    /// under, so it is *who the room will say did this*. Resolving it as the
+    /// person for an agent's call would put the agent's edits in the person's
+    /// name — which breaks attribution, `undo_for_author`, and the one thing a
+    /// viewer most needs to be able to tell apart on screen.
+    ///
+    /// The gate this pairs with already knew: `caller_actor` resolves an
+    /// agent's capabilities under `actor_for_agent`. Only the attribution was
+    /// still being answered as the person.
+    pub fn refresh_app_surfaces_as(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        agent: Option<&str>,
+    ) {
+        let caller = match agent {
+            Some(name) if !name.trim().is_empty() => name.to_string(),
+            _ => chrome.local_user_id.clone(),
+        };
         let Some(active) = chrome.active_tab_id() else {
             self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
             return;
@@ -6334,7 +6483,27 @@ impl ShellOverlayHost {
         root: &ObjId,
         visibility: &dyn crate::shell::search::action_api::ActionVisibility,
     ) -> crate::shell::search::action_api::ActionCatalog {
-        self.refresh_app_surfaces(chrome, doc);
+        self.action_catalog_as(query, chrome, doc, root, visibility, None)
+    }
+
+    /// [`Self::action_catalog`], built for `agent` rather than for the person.
+    ///
+    /// `visibility` already carries the agent's capabilities; this carries its
+    /// *identity*, so an operation it performs is committed and attributed to
+    /// it. The two travel together at every call site for the reason the
+    /// dispatcher gives about the gate: rebuilding either one as the person
+    /// would hand an agent the person's surface at the moment something runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn action_catalog_as(
+        &self,
+        query: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+        agent: Option<&str>,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        self.refresh_app_surfaces_as(chrome, doc, agent);
         let scope = chrome.search_scope;
         let active_provider = active_tab_provider_id(chrome, &self.search_registry);
         crate::shell::search::action_api::ActionCatalog::build(
@@ -7452,6 +7621,7 @@ impl Widget for ShellOverlayHost {
         // this frame is already reflected in `active_group`.
         self.scroll_active_group_into_view();
         self.pump_action_flights();
+        self.pump_action_touches();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
@@ -7808,6 +7978,10 @@ impl Widget for ShellOverlayHost {
         // An agent's crossing sits with the rest of presence: above the
         // applications, below every overlay a person opened themselves.
         self.draw_action_flights(scene, transform, text_renderer, theme, presence);
+        // And the mark on the resource an action was performed on, in the
+        // same band and for the same reason: it is presence, so it goes over
+        // the application it is about and under anything a person opened.
+        self.draw_action_touches(scene, transform, text_renderer, theme, presence);
 
         // Floating sidebar wheel: above the desktop content, below every
         // overlay — including the scrims. It used to paint after the
@@ -10340,7 +10514,8 @@ impl Widget for ShellOverlayHost {
         let now = Instant::now();
         // An object crossing between two applications must keep the frames
         // coming for its whole duration, or it renders as a jump.
-        let flight_in_flight = crate::shell::action_flight::any_live();
+        let flight_in_flight = crate::shell::action_flight::any_live()
+            || crate::shell::action_touch::any_live();
         let qs_in_flight = flight_in_flight || self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);

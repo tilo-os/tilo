@@ -20,6 +20,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod action_flight;
+pub mod action_touch;
 pub mod actions;
 pub mod app_action_wire;
 pub mod browser_stub;
@@ -1135,6 +1136,13 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
                 UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
+            }
+            // Photos opens on nothing, like the others. What it is *shown*
+            // comes from the document, so a tab the agent opened with a file
+            // and a tab the user opened empty are the same widget in two
+            // states rather than two code paths.
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Photos") => {
+                UiTile::App(Box::new(photos::PhotosApp::new()))
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),

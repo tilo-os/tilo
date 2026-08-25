@@ -334,6 +334,18 @@ impl PhotosApp {
         }
     }
 
+    /// The path of the photograph this instance is showing, if any.
+    ///
+    /// Read off the decoded original rather than the document, because the two
+    /// answer different questions and only this one is true of the *pixels on
+    /// screen*: `refresh` reloads it from the document and clears it when the
+    /// file will not decode, so a path here means there is something drawn to
+    /// point at. A document naming a file this machine cannot read would
+    /// otherwise publish a rect around an empty canvas.
+    pub fn open_image_path(&self) -> Option<&str> {
+        self.original.as_ref().map(|(p, _)| p.as_str())
+    }
+
     /// The pixels currently shown, if any. This is what Copy and Save export.
     pub fn edited_pixels(&self) -> Option<&Rgba> {
         self.rendered.as_ref().map(|r| &r.rgba)
@@ -1509,6 +1521,17 @@ impl Widget for PhotosApp {
         "PhotosApp"
     }
 
+    /// Hand the concrete app back out of a `Box<dyn Widget>`.
+    ///
+    /// A compositor hosting this in a tab holds it as a trait object, so
+    /// "open this file in the photo viewer that is already on screen" has no
+    /// route in without it. Opening still goes through
+    /// [`PhotosApp::open_path`] — this only recovers the type, it does not add
+    /// a second way to change what is shown.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn accessibility(&self) -> Option<AccessNode> {
         use ui::a11y::Role;
         Some(AccessNode::new(Role::Group))
@@ -1533,7 +1556,79 @@ impl Widget for PhotosApp {
     fn take_remark(&mut self) -> Option<qos_reference::Remark> {
         Self::take_remark(self)
     }
+
+    /// The open photograph and the edits it supports, published to whatever is
+    /// hosting this widget.
+    ///
+    /// The same tree [`crate::actions::PhotosResources`] serves to a packaged
+    /// instance over the socket, so an app compiled into the compositor and one
+    /// running as its own process offer the identical surface at the identical
+    /// addresses. Without this the tree existed but only a caller already
+    /// inside this process could reach it.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        use qos_actions::ResourceProvider;
+        crate::actions::PhotosResources.resources(doc)
+    }
+
+    /// Where the published photograph actually is on screen.
+    ///
+    /// The photograph's own rect, not the canvas's: a contain-fit image leaves
+    /// letterbox bands, and a mark drawn round the canvas would be drawn round
+    /// those too — claiming a participant touched a region of empty background.
+    /// `photograph_rect` is the viewer's answer to where the pixels ended up,
+    /// which is the same rect the compose surface is already placed against.
+    ///
+    /// Keyed by the id [`crate::actions::resource_id`] mints from the path, so
+    /// the address a caller invokes — `photos.image:/…/harbour.png#crop` — is
+    /// the address that resolves here. Nothing open publishes nothing, exactly
+    /// as the resource tree does.
+    fn resource_rects(&self) -> Vec<(String, Rect)> {
+        let Some(path) = self.open_image_path() else {
+            return Vec::new();
+        };
+        vec![(crate::actions::resource_id(path), self.photograph_rect())]
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+/// Lets the compositor host Photos in a tab directly, the same way it hosts
+/// the terminal, the file explorer and the word processor, rather than
+/// standing a placeholder card where the photograph should be.
+///
+/// The point is not convenience. An action addressed at
+/// `photos.image:/…/harbour.png` can only be *shown* landing if something on
+/// this desktop is drawing that photograph; a placeholder tile publishes no
+/// resource rects, so the address would resolve to no region and the mark
+/// would have nowhere to go.
+impl ui::widget::AppWidget for PhotosApp {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        // The toolkit's tab vocabulary has no picture variant. Photos edits a
+        // file and writes the result back, which is what `Editor` names; the
+        // glyph below is what actually tells the two apart in a tab pill.
+        ui::widget::AppKind::Editor
+    }
+
+    fn app_title(&self) -> &str {
+        // The open file's own name, so two photographs open at once are two
+        // distinguishable tabs rather than two tabs called "Photos". Nothing
+        // open falls back to the app's name, which is the only true thing to
+        // say about an empty window.
+        self.open_image_path()
+            .and_then(|p| p.rsplit('/').next())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("Photos")
+    }
+
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        // Nerd Font image glyph, matching the convention every other hosted
+        // app's tab pill uses.
+        ui::widget::IconDescriptor::Glyph("\u{F02E9}")
+    }
+
+    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+        Some(ui::widget::AppKind::Editor)
     }
 }
