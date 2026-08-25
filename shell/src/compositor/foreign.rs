@@ -1219,6 +1219,33 @@ impl Widget for ForeignSurfaceWidget {
         node
     }
 
+    /// The addresses this window is showing, all at the window's own rect.
+    ///
+    /// A packaged app is a separate process, so nothing here walked a widget
+    /// tree to find the photograph inside it — and the socket that app holds
+    /// has no field for saying where it drew one. What *is* known, and known
+    /// from the app's own publish rather than guessed, is that these addresses
+    /// belong to this connection and this connection is this window. So the
+    /// window is the answer, and it is a true one: a mark drawn here is drawn
+    /// on the thing that is showing the object being acted on.
+    ///
+    /// Coarser than an in-process app's answer, which is the photograph's own
+    /// rect with the letterbox bands excluded. Closing that gap means letting
+    /// an application say where inside its window an address is drawn, which
+    /// is a field on the wire rather than anything here — and until it exists,
+    /// answering at window granularity is better than not answering, because
+    /// an address that resolves to nothing draws nothing and reads exactly
+    /// like a desktop where the agent did not act.
+    fn resource_rects(&self) -> Vec<(String, Rect)> {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return Vec::new();
+        }
+        crate::shell::action_touch::resources_of(&self.app_id)
+            .into_iter()
+            .map(|id| (id, self.rect))
+            .collect()
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
             return;
