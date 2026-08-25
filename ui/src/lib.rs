@@ -35,6 +35,16 @@ pub mod screen_reader;
 pub mod action_host;
 pub mod action_palette;
 pub mod app;
+/// Content, addressed by what it is rather than by where it sits.
+///
+/// Re-exported from `qdoc` because applications need it and the alternative is
+/// each of them naming a file. A path is a fact about one machine: the same
+/// picture, shared into a room, is staged under a different absolute path in
+/// every session that has it, so a document that records a path records
+/// something only one participant can act on. A hash is the same word
+/// everywhere, and this is where a replica turns one back into bytes — or
+/// asks the room for them and draws a placeholder until they land.
+pub use qdoc::blobstore;
 pub mod color_compat;
 pub mod diag;
 pub mod doc;
