@@ -200,15 +200,28 @@ use ui::tokens::{Gesture, SpringPresets, rubber_band};
 use ui::widget::{Chip, ChipLead, ChipStyle, Widget};
 
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::state::WorkspaceId;
+use crate::shell::state::{WorkspaceId, WorkspaceTree};
 
 /// A single spoke-label. `workspace_id` is an opaque correlator the host
 /// uses to map the active spoke back to a workspace in the tree; the
 /// widget itself never dereferences it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpokeLabel {
     pub text: String,
     pub workspace_id: Option<u64>,
+}
+
+/// One spoke per workspace, in the tree's order, carrying the id the
+/// disc maps a chosen sector back to. The disc re-reads this on every
+/// chrome revision, so the list on the wheel is the tree's list.
+pub fn spokes_from_tree(tree: &WorkspaceTree) -> Vec<SpokeLabel> {
+    tree.workspaces
+        .iter()
+        .map(|w| SpokeLabel {
+            text: w.name.clone(),
+            workspace_id: Some(w.id.0),
+        })
+        .collect()
 }
 
 /// In-plane wheel disc. See module-level docs for the interaction model.
@@ -343,6 +356,14 @@ pub struct SidebarWheelDisc {
     /// A summon moves the same object to the pointer; it does not
     /// reveal more of it.
     summon_at: Option<Point>,
+    /// The chrome revision the disc last read `tree.active` at, so the
+    /// per-frame follow is a single integer compare on the frames where
+    /// nothing changed. `u64::MAX` until the first read, so a disc
+    /// attached to a chrome always reads it once.
+    ///
+    /// Left where it was on the frames the read is skipped (a drag in
+    /// flight), so the switch is picked up on release rather than lost.
+    followed_revision: u64,
 }
 
 /// Inputs that change the disc's painted pixels. The visual rotation
@@ -677,6 +698,7 @@ impl SidebarWheelDisc {
             cached_fp: WheelCacheFp::default(),
             hit_rects_origin_px: (0, 0),
             summon_at: None,
+            followed_revision: u64::MAX,
         }
     }
 
@@ -1257,6 +1279,14 @@ fn spoke_icon_for_label(label: &str) -> Icon {
 // per-spoke labels entirely (only the active spoke gets an upright
 // horizontal label, drawn in screen space inside the panel) so neither
 // helper is needed any more.)
+
+/// `spring` with its value and target taken through `f`, velocity
+/// dropped.
+fn remapped(spring: &Spring, f: impl Fn(f32) -> f32) -> Spring {
+    let mut out = Spring::new(f(spring.value()), spring.params());
+    out.set_target(f(spring.target()));
+    out
+}
 
 impl Widget for SidebarWheelDisc {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -2212,6 +2242,9 @@ impl Widget for SidebarWheelDisc {
             .map(|prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0))
             .unwrap_or(1.0 / 60.0);
         self.last_update_at = Some(now);
+        // Before the spring steps, so a switch made elsewhere this frame
+        // is motion this frame.
+        self.follow_chrome();
         let mut keep = self.advance(dt);
         // Wheel-scroll idle reset. The discrete-detent path in
         // `handle_event` already triggers `click_to_spoke` (and its
@@ -2486,8 +2519,18 @@ impl SidebarWheelDisc {
         if target_idx >= self.spokes.len() || target_idx == self.active_idx {
             return;
         }
+        self.turn_to_idx(target_idx);
+    }
+
+    /// Choose `idx` and settle onto it from wherever the rim visibly is.
+    ///
+    /// The motion behind a spoke click, a wheel detent and a switch made
+    /// elsewhere in the shell. No guard on the indicator here: a switch
+    /// that arrives mid-settle may name the sector the indicator is just
+    /// passing, and it still has to become the destination.
+    fn turn_to_idx(&mut self, idx: usize) {
         let from = self.visual_rotation_deg();
-        self.commit_to_idx(target_idx);
+        self.commit_to_idx(idx);
         let target = self.rotation_deg;
         self.aim_settle_spring(from, target);
         // Leave the indicator on the wheel rather than on the
@@ -2496,6 +2539,105 @@ impl SidebarWheelDisc {
         // for exactly one frame, snap back to where the disc actually
         // is, and then walk up to it — a flash on every click.
         self.sync_active_from_visual();
+    }
+
+    /// Take the tree's workspace list, keeping the wheel on the
+    /// workspace it is on.
+    ///
+    /// The list was read once, when the disc was built, so a workspace
+    /// added with the disc's own "+" never got a sector, and a rename
+    /// never reached its label. Now it is the tree's list, re-read with
+    /// every revision.
+    ///
+    /// Workspace `i` rests at `-i · gap`, and a change to the list can
+    /// move both halves of that: a change *before* the wheel's
+    /// workspace moves its index, and any change in count can change
+    /// the gap, since the band is divided among the workspaces it
+    /// holds. So every rotation the disc carries — the target, the
+    /// spring in flight, the settle a harness may replay — is taken
+    /// through index units: degrees in the old geometry to workspaces
+    /// from the top, the index shift added, and back to degrees in the
+    /// new one. The wheel stays on its workspace rather than sliding
+    /// onto whichever neighbour inherited the index, and since the fan
+    /// is drawn around the active sector, nothing is seen to move. If
+    /// the wheel's workspace is gone, there is no shift to add; the
+    /// caller's follow of `tree.active` then turns the wheel to the
+    /// workspace that took its place.
+    fn refresh_spokes(&mut self, spokes: Vec<SpokeLabel>) {
+        if spokes == self.spokes {
+            return;
+        }
+        let gap_old = self.spoke_gap_deg();
+        let old_idx = self.selected_idx();
+        let headed = self.spokes.get(old_idx).and_then(|s| s.workspace_id);
+        self.spokes = spokes;
+        // Populated per spoke by `draw`; the old rects name sectors
+        // that may no longer exist.
+        self.spoke_hit_rects.clear();
+        let gap_new = self.spoke_gap_deg();
+        let shift = headed
+            .and_then(|id| self.spokes.iter().position(|s| s.workspace_id == Some(id)))
+            .map(|new_idx| new_idx as f32 - old_idx as f32)
+            .unwrap_or(0.0);
+        if shift != 0.0 || gap_new != gap_old {
+            let remap = |deg: f32| -((-deg / gap_old) + shift) * gap_new;
+            self.rotation_deg = remap(self.rotation_deg);
+            // A remapped spring keeps its value and target and loses
+            // its velocity — the spring type has no way to carry it
+            // over, and a list change mid-settle is rare enough that a
+            // settle finishing a touch early is the right trade against
+            // a wheel that lands on the wrong workspace.
+            self.rotation_spring = self.rotation_spring.as_ref().map(|s| remapped(s, remap));
+            self.settle_origin = self.settle_origin.as_ref().map(|s| remapped(s, remap));
+        }
+        self.active_idx = self.active_idx.min(self.spokes.len().saturating_sub(1));
+        self.sync_active_from_visual();
+    }
+
+    /// Turn to whatever workspace the tree says is active, if that is
+    /// not where the wheel is already headed.
+    ///
+    /// The disc is one of several ways to switch workspace: Alt+wheel,
+    /// Super+arrows, the topbar arrows and the overview all go through
+    /// `ChromeState::switch_workspace` and never touch the disc. Seeded
+    /// from the tree once at construction and only ever writing back,
+    /// the wheel kept pointing at the workspace it had last chosen
+    /// itself, whatever the shell had switched to since.
+    ///
+    /// A read, not a write: `commit_to_idx` does publish, but the tree
+    /// already names this workspace, so the publish returns before
+    /// bumping and nothing re-syncs. Skipped while the rim is held — a
+    /// hand on the wheel is not to be pulled off it — and the revision
+    /// is left unrecorded then, so the release re-reads it. An active
+    /// workspace with no spoke (the list is not yet refreshed from the
+    /// tree) is left alone.
+    fn follow_chrome(&mut self) {
+        if self.drag_from.is_some() {
+            return;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        if chrome.borrow().revision == self.followed_revision {
+            return;
+        }
+        let (revision, active, spokes) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            (state.revision, tree.active, spokes_from_tree(&tree))
+        };
+        self.followed_revision = revision;
+        self.refresh_spokes(spokes);
+        let Some(idx) = self
+            .spokes
+            .iter()
+            .position(|s| s.workspace_id == Some(active.0))
+        else {
+            return;
+        };
+        if idx != self.selected_idx() {
+            self.turn_to_idx(idx);
+        }
     }
 
     /// One frame of wheel motion: step the spring, then re-derive the
@@ -4480,5 +4622,238 @@ mod tests {
             d.sync_active_from_visual();
         }
         assert_eq!(d.active_idx, 2, "the indicator lands on the clicked spoke");
+    }
+
+    /// One production `update` tick, the way the overlay host drives
+    /// the disc each frame.
+    fn tick(d: &mut SidebarWheelDisc) -> bool {
+        let mut st = AutoCommit::new();
+        let obj = automerge::ROOT.clone();
+        d.update(&mut st, &obj)
+    }
+
+    /// The disc must follow a workspace switch it did not make.
+    ///
+    /// Alt+wheel, Super+arrows, the topbar arrows and the overview all
+    /// switch through `ChromeState::switch_workspace`, which moves
+    /// `tree.active` and bumps the revision. The disc used to be a
+    /// one-way publisher — seeded from the tree once at construction,
+    /// writing its own choice back, never reading — so after any of
+    /// those the wheel on the side kept pointing at the old workspace.
+    #[test]
+    fn disc_follows_a_workspace_switch_made_elsewhere() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        assert_eq!(tree.active, ws_ids[0]);
+        let chrome = ChromeState::new(tree);
+        let spokes: Vec<SpokeLabel> = ws_ids
+            .iter()
+            .map(|id| SpokeLabel { text: "W".into(), workspace_id: Some(id.0) })
+            .collect();
+        let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
+        assert_eq!(d.selected_idx(), 0);
+
+        // The Alt+wheel path: two detents down.
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        assert_eq!(chrome.borrow().tree().active, ws_ids[2]);
+        let rev = chrome.borrow().revision;
+
+        assert!(tick(&mut d), "following a switch is motion, and must ask for frames");
+        assert_eq!(
+            d.selected_idx(),
+            2,
+            "the wheel on the side did not turn to the workspace the shell switched to"
+        );
+        // It turns rather than teleports: the settle spring is in flight
+        // and the indicator trails the rim.
+        assert!(
+            d.visual_rotation_deg() != d.rotation_deg,
+            "the disc jumped instead of settling onto the new workspace"
+        );
+        frames(&mut d, 300);
+        assert_eq!(d.active_idx, 2, "the indicator must land on the new workspace");
+        assert!((d.visual_rotation_deg() - d.rotation_deg).abs() < 0.1);
+
+        // Following is a read: it must not re-publish and force the
+        // rest of the shell to re-sync a tree that did not change.
+        assert_eq!(
+            chrome.borrow().revision,
+            rev,
+            "following the tree bumped the chrome revision"
+        );
+        assert_eq!(chrome.borrow().tree().active, ws_ids[2]);
+
+        // And back up one, the other direction.
+        assert!(chrome.borrow_mut().switch_workspace(-1));
+        tick(&mut d);
+        frames(&mut d, 300);
+        assert_eq!(d.selected_idx(), 1);
+        assert_eq!(d.active_idx, 1);
+    }
+
+    /// A switch that lands while the user is holding the rim must not
+    /// yank the wheel out of their hand; the tree is re-read once they
+    /// let go.
+    #[test]
+    fn disc_does_not_follow_the_tree_mid_drag() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let chrome = ChromeState::new(tree);
+        let spokes: Vec<SpokeLabel> = ws_ids
+            .iter()
+            .map(|id| SpokeLabel { text: "W".into(), workspace_id: Some(id.0) })
+            .collect();
+        let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
+
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        // A small pull, well inside the first detent.
+        pump(&mut d, cursor_event(cx, start_y - 5.0));
+        let held = d.rotation_deg;
+
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        tick(&mut d);
+        assert_eq!(
+            d.rotation_deg, held,
+            "a switch made elsewhere moved the wheel while the user was holding it"
+        );
+
+        // Letting go inside the first detent lands back on workspace 0
+        // and publishes it — the disc's own answer wins over the
+        // switch that arrived mid-gesture.
+        assert!(pump(&mut d, release_event()));
+        frames(&mut d, 300);
+        assert_eq!(d.selected_idx(), 0);
+        assert_eq!(chrome.borrow().tree().active, ws_ids[0]);
+    }
+
+    /// Chrome + disc over the demo tree, spokes carrying the workspace
+    /// ids. Returns the ids so a test can name workspaces by position.
+    fn wired() -> (Rc<RefCell<crate::shell::chrome_state::ChromeState>>, SidebarWheelDisc, Vec<WorkspaceId>) {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+        let tree = WorkspaceTree::bootstrap_demo();
+        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let chrome = ChromeState::new(tree);
+        let spokes = chrome.borrow().tree().workspaces.iter().map(|w| SpokeLabel {
+            text: w.name.clone(),
+            workspace_id: Some(w.id.0),
+        }).collect();
+        let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
+        (chrome, d, ws_ids)
+    }
+
+    /// The workspace list on the disc is the tree's, not a copy taken
+    /// at startup: a workspace added anywhere in the shell gets a
+    /// spoke, and since adding one also activates it, the wheel turns
+    /// onto it.
+    #[test]
+    fn disc_grows_a_spoke_for_a_workspace_added_elsewhere() {
+        let (chrome, mut d, _) = wired();
+        assert_eq!(d.spokes.len(), 3);
+        let new_id = chrome.borrow_mut().add_workspace("Untitled");
+        assert!(tick(&mut d));
+        assert_eq!(d.spokes.len(), 4, "the new workspace never reached the disc");
+        assert_eq!(d.spokes[3].text, "Untitled");
+        assert_eq!(d.spokes[3].workspace_id, Some(new_id.0));
+        assert_eq!(d.selected_idx(), 3, "adding a workspace activates it; the wheel must turn to it");
+        frames(&mut d, 300);
+        assert_eq!(d.active_idx, 3);
+    }
+
+    /// A rename reaches the label under the sector.
+    #[test]
+    fn disc_relabels_a_spoke_when_its_workspace_is_renamed() {
+        let (chrome, mut d, _) = wired();
+        {
+            let mut st = chrome.borrow_mut();
+            st.editing_workspace_name = Some("Lab".into());
+            st.commit_workspace_name();
+        }
+        tick(&mut d);
+        assert_eq!(d.spokes[0].text, "Lab", "the rename never reached the disc");
+        assert_eq!(d.spokes.len(), 3);
+        assert_eq!(d.selected_idx(), 0, "a rename is not a switch");
+    }
+
+    /// When the list changes shape *before* the workspace the wheel is
+    /// on, the wheel stays on that workspace: its index moved, its
+    /// rotation moves with it, and nothing is seen to turn.
+    #[test]
+    fn disc_keeps_its_workspace_when_one_before_it_is_removed() {
+        let (chrome, mut d, ws_ids) = wired();
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        tick(&mut d);
+        frames(&mut d, 300);
+        assert_eq!(d.selected_idx(), 2);
+        assert_eq!(d.active_idx, 2);
+
+        // A peer closes the first workspace: the one we are on is now
+        // index 1. Same workspace, same `tree.active`.
+        {
+            let mut st = chrome.borrow_mut();
+            st.tree_mut().workspaces.remove(0);
+            st.bump();
+        }
+        let rev = chrome.borrow().revision;
+        let keep = tick(&mut d);
+        assert_eq!(d.spokes.len(), 2);
+        assert_eq!(d.spokes[1].workspace_id, Some(ws_ids[2].0));
+        assert_eq!(d.selected_idx(), 1, "the wheel slid off its workspace when the list shifted");
+        assert_eq!(d.active_idx, 1);
+        assert_eq!(
+            d.rotation_deg,
+            d.rotation_for_idx(1),
+            "the rotation must be re-expressed at the workspace's new index"
+        );
+        assert!(
+            !keep && (d.visual_rotation_deg() - d.rotation_deg).abs() < 0.01,
+            "a list change before the wheel's workspace must not be seen as a turn"
+        );
+        assert_eq!(chrome.borrow().revision, rev, "following the list is a read");
+    }
+
+    /// When the workspace the wheel is on goes away, the wheel turns to
+    /// whatever the tree made active instead.
+    #[test]
+    fn disc_turns_to_the_new_active_when_its_workspace_is_removed() {
+        let (chrome, mut d, ws_ids) = wired();
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        tick(&mut d);
+        frames(&mut d, 300);
+        assert_eq!(d.selected_idx(), 2);
+
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            tree.workspaces.remove(2);
+            tree.set_active(ws_ids[0]);
+            drop(tree);
+            st.bump();
+        }
+        assert!(tick(&mut d), "turning to the surviving workspace is motion");
+        assert_eq!(d.spokes.len(), 2);
+        assert_eq!(d.selected_idx(), 0);
+        frames(&mut d, 400);
+        assert_eq!(d.active_idx, 0);
+        assert!((d.visual_rotation_deg() - d.rotation_for_idx(0)).abs() < 0.1);
+        assert_eq!(chrome.borrow().tree().active, ws_ids[0]);
     }
 }
