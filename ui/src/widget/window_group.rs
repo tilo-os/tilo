@@ -2560,6 +2560,226 @@ mod tests {
         );
     }
 
+    /// Everything one press on a pill can end up doing, so a test can
+    /// say which of them actually happened rather than only that some
+    /// rect was computed.
+    #[derive(Debug, PartialEq, Eq)]
+    enum PressOutcome {
+        Closed,
+        Maximized,
+        Reordered,
+        Nothing,
+    }
+
+    /// Drive one full press-move-release gesture at the point `aim`
+    /// picks off the resting frame, and report what the group did.
+    ///
+    /// The layout pass between the pointer arriving and the button
+    /// going down is the one a live frame loop runs: the pill the
+    /// pointer entered has opened by then, which is exactly the window
+    /// the hand-reported "close sometimes maximizes" lands in.
+    fn press_outcome_at(aim: fn(&WindowGroup) -> Point, twitch: f64) -> PressOutcome {
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut g = make_group();
+        let before: Vec<u64> = g.bar.tabs().iter().map(|t| t.id).collect();
+        // Reduce motion so the reveal lands in one layout pass — the
+        // settled end of the curve, which is where a pointer that has
+        // been sitting on a pill for a moment actually is.
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // What the user is aiming at, read off the frame they are
+        // looking at — the resting one, before the pointer arrives.
+        let target = aim(&g);
+
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut focus_target = None;
+        let mods = winit::event::Modifiers::default();
+        let moved_to = |p: Point| WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let release = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+
+        let mut pump = |g: &mut WindowGroup, ev: &WindowEvent| {
+            let mut handled = false;
+            g.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+        };
+
+        // Pointer arrives on the target and the frame loop lays out
+        // again before the button goes down.
+        pump(&mut g, &moved_to(target));
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        pump(&mut g, &press);
+        if twitch != 0.0 {
+            pump(&mut g, &moved_to(Point::new(target.x + twitch, target.y)));
+        }
+        pump(&mut g, &release);
+
+        let after: Vec<u64> = g.bar.tabs().iter().map(|t| t.id).collect();
+        if after.len() < before.len() {
+            PressOutcome::Closed
+        } else if g.maximized {
+            PressOutcome::Maximized
+        } else if after != before {
+            PressOutcome::Reordered
+        } else {
+            PressOutcome::Nothing
+        }
+    }
+
+    /// The close mark an active pill shows at rest must still be a
+    /// close button once the pointer has arrived on it.
+    ///
+    /// A pill opens when the pointer enters it, and it opens by exactly
+    /// one action slot at its right edge. With the chip cluster hung
+    /// off that edge, every chip in it travels one slot right — and the
+    /// slot the close mark just vacated is the one the maximize chip
+    /// moves into. The pointer never moved; the control under it
+    /// changed identity. Whether the press lands before or after that
+    /// happens is a matter of milliseconds, which is why the button
+    /// "sometimes maximizes instead".
+    ///
+    /// Twitch sizes bracket [`crate::dnd::DRAG_START_THRESHOLD_PX`]: a
+    /// press that wanders a pixel or two before release is still a
+    /// click, and must still close.
+    #[test]
+    fn the_close_mark_a_pill_shows_at_rest_stays_a_close_button_under_the_pointer() {
+        for twitch in [0.0_f64, 1.0, 3.0, 6.0] {
+            let outcome = press_outcome_at(|g| g.bar.close_rects()[0].center(), twitch);
+            assert_eq!(
+                outcome,
+                PressOutcome::Closed,
+                "pressing the close mark the active pill was showing \
+                 (pointer twitch {twitch} px) must close the tab, not \
+                 maximize / reorder / do nothing",
+            );
+        }
+    }
+
+    /// A press that wanders a pixel or two before release is a click,
+    /// not a drag.
+    ///
+    /// The tab-drag threshold is measured from the press point, so a
+    /// hand that is not perfectly still does not lift the pill off the
+    /// bar. Measuring it from the pill's *centre* instead makes the
+    /// threshold meaningless for every press that is not dead-centre —
+    /// a press near a pill's edge is already tens of pixels from the
+    /// centre, so the first pointer sample after it starts a drag and
+    /// the click is swallowed by a gesture the user never made.
+    #[test]
+    fn a_twitch_after_pressing_a_pill_is_still_a_click() {
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut g = make_group();
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // Near the leading edge of the second pill: inside the pill,
+        // clear of every chip at any reveal, and a long way from the
+        // pill's centre.
+        let pill = g.bar.tab_rects()[1];
+        let press_at = Point::new(pill.x0 + 8.0, pill.center().y);
+
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut focus_target = None;
+        let mods = winit::event::Modifiers::default();
+        let moved_to = |p: Point| WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        let mut pump = |g: &mut WindowGroup, ev: &WindowEvent| {
+            let mut handled = false;
+            g.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+        };
+
+        pump(&mut g, &moved_to(press_at));
+        pump(
+            &mut g,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        for step in [1.0_f64, 2.0, 3.0] {
+            pump(&mut g, &moved_to(Point::new(press_at.x + step, press_at.y)));
+            assert!(
+                !g.bar.drag_in_flight(),
+                "a {step} px wander under the press threshold must not lift \
+                 the pill into a drag",
+            );
+        }
+        pump(
+            &mut g,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            g.bar.tabs().iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![1, 2],
+            "a click must leave the tab order alone",
+        );
+    }
+
     /// Toggling `maximized` must report `take_structure_dirty()` so
     /// `App` re-runs `build_layout` and the cached taffy node picks
     /// up the new width style — otherwise the click visibly does
