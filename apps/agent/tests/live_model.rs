@@ -15,6 +15,7 @@
 //! cargo test -p agent --test live_model -- --ignored --nocapture
 //! ```
 
+use std::path::Path;
 use std::time::Duration;
 
 use qos_agent::model::{Chooser, Route};
@@ -209,5 +210,184 @@ fn the_model_still_refuses_what_the_app_cannot_do() {
         "expected a refusal, got {:?} ({})",
         d.plan,
         d.route.detail()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The room the film asks about
+// ---------------------------------------------------------------------------
+
+/// The whole room, not one document: a page, a directory, a conversation, and
+/// a photo editor that is **not** running.
+///
+/// The tests above hand the model one application, which is the shape of an
+/// instruction typed into a page. The request this one is about arrives the
+/// other way — somebody right-clicks a photograph and says something about it
+/// — and what the model is then handed is a survey of a room: applications,
+/// paths, and the operations that may be performed on each. That is a
+/// different kind of input, and it is the one that came back declined.
+fn film_room(directory: &Path) -> qos_agent::surface::Catalogue {
+    use qos_agent::surface;
+
+    // The page the request wants the photograph put into.
+    let mut page = automerge::AutoCommit::new();
+    let c = qdoc::model::init(&mut page, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&page, &c);
+    {
+        let mut dm = qdoc::DocMut {
+            doc: &mut page,
+            c: &c,
+            ids: &mut ids,
+        };
+        let mut after: Option<String> = None;
+        for (kind, text) in [
+            ("heading", "Run of show"),
+            ("list_item", "Doors"),
+            ("list_item", "Sound"),
+            ("list_item", "Seating"),
+        ] {
+            let id = dm.insert_block(after.as_deref(), kind);
+            dm.splice_text(&id, 0, 0, text);
+            after = Some(id);
+        }
+    }
+    page.commit();
+
+    // The file manager, browsing the directory the photograph is in. Its
+    // resources are read off the real directory by the explorer's own reader,
+    // so the entries in the survey are the paths a run would really carry.
+    let mut files = automerge::AutoCommit::new();
+    {
+        use automerge::transaction::Transactable;
+        files
+            .put_object(&automerge::ROOT, "files.rename_query", automerge::ObjType::Text)
+            .expect("seed the rename buffer");
+    }
+    files.commit();
+
+    // The conversation the request is written into: one workspace, two
+    // channels, which is what the room's starter seed makes.
+    let mut chat = automerge::AutoCommit::new();
+    chat::doc::ChatDoc::seed_starter(&mut chat, "u_claude");
+    chat.commit();
+
+    let held: Vec<(&'static surface::AppContract, &automerge::AutoCommit)> = vec![
+        (&surface::CONTRACTS[0], &page),
+        (&surface::CONTRACTS[1], &files),
+        (&surface::CONTRACTS[2], &chat),
+    ];
+    surface::catalogue(
+        &held,
+        &surface::View {
+            directory: Some(directory.to_path_buf()),
+            ..Default::default()
+        },
+        &granted_across(&["word-processor", "files", "chat", "photos"], "Claude"),
+    )
+}
+
+/// The four grants the film issues: leave to act in each of these
+/// applications, and — for the one that is not running — leave to open it.
+fn granted_across(apps: &[&str], name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        apps.iter()
+            .map(|app| {
+                CapOverride::grant(
+                    Subject::agent(name),
+                    Scope::App((*app).to_string()),
+                    Verb::Write,
+                )
+                .with_id(format!("invited-{app}"))
+            })
+            .collect(),
+    )
+}
+
+/// A directory shaped like the one the film works in: a photograph and the
+/// document it is going into.
+fn a_photograph_and_a_page() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A real PNG rather than a stub, because the explorer reports what it
+    // reads and a survey built on a lie proves nothing about the survey.
+    let png = photos::pixels::encode_png(
+        &photos::pixels::Rgba::new(320, 200, vec![0u8; 4 * 320 * 200])
+            .expect("a rectangle of pixels"),
+    )
+    .expect("encode a photograph");
+    std::fs::write(dir.path().join("harbour.png"), png).expect("write the photograph");
+    std::fs::write(dir.path().join("Run of show.md"), b"# Run of show\n")
+        .expect("write the page");
+    dir
+}
+
+/// **The film's request, answered rather than declined.**
+///
+/// "Make this square and put it in the open document", said about a
+/// photograph, with the photo editor not running. Three things have to happen
+/// — open it, crop it, place the result — and only the first can be named
+/// before the open, so the answer is an open plus a remainder.
+///
+/// What this is really holding is the step before that: the call has to come
+/// back with an answer at all. The same request declined on the way in, and
+/// the fallback that catches a decline could only say "open the photo
+/// editor", which opened a window and reported the work finished. So the
+/// assertion is on the route first and the plan second, and neither is
+/// allowed to pass by way of the keyword vocabulary.
+#[test]
+#[ignore = "calls the live Anthropic API; needs a key and the network"]
+fn the_request_the_film_turns_on_is_answered() {
+    let dir = a_photograph_and_a_page();
+    let room = film_room(dir.path());
+    let photograph = format!("files.entry:{}", dir.path().join("harbour.png").display());
+    // What the compositor hands the agent when somebody right-clicks a thing
+    // and says something about it: the room narrowed to that thing, plus the
+    // opens, because opening an application performs nothing to any resource.
+    let scoped = room.scoped_to(&photograph);
+    assert!(
+        scoped.offers.iter().any(|o| o.id().starts_with("photos.app#")),
+        "the photo editor has to be openable from here, or the request \
+         cannot be answered at all: {:?}",
+        scoped.offers.iter().map(|o| o.id()).collect::<Vec<_>>()
+    );
+
+    let d = chooser().choose(
+        "make this square and put it in the open document",
+        &[],
+        &scoped,
+    );
+
+    let Route::Model { model, why, asked } = &d.route else {
+        panic!(
+            "the call did not reach an answer, so the run would fall to the \
+             keyword vocabulary — which cannot express a request that crosses \
+             two applications: {}",
+            d.route.detail()
+        );
+    };
+    println!("\n  answered by: {model}\n  why: {why}\n  asked: {asked:?}");
+
+    // The open is named. It is the one step of the three that a survey taken
+    // before it could possibly hold.
+    let opens = d.plan.steps.iter().any(|s| {
+        matches!(&s.instruction, Instruction::Perform { id, .. } if id.starts_with("photos.app#"))
+    });
+    assert!(opens, "nothing in the plan opens the photo editor: {:?}", d.plan);
+
+    // And the rest of the sentence is kept rather than dropped — as a step
+    // whose operation cannot be named yet, or as the remainder. Dropping it
+    // is the failure this whole path exists to prevent: a window opens, the
+    // last part never happens, and the run reports itself as finished.
+    let carries_the_rest = d.plan.len() > 1
+        || d.plan
+            .steps
+            .iter()
+            .any(|s| matches!(s.instruction, Instruction::Unknown(_)));
+    assert!(
+        carries_the_rest,
+        "the plan opens the editor and stops, so cropping and placing were \
+         dropped on the floor: {:?}",
+        d.plan
     );
 }
