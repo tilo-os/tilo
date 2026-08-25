@@ -133,16 +133,47 @@ impl UndoLog {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
     ) {
+        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
+    }
+
+    /// As [`Self::record_committed_action`], attributing the boundary to
+    /// whoever performed it.
+    ///
+    /// For a change that arrived from *outside* this window — an agent or a
+    /// collaborator invoking an operation this app published. Such a change is
+    /// applied under the caller's own actor and never passes through a local
+    /// commit, so without a boundary here two things go wrong at once. The
+    /// action is reachable by nobody, and — worse — `last_heads` stays behind
+    /// it, so the next local edit brackets a range that *contains* somebody
+    /// else's work and one Ctrl+Z reverts both.
+    ///
+    /// Naming the author is what keeps the two apart afterwards: the local
+    /// user's Ctrl+Z walks past an entry belonging to someone else, and the
+    /// entry stays revertible under the name that made it.
+    pub fn record_committed_action_authored(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
         let after = doc.get_heads();
         if after == before {
-            return; // nothing actually changed
+            // Nothing to undo, but the baseline still moves up — for the
+            // reason `commit_action_authored` gives at length for the empty
+            // transaction. Returning without touching it would leave the next
+            // action bracketing from wherever the baseline last stood, which
+            // on this route is behind whatever arrived in the meantime.
+            self.last_heads = after;
+            return;
         }
         self.undo_stack.push(UndoEntry {
             before,
             after: after.clone(),
             focused_node_idx,
             widget_metadata: metadata,
-            author: None,
+            author,
         });
         self.redo_stack.clear();
         self.last_heads = after;
@@ -187,6 +218,33 @@ impl UndoLog {
         Some(entry)
     }
 
+    /// Whether `author` may revert `entry`.
+    ///
+    /// Their own work, obviously. But also anything **unattributed**, and that
+    /// half is not a convenience — it is what makes an author-scoped undo
+    /// reach the entries the toolkit records for an app's own affordances.
+    ///
+    /// [`UndoLog::record_committed_action`] is the drain behind
+    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
+    /// — every toolbar button, context-menu item and palette dispatch — and it
+    /// has no author to give: the widget reports heads, not identity. So those
+    /// entries land with `author: None`. Matching only on `Some(a) == author`
+    /// left every one of them permanently unreachable, because the interactive
+    /// Ctrl+Z always carries an author and nothing else pops the stack.
+    ///
+    /// Claiming them is sound rather than merely expedient: an entry only
+    /// reaches these stacks by way of a *local* commit boundary. A peer's ops
+    /// arrive through `State::load_incremental`, which re-baselines without
+    /// pushing anything, so an unattributed entry cannot be somebody else's
+    /// work. An entry that names a different person still belongs to them and
+    /// is still walked past.
+    fn claimable_by(entry: &UndoEntry, author: &UserId) -> bool {
+        match &entry.author {
+            Some(a) => a == author,
+            None => true,
+        }
+    }
+
     pub fn undo_for_author(
         &mut self,
         doc: &mut AutoCommit,
@@ -197,7 +255,7 @@ impl UndoLog {
         let idx = self
             .undo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(a) if a == author))?;
+            .rposition(|e| Self::claimable_by(e, author))?;
         let entry = self.undo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.redo_stack.push(UndoEntry {
@@ -254,7 +312,7 @@ impl UndoLog {
         let idx = self
             .redo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+            .rposition(|e| Self::claimable_by(e, a))?;
         let entry = self.redo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.undo_stack.push(UndoEntry {
@@ -394,6 +452,25 @@ impl State {
     ) {
         self.undo
             .record_committed_action(&mut self.doc, before, focused_node_idx, metadata);
+    }
+
+    /// As [`Self::record_committed_action`], naming who performed it — for a
+    /// change that reached this document from outside the window. See
+    /// [`UndoLog::record_committed_action_authored`].
+    pub fn record_committed_action_authored(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
+        self.undo.record_committed_action_authored(
+            &mut self.doc,
+            before,
+            focused_node_idx,
+            metadata,
+            author,
+        );
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
