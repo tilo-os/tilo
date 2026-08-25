@@ -1381,6 +1381,27 @@ fn translate(
             );
             TranslatedAction::Nothing
         }
+        // Addressed to the session, like the two above, and carried on the
+        // capnp interface where a launched app actually holds its socket. A
+        // legacy JSON peer publishing one has no catalogue behind it, and is
+        // told so rather than left believing it is reachable.
+        CollabRequest::PublishActions { app_id, .. } => {
+            tracing::warn!(
+                src_id, %app_id,
+                "collab_broker: an application published its operations on the \
+                 legacy transport, which has no catalogue to put them in; \
+                 nothing outside that process can reach them"
+            );
+            TranslatedAction::Nothing
+        }
+        CollabRequest::CompleteInvocation { id, .. } => {
+            tracing::warn!(
+                src_id, id,
+                "collab_broker: an invocation was answered on the legacy \
+                 transport, which never carried one"
+            );
+            TranslatedAction::Nothing
+        }
         CollabRequest::Presence { key, payload } => {
             // Chrome traffic: cluster scope. Every app in the cluster
             // is a legitimate audience for "who else is here", but a

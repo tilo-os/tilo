@@ -503,6 +503,22 @@ pub struct App {
     /// local-only transport; the shell/session swaps in a peer/host transport
     /// via [`Self::set_action_transport`].
     action_transport: Box<dyn qos_actions::ActionTransport>,
+    /// What this app last told the session it can do.
+    ///
+    /// Kept so a republish only happens when the surface actually changed. The
+    /// publish is level-triggered, so sending an unchanged one every frame
+    /// would be correct and wasteful; sending none would leave the session
+    /// holding addresses for resources that have closed.
+    published_actions: Vec<crate::collaboration::PublishedAction>,
+    /// The document heads the published surface was surveyed at, and when.
+    ///
+    /// A resource tree is a function of the document, so an unchanged document
+    /// re-surveys to the same answer -- and surveying is not free (an app
+    /// enumerating resources that live *in* the document materialises it). The
+    /// timestamp is the floor under that: part of a tree can depend on where
+    /// the caret is, which is not in the heads, so the survey is retaken
+    /// periodically even when nothing was typed.
+    published_at: Option<(Vec<automerge::ChangeHash>, Instant)>,
     /// The retained accessibility tree — stable node identity + a frame-to-frame
     /// diff over the widget semantics and the app's resource affordances.
     /// Refreshed on demand via [`Self::refresh_semantic_tree`]; read via
@@ -609,6 +625,8 @@ impl App {
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
+            published_actions: Vec::new(),
+            published_at: None,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
@@ -1869,6 +1887,72 @@ impl App {
         }
     }
 
+    /// Tell the session what this app currently has open and what can be done
+    /// to it, when that has changed since the last time it was told.
+    ///
+    /// Level-triggered by design: the session replaces this connection's whole
+    /// surface with what arrives, so an operation on a resource that has
+    /// closed stops being addressable in the same breath. That only works if
+    /// the app keeps saying what is true *now*, which is why this sits on the
+    /// frame loop rather than at each place a resource opens.
+    ///
+    /// Nothing that can act crosses. `door::survey` returns owned data with no
+    /// closure and no handle in it, so what the session holds is a description
+    /// of this app's surface and not a way into it.
+    pub fn publish_action_surface(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        // Part of an app's tree depends on state that is not in the document
+        // -- where the caret is, which section is selected -- so heads alone
+        // would leave a caret-anchored operation pointing at wherever the
+        // caret was when the last edit landed. A floor under the re-survey
+        // bounds that staleness without paying for a materialise every frame.
+        const RESURVEY_INTERVAL: Duration = Duration::from_millis(500);
+        let heads = self.state.doc.get_heads();
+        let now = Instant::now();
+        if let Some((last_heads, at)) = &self.published_at {
+            if *last_heads == heads && now.duration_since(*at) < RESURVEY_INTERVAL {
+                return;
+            }
+        }
+        let resources = self.root_widget.resources(&self.state.doc);
+        let surface: Vec<crate::collaboration::PublishedAction> =
+            qos_actions::door::survey(&resources)
+                .into_iter()
+                .map(|d| crate::collaboration::PublishedAction {
+                    resource: d.address.resource,
+                    action: d.address.action,
+                    resource_kind: d.resource_kind,
+                    resource_label: d.resource_label,
+                    action_label: d.action_label,
+                    description: d.description,
+                    text_input: match d.input {
+                        qos_actions::door::InputSpec::None => None,
+                        qos_actions::door::InputSpec::Text {
+                            prompt,
+                            placeholder,
+                            collects,
+                        } => Some(crate::collaboration::PublishedTextInput {
+                            prompt,
+                            placeholder,
+                            wants_content: collects == qos_actions::resource::Collects::Content,
+                        }),
+                    },
+                })
+                .collect();
+        self.published_at = Some((heads, now));
+        if surface == self.published_actions {
+            return;
+        }
+        self.published_actions = surface.clone();
+        self.collab_manager
+            .send(crate::collaboration::CollabRequest::PublishActions {
+                app_id: crate::collaboration::local_app_id(),
+                actions: surface,
+            });
+    }
+
     pub fn pump_collab_presence(&mut self) -> bool {
         let events = self.collab_manager.poll();
         let mut any = false;
@@ -1900,6 +1984,67 @@ impl App {
                         self.needs_sync = true;
                         self.structure_dirty = true;
                     }
+                }
+                CollabEvent::ActionInvoked {
+                    id,
+                    resource,
+                    action,
+                    argument,
+                    actor,
+                } => {
+                    // The session asked this app to perform one of the
+                    // operations it published, and it is this app that
+                    // performs it: the resource tree, the decoders and the
+                    // document are all here and two of the three cannot cross
+                    // a process boundary at all.
+                    //
+                    // Re-surveyed rather than resolved against what was last
+                    // published. The document may have moved since, and an
+                    // address that no longer names anything must fail loudly
+                    // instead of running whatever now sits at that id.
+                    let address = qos_actions::door::ActionAddress::new(&resource, &action);
+                    let resources = self.root_widget.resources(&self.state.doc);
+                    let outcome = qos_actions::door::invoke(
+                        &mut self.state.doc,
+                        &resources,
+                        &address,
+                        argument.as_deref(),
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    );
+                    let (code, message) = match &outcome {
+                        Ok(_) => {
+                            // The document changed, so the next frame must
+                            // rebuild from it and the delta must go out. Same
+                            // two flags an action arriving from the room sets.
+                            self.needs_sync = true;
+                            self.structure_dirty = true;
+                            tracing::info!(
+                                target: "ui::actions",
+                                id, %resource, %action, %actor,
+                                "performed an operation this app published"
+                            );
+                            (String::new(), String::new())
+                        }
+                        Err(e) => {
+                            // Reported, never swallowed. Somebody who cannot
+                            // see this window asked for something; a refusal
+                            // that arrived as silence would be read as a hang.
+                            tracing::warn!(
+                                target: "ui::actions",
+                                id, %resource, %action, error = %e,
+                                "an operation this app published could not be performed"
+                            );
+                            (e.code().to_string(), e.to_string())
+                        }
+                    };
+                    self.collab_manager
+                        .send(crate::collaboration::CollabRequest::CompleteInvocation {
+                            id,
+                            code,
+                            message,
+                        });
                 }
                 CollabEvent::Context { collaborators, .. } => {
                     // The roster is also the list of places a remark can go.
@@ -4975,6 +5120,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             window.request_redraw();
         }
+
+        // And say what this app can do, if that has changed. Beside the drain
+        // above rather than at each place a resource opens or closes, for the
+        // reason the publish is level-triggered: the session holds whatever was
+        // last said, so what has to be true is that the last thing said is
+        // current -- not that every change remembered to say something.
+        app.publish_action_surface();
 
         // Fade out peer "just typed" highlighter marks: reclaim any that
         // have fully decayed, and keep pumping frames while any are still
