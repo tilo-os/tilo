@@ -407,6 +407,9 @@ pub struct ChatApp {
     mention_shot: Option<String>,
     /// Which agent-record scenario a `--shots` frame is staging, if any.
     agent_shot: Option<String>,
+    /// `--shots` only: stage a remark that arrived from another machine, in a
+    /// room whose roster names its participants by address.
+    arrival_shot: bool,
     /// `--shots` only: a draft to stage into the main composer so a screenshot
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
@@ -607,6 +610,7 @@ impl ChatApp {
             shot_starter: false,
             mention_shot: None,
             agent_shot: None,
+            arrival_shot: false,
             shot_composer_draft: None,
             is_live: false,
             room_id: String::new(),
@@ -863,6 +867,18 @@ impl ChatApp {
                 self.call = CallState::default();
                 self.agent_shot = Some(scenario.to_string());
                 self.thread_open = Some("m_ask_3".into());
+            }
+            // A remark written about a file in another window, arriving from
+            // the machine that wrote it — the shape the session's remark path
+            // actually puts on the wire. Captured because the header beside it
+            // is where an author id stops being an id and becomes a person,
+            // and an author in a spelling the roster is not keyed by renders
+            // as a stranger with no face.
+            "remark-arrived" => {
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.arrival_shot = true;
             }
             "context" => {
                 self.menu = Some(ContextMenu {
@@ -1649,7 +1665,7 @@ impl ChatApp {
     /// and supplying one would repaint mentions in shots that are about
     /// mentions.
     pub fn shot_room(&self) -> Vec<(String, String)> {
-        if self.agent_shot.is_none() {
+        if self.agent_shot.is_none() && !self.arrival_shot {
             return Vec::new();
         }
         self.room_names
@@ -1822,6 +1838,67 @@ impl ChatApp {
                     .expect("and applying it changes the conversation");
             }
         }
+    }
+
+    /// A remark that came in from another machine, staged at the ids a live
+    /// session carries.
+    ///
+    /// Both spellings this codebase has for one participant appear here, and
+    /// only one of them is a key anything resolves against: the roster names
+    /// people by the address every machine in the room can say,
+    /// `peer@<liveness handle>`, and each peer's own membership row is written
+    /// under the same string. So the author is that address — the id the
+    /// session's remark path stamps on its way out. Author a message under the
+    /// other spelling (the account name this machine happens to run under) and
+    /// the header beside it can resolve nothing: no name, no monogram, no
+    /// colour, for a person the sidebar is listing correctly two inches away.
+    ///
+    /// `--shots` only, reached from [`Self::seed_shot_scenario`], which the
+    /// live binary never calls.
+    fn seed_arrival_shot(&mut self, doc: &mut AutoCommit) {
+        // Handles from a real three-machine session, kept verbatim so the
+        // frame is read at the width a real id occupies rather than a tidy
+        // stand-in's.
+        const XAVER: &str = "peer@12662516466563993685";
+        const CLAUDE: &str = "peer@16437313512669011972";
+
+        for (id, name) in [(XAVER, "Xaver"), (CLAUDE, "Claude")] {
+            // What the room calls them. Handed to the presence store by the
+            // `--shots` entry point, because `adopt_room` re-reads the roster
+            // every frame and would drop anything only written here.
+            self.room_names.insert(id.to_string(), name.to_string());
+            // And the membership row each peer's own chat writes for itself —
+            // nobody writes anybody else's.
+            ChatDoc::ensure_member(doc, id, false, model::Presence::Online);
+        }
+
+        self.active_ws = "ws_acme".into();
+        self.active_channel = "c_general".into();
+        let channel = self.active_channel.clone();
+
+        // Encoded the way a remark really is: `qos-reference` mints chat's own
+        // `SendMessage`, chat's registry decodes it and chat's own action
+        // applies it. A message written straight into the document would prove
+        // only that chat can read its own writing.
+        let remark = qos_reference::Remark::new(
+            "Claude: make this square and put it in the open document",
+            qos_reference::ResourceRef::whole(
+                "files.entry",
+                "files.entry:/var/workspace/harbour.png",
+                "harbour.png",
+            ),
+            qos_reference::Destination::channel(channel.as_str(), "general"),
+        );
+        let encoded = remark
+            .to_chat_action("m_remark_arrived", XAVER, crate::doc::NOW)
+            .expect("a remark addressed to a channel is deliverable");
+        let mut registry = qos_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        registry
+            .decode(&encoded)
+            .expect("chat decodes an action minted under its own type id")
+            .apply(doc)
+            .expect("and applying it inserts the message");
     }
 
     fn seed_mention_shot(&mut self, doc: &mut AutoCommit, which: &str) {
@@ -2437,6 +2514,9 @@ impl Widget for ChatApp {
             }
             if let Some(which) = self.mention_shot.clone() {
                 self.seed_mention_shot(doc, &which);
+            }
+            if self.arrival_shot {
+                self.seed_arrival_shot(doc);
             }
         }
         self.reload(doc);
