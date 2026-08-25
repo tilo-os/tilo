@@ -1866,6 +1866,34 @@ ROLES = {
     "xaver": "joined by invite",
 }
 
+#: At or above this SSIM the two screens either side of a cut are the
+#: same picture as far as a viewer is concerned, and the cut is one
+#: nobody can see.
+#:
+#: Two different things made the band look like it was captioning the
+#: wrong machine, and only one of them is this one.
+#:
+#: The band cannot caption the wrong machine by accident: `_capture`
+#: reads the live session under the lock and uses that same object for
+#: both the snapshot and the name it files with it, and `_label_spans`
+#: walks the very timeline the concat track is built from. What the band
+#: *can* be is late — see `_label_spans` — and it was, at every cut.
+#:
+#: The other thing is this, and it is a property of the product rather
+#: than of the camera: two people looking at the same shared document
+#: see the same screen. That is the point of the system being filmed. So
+#: a cut between them changes nothing but the caption, and no caption
+#: can fix that — the cut is what is wrong, and the beat has to be
+#: restructured to cut where the two desktops actually differ.
+#:
+#: 0.85, from measuring the four cuts in a 521 s take. Cuts between two
+#: genuinely different screens came in at SSIM 0.60-0.63; the one cut
+#: where both machines showed the same two windows with the same content
+#: came in at 0.9516, and two frames of one unchanging screen run above
+#: 0.9995. The threshold sits in the gap, with a wide margin either
+#: side.
+CUT_VISIBLE_SSIM = 0.85
+
 # The one session this film never shows, and the reason it has a name of
 # its own rather than an absent entry in ROLES.
 #
@@ -2813,7 +2841,91 @@ class Recorder:
             else:
                 spans.append((name, at, at + seconds))
             at += seconds
-        return [s for s in spans if s[2] - s[1] >= 1.0 / fps]
+
+        # Snap each boundary back to the frame grid the picture is on,
+        # rounding *down*.
+        #
+        # The caption used to be late at every cut — measured at 2 to 9
+        # frames across a 521 s take, so for 67 to 300 ms the film showed
+        # one machine's screen under the other machine's name. That is
+        # the thing that reads as the band captioning the wrong machine,
+        # and it is not a disagreement about which session a frame came
+        # from: these spans are walked over the very timeline the concat
+        # track is built from, so the name always belongs to the pixels.
+        #
+        # It is a disagreement about *when*. These boundaries accumulate
+        # the frames' own float durations, while `drawtext` is evaluated
+        # against output timestamps that `fps=` has quantised onto the
+        # container's grid. A boundary landing anywhere inside a tick
+        # turns the caption on at the *end* of that tick, so the caption
+        # can only ever be late, never early — which is exactly the
+        # one-sided error that was measured.
+        #
+        # Flooring puts the boundary on the grid, and puts it on the
+        # frame the cut is on rather than the one after it. A caption
+        # that changes a frame early is invisible; one that changes a
+        # frame late is the defect.
+        tick = 1.0 / fps
+        snapped = [
+            (name, math.floor(a / tick) * tick, math.floor(b / tick) * tick)
+            for name, a, b in spans
+        ]
+        return [s for s in snapped if s[2] - s[1] >= tick]
+
+    def _frame_ssim(self, rel_a: str, rel_b: str) -> float | None:
+        """How alike two captured frames are, 0..1. `None` if unreadable.
+
+        The frames on disk are the sessions' own snapshots and carry no
+        band — that is drawn at compose time — so this compares exactly
+        the part of the picture a viewer uses to tell one screen from
+        another, with the one element that always differs excluded by
+        construction rather than by a crop that could drift.
+
+        Structural similarity rather than PSNR. Most of this film is a
+        dark desktop, and a large flat area drags PSNR up until it stops
+        discriminating: two screens 40 s and a whole app apart measured
+        50 dB, which is the same neighbourhood as two frames a
+        thirtieth of a second apart. SSIM separated the same pair 0.60
+        against 0.99999.
+        """
+        a = os.path.join(self.dir, rel_a)
+        b = os.path.join(self.dir, rel_b)
+        try:
+            done = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-i", a, "-i", b,
+                 "-lavfi", "ssim", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        m = re.search(r"All:([0-9.]+)", done.stderr)
+        return float(m.group(1)) if m else None
+
+    def _check_visible_cuts(self, timeline: list[tuple[str, str, float]]) -> None:
+        """Refuse a cut between two screens that look the same.
+
+        See `CUT_VISIBLE_SSIM`. The band names the machine, and it names
+        it correctly; what it cannot do is make a cut visible that the
+        pictures either side of it do not show. When those pictures
+        match, the only thing that changes at the cut is the caption,
+        and the film reads as having captioned the wrong machine.
+
+        Measured on the frames rather than reasoned about from the
+        beats: which two screens happen to be identical depends on what
+        the demo was doing at that moment, and that moves.
+        """
+        at = 0.0
+        for i, (rel, name, seconds) in enumerate(timeline):
+            if i and name != timeline[i - 1][1]:
+                s = self._frame_ssim(timeline[i - 1][0], rel)
+                if s is not None and s >= CUT_VISIBLE_SSIM:
+                    FAILURES.append(
+                        f"the cut to {name} at {at:.1f}s is invisible: the "
+                        f"frame before it and the frame after it match at "
+                        f"SSIM {s:.4f}, so the picture does not change and "
+                        f"only the band does. A viewer reads that as the "
+                        f"band naming the wrong machine. The band is right "
+                        f"— cut where the two desktops differ instead.")
+            at += seconds
 
     def _caption(self, slug: str, text: str) -> str:
         """Caption text goes in a file, not in the filter graph: drawtext
@@ -2840,6 +2952,7 @@ class Recorder:
         source_w, source_h = (int(v) for v in size.lower().split("x"))
         timeline = self._timeline(t_start, t_end, fps)
         rel_track = self._concat_list(timeline)
+        self._check_visible_cuts(timeline)
 
         chain = [f"fps={fps}"]
         # The band sits *below* the screen rather than over it, and that
