@@ -1234,14 +1234,39 @@ class Session:
     #: about a second and a half; this is a little brisker than that,
     #: because a film has to keep moving and an approach nobody notices
     #: is one that has done its job.
-    POINTER_SPEED_PX_S = 2200.0
+    POINTER_SPEED_PX_S = 1700.0
     #: Shortest and longest an approach may take, whatever the distance.
     POINTER_TRAVEL_MIN_S = 0.16
-    POINTER_TRAVEL_MAX_S = 0.55
-    #: Wall-clock a step of the path is given. Near the camera's own
-    #: frame time, so consecutive steps land in consecutive frames
-    #: rather than several to a frame.
-    POINTER_STEP_S = 0.055
+    POINTER_TRAVEL_MAX_S = 1.90
+    #: Wall-clock a step of the path is given, as a floor. The real step
+    #: time is whatever the camera's frame period turns out to be — see
+    #: `Recorder.frame_period` — because a step shorter than a frame is a
+    #: socket round trip nobody photographs.
+    POINTER_STEP_S = 0.02
+    #: The furthest the pointer may travel between two *photographed*
+    #: positions.
+    #:
+    #: This is the whole difference between a pointer that moves and one
+    #: that teleports, and it is a distance rather than a duration. The
+    #: step count used to come out of the trip's duration — `seconds /
+    #: POINTER_STEP_S`, clamped to at most twelve — so a long approach
+    #: was twelve steps however long it was, and a trip across the
+    #: desktop moved the cursor 160 px at a time. A difference trail over
+    #: such an approach shows four stamped cursors with clear ground
+    #: between them; a hand leaves a smear.
+    #:
+    #: A little under the cursor's own height, so consecutive positions
+    #: overlap and the eye joins them up.
+    POINTER_STEP_PX = 24.0
+    #: The path is eased, so its middle runs 1.5x the average rate (the
+    #: peak of the smoothstep derivative). The cap has to hold at the
+    #: fastest point of the trip, not on average, or the middle of every
+    #: approach is the part that jumps.
+    POINTER_EASE_PEAK = 1.5
+    #: Ceiling on the number of positions one approach is cut into. Each
+    #: is a socket round trip to the compositor being filmed, and past
+    #: this the camera is the limiting factor anyway.
+    POINTER_STEPS_MAX = 180
     #: How long the pointer rests on a control before the button goes
     #: down, and how long the button stays down. Both are what a finger
     #: does, and both have to outlast one captured frame or the press is
@@ -1271,10 +1296,27 @@ class Session:
         if distance < 2.0:
             self.pointer_move(x, y)
             return
+        # How many positions the path is cut into: enough that no two
+        # neighbours are further apart than a cursor. That is the number
+        # the *picture* needs, and it is set by the distance alone.
+        steps = max(3, min(self.POINTER_STEPS_MAX,
+                           math.ceil(distance * self.POINTER_EASE_PEAK
+                                     / self.POINTER_STEP_PX)))
+        # How long each of them is held: at least one camera frame, or
+        # the step is a socket round trip that never reaches the film.
+        step_s = max(self.POINTER_STEP_S,
+                     RECORDER.frame_period() if RECORDER is not None else 0.0)
+        # And the trip takes as long as walking it properly takes. The
+        # nominal duration is what a hand would spend on the distance;
+        # the floor is what photographing every step costs. Capped, so a
+        # camera having a bad minute cannot turn one approach into a
+        # crawl — past the cap the steps go by faster than frames and the
+        # smear thins out, which is the graceful end of this rather than
+        # the film stopping to watch a cursor.
         seconds = min(self.POINTER_TRAVEL_MAX_S,
                       max(self.POINTER_TRAVEL_MIN_S,
-                          distance / self.POINTER_SPEED_PX_S))
-        steps = max(3, min(12, round(seconds / self.POINTER_STEP_S)))
+                          distance / self.POINTER_SPEED_PX_S,
+                          steps * step_s))
         for i in range(1, steps + 1):
             t = i / steps
             eased = t * t * (3.0 - 2.0 * t)
@@ -2258,6 +2300,38 @@ class Recorder:
     def frames_from(self, name: str) -> int:
         return sum(1 for _t, _rel, n, _h in self.frames if n == name)
 
+    #: What one frame is assumed to cost before the camera has taken
+    #: enough of them to say. Deliberately pessimistic: over-estimating
+    #: costs an approach a few needless milliseconds, under-estimating
+    #: emits pointer moves nobody photographs.
+    ASSUMED_FRAME_PERIOD_S = 0.033
+
+    def frame_period(self) -> float:
+        """Seconds between the last few frames, as actually taken.
+
+        A gesture that wants to be *photographed* has to be paced against
+        this rather than against a constant. The pointer approach is the
+        case that made it necessary: it moved in steps sized for a 55 ms
+        camera, and against a camera whose frames were 100-130 ms apart
+        two steps happened between photographs, so a trip that really did
+        walk landed on screen as three stamps with gaps between them.
+
+        The recent tail rather than the whole run: a snapshot's cost
+        moves with what is on screen, and an approach cares about what
+        the camera is doing now.
+        """
+        with self._lock:
+            recent = [t for t, _rel, _n, _h in self.frames[-24:]]
+        if len(recent) < 4:
+            return self.ASSUMED_FRAME_PERIOD_S
+        gaps = sorted(b - a for a, b in zip(recent, recent[1:]))
+        median = gaps[len(gaps) // 2]
+        # A run of gaps can contain a stall the camera is already out of;
+        # the floor keeps that from being read as a fast camera, and the
+        # ceiling keeps one 850 ms snapshot from stretching every gesture
+        # in the film.
+        return min(0.25, max(self.ASSUMED_FRAME_PERIOD_S, median))
+
     def dwell(self) -> None:
         """Hold on the moment just reached.
 
@@ -2768,25 +2842,35 @@ class Recorder:
         rel_track = self._concat_list(timeline)
 
         chain = [f"fps={fps}"]
-        # The band sits *below* the screen rather than over it. A session
-        # recorded at the video's height minus the band goes in 1:1 and
-        # is padded downwards, so the strip the band occupies is empty
-        # canvas and no window is ever covered by it. See RECORD_SIZE.
-        if (source_w, source_h) == (VIDEO_W, VIDEO_H - BAND_H):
-            chain.append(f"pad={VIDEO_W}:{VIDEO_H}:0:0:color={BG}")
-        # No scale filter at all when the session already renders at the
-        # video's size, which is what `--record-size` picks by default.
-        # Resampling a 1:1 frame would cost exactly the legibility that
-        # recording full-frame was for.
-        elif (source_w, source_h) != (VIDEO_W, VIDEO_H):
-            k = min(VIDEO_W / source_w, VIDEO_H / source_h)
-            w, h = _even(source_w * k), _even(source_h * k)
-            print(f"  {size} is not {VIDEO_W}x{VIDEO_H}; frames are resampled "
-                  f"to {w}x{h} and letterboxed. Record at {RECORD_SIZE} "
-                  f"for 1:1.")
+        # The band sits *below* the screen rather than over it, and that
+        # is a property of the *composition*, not of the source size.
+        #
+        # It used to be a property of the source size: a session that
+        # rendered at exactly `RECORD_SIZE` was padded downwards and the
+        # band landed on empty canvas, and every other size was fitted
+        # into the whole 1080 and then had the band drawn on top of it.
+        # A windowed take is exactly that other case — the window manager
+        # granted 1920x1048 against the 1920x1014 asked for — so the film
+        # went out with 66 px of scrim across the bottom of the picture
+        # and the word processor's Margins / Spacing / Page layout bar
+        # rendered as dim grey text inside it. The band was doing the one
+        # thing RECORD_SIZE exists to stop it doing.
+        #
+        # So the frame is fitted into the height the video can actually
+        # show — `VIDEO_H - BAND_H` — whatever it arrives at, and the
+        # strip below is always empty canvas. A session already at
+        # `RECORD_SIZE` still goes in 1:1 with nothing resampled, because
+        # fitting it computes a scale of exactly 1.
+        shown_h = VIDEO_H - BAND_H
+        k = min(VIDEO_W / source_w, shown_h / source_h)
+        w, h = _even(source_w * k), _even(source_h * k)
+        if (w, h) != (source_w, source_h):
+            print(f"  {size} is not {RECORD_SIZE}; frames are resampled to "
+                  f"{w}x{h} and letterboxed above the band. Record at "
+                  f"{RECORD_SIZE} for 1:1.")
             chain.append(f"scale={w}:{h}:flags=lanczos")
-            chain.append(f"pad={VIDEO_W}:{VIDEO_H}:{(VIDEO_W - w) // 2}:"
-                         f"{(VIDEO_H - h) // 2}:color={BG}")
+        chain.append(f"pad={VIDEO_W}:{VIDEO_H}:{(VIDEO_W - w) // 2}:"
+                     f"{(shown_h - h) // 2}:color={BG}")
         chain.append("format=rgb24")
         # The scrim is always up, so the band does not blink between
         # cuts — only the name inside it changes.

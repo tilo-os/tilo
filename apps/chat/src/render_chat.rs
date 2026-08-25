@@ -407,7 +407,16 @@ impl ChatApp {
                     self.user(&person.id).map(|u| u.color_idx).unwrap_or(0),
                     status,
                 );
-                let name = truncate_to(tr, &person.name, 12.5, row.width() - 44.0);
+                // `user_name`, not the participant's carried `name`. That
+                // field is `display_name`, whose last fallback is the raw
+                // id — so a peer the room has not named yet put
+                // `u_345d1c227bde49e2adbe0f6…` in the list where a person
+                // goes, beside `Claude` and `quinten`. Every other place a
+                // person is named on screen goes through `user_name`,
+                // which answers `Someone (…)` for an id it cannot resolve;
+                // this row was the one that did not.
+                let name = self.user_name(&person.id);
+                let name = truncate_to(tr, &name, 12.5, row.width() - 44.0);
                 label(scene, tr, tf, &name, 12.5, c.text_primary, row.x0 + 34.0, row.center().y - 8.0);
                 y += 30.0;
             }

@@ -496,6 +496,38 @@ impl Default for CommandPalette {
 }
 
 impl CommandPalette {
+    /// Width of the insertion point, matching [`crate::widget::TextInput`]
+    /// so the palette's caret and a field's caret are the same object.
+    pub const CARET_WIDTH: f64 = 2.0;
+    /// How far the caret runs above and below the text band. A bar
+    /// exactly as tall as the glyphs reads as a letter rather than as a
+    /// caret; a little overhang is what makes it one.
+    pub const CARET_OVERHANG: f64 = 2.0;
+    /// Gap left between the caret and a *placeholder*, so the two do not
+    /// collide on the first glyph. Real text needs none: by the time
+    /// there is any, the placeholder it would have run into is gone.
+    pub const CARET_GUTTER: f64 = 5.0;
+
+    /// Distance from the start of `text` to the caret at byte `cursor`.
+    ///
+    /// Measured through the same [`TextRenderer`] that draws the string,
+    /// so the caret lands between the glyphs it is between rather than
+    /// near them. A `cursor` that is not on a character boundary — which
+    /// nothing should produce, but a clamp is cheaper than a panic in a
+    /// draw path — falls back to the whole string's width.
+    fn caret_offset_px(
+        text_renderer: &mut TextRenderer,
+        text: &str,
+        cursor: usize,
+        size: f32,
+    ) -> f64 {
+        let head = text.get(..cursor.min(text.len())).unwrap_or(text);
+        if head.is_empty() {
+            return 0.0;
+        }
+        text_renderer.measure(head, size, None).0 as f64
+    }
+
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -2094,7 +2126,17 @@ impl Widget for CommandPalette {
             layout.input_rect.y0 + (layout.input_rect.height() - text_size as f64) / 2.0;
         let mut tx = layout.input_rect.x0;
         let avail = layout.input_rect.width();
-        if let Some(arg) = &self.arg_state {
+        // Where the insertion point goes, and what sits behind it. The
+        // palette owns the keyboard for as long as it is open — every
+        // keystroke edits this field — so the caret is unconditional
+        // rather than gated on a focus flag the palette does not have.
+        //
+        // It was missing entirely: the field carried a `query_selection`
+        // that arrow keys moved and typing spliced at, and nothing drew
+        // it. On camera the palette sat on `Search…` for two seconds
+        // before the first character appeared, and a search box with no
+        // insertion point does not look like one that is listening.
+        let caret_at = if let Some(arg) = &self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
                 text_renderer.draw_text(
@@ -2113,31 +2155,70 @@ impl Widget for CommandPalette {
             } else {
                 (arg.buffer.as_str(), colors.text_primary)
             };
-            let body = text_renderer.elide_to_width(body, text_size, (layout.input_rect.x1 - tx) as f32);
+            let caret = Self::caret_offset_px(
+                text_renderer,
+                &arg.buffer,
+                arg.selection.cursor,
+                text_size,
+            );
+            let empty = arg.buffer.is_empty();
+            let body_x = tx + if empty { Self::CARET_GUTTER } else { 0.0 };
+            let body = text_renderer
+                .elide_to_width(body, text_size, (layout.input_rect.x1 - body_x) as f32);
             text_renderer.draw_text(
                 scene,
                 &body,
                 text_size,
                 color,
-                transform * Affine::translate((tx, text_y)),
+                transform * Affine::translate((body_x, text_y)),
                 None,
             );
+            tx + caret
         } else {
-            let (display, text_color) = if self.query.is_empty() {
+            let empty = self.query.is_empty();
+            let (display, text_color) = if empty {
                 ("Search\u{2026}".to_string(), colors.text_dim)
             } else {
                 (self.query.clone(), colors.text_primary)
             };
-            let display = text_renderer.elide_to_width(&display, text_size, avail as f32);
+            let caret = Self::caret_offset_px(
+                text_renderer,
+                &self.query,
+                self.query_selection.cursor,
+                text_size,
+            );
+            // The placeholder is pushed clear of the caret; real text is
+            // not, so nothing shifts under the first keystroke — the
+            // placeholder it would have collided with is gone by then.
+            let body_x = tx + if empty { Self::CARET_GUTTER } else { 0.0 };
+            let display = text_renderer
+                .elide_to_width(&display, text_size, (avail - (body_x - tx)) as f32);
             text_renderer.draw_text(
                 scene,
                 &display,
                 text_size,
                 text_color,
-                transform * Affine::translate((tx, text_y)),
+                transform * Affine::translate((body_x, text_y)),
                 None,
             );
-        }
+            tx + caret
+        };
+        // Held inside the field, so a caret at the end of a query wider
+        // than the slot does not draw outside it.
+        let caret_x = caret_at
+            .clamp(layout.input_rect.x0, layout.input_rect.x1 - Self::CARET_WIDTH);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &Rect::new(
+                caret_x,
+                text_y - Self::CARET_OVERHANG,
+                caret_x + Self::CARET_WIDTH,
+                text_y + text_size as f64 + Self::CARET_OVERHANG,
+            ),
+        );
 
         // Filter strip. Skipped entirely when the host paints its own
         // controls into the reserved band.
