@@ -10137,6 +10137,49 @@ impl Widget for ShellOverlayHost {
     /// children clear their own flags this tick — short-circuiting
     /// would leave a stale flag pending in whichever subtree we
     /// skipped.
+    ///
+    /// # The order of the reconcilers below is load-bearing
+    ///
+    /// Four things reconcile the widget rows against the persisted tree,
+    /// and they are not independent. Changing the order, or dropping one,
+    /// does not produce a compile error — it produces a window that comes
+    /// back after being closed, or a live application replaced by a card.
+    ///
+    /// 1. [`Self::harvest_closed_tabs_into_tree`] — tabs the user closed
+    ///    leave the tree. Both reconcilers after it compare widget
+    ///    against tree, and until this runs a closed tab is gone from one
+    ///    and not the other: the group harvest reads that as a group that
+    ///    shrank, and the resync reads it as a tab to splice back.
+    /// 2. [`Self::harvest_widget_only_groups_into_tree`] — groups the
+    ///    widget grew (a tab dragged out into its own window) reach the
+    ///    tree. Before the resync, or it would see "widget has X, tree
+    ///    does not" and evict the group the user just made.
+    /// 3. [`Self::harvest_widget_tab_placement_into_tree`] — which group
+    ///    each tab sits in. After 2, because a tab torn into a brand-new
+    ///    group needs the group to exist before it can be placed in it.
+    /// 4. [`Self::resync_strips_from_tree`] — the tree back onto the
+    ///    rows. Last: everything above is the widget's side of the story,
+    ///    and this is the step that acts on the settled tree.
+    ///
+    /// Between 2 and 3 the tree lists a moved tab **twice** — intact where
+    /// it started, and again in the group it moved to. Step 2 carries the
+    /// real [`crate::shell::state::Tab`] across rather than rebuilding it
+    /// from a widget descriptor (a descriptor has no wayland surface id,
+    /// no terminal session, no document), and that is what makes the
+    /// duplicate harmless: `WorkspaceTree::place_tab` in step 3 keeps
+    /// whichever copy it meets first in tree order, and with step 2 doing
+    /// its job both copies say the same thing. Take that away and which
+    /// copy survives depends on which side of its old neighbours the tab
+    /// was dropped — tear one out to the left and the rebuilt copy is
+    /// first, so the live client is discarded in favour of a stub card.
+    /// `cross_strip_drag::a_tab_dragged_into_its_own_group_keeps_what_was_inside_it`
+    /// pins exactly that arrangement.
+    ///
+    /// [`Self::deferred_tile_swaps`] rides on top of 4 and needs no place
+    /// in this order: it makes the resync run again on a frame where the
+    /// revision did not move, and the swap it is waiting on is gated on
+    /// the tab's recorded signature, which steps 1–3 have already settled
+    /// by the time it is read.
     fn take_structure_dirty(&mut self) -> bool {
         // Take closed tabs out of the tree first. Both reconcilers
         // below compare the widget against the tree, and a tab the user
