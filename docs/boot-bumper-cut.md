@@ -148,9 +148,13 @@ edit is a shorter cut, never a faster one.
 
 ## Assembling
 
-Cut each span, then join with `scripts/demo-assemble.py`, which normalises
-everything to 1920×1080 / 30 fps and refuses if a segment is missing. The boot
-recording is 1280×800, so it pillarboxes — expected.
+`scripts/cut-boot-bumper.py` writes the bumper already at 1920×1080 / 30 fps,
+so joining it with `scripts/demo-assemble.py` is a plain concatenation —
+the assembler's scale and pad are no-ops on both segments and neither is
+reported as rescaled. That is the point: the join is a cut, not a resize.
+
+If the assembler ever says a segment was rescaled, something upstream is not
+the film's geometry and the join will show it.
 
 ```bash
 scripts/demo-assemble.py --out final.mp4 boot-cut.mp4 qos-demo.mp4
