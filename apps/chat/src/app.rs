@@ -1078,8 +1078,54 @@ impl ChatApp {
     /// What to call `id` on screen. One resolver, so a name beside a message,
     /// a name in the roster and a name in the `@` picker cannot disagree — see
     /// [`Self::display_name`] for why the room, not the peer, answers.
+    ///
+    /// Two things happen here that must not happen in `display_name`, which
+    /// also answers for attribution and for matching:
+    ///
+    /// **You are "You".** Reading your own name back at you is how a chat
+    /// tells you it does not know who you are. Second-person is rendered on
+    /// this machine only and never written to the document, so it cannot
+    /// become two peers disagreeing about a third.
+    ///
+    /// **Nobody is ever shown an internal token.** `display_name` ends at
+    /// `id.to_string()`, and an id here is `peer@9007495404254172154` — a
+    /// hash of a public key. That is what was appearing beside messages and
+    /// in the roster, and it is not a name, it is a thing to be resolved
+    /// into one. Until the room says otherwise the honest answer is that
+    /// somebody is here and has not been named, with enough of the id to
+    /// tell two of them apart. Inventing a plausible name would be worse:
+    /// this is the surface where knowing who you are talking to is the
+    /// whole point.
     pub(crate) fn user_name(&self, id: &str) -> String {
-        self.display_name(id)
+        // A person who *has* been named still reads "You" beside their own
+        // messages; the roster is where their name belongs, and it appends
+        // "(you)" there rather than replacing it.
+        if id == self.me.id {
+            return "You".to_string();
+        }
+        let named = self.display_name(id);
+        if named != id && !named.trim().is_empty() {
+            return named;
+        }
+        format!("Someone ({})", Self::unnamed_tag(id))
+    }
+
+    /// Enough of an unresolved id to tell two unnamed people apart.
+    ///
+    /// The tail rather than the head: these ids share a `peer@` prefix and
+    /// differ in their digits, so the first characters are the ones that
+    /// carry no information.
+    fn unnamed_tag(id: &str) -> String {
+        let body = id.rsplit(['@', ':']).next().unwrap_or(id);
+        let tail: String = body
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if tail.is_empty() { id.to_string() } else { tail }
     }
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
@@ -2268,5 +2314,46 @@ mod screenshare_reuse_tests {
             (W, H),
             "featured-tile image carries the decoded frame's dimensions"
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_on_screen {
+    use super::*;
+
+    /// Nobody is ever shown the token the system uses to route to them.
+    ///
+    /// A participant id is `peer@9007495404254172154` — a hash of a public
+    /// key. It appeared beside messages and in the roster whenever the room
+    /// had not named somebody yet, which is most of the time a peer has just
+    /// arrived. It is not a name; it is the thing a name resolves from.
+    #[test]
+    fn an_unnamed_participant_is_not_shown_their_routing_token() {
+        let app = ChatApp::new_ephemeral();
+        let stranger = "peer@9007495404254172154";
+        let shown = app.user_name(stranger);
+        assert!(
+            !shown.contains("9007495404254172154"),
+            "the id leaked onto the screen as `{shown}`",
+        );
+        assert!(
+            shown.starts_with("Someone"),
+            "an unnamed peer should read as somebody unnamed, got `{shown}`",
+        );
+        assert!(
+            shown.contains("2154"),
+            "two unnamed peers have to be distinguishable, got `{shown}`",
+        );
+    }
+
+    /// And you are "You".
+    ///
+    /// Reading your own id — or your own name — back at you is how a chat
+    /// tells you it does not know who you are.
+    #[test]
+    fn the_person_reading_the_screen_is_you() {
+        let app = ChatApp::new_ephemeral();
+        let me = app.me.id.clone();
+        assert_eq!(app.user_name(&me), "You");
     }
 }
