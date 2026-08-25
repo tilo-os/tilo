@@ -93,7 +93,7 @@ calibration exemplar is feeds' `Modal::AddSubscription`.
 | `apps/pdf_viewer/src/app.rs:349` `editing`, `:364` `query` | pdf_viewer | inline comment/reply/signer editor **self-admits "no selection"** + hand-rolled clipboard (`app_events.rs:789`); find query | `TextInput`/`SearchField` | L | HIGH |
 | `apps/disks/src/app.rs:2099` `confirm_input` | disks | `push(ch)`/`.pop()` on the format-confirm field | `TextInput` | S | HIGH |
 | `apps/vpn/src/app.rs:1469` `Modal::Add` | vpn | `add_name`/`add_endpoint` Strings, Tab-cycled focus, `f.push_str(s)`/`.pop()` | `TextInput` | M | HIGH |
-| `apps/remote/src/app.rs:649` `type_char`/`:664` backspace | remote | splices into `draft.{name,host,port,user,group}` + `search`; port hand-filters `is_ascii_digit` | `TextInput`/`NumberInput`/`SearchField` | L | HIGH |
+| ~~`apps/remote/src/app.rs:649` `type_char`/`:664` backspace~~ | remote ✅ | **DONE** — all six fields (`draft.{name,host,port,user,group}` + `search`) are `TextInput`s; `type_char`/`backspace`/`field_buf` deleted, and the port filters on commit so a pasted port arrives whole | `TextInput` | L | HIGH |
 | `apps/software_store/src/app.rs:2965` `search_query` | software_store | `.push(ch)`/`.pop()` on Backspace/Character | `SearchField` | M | HIGH |
 | `apps/chat/src/events.rs:714` inline rename | chat | `text.push_str(s)`/`.pop()` | `EditableLabel` | M | HIGH |
 | `apps/containers/src/panels.rs:1893` `prompt_key` | containers | `prompt.value.push_str(ch)`/`.pop()` | `TextInput` | S | HIGH |
@@ -523,7 +523,7 @@ Route existing single-line fields to `TextInput`/`SearchField`/`NumberInput`/
 `EditableLabel`. **Apps:** feeds, maps, weather, logs, monitor, snippets,
 hex_editor, word-processor (find), sheets (name box + tab rename), music
 (name_input), ebook (num_edit + note), disks (confirm), vpn (add), containers
-(prompt), remote (fields), software_store (search), chat (inline rename),
+(prompt), ~~remote (fields)~~ ✅, software_store (search), chat (inline rename),
 pdf_viewer (find query). *Start with feeds (the exemplar) and weather (smallest).*
 
 ### Wave 2 — Extend `TextInput`, then migrate the blocked text inputs (HIGH)
