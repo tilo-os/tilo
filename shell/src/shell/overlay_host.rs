@@ -1422,6 +1422,23 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 /// Pinned by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
+/// How long an open may go without a window before the desktop stops
+/// saying it is loading and says what happened instead.
+///
+/// Comfortably past every wait that is real. A foreign surface is forced
+/// visible at [`crate::compositor::foreign::PRESENT_GRACE`] — ten seconds
+/// after the compositor first hears of it — so a window that was ever
+/// adopted has settled the notice well before this, and the seconds
+/// before adoption (fork, exec, wayland connect, first configure) fit
+/// inside the remainder even on a debug build. Anything still saying
+/// "Loading…" at twenty seconds is not loading.
+///
+/// Far short of the 120-second expiry the notice carries, which is a
+/// backstop against a leak rather than an answer: it takes the toast
+/// away without ever saying anything, which is the silence the notice
+/// existed to prevent.
+pub(crate) const OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
 use crate::shell::tile_signature;
 
 /// Drop parked tiles whose tab is no longer anywhere in `tree` — a tab
@@ -4629,12 +4646,22 @@ impl ShellOverlayHost {
             // the user watching an empty desktop after the one piece of
             // feedback had already gone. The success settlement is the
             // window appearing, and that is
-            // [`Self::retire_notices_for_opened_windows`]. `Exited` is
-            // not a settlement either: by then the app has run.
-            if matches!(
+            // [`Self::retire_notices_for_opened_windows`].
+            //
+            // `Exited` is not a settlement *once the app has run* — by
+            // then the window appeared, the notice went with it, and the
+            // app closing is ordinary. But an `Exited` arriving while the
+            // notice is still outstanding says the opposite: the process
+            // came and went without ever showing a window, so the open is
+            // over and it did not succeed. Leaving "Loading…" up for that
+            // describes a program that is no longer running.
+            let still_waiting =
+                crate::shell::catalogue::pending_notice_for(&event.package_id).is_some();
+            let settles = matches!(
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
-            ) {
+            ) || (matches!(event.kind, LaunchEventKind::Exited) && still_waiting);
+            if settles {
                 if let Some(notice) = crate::shell::catalogue::take_pending_notice(&event.package_id)
                 {
                     let mut st = chrome_handle.borrow_mut();
@@ -4648,7 +4675,19 @@ impl ShellOverlayHost {
                     eprintln!("shell: launched {} (pid {pid})", event.package_id);
                     continue;
                 }
-                LaunchEventKind::Exited => continue,
+                // Ordinary close: the window was there and is gone. Only
+                // the never-opened case has anything to report.
+                LaunchEventKind::Exited if !still_waiting => continue,
+                LaunchEventKind::Exited => (
+                    crate::shell::i18n::t_args(
+                        "notice-open-gave-up",
+                        &[crate::shell::i18n::arg(
+                            "app",
+                            app_display_name(&event.package_id).as_str(),
+                        )],
+                    ),
+                    crate::shell::i18n::t("notice-open-stopped-early-body"),
+                ),
                 LaunchEventKind::SpawnFailed { detail } => {
                     (format!("Couldn't open {}", event.display_name), detail)
                 }
@@ -4802,6 +4841,103 @@ impl ShellOverlayHost {
         retired
     }
 
+    /// End an open that produced no window, in words, rather than
+    /// leaving it reading "Loading…".
+    ///
+    /// The other two settlements are both *events*: a window paints
+    /// ([`Self::retire_notices_for_opened_windows`]), or the launcher
+    /// reports a failure ([`Self::drain_launch_events`]). Between them
+    /// they cover everything that announces itself — and nothing else.
+    /// An open where the launcher forks cleanly and then no window ever
+    /// arrives announces nothing at all: no failure event, no surface to
+    /// match. Its notice therefore stood, unchanged, until the 120-second
+    /// backstop expiry took it away silently.
+    ///
+    /// That is the same defect as a silent action seen from the other
+    /// end. For two minutes the desktop said an app was loading when
+    /// nothing was loading; a launch that failed and a launch that
+    /// worked looked identical, and both looked unfinished. One take
+    /// carried "Opening Chat / Loading…" for the entire time the camera
+    /// was on that machine, over a chat window that had opened, drawn,
+    /// and scrolled off the strip.
+    ///
+    /// So an open is given a deadline it must resolve inside, and
+    /// missing it is an outcome like any other: the indication is
+    /// replaced by what happened, at error severity, with an ordinary
+    /// toast lifetime so the report itself does not become the next
+    /// thing that will not go away.
+    ///
+    /// A fetch still visibly moving is exempt. It is accounting for its
+    /// own wait phase by phase ([`Self::refresh_open_progress_notices`]),
+    /// and a download of a large package legitimately outlasts the
+    /// deadline while remaining perfectly legible.
+    ///
+    /// Returns whether anything was settled, so the caller can mark the
+    /// frame dirty.
+    pub(crate) fn settle_overdue_open_notices(&mut self) -> bool {
+        let pending = crate::shell::catalogue::pending_notices();
+        if pending.is_empty() {
+            return false;
+        }
+        let Some(chrome_handle) = self.chrome.clone() else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        // Two different endings, kept apart. `Overdue` still has a
+        // notice on screen that has to be replaced by the reason;
+        // `Vanished` means the toast has already left the stack (the
+        // user swiped it away, or the cap evicted it), so there is
+        // nothing to reword and the only thing owed is to stop waiting.
+        let mut overdue: Vec<String> = Vec::new();
+        let mut vanished: Vec<String> = Vec::new();
+        {
+            let st = chrome_handle.borrow();
+            for (package_id, notice) in &pending {
+                if crate::shell::catalogue::fetch_phase(package_id)
+                    .is_some_and(|phase| phase.is_in_progress())
+                {
+                    continue;
+                }
+                match st.notifications().iter().find(|n| n.id == *notice) {
+                    None => vanished.push(package_id.clone()),
+                    Some(n) if now.duration_since(n.created_at) >= OPEN_DEADLINE => {
+                        overdue.push(package_id.clone())
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        if overdue.is_empty() && vanished.is_empty() {
+            return false;
+        }
+        for package_id in &vanished {
+            let _ = crate::shell::catalogue::take_pending_notice(package_id);
+        }
+        let mut settled = !vanished.is_empty();
+        for package_id in overdue {
+            let Some(notice) = crate::shell::catalogue::take_pending_notice(&package_id) else {
+                continue;
+            };
+            let name = app_display_name(&package_id);
+            let mut st = chrome_handle.borrow_mut();
+            st.dismiss_notification(notice);
+            st.push_notification_full(
+                crate::shell::notification::Notification::new(
+                    crate::shell::i18n::t_args(
+                        "notice-open-gave-up",
+                        &[crate::shell::i18n::arg("app", name.as_str())],
+                    ),
+                    crate::shell::i18n::t("notice-open-gave-up-body"),
+                )
+                .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                .with_app_name("Applications"),
+            );
+            st.bump();
+            settled = true;
+        }
+        settled
+    }
+
     pub fn pump_permission_prompt(&mut self) {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
@@ -4866,11 +5002,10 @@ impl ShellOverlayHost {
             if let Some(pending) = st.pending_grants.front() {
                 let label = capability_label(&pending.capability);
                 let is_owner = is_active_workspace_owner(&st);
-                self.permission_prompt = Some(PermissionPrompt::new(
-                    pending.app_id.clone(),
-                    label,
-                    is_owner,
-                ));
+                self.permission_prompt = Some(
+                    PermissionPrompt::new(pending.app_id.clone(), label, is_owner)
+                        .with_app_label(app_display_name(&pending.app_id)),
+                );
             }
         }
     }
@@ -7687,7 +7822,8 @@ impl Widget for ShellOverlayHost {
         // a mutex and moves a Vec out.
         let launch_dirty = self.drain_launch_events()
             | self.refresh_open_progress_notices()
-            | self.retire_notices_for_opened_windows();
+            | self.retire_notices_for_opened_windows()
+            | self.settle_overdue_open_notices();
         // Notification lifecycle: drop expired toasts so the stack
         // shrinks even on frames where the user does nothing. The
         // widget's own `update` also drives this, but routing it
@@ -10747,10 +10883,39 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
+/// What to call `app_id` on screen, in shell chrome that has only the id.
+///
+/// Used by the permission bar and by the notices that report how an open
+/// ended — both of which the person reads while looking at the window
+/// (or the missing window) the id belongs to, so they have to agree with
+/// its tab.
+///
+/// The bar used to draw the raw app-id, so the one question in the
+/// system that most needs to be understood before it is answered asked
+/// it about `dev.qos.file-explorer` — while the tab of the window it was
+/// covering read `Files`, because tab labels have gone through the
+/// installed-app manifest for a long time
+/// ([`crate::compositor::tab_binding::tab_label_for_foreign`]). This is
+/// the same lookup, so the two agree.
+///
+/// Falls back to the id-derived name and then to the id itself: an app
+/// nobody has a manifest for is still better named `Hex Editor` than
+/// `dev.example.hex-editor`, and better named by its id than by nothing.
+fn app_display_name(app_id: &str) -> String {
+    if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
+        return name;
+    }
+    let derived = crate::shell::launcher::display_name_for_package_id(app_id);
+    if derived.trim().is_empty() {
+        return app_id.to_string();
+    }
+    derived
+}
+
 /// Is the local user the owner of the active workspace?
 ///
-/// Gates the permission prompt's "Always" button and the Workspace
-/// Settings Permissions tab's Revoke buttons.
+/// Gates whether the permission prompt offers its "Always allow" button
+/// at all, and the Workspace Settings Permissions tab's Revoke buttons.
 ///
 /// This used to return `true` unconditionally, which made every local
 /// user the owner of every workspace — including ones a peer had shared
@@ -16959,6 +17124,175 @@ mod palette_dispatch_tests {
              thing may be saying it"
         );
         store.forget(SURFACE);
+    }
+
+    /// An open that produced nothing has to end in words.
+    ///
+    /// Between them, the window appearing and the launcher reporting a
+    /// failure cover every open that *announces* how it ended. An open
+    /// where the launcher forks cleanly and then no window ever arrives
+    /// announces nothing: there is no failure event and no surface to
+    /// match against. Its notice therefore stood, unchanged, saying
+    /// "Loading…" about nothing until a two-minute backstop removed it
+    /// without a word — so a launch that failed and a launch that worked
+    /// looked identical on screen, and both looked unfinished.
+    #[test]
+    fn an_open_that_never_produces_a_window_ends_in_words_rather_than_in_loading() {
+        let (mut h, chrome) = host_with_chrome();
+        const PACKAGE: &str = "dev.qos.deadlinefixture";
+        let _ = crate::shell::catalogue::take_pending_notice(PACKAGE);
+
+        // Raised the way an open raises it, but dated far enough back
+        // that the deadline has passed without sleeping through it.
+        let notice = {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(
+                crate::shell::notification::Notification::new("Opening Ledger", "Loading…")
+                    .with_app_name("Applications")
+                    .with_dismiss_after(std::time::Duration::from_secs(120))
+                    .with_created_at(
+                        std::time::Instant::now() - OPEN_DEADLINE
+                            + std::time::Duration::from_millis(500),
+                    ),
+            )
+        };
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice(PACKAGE, notice),
+            None
+        );
+
+        assert!(
+            !h.settle_overdue_open_notices(),
+            "still inside the deadline: an open that is genuinely slow must \
+             be left to finish rather than declared dead"
+        );
+        assert!(
+            chrome.borrow().notifications().iter().any(|n| n.id == notice),
+            "the acknowledgement is still owed"
+        );
+
+        // Past the deadline, with still no window anywhere.
+        {
+            let mut st = chrome.borrow_mut();
+            let n = st
+                .notifications
+                .iter_mut()
+                .find(|n| n.id == notice)
+                .expect("the notice is on the stack");
+            n.created_at = std::time::Instant::now() - OPEN_DEADLINE;
+        }
+        assert!(
+            h.settle_overdue_open_notices(),
+            "an open with no window twenty seconds on is over, and the \
+             desktop has to say which way it went"
+        );
+
+        let st = chrome.borrow();
+        assert!(
+            !st.notifications().iter().any(|n| n.id == notice),
+            "'Loading…' must not outlive the loading"
+        );
+        let report = st
+            .notifications()
+            .last()
+            .expect("the outcome replaces the indication; it does not simply vanish");
+        assert_eq!(
+            report.severity,
+            crate::shell::notification::NotificationSeverity::Error,
+            "a launch that did not happen is not good news and must not read \
+             like the neutral one that did"
+        );
+        assert_ne!(
+            report.body, "Loading…",
+            "the whole defect is a report that goes on claiming to be in progress"
+        );
+        assert!(
+            !report.title.is_empty() && report.title != "Opening Ledger",
+            "the title has to state the outcome, not repeat the intent: {:?}",
+            report.title
+        );
+        drop(st);
+        assert_eq!(
+            crate::shell::catalogue::take_pending_notice(PACKAGE),
+            None,
+            "the open is settled, so nothing may go on waiting for it"
+        );
+    }
+
+    /// A process that came and went without ever showing a window did not
+    /// open. `Exited` is ordinary once the window has been and gone — the
+    /// notice went with it — but while the notice is still outstanding it
+    /// is the end of the open, and saying "Loading…" about a process that
+    /// is no longer running is the same lie by a different route.
+    #[test]
+    fn a_process_that_exits_without_ever_opening_a_window_says_so() {
+        let (mut h, chrome) = host_with_chrome();
+        const PACKAGE: &str = "dev.qos.exitfixture";
+        let _ = crate::shell::catalogue::take_pending_notice(PACKAGE);
+        let _ = crate::shell::launcher::drain_events();
+
+        let notice = {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(
+                crate::shell::notification::Notification::new("Opening Ledger", "Loading…")
+                    .with_app_name("Applications"),
+            )
+        };
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice(PACKAGE, notice),
+            None
+        );
+
+        crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
+            package_id: PACKAGE.to_string(),
+            display_name: "Ledger".to_string(),
+            kind: crate::shell::launcher::LaunchEventKind::Exited,
+        });
+        assert!(
+            h.drain_launch_events(),
+            "the open ended; the desktop owes an account of it"
+        );
+
+        let st = chrome.borrow();
+        assert!(
+            !st.notifications().iter().any(|n| n.id == notice),
+            "the process is gone, so the indication that it is loading must be too"
+        );
+        let report = st
+            .notifications()
+            .last()
+            .expect("an open that ended has to end visibly");
+        assert_eq!(
+            report.severity,
+            crate::shell::notification::NotificationSeverity::Error
+        );
+        assert_ne!(report.body, "Loading…");
+    }
+
+    /// The ordinary close is still silent. An app the user opened, used
+    /// and shut has already settled its notice by appearing; reporting
+    /// its exit as a failed open would put an error on screen every time
+    /// somebody closed a window.
+    #[test]
+    fn closing_an_app_that_did_open_reports_nothing() {
+        let (mut h, chrome) = host_with_chrome();
+        const PACKAGE: &str = "dev.qos.cleanexitfixture";
+        let _ = crate::shell::catalogue::take_pending_notice(PACKAGE);
+        let _ = crate::shell::launcher::drain_events();
+
+        crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
+            package_id: PACKAGE.to_string(),
+            display_name: "Ledger".to_string(),
+            kind: crate::shell::launcher::LaunchEventKind::Exited,
+        });
+        assert!(
+            !h.drain_launch_events(),
+            "nothing was outstanding, so there is nothing to report"
+        );
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "closing a window must not raise an error toast"
+        );
     }
 
     /// The other way the hand-over can happen: an app fast enough to paint
