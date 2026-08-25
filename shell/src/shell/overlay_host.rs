@@ -5123,6 +5123,15 @@ impl ShellOverlayHost {
         let dismissed = self.remark_was_open && !self.remark.is_open();
         self.remark_was_open = self.remark.is_open();
         if dismissed {
+            // The other half of "compose surface opened above the windows", so
+            // a session's log carries how long the panel was actually up. It
+            // has been measured off a film instead — three frames, gone before
+            // anybody could type into it — and the pair of lines is what makes
+            // that readable without the video.
+            tracing::info!(
+                target: "shell::remark",
+                "the compose surface closed",
+            );
             // The socket case. An application in its own process is told the
             // same thing as one hosted here, by the only route there is to it.
             if let Some(peer) = self.remark_peer.take() {
