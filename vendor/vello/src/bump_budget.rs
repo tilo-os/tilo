@@ -190,7 +190,15 @@ impl BudgetTracker {
             if self.log {
                 self.report(&used, &in_effect, changed);
             } else if used.failed != 0 {
-                log::warn!(
+                // `eprintln!`, matching `report` below, and deliberately
+                // not `log::warn!`: nothing in this workspace installs a
+                // `log` subscriber or a log-to-tracing bridge, and
+                // applications built on the toolkit never initialise
+                // tracing at all -- so the record went nowhere, in
+                // exactly the processes most likely to overflow. An
+                // overflow drops geometry with no other symptom, so a
+                // warning that cannot be read is the same as no warning.
+                eprintln!(
                     "vello: a frame overflowed its bump buffers (failed={:#x}); \
                      growing the reservation to {} KB. Set {LOG_ENV}=1 for detail.",
                     used.failed,
