@@ -2715,7 +2715,7 @@ impl Widget for FileExplorerWidget {
             state,
             path,
             handled,
-            self.last_cursor,
+            Some(self.last_cursor),
             self.context_menu
                 .is_open()
                 .then(|| self.context_menu.get_rect()),

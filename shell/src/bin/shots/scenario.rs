@@ -1969,7 +1969,65 @@ fn catalogue_rest() -> Vec<Scenario> {
         wifi_password_prompt(),
         file_chooser_dialog(),
         remark_compose_beside_a_window(),
+        remark_compose_takes_a_sentence(),
     ]
+}
+
+/// The compose surface being used: it stays up, it is typed into, it sends.
+///
+/// The three frames the gesture was missing. The panel opened and went again
+/// inside a tenth of a second, so the only picture anybody had of it was an
+/// empty box with a placeholder in it — which looks identical to a box that
+/// works and identical to a box that cannot be typed into.
+///
+/// The press in the middle is the point. It carries no position, which is the
+/// state the chrome is in when the pointer has spent the whole gesture inside
+/// an application window: motion over a window belongs to that window and
+/// never reaches this tree. That press used to close the panel.
+///
+/// * `01-opened` — the panel as it arrives, empty, with its placeholder.
+/// * `02-after-a-press-with-no-position` — still there.
+/// * `03-typed` — the sentence in the field.
+/// * `04-sent` — Enter, and the panel has gone because it sent.
+fn remark_compose_takes_a_sentence() -> Scenario {
+    let menu = Rect::new(430.0, 180.0, 610.0, 400.0);
+    Scenario {
+        name: "remark_compose_takes_a_sentence",
+        description: "The compose surface surviving a press, taking a sentence, and sending it.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Notes",
+                title: "Notes",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(4),
+            Action::ComposeRemarkBeside {
+                window: 0.0,
+                beside: menu,
+                label: "harbour.png",
+            },
+            Action::Wait(2),
+            Action::Snapshot("01-opened"),
+            // No `MoveCursor` in front of it, deliberately.
+            Action::MousePress,
+            Action::MouseRelease,
+            Action::Wait(2),
+            Action::Snapshot("02-after-a-press-with-no-position"),
+            Action::ClickNamed("remark_input"),
+            Action::Type("claude: crop this to the boats".to_string()),
+            Action::Wait(2),
+            Action::Snapshot("03-typed"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(2),
+            Action::Snapshot("04-sent"),
+        ],
+    }
 }
 
 /// The "say something about this" surface, beside a window at the screen edge.
