@@ -128,6 +128,21 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                      {into_app:?}) from peer-{src_idx}: this harness hosts no \
                      windows, so a crossing has nowhere to be drawn."
                 ),
+                // Addressed to a session with a desktop and a catalogue, and
+                // this harness is two peers on a socket. Loud, so a test that
+                // starts sending one is told rather than quietly fanning it.
+                CollabRequest::ComposeRemark { reference, .. } => panic!(
+                    "broker received ComposeRemark({reference:?}) from \
+                     peer-{src_idx}: this harness draws no windows."
+                ),
+                CollabRequest::PublishActions { app_id, .. } => panic!(
+                    "broker received PublishActions({app_id:?}) from \
+                     peer-{src_idx}: this harness holds no catalogue."
+                ),
+                CollabRequest::CompleteInvocation { id, .. } => panic!(
+                    "broker received CompleteInvocation({id}) from \
+                     peer-{src_idx}: nothing here can have asked for one."
+                ),
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;

@@ -74,8 +74,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, action_stream, blob_stream, channel_handle, collab_service, context_stream,
-    cursor_stream,
+    OpKind, action_input, action_stream, blob_stream, channel_handle, collab_service,
+    context_stream, cursor_stream, invocation_stream,
     presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
@@ -147,6 +147,21 @@ struct ActionEnvelope {
     from_user_id: String,
 }
 
+/// Envelope pushed onto an [`InvocationStreamServer`]'s queue.
+///
+/// Addressed to one connection rather than to a channel's subscribers, which
+/// is why it never appears in [`ChannelSubscribers`]: an invocation names the
+/// application that published the operation, and every other reader of the
+/// room is the wrong recipient for it.
+#[derive(Clone, Debug)]
+struct InvocationEnvelope {
+    id: u64,
+    resource: String,
+    action: String,
+    argument: Option<String>,
+    actor: String,
+}
+
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
 struct ContextEnvelope {
@@ -180,6 +195,9 @@ struct BlobSub {
 struct ActionSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ActionEnvelope>,
+}
+struct InvocationSub {
+    tx: mpsc::UnboundedSender<InvocationEnvelope>,
 }
 
 /// Per-channel subscriber registry.
@@ -262,6 +280,17 @@ pub struct CapnpBrokerState {
     /// different socket — and every packaged qOS app speaks capnp, so
     /// this transport is where a person is normally seen from.
     identity: Arc<LocalIdentity>,
+    /// Which connection is listening for invocations, keyed by peer.
+    ///
+    /// Keyed by peer and not by channel because this is the one direction on
+    /// this transport that is not a fan-out: the session addresses exactly the
+    /// application that published the operation. A connection with no row here
+    /// is one that never opened the stream, and an invocation for it is
+    /// refused rather than dropped.
+    invocations: Mutex<HashMap<u64, InvocationSub>>,
+    /// Which application each connection published operations as, so the
+    /// session can be told whose surface just went when the socket closes.
+    published_apps: Mutex<HashMap<u64, String>>,
 }
 
 impl CapnpBrokerState {
@@ -284,6 +313,8 @@ impl CapnpBrokerState {
             broker_channels,
             publisher,
             identity,
+            invocations: Mutex::new(HashMap::new()),
+            published_apps: Mutex::new(HashMap::new()),
         })
     }
 
@@ -620,6 +651,17 @@ impl CapnpBrokerState {
                      was dropped; it is an answer to one connection"
                 );
             }
+            // Same reading. An invocation names the one application that
+            // published the operation, and reaches it through
+            // `dispatch_invocation`; fanning it out would have every app in
+            // the room perform it once, in each other's name.
+            CollabEvent::ActionInvoked { id, resource, action, .. } => {
+                tracing::warn!(
+                    id, %resource, %action,
+                    "capnp fanout: an invocation has no audience and was dropped; \
+                     it is addressed to one connection"
+                );
+            }
         }
     }
 
@@ -770,6 +812,76 @@ impl CapnpBrokerState {
                 .push(ActionSub { peer_id, tx });
         }
         rx
+    }
+
+    /// Register `peer_id` as the connection invocations for it go to.
+    ///
+    /// Re-subscribing replaces: a connection has one application behind it, so
+    /// a second stream is the same reader asking again, and keeping both would
+    /// deliver one instruction twice.
+    fn subscribe_invocations(&self, peer_id: u64) -> mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut m) = self.invocations.lock() {
+            m.insert(peer_id, InvocationSub { tx });
+        }
+        rx
+    }
+
+    /// Hand one invocation to `peer`. `false` when nothing took it.
+    pub(crate) fn dispatch_invocation(
+        &self,
+        peer: u64,
+        invocation: crate::shell::collab_broker::WireInvocation,
+    ) -> bool {
+        let Ok(mut m) = self.invocations.lock() else {
+            return false;
+        };
+        let Some(sub) = m.get(&peer) else {
+            return false;
+        };
+        let env = InvocationEnvelope {
+            id: invocation.id,
+            resource: invocation.resource,
+            action: invocation.action,
+            argument: invocation.argument,
+            actor: invocation.actor,
+        };
+        if sub.tx.send(env).is_ok() {
+            return true;
+        }
+        // The reader has gone. Drop the row rather than leaving an address
+        // that will keep accepting instructions nothing performs.
+        m.remove(&peer);
+        false
+    }
+
+    /// Forget everything a connection registered. Called once when its RPC
+    /// session ends, however it ended.
+    fn forget_peer(&self, peer: u64) {
+        if let Ok(mut m) = self.invocations.lock() {
+            m.remove(&peer);
+        }
+        let published = self
+            .published_apps
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&peer));
+        // Told to the session whether or not this connection ever published:
+        // the listener keys on the connection, and a peer that published and
+        // then had its row cleaned up elsewhere must still stop being offered.
+        if let Some(listener) = self
+            .peer_table
+            .upgrade()
+            .and_then(|t| t.app_action_listener())
+        {
+            listener.gone(peer);
+        }
+        if let Some(app) = published {
+            tracing::info!(
+                peer, %app,
+                "capnp broker: an application went; its operations stop being offered"
+            );
+        }
     }
 
     fn subscribe_context(
@@ -1185,6 +1297,137 @@ impl channel_handle::Server for CapnpChannelHandle {
                          session has no desktop to draw one on"
                     );
                 }
+            }
+            Ok(())
+        })
+    }
+
+    fn publish_actions(
+        self: Rc<Self>,
+        params: channel_handle::PublishActionsParams,
+        _results: channel_handle::PublishActionsResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        Promise::from_future(async move {
+            let p = params.get()?;
+            // The app's own claim about which application it is. Recorded and
+            // logged; not what anything is decided on. The route is the
+            // broker's answer to the same question and it is the one the
+            // session gates against -- see `AppActionListener::published`.
+            let claimed = p.get_app_id()?.to_str().unwrap_or_default().to_owned();
+            let announced = route.app_id.clone();
+            let mut actions = Vec::new();
+            for a in p.get_actions()?.iter() {
+                let text = |t: capnp::text::Reader<'_>| t.to_str().unwrap_or_default().to_owned();
+                let description = text(a.get_description()?);
+                let text_input = match a.get_input()?.which() {
+                    Ok(action_input::Which::None(())) => None,
+                    Ok(action_input::Which::Text(t)) => {
+                        Some(crate::shell::collab_broker::WireTextInput {
+                            prompt: text(t.get_prompt()?),
+                            placeholder: text(t.get_placeholder()?),
+                            wants_content: t.get_wants_content(),
+                        })
+                    }
+                    // A union case this build does not know is a surface it
+                    // cannot describe, so the operation is dropped rather than
+                    // offered as one taking nothing -- which would be an
+                    // invocation made with the wrong shape.
+                    Err(e) => {
+                        tracing::warn!(
+                            peer = peer_id, error = ?e,
+                            "capnp broker: an application published an operation whose \
+                             argument shape this build does not know; it is not offered"
+                        );
+                        continue;
+                    }
+                };
+                actions.push(crate::shell::collab_broker::WireExportedAction {
+                    resource: text(a.get_resource()?),
+                    action: text(a.get_action()?),
+                    resource_kind: text(a.get_resource_kind()?),
+                    resource_label: text(a.get_resource_label()?),
+                    action_label: text(a.get_action_label()?),
+                    description: (!description.is_empty()).then_some(description),
+                    text_input,
+                });
+            }
+            let app = if announced.is_empty() {
+                // A connection that announced no application on its channel
+                // key. The claim is all there is, and the session's namespace
+                // check is what stops it being useful for impersonation.
+                claimed.clone()
+            } else {
+                announced
+            };
+            if let Ok(mut m) = state.published_apps.lock() {
+                m.insert(peer_id, app.clone());
+            }
+            let room = route.cluster_id.clone();
+            match state
+                .peer_table
+                .upgrade()
+                .and_then(|t| t.app_action_listener())
+            {
+                Some(listener) => {
+                    tracing::debug!(
+                        peer = peer_id, %app, %room, count = actions.len(),
+                        "capnp broker: an application published what can be done to it"
+                    );
+                    listener.published(peer_id, &app, &room, actions);
+                }
+                None => {
+                    tracing::warn!(
+                        peer = peer_id, %app,
+                        "capnp broker: an application published its operations, and this \
+                         session has no catalogue to put them in; nothing outside it can \
+                         reach them"
+                    );
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn subscribe_invocations(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeInvocationsParams,
+        mut results: channel_handle::SubscribeInvocationsResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.state.subscribe_invocations(self.peer_id);
+        let server = InvocationStreamServer {
+            rx: Rc::new(RefCell::new(rx)),
+        };
+        let client: invocation_stream::Client = capnp_rpc::new_client(server);
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn complete_invocation(
+        self: Rc<Self>,
+        params: channel_handle::CompleteInvocationParams,
+        _results: channel_handle::CompleteInvocationResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let id = p.get_id();
+            let code = p.get_code()?.to_str().unwrap_or_default().to_owned();
+            let message = p.get_message()?.to_str().unwrap_or_default().to_owned();
+            match state
+                .peer_table
+                .upgrade()
+                .and_then(|t| t.app_action_listener())
+            {
+                Some(listener) => listener.completed(id, &code, &message),
+                None => tracing::warn!(
+                    peer = peer_id, id,
+                    "capnp broker: an application answered an invocation nothing here \
+                     asked for; whoever is waiting will time out instead"
+                ),
             }
             Ok(())
         })
@@ -1855,6 +2098,41 @@ impl action_stream::Server for ActionStreamServer {
     }
 }
 
+struct InvocationStreamServer {
+    rx: Rc<RefCell<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+}
+
+impl invocation_stream::Server for InvocationStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: invocation_stream::ReadParams,
+        mut results: invocation_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let env = match rx.borrow_mut().recv().await {
+                Some(e) => e,
+                None => {
+                    return Err(capnp::Error::disconnected(
+                        "invocation stream closed".into(),
+                    ));
+                }
+            };
+            let mut b = results.get();
+            b.set_id(env.id);
+            b.set_resource(&env.resource);
+            b.set_action(&env.action);
+            b.set_actor(&env.actor);
+            // Presence of an argument is its own field, so an operation
+            // legitimately invoked with the empty string still says it was
+            // given one.
+            b.set_has_argument(env.argument.is_some());
+            b.set_argument(env.argument.as_deref().unwrap_or(""));
+            Ok(())
+        })
+    }
+}
+
 struct ContextStreamServer {
     rx: Rc<RefCell<mpsc::UnboundedReceiver<ContextEnvelope>>>,
 }
@@ -2022,7 +2300,14 @@ pub fn spawn(
                     let state = Arc::clone(&state);
                     let peer_id = state.next_peer_id();
                     tokio::task::spawn_local(async move {
-                        if let Err(e) = drive_connection(stream, state, peer_id).await {
+                        let outcome = drive_connection(stream, Arc::clone(&state), peer_id).await;
+                        // Whatever ended the session, the operations this
+                        // connection published stop being offered here. An
+                        // address that outlived the process behind it is worse
+                        // than one that never existed: it resolves, it is
+                        // invoked, and nothing performs it.
+                        state.forget_peer(peer_id);
+                        if let Err(e) = outcome {
                             tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
                         }
                     });
