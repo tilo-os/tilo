@@ -913,7 +913,11 @@ fn cooperative_responder_answers_when_log_has_match() {
     // Skip that and just assert the request is consumed (no panic +
     // request buffer drains).
     let handle_req = net.inbound_scrollback_request_handle();
-    net.handle_scrollback_request_message(123u64, artifact, 10, 50);
+    // The room the request arrived on: an answer is published back
+    // onto it, so a page of history goes to the room that asked.
+    let room = shell::shell::state::RoomId::parse("6b3f9a10-0000-4000-8000-00000000000a")
+        .expect("a valid room id");
+    net.handle_scrollback_request_message(room, 123u64, artifact, 10, 50);
     // Drain wakes every 100 ms.
     let deadline = Instant::now() + REPLY_BACKSTOP;
     let mut drained = false;
