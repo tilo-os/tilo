@@ -38,7 +38,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::icons::{draw_icon, icon_for_path, Icon, LUCIDE_DEFAULT_STROKE_PX};
@@ -751,7 +751,11 @@ impl Widget for FilePicker {
             scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
 
             if let Some(entry) = self.entries.get(i) {
-                let fg = if is_selected { Color::WHITE } else { tokens.colors.text_primary };
+                let fg = if is_selected {
+                    tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                } else {
+                    tokens.colors.text_primary
+                };
                 // Leading file-type icon.
                 let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
                 let icon_rect = Rect::new(rect.x0 + 8.0, icon_y, rect.x0 + 8.0 + ROW_ICON_PX, icon_y + ROW_ICON_PX);

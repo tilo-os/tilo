@@ -99,6 +99,14 @@ pub struct ToggleInteract {
     pub disabled: bool,
 }
 
+/// How much further from its track a hovered knob is pushed.
+///
+/// Hover has to be visible without being a different colour, so it is the same
+/// walk carried on rather than a second tone: the knob asks for this multiple
+/// of the contrast it already reached, which can only move it the way it was
+/// already going.
+const HOVER_KNOB_GAIN: f64 = 1.4;
+
 /// Resolve the `(track, knob, border, border_width)` colours for a switch in
 /// a given on/off + interaction state. The single source of truth for both
 /// the retained [`Toggle`]'s draw and the immediate-mode [`Toggle::paint`] —
@@ -114,10 +122,27 @@ pub fn toggle_face_colors(
     } else {
         theme.tokens.colors.neutral[3]
     };
+    // The knob is the whole of what a switch says. Both of its tones were
+    // chosen for the neutral off-track, and on the accent on-track they
+    // collapse into it — 1.16:1 on the dark palette, a switch with no visible
+    // knob in the state that matters.
+    //
+    // Resolving each tone separately would fix the ratio and break something
+    // else: on a light accent the dim tone has to walk toward white while the
+    // primary tone already clears where it is, so the knob would jump from
+    // near-white to near-black under the pointer. So the resting knob is
+    // resolved against the track once, and hover is that knob pressed further
+    // from the track rather than a second tone.
+    let knob = theme.tokens.colors.ink_on_any(
+        &[track],
+        theme.text_dim,
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    );
     let knob = if interact.hovered {
-        theme.text_primary
+        let reached = crate::a11y::contrast_ratio(knob, track);
+        theme.tokens.colors.ink_on_any(&[track], knob, reached * HOVER_KNOB_GAIN)
     } else {
-        theme.text_dim
+        knob
     };
     let (border, border_w) = if interact.focused {
         (theme.border_focus, 2.0)

@@ -163,6 +163,23 @@ impl Theme {
         self.tokens.colors.on_card()
     }
 
+    /// [`Self::on_card`] for any surface a widget actually paints on — a
+    /// document's paper, a placeholder box that is a tint of it, a panel a
+    /// chart plots inside. Thin forwarder to
+    /// [`crate::tokens::Colors::on_surface`], which explains why the surface
+    /// has to be a parameter.
+    pub fn on_surface(&self, surface: Color) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_surface(surface)
+    }
+
+    /// [`Self::on_surface`] against a caller-chosen contrast floor — what a
+    /// caller drawing at the bottom of the type scale asks for. Thin forwarder
+    /// to [`crate::tokens::Colors::on_surface_at`], which explains why the
+    /// floor belongs to the caller.
+    pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_surface_at(surface, min_ratio)
+    }
+
     /// The hairline that separates a window from the desktop behind it. Thin
     /// forwarder to [`crate::tokens::Colors::window_edge`], which explains why
     /// the edge is derived from the desktop ground rather than taken as a
@@ -454,6 +471,46 @@ impl Theme {
             info:          Color::from_rgb8(0xC4, 0xA7, 0xE7), // iris
             window_card:   None,
         })
+    }
+
+    /// The theme this machine is configured to use.
+    ///
+    /// Read from `$XDG_CONFIG_HOME/qos/settings.json` (falling back to
+    /// `~/.config/qos/settings.json`) — the same file `apps/themes` writes when
+    /// somebody picks a theme.
+    ///
+    /// Until this existed nothing read that file: `App::new` hard-coded
+    /// [`Self::dark`] and `set_theme` had no production caller, so the themes
+    /// app could report a theme applied and be describing a write no reader
+    /// would ever see. That also left [`Self::high_contrast`] reachable only
+    /// from the screenshot harness, which makes the accessibility theme a
+    /// picture of a feature rather than one.
+    ///
+    /// Unreadable, absent and unrecognised all mean the dark default: a machine
+    /// with no preference and one whose settings file is corrupt both want a
+    /// desktop that starts.
+    pub fn configured() -> Self {
+        match Self::configured_id().as_deref() {
+            Some("light") => Self::light(),
+            Some("high-contrast") | Some("high_contrast") => Self::high_contrast(),
+            _ => Self::dark(),
+        }
+    }
+
+    /// The active theme's id as the settings file spells it, if any.
+    ///
+    /// A plain string lookup rather than a parse of the whole appearance
+    /// section: `ui` cannot depend on the themes app, and the one field needed
+    /// here is a scalar.
+    fn configured_id() -> Option<String> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })?;
+        let text = std::fs::read_to_string(base.join("qos").join("settings.json")).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        v.get("appearance")?.get("theme")?.as_str().map(str::to_string)
     }
 
     /// High-contrast accessibility preset (workstream W2 of the a11y design).
@@ -752,6 +809,69 @@ mod tests {
         ] {
             let r = contrast_ratio(t.text_primary, t.bg_app);
             assert!(r >= 4.5, "{} primary text on ground = {r:.2}:1 (< AA)", t.name);
+        }
+    }
+
+    /// Both ink tiers clear AA on any surface, not only on the window card.
+    ///
+    /// The card is one ground among several. A document's paper is light in
+    /// every theme by design, and a placeholder box drawn on it is a tint of
+    /// that paper — so ink for it cannot come from darkening the background by
+    /// a fixed fraction, which is what a hand-rolled shade does. That produces
+    /// about the same ratio whatever the palette, which is how the
+    /// high-contrast preset ended up *less* legible than the light one:
+    /// 4.37:1 against 4.52:1, on the sentence telling a reader why their
+    /// picture was not there.
+    #[test]
+    fn on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on() {
+        use crate::a11y::contrast_ratio;
+        // The grounds real callers hand in, sampled across the light/dark line
+        // and including the near-white tints a paper-like surface produces.
+        let grounds = [
+            ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
+            ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
+            ("paper tint, cool", Color::from_rgb8(0xdf, 0xdf, 0xe2)),
+            ("mid grey", Color::from_rgb8(0x80, 0x80, 0x80)),
+            ("near black", Color::from_rgb8(0x0a, 0x0a, 0x0a)),
+            ("black", Color::from_rgb8(0, 0, 0)),
+            ("white", Color::from_rgb8(255, 255, 255)),
+        ];
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            for (label, ground) in grounds {
+                let on = t.on_surface(ground);
+                let r = contrast_ratio(on.ink, ground);
+                assert!(r >= 4.5, "{} ink on {label} = {r:.2}:1 (< AA)", t.name);
+                let rd = contrast_ratio(on.ink_dim, ground);
+                assert!(
+                    rd >= 4.5,
+                    "{} dim ink on {label} = {rd:.2}:1 (< AA) — this is the tier a \
+                     caption or a placeholder label uses",
+                    t.name,
+                );
+            }
+        }
+    }
+
+    /// A palette authored for more contrast delivers more of it.
+    ///
+    /// The measured symptom: a placeholder label read at 4.37:1 under the
+    /// high-contrast preset and 4.52:1 under the light one, on the same box. A
+    /// preset whose whole purpose is legibility cannot come out behind the
+    /// ordinary one.
+    #[test]
+    fn the_high_contrast_preset_is_not_the_least_legible_one() {
+        use crate::a11y::contrast_ratio;
+        // A tint of a document's paper, which is light under every preset.
+        let ground = Color::from_rgb8(0xee, 0xee, 0xec);
+        let dim_ratio = |t: &Theme| contrast_ratio(t.on_surface(ground).ink_dim, ground);
+        let hc = dim_ratio(&Theme::high_contrast());
+        for t in [Theme::light(), Theme::dark()] {
+            let r = dim_ratio(&t);
+            assert!(
+                hc >= r,
+                "high-contrast reads at {hc:.2}:1 where {} reads at {r:.2}:1",
+                t.name,
+            );
         }
     }
 
@@ -1094,5 +1214,62 @@ mod tests {
             (hc.border_focus.r(), hc.border_focus.g(), hc.border_focus.b()),
             (hc.border_standard.r(), hc.border_standard.g(), hc.border_standard.b()),
         );
+    }
+}
+
+#[cfg(test)]
+mod configured_theme {
+    use super::*;
+
+    /// The accessibility theme is reachable from a real settings file.
+    ///
+    /// Before this, `Theme::high_contrast` existed and nothing outside the
+    /// screenshot harness could select it: `App::new` hard-coded
+    /// `Theme::dark()` and `set_theme` had no production caller. The themes app
+    /// wrote `appearance.theme` and reported success, and no reader existed.
+    ///
+    /// `XDG_CONFIG_HOME` is pointed at a temp directory for this process only,
+    /// so the check runs against a real file without touching the operator's.
+    #[test]
+    fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
+        let dir = std::env::temp_dir().join(format!("qos-theme-{}", std::process::id()));
+        let qos = dir.join("qos");
+        std::fs::create_dir_all(&qos).expect("temp config dir");
+        std::fs::write(
+            qos.join("settings.json"),
+            r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
+        )
+        .expect("write settings");
+
+        // SAFETY: single-threaded within this test, and the value is put back
+        // before it returns.
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let picked = Theme::configured();
+        match prev {
+            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            picked.name,
+            Theme::high_contrast().name,
+            "a settings file asking for high contrast must produce it",
+        );
+    }
+
+    /// No preference is not an error, and must not stop a desktop starting.
+    #[test]
+    fn an_absent_settings_file_still_yields_a_usable_theme() {
+        let dir = std::env::temp_dir().join(format!("qos-theme-none-{}", std::process::id()));
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let picked = Theme::configured();
+        match prev {
+            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        assert_eq!(picked.name, Theme::dark().name);
     }
 }

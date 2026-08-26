@@ -24,6 +24,7 @@ use crate::icons::{self, Icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
 use crate::widget::Widget;
 use qos_actions::{ActionInput, FlatAction};
 
@@ -1540,6 +1541,20 @@ impl CommandPalette {
         }
     }
 
+    /// The opaque colour a row's own content is painted on.
+    ///
+    /// A selected row is not the card it sits in — it is the card plus an
+    /// accent wash — and ink chosen against the card reads a tier lower there.
+    /// Resolving it here means the paint and anything that checks the paint are
+    /// answering from one place.
+    pub(crate) fn row_ground(colors: &crate::tokens::Colors, selected: bool) -> Color {
+        if selected {
+            crate::tokens::colors::over(colors.surfaces.raised, colors.accent[5], SELECTION_WASH)
+        } else {
+            colors.surfaces.raised
+        }
+    }
+
     /// One result row: selection body, leading kind glyph, title, and a
     /// dimmed subtitle or right-aligned keybinding.
     #[allow(clippy::too_many_arguments)]
@@ -1556,6 +1571,14 @@ impl CommandPalette {
         desc_size: f32,
     ) {
         let colors = &theme.tokens.colors;
+        // What this row's text and chips will actually be painted on.
+        let row_ground = Self::row_ground(colors, selected);
+        // The second line is the smallest text the palette draws, and on a
+        // selected row it was the dim tier fighting an accent wash it was never
+        // measured against. Ask for the tone the theme authored and take the
+        // nearest legible step from it, so the subtitle stays a subtitle rather
+        // than being promoted to the title's weight to survive.
+        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
         if selected {
             // Selection has to survive a glance across a dense list. A
             // near-invisible grey wash did not: it read as a rendering
@@ -1565,7 +1588,7 @@ impl CommandPalette {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.accent[5].with_alpha_factor(0.22),
+                colors.accent[5].with_alpha_factor(SELECTION_WASH),
                 None,
                 &shape,
             );
@@ -1626,6 +1649,11 @@ impl CommandPalette {
                 cy + chip_h / 2.0,
             );
             let chip_shape = RoundedRect::from_rect(chip, 5.0);
+            // The chip's wash is faint enough that its body is within a shade
+            // of the row, but it is still a body: resolve it rather than
+            // measuring the label against a row it does not quite sit on.
+            let kb_fill =
+                crate::tokens::colors::over(row_ground, Color::WHITE, KEYBINDING_CHIP_WASH);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1644,7 +1672,7 @@ impl CommandPalette {
                 scene,
                 kb,
                 desc_size,
-                colors.text_dim,
+                colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
                 transform
                     * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
                 None,
@@ -1694,7 +1722,7 @@ impl CommandPalette {
                     scene,
                     &sub,
                     desc_size,
-                    colors.text_dim,
+                    subtitle_ink,
                     transform
                         * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
                     None,
@@ -1824,6 +1852,14 @@ impl CommandPalette {
         }
     }
 }
+
+/// How much accent a selected row's body carries over the card. Named because
+/// the ink on that row is measured against the composite this produces, and the
+/// two have to be the same number.
+const SELECTION_WASH: f32 = 0.22;
+/// The wash a keybinding chip's body carries over the row. Matches the alpha of
+/// `surface_white_5`, which is what actually paints it.
+const KEYBINDING_CHIP_WASH: f32 = 13.0 / 255.0;
 
 /// Single-line result row.
 const ROW_HEIGHT: f64 = 32.0;

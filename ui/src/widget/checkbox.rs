@@ -162,7 +162,11 @@ impl Widget for Checkbox {
             scene.stroke(
                 &Stroke::new(2.5).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round),
                 transform,
-                Color::WHITE,
+                theme.tokens.colors.ink_on_any(
+                    &[box_color],
+                    Color::WHITE,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
                 None,
                 &path
             );

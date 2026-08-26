@@ -36,6 +36,8 @@ mod diagnostics_outlive_a_closed_log_pipe;
 mod dnd_test;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
+#[path = "filled_control_labels_are_readable.rs"]
+mod filled_control_labels_are_readable;
 #[path = "fractional_scale_render.rs"]
 mod fractional_scale_render;
 #[path = "ghost_cursor_render_test.rs"]
