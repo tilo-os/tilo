@@ -89,6 +89,12 @@ struct Cli {
     /// it off 30000 — a deadline inside the spread is worse than a generous
     /// one, because what a run that misses produces is the keyword
     /// vocabulary's answer under a log line saying a model was asked.
+    ///
+    /// It bounds the retries too. A request an overloaded service turns away
+    /// is made again with a short backoff, and every one of those waits comes
+    /// out of this deadline rather than being added to it — so shortening
+    /// this shortens how long the agent will wait out a busy service, and
+    /// nothing here can make a beat run longer than this says.
     #[arg(long, default_value_t = 75_000)]
     model_timeout_ms: u64,
     /// How long an addressed line must stop changing before it is read as

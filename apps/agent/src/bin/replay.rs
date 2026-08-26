@@ -47,7 +47,11 @@ fn main() -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let text = qos_agent::model::send(&client, &key, &body).map_err(|e| e.why())?;
+    // One attempt. The agent retries a busy service against its own
+    // deadline; a reproduction has no beat to be late for, and a second
+    // post would only muddle which answer came back from what.
+    let text = qos_agent::model::send(&client, &key, &body)
+        .map_err(|attempt| attempt.error.why())?;
     if raw {
         println!("{text}");
         return Ok(());
