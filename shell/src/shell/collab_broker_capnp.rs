@@ -456,6 +456,17 @@ impl CapnpBrokerState {
                     });
                 }
             }
+            CollabEvent::ActionArrived { type_id, .. } => {
+                // Unreachable today: nothing produces this until the action
+                // wire publishes an app's operations over this transport. Said
+                // out loud rather than dropped, because when that lands an
+                // action that silently went nowhere is indistinguishable from
+                // one the far side chose not to perform.
+                tracing::warn!(
+                    %type_id,
+                    "capnp fanout: no action stream yet, action dropped"
+                );
+            }
             CollabEvent::ScrollbackBatch { .. } => {
                 // Scrollback replies are per-request in the capnp
                 // schema — they don't ride a stream. The legacy path
