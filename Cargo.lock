@@ -11222,6 +11222,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-reference"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "qos-actions",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "qos-relay"
 version = "0.1.0"
 dependencies = [
