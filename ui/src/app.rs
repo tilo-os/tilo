@@ -1449,11 +1449,49 @@ impl App {
                     self.collab_manager.is_connected()
                 );
             }
-            self.broadcast_presence(
-                k,
-                crate::collaboration::PresencePayload::Arrived,
-            );
+            self.announce_arrival(k);
         }
+    }
+
+    /// Say we are here, and say what we hold.
+    ///
+    /// The `Arrived` half is the ask: peers already holding this document
+    /// answer it with their full state, which is how a window that opens onto
+    /// a document somebody else is already editing catches up on the text that
+    /// was there before it.
+    ///
+    /// The document half is that same question answered from the other side,
+    /// and it did not exist. A whole document went out only ever *in reply* to
+    /// somebody's `Arrived`, so the handshake ran one way in time: a
+    /// participant already in the room had asked when it arrived, been
+    /// answered by whoever was up at that moment, and heard nothing since —
+    /// and the newcomer asked and volunteered nothing. Two windows in one room
+    /// and only the younger one knew what the other was holding; a participant
+    /// with no window that opened an application and waited for its state was
+    /// on the wrong side of it every time.
+    ///
+    /// So an arrival now carries what arrived with it. It is merged on the
+    /// receiving side and never assigned (`CollabEvent::CRDTUpdate`), so an
+    /// empty editor announcing itself cannot clear anybody's page — the same
+    /// property that makes the reply safe, because the reply is this frame.
+    ///
+    /// Nothing is sent when there is no broker: `state.save()` serialises the
+    /// whole document, and an app running by itself should not pay that to
+    /// tell nobody.
+    fn announce_arrival(&mut self, scope: PresenceKey) {
+        self.broadcast_presence(
+            scope,
+            crate::collaboration::PresencePayload::Arrived,
+        );
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let data = self.state.save();
+        if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+            crate::diag!("[app] announced with our own state, {}B", data.len());
+        }
+        self.collab_manager
+            .send(crate::collaboration::CollabRequest::SyncCRDT { data });
     }
 
     /// Returns the currently active presence-broadcast scope, if any.
@@ -3406,10 +3444,7 @@ impl App {
                 // hears only the edits made from then on and never the text
                 // that was already there.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
-                    self.broadcast_presence(
-                        scope,
-                        crate::collaboration::PresencePayload::Arrived,
-                    );
+                    self.announce_arrival(scope);
                 }
                 true
             }
