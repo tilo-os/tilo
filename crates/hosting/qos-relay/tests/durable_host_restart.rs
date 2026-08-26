@@ -17,8 +17,7 @@
 //! genuine Automerge document, so "converge" means identical heads,
 //! not byte-equality of an opaque blob.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -26,7 +25,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {

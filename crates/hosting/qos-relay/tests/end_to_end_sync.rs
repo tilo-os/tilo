@@ -25,8 +25,7 @@
 //!      delta. B applies it and now fully converges with A across
 //!      *both* edits.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -34,7 +33,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Read a string value at `key` under the document root.
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {

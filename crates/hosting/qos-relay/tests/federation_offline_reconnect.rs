@@ -11,8 +11,7 @@
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.
 
-mod common;
-
+use crate::common;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ use qos_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
 };
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Build a fresh signing key + signed cert with `can_act_as_host`.
 /// Returns the cert AND the signing key so callers can re-use them

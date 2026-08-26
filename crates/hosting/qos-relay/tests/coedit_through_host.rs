@@ -16,8 +16,7 @@
 //! `Relay`/`RelayCoeditSession` path — no mocks of the host or the
 //! bridge.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -25,7 +24,7 @@ use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, Value};
 use qos_relay::{Inbound, RelayClient, RelayCoeditSession};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
 /// `seed` — mirroring what a toolkit editor binds to.

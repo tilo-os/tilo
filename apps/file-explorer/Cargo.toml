@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "file-explorer"
 version = "0.2.0"
 edition = "2024"
@@ -50,3 +52,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

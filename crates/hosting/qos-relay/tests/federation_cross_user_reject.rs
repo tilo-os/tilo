@@ -10,14 +10,13 @@
 //!    auth stage (user B's cert doesn't chain to user A's root);
 //!  - no state for any workspace leaks from B → A.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_peer_relay_is_rejected() {
