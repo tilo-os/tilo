@@ -230,10 +230,10 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
 /// can check what an address currently names before committing to it.
 pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option<&'a ActionSpec> {
     fn walk<'a>(r: &'a Resource, address: &ActionAddress) -> Option<&'a ActionSpec> {
-        if r.id.as_str() == address.resource {
-            if let Some(spec) = r.actions.iter().find(|a| a.id == address.action) {
-                return Some(spec);
-            }
+        if r.id.as_str() == address.resource
+            && let Some(spec) = r.actions.iter().find(|a| a.id == address.action)
+        {
+            return Some(spec);
         }
         r.children.iter().find_map(|c| walk(c, address))
     }
