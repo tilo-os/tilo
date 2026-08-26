@@ -52,7 +52,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -262,6 +262,11 @@ struct Peer {
     /// for what goes wrong when it stops matching, and why the reader
     /// thread is in no position to say so.
     accepted_on: Option<FileIdentity>,
+    /// How many sweeps in a row have found [`Self::writer`] locked and
+    /// so been unable to ask this peer anything at all. Reset by the
+    /// first sweep that gets the lock. See
+    /// [`SWEEPS_BEFORE_AN_UNEXAMINABLE_PEER_IS_LOST`].
+    unexaminable_sweeps: AtomicU32,
     /// The route this connection announced on its
     /// `CollabRequest::Hello`. Both the delivery filter and the stamp
     /// the libp2p bridge puts on outbound `NeighbourMsg`s. `None`
@@ -321,10 +326,30 @@ impl Peer {
         use std::os::fd::AsRawFd;
 
         let guard = match self.writer.try_lock() {
-            Ok(g) => g,
-            // Held by a delivery in flight, which is a peer being
-            // reached rather than one that cannot be. Nothing to say.
-            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Ok(g) => {
+                self.unexaminable_sweeps.store(0, Ordering::Relaxed);
+                g
+            }
+            // Held by a delivery in flight — which for as long as a
+            // delivery takes is a peer being reached, and is nothing to
+            // report. Past that it is the opposite: a write that has
+            // stuck holds this lock for as long as it is stuck, and
+            // every sweep after it skips the peer in the silence the
+            // sweep is here to end.
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let missed = self.unexaminable_sweeps.fetch_add(1, Ordering::Relaxed) + 1;
+                if missed < SWEEPS_BEFORE_AN_UNEXAMINABLE_PEER_IS_LOST {
+                    return None;
+                }
+                return Some(format!(
+                    "its write half has been locked for {} sweeps ({:?}) and it has \
+                     not been possible to ask it anything at all — a delivery to it \
+                     is stuck, and a peer that cannot be examined is as unreachable \
+                     as one that has gone",
+                    missed,
+                    PEER_SWEEP_INTERVAL * missed,
+                ));
+            }
             Err(std::sync::TryLockError::Poisoned(_)) => {
                 return Some(
                     "the lock guarding its write half was poisoned by a panic, so \
@@ -1110,6 +1135,24 @@ const PEER_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 /// that dropping a broker does not wait out a whole
 /// [`PEER_SWEEP_INTERVAL`]. Matches the drain thread's cadence.
 const SWEEP_QUIT_POLL: Duration = Duration::from_millis(100);
+
+/// How many sweeps in a row may find a peer's write half locked before
+/// the fact that it cannot be examined becomes the thing worth saying.
+///
+/// The sweep asks its questions under the peer's own writer lock, and
+/// skips a peer whose lock is held on the reasoning that a delivery in
+/// flight is a peer being reached. That reasoning holds for a delivery,
+/// which takes microseconds. It does not hold for a *stuck* one: a write
+/// that has blocked — a peer that stopped reading, a socket buffer that
+/// filled — holds that lock for as long as it is stuck, and every sweep
+/// from then on skips the peer in exactly the silence the sweep exists
+/// to end.
+///
+/// Eight passes at [`PEER_SWEEP_INTERVAL`] is sixteen seconds. No
+/// healthy delivery is in flight for sixteen seconds, and a peer that
+/// cannot be examined for that long is as unaccountable as one that has
+/// gone.
+const SWEEPS_BEFORE_AN_UNEXAMINABLE_PEER_IS_LOST: u32 = 8;
 
 /// A connection that is no longer in the fan-out table, and why.
 ///
@@ -3191,6 +3234,7 @@ fn spawn_inner(
                             writer: Mutex::new(writer),
                             route: Mutex::new(None),
                             accepted_on,
+                            unexaminable_sweeps: AtomicU32::new(0),
                         });
                         listener_table.insert(Arc::clone(&peer));
                         tracing::info!(
@@ -5858,6 +5902,7 @@ mod tests {
             writer: Mutex::new(near),
             route: Mutex::new(route),
             accepted_on,
+            unexaminable_sweeps: AtomicU32::new(0),
         });
         table.insert(Arc::clone(&peer));
         (peer, far)
@@ -5913,6 +5958,98 @@ mod tests {
             departures[0].reason.contains("the far end has closed"),
             "the record has to say the connection ended, got {:?}",
             departures[0].reason,
+        );
+    }
+
+    /// A peer the sweep cannot examine is reported as such, rather than
+    /// skipped for as long as it stays that way.
+    ///
+    /// The sweep asks its questions under the peer's own write lock, and
+    /// a peer whose lock is held is skipped — right, for the microsecond
+    /// a delivery takes, and wrong the moment a delivery *sticks*. A
+    /// write that has blocked holds that lock for as long as it is
+    /// blocked, and every sweep after it skipped the peer in exactly the
+    /// silence the sweep was added to end: the reader does not return,
+    /// the fan-out does not evict, and the sweep says nothing either.
+    ///
+    /// Forced rather than waited for: the lock is taken and held by this
+    /// test, which is indistinguishable from a stuck delivery as far as
+    /// the sweep can tell, and the sweep is then run the number of times
+    /// it takes.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_the_sweep_cannot_examine_is_not_skipped_for_ever() {
+        let table = PeerTable::new();
+        let (peer, _far) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+
+        // Whatever is holding it, the sweep sees the same thing: a lock
+        // it cannot take.
+        let held = peer.writer.lock().expect("the lock is free to begin with");
+
+        for pass in 1..SWEEPS_BEFORE_AN_UNEXAMINABLE_PEER_IS_LOST {
+            table.account_for_lost_peers();
+            assert_eq!(
+                table.snapshot().len(),
+                1,
+                "a delivery in flight is a peer being reached; it must not be \
+                 dropped on sweep {pass}, which is still inside the grace",
+            );
+            assert!(
+                table.departures().is_empty(),
+                "and nothing should be said about it yet either",
+            );
+        }
+
+        table.account_for_lost_peers();
+
+        assert!(
+            table.snapshot().is_empty(),
+            "a peer that has not been examinable for the whole grace is as \
+             unreachable as one that has gone, and has to leave the fan-out",
+        );
+        let departures = table.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "the sweep skipped it every pass and never said so, got {departures:?}",
+        );
+        assert!(
+            departures[0].reason.contains("has been locked for"),
+            "the record has to say that it could not be examined, and for how \
+             long, got {:?}",
+            departures[0].reason,
+        );
+
+        drop(held);
+    }
+
+    /// A lock released before the count runs out puts the peer back to
+    /// healthy, so an ordinary busy connection is never dropped for
+    /// being busy.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_delivery_that_finishes_clears_the_sweeps_it_was_missed_for() {
+        let table = PeerTable::new();
+        let (peer, _far) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+
+        for _ in 0..(SWEEPS_BEFORE_AN_UNEXAMINABLE_PEER_IS_LOST * 3) {
+            let held = peer.writer.lock().expect("free");
+            table.account_for_lost_peers();
+            drop(held);
+            // The next sweep gets the lock, which is what a delivery
+            // completing looks like from here.
+            table.account_for_lost_peers();
+        }
+
+        assert_eq!(
+            table.snapshot().len(),
+            1,
+            "a peer that is merely busy must never be dropped for being busy",
+        );
+        assert!(
+            table.departures().is_empty(),
+            "and nothing should have been said about it, got {:?}",
+            table.departures(),
         );
     }
 
