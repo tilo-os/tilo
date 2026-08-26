@@ -1097,7 +1097,14 @@ fn draw_opening_card(
         None,
         &rect,
     );
-    let on_card = theme.tokens.colors.neutral[1];
+    // Ink measured against the card, not taken from a fixed ramp slot.
+    // `neutral[1]` is the *dark* end of a dark theme's ramp, and the card it
+    // was painted on is that theme's darkest surface: the app's name came out
+    // at about 1.05:1 against its own ground — present in the scene, invisible
+    // on screen, and the only thing a person watching a window open had to
+    // read. The light presets had the mirror bug. `draw_card_text` already
+    // carries this fix; this call site was missed.
+    let on_card = theme.on_card().ink;
     let size = theme.tokens.typography.scale.xl;
     let cx = rect.center().x;
     // The name sits above centre so that the pair of it and the indicator
@@ -1146,9 +1153,16 @@ fn draw_card_text(
     // surface under the high-contrast preset and a white one on the
     // preserved concept palette, so a fixed ramp slot is legible on
     // only one of them.
-    let ink = theme.on_card();
-    let on_card = ink.ink;
-    let on_card_dim = ink.ink_dim;
+    let card = theme.tokens.colors.surfaces.window_card;
+    let on_card = theme.on_card().ink;
+    // The detail line is set at the bottom of the type scale, where the default
+    // floor is measured for an ideal glyph and a real one is anti-aliased:
+    // derived at 4.5:1 it reached the screen at 3.8:1 on the light card, a tier
+    // under the floor its colour was picked to clear. Still a quieter grey than
+    // the title in every theme.
+    let on_card_dim = theme
+        .on_surface_at(card, crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST)
+        .ink_dim;
     let text_size = theme.tokens.typography.scale.xl;
     let (tw, _) = tr.measure(title, text_size, None);
     let x = rect.center().x - tw as f64 / 2.0;

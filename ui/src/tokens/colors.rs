@@ -173,8 +173,64 @@ pub struct OnCard {
 /// it is reused there. WCAG 2.1 AA for body text.
 const ON_CARD_MIN_CONTRAST: f64 = 4.5;
 
+/// The floor to ask for when the text is drawn at the bottom of the type
+/// scale.
+///
+/// WCAG's 4.5:1 is stated for an ideal glyph; a real one is anti-aliased, and
+/// at 12 px and below no pixel of a lowercase word reaches full coverage — a
+/// label measured at 4.56:1 reached the screen at 3.44:1. AAA leaves enough
+/// headroom that what lands still clears AA. The caller picks it because only
+/// the caller knows the size.
+pub const ON_CARD_SMALL_TEXT_CONTRAST: f64 = 7.0;
+
 /// How far a [`OnCard::tint`] surface is pulled from the card toward its ink.
 const ON_CARD_TINT_T: f32 = 0.07;
+
+/// Minimum contrast a shape that is not text — a pill's edge, a toggle's knob
+/// — must clear against what it is drawn on. WCAG 2.1 non-text contrast.
+pub const NON_TEXT_MIN_CONTRAST: f64 = 3.0;
+
+/// Minimum contrast a control's *label* must clear against the control's own
+/// fill. Same number as the card floor, named apart because the ground is
+/// different: a button's label is measured against the accent it is painted
+/// on, not against the surface behind it, and an accent bright enough to
+/// carry meaning at a glance is one white text disappears into.
+pub const ON_FILL_MIN_CONTRAST: f64 = 4.5;
+
+/// How much accent an [`AccentChip`]'s body carries over its ground. Low on
+/// purpose: the chip states a fact about a row, not a second selection. Its
+/// label is made legible by deriving ink against the composite, not by making
+/// the body louder.
+const ACCENT_CHIP_WASH: f32 = 0.18;
+
+/// The opaque colour an opaque `wash` painted at `alpha` over `ground` leaves
+/// behind.
+///
+/// Contrast is a property of what reaches the screen, and a translucent fill
+/// does not reach it alone; a caller that needs to know whether its text will
+/// read on a washed row has to composite first.
+pub fn over(ground: Color, wash: Color, alpha: f32) -> Color {
+    mix8(ground, wash, alpha)
+}
+
+/// An accent-tinted pill, resolved against the ground it will be painted on.
+///
+/// Every field is opaque rather than a token plus an alpha, because a wash is
+/// not a colour until it has a ground: the same `accent × 0.18` is one thing
+/// over a panel and another over a selected row, and only the composite can be
+/// measured. Measuring the token instead is how a chip ends up as accent ink
+/// on an accent wash on an accent selection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccentChip {
+    /// Opaque body: the wash already composited over the row's ground.
+    pub fill: Color,
+    /// The pill's edge, clearing [`NON_TEXT_MIN_CONTRAST`] against the
+    /// **ground** — so the shape stays findable where the wash inside it is
+    /// within a shade of the ground's own colour.
+    pub border: Color,
+    /// Label ink, clearing the caller's floor against [`Self::fill`].
+    pub ink: Color,
+}
 
 #[derive(Clone, Debug)]
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
@@ -392,6 +448,10 @@ impl Colors {
 
         let scrim = if p.dark { mix8(p.base, black, 0.55) } else { Color::from_rgb8(12, 12, 14) };
 
+        // Which way a translucent surface/border tier has to lean to be seen
+        // at all. See the `surface_white_*` fields below.
+        let veneer = if p.dark { Color::WHITE } else { black };
+
         Self {
             neutral,
             accent,
@@ -420,11 +480,24 @@ impl Colors {
             text_tertiary: p.text_tertiary,
             border_standard: p.border,
             border_focus: p.focus,
-            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
-            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
-            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
-            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
-            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+            // A veneer has to move the surface it is laid on, and which way
+            // that is depends on the palette. These tiers were white at every
+            // strength on both sides of the light/dark line, and white over
+            // `raised` — `#ffffff` on the light theme — is nothing at all: the
+            // faint tier measured 1.01:1 there, which is why every unselected
+            // filter chip lost its pill and read as bare text. Wash toward the
+            // contrasting extreme instead, so a tier means the same thing on
+            // both sides.
+            //
+            // Strength is unchanged, deliberately: these are quiet tiers, not
+            // shapes a person has to find. A pill that must stay findable
+            // takes an edge clearing `NON_TEXT_MIN_CONTRAST` against its
+            // ground — see `AccentChip::border` — rather than a louder body.
+            surface_white_5:  with_a(veneer, 13),
+            surface_white_10: with_a(veneer, 26),
+            surface_white_20: with_a(veneer, 51),
+            border_white_10:  with_a(veneer, 26),
+            border_white_20:  with_a(veneer, 51),
         }
     }
 
@@ -448,31 +521,207 @@ impl Colors {
     /// high-contrast preset (black card) and OLED (`#0A0A0A` card) they
     /// painted dark-on-dark and the text disappeared.
     pub fn on_card(&self) -> OnCard {
-        use crate::a11y::contrast_ratio;
-        let card = self.surfaces.window_card;
+        self.on_surface(self.surfaces.window_card)
+    }
 
-        let (ink, ink_dim, ink_tertiary) =
-            if contrast_ratio(self.text_primary, card) >= ON_CARD_MIN_CONTRAST {
-                (self.text_primary, self.text_dim, self.text_tertiary)
+    /// [`Self::on_card`] for any surface a widget actually paints on.
+    ///
+    /// The window card is not the only ground content lands on: a document's
+    /// paper is deliberately light in every theme, a placeholder box is a tint
+    /// of that paper, a chart plots on its own panel. Ink that clears AA on
+    /// the card can sit at 4.4:1 a few percent away from it — which is where a
+    /// hand-derived tone lands when it is computed by darkening the
+    /// *background* by a fixed fraction instead of being measured against it.
+    /// A fixed fraction yields roughly the same ratio whatever the palette, so
+    /// the theme that exists to raise contrast does not.
+    pub fn on_surface(&self, surface: Color) -> OnCard {
+        self.on_surface_at(surface, ON_CARD_MIN_CONTRAST)
+    }
+
+    /// [`Self::on_surface`] against a caller-chosen contrast floor, for a
+    /// caller that knows it is drawing small (see
+    /// [`ON_CARD_SMALL_TEXT_CONTRAST`]).
+    ///
+    /// [`OnCard::ink`] and [`OnCard::ink_dim`] are measured against `surface`
+    /// and stepped out until they clear `min_ratio`; `ink_dim` matters as much
+    /// as `ink` because it is the tier a caption or a placeholder label uses,
+    /// which is often the only explanation on screen.
+    ///
+    /// [`OnCard::ink_tertiary`] is passed through as the palette authored it.
+    /// How quiet the quietest tier is belongs to the palette — Solarized runs
+    /// its tertiary at 2.8:1 on its own ground on purpose — and holding it to
+    /// a body-text floor would erase the tier rather than fix it.
+    pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> OnCard {
+        use crate::a11y::contrast_ratio;
+
+        let chrome_tiers_read = contrast_ratio(self.text_primary, surface) >= min_ratio
+            && contrast_ratio(self.text_dim, surface) >= min_ratio;
+
+        let (ink, ink_dim, ink_tertiary) = if chrome_tiers_read {
+            (self.text_primary, self.text_dim, self.text_tertiary)
+        } else {
+            // One step in from the ramp end, not the end itself: pure
+            // black on white (or pure white on black) is harsher than
+            // the typography the rest of the UI uses.
+            let from_low = contrast_ratio(self.neutral[0], surface)
+                >= contrast_ratio(self.neutral[10], surface);
+            if from_low {
+                (self.neutral[1], self.neutral[4], self.neutral[4])
             } else {
-                // One step in from the ramp end, not the end itself: pure
-                // black on white (or pure white on black) is harsher than
-                // the typography the rest of the UI uses.
-                let from_low = contrast_ratio(self.neutral[0], card)
-                    >= contrast_ratio(self.neutral[10], card);
-                if from_low {
-                    (self.neutral[1], self.neutral[4], self.neutral[4])
-                } else {
-                    (self.neutral[9], self.neutral[6], self.neutral[6])
-                }
-            };
+                (self.neutral[9], self.neutral[6], self.neutral[6])
+            }
+        };
+
+        // The ramp is the palette's own, so its inner steps are not guaranteed
+        // to clear against an arbitrary surface — a mid-grey placeholder under
+        // a shallow ramp leaves `neutral[4]` short.
+        let ink = self.step_out_until_legible(ink, surface, min_ratio);
+        let ink_dim = self.step_out_until_legible(ink_dim, surface, min_ratio);
 
         OnCard {
             ink,
             ink_dim,
             ink_tertiary,
-            tint: mix8(card, ink, ON_CARD_TINT_T),
+            tint: mix8(surface, ink, ON_CARD_TINT_T),
         }
+    }
+
+    /// An authored `tone` made legible on `ground`: returned untouched when it
+    /// already clears `min_ratio` there, otherwise the smallest step from it
+    /// toward the contrasting extreme that does.
+    ///
+    /// [`Self::on_surface_at`] answers "what do the *chrome's tiers* become
+    /// here". This answers the narrower question a widget asks when it has
+    /// already chosen a tone for a reason and needs that tone to survive a
+    /// ground the palette did not have in mind — so it does not have to take a
+    /// tier set it will discard, or reach for a hand-picked shade.
+    pub fn ink_on(&self, ground: Color, tone: Color, min_ratio: f64) -> Color {
+        self.step_out_until_legible(tone, ground, min_ratio)
+    }
+
+    /// One `tone`, made legible on *every* ground in `grounds` at once.
+    ///
+    /// A control is not one ground: a button's fill moves between rest, hover
+    /// and press, and resolving the label separately against each lets it cross
+    /// the floor mid-range and flip polarity under the pointer. A label that
+    /// turns from white to near-black on hover reads as a fault however well
+    /// each individual frame measures, so the ink is chosen once, against the
+    /// ground it reads worst on, and held for the whole set.
+    pub fn ink_on_any(&self, grounds: &[Color], tone: Color, min_ratio: f64) -> Color {
+        use crate::a11y::contrast_ratio;
+        let worst = |c: Color| {
+            grounds
+                .iter()
+                .map(|g| contrast_ratio(c, *g))
+                .fold(f64::INFINITY, f64::min)
+        };
+        if grounds.is_empty() || worst(tone) >= min_ratio {
+            return tone;
+        }
+        // Polarity is decided against the hardest ground rather than
+        // per-ground: the states of one control sit within a shade of each
+        // other, so the ground that defeats the tone is the one that decides
+        // which way there is room to walk.
+        let hardest = grounds
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                contrast_ratio(tone, *a)
+                    .partial_cmp(&contrast_ratio(tone, *b))
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .expect("non-empty");
+        let target = Self::contrasting_extreme(hardest);
+        for step in 1..=16 {
+            let candidate = mix8(tone, target, step as f32 / 16.0);
+            if worst(candidate) >= min_ratio {
+                return candidate;
+            }
+        }
+        target
+    }
+
+    /// The ink for anything drawn *on* the accent-primary fill — a selected
+    /// row, a highlighted menu item, a chosen day in a calendar.
+    ///
+    /// The accent is the one fill that shows up under a label all over the
+    /// product, and every widget that used it reached for the same literal
+    /// white. That is right on a dark accent and wrong on a bright one, and
+    /// which of the two a palette ships is not something a widget can know.
+    /// Asking here means a selected row and a primary button cannot disagree
+    /// inside one frame.
+    pub fn on_accent(&self, min_ratio: f64) -> Color {
+        self.ink_on_any(&[self.accent[ACCENT_PRIMARY_IDX]], Color::WHITE, min_ratio)
+    }
+
+    /// An [`AccentChip`] resolved for `ground`, its label clearing `min_ratio`
+    /// against the pill's own body.
+    pub fn accent_chip_on(&self, ground: Color, min_ratio: f64) -> AccentChip {
+        self.tinted_chip_on(
+            ground,
+            self.accent[ACCENT_PRIMARY_IDX],
+            ACCENT_CHIP_WASH,
+            min_ratio,
+        )
+    }
+
+    /// [`Self::accent_chip_on`] for a chip carrying any `tint` at any `wash`
+    /// strength — a danger-tinted button, a semantic status pill.
+    ///
+    /// The order is the whole point. The body is composited **first**, so the
+    /// ink is measured against the colour the screen will hold rather than
+    /// against the token the wash was made from. A label drawn in the *same*
+    /// tint as its own wash of that tint cannot reach a text floor at any wash
+    /// strength — both sides of the ratio move together, so no palette change
+    /// can lift it: `ChipStyle::tint`'s `accent × 0.18` fill with an `accent`
+    /// label measures 3.95:1 on the dark card and 3.79:1 on the light one. The
+    /// ink walks out of the tint only as far as the floor demands, so the pill
+    /// keeps its hue while its label stops sharing it. The edge is measured
+    /// against the *ground*, because an edge's job is to separate the pill from
+    /// the row.
+    pub fn tinted_chip_on(
+        &self,
+        ground: Color,
+        tint: Color,
+        wash: f32,
+        min_ratio: f64,
+    ) -> AccentChip {
+        let fill = mix8(ground, tint, wash);
+        AccentChip {
+            fill,
+            border: self.ink_on(ground, tint, NON_TEXT_MIN_CONTRAST),
+            ink: self.ink_on(fill, tint, min_ratio),
+        }
+    }
+
+    /// Darken or lighten `ink` toward whichever extreme contrasts with
+    /// `surface` until it clears `min_ratio`. Returns `ink` untouched when it
+    /// already clears, so a palette's authored tone is preferred.
+    fn step_out_until_legible(&self, ink: Color, surface: Color, min_ratio: f64) -> Color {
+        use crate::a11y::contrast_ratio;
+        if contrast_ratio(ink, surface) >= min_ratio {
+            return ink;
+        }
+        let target = Self::contrasting_extreme(surface);
+        // Sixteenths: fine enough that the result stays close to the authored
+        // tone, coarse enough to be a handful of comparisons rather than a
+        // search.
+        for step in 1..=16 {
+            let candidate = mix8(ink, target, step as f32 / 16.0);
+            if contrast_ratio(candidate, surface) >= min_ratio {
+                return candidate;
+            }
+        }
+        target
+    }
+
+    /// Black or white, whichever contrasts with `ground` — the end of the walk
+    /// both step-out functions aim at, and the one value guaranteed to clear.
+    fn contrasting_extreme(ground: Color) -> Color {
+        use crate::a11y::contrast_ratio;
+        let black = Color::from_rgb8(0, 0, 0);
+        let white = Color::from_rgb8(255, 255, 255);
+        if contrast_ratio(black, ground) >= contrast_ratio(white, ground) { black } else { white }
     }
 
     /// A hairline that stays visible on `ground`, whichever side of the
@@ -496,23 +745,6 @@ impl Colors {
         if moved(light) >= moved(dark) { light } else { dark }
     }
 
-    /// The hairline that separates a window from the desktop behind it.
-    ///
-    /// This is deliberately **not** a property of the window card. The edge is
-    /// painted on the desktop, outside the card's silhouette, because the
-    /// pixels inside the card belong to the hosted app and the shell never
-    /// samples them: a constant stroked over app content lands on whatever the
-    /// app happened to paint, so one token reads as a soft rim light over a
-    /// dark app and as a glaring near-white line over one painting light
-    /// chrome. No alpha satisfies both — the two grounds are at opposite ends
-    /// of the ramp. Deriving the edge from the one ground the shell *does*
-    /// know, and keeping it off the app's pixels entirely, makes the edge
-    /// legible without the shell having to guess what is underneath it.
-    /// [`crate::widget::tile_host::TileHost`] owns the matching geometry.
-    ///
-    /// A preset's declared [`Surfaces::window_card_border`] is honoured
-    /// wherever it actually registers against that ground; only a declaration
-    /// the ground would swallow gets its polarity flipped.
     /// The body a control takes when it is **lifted** off the chrome's own
     /// ground — a hovered or active tab pill, a selected row. `t` runs from
     /// `0.0` (flat on the ground) to `1.0` (the full lift).
@@ -593,6 +825,23 @@ impl Colors {
         composite(with_a(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
+    /// The hairline that separates a window from the desktop behind it.
+    ///
+    /// This is deliberately **not** a property of the window card. The edge is
+    /// painted on the desktop, outside the card's silhouette, because the
+    /// pixels inside the card belong to the hosted app and the shell never
+    /// samples them: a constant stroked over app content lands on whatever the
+    /// app happened to paint, so one token reads as a soft rim light over a
+    /// dark app and as a glaring near-white line over one painting light
+    /// chrome. No alpha satisfies both — the two grounds are at opposite ends
+    /// of the ramp. Deriving the edge from the one ground the shell *does*
+    /// know, and keeping it off the app's pixels entirely, makes the edge
+    /// legible without the shell having to guess what is underneath it.
+    /// [`crate::widget::tile_host::TileHost`] owns the matching geometry.
+    ///
+    /// A preset's declared [`Surfaces::window_card_border`] is honoured
+    /// wherever it actually registers against that ground; only a declaration
+    /// the ground would swallow gets its polarity flipped.
     pub fn window_edge(&self) -> Color {
         use crate::a11y::relative_luminance;
         let ground = self.surfaces.base;

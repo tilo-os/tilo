@@ -28,6 +28,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
 use crate::widget::Widget;
 
 /// Semantic role each segment of a [`TriStateControl`] plays — drives the
@@ -187,15 +188,23 @@ impl Widget for TriStateControl {
             None,
             &RoundedRect::from_rect(active, radius),
         );
+        // What the selected segment's label is actually drawn on: the tone at
+        // its alpha over the track, not the tone token. Measuring against the
+        // token would report a contrast the screen never holds.
+        let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
         // Labels.
         let text_size = theme.tokens.typography.scale.sm;
         for i in 0..3 {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
-                Color::WHITE
+                theme.tokens.colors.ink_on_any(&[active_ground], Color::WHITE, ON_FILL_MIN_CONTRAST)
             } else if on {
-                theme.tokens.colors.text_primary
+                theme.tokens.colors.ink_on_any(
+                    &[active_ground],
+                    theme.tokens.colors.text_primary,
+                    ON_FILL_MIN_CONTRAST,
+                )
             } else {
                 theme.text_dim
             };
