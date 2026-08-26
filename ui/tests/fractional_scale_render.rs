@@ -11,9 +11,7 @@
 //! Skipped (eprintln + early return) when no wgpu adapter is available,
 //! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};

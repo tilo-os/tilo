@@ -9,7 +9,6 @@
 //! export LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
 //! cargo test -p ui --features webview-wpe --test wpe_engine
 //! ```
-#![cfg(feature = "webview-wpe")]
 
 use std::time::{Duration, Instant};
 
