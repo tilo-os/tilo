@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# cargo wrapper for trees that build inside a container. Install as `cargo` on PATH.
+#
+# Does three things:
+#   - routes the build into the container named in `.build-container` (found by walking
+#     up from $PWD, so worktrees are covered by the root's marker)
+#   - selects the sccache server by port. distrobox shares the host network namespace
+#     and copies the host environment inward, so without an explicit choice on both
+#     sides a container build reaches the host's server, which cannot see the
+#     container's headers. Presents as a cache miss, not an error.
+#   - derives job count and cache ceiling from the hardware
+#
+# Every failure path falls through to plain cargo. QCARGO_BYPASS=1 skips it,
+# QCARGO_DEBUG=1 prints the routing decision.
+
+set -uo pipefail
+
+readonly REAL_CARGO="${HOME}/.cargo/bin/cargo"
+
+# Fall back to any other cargo on PATH that is not this shim (rustup-less environments).
+if [ ! -x "$REAL_CARGO" ]; then
+  self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  while IFS= read -r cand; do
+    [ "$(readlink -f "$cand" 2>/dev/null)" != "$self" ] && exec "$cand" "$@"
+  done < <(command -v -a cargo 2>/dev/null)
+  echo "cargo: no cargo binary found" >&2
+  exit 127
+fi
+
+[ -n "${QCARGO_BYPASS:-}" ] && exec "$REAL_CARGO" "$@"
+
+_route() { [ -n "${QCARGO_DEBUG:-}" ] && echo "qcargo: $1" >&2; return 0; }
+
+# Job count is bounded by memory, not cores: rustc peaks around 7 GB on the larger
+# crates here. CARGO_BUILD_JOBS is not in sccache's cache key (measured), so deriving
+# it per-machine does not fragment the cache. CARGO_TARGET_DIR is in the key — see below.
+readonly GB_PER_RUSTC=7
+derive_jobs() {
+  local cores mem_gb by_mem
+  cores=$(nproc 2>/dev/null || echo 4)
+  mem_gb=$(awk '/^MemTotal:/{printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 8)
+  by_mem=$(( mem_gb / GB_PER_RUSTC ))
+  [ "$by_mem" -lt 1 ] && by_mem=1
+  if [ "$by_mem" -lt "$cores" ]; then echo "$by_mem"; else echo "$cores"; fi
+}
+
+# sccache ceiling: 20% of the filesystem, floor 64G, cap 200G.
+#
+# One full debug+test build of this workspace is ~2,200 cacheable units, a few GB
+# compressed. Dependencies never change unless Cargo.lock does; workspace members turn
+# over whenever a shared crate is touched. 200G holds roughly 40 branch-versions.
+derive_cache_size() {
+  local kb gb
+  kb=$(df -Pk "${SCCACHE_DIR:-$HOME/.cache}" 2>/dev/null | awk 'NR==2{print $2}')
+  [ -z "$kb" ] && { echo "64G"; return; }
+  gb=$(( kb / 1048576 / 5 ))
+  [ "$gb" -lt 64 ] && gb=64
+  [ "$gb" -gt 200 ] && gb=200
+  echo "${gb}G"
+}
+
+use_sccache() {
+  [ -n "${RUSTC_WRAPPER:-}" ] && return 0          # caller already chose; leave it alone
+  command -v sccache >/dev/null 2>&1 || return 0   # not installed; a plain build is fine
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$(derive_cache_size)}"
+}
+
+# Never set CARGO_TARGET_DIR. sccache hashes it into the Rust cache key: measured, a
+# clean rebuild of one crate hits with it unset and misses with it set to the same path.
+
+# distrobox preserves $PWD, so this resolves identically on both sides of the boundary.
+find_marker() {
+  local d="$PWD"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    [ -r "$d/.build-container" ] && { echo "$d"; return 0; }
+    [ "$d" = "$HOME" ] && break
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+marker_dir="$(find_marker || true)"
+
+# Only for trees with a marker: this shim is `cargo` for every project on the box, and
+# capping unrelated ones at this workspace's memory profile would throttle them.
+[ -n "$marker_dir" ] && export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(derive_jobs)}"
+
+# --- inside a container: this *is* the build environment, so build here ---------------------
+if [ -f /run/.containerenv ] || [ -n "${CONTAINER_ID:-}" ]; then
+  # Unconditional, not :- defaults: distrobox copies the host's values in, and
+  # honouring an inherited value is the bug this prevents.
+  export SCCACHE_SERVER_PORT=4226
+  export SCCACHE_DIR="${HOME}/.cache/sccache-distrobox"
+  use_sccache
+  _route "container(${CONTAINER_ID:-?}) port=$SCCACHE_SERVER_PORT dir=$SCCACHE_DIR jobs=${CARGO_BUILD_JOBS:-cargo-default} size=${SCCACHE_CACHE_SIZE:-none}"
+  exec "$REAL_CARGO" "$@"
+fi
+
+# --- host: route to a container if the project asks for one ---------------------------------
+container=""
+[ -n "$marker_dir" ] && container="$(head -n1 "$marker_dir/.build-container" | tr -d '[:space:]')"
+
+if [ -n "$container" ] && command -v distrobox >/dev/null 2>&1; then
+  # distrobox keeps its chatter on stderr, so stdout stays clean for callers that
+  # parse it (`cargo metadata`, rust-analyzer).
+  _route "dispatch->$container (marker in $marker_dir)"
+  exec distrobox enter "$container" -- cargo "$@"
+fi
+
+export SCCACHE_SERVER_PORT=4227
+export SCCACHE_DIR="${HOME}/.cache/sccache"
+use_sccache
+_route "host port=$SCCACHE_SERVER_PORT dir=$SCCACHE_DIR jobs=${CARGO_BUILD_JOBS:-cargo-default} size=${SCCACHE_CACHE_SIZE:-none}"
+exec "$REAL_CARGO" "$@"
