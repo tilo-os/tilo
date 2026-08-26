@@ -19,6 +19,113 @@ use crate::app::{ChatApp, Hit, MenuTarget, AVATAR};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::*;
 
+/// Body text size for a message. Shared by the measure and the draw so a
+/// mention-carrying row reserves exactly the height it paints.
+const BODY_SIZE: f32 = 15.0;
+
+/// `RichTextLayout` lays out at `size * 1.4 * mult`; `TextRenderer::measure`
+/// uses `size * 1.25`. Feeding this multiplier keeps a body drawn through the
+/// rich path on the same line grid as one drawn through the plain path, so a
+/// message does not jump when somebody is mentioned in it.
+const BODY_LINE_MULT: f32 = 1.25 / 1.4;
+
+/// How much of the participant's colour a mention *of you* keeps when it is
+/// tinted toward the surface. A filled band, so it can be found by scanning.
+const MENTION_SELF_BAND_MIX: f64 = 0.78;
+
+/// Contrast floors for the mention run, measured rather than eyeballed:
+/// AA body text wherever it lands, and the non-text floor for the filled band
+/// against the surface it sits on (a band nobody can see is not a highlight).
+pub(crate) const MENTION_TEXT_CONTRAST: f64 = 4.5;
+pub(crate) const MENTION_BAND_CONTRAST: f64 = 3.0;
+
+/// How a mention of `user` is painted on `ground`: an optional filled band, and
+/// the ink for the run.
+///
+/// The two cases are deliberately different in *kind*, not merely in strength.
+/// A mention of somebody else is their name in their own colour — the same
+/// colour their caret pill and cursor use, so "who is this about" is answered
+/// the same way everywhere. A mention of **you** is the one you have to be able
+/// to find by scanning a channel you have been away from, so it is filled:
+/// their colour becomes the ground and the text sits on it.
+///
+/// Both halves are then corrected against what they actually land on, because
+/// a colour picked to tell people apart is not a colour picked to be read.
+pub(crate) fn mention_colors(app: &ChatApp, user: &str, is_self: bool, theme: &Theme, ground: Color) -> (Option<Color>, Color) {
+    let (r, g, b) = app.participant_color(user);
+    let own = Color::from_rgb8(r, g, b);
+    if !is_self {
+        // Their colour, made legible on the surface the message is on.
+        let ink = legible_on(own, ground, MENTION_TEXT_CONTRAST, theme.tokens.colors.text_primary);
+        return (None, ink);
+    }
+    let band = band_at_least(blend_toward(own, ground, MENTION_SELF_BAND_MIX), own, ground, MENTION_BAND_CONTRAST);
+    // Ink for a filled band starts from body ink and is pushed away from the
+    // band — text in the band's own hue on the band is the one combination
+    // that cannot be rescued.
+    let ink = legible_on(theme.tokens.colors.text_primary, band, MENTION_TEXT_CONTRAST, theme.tokens.colors.text_primary);
+    (Some(band), ink)
+}
+
+/// Split a message body into styled runs: prose in body ink, each resolved
+/// mention in its participant's colour on its own band.
+///
+/// Built from the stored [`crate::mention::Mention`] list, never by scanning the
+/// text — the renderer and the resolver agree about where a mention is because
+/// only one of them ever decides.
+pub(crate) fn body_spans(app: &ChatApp, m: &Message, theme: &Theme, ground: Color) -> Vec<ui::richtext::RichSpan> {
+    use ui::richtext::RichSpan;
+    let text = m.text.as_str();
+    let mut spans: Vec<RichSpan> = Vec::new();
+    let mut cursor = 0usize;
+    let mut mentions: Vec<&crate::mention::Mention> = m.mentions.iter().collect();
+    mentions.sort_by_key(|x| x.start);
+    for mention in mentions {
+        let (s, e) = (mention.start, mention.end());
+        // An offset that no longer lands on the body (an edit that did not
+        // re-resolve) is skipped rather than trusted — better plain prose than
+        // a highlight over the wrong words.
+        if s < cursor || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+            continue;
+        }
+        if s > cursor {
+            spans.push(RichSpan::new(&text[cursor..s]));
+        }
+        // `is_me` rather than a bare comparison: a peer that has adopted the
+        // room's address for itself still authored earlier mentions under the
+        // id it resolved at startup, and those still refer to this session.
+        let is_self = app.is_me(&mention.user);
+        let (band, ink) = mention_colors(app, &mention.user, is_self, theme, ground);
+        spans.push(
+            RichSpan::new(&text[s..e])
+                .bold(true)
+                .color(Some([ink.r(), ink.g(), ink.b()]))
+                .background(band.map(|c| [c.r(), c.g(), c.b()])),
+        );
+        cursor = e;
+    }
+    if cursor < text.len() {
+        spans.push(RichSpan::new(&text[cursor..]));
+    }
+    spans
+}
+
+/// Lay out a mention-carrying body at `width`.
+pub(crate) fn shape_body(tr: &mut TextRenderer, spans: &[ui::richtext::RichSpan], width: f32) -> ui::richtext::RichTextLayout {
+    ui::richtext::RichTextLayout::shape(
+        &mut tr.font_system,
+        spans,
+        false,
+        BODY_SIZE,
+        width,
+        ui::richtext::TextAlign::Left,
+        ui::richtext::FontFamily::Sans,
+        Vec::new(),
+        Vec::new(),
+        BODY_LINE_MULT,
+    )
+}
+
 /// Draw a circular initials avatar with an optional presence dot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_avatar(
@@ -541,7 +648,7 @@ impl ChatApp {
             for (gi, &idx) in g.message_indices.iter().enumerate() {
                 let m = &self.messages[idx];
                 let show_header = gi == 0;
-                let rm = self.measure_row(tr, m, show_header, text_w);
+                let rm = self.measure_row(tr, theme, m, show_header, text_w);
                 total += rm.height();
                 rows.push(rm);
             }
@@ -570,7 +677,7 @@ impl ChatApp {
         }
     }
 
-    fn measure_row(&self, tr: &mut TextRenderer, m: &Message, show_header: bool, text_w: f32) -> RowM {
+    fn measure_row(&self, tr: &mut TextRenderer, theme: &Theme, m: &Message, show_header: bool, text_w: f32) -> RowM {
         let editing = self.editing.as_ref().is_some_and(|(id, _)| id == &m.id);
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
@@ -579,8 +686,14 @@ impl ChatApp {
             (tr.measure(t, 15.0, Some(text_w)).1 as f64).max(19.0)
         } else if m.text.is_empty() {
             0.0
+        } else if m.mentions.is_empty() {
+            tr.measure(&m.text, BODY_SIZE, Some(text_w)).1 as f64
         } else {
-            tr.measure(&m.text, 15.0, Some(text_w)).1 as f64
+            // A mention-carrying body is laid out by the rich path, so it must
+            // be measured by the rich path too — measuring one and painting the
+            // other is how a row ends up clipping its own last line.
+            let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
+            shape_body(tr, &spans, text_w).height() as f64
         };
         let att_h = match &m.attachment {
             None => 0.0,
@@ -650,13 +763,22 @@ impl ChatApp {
             self.draw_message_editor(scene, tf, tr, theme, text_x, text_w, rm, y, hits);
         } else {
             if !m.text.is_empty() {
-                text(scene, tr, tf, &m.text, 15.0, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
+                if m.mentions.is_empty() {
+                    text(scene, tr, tf, &m.text, BODY_SIZE, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
+                } else {
+                    // Mentions are runs inside the paragraph, so the whole body
+                    // goes through the attributed layout — one wrap, one line
+                    // grid, bands painted behind the glyphs they belong to.
+                    let spans = body_spans(self, m, theme, c.surfaces.base);
+                    let layout = shape_body(tr, &spans, text_w);
+                    tr.draw_rich(scene, &layout, tf * Affine::translate((text_x, *y)), c.text_primary);
+                }
                 *y += rm.body_h + 2.0;
             }
             // Right-click your own message (header + body) opens the edit menu.
             // Recorded now, before the reaction / thread hits so those still
             // win in their own sub-regions.
-            if m.author == self.me.id {
+            if self.is_me(&m.author) {
                 ChatApp::push_hit(hits, Rect::new(area.x0, content_top, area.x1, *y), Hit::MessageMenu { msg: m.id.clone() });
             }
         }
@@ -738,6 +860,7 @@ impl ChatApp {
         *y += rm.edit_ctrl_h;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_reactions(
         &self,
         scene: &mut Scene,
@@ -774,6 +897,7 @@ impl ChatApp {
         ChatApp::push_hit(hits, add, Hit::AddReaction { msg: m.id.clone(), anchor: Point::new(add.x0, y + h + 4.0) });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_thread_affordance(
         &self,
         scene: &mut Scene,
@@ -819,6 +943,7 @@ impl ChatApp {
         ChatApp::push_hit(hits, bar, Hit::OpenThread(m.id.clone()));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_attachment(
         &self,
         scene: &mut Scene,
@@ -912,6 +1037,7 @@ impl ChatApp {
     /// Render an embed this peer isn't permitted to open: a neutral locked card
     /// with the filename but no hydrated content. Sized to match the granted
     /// embed's footprint so the timeline layout is identical either way.
+    #[allow(clippy::too_many_arguments)]
     fn draw_gated_embed(
         &self,
         scene: &mut Scene,
@@ -1194,7 +1320,7 @@ impl ChatApp {
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(scene, tf, tr, theme, avc, 16.0, &u.initials, u.color_idx, Some(u.status));
             let nx = avc.x + 16.0 + 12.0;
-            let display = if u.id == self.me.id {
+            let display = if self.is_me(&u.id) {
                 format!("{} (you)", u.name)
             } else {
                 u.name.clone()
@@ -1396,6 +1522,9 @@ fn file_chip_meta(name: &str, size: u64) -> String {
     }
 }
 
+/// Horizontal centre of the workspace rail (column of square buttons).
+const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
+
 #[cfg(test)]
 mod tests {
     use super::{file_chip_meta, human_size};
@@ -1435,6 +1564,3 @@ mod tests {
         assert!(human_size(3_000_000).ends_with(" MB"));
     }
 }
-
-/// Horizontal centre of the workspace rail (column of square buttons).
-const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
