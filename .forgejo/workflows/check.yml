@@ -23,6 +23,11 @@ jobs:
       # pinned toolchain and nextest. Previously every run dnf-installed ~30
       # packages first.
       image: code.podesta.ai/qos/qos-builder:latest
+      # The runner pulls the job container before any step runs, so a
+      # docker/login-action step inside the job is too late for a private image.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
