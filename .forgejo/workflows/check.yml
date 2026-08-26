@@ -19,42 +19,11 @@ jobs:
   check:
     runs-on: runner
     container:
-      image: quay.io/fedora/fedora:42
+      # Prebuilt by build-builder-image.yml: the native dependencies, the
+      # pinned toolchain and nextest. Previously every run dnf-installed ~30
+      # packages first.
+      image: code.sandbox.example/qos/qos-builder:latest
     steps:
-      # First, because the fedora container ships neither node (which
-      # actions/checkout needs) nor the Rust build deps. capnproto is required by
-      # runtime-collab's build.rs; the Vulkan driver lets the GPU tests run headless.
-      #
-      # bubblewrap and rust-analyzer are here because tests need them, not
-      # the build. Both are subjects rather than tools: `bwrap` is how a qOS
-      # app runs at all, so the launcher's egress and room-confinement suites
-      # and the compositor's sandbox check are exercising the real thing, and
-      # the code editor's language-server suite drives a real rust-analyzer
-      # against a real project. Each of those refuses to skip when its
-      # subject is absent — correctly, since a sandbox test that quietly
-      # passes on a host with no sandbox is worse than no test. Installing
-      # them is what lets those refusals mean something. Verified in this
-      # image: `bwrap --unshare-all` works unprivileged inside the container.
-      - name: Install deps (node for checkout, capnproto for runtime-collab, build + Vulkan, bwrap + rust-analyzer for the tests)
-        run: |
-          dnf install -y \
-            nodejs \
-            rust cargo sccache capnproto \
-            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
-            clang clang-devel pkgconf-pkg-config \
-            libxkbcommon-devel wayland-devel \
-            libseat-devel libinput-devel systemd-devel libdrm-devel \
-            mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-            pipewire-devel \
-            ffmpeg-free-devel libva-devel \
-            gstreamer1-devel gstreamer1-plugins-base-devel \
-            openssl-devel sqlite-devel zlib-ng-compat-devel \
-            fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
-            nasm \
-            vulkan-loader mesa-vulkan-drivers \
-            bubblewrap rust-analyzer \
-          && dnf clean all
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -63,38 +32,20 @@ jobs:
       - name: Workspace membership guard (no crate silently dropped)
         run: ./scripts/check-workspace-complete.sh
 
-      # The browser is in here too: its WPE WebKit engine sits behind the
-      # non-default `wpe` feature, so the default build is hermetic and needs
-      # no native WebKit stack.
+      # nextest builds every test target and runs each test in its own process.
+      # `cargo check --workspace` used to run first; it compiled the tree a
+      # second time for artifacts this step cannot reuse.
       #
-      # GStreamer is NOT hermetic any more, despite the comment in Cargo.toml
-      # that says the dev stack is never needed here. Two crates now enable it
-      # from their default features — `camera` (default = ["live-capture"]) and
-      # `video_editor` (default = ["decode"] -> media/decode) — so a plain
-      # `cargo check --workspace` wants gstreamer-1.0, and every run of this job
-      # has failed on the missing .pc file since those defaults changed. The
-      # headers are installed above; the alternative, taking those features back
-      # off by default, is a product decision rather than a CI one.
-      #
-      # --locked: a fresh resolve of this tree pulls a pre-release ed25519-dalek
-      # stack through iroh that does not compile, and it fails inside a
-      # dependency rather than anywhere this repo touches. --locked makes an
-      # out-of-date lockfile say so instead.
-      - name: cargo check --workspace (every app + crate must compile)
+      # --locked: a fresh resolve pulls a pre-release ed25519-dalek stack
+      # through iroh that does not compile, failing inside a dependency rather
+      # than anywhere this repo touches.
+      - name: cargo nextest run --workspace
         env:
-          RUSTC_WRAPPER: sccache
-          CARGO_BUILD_JOBS: "4"
-        run: cargo check --workspace --locked
-
-      - name: cargo test --workspace
-        env:
-          RUSTC_WRAPPER: sccache
           # Headless GPU via llvmpipe; live network tests self-skip unless opted in.
           WGPU_BACKEND: vulkan
-          # Bound peak memory: a workspace-wide test build otherwise fans out to
-          # ~30 parallel rustc linking full-debuginfo test binaries and OOM-kills
-          # the runner mid-compile. Cap parallelism and drop test-profile
-          # debuginfo (no effect on pass/fail) — full coverage, bounded RAM.
+          # Bound peak memory: parallel rustc linking test binaries otherwise
+          # OOM-kills the runner mid-compile. Test-profile debuginfo has no
+          # effect on pass/fail.
           CARGO_BUILD_JOBS: "4"
           CARGO_PROFILE_TEST_DEBUG: "0"
           # A wayland socket has to be bound somewhere, and smithay's
@@ -107,4 +58,11 @@ jobs:
         run: |
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          cargo test --workspace --locked --no-fail-fast
+          cargo nextest run --workspace --locked --profile ci
+
+      # Examples are not test targets, so nextest does not build them. The
+      # dependency rlibs it just produced make this close to free.
+      - name: cargo build --workspace --examples
+        env:
+          CARGO_BUILD_JOBS: "4"
+        run: cargo build --workspace --examples --locked
