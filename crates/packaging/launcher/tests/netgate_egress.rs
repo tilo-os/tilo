@@ -465,6 +465,21 @@ impl ProbeReport {
     }
 }
 
+/// The name `--exact` needs to select one of this file's probe tests when the
+/// binary re-executes itself.
+///
+/// This file is a module of `tests/it.rs` rather than its own binary, so the
+/// bare function name selects nothing. `module_path!` is one segment too long
+/// for libtest, which names tests relative to the binary root, so the crate
+/// segment is dropped. Derived rather than written out because a name that
+/// silently matches no test leaves the probe running nothing and the parent
+/// panicking on an empty report.
+fn probe_test_name(probe: &str) -> String {
+    let module = module_path!();
+    let relative = module.split_once("::").map_or(module, |(_, rest)| rest);
+    format!("{relative}::{probe}")
+}
+
 /// Run the probe inside a sandbox whose network shape is decided by the
 /// production [`EgressDecision`].
 fn run_probe(
@@ -507,7 +522,7 @@ fn run_probe(
     argv.push(exe_s);
     argv.extend([
         "--exact".into(),
-        "netns_probe".into(),
+        probe_test_name("netns_probe"),
         "--nocapture".into(),
         "--test-threads".into(),
         "1".into(),
@@ -584,7 +599,7 @@ fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host
             SANDBOX_SOCKET_PATH,
         ])
         .arg(&exe)
-        .args(["--exact", "proof_probe", "--nocapture", "--test-threads", "1"])
+        .args(["--exact", &probe_test_name("proof_probe"), "--nocapture", "--test-threads", "1"])
         .env("QOS_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
         .env("QOS_NETGATE_PROOF_PORT", host_port.to_string())
         .output()
@@ -1042,7 +1057,7 @@ fn run_device_local_probe(
     argv.push(exe_s);
     argv.extend([
         "--exact".into(),
-        "device_local_probe".into(),
+        probe_test_name("device_local_probe"),
         "--nocapture".into(),
         "--test-threads".into(),
         "1".into(),
