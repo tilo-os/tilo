@@ -594,13 +594,14 @@ fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
     hz.app.open_path(&mut hz.state.doc, &path);
     hz.frame();
 
-    // Address the photograph by the id derived from its path — no
+    // Address the photograph by the id derived from its content — no
     // enumeration, no coordinate, nothing that needs a screen.
     let resources = PhotosResources.resources(&hz.state.doc);
+    let open = photos::doc::PhotosDoc::image(&hz.state.doc).expect("the harness opened one");
     assert_eq!(
         resources[0].id.0,
-        photos::actions::resource_id(&path),
-        "the published id is not derivable from the path"
+        photos::actions::resource_id(&open),
+        "the published id is not the one derived from the photograph"
     );
 
     let ActionInput::Prompted { build, .. } = &resources[0]

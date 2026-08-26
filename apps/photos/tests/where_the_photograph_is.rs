@@ -116,17 +116,18 @@ fn a_viewer_with_nothing_open_publishes_no_place() {
 
 /// The address a caller invokes is the address that resolves to a place.
 ///
-/// Two halves minted from the same path by the same function. If they ever
-/// drift, every invocation still works and nothing is ever marked — the
+/// Two halves minted from the same photograph by the same function. If they
+/// ever drift, every invocation still works and nothing is ever marked — the
 /// failure that looks exactly like a desktop where the agent did not act.
 #[test]
 fn the_place_is_keyed_by_the_address_a_caller_invokes() {
-    let (mut state, mut app, path, _dir) = opened_sized(900, 600);
+    let (mut state, mut app, _path, _dir) = opened_sized(900, 600);
     layout(&mut app, &mut state);
 
     let rects = Widget::resource_rects(&app);
     assert_eq!(rects.len(), 1, "one open photograph, one place: {rects:?}");
-    let id = photos::actions::resource_id(&path);
+    let open = PhotosDoc::image(&state.doc).expect("the fixture opened one");
+    let id = photos::actions::resource_id(&open);
     assert_eq!(rects[0].0, id, "the place is not keyed by the address");
 
     let published = Widget::resources(&app, &state.doc);
@@ -264,16 +265,24 @@ fn a_photograph_a_collaborator_opened_is_drawn_here_too() {
          standing in for one"
     );
 
+    let mut places = Vec::new();
     for (image, whose) in [(theirs, "a collaborator's"), (opened, "this machine's")] {
         PhotosDoc::set_image(&mut state.doc, Some(&image));
         layout(&mut app, &mut state);
+        let rects = Widget::resource_rects(&app);
         assert!(
-            !Widget::resource_rects(&app).is_empty(),
+            !rects.is_empty(),
             "with {whose} path in the document this session drew no \
              photograph — the picture is its content, and this machine holds \
              the content",
         );
+        places.push(rects[0].0.clone());
     }
+    assert_eq!(
+        places[0], places[1],
+        "one photograph published two places, one per path — so an operation \
+         invoked on it is marked on whichever session's path won",
+    );
 
     // And the honest placeholder stays honest: content nobody here has is no
     // picture, rather than a picture drawn from whatever the path finds.
