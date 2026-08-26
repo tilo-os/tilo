@@ -1204,6 +1204,12 @@ pub enum NoMatch {
 /// whichever came first. An operation that needs text gets the literal the
 /// instruction quoted or nothing at all.
 ///
+/// Words are not the only thing an instruction says, though, and where two
+/// operations wear the same verb the tie is broken by what it supplied: an
+/// instruction carrying a value prefers the operation that collects one, and
+/// one carrying none prefers the operation that takes none. Never the other way
+/// round, and never a tie broken by order.
+///
 /// The refusals are the point. A run with no model reachable either does the
 /// one thing the instruction plainly names, or says which of these three it
 /// ran into — it never reports success for something it did not do, and never
@@ -1233,6 +1239,34 @@ pub fn from_verbs<'a>(
     if best.is_empty() {
         return Err(NoMatch::Nothing);
     }
+    let said = quoted_literal(rest);
+    if best.len() > 1 {
+        // A tie the instruction itself breaks.
+        //
+        // Two operations answering to one verb need not be two meanings. The
+        // photo editor publishes a crop that collects a region and a crop that
+        // collects nothing, and which of them an instruction names is settled
+        // by whether it supplied a value: `crop the photograph to
+        // "0.25,0.25,0.5,0.5"` quotes a region and only the prompted crop
+        // can use one, while `crop the photograph` quotes none and only the
+        // argument-less one can act without one. That is a fact about the two
+        // operations rather than a guess about the wording — the same fact
+        // dispatch reads off [`Offer::wants_text`] a moment later, applied
+        // where the choice is actually made.
+        let fits: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|o| collects_a_value_said(o) == said.is_some())
+            .collect();
+        // Only ever narrowing, and never to nothing. Where every tied
+        // operation refuses what the instruction supplied, the tie stands and
+        // is refused — which is what keeps a genuine ambiguity ("align it",
+        // with a left and a centre that both take nothing) a question rather
+        // than a coin toss.
+        if !fits.is_empty() {
+            best = fits;
+        }
+    }
     if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
@@ -1242,19 +1276,28 @@ pub fn from_verbs<'a>(
         ));
     }
     let chosen = best[0];
-    // An operation that collects *content* collects a content hash, and there
-    // is no content hash anywhere in a sentence — nobody writes one down and
-    // inventing one would name bytes that do not exist. So it is not asked for
-    // here. Either an earlier step produced content and the caller binds it
-    // (see `plan::Step`), or the operation is refused at dispatch for having
-    // nothing to place.
-    if !chosen.wants_text() || chosen.wants_content() {
+    if !collects_a_value_said(chosen) {
         return Ok((chosen, None));
     }
-    match quoted_literal(rest) {
+    match said {
         Some(text) => Ok((chosen, Some(text))),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
+}
+
+/// Whether performing `offer` needs a value the instruction could have said.
+///
+/// Narrower than [`Offer::wants_text`], on purpose. An operation that collects
+/// *content* wants text too, and the text it wants is a content hash — there is
+/// none anywhere in a sentence, nobody writes one down, and inventing one would
+/// name bytes that do not exist. So it is never asked of the words: either an
+/// earlier step produced content and the caller binds it (see `plan::Step`), or
+/// the operation is refused at dispatch for having nothing to place.
+///
+/// Which makes this the question to ask of an instruction and an operation
+/// together — whether what the one said is what the other takes.
+fn collects_a_value_said(offer: &Offer) -> bool {
+    offer.wants_text() && !offer.wants_content()
 }
 
 #[cfg(test)]
@@ -1326,6 +1369,124 @@ mod tests {
         assert_eq!(quoted_literal("don't rename anything"), None);
         // An unterminated quote has quoted nothing.
         assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+    }
+
+    // -- telling two operations of one verb apart --------------------------
+
+    /// The photo editor with a photograph open, as the agent surveys it.
+    ///
+    /// The real contract over a real document, so what ties below is the pair
+    /// of operations the application actually publishes rather than two labels
+    /// written here to look like each other.
+    fn photo_editor_offers() -> Vec<Offer> {
+        let photos = CONTRACTS
+            .iter()
+            .find(|c| c.namespace == "photos")
+            .expect("the photo editor's contract");
+        let mut doc = AutoCommit::new();
+        ::photos::doc::PhotosDoc::seed(&mut doc);
+        ::photos::doc::PhotosDoc::set_image(
+            &mut doc,
+            Some(&::photos::OpenImage::from_path("/x/harbour.png", 40, 24)),
+        );
+        doc.commit();
+        offers(
+            &[(photos, &doc)],
+            &View::default(),
+            &granting(vec![grant(Scope::App("photos".to_string()))]),
+        )
+    }
+
+    /// Which of the photo editor's two crops an instruction names is settled
+    /// by whether the instruction supplied a region.
+    ///
+    /// Both crops lead with the same verb, so the words alone tie — which is
+    /// the state that had the agent refuse `crop the photograph to
+    /// "0.25,0.25,0.5,0.5"` as something that could mean either, and with it
+    /// the whole sequence that clause was one step of. But the instruction is
+    /// not silent about the difference: one crop collects a region and the
+    /// other collects nothing, and an instruction has either quoted a region
+    /// or it has not.
+    ///
+    /// Asserted in both directions, because a rule that always preferred the
+    /// prompted crop would pass the first half and leave `crop the photograph`
+    /// unanswerable, and one that always preferred the square would pass the
+    /// second while throwing away a region somebody had written down.
+    #[test]
+    fn a_supplied_region_tells_the_two_crops_apart() {
+        let published = photo_editor_offers();
+
+        // Two crops, one verb, and exactly one of them collecting a value.
+        // Without all three the rest of this proves nothing.
+        let crops: Vec<&Offer> = published
+            .iter()
+            .filter(|o| o.descriptor.action_label.to_lowercase().contains("crop"))
+            .collect();
+        assert_eq!(
+            crops.len(),
+            2,
+            "this test is about two crops; the editor publishes {:?}",
+            published
+                .iter()
+                .map(|o| o.descriptor.action_label.clone())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            crops
+                .iter()
+                .filter(|o| o.wants_text() && !o.wants_content())
+                .count(),
+            1,
+            "exactly one of the two crops collects a region: {:?}",
+            crops
+                .iter()
+                .map(|o| (o.descriptor.action_label.clone(), o.wants_text()))
+                .collect::<Vec<_>>(),
+        );
+
+        // A region is something only the prompted crop can be performed with.
+        let (chosen, argument) =
+            from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &published)
+                .expect("a quoted region tells the two crops apart");
+        assert_eq!(
+            chosen.address().action,
+            "crop",
+            "a quoted region must reach the crop that collects one, not {}",
+            chosen.descriptor.action_label,
+        );
+        assert_eq!(argument.as_deref(), Some("0.25,0.25,0.5,0.5"));
+
+        // The same words with no region in them. Only the crop that asks for
+        // nothing can act on what was said, so it is the one that was meant.
+        let (chosen, argument) = from_verbs("crop the photograph", &published)
+            .expect("with no region said, the crop that needs none is the one that can act");
+        assert_eq!(
+            chosen.address().action,
+            "crop-square",
+            "an instruction supplying nothing must reach the crop that takes \
+             nothing, not {}",
+            chosen.descriptor.action_label,
+        );
+        assert_eq!(argument, None);
+
+        // And asking for the square by name still reaches it.
+        let (chosen, argument) = from_verbs("crop the photograph to a square", &published)
+            .expect("the square crop answers to its own words");
+        assert_eq!(chosen.address().action, "crop-square");
+        assert_eq!(argument, None);
+
+        // What is gone is a false ambiguity, not the mechanism. Two operations
+        // that both take nothing are still not told apart by an instruction
+        // that supplies nothing, and that is still a question rather than a
+        // guess.
+        match from_verbs("rotate the photograph", &published) {
+            Err(NoMatch::Ambiguous(labels)) => assert_eq!(
+                labels.len(),
+                2,
+                "the two rotations are the ambiguity: {labels:?}"
+            ),
+            other => panic!("a genuine ambiguity must still be refused: {other:?}"),
+        }
     }
 
     // -- opening an application ------------------------------------------
