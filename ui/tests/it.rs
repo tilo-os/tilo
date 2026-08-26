@@ -30,6 +30,8 @@ mod cross_process_presence_pump;
 mod data_table_test;
 #[path = "design_token_audit.rs"]
 mod design_token_audit;
+#[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
+mod diagnostics_outlive_a_closed_log_pipe;
 #[path = "dnd_test.rs"]
 mod dnd_test;
 #[path = "file_picker_render_test.rs"]
