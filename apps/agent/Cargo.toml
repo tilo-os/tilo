@@ -1,7 +1,7 @@
 [package]
 name = "agent"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "qos-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
 
 [lib]
