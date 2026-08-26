@@ -2352,3 +2352,145 @@ fn an_instruction_that_crosses_nothing_reports_no_crossing() {
          no crossing to draw",
     );
 }
+
+// ---------------------------------------------------------------------------
+// 10. A frame that only looks like an arrival
+// ---------------------------------------------------------------------------
+
+/// A raw participant on the JSON socket: it says exactly what it is told to
+/// say, and counts the documents that come back.
+///
+/// Raw rather than a [`Peer`], because the question here is what the *agent*
+/// puts on the wire, and a participant built on the toolkit would answer the
+/// same frames and make the count everybody's. It announces no app, so the
+/// broker's fan-out is room-wide and anything addressed to the room reaches
+/// it — the agent's own address.
+struct Onlooker {
+    out: UnixStream,
+    seen: std::sync::Arc<Mutex<usize>>,
+}
+
+impl Onlooker {
+    fn join(room: &Room, handle: &str) -> Self {
+        let out = UnixStream::connect(&room.json).expect("connect the json socket");
+        let mut reading = out.try_clone().expect("clone the socket");
+        let seen = std::sync::Arc::new(Mutex::new(0usize));
+        let tally = std::sync::Arc::clone(&seen);
+        // A reader thread rather than a timed read: a read that times out
+        // mid-frame leaves the stream half-consumed, and every count after it
+        // would be about a stream nobody could parse.
+        std::thread::spawn(move || {
+            while let Some(frame) = qos_agent::wire::read_frame(&mut reading) {
+                if let Ok(CollabEvent::CRDTUpdate { .. }) =
+                    serde_json::from_slice::<CollabEvent>(&frame)
+                {
+                    *tally.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                }
+            }
+        });
+        let mut me = Self { out, seen };
+        me.say(&CollabRequest::Hello {
+            app_id: String::new(),
+            cluster_id: room.id,
+            record: None,
+            handle: Some(handle.to_string()),
+        });
+        me
+    }
+
+    fn say(&mut self, req: &CollabRequest) {
+        let body = serde_json::to_vec(req).expect("encode the request");
+        qos_agent::wire::write_frame(&mut self.out, &body).expect("write to the broker");
+    }
+
+    fn arrive_under(&mut self, key: ui::presence::PresenceKey) {
+        self.say(&CollabRequest::Presence { key, payload: PresencePayload::Arrived });
+    }
+
+    fn documents(&self) -> usize {
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A viewport moving is not somebody joining, and the agent must not answer it
+/// with its document.
+///
+/// The toolkit has no presence payload for "where I am looking", so a
+/// [`ui::view::ViewSubset`] rides inside the routing key and is paired with
+/// `Arrived` as an inert carrier — `ui::App::broadcast_view_presence` says so
+/// where it sends one, and `ui::presence` dispatches on the key before the
+/// payload is ever inspected. Every scroll and every window resize publishes
+/// one, and the broker hands them to a room-wide participant like any other
+/// presence frame.
+///
+/// Read as a join, each of those costs the agent's whole document, written to
+/// the one socket it also asks its own questions on. Both halves are asserted
+/// here against one another: the scope-keyed arrival must still be answered,
+/// or this would pass for an agent that had stopped answering anybody.
+#[test]
+fn a_viewport_moving_is_not_somebody_arriving() {
+    let room = room();
+    let mut page_peer = Peer::new(
+        &room,
+        WORD_PROCESSOR,
+        "quinten",
+        page("Sound check", None),
+        |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
+    );
+    let mut session = joined(
+        agent_cfg(&room, granting(&["word-processor"]), None),
+        &mut [&mut page_peer],
+        Duration::from_secs(20),
+    );
+    assert!(
+        session.apps().contains(&"word-processor"),
+        "the agent never took the page, so it has nothing to answer with and \
+         this would prove nothing: it holds {:?}",
+        session.apps()
+    );
+
+    // Nothing pumps the page from here on, so every document the onlooker is
+    // sent came from the agent — the only other participant in the room.
+    let mut onlooker = Onlooker::join(&room, "onlooker");
+
+    // The control: a scope-keyed arrival is a join, and is answered.
+    onlooker.arrive_under(ui::presence::PresenceKey::Workspace {
+        id: room.id.to_string(),
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && onlooker.documents() == 0 {
+        session
+            .run_until(Instant::now() + Duration::from_millis(100))
+            .expect("the agent session");
+    }
+    let answered = onlooker.documents();
+    assert!(
+        answered > 0,
+        "the agent did not answer a scope-keyed arrival with its document, so \
+         the rest of this test would pass for an agent that answers nobody"
+    );
+
+    // And the frames that only carry the payload.
+    let looking_at = ui::view::ViewSubset {
+        open_resource: Some("wp.block:heading".to_string()),
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        onlooker.arrive_under(ui::presence::PresenceKey::view(&looking_at));
+        onlooker.arrive_under(ui::presence::PresenceKey::Tab {
+            id: "page-2".to_string(),
+        });
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        session
+            .run_until(Instant::now() + Duration::from_millis(100))
+            .expect("the agent session");
+    }
+    assert_eq!(
+        onlooker.documents(),
+        answered,
+        "a viewport moving and a focus dot moving are not arrivals, and the \
+         agent sent its whole document for each of them"
+    );
+}
