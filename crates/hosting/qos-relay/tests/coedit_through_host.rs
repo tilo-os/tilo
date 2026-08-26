@@ -16,7 +16,6 @@
 //! `Relay`/`RelayCoeditSession` path — no mocks of the host or the
 //! bridge.
 
-use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;

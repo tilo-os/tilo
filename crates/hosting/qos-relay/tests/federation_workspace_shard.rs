@@ -8,7 +8,6 @@
 //! federates over no workspace at all. That's the whole shard
 //! isolation mechanism: hosted-set intersection.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

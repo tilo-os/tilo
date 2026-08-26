@@ -10,7 +10,6 @@
 //! (e.g. skipping the revocation check) would slip past the unit
 //! tests but fail here.
 
-use crate::common;
 use qos_relay::RelayClient;
 use qos_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason,

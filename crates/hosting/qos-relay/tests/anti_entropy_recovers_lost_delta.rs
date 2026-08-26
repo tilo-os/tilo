@@ -18,7 +18,6 @@
 //! (identical `get_heads()`), on the real `Relay` / `RelayClient` path,
 //! no mocks of the host.
 
-use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;

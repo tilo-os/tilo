@@ -17,7 +17,6 @@
 //! genuine Automerge document, so "converge" means identical heads,
 //! not byte-equality of an opaque blob.
 
-use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
