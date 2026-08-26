@@ -136,12 +136,22 @@ struct CapBinding {
 impl CapBinding {
     /// Evaluate `access` on `path` through the capability model.
     fn permits(&self, path: &str, access: Access) -> bool {
+        self.permits_as(&self.actor, path, access)
+    }
+
+    /// [`Self::permits`] asked on behalf of `actor` rather than the actor this
+    /// binding was created for.
+    ///
+    /// The capability list is the *workspace's* — it names every subject the
+    /// workspace has granted anything to — so asking it about somebody else is
+    /// reading the same list, not inventing a second policy.
+    fn permits_as(&self, actor: &Actor, path: &str, access: Access) -> bool {
         let required = match access {
             Access::Read => Verb::Read,
             Access::Write => Verb::Write,
         };
         decide_capability(
-            &self.actor,
+            actor,
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
@@ -157,17 +167,38 @@ impl CapBinding {
     /// is not consulted here: it can never introduce a path, only take
     /// one away, and it takes it away in `permits`.
     fn read_nominations(&self) -> impl Iterator<Item = &str> {
+        self.read_nominations_for(&self.actor)
+    }
+
+    /// [`Self::read_nominations`] for an arbitrary actor.
+    fn read_nominations_for<'a>(&'a self, actor: &'a Actor) -> impl Iterator<Item = &'a str> {
         self.caps
             .iter()
-            .filter(|c| {
+            .filter(move |c| {
                 c.effect == Effect::Grant
                     && c.verb.implies(Verb::Read)
-                    && c.subject.matches_actor(&self.actor)
+                    && c.subject.matches_actor(actor)
             })
             .filter_map(|c| match &c.scope {
                 Scope::FsPath(p) => Some(p.as_str()),
                 _ => None,
             })
+    }
+}
+
+/// The actor a **remote** identity is evaluated as: its own person principal
+/// and nothing else.
+///
+/// The principals a mount proves for *itself* — the rooms it is in, the app it
+/// runs as, a bearer token it presented — are statements about this machine.
+/// Lending them to whoever dials in would let any peer inherit the mount's
+/// authority, so a peer is only ever the key it authenticated with.
+fn peer_actor(peer: &IdentityKey) -> Actor {
+    let key = Ed25519PublicKey(*peer);
+    Actor {
+        role: None,
+        key: Some(key),
+        principals: vec![Principal::person_from_key(key)],
     }
 }
 
@@ -349,6 +380,56 @@ impl WorkspaceAcl {
                 .any(|b| &b.identity == identity && b.permits(path, access))
     }
 
+    /// Does the **remote** identity `peer` hold `access` on `path`?
+    ///
+    /// The network counterpart of [`Self::permits`], which answers only for
+    /// the identity this mount bound and so says `false` for every peer —
+    /// fail-closed, but it also refuses everyone. Same list, same
+    /// [`collab_types::decide_capability`], same deny-bias; only the actor
+    /// differs, and for a peer it is [`peer_actor`]. A binding *for* the peer
+    /// keeps its own actor, so a mount asking about itself gets one answer
+    /// either way.
+    pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
+        let direct = self.entries.iter().any(|e| {
+            &e.identity == peer
+                && path_covers(&e.path_prefix, path)
+                && match access {
+                    Access::Read => e.read,
+                    Access::Write => e.write,
+                }
+        });
+        direct || {
+            let as_peer = peer_actor(peer);
+            self.bindings.iter().any(|b| {
+                let actor = if &b.identity == peer { &b.actor } else { &as_peer };
+                b.permits_as(actor, path, access)
+            })
+        }
+    }
+
+    /// Does `peer` hold a read grant on *anything* in this workspace?
+    ///
+    /// The admission question, and deliberately the coarsest one: it is what
+    /// the sync and content planes can answer before they know which path a
+    /// request will turn out to concern. A peer that reads nothing here is a
+    /// stranger, and a stranger is served nothing at all — not the namespace
+    /// document, not a blob.
+    ///
+    /// A grant is only a candidate until the decision function confirms it, so
+    /// a `Restrict` that empties a peer's grants makes this `false` as surely
+    /// as never granting anything did.
+    pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
+        let direct = self.entries.iter().any(|e| &e.identity == peer && e.read);
+        direct || {
+            let as_peer = peer_actor(peer);
+            self.bindings.iter().any(|b| {
+                let actor = if &b.identity == peer { &b.actor } else { &as_peer };
+                b.read_nominations_for(actor)
+                    .any(|granted| b.permits_as(actor, granted, Access::Read))
+            })
+        }
+    }
+
     /// Is `path` part of the view `identity` sees?
     ///
     /// True when the identity may read `path`, or when `path` is an
@@ -421,6 +502,28 @@ impl AclHandle {
         // the alternative is to answer from a value nobody vouches for.
         match self.0.read() {
             Ok(acl) => acl.permits(identity, path, access),
+            Err(_) => false,
+        }
+    }
+
+    /// Does the remote identity `peer` hold `access` on `path`, per the ACL
+    /// bound *right now*? Delegates to [`WorkspaceAcl::permits_peer`].
+    pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
+        match self.0.read() {
+            Ok(acl) => acl.permits_peer(peer, path, access),
+            Err(_) => false,
+        }
+    }
+
+    /// Does `peer` read anything here, per the ACL bound *right now*?
+    /// Delegates to [`WorkspaceAcl::reads_anything`].
+    ///
+    /// Read live rather than captured at connect time so a revocation reaches
+    /// the network plane on the next request, the same way it already reaches
+    /// the FUSE plane on the next `open`.
+    pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
+        match self.0.read() {
+            Ok(acl) => acl.reads_anything(peer),
             Err(_) => false,
         }
     }
@@ -753,5 +856,89 @@ mod tests {
         assert!(acl.visible(&ALICE, "/w/docs/report.md"));
         assert!(!acl.visible(&ALICE, "/w/other"));
         assert!(!acl.visible(&BOB, "/w"));
+    }
+
+    // A capability list written for Bob decides for Bob, even on a mount
+    // bound as Alice — `permits` would answer `false` for every peer, which
+    // is correct for the FUSE path and useless for admitting a connection.
+    #[test]
+    fn a_peer_is_decided_by_the_workspaces_own_capability_list() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(BOB)),
+            Scope::FsPath("/docs".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+        assert!(acl.permits_peer(&BOB, "/docs/report.md", Access::Read));
+        assert!(acl.reads_anything(&BOB));
+        assert!(!acl.permits_peer(&BOB, "/docs/report.md", Access::Write));
+        assert!(!acl.permits_peer(&BOB, "/secrets", Access::Read));
+    }
+
+    // An identity the list never names reads nothing — which is what the sync
+    // and content planes turn into "served nothing".
+    #[test]
+    fn an_unnamed_peer_reads_nothing() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+        assert!(acl.reads_anything(&ALICE), "the bound identity still reads");
+        assert!(!acl.reads_anything(&BOB));
+        assert!(!acl.permits_peer(&BOB, "/", Access::Read));
+        assert!(
+            !WorkspaceAcl::new().reads_anything(&BOB),
+            "an empty ACL admits nobody"
+        );
+    }
+
+    // Revocation reaches the network plane because the plane asks the live
+    // handle, not a snapshot taken when the mount came up. This is the swap
+    // `CapabilityFile::refresh` performs when the capability file is emptied.
+    #[test]
+    fn revoking_a_peers_grant_stops_it_reading() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(BOB)),
+            Scope::FsPath("/docs".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        let handle = AclHandle::new(WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0)));
+        assert!(handle.reads_anything(&BOB));
+        assert!(handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+
+        handle.replace(WorkspaceAcl::new());
+        assert!(!handle.reads_anything(&BOB));
+        assert!(!handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+    }
+
+    // A capability granted to a room the mount is in belongs to the mount.
+    // Lending it to whoever dials in would hand every caller the host's
+    // authority, so a peer carries only its own key.
+    #[test]
+    fn a_peer_does_not_inherit_the_mounts_principals() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let room = Principal::Room("6b3f9a10-0000-4000-8000-00000000000a".to_string());
+        let cap = CapOverride::new(
+            Subject::Principal(room.clone()),
+            Scope::FsPath("/".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[room], Some(0));
+        assert!(acl.permits(&ALICE, "/x", Access::Read), "the mount holds it");
+        assert!(!acl.reads_anything(&BOB), "a caller does not");
+        assert!(!acl.permits_peer(&BOB, "/x", Access::Read));
     }
 }

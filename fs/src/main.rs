@@ -298,6 +298,7 @@ async fn serve(
         store.clone(),
         hydrator.clone(),
         namespace.clone(),
+        acl.as_ref().map(|(handle, _)| handle.clone()),
     )
     .await?;
 
@@ -355,6 +356,7 @@ async fn mount(
         hydrator.clone(),
         namespace.clone(),
         ticket,
+        acl.as_ref().map(|(handle, _)| handle.clone()),
     )
     .await?;
 
