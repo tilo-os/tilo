@@ -68,6 +68,30 @@ it, and never point two worktrees at one target directory — cargo's artifact k
 omits the package path, so worktrees of one repo collide and cargo reports
 `Fresh` while handing you the other's binary.
 
+### What does not make builds faster here
+
+Measured on `ui`'s test binary, so nobody spends the day rediscovering it:
+
+| change | effect |
+|---|---|
+| mold instead of GNU ld | none (40 s vs 41 s, and 61 s vs 61 s) |
+| `-C split-debuginfo=unpacked` | binary 697 -> 507 MB, build 14% **slower** |
+| `-C debuginfo=0` | binary 665 -> 475 MB, build unchanged |
+| nightly `--jobs-frontend=4` / `=8` | +13% / 0% |
+| nightly cranelift backend | 23% slower |
+
+Linking is not the bottleneck and the multi-hundred-MB binaries are not either.
+Compilation dominates: `-Z time-passes` puts type checking at 14% of a debug
+build and LLVM at 29%, the rest rustc lowering MIR to IR.
+
+Run-to-run noise on a busy machine is ±20%, which is larger than most of the
+effects above. Measure on an idle machine or not at all.
+
+The cost that *is* real for concurrent work: every change to `build.rustflags`
+invalidates the entire sccache for everyone at once. Rust hit rate measured
+1.75% during a day of flag changes and recovered to 33% once they stopped.
+Batch them.
+
 ### Sizing the compilation cache
 
 116 members over ~1,480 external crates. One full debug+test build is ~2,200

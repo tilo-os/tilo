@@ -46,6 +46,9 @@ jobs = 4
 #                        have to come from the compiler, and stable Rust does
 #                        not emit them, so claiming IBT would trap on the first
 #                        indirect call.
+# Keep every flag in this one list. A `[target.<triple>]` rustflags block does not
+# merge with `build.rustflags`, it REPLACES it — moving one flag into a target block
+# silently drops the hardening above, and nothing errors.
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
