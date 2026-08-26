@@ -7,7 +7,6 @@
 //! suppresses PeerRelay → PeerRelay echoes. This test proves the
 //! reuse: no new fan-out, no new transport, no new store path.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

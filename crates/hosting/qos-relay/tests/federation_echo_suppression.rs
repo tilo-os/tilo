@@ -9,7 +9,6 @@
 //! Concretely: after the author publishes, the author's inbound
 //! channel receives ZERO envelopes over the window.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
