@@ -424,3 +424,122 @@ fn dragging_out_a_groups_last_window_leaves_its_neighbours_alone() {
         "the tree dropped the group the window left, and only it",
     );
 }
+
+/// Which tab the persisted tree says a group is showing.
+fn tree_active_tab(
+    chrome: &shell::shell::chrome_state::Chrome,
+    strip: StripId,
+    group: GroupId,
+) -> Option<u64> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.active_workspace()
+        .and_then(|ws| ws.strips.iter().find(|s| s.id == strip))
+        .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
+        .map(|g| g.active_tab)
+}
+
+/// Which tab the *widget* — the thing that actually draws — says a group
+/// is showing. `WindowGroup::build_layout`, `apply_layout` and `draw` all
+/// resolve the visible tile by `bar.active_id()`, so this is the pointer
+/// that decides what is on screen.
+fn shown_tab(host: &mut ShellOverlayHost, strip: StripId, group_idx: usize) -> u64 {
+    host.group_at_for_tests(strip, group_idx)
+        .expect("group widget")
+        .active_tab_id()
+}
+
+#[test]
+fn a_window_dropped_on_a_sibling_bar_is_the_one_that_window_shows() {
+    // The gesture's whole point is that the window you dragged is now
+    // *in* that frame. A group that goes on showing the tab that was
+    // already there reads as the dragged window vanishing at the moment
+    // it lands — the drop looks like a delete.
+    let (tree, strip, g_left, g_right, left_tabs, right_tab) = one_strip_two_groups();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let dragged = left_tabs[1];
+
+    assert_eq!(
+        tree_active_tab(&chrome, strip, g_right),
+        Some(right_tab),
+        "precondition: the right window shows its own only tab",
+    );
+
+    let from = pill_centre(&mut host, strip, 0, dragged);
+    let to = bar_centre(&mut host, strip, 1);
+    drag(&mut host, &layout, from, to, 12);
+
+    assert_eq!(
+        shown_tab(&mut host, strip, 1),
+        dragged,
+        "the instant it lands, the window draws what was dropped into it",
+    );
+
+    // The rest of that frame, then the frame after it — the point by
+    // which the widget-to-tree mirror has run and the rows have been
+    // rebuilt from the settled tree. Everything downstream of the
+    // gesture reads the tree from here on: peers, the search scope, a
+    // restart, and the test-control socket the demo rig asks through.
+    settle(&mut host);
+    next_frame(&mut host, &chrome);
+
+    assert_eq!(
+        shown_tab(&mut host, strip, 1),
+        dragged,
+        "and it is still what the window draws a frame later",
+    );
+    assert_eq!(
+        tree_active_tab(&chrome, strip, g_right),
+        Some(dragged),
+        "with the tree agreeing about which window that is",
+    );
+    let _ = g_left;
+}
+
+#[test]
+fn a_window_merged_into_a_group_is_the_one_that_group_shows() {
+    // The same join, reached the way a caller reaches it rather than the
+    // way a hand does: `merge_tab_into_group` is the drop committed over
+    // the test-control socket, and it is what the demo rig drives. The
+    // two routes have to end in the same place — a window that arrives
+    // by either is the one in front.
+    let (tree, strip, g_left, g_right, left_tabs, right_tab) = one_strip_two_groups();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let joining = left_tabs[1];
+
+    let count = host
+        .merge_tab_into_group(joining, g_right)
+        .expect("the window joins its neighbour's tab bar");
+    assert_eq!(count, 2, "the group holds both windows");
+    assert_eq!(
+        tree_layout(&chrome, strip),
+        vec![(g_left, vec![left_tabs[0]]), (g_right, vec![right_tab, joining])],
+        "the tree records the join",
+    );
+
+    assert_eq!(
+        shown_tab(&mut host, strip, 1),
+        joining,
+        "the window draws the application that just joined it",
+    );
+    assert_eq!(
+        tree_active_tab(&chrome, strip, g_right),
+        Some(joining),
+        "and the tree says the same",
+    );
+
+    settle(&mut host);
+    next_frame(&mut host, &chrome);
+    assert_eq!(
+        shown_tab(&mut host, strip, 1),
+        joining,
+        "still drawing it a frame later",
+    );
+    assert_eq!(
+        tree_active_tab(&chrome, strip, g_right),
+        Some(joining),
+        "and the tree has not put the old tab back",
+    );
+}

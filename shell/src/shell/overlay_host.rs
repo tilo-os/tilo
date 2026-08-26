@@ -3163,6 +3163,10 @@ impl ShellOverlayHost {
                     let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
                         continue;
                     };
+                    // Whether this pass rearranged which tabs the group
+                    // holds, which is what decides below whether its
+                    // front tab has to be restored from the tree.
+                    let mut membership_changed = false;
                     let live_tab_ids: std::collections::HashSet<u64> =
                         live.tabs().iter().map(|t| t.id).collect();
                     let tree_tab_ids: std::collections::HashSet<u64> =
@@ -3232,6 +3236,7 @@ impl ShellOverlayHost {
                         );
                         live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
                         tab_tiles.insert(tab.id, signature);
+                        membership_changed = true;
                         any_change = true;
                     }
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
@@ -3244,8 +3249,39 @@ impl ShellOverlayHost {
                             // running every frame for the rest of the
                             // session.
                             deferred.remove(stale);
+                            membership_changed = true;
                             any_change = true;
                         }
+                    }
+                    // A group whose tabs this pass rearranged shows what
+                    // the tree says it is showing.
+                    //
+                    // Every splice and detach above moves the bar's own
+                    // active pointer as a side effect — `insert_detached_tab`
+                    // promotes whatever it inserts, `detach_tab` falls back
+                    // to a neighbour — so a group that gained two tabs in
+                    // one pass ends up in front of whichever the walk
+                    // reached last, and one that lost the tab it was
+                    // showing ends up on a neighbour the tree never named.
+                    // Nothing notices, because the per-frame
+                    // `harvest_active_tab_writeback` treats the widget's
+                    // pointer as authoritative and copies that accident
+                    // back into the tree — so a window that a peer, an
+                    // adoption or a drop put in front of a group silently
+                    // loses the front to whatever the reconcile touched
+                    // last, and the tree ends up agreeing.
+                    //
+                    // Gated on the membership actually changing so this
+                    // stays a tree→widget pass over what the pass itself
+                    // disturbed: a tab the user just clicked is a widget
+                    // pointer the tree has not been told about yet, and
+                    // forcing it back here on an unrelated revision bump
+                    // would undo the click.
+                    if membership_changed
+                        && live.active_tab_id() != g.active_tab
+                        && live.set_active_tab(g.active_tab)
+                    {
+                        any_change = true;
                     }
                 }
             }
@@ -3728,6 +3764,19 @@ impl ShellOverlayHost {
             // tree write above already set the strip's active group to
             // `dest_gid`, so the per-frame `scroll_active_group_into_view`
             // pans to the merged window on its own.
+            //
+            // Nothing here has to select the arriving tab either, and
+            // adding a selection would be the wrong reading of the two
+            // lines above. Both halves have already done it:
+            // `WorkspaceTree::move_tab_into_group_at` sets the
+            // destination group's `active_tab` to the tab it inserts,
+            // and `WindowGroup::insert_detached_tab` — reached through
+            // the row merge — makes it the bar's `active_id`. They agree
+            // on purpose, because the per-frame writeback mirrors the
+            // second into the first and would otherwise undo one of
+            // them. `merged_tab_activation_tests` pins it from this
+            // entry point, which is the one the test-control socket's
+            // `merge_tab_into_group` op arrives at.
             tracing::info!(
                 "tab {tab_id} left group {source_gid} for group {dest_gid}, \
                  which now holds {count} tab(s)"
@@ -5517,6 +5566,15 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_maximize_harvest_for_tests(&mut self) {
         self.harvest_pending_maximize_changes();
+    }
+
+    /// Test-only one-shot harvest: runs the per-frame mirror of the
+    /// widget-side `TabBar::active_id` into the persisted tree. Lets a
+    /// test ask what a group is still showing one frame after something
+    /// changed which tabs it holds, without spinning up a render loop.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_active_tab_writeback_for_tests(&mut self) {
+        self.harvest_active_tab_writeback();
     }
 
     /// Test-only one-shot harvest: lets integration tests invoke the
@@ -7788,6 +7846,18 @@ impl Widget for ShellOverlayHost {
         // tree before the resync reads it, or the resync splices the
         // closed window straight back in.
         self.harvest_closed_tabs_into_tree();
+        // And a window the user dropped onto a sibling's tab bar has to
+        // reach the tree before the resync reads it, for the same reason
+        // and with a worse ending. The drop is a widget-side splice; the
+        // resync projects the tree back onto the rows; so a resync that
+        // runs first undoes the drop on screen and, worse, leaves the
+        // dropped group's bar pointing at the tab that was already there.
+        // `harvest_active_tab_writeback` further down this same frame
+        // treats that pointer as authoritative and copies it into the
+        // tree, overwriting the front tab the move had just set — the
+        // window the person dropped in becomes a tab nobody can see, on a
+        // group that goes on showing its old occupant.
+        self.harvest_pending_tab_moves();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Mirror the compositor's live fullscreen state onto the strip rows
         // before the children update, so a promotion/restore is reflected in
@@ -7827,12 +7897,6 @@ impl Widget for ShellOverlayHost {
         // tab order survives a restart and replicates to peers. Same one-shot
         // take-pattern as the group reorder above.
         self.harvest_pending_tab_reorder();
-        // Mirror any in-frame same-strip tab drag (drop a window onto a
-        // sibling group's bar, or into the space between two groups) into
-        // the persisted `WorkspaceTree`. Without it the strip and the tree
-        // disagree about where the window is, and the next resync settles
-        // that by putting it back.
-        self.harvest_pending_tab_moves();
         // Open the palette aimed at the group whose "+" chip was clicked,
         // and retire that aim once the palette is gone. The refresh has
         // to happen here rather than inside the harvest: a picker that
@@ -22016,6 +22080,234 @@ mod roster_row_paint {
             row.name_text.ends_with('\u{2026}'),
             "a name that did not fit must show that it was cut: {:?}",
             row.name_text,
+        );
+    }
+}
+
+#[cfg(test)]
+mod merged_tab_activation_tests {
+    //! What a window shows after another window joins its tab bar.
+    //!
+    //! Dropping a window onto a sibling's tab bar merges the two into
+    //! one group. The window that just arrived is the one the person is
+    //! looking for — they dragged it there — so it has to be the tab in
+    //! front. A group that goes on showing the tab that was already
+    //! there reads on screen as the dropped window vanishing at the
+    //! moment it lands.
+    //!
+    //! Two pointers decide that, and they move independently: the
+    //! widget-side `TabBar::active_id`, which is what `WindowGroup`'s
+    //! `build_layout` / `apply_layout` / `draw` resolve the visible tile
+    //! from, and the persisted `WorkspaceTree`'s `group.active_tab`,
+    //! which is what the search scope, the peers and the test-control
+    //! socket read. Both are asserted here, and asserted again after the
+    //! per-frame writeback that mirrors one into the other — a merge
+    //! that only agreed for one frame is the same bug one tick later.
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    const GROUP_LEFT: GroupId = 4001;
+    const GROUP_RIGHT: GroupId = 4002;
+    const TAB_LEFT: u64 = 0xa1;
+    const TAB_RIGHT: u64 = 0xb2;
+
+    fn stub_group(id: GroupId, tab_id: u64, label: &str) -> StateGroup {
+        StateGroup {
+            id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: label.into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other(label.into()),
+                    label: label.into(),
+                },
+            }],
+            active_tab: tab_id,
+            width: StateWidth::Normal,
+            maximized: false,
+        }
+    }
+
+    /// Two windows side by side on one strip, each its own group with one
+    /// tab — the shape the strip is in just before a drop merges them.
+    fn two_windows_on_one_strip() -> (WorkspaceTree, StripId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let strip = Strip {
+            id: strip_id,
+            name: "Strip".into(),
+            window_groups: vec![
+                stub_group(GROUP_LEFT, TAB_LEFT, "Left"),
+                stub_group(GROUP_RIGHT, TAB_RIGHT, "Right"),
+            ],
+        };
+        let ws = Workspace {
+            owner: None,
+            capabilities: Vec::new(),
+            id: ws_id,
+            room: crate::shell::state::RoomId::new(),
+            name: "Test".into(),
+            strips: vec![strip],
+            collaborators: vec![],
+            shared_surfaces: StdHashMap::new(),
+        };
+        let mut active_strip = StdHashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdHashMap::new();
+        active_group.insert(strip_id, GROUP_LEFT);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        };
+        (tree, strip_id)
+    }
+
+    /// The persisted group's active-tab pointer, read off the live chrome
+    /// the same way the test-control socket serialises it.
+    fn persisted_active_tab(
+        chrome: &crate::shell::chrome_state::Chrome,
+        group_id: GroupId,
+    ) -> Option<u64> {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        tree.workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == group_id)
+            .map(|g| g.active_tab)
+    }
+
+    #[test]
+    fn a_window_that_joins_a_group_is_the_one_the_group_shows() {
+        let (tree, strip_id) = two_windows_on_one_strip();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert_eq!(
+            persisted_active_tab(&chrome, GROUP_LEFT),
+            Some(TAB_LEFT),
+            "precondition: the left window is showing its own only tab",
+        );
+
+        let count = host
+            .merge_tab_into_group(TAB_RIGHT, GROUP_LEFT)
+            .expect("the right window joins the left window's tab bar");
+        assert_eq!(count, 2, "the merged group holds both windows");
+
+        // What the renderer resolves the visible tile from.
+        // `WindowGroup::build_layout`, `apply_layout` and `draw` all pick
+        // the host whose id is `bar.active_id()`, so this is the pointer
+        // that decides what is on screen.
+        let shown = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("the merged group is still the strip's first group")
+            .active_tab_id();
+        assert_eq!(
+            shown, TAB_RIGHT,
+            "the window draws the tab that just joined it, not the one \
+             that was already there",
+        );
+
+        // And what everything outside the widget tree reads.
+        assert_eq!(
+            persisted_active_tab(&chrome, GROUP_LEFT),
+            Some(TAB_RIGHT),
+            "the persisted group points at the tab that just joined",
+        );
+
+        // The per-frame writeback mirrors the widget pointer into the
+        // tree. A merge that set only one of the two would be undone here
+        // on the very next frame.
+        host.tick_active_tab_writeback_for_tests();
+        assert_eq!(
+            persisted_active_tab(&chrome, GROUP_LEFT),
+            Some(TAB_RIGHT),
+            "and it still does on the frame that follows the drop",
+        );
+    }
+
+    /// The other way a group gains a window: not a gesture on this
+    /// machine at all, but the tree growing tabs underneath it — a
+    /// toplevel adopted into a group, or a peer's room arriving with
+    /// windows this machine has never drawn. The widget rows learn about
+    /// those through `resync_strips_from_tree`, which splices each
+    /// missing tab in turn.
+    ///
+    /// Two at once is what separates "the front tab is the one the tree
+    /// named" from "the front tab is whatever was spliced last": every
+    /// splice promotes what it inserts, so a group that gains a pair
+    /// ends up showing the second of them however the tree named the
+    /// first. Nothing catches it afterwards, because the per-frame
+    /// writeback treats the widget pointer as the authority and copies
+    /// the accident back — so the window that was in front silently
+    /// loses it, and the tree ends up agreeing that it did.
+    #[test]
+    fn a_group_the_tree_grows_tabs_under_shows_the_tab_the_tree_named() {
+        const ARRIVED_FIRST: u64 = 0xc3;
+        const ARRIVED_SECOND: u64 = 0xd4;
+
+        let (tree, strip_id) = two_windows_on_one_strip();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        // The tree gains both windows in one go, with the first of them
+        // in front — the arrangement whoever sent it was looking at.
+        {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let group = tree
+                .workspaces
+                .iter_mut()
+                .flat_map(|ws| ws.strips.iter_mut())
+                .flat_map(|s| s.window_groups.iter_mut())
+                .find(|g| g.id == GROUP_LEFT)
+                .expect("the left group");
+            for (id, label) in [
+                (ARRIVED_FIRST, "Arrived first"),
+                (ARRIVED_SECOND, "Arrived second"),
+            ] {
+                group.tabs.push(Tab {
+                    id,
+                    title: label.into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other(label.into()),
+                        label: label.into(),
+                    },
+                });
+            }
+            group.active_tab = ARRIVED_FIRST;
+        }
+        chrome.borrow_mut().bump();
+
+        // A whole production frame, rather than the resync on its own:
+        // the writeback that would launder a wrong answer into the tree
+        // runs later in the same frame, and a test that stopped before
+        // it would pass on a desktop that still ends up wrong.
+        let mut doc = automerge::AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        host.update(&mut doc, &doc_root);
+
+        let shown = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("the left group's widget")
+            .active_tab_id();
+        assert_eq!(
+            shown, ARRIVED_FIRST,
+            "the group draws the window the tree put in front, not \
+             whichever tab the reconcile spliced last",
+        );
+        assert_eq!(
+            persisted_active_tab(&chrome, GROUP_LEFT),
+            Some(ARRIVED_FIRST),
+            "and the frame did not write the other one back over it",
         );
     }
 }
