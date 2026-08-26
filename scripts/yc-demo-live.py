@@ -775,6 +775,17 @@ class Live:
         #: than for a document poll to notice one. Hands-on there is
         #: nobody to set it and the document is asked instead.
         self.typed = threading.Event()
+        #: And this the moment that half stops, however it stopped.
+        #:
+        #: The grace below exists for a person: somebody is at a
+        #: keyboard and the rig cannot know how long a sentence takes
+        #: them. Under `--self-test` there is nobody, and the thread
+        #: that would have done the typing has already reported. Waiting
+        #: two more minutes for it then is not patience, it is waiting
+        #: for an event that has already been decided -- and it turned
+        #: one failed claim into 58% of a film that has to fit in 110
+        #: seconds.
+        self.owner_done = threading.Event()
         #: When the run first had everything the handover needs except
         #: the writing, so waiting for the writing can be bounded rather
         #: than open-ended: a driving half that died leaves this event
@@ -2483,14 +2494,23 @@ class Live:
                     self.asked_if_he_wrote = now
                     written = self.he_has_written() is not None
             if not written:
-                if now <= self.ready_at + HANDOVER_GRACE_S:
+                # The driven half has stopped and did not write. There is
+                # no hand to wait for, so the grace below is waiting on a
+                # question that has already been answered.
+                done = self.args.self_test and self.owner_done.is_set()
+                if not done and now <= self.ready_at + HANDOVER_GRACE_S:
                     return
                 # Handing over anyway rather than sitting here to the
                 # duration cap. A rig that stalls silently at the one
                 # place a take can stall for ever reads exactly like a
                 # rig that has hung, and the beat it is waiting for is
                 # the one nobody can perform on its behalf.
-                yc.gap(f"nothing was written in the document within "
+                yc.gap("the owner's half finished without writing "
+                       "anything in the document, so the film hands over "
+                       "anyway — and the beat it hands over on did not "
+                       "happen"
+                       if done else
+                       f"nothing was written in the document within "
                        f"{HANDOVER_GRACE_S:.0f}s of everything else being "
                        f"ready for it, so the film hands over anyway — and "
                        f"the beat it hands over on did not happen")
@@ -2766,6 +2786,11 @@ def the_owners_half(q, shots: str, live: "Live",
         yc.FAILURES.append(
             f"--self-test: the owner's half stopped at "
             f"{type(exc).__name__}: {exc}")
+    finally:
+        # However it ended -- written, refused or crashed -- there is
+        # nobody left here to type, and the watcher is told so rather
+        # than left waiting out a grace period meant for a person.
+        live.owner_done.set()
 
 
 def _the_owners_half(q, shots: str, live: "Live",
@@ -2997,7 +3022,8 @@ def _the_owners_half(q, shots: str, live: "Live",
     room = live.room or (q.active_workspace() or {}).get("room")
     typed = yc.type_into_the_document(q, wp, yc.SHARED_TEXT,
                                       room=room,
-                                      proof=yc.SHARED_PROOF)
+                                      proof=yc.SHARED_PROOF,
+                                      shots=shots)
     yc.claim("the document was written into", typed, True)
     if typed:
         # The handover waits on this. Set only when the words are on his
