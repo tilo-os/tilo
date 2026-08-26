@@ -194,6 +194,53 @@ impl RedactionLog {
     }
 }
 
+/// What the kernel calls the file a descriptor names, taken when the
+/// connection was accepted so a later delivery can ask whether the
+/// descriptor is still that connection.
+///
+/// A descriptor is a number, and a number can come to mean something
+/// else. Anything in this process that closes one it no longer owns
+/// frees that number for the next `accept` or `open`, and from then on
+/// every write the broker aims at the peer lands in whatever took it.
+/// The write succeeds, so nothing fails, so nothing is evicted and
+/// nothing is said — and the peer stays in the fan-out for the rest of
+/// the session being handed a file it does not own.
+///
+/// The reader thread cannot be the one to notice. A thread blocked in
+/// `read` on a descriptor substituted out from under it goes on waiting
+/// on whatever took the number, never returns, and so never runs the
+/// exit accounting that is otherwise the broker's only account of a
+/// connection ending.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+impl std::fmt::Debug for FileIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.dev, self.ino)
+    }
+}
+
+/// Ask the kernel which file `fd` names right now. `None` when it
+/// cannot be stat'ed at all, which is itself a change worth reporting
+/// rather than a reason to skip the question.
+fn file_identity<F: std::os::fd::AsRawFd>(fd: &F) -> Option<FileIdentity> {
+    // SAFETY: `fstat` writes `st` in full on success and touches
+    // nothing else; `fd` is borrowed live for the duration of the call.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstat(fd.as_raw_fd(), &mut st) != 0 {
+            return None;
+        }
+        Some(FileIdentity {
+            dev: st.st_dev as u64,
+            ino: st.st_ino as u64,
+        })
+    }
+}
+
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
     /// Stable id assigned at accept time. Identifies the *connection*
@@ -210,6 +257,11 @@ struct Peer {
     /// Write side of the connected stream. The read side is owned by
     /// the per-peer reader thread.
     writer: Mutex<UnixStream>,
+    /// Which file [`Self::writer`] named when this connection was
+    /// accepted. Checked before every delivery — see [`FileIdentity`]
+    /// for what goes wrong when it stops matching, and why the reader
+    /// thread is in no position to say so.
+    accepted_on: Option<FileIdentity>,
     /// The route this connection announced on its
     /// `CollabRequest::Hello`. Both the delivery filter and the stamp
     /// the libp2p bridge puts on outbound `NeighbourMsg`s. `None`
@@ -228,6 +280,36 @@ impl Peer {
     /// One input to [`LocalIdentity::resolve`], and the weakest one.
     fn announced_handle(&self) -> Option<String> {
         self.handle.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Write one frame to this connection, refusing to write into a
+    /// descriptor that is no longer it.
+    ///
+    /// The check is the whole of why this is a method rather than a
+    /// call to [`write_frame_to`]. A write that *fails* is already an
+    /// eviction with a reason on it; a write that succeeds into the
+    /// wrong file is the one the broker had no way to see, and the
+    /// error returned here puts it on the same footing as any other
+    /// failed delivery: the caller evicts the peer and records why.
+    fn deliver(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|_| std::io::Error::other("writer mutex poisoned"))?;
+        if let Some(accepted) = self.accepted_on {
+            let now = file_identity(&*guard);
+            if now != Some(accepted) {
+                return Err(std::io::Error::other(format!(
+                    "its write descriptor no longer names the connection it was \
+                     accepted on (accepted {accepted:?}, now {})",
+                    match now {
+                        Some(id) => format!("{id:?}"),
+                        None => "nothing this process holds".to_string(),
+                    },
+                )));
+            }
+        }
+        write_frame_to(&mut guard, bytes)
     }
 }
 
@@ -1216,7 +1298,7 @@ impl PeerTable {
             if !route.delivers_to(&peer_route) {
                 continue;
             }
-            match write_frame(&peer.writer, &bytes) {
+            match peer.deliver(&bytes) {
                 Ok(()) => delivered += 1,
                 // Collected rather than evicted here: `remove_because`
                 // takes the registry lock, and taking it inside the loop
@@ -1295,7 +1377,7 @@ impl PeerTable {
         };
         let target = self.snapshot().into_iter().find(|p| p.id == peer_id);
         if let Some(peer) = target {
-            if let Err(e) = write_frame(&peer.writer, &bytes) {
+            if let Err(e) = peer.deliver(&bytes) {
                 self.remove_because(
                     &peer,
                     format!("a message addressed to it alone failed to send: {e}"),
@@ -1426,13 +1508,16 @@ fn read_frame(s: &mut UnixStream) -> Result<Vec<u8>, FrameEnd> {
 
 /// Write one length-prefixed frame. Errors propagate so the caller can
 /// evict the peer from the fan-out table.
-fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> {
-    let mut guard = writer
-        .lock()
-        .map_err(|_| std::io::Error::other("writer mutex poisoned"))?;
+///
+/// Takes the stream rather than the `Mutex` around it because the
+/// descriptor check in [`Peer::deliver`] has to happen under the same
+/// lock as the write it guards: a check that released the lock first
+/// would be answering about a descriptor that could be replaced before
+/// the write reached it.
+fn write_frame_to(stream: &mut UnixStream, bytes: &[u8]) -> std::io::Result<()> {
     let len = bytes.len() as u32;
-    guard.write_all(&len.to_le_bytes())?;
-    guard.write_all(bytes)?;
+    stream.write_all(&len.to_le_bytes())?;
+    stream.write_all(bytes)?;
     Ok(())
 }
 
@@ -2059,7 +2144,7 @@ fn reader_loop(
                         bytes,
                     };
                     if let Ok(json) = serde_json::to_vec(&evt) {
-                        let _ = write_frame(&peer.writer, &json);
+                        let _ = peer.deliver(&json);
                     }
                 } else {
                     publisher.want_blob(route, Transport::Json, hash);
@@ -2453,6 +2538,23 @@ impl BrokerHandle {
     /// to wait for the listener to register everyone before sending.
     pub fn peer_count(&self) -> usize {
         self.peers.peers.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// What each connected peer was accepted on, by connection id.
+    ///
+    /// A test seam, and a narrow one: the two descriptors the broker
+    /// takes for a connection are taken inside the listener thread and
+    /// are deliberately not reachable from anywhere else. The one test
+    /// that has to substitute them needs a way to find them among every
+    /// other descriptor the process holds, and the socket they name is
+    /// that way.
+    #[cfg(test)]
+    pub(crate) fn peers_accepted_on(&self) -> Vec<(u64, Option<FileIdentity>)> {
+        self.peers
+            .snapshot()
+            .into_iter()
+            .map(|p| (p.id, p.accepted_on))
+            .collect()
     }
 
     /// How many connected peers have announced a route (i.e. have
@@ -2875,11 +2977,13 @@ fn spawn_inner(
                                 continue;
                             }
                         };
+                        let accepted_on = file_identity(&writer);
                         let peer = Arc::new(Peer {
                             id,
                             handle: Mutex::new(None),
                             writer: Mutex::new(writer),
                             route: Mutex::new(None),
+                            accepted_on,
                         });
                         listener_table.insert(Arc::clone(&peer));
                         tracing::info!(
@@ -5498,6 +5602,209 @@ mod tests {
             departures[1].reason,
         );
 
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
+    }
+
+    /// Every descriptor this process holds that names a socket.
+    ///
+    /// Read out of `/proc/self/fd` because the numbers are what the
+    /// substitution needs and the kernel is the only thing that knows
+    /// them: the broker takes its two inside its own listener thread
+    /// and keeps no note of which numbers they were.
+    fn open_socket_fds() -> std::collections::BTreeMap<i32, String> {
+        let mut out = std::collections::BTreeMap::new();
+        let Ok(dir) = std::fs::read_dir("/proc/self/fd") else {
+            return out;
+        };
+        for entry in dir.flatten() {
+            let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            let Ok(link) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            let name = link.to_string_lossy().into_owned();
+            if name.starts_with("socket:") {
+                out.insert(fd, name);
+            }
+        }
+        out
+    }
+
+    /// A connection can stop being a connection without either end
+    /// saying so.
+    ///
+    /// The broker takes two descriptors per peer — the read half its
+    /// reader thread blocks on, and the write half's clone — and closes
+    /// neither until the connection ends. Anything *else* in the
+    /// process that closes a descriptor it no longer owns frees that
+    /// number for the next `accept` or `open`, and from then on every
+    /// write the fan-out aims at the peer lands in whatever took it.
+    ///
+    /// What made that invisible is that such a write *succeeds*. The
+    /// broker's only account of a connection ending came from a failed
+    /// write or from the reader thread, and neither happens here: the
+    /// reader is blocked on a descriptor that was substituted out from
+    /// under it and never returns. So the peer stayed in the fan-out for
+    /// the rest of the session, counted as delivered to on every event,
+    /// while the application on the far end received nothing at all and
+    /// no line anywhere said why.
+    ///
+    /// Forced rather than raced. The substitution is performed directly
+    /// on the descriptors the accept produced, so the ordering under
+    /// test is the one this runs every time — a version that waited for
+    /// the race to happen on its own would pass on the runs where it
+    /// did not.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_whose_descriptor_was_taken_away_leaves_the_fan_out() {
+        use std::os::fd::AsRawFd;
+
+        let socket_path = temp_sock("descriptor-substitution");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut client = UnixStream::connect(&socket_path).expect("client connects");
+        // Announced with no app id: the room-wide mode, where every
+        // app's state in the room is addressed to this connection. It is
+        // what a participant without a window of its own announces, and
+        // it is the connection this was found on.
+        let hello = serde_json::to_vec(&CollabRequest::Hello {
+            app_id: String::new(),
+            cluster_id: TEST_CLUSTER.parse().expect("a valid cluster uuid"),
+            record: None,
+            handle: Some("a participant with no window".to_string()),
+        })
+        .expect("serialize hello");
+        client
+            .write_all(&(hello.len() as u32).to_le_bytes())
+            .expect("write hello length");
+        client.write_all(&hello).expect("write hello");
+        wait_for_announced(&handle, 1, Duration::from_secs(2));
+        assert_eq!(
+            handle.announced_peer_count(),
+            1,
+            "the connection has to be in the fan-out before it can be taken out of it",
+        );
+
+        // The two the accept produced. Found by the socket they name
+        // rather than by diffing the descriptors this process holds:
+        // the rest of the suite opens sockets of its own while this
+        // runs, and a diff would pick those up too.
+        let accepted = handle.peers_accepted_on();
+        assert_eq!(
+            accepted.len(),
+            1,
+            "one connection, one entry in the fan-out, got {accepted:?}",
+        );
+        let ino = accepted[0]
+            .1
+            .expect("the broker records the file it accepted a connection on")
+            .ino;
+        let ours = client.as_raw_fd();
+        let named = format!("socket:[{ino}]");
+        let fresh: Vec<(i32, String)> = open_socket_fds()
+            .into_iter()
+            .filter(|(fd, name)| *fd != ours && *name == named)
+            .collect();
+        assert_eq!(
+            fresh.len(),
+            2,
+            "an accept and its clone are the two descriptors the broker takes \
+             for one connection, got {fresh:?}",
+        );
+
+        // Take them away. What goes in their place has to be a socket
+        // that accepts everything written to it, because the point is
+        // that nothing fails: a replacement that refused the write, or
+        // filled up and blocked, would evict the peer for an ordinary
+        // reason and prove nothing at all. So the far end is drained by
+        // a thread of this test for as long as the substitution lasts.
+        let (keep, spare) = UnixStream::pair().expect("a socket to put in their place");
+        let stop = Arc::new(AtomicBool::new(false));
+        let drain_stop = Arc::clone(&stop);
+        let mut drain = keep.try_clone().expect("a handle to drain the replacement");
+        drain
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("a bounded read");
+        let drainer = std::thread::spawn(move || {
+            let mut sink = [0u8; 4096];
+            while !drain_stop.load(Ordering::Relaxed) {
+                if let Ok(0) = drain.read(&mut sink) {
+                    break;
+                }
+            }
+        });
+        for (fd, _) in &fresh {
+            // SAFETY: `fd` is a live descriptor number in this process
+            // and `spare` outlives the call.
+            let rc = unsafe { libc::dup2(spare.as_raw_fd(), *fd) };
+            assert_ne!(rc, -1, "substituting the descriptor is the whole test");
+        }
+
+        // Anything sent from here reaches the replacement, not the
+        // client — which is the harm, and it is silent.
+        let route = CrdtRoute::app("dev.qos.notes", TEST_CLUSTER);
+        handle.fanout_event(
+            &CollabEvent::CRDTIncremental {
+                data: b"addressed to a connection the broker no longer holds".to_vec(),
+            },
+            None,
+            &route,
+        );
+        client
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .expect("a bounded read");
+        let mut sink = [0u8; 4096];
+        loop {
+            match client.read(&mut sink) {
+                // Whatever the broker said before the substitution is
+                // still in the buffer; it is what comes after that this
+                // is about.
+                Ok(n) if n > 0 => continue,
+                _ => break,
+            }
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && handle.peer_count() > 0 {
+            handle.fanout_event(
+                &CollabEvent::CRDTIncremental {
+                    data: b"addressed to a connection the broker no longer holds".to_vec(),
+                },
+                None,
+                &route,
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            handle.peer_count(),
+            0,
+            "a peer the broker can no longer reach has to leave the fan-out, \
+             or every event after this is counted as delivered to a socket \
+             nobody is on the other end of",
+        );
+        let departures = handle.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "a connection stopped being reachable and nothing recorded it, \
+             got {departures:?}",
+        );
+        assert!(
+            departures[0]
+                .reason
+                .contains("no longer names the connection"),
+            "the record has to say that the descriptor stopped being the \
+             connection, not merely that a write failed, got {:?}",
+            departures[0].reason,
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        drop(spare);
+        drop(keep);
+        let _ = drainer.join();
         let _ = std::fs::remove_file(&socket_path);
         drop(handle);
     }
