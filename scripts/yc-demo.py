@@ -8628,6 +8628,17 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         if active_tab_surface(quinten, merged["id"]) != int(wp["surface_id"]):
             note("the document is not the tab in front after the merge, so "
                  "the beat after this one will type into whatever is")
+        # Which tab is drawn and which window has the keys are two
+        # different things, and only the second decides where a sentence
+        # goes. Bringing the document's tab to the front left it visible
+        # and unfocused: the next beat typed into the window beside it and
+        # waited nearly two minutes for words to appear in a document that
+        # was never being typed into -- twice, the second time after a fix
+        # that moved only the drawn tab and reported success.
+        if not jump_to_group(quinten, wp):
+            note("the strip's focus did not reach the document, so the "
+                 "sentence the next beat types will go to whatever holds "
+                 "the keys")
 
 
 
