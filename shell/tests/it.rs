@@ -90,6 +90,8 @@ mod maximize_persist_wireup_test;
 mod nirios_e2e_test;
 #[path = "nvenc_hardware_encode.rs"]
 mod nvenc_hardware_encode;
+#[path = "opening_configure_carries_the_tab_size.rs"]
+mod opening_configure_carries_the_tab_size;
 #[path = "participant_names.rs"]
 mod participant_names;
 #[path = "peer_join_toast_batches.rs"]
@@ -122,6 +124,8 @@ mod remote_cursors_test;
 mod sandbox_check;
 #[path = "scrollback_pipeline.rs"]
 mod scrollback_pipeline;
+#[path = "server_side_decorations.rs"]
+mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
 mod session_lock_e2e;
 #[path = "shell_chrome_test.rs"]
