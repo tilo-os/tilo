@@ -8,9 +8,8 @@
 //! preceding `CursorMoved` misses the row and the folder never opens. These
 //! tests drive the real widget through a rebuild between the two clicks and
 //! prove the second click still opens the folder.
-
-mod common;
-use common::{row_center, Harness};
+use crate::common;
+use crate::common::{row_center, Harness};
 
 /// A temp dir containing a single folder (row 0) plus a file.
 fn dir_with_folder() -> (tempfile::TempDir, std::path::PathBuf) {

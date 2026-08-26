@@ -1,8 +1,7 @@
 //! pin / unpin flip a package's `Pinning` state and persist across
 //! store re-opens.
 
-mod common;
-
+use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;

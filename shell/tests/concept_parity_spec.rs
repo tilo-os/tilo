@@ -86,8 +86,6 @@ use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
 
-mod support;
-
 // ===========================================================================
 // Shared helpers
 // ===========================================================================

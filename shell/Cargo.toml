@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "shell"
 version = "0.1.0"
 edition = "2024"
@@ -341,3 +343,7 @@ naga = { version = "29", features = ["wgsl-in"] }
 [[bin]]
 name = "qos-control"
 path = "src/bin/qos-control.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "qdoc"
 version = "0.1.0"
 edition = "2024"
@@ -16,3 +18,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

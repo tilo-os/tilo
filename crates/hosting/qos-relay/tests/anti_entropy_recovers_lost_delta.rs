@@ -18,8 +18,7 @@
 //! (identical `get_heads()`), on the real `Relay` / `RelayClient` path,
 //! no mocks of the host.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -27,7 +26,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient, reconcile};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
