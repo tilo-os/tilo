@@ -14,13 +14,36 @@
  * links, or a vendored dependency. Inference has already been tried and
  * it does not narrow far enough. This names the caller.
  *
+ * WHAT THIS CANNOT SEE
+ * --------------------
+ * LD_PRELOAD interposes calls that go through libc. `rustix`, with its
+ * default `linux_raw` backend, issues the syscall instruction directly
+ * and never touches libc — and rustix is what smithay, calloop and the
+ * wayland stack use for descriptor handling, which is most of the
+ * compositor's. So a clean run here does NOT mean nothing closed a
+ * descriptor it did not own; it means nothing on the libc path did.
+ *
+ * Closing that gap needs no new tools and no source change. rustix's own
+ * build script honours an end-user escape hatch:
+ *
+ *     RUSTFLAGS=--cfg=rustix_use_libc cargo build --profile demo -p shell
+ *
+ * which routes every rustix syscall through libc, where this can see it.
+ * It changes the sccache key, so expect a full rebuild, and it is a
+ * diagnostic build rather than the one to ship. Until a run has been
+ * traced that way, treat a silent log as "not proven" rather than
+ * "clean".
+ *
  * Interposes close(2), dup2(2), dup3(2) and close_range(2) — the four
  * ways a descriptor number stops meaning what it meant — and for each
  * records:
  *
- *   - whether the descriptor being destroyed was open at all. A close of
- *     a descriptor that is already closed is the smoking gun: it is the
- *     only one of these that is unambiguously a bug.
+ *   - whether the descriptor being destroyed was open at all. A *close*
+ *     of a descriptor that is already closed is the smoking gun — it is
+ *     the only one of these that is unambiguously a bug — and those
+ *     lines carry the token `DOUBLE-CLOSE`, which is what to grep for.
+ *     A `dup2` onto a free number is not that; it is ordinary fd
+ *     placement, and it is not reported unless QOS_FDWATCH_ALL is set.
  *   - what it named, when it was open: dev:ino, its kind, and for a
  *     socket its address family. The broker's peers are AF_UNIX sockets,
  *     so a close of one from a library with no business holding sockets
@@ -187,7 +210,7 @@ static void describe(int fd, char *out, size_t cap, int *was_open, int *is_socke
     *is_socket = 0;
 
     if (fcntl(fd, F_GETFD) == -1) {
-        snprintf(out, cap, "was-not-open");
+        snprintf(out, cap, "not-open");
         return;
     }
     *was_open = 1;
@@ -253,15 +276,23 @@ static void record(const char *op, int doomed, int source, void *caller)
     }
     inside = 1;
 
+    /* dup2 and dup3 name a source as well; a plain close does not. */
+    const int displacing = source >= 0;
+
     char what[192];
     int was_open = 0;
     int is_socket = 0;
     describe(doomed, what, sizeof what, &was_open, &is_socket);
 
-    /* The default is not a firehose: a descriptor that was already
-       closed, or one that names a socket. Everything else is ordinary
-       housekeeping and there is a great deal of it. */
-    if (record_everything || !was_open || is_socket) {
+    /* The default is not a firehose. Two things are worth a line: a
+       *close* of a descriptor that was not open, which is unambiguously
+       a bug, and anything at all happening to a socket, which is what
+       the broker's peers are. A dup2 onto a free number is neither — it
+       is how every fd handoff in the launcher works, and reporting it as
+       though a descriptor had been lost is worse than not reporting it,
+       because it fills the log with false alarms. */
+    const int double_close = !displacing && !was_open;
+    if (record_everything || double_close || is_socket) {
         dump_maps_once();
 
         char who[512];
@@ -269,16 +300,16 @@ static void record(const char *op, int doomed, int source, void *caller)
 
         char line[1024];
         int n;
-        if (source >= 0) {
+        if (displacing) {
             n = snprintf(line, sizeof line,
                          "fdwatch pid=%d tid=%ld %s source=%d target=%d %s from %s\n",
                          (int) getpid(), (long) syscall(SYS_gettid), op, source,
                          doomed, what, who);
         } else {
             n = snprintf(line, sizeof line,
-                         "fdwatch pid=%d tid=%ld %s fd=%d %s from %s\n",
+                         "fdwatch pid=%d tid=%ld %s fd=%d %s%s from %s\n",
                          (int) getpid(), (long) syscall(SYS_gettid), op, doomed,
-                         what, who);
+                         what, double_close ? " DOUBLE-CLOSE" : "", who);
         }
         if (n > 0) {
             size_t len = (size_t) n < sizeof line ? (size_t) n : sizeof line - 1;

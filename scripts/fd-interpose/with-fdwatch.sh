@@ -14,11 +14,21 @@
 #   export QOS_FDWATCH=1 QOS_FDWATCH_LOG=$PWD/target/fdwatch-%p.log
 #   scripts/yc-demo-live.py …
 #
-# Afterwards, the file with a `was-not-open` line in it is the process
+# Afterwards, the file with a `DOUBLE-CLOSE` line in it is the process
 # that closed a descriptor it did not own, and the `from` on that line
 # names the object and offset. `addr2line -e <object> <offset>` finishes
 # the job; the maps dump at the top of the file covers the case where
 # dladdr could not.
+#
+# A silent log is NOT the same as a clean one. This sees only what goes
+# through libc, and rustix — which is what smithay, calloop and the
+# wayland stack use — bypasses libc entirely by default. To make a
+# negative result mean something, build the binary under test with
+#
+#   RUSTFLAGS=--cfg=rustix_use_libc cargo build --profile demo -p shell
+#
+# which routes rustix through libc. Full rebuild, diagnostic build only.
+# See the note at the top of fdwatch.c.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
