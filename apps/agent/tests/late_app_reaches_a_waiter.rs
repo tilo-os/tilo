@@ -20,6 +20,12 @@
 //! app — a connected fd, handed over by number. Nothing is stubbed and no
 //! event is handed to anyone directly: what each app learns, it learns off
 //! the socket.
+//!
+//! The two run one at a time. An app takes its room and its socket out of the
+//! environment, which is process-wide, so two of these overlapping would each
+//! be reading the other's room between setting a variable and the constructor
+//! that reads it -- and a room the participants disagree about is the failure
+//! this is trying to detect.
 
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -171,6 +177,7 @@ const WITHIN: Duration = Duration::from_secs(20);
 /// asked and volunteered nothing, so a participant that had already asked,
 /// and had been answered by an emptier room, stayed with that answer.
 #[test]
+#[serial_test::serial]
 fn the_app_already_here_receives_what_a_later_one_brought() {
     let room = room();
     // Deliberately empty: the point is what it *gains*, and an app that
@@ -203,6 +210,7 @@ fn the_app_already_here_receives_what_a_later_one_brought() {
 /// A run where both fail is a broken harness rather than a defect, and the
 /// two are indistinguishable from the test above on its own.
 #[test]
+#[serial_test::serial]
 fn the_app_that_starts_second_receives_what_was_already_here() {
     let room = room();
     let early_file = "/early/harbour.png";
