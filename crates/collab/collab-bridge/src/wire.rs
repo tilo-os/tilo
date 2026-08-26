@@ -107,6 +107,31 @@ pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
+    /// Whether this member is an agent rather than a person.
+    ///
+    /// The room already knows — an agent is admitted as one, and
+    /// `RosterRow::is_agent` records it. This projection dropped it, so
+    /// anything downstream that needed to tell an agent from a person
+    /// had to read the id and hope.
+    ///
+    /// Defaulted on the wire so an older peer that omits the field reads
+    /// as a person: a peer wrongly shown as a person is a smaller lie
+    /// than a roster that will not load.
+    #[serde(default)]
+    pub is_agent: bool,
+    /// Whether this row is the receiving machine's own participant.
+    ///
+    /// An application cannot work it out for itself. `id` is the address
+    /// *other* machines use for a participant, and a machine never
+    /// announces its own participant to its own applications — so the
+    /// only local identity available was a different string for the same
+    /// person, and anything asking "am I the one addressed here"
+    /// compared two ids that were never going to match.
+    ///
+    /// Defaulted on the wire, so a peer that predates it reads as
+    /// somebody else — which is what every row was before this existed.
+    #[serde(default)]
+    pub is_self: bool,
 }
 
 // ---- PresenceKey mirror -------------------------------------------------
@@ -129,6 +154,19 @@ pub enum PresenceKey {
     Tab { id: String },
     Workspace { id: String },
     App { app: AppKind, sub: String },
+    /// A participant's broadcast view subset, as its postcard encoding.
+    /// Opaque here — the bridge only routes it.
+    View { data: Vec<u8> },
+    /// A pointer position together with the space it was measured in.
+    Pointer { space: PointerSpace },
+}
+
+/// Postcard mirror of `ui::presence::PointerSpace`. Same ordinal rule as
+/// [`AppKind`]: variant order must match upstream byte-for-byte.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum PointerSpace {
+    Desktop { room: String },
+    Surface { surface: String },
 }
 
 /// Postcard mirror of `ui::permissions::AppKind`. Postcard tags enum
