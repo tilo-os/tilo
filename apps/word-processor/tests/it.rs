@@ -6,3 +6,5 @@ mod e2e_docx;
 mod e2e_html;
 #[path = "e2e_odt.rs"]
 mod e2e_odt;
+#[path = "two_sessions_one_document.rs"]
+mod two_sessions_one_document;
