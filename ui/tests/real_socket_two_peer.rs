@@ -51,6 +51,7 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn real_socket_fans_out_incremental_and_presence() {
     // 1. Choose a per-pid temp socket path so parallel test runs
     //    (or an abandoned previous run) don't collide.

@@ -25,6 +25,7 @@ use ui::collaboration::{
 use ui::presence::PresenceKey;
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn n_peer_fanout_and_per_peer_attribution() {
     let socket_path = std::env::temp_dir()
         .join(format!("quick-collab-n-{}.sock", std::process::id()));

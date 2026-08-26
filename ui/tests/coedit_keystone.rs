@@ -349,6 +349,7 @@ fn poll_until<T>(
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     let (mut a, mut b, sock) = two_peers("render");
 
@@ -441,6 +442,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn remote_caret_presence_round_trips_both_ways() {
     let (mut a, mut b, sock) = two_peers("presence");
 
@@ -572,6 +574,7 @@ fn sign_delta(
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn signed_edit_is_permission_gated() {
     // One channel owner underwrites two members: a writer (Editor) and a
     // viewer (Viewer, no write capability). Both target the same Note
