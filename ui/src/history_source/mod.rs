@@ -51,11 +51,23 @@ use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
 pub mod groups;
+pub mod revert;
+pub mod run_undo;
+pub mod runs;
 pub use authors::{
     actor_handle, local_identity_author, short_id, stable_hue, AuthorDirectory, UNKNOWN_AUTHOR_NAME,
 };
 pub use groups::{
     clear_name, close_range, is_group_marker, name_range, read_named_ranges, GROUPS_KEY,
+};
+pub use revert::{
+    latest_run_by, plan_revert, revert_run, ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot,
+};
+pub use run_undo::{
+    refuse_run, undo_run, undo_step, unreachable_steps, RunUndoReport, StepOutcome, StepState,
+};
+pub use runs::{
+    forget_run, is_run_marker, read_runs, record_run, run_starting_at, AgentRun, RunStep, RUNS_KEY,
 };
 
 /// Default ceiling on how many of the most recent versions are turned into
@@ -178,13 +190,17 @@ impl HistorySource {
                 continue;
             }
 
-            // Naming a version is a change like any other, but it is not a row:
-            // the name is already on screen as the band's title, and a "1 field"
-            // row directly under the band it named says nothing. The check runs
-            // only for changes that described nothing else, so the common path
-            // pays no extra diff.
-            if summary == NO_VISIBLE_CHANGE && groups::is_group_marker(&doc.diff(&before, &after)) {
-                continue;
+            // Naming a version — or recording a cross-application run — is a
+            // change like any other, but it is not a row: the name is already
+            // on screen as the band's title, and a "1 field" row directly under
+            // the band it named says nothing. The check runs only for changes
+            // that described nothing else, so the common path pays no extra
+            // diff.
+            if summary == NO_VISIBLE_CHANGE {
+                let patches = doc.diff(&before, &after);
+                if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
+                    continue;
+                }
             }
 
             out.push(HistoryEntry {
@@ -419,10 +435,10 @@ fn patch_summary(
     after: &[ChangeHash],
 ) -> (String, OpClass, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
-    // A change that only named a version reports as nothing visible; the caller
-    // recognises that and drops the row rather than showing "1 field" under the
-    // band the name just created.
-    if groups::is_group_marker(&patches) {
+    // A change that only named a version, or recorded a run, reports as nothing
+    // visible; the caller recognises that and drops the row rather than showing
+    // "1 field" under the band the name just created.
+    if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
         return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
     }
     let mut inserted = 0usize;
