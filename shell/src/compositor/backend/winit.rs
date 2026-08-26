@@ -24,7 +24,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
+// `ui::gpu`'s context, not `vello::util`'s: this backend's window is one
+// client sharing an integrated GPU with every other qOS process, so it
+// needs the same memory hint every other consumer asks for — see the
+// header of `ui/src/gpu.rs`.
+use ui::gpu::RenderContext;
+use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -317,6 +322,12 @@ impl Presenter for WinitPresenter {
 }
 
 impl Backend for WinitBackend {
+    /// The host session draws the pointer over this window, so the
+    /// compositor must not paint a second one into the scene.
+    fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
     /// Inline presentation. Only reached when [`Backend::take_presenter`]
     /// was not called (or already handed the render state away) — the
     /// compositor normally submits through the render thread instead.
