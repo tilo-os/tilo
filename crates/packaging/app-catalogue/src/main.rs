@@ -15,7 +15,26 @@
 //! launch, and non-zero with a single plain-English line on stderr
 //! otherwise. That line is what a caller shows a user, so it is
 //! written to be read by one.
+//!
+//! ## What `install` says while it works
+//!
+//! An install is seconds long, and a caller with a person waiting on it
+//! has to be able to say how far along it is. So it narrates on stdout,
+//! one flushed line at a time:
+//!
+//! ```text
+//! progress <received-bytes> <total-bytes|->
+//! phase unpacking
+//! installed <package-id> <version>
+//! ```
+//!
+//! `-` for the total means the registry declared no `Content-Length`;
+//! the caller shows an indeterminate indication rather than a fraction.
+//! A reader that only cares about the exit status can ignore all of it.
 
+use std::io::Write;
+
+use app_catalogue::install::DownloadProgress;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -83,7 +102,25 @@ fn list(json: bool) {
 }
 
 fn install(package_id: &str) {
-    match app_catalogue::install::install(package_id) {
+    // Flushed as it happens — the caller is a process watching a pipe, and a
+    // fetch that only spoke when it finished is a fetch nobody can show. The
+    // final `installed` line stays the last word either way, so a caller that
+    // reads nothing but the exit status is unaffected.
+    let mut announced_unpacking = false;
+    let mut on_progress = |p: DownloadProgress| {
+        match p.total {
+            Some(total) => println!("progress {} {}", p.received, total),
+            None => println!("progress {} -", p.received),
+        }
+        // The last report is the whole file being on disk, which is where
+        // verification and extraction start.
+        if !announced_unpacking && matches!(p.total, Some(t) if t == p.received) {
+            announced_unpacking = true;
+            println!("phase unpacking");
+        }
+        let _ = std::io::stdout().flush();
+    };
+    match app_catalogue::install::install_reporting(package_id, &mut on_progress) {
         Ok(app) => {
             println!("installed {} {}", app.package_id, app.version);
         }
