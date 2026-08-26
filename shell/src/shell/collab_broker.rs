@@ -1198,6 +1198,18 @@ const PEER_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 /// defect it was written to fix, in the thing doing the fixing.
 const SWEEP_HEARTBEAT: Duration = Duration::from_secs(30);
 
+/// How often a thread that is *not* the sweep checks that the sweep is
+/// still taking passes.
+///
+/// The heartbeat says the sweep is alive, and says nothing when it is
+/// not — which is the same silence as a sweep with nothing to watch, and
+/// exactly the ambiguity the heartbeat was added to remove. Something
+/// else has to notice, and it has to be somewhere already proven to
+/// survive: in the session this was written for, the drain thread went
+/// on logging for thirty-five minutes after everything else in the
+/// broker had gone quiet.
+const SWEEP_WATCHDOG: Duration = Duration::from_secs(30);
+
 /// How long the sweep thread sleeps between looks at its quit flag, so
 /// that dropping a broker does not wait out a whole
 /// [`PEER_SWEEP_INTERVAL`]. Matches the drain thread's cadence.
@@ -1282,6 +1294,14 @@ pub struct PeerTable {
     /// "looked and found nothing" from "never looked", which no amount of
     /// log-reading could.
     sweeps_completed: AtomicU64,
+    /// What [`PeerTable::sweeps_completed`] read the last time anything
+    /// checked, so a watcher can tell a sweep that is idle from one that
+    /// has stopped.
+    sweep_watch_last: AtomicU64,
+    /// Whether the sweep having stalled has already been said. It does
+    /// not un-stall, and a line every thirty seconds for the rest of a
+    /// session buries the one that mattered.
+    sweep_stall_reported: AtomicBool,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -1346,6 +1366,8 @@ impl PeerTable {
             app_actions: Mutex::new(None),
             table_loss_reported: AtomicBool::new(false),
             sweeps_completed: AtomicU64::new(0),
+            sweep_watch_last: AtomicU64::new(0),
+            sweep_stall_reported: AtomicBool::new(false),
         }
     }
 
@@ -1538,6 +1560,38 @@ impl PeerTable {
         }
         self.sweeps_completed.fetch_add(1, Ordering::Relaxed);
         examined
+    }
+
+    /// Whether the sweep has taken a pass since this was last asked, and
+    /// a complaint on the log if it has not.
+    ///
+    /// Called from a thread that is not the sweep, because a stuck
+    /// watcher cannot report itself — that is the whole failure this
+    /// exists for. Returns whether the sweep is advancing, so a caller
+    /// (and a test) can act on it rather than only read about it.
+    pub(crate) fn check_the_sweep_is_alive(&self) -> bool {
+        let now = self.sweeps_completed();
+        let before = self.sweep_watch_last.swap(now, Ordering::Relaxed);
+        if now != before {
+            // Moving again after a stall is worth hearing about too.
+            if self.sweep_stall_reported.swap(false, Ordering::Relaxed) {
+                tracing::info!(
+                    passes = now,
+                    "collab_broker: the peer-liveness sweep is taking passes again"
+                );
+            }
+            return true;
+        }
+        if !self.sweep_stall_reported.swap(true, Ordering::Relaxed) {
+            tracing::error!(
+                passes = now,
+                "collab_broker: the peer-liveness sweep has stopped taking passes — \
+                 it is blocked or gone. Nothing is now watching for connections that \
+                 end while no traffic is addressed to them, which is the failure the \
+                 sweep exists to catch"
+            );
+        }
+        false
     }
 
     /// How many sweeps have finished since this broker started.
@@ -3446,13 +3500,19 @@ fn spawn_inner(
                 since_last_sweep = Duration::ZERO;
                 let examined = sweep_table.account_for_lost_peers();
                 since_heartbeat += PEER_SWEEP_INTERVAL;
-                // Only while there is something to watch: a session with
-                // no connections has nothing to be silent about.
-                if examined > 0 && since_heartbeat >= SWEEP_HEARTBEAT {
+                if since_heartbeat >= SWEEP_HEARTBEAT {
                     since_heartbeat = Duration::ZERO;
+                    // Unconditional, including when there is nothing
+                    // connected. This used to fire only while a peer was
+                    // in the table, which meant a sweep watching an empty
+                    // room and a sweep that had stopped produced the same
+                    // silence — the exact ambiguity the heartbeat was
+                    // added to remove, reintroduced by the condition that
+                    // was meant to keep it quiet. The count says which.
                     tracing::info!(
                         connections = examined,
-                        "collab_broker: still watching; every connection reachable"
+                        passes = sweep_table.sweeps_completed(),
+                        "collab_broker: still watching"
                     );
                 }
             }
@@ -3514,7 +3574,17 @@ fn spawn_inner(
                     // name that changes still lands promptly.
                     let mut labels: std::collections::HashMap<String, (Instant, PeerLabels)> =
                         std::collections::HashMap::new();
+                    // The sweep cannot report its own stall. This thread
+                    // can: it is the one that went on running for
+                    // thirty-five minutes after the broker had otherwise
+                    // gone quiet, in the session that made this
+                    // necessary.
+                    let mut sweep_checked_at = Instant::now();
                     while !quit.load(Ordering::Relaxed) {
+                        if sweep_checked_at.elapsed() >= SWEEP_WATCHDOG {
+                            sweep_checked_at = Instant::now();
+                            drain_table.check_the_sweep_is_alive();
+                        }
                         // Drain inbound unsigned CRDT increments.
                         let drained: Vec<_> = {
                             let mut buf = match inbound.lock() {
@@ -6132,6 +6202,85 @@ mod tests {
             "both ends of this pair are this process, and the kernel should say so",
         );
         drop(there);
+    }
+
+    /// A sweep that stops is noticed by something that is not the sweep.
+    ///
+    /// The heartbeat says the sweep is alive and says nothing when it is
+    /// not — which is the same silence as a sweep with nothing to watch.
+    /// A real session ran thirty-five minutes on one heartbeat and no
+    /// departure, and the log could not say whether the thread was stuck
+    /// or the table was empty. A stuck watcher cannot report itself; the
+    /// report has to come from somewhere else.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_sweep_that_stops_is_noticed_by_something_that_is_not_the_sweep() {
+        let table = PeerTable::new();
+
+        // Nothing has swept at all. That is a stall, not an absence of
+        // news, and the first question asked must say so.
+        assert!(
+            !table.check_the_sweep_is_alive(),
+            "a sweep that has never taken a pass is not a healthy one",
+        );
+
+        table.account_for_lost_peers();
+        assert!(
+            table.check_the_sweep_is_alive(),
+            "a pass has happened since the last question, so it is advancing",
+        );
+
+        // And now it stops. Both questions have to answer the same way:
+        // the stall does not heal by being asked about twice.
+        assert!(
+            !table.check_the_sweep_is_alive(),
+            "no pass since the last question means it has stopped",
+        );
+        assert!(
+            !table.check_the_sweep_is_alive(),
+            "and it is still stopped the second time it is asked",
+        );
+
+        // Recovery is reported too, so a transient stall does not leave
+        // the log claiming a dead sweep for the rest of the session.
+        table.account_for_lost_peers();
+        assert!(
+            table.check_the_sweep_is_alive(),
+            "a sweep that starts advancing again is alive again",
+        );
+    }
+
+    /// A pass over an empty table still counts as a pass.
+    ///
+    /// The heartbeat used to fire only while something was connected,
+    /// which made "watching an empty room" and "not watching" the same
+    /// silence — the ambiguity it existed to remove, reintroduced by the
+    /// condition meant to keep it quiet. What makes the heartbeat
+    /// meaningful is that a pass is recorded whether or not it found
+    /// anything to look at.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_pass_over_an_empty_table_is_still_a_pass() {
+        let table = PeerTable::new();
+        assert_eq!(table.sweeps_completed(), 0);
+
+        assert_eq!(
+            table.account_for_lost_peers(),
+            0,
+            "there is nothing connected to examine",
+        );
+        assert_eq!(
+            table.sweeps_completed(),
+            1,
+            "but the pass still happened, and the heartbeat has to be able to say so",
+        );
+
+        table.account_for_lost_peers();
+        assert_eq!(
+            table.sweeps_completed(),
+            2,
+            "and each subsequent one counts too",
+        );
     }
 
     /// The sweep thread actually runs.
