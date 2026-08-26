@@ -460,6 +460,36 @@ pub fn close_tab_for_destroyed_surface(
     false
 }
 
+/// Remove the tab `tab_id` from wherever in the tree it is, repairing its
+/// group's selection when it was the tab in front.
+///
+/// The undo for a placement whose window then never came: a caller can
+/// put a tab down before a launch starts, to give the open an identity
+/// something can point at, and a launch that fails to start has to take
+/// that tab away again rather than leave a card describing a window
+/// nobody is opening.
+///
+/// [`close_tab_for_destroyed_surface`] is the same removal keyed on a
+/// surface. This one is keyed on the tab, because the tab in question
+/// never got a surface at all.
+pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+    for ws in tree.workspaces.iter_mut() {
+        for strip in ws.strips.iter_mut() {
+            for group in strip.window_groups.iter_mut() {
+                let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
+                    continue;
+                };
+                group.tabs.remove(pos);
+                if group.active_tab == tab_id {
+                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Turn a wayland app-id into a tab-bar friendly label.
 ///
 /// The app's own name wins wherever one can be found — from this
@@ -654,7 +684,7 @@ mod tests {
     fn a_launch_beside_a_lone_window_opens_its_own_group_to_the_right() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let (strip_id, focused) = focus_lone_window(&mut tree);
+        let (strip_id, _focused) = focus_lone_window(&mut tree);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
         let tabs_in_focused = tree.workspaces[0].strips[0].window_groups[0].tabs.len();
 
@@ -1026,6 +1056,56 @@ mod tests {
             !still_there,
             "the foreign tab with surface_id=42 must be gone"
         );
+    }
+
+    /// `remove_tab` takes the tab out of whichever group holds it and
+    /// repairs the group's selection when the removed tab was the one
+    /// in front — the same repair `close_tab_for_destroyed_surface`
+    /// makes, but keyed on the tab rather than on a surface, for a tab
+    /// that was placed ahead of a launch and never got one.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn remove_tab_takes_a_placed_tab_out_and_repairs_selection() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let tab_id = adopt_toplevel(&mut tree, 55, Some("io.example.pending".into()));
+        let owner = group_of(&tree, 55).id;
+        let before = group_of(&tree, 55).tabs.len();
+        assert_eq!(
+            group_of(&tree, 55).active_tab,
+            tab_id,
+            "fixture sanity: the newly adopted tab is the one in front",
+        );
+
+        assert!(remove_tab(&mut tree, tab_id), "the tab exists and is removed");
+
+        let group = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == owner)
+            .expect("the owning group still exists");
+        assert_eq!(group.tabs.len(), before - 1, "tab count must drop by exactly one");
+        assert!(
+            group.tabs.iter().all(|t| t.id != tab_id),
+            "the removed tab must be gone",
+        );
+        assert_ne!(
+            group.active_tab, tab_id,
+            "the group must not point at the tab it no longer has",
+        );
+    }
+
+    /// A tab id nothing in the tree holds is reported as not removed,
+    /// not silently accepted — a caller unwinding a launch has to know
+    /// whether there was anything to unwind.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn remove_tab_reports_false_for_an_unknown_tab() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        assert!(!remove_tab(&mut tree, 0xdead_beef));
     }
 
     #[test]
