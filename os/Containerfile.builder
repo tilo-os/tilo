@@ -41,7 +41,7 @@ ARG RUST_CHANNEL
 RUN curl -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal \
           --default-toolchain "${RUST_CHANNEL}" \
-          --component rustfmt clippy \
+          --component rustfmt --component clippy \
     && cargo --version && rustc --version
 
 RUN cargo install --locked cargo-nextest && cargo nextest --version
