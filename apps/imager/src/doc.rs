@@ -10,6 +10,7 @@
 //! ```text
 //! root
 //! ├── "targets"      (Str)   # serde_json of Vec<TargetDrive>
+//! ├── "releases"     (Str)   # serde_json of Vec<QosRelease>
 //! ├── "source"       (Str)   # serde_json of Option<Source>
 //! ├── "recent"       (Str)   # serde_json of Vec<Source>
 //! ├── "profile"      (Str)   # serde_json of InstallProfile (the live edits)
@@ -24,8 +25,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 
 use crate::model::{
-    sample_recent_sources, sample_source, sample_targets, Action, InstallProfile, Progress, Source,
-    Step, TargetDrive,
+    sample_recent_sources, sample_releases, sample_source, sample_targets, Action, InstallProfile,
+    Progress, QosRelease, Source, Step, TargetDrive,
 };
 
 pub struct ImagerDoc;
@@ -44,6 +45,9 @@ impl ImagerDoc {
     pub fn seed(doc: &mut AutoCommit, targets: &[TargetDrive]) {
         if Self::get_str(doc, "targets").is_none() {
             Self::write_targets(doc, targets);
+        }
+        if Self::get_str(doc, "releases").is_none() {
+            Self::write_json(doc, "releases", &Vec::<QosRelease>::new());
         }
         if Self::get_str(doc, "source").is_none() {
             Self::set_source(doc, None);
@@ -76,13 +80,14 @@ impl ImagerDoc {
         }
     }
 
-    /// Seed a fully-populated **demo** document: the sample drives, a
-    /// pre-selected qOS image, and a short recent-sources history. This is the
-    /// single home of the imager's sample content — used only by `--shots`,
-    /// the `--demo` flag, and tests, never by the live app (which stays blank
-    /// per [`Self::seed`]).
+    /// Seed a fully-populated **demo** document: the sample drives, the sample
+    /// qOS releases, a pre-selected qOS image, and a short recent-sources
+    /// history. This is the single home of the imager's sample content — used
+    /// only by `--shots`, the `--demo` flag, and tests, never by the live app
+    /// (which stays blank per [`Self::seed`]).
     pub fn seed_demo(doc: &mut AutoCommit) {
         Self::seed(doc, &sample_targets());
+        Self::write_json(doc, "releases", &sample_releases());
         Self::set_source(doc, Some(&sample_source()));
         Self::write_json(doc, "recent", &sample_recent_sources());
     }
@@ -91,8 +96,21 @@ impl ImagerDoc {
     pub fn write_targets(doc: &mut AutoCommit, targets: &[TargetDrive]) {
         Self::write_json(doc, "targets", &targets.to_vec());
     }
+    /// The probed drive list. A missing or unreadable blob yields **nothing** —
+    /// the imager offers a drive to erase only when it has actually seen one.
     pub fn targets(doc: &AutoCommit) -> Vec<TargetDrive> {
-        Self::read_json(doc, "targets").unwrap_or_else(sample_targets)
+        Self::read_json(doc, "targets").unwrap_or_default()
+    }
+
+    // ---- qOS releases -------------------------------------------------------
+    /// Releases offered as a write source. Empty unless something actually put
+    /// one here: there is no built-in list to fall back on, because a release
+    /// row is a write source for a drive-erasing job.
+    pub fn releases(doc: &AutoCommit) -> Vec<QosRelease> {
+        Self::read_json(doc, "releases").unwrap_or_default()
+    }
+    pub fn set_releases(doc: &mut AutoCommit, releases: &[QosRelease]) {
+        Self::write_json(doc, "releases", &releases.to_vec());
     }
 
     // ---- source -----------------------------------------------------------
@@ -243,6 +261,27 @@ mod tests {
         assert_eq!(ImagerDoc::targets(&doc).len(), 2);
         assert!(ImagerDoc::source(&doc).is_some());
         assert!(!ImagerDoc::recent(&doc).is_empty());
+        assert_eq!(ImagerDoc::releases(&doc).len(), 2);
+    }
+
+    /// Reading a document that holds no inventory must not conjure one. Both of
+    /// these lists name something the user can point a drive-erasing write at,
+    /// so a "helpful" fallback is a fabricated destination and a fabricated
+    /// source — the two halves of the one destructive operation.
+    #[test]
+    fn an_unseeded_document_names_no_drive_and_no_release() {
+        let doc = AutoCommit::new();
+        assert!(ImagerDoc::is_empty(&doc));
+        assert!(ImagerDoc::targets(&doc).is_empty(), "no fabricated drives");
+        assert!(ImagerDoc::releases(&doc).is_empty(), "no fabricated releases");
+    }
+
+    #[test]
+    fn plain_seed_offers_no_release() {
+        // The live path seeds with a real (possibly empty) probe result and
+        // nothing else: releases stay empty until something actually finds one.
+        let doc = seeded();
+        assert!(ImagerDoc::releases(&doc).is_empty());
     }
 
     #[test]

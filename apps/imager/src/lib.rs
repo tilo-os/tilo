@@ -57,6 +57,7 @@ pub fn app_root() -> Box<dyn Widget> {
 /// the offscreen renderer can walk them and the gallery reads top-to-bottom.
 pub const SHOT_SCENARIOS: &[&str] = &[
     "source",
+    "source-empty",
     "drive",
     "drive-empty",
     "drive-internal",
@@ -92,6 +93,15 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
         ImagerDoc::set_selected(doc, None);
         ImagerDoc::set_step(doc, Step::Drive);
         ImagerDoc::set_status(doc, "No removable drives detected");
+        return;
+    }
+
+    // The Source step as the live app actually opens it: nothing browsed yet,
+    // no release known to be on this machine. This is the state a real run
+    // starts in, so it is the one worth looking at.
+    if scenario == "source-empty" {
+        ImagerDoc::seed(doc, &[]);
+        ImagerDoc::set_step(doc, Step::Source);
         return;
     }
 
