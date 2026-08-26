@@ -316,6 +316,91 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
     }
 
+    /// A table, built through the model's own API and put through `save()`,
+    /// because that is the form a late joiner is handed. The two rows the
+    /// assertions read by name, followed by enough further rows to carry the
+    /// text column past Automerge's compression threshold.
+    ///
+    /// The size matters to the control assertion, not to the walk: below that
+    /// threshold the cell text survives verbatim in the saved bytes and a plain
+    /// byte search finds it, so the test would prove the opposite of what it is
+    /// for. A real table of facts is comfortably past it, and the padding
+    /// reproduces the ordinary case rather than contriving one.
+    fn table_document() -> Vec<u8> {
+        const NAMED: [[&str; 3]; 2] =
+            [["alpha one", "alpha two", "alpha three"], ["beta one", "beta two", "beta three"]];
+        const PADDING_ROWS: usize = 12;
+
+        let mut rows: Vec<Vec<String>> =
+            NAMED.iter().map(|r| r.iter().map(|s| s.to_string()).collect()).collect();
+        for row in NAMED.len()..NAMED.len() + PADDING_ROWS {
+            rows.push((0..3).map(|col| format!("row {row} column {col} of the same table")).collect());
+        }
+
+        let mut d = qdoc::Document::new();
+        {
+            let mut dm = d.as_mut();
+            let mut prev: Option<String> = None;
+            for (row, cells) in rows.iter().enumerate() {
+                for (col, text) in cells.iter().enumerate() {
+                    let id = dm.insert_block(prev.as_deref(), "cell");
+                    dm.set_attr(&id, "table", "t1");
+                    dm.set_attr(&id, "row", row as i64);
+                    dm.set_attr(&id, "col", col as i64);
+                    dm.splice_text(&id, 0, 0, text);
+                    prev = Some(id);
+                }
+            }
+        }
+        d.save()
+    }
+
+    /// Text in a table cell is text, and is found.
+    ///
+    /// A walk that stopped at body text would report an empty page for a document
+    /// that keeps its facts in cells. Cells are ordinary blocks, so it does not
+    /// stop there — said out loud because "the phrase is only in a table" is the
+    /// first guess when a check calls a document empty, and acting on it sends
+    /// the fix into the wrong file.
+    #[test]
+    fn text_written_into_a_table_cell_is_found() {
+        let saved = table_document();
+        let found = strings(&saved);
+        let hit = found
+            .iter()
+            .find(|(_, t)| t == "beta two")
+            .expect("a cell's text must be found");
+        assert!(
+            hit.0.ends_with(".text"),
+            "the path must name the cell's text object, got {:?}",
+            hit.0,
+        );
+        // The whole grid, not one lucky cell.
+        for cell in ["alpha one", "alpha three", "beta one", "beta three"] {
+            assert!(
+                found.iter().any(|(_, t)| t == cell),
+                "the cell {cell:?} is in the table and must be found",
+            );
+        }
+        // ...and it is genuinely unfindable without decoding, which is why
+        // nothing may fall back to searching the bytes.
+        assert!(
+            !contains_bytes(&saved, "beta two"),
+            "the phrase must be absent from the saved bytes — that absence is what \
+             a byte search would report as an empty page",
+        );
+    }
+
+    /// The control for the test above.
+    #[test]
+    fn a_table_does_not_report_cells_it_never_held() {
+        let found = strings(&table_document());
+        assert!(
+            !found.iter().any(|(_, t)| t.contains("gamma")),
+            "a table must not claim a row that was never written into it",
+        );
+    }
+
     #[test]
     fn nesting_is_walked_to_the_bottom() {
         let mut doc = AutoCommit::new();
