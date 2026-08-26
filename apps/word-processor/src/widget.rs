@@ -721,6 +721,12 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
 /// render pass (so received caret/selection presence maps back onto the same
 /// block) — keeping the two halves in agreement is the whole point of the
 /// single helper.
+/// The presence key a word-processor block is addressed by on the wire.
+///
+/// Spelled out here rather than shared: this is the cross-process contract
+/// `apps/agent` reproduces from the outside (it has no window and no pointer,
+/// only a caret to publish), so the two sides must independently agree on the
+/// exact key shape.
 fn block_presence_key(block_id: &str) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
@@ -820,8 +826,7 @@ fn pack_toolbar_rows(widths: &[f64], group_starts: &[bool], avail_w: f64) -> Vec
     rows
 }
 
-/// `(font size, whole-block bold, left indent, optional bullet)`. Size is the
-/// style default; per-run `size` marks override it in `block_runs`.
+/// Whether char `i` of a block is covered by a boolean mark named `name`.
 fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
 }
@@ -1118,9 +1123,7 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
     }
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
-    // The run key now also folds in the tracked-change review colour: an `ins`
-    // run becomes green, a `del` run red. This overrides any explicit `color`
-    // mark over the same range (review colour wins for legibility).
+    // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
         if char_in_mark(i, &b.marks, qdoc::schema::MARK_INS) {
             Some(TRACK_INS_RGB)
@@ -1130,6 +1133,9 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
             None
         }
     };
+    // The run key now also folds in the tracked-change review colour, which
+    // overrides any explicit `color` mark over the same range (review colour
+    // wins for legibility).
     let key = |i: usize| {
         (
             char_has(i, &b.marks, "strong"),
@@ -1409,8 +1415,13 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64)
 
 /// Run the spell-checker over a block's text, returning the misspelled byte spans
 /// `(start, end)`. Skips the U+FFFC field/note placeholders (they are not words).
+///
+/// Spans only. This is called while drawing the paragraph the caret is in, which
+/// means on every keystroke, and a correction nobody has asked for is not worth
+/// searching the dictionary for. The right-click menu asks for one when it has
+/// a word to ask about — see `suggestions_for_word`.
 fn spell_spans(dict: &spellcheck::Dictionary, text: &str) -> Vec<(usize, usize)> {
-    spellcheck::check(dict, text).into_iter().map(|m| (m.start, m.end)).collect()
+    spellcheck::spans(dict, text)
 }
 
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
@@ -4850,7 +4861,9 @@ impl Widget for WordProcessorWidget {
                 }
                 bi += 1;
             } else {
-                // Resolve the block's style (component-instance model).
+                // Resolve the block's style (component-instance model). `size`
+                // and `base_bold` are the style default; per-run `size` marks
+                // override them in `block_runs`.
                 let st = self.sheet.get(&block_style_key(b));
                 let (size, base_bold) = (st.size, st.bold);
                 // List items indent by nesting level; the bullet/number sits just
@@ -6791,9 +6804,10 @@ impl WordProcessorWidget {
     ///
     /// This is the *ephemeral* half of authorship. The durable half —
     /// "this paragraph is hers, that one is his", still coloured an hour
-    /// later — is not drawn here and cannot be: it needs a per-run author
-    /// recorded in the document, which this document model does not carry.
-    /// See the note on [`ui::presence::PresenceCtx::draw_peer_authorship`].
+    /// later — is not drawn here: `qdoc::author_runs` can recover a per-run
+    /// author from the document now, the same way [`ui::widget::block_editor`]
+    /// already feeds [`ui::presence::PresenceCtx::draw_peer_authorship`], but
+    /// this widget does not yet call it in its own draw pass.
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
