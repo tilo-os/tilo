@@ -2,6 +2,8 @@
 name = "ui"
 version = "0.1.0"
 edition = "2024"
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 
 [features]
 # Keep the legacy JSON-over-Unix-socket broker path compiled in
@@ -279,3 +281,7 @@ required-features = ["webview-wpe"]
 [[example]]
 name = "wpe_scroll_repro"
 required-features = ["webview-wpe"]
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

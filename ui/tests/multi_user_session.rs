@@ -1,6 +1,5 @@
-mod support;
 
-use support::{MemoryRelay, pump, headless_app};
+use crate::support::{MemoryRelay, pump, headless_app};
 use ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
 use ui::presence::{PresenceKey, PathSegment};
 use ui::permissions::{
