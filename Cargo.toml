@@ -151,6 +151,7 @@ members = [
     "crates/system/os-actions",
     "crates/system/qos-bluez",
     "crates/collab/collab-types",
+    "crates/collab/reference",
     "crates/collab/collab-bridge",
     "crates/collab/threshold-identity",
     "crates/collab/channel-crypto",
