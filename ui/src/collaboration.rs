@@ -254,6 +254,33 @@ pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
+    /// Whether this member is an agent rather than a person.
+    ///
+    /// The room already knows — an agent is admitted as one — and without the
+    /// marking anything downstream that needed to tell an agent from a person
+    /// had to read the id and hope.
+    ///
+    /// Defaulted on the wire so a peer that does not send the field reads as a
+    /// person: a smaller lie than a roster that will not load.
+    #[serde(default)]
+    pub is_agent: bool,
+    /// Whether this row is the receiving machine's own participant.
+    ///
+    /// A roster is the room's list of its members, so "which of these is me"
+    /// is a fact about that list and belongs in it; stated separately it would
+    /// be a second source of truth that can disagree with the first.
+    ///
+    /// An application cannot work it out for itself. `id` is the address
+    /// *other* machines use for a participant, and a machine never announces
+    /// its own participant to its own applications — so the only local
+    /// identity available was a different string for the same person, and
+    /// anything asking "am I the one addressed here" compared two ids that
+    /// were never going to match.
+    ///
+    /// Defaulted on the wire, so a peer that predates it reads as somebody
+    /// else, which is what every row was before this existed.
+    #[serde(default)]
+    pub is_self: bool,
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
@@ -1146,13 +1173,100 @@ fn auto_hello_env() -> (String, Uuid) {
     auto_hello_env_uncached()
 }
 
-/// The identity this process collaborates as — the same `user_id` the broker
-/// attributes its ops and presence to.
+/// The person sitting at this machine.
 ///
 /// Actions are stamped with this so undo can tell one collaborator's work from
-/// another's: see [`crate::state::State::undo_as`].
+/// another's (see [`crate::state::State::undo_as`]), which makes two demands:
+/// the id must be **stable** across the life of a document — one that changed
+/// between two actions would strand the first, unreachable by the person who
+/// performed it — and **distinct** between two people, or `undo_for_author`
+/// matches on something that cannot tell them apart and one person's Ctrl+Z
+/// reverts the other's work.
+///
+/// It used to return [`local_app_id`]: stable, and shared by everyone, so every
+/// person on every machine running the word processor was one author.
+///
+/// The ladder below is the shell-side `local_user_id`'s, rung for rung, with
+/// the one rung a *sandboxed* app needs inserted. Deliberately the same ladder
+/// rendered the same way — a capability the compositor granted to a person and
+/// an undo entry an app stamped with them have to name one subject, and two
+/// independent derivations are how they come to disagree with nothing
+/// reporting it.
+///
+/// 1. `QOS_USER_ID` — an explicit answer from an operator or the capture
+///    driver. The shell reads it first too, so setting it makes the two agree
+///    by construction.
+/// 2. The runtime identity the launcher binds in and names with
+///    `QOS_USER_IDENTITY`. This is the rung a packaged app actually lands on:
+///    `/var/lib/qos` is not in its sandbox, so the shell's own next rung is
+///    unreachable from inside one.
+/// 3. The same identity from `$XDG_CONFIG_HOME/qos/identity/primary.json`, for
+///    the shell's in-process apps — not sandboxed, so nothing sets the env var
+///    for them. The ladder [`crate::history_source`] already walks.
+/// 4. `/var/lib/qos/user-identity/pubkey.bin`, the shell's own second rung.
+/// 5. The OS account name, then a constant. Per-account rather than
+///    per-person, which is the honest limit of a machine that has never been
+///    enrolled — and still distinguishes two people far better than naming
+///    them after the application did.
+///
+/// Not memoised, for the reason [`auto_hello_env_uncached`] gives: a process
+/// hosting more than one identity must not be frozen into the first one.
 pub fn local_user_id() -> crate::permissions::UserId {
-    crate::permissions::UserId(auto_hello_env().0)
+    crate::permissions::UserId(resolve_local_user_id())
+}
+
+fn resolve_local_user_id() -> String {
+    if let Some(v) = non_empty_env("QOS_USER_ID") {
+        return v;
+    }
+    if let Some(id) = runtime_identity::load()
+        .ok()
+        .or_else(|| config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok()))
+    {
+        return person_id_from_key(id.group_public_key());
+    }
+    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        return person_id_from_key(key);
+    }
+    non_empty_env("USER").unwrap_or_else(|| "local".to_string())
+}
+
+/// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
+/// `$HOME/.config/qos/identity/primary.json` — where first boot writes the
+/// identity an unsandboxed process has to find for itself.
+fn config_identity_path() -> Option<std::path::PathBuf> {
+    let base = match non_empty_env("XDG_CONFIG_HOME") {
+        Some(v) => std::path::PathBuf::from(v),
+        None => std::path::PathBuf::from(non_empty_env("HOME")?).join(".config"),
+    };
+    let p = base.join("qos").join("identity").join("primary.json");
+    p.is_file().then_some(p)
+}
+
+/// A public key rendered as a person, in the one canonical form — so this
+/// string and the compositor's string for the same key are the same string.
+fn person_id_from_key(key: [u8; 32]) -> String {
+    match crate::permissions::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+    ) {
+        crate::permissions::Principal::Person(id) => id,
+        // `person_from_key` constructs `Person` unconditionally; this arm
+        // exists only because the return type is the whole enum.
+        _ => unreachable!("person_from_key returns a person"),
+    }
+}
+
+/// The application this process is, as the launcher named it
+/// (`QOS_PACKAGE_ID`), falling back to `QUICK_APP_ID` for a dev run.
+///
+/// Read from the same place the channel key is built from, deliberately: the
+/// session pairs what an app publishes with the application its connection
+/// announced, so the two have to be one answer rather than two that can
+/// disagree.
+pub fn local_app_id() -> String {
+    auto_hello_env().0
 }
 
 /// The room this process collaborates in — the cluster every CRDT delta
@@ -1400,6 +1514,14 @@ async fn drive_shovel(
                                     id: c.user_id,
                                     name: c.display_name,
                                     color: unpack_color(c.color),
+                                    // `runtime_collab::Collaborator` does not
+                                    // carry these yet, so on the SDK path
+                                    // every row reads as a person and as
+                                    // somebody else — the values the fields
+                                    // held before they existed. Only a roster
+                                    // that sets them may be read for them.
+                                    is_agent: false,
+                                    is_self: false,
                                 })
                                 .collect();
                             if itx
@@ -1736,6 +1858,12 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 runtime_collab::PresencePayload::Left => PresencePayload::Left,
+                // A pointer keeps the coordinate space its key carries, where
+                // `Cursor` has nowhere to put one — which is why it survives as
+                // a keyed payload rather than collapsing into the outer arm.
+                runtime_collab::PresencePayload::Pointer { x, y } => {
+                    PresencePayload::Pointer { x, y }
+                }
                 // Handled in the outer arm; make match exhaustive.
                 runtime_collab::PresencePayload::Cursor { .. } => unreachable!(),
             };
