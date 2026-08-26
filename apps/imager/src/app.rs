@@ -50,8 +50,8 @@ use ui::widget::Widget;
 use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
 use crate::model::{
-    fmt_eta, fmt_rate, fmt_size, Action, InstallProfile, JobPhase, Progress, Source, SourceKind,
-    Step, TargetDrive, TargetKind,
+    fmt_eta, fmt_rate, fmt_size, Action, InstallProfile, JobPhase, Progress, QosRelease, Source,
+    SourceKind, Step, TargetDrive, TargetKind,
 };
 use crate::write::{spawn_job, WriteRequest};
 
@@ -63,6 +63,9 @@ const CRUMB_TOP: f64 = 26.0;
 const CRUMB_H: f64 = 34.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
+/// Height of the Source step's "no qOS releases" card. Shared by the draw and
+/// layout passes so the two stay in step.
+const RELEASE_ZERO_H: f64 = 84.0;
 
 /// A clickable hit-target for one frame. Pure function of the viewport +
 /// state, so `draw` and `handle_event` agree without ordering hazards. The
@@ -97,6 +100,11 @@ pub struct ImagerApp {
     source: Option<Source>,
     recent: Vec<Source>,
     targets: Vec<TargetDrive>,
+    /// qOS releases offered on the Source step. Like the drive list this is
+    /// read from the document and never invented: an offered release is a
+    /// write source for a job that erases the target, so one that does not
+    /// exist on this machine must not be clickable.
+    releases: Vec<QosRelease>,
     selected: Option<usize>,
     action: Action,
     profile: InstallProfile,
@@ -148,6 +156,7 @@ impl ImagerApp {
             source: None,
             recent: Vec::new(),
             targets: Vec::new(),
+            releases: Vec::new(),
             selected: None,
             action: Action::Flash,
             profile: InstallProfile::default(),
@@ -175,8 +184,10 @@ impl ImagerApp {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
-    fn releases(&self) -> Vec<crate::model::QosRelease> {
-        crate::model::sample_releases()
+    /// The releases the document actually knows about — empty on the live
+    /// path, seeded content under `--demo` / `--shots`.
+    fn releases(&self) -> &[QosRelease] {
+        &self.releases
     }
 
     /// The drives shown on the Drive step: always the removable ones, plus
@@ -500,8 +511,12 @@ impl ImagerApp {
         if self.source.is_some() {
             y += 92.0 + 24.0; // selected card
         }
-        // qOS releases list.
+        // qOS releases list. With none known, the zero-state card takes the
+        // space and there is nothing here to click.
         y += 22.0; // section label
+        if self.releases().is_empty() {
+            y += RELEASE_ZERO_H + 10.0;
+        }
         for (i, _) in self.releases().iter().enumerate() {
             let r = Rect::new(x0, y, x1, y + 54.0);
             hits.push((r, Hit::Release(i)));
@@ -509,7 +524,7 @@ impl ImagerApp {
         }
         // Recent list.
         if !self.recent.is_empty() {
-            y += 20.0;
+            y += 12.0 + 20.0; // gap + section label, as drawn
             for (i, _) in self.recent.iter().enumerate().take(3) {
                 let r = Rect::new(x0, y, x1, y + 44.0);
                 if y + 44.0 > content.y1 {
@@ -605,7 +620,7 @@ impl ImagerApp {
                 scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, 11.0));
                 self.txt_center(scene, tr, &format!("{}", s.index() + 1), 12.0, Color::WHITE, disc_c.x, disc_c.y - 8.0, TextWeight::Bold);
             }
-            let label_c = if current { c.text_primary } else if done { c.text_primary } else { c.text_dim };
+            let label_c = if current || done { c.text_primary } else { c.text_dim };
             self.txt(scene, tr, s.title(), 13.5, label_c, r.x0 + 40.0, (r.y0 + r.y1) / 2.0 - 9.0, None, if current { TextWeight::Semibold } else { TextWeight::Medium });
             // Connector to the next pill.
             if i + 1 < lay.crumbs.len() {
@@ -707,7 +722,12 @@ impl ImagerApp {
     fn draw_source_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Choose the source image", "The image to write. Pick a local .iso or .img file, or a qOS release below.");
+        let sub = if self.releases().is_empty() {
+            "The image to write. Pick a local .iso or .img file."
+        } else {
+            "The image to write. Pick a local .iso or .img file, or a qOS release below."
+        };
+        self.draw_step_title(scene, tr, theme, content, "Choose the source image", sub);
         let mut y = content.y0 + 44.0;
 
         // Browse drop-zone.
@@ -753,9 +773,22 @@ impl ImagerApp {
             y = browse.y1 + 28.0;
         }
 
-        // qOS releases.
-        self.section_label(scene, tr, theme, "OR CHOOSE A qOS RELEASE", content.x0, y);
+        // qOS releases. With none to choose between, the heading names the
+        // section rather than offering a choice that is not there.
+        let heading = if self.releases().is_empty() { "qOS RELEASES" } else { "OR CHOOSE A qOS RELEASE" };
+        self.section_label(scene, tr, theme, heading, content.x0, y);
         y += 22.0;
+        if self.releases().is_empty() {
+            // Nothing is known to be on this machine, so nothing is offered.
+            // The honest zero-state says so rather than leaving a bare heading.
+            let card = Rect::new(content.x0, y, content.x1, y + RELEASE_ZERO_H);
+            Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
+            Self::dashed_rr(scene, t, card, 12.0, c.border_standard, 1.2);
+            let cx = (card.x0 + card.x1) / 2.0;
+            self.txt_center(scene, tr, "No qOS releases found", 14.0, c.text_primary, cx, card.y0 + 24.0, TextWeight::Semibold);
+            self.txt_center(scene, tr, "Releases stored on this machine appear here.", 12.0, c.text_dim, cx, card.y0 + 47.0, TextWeight::Regular);
+            y = card.y1 + 10.0;
+        }
         for rel in self.releases().iter() {
             let r = Rect::new(content.x0, y, content.x1, y + 54.0);
             let selected = self.source.as_ref().map(|s| s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)).unwrap_or(false);
@@ -907,6 +940,7 @@ impl ImagerApp {
         self.txt_center(scene, tr, hint, 12.0, c.neutral[6], cx, card.y0 + 196.0, TextWeight::Regular);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_drive_card(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, idx: usize, drive: &TargetDrive) {
         let c = &theme.tokens.colors;
         let selected = self.selected == Some(idx);
@@ -1121,13 +1155,13 @@ impl ImagerApp {
         if p.rate_bps > 0 {
             meta.push_str(&fmt_rate(p.rate_bps));
         }
-        if let Some(src) = &self.source {
-            if let Some(eta) = p.eta_secs(src.size) {
-                if !meta.is_empty() {
-                    meta.push_str("   ·   ");
-                }
-                meta.push_str(&format!("~{} left", fmt_eta(eta)));
+        if let Some(src) = &self.source
+            && let Some(eta) = p.eta_secs(src.size)
+        {
+            if !meta.is_empty() {
+                meta.push_str("   ·   ");
             }
+            meta.push_str(&format!("~{} left", fmt_eta(eta)));
         }
         if !meta.is_empty() {
             self.txt_center(scene, tr, &meta, 13.0, c.text_dim, cxp, cyp + radius + 20.0, TextWeight::Medium);
@@ -1197,12 +1231,13 @@ impl ImagerApp {
 // =========================================================================
 impl ImagerApp {
     fn select_source(&mut self, state: &mut AutoCommit, src: Source) {
-        if let Some(prev) = &self.source {
-            if !prev.path.is_empty() && !self.recent.iter().any(|s| s.path == prev.path) {
-                self.recent.insert(0, prev.clone());
-                self.recent.truncate(6);
-                ImagerDoc::set_recent(state, &self.recent);
-            }
+        if let Some(prev) = &self.source
+            && !prev.path.is_empty()
+            && !self.recent.iter().any(|s| s.path == prev.path)
+        {
+            self.recent.insert(0, prev.clone());
+            self.recent.truncate(6);
+            ImagerDoc::set_recent(state, &self.recent);
         }
         // A non-installable source cannot carry a pre-config profile.
         if !src.installable {
@@ -1416,10 +1451,10 @@ impl ImagerApp {
     fn type_into_confirm(&mut self, state: &mut AutoCommit, ch: Option<char>, backspace: bool) {
         if backspace {
             self.confirm.pop();
-        } else if let Some(c) = ch {
-            if !c.is_control() {
-                self.confirm.push(c);
-            }
+        } else if let Some(c) = ch
+            && !c.is_control()
+        {
+            self.confirm.push(c);
         }
         let conf = self.confirm.clone();
         ImagerDoc::set_confirm(state, &conf);
@@ -1463,8 +1498,8 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => self.open_file_picker(state),
             Hit::Release(i) => {
-                if let Some(rel) = self.releases().get(i) {
-                    self.select_source(state, rel.to_source());
+                if let Some(src) = self.releases.get(i).map(|r| r.to_source()) {
+                    self.select_source(state, src);
                 }
             }
             Hit::Recent(i) => {
@@ -1543,6 +1578,7 @@ impl Widget for ImagerApp {
         self.targets = ImagerDoc::targets(state);
         self.source = ImagerDoc::source(state);
         self.recent = ImagerDoc::recent(state);
+        self.releases = ImagerDoc::releases(state);
         self.profile = ImagerDoc::profile(state);
         self.progress = ImagerDoc::progress(state);
         self.action = ImagerDoc::action(state);
@@ -1922,6 +1958,43 @@ mod tests {
         assert!(app.source.is_none(), "no fabricated image");
         assert!(app.recent.is_empty(), "no fabricated recent history");
         assert_eq!(app.step, Step::Source);
+    }
+
+    /// A release row is a *write source for erasing a drive*, so the live app
+    /// must offer none of its own invention: the list comes from the document,
+    /// and a live (unseeded) document has nothing in it. Sample releases are
+    /// opt-in via `--demo` / `--shots` like every other sample surface here.
+    #[test]
+    fn live_app_offers_no_qos_release_to_write() {
+        let mut app = ImagerApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.releases().is_empty(), "no fabricated qOS releases");
+
+        // ...and nothing on the Source step is clickable that would select one.
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        let offered = app
+            .compute_layout()
+            .hits
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::Release(_)));
+        assert!(!offered, "no release row may be hit-testable on the live path");
+        assert!(app.source.is_none(), "and nothing is pre-selected as the source");
+    }
+
+    /// The gate is a gate, not a deletion: the demo document still offers them.
+    #[test]
+    fn demo_document_offers_its_seeded_releases() {
+        let (mut app, _doc) = seeded_app();
+        assert_eq!(app.releases().len(), 2);
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        let offered = app
+            .compute_layout()
+            .hits
+            .iter()
+            .filter(|(_, h)| matches!(h, Hit::Release(_)))
+            .count();
+        assert_eq!(offered, 2, "each seeded release has a row to click");
     }
 
     #[test]
