@@ -12,8 +12,7 @@
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
 //! which we compute cheaply via one throwaway pack pass.
 
-mod fixtures;
-
+use crate::fixtures;
 use ed25519_dalek::{Signer, SigningKey};
 use pkg::manifest::{Manifest, TrustAttestation};
 use pkg::trust::{

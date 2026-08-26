@@ -61,10 +61,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
-use support::snapshot::SnapshotAssertion;
+use crate::support::offscreen::OffscreenRenderer;
+use crate::support::snapshot::SnapshotAssertion;
 
 /// Directory under the crate root where golden PNGs are committed.
 /// Mirrors `screenshots_dir()` but lives in source, not `target/`.

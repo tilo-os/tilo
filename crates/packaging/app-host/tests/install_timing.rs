@@ -3,8 +3,7 @@
 //!
 //!     APP_HOST_TIMING=1 cargo test -p app-host --test install_timing --release -- --nocapture
 
-mod common;
-
+use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;

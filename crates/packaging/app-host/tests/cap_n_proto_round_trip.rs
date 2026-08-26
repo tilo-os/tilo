@@ -2,8 +2,7 @@
 //! Unix socket in a `LocalSet`, dial from a client, and drive
 //! install → list → pin → resolve → diskUsage.
 
-mod common;
-
+use crate::common;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

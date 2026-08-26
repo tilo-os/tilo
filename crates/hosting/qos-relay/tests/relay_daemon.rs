@@ -6,14 +6,13 @@
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
 //! receives the same delta bytes via the relay's fan-out.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_peers_fan_out_through_relay() {

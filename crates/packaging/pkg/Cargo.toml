@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "pkg"
 version = "0.1.0"
 edition = "2024"
@@ -38,3 +40,7 @@ walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
