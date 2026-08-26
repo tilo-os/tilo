@@ -605,6 +605,28 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
 /// beat the settle window and produced the refusal this replaces.
 const STILL_WRITING_GRACE: Duration = Duration::from_secs(4);
 
+/// Whether an `Arrived` under this key is somebody joining, or a frame that
+/// merely carries the payload.
+///
+/// Two of the key variants pair `Arrived` with something that is not an
+/// arrival, and both are the toolkit's own design rather than an accident:
+///
+/// * a **`View`** carries where a participant is looking. It has no
+///   `PresencePayload` variant of its own, so it rides inside the routing key
+///   and pairs with `Arrived` as an inert carrier — `ui::App` says so where it
+///   sends one, and `ui::presence` dispatches on the key before the payload is
+///   ever inspected. Every scroll and every window resize publishes one.
+/// * a **`Tab`** moves a peer's focus dot between pages. `ui::presence`
+///   answers it by moving the dot and never with a document.
+///
+/// Reading either as a join is not merely noisy: the answer to a join is this
+/// agent's whole document, sent on the one socket it also asks on. So a room
+/// where anybody is scrolling turned every viewport change into a full
+/// snapshot on the wire, queued ahead of the agent's own next question.
+fn is_a_join(key: &PresenceKey) -> bool {
+    !matches!(key, PresenceKey::Tab { .. }) && key.as_view().is_none()
+}
+
 /// Which block a presence frame is about, for the frames that are about a
 /// block at all.
 ///
@@ -1107,9 +1129,9 @@ impl Session {
             }
             Some(CollabEvent::RemotePresenceUpdate {
                 user_id,
+                key,
                 payload: PresencePayload::Arrived,
-                ..
-            }) => {
+            }) if is_a_join(&key) => {
                 // A participant arriving after us deserves what we hold.
                 if let Some(ed) = self.editor.as_mut() {
                     let full = ed.full();
