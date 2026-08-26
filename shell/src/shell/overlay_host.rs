@@ -408,10 +408,10 @@ pub enum PeerSyncAction {
     /// `copy` is what separates the collaborators panel's Invite from
     /// the palette's `peer.invite.named` row. Somebody who filled in a
     /// name and pressed Create has said everything the token needs;
-    /// making them then locate a Copy button is a second gesture
-    /// serving one intent — the gesture that got skipped on camera,
-    /// because it is the one nobody thinks to make. The card carries a
-    /// Copy button either way, for a second copy.
+    /// making them then locate a Copy button is a second gesture serving
+    /// one intent, and it is the one people forget — an invite nobody
+    /// copied was never issued. The card carries a Copy button either
+    /// way, for a second copy.
     IssueInviteFor { name: String, copy: bool },
     /// Open the invite composer: the field that asks who is being
     /// invited, before anything is minted.
@@ -4623,6 +4623,26 @@ impl ShellOverlayHost {
     /// hotkey path — the flag itself stays internal to this module.
     pub fn palette_visible(&self) -> bool {
         self.palette_visible
+    }
+
+    /// Last pointer position this host knows about, or `None` before
+    /// anything has moved a pointer through the session.
+    pub fn pointer_position(&self) -> Option<Point> {
+        self.last_cursor
+    }
+
+    /// Record where the pointer is, for a motion this widget tree will
+    /// never be handed.
+    ///
+    /// The chrome hit-tests a press against the position the last motion
+    /// left behind, because `MouseInput` carries no position of its own.
+    /// That holds only while the chrome sees every motion — and a
+    /// `CursorMoved` over a foreign client window is delivered straight
+    /// to that client and never reaches this tree's own event dispatch,
+    /// so without this call `last_cursor` goes stale the moment the
+    /// pointer enters a window and stays stale until it leaves.
+    pub fn note_pointer(&mut self, p: Point) {
+        self.last_cursor = Some(p);
     }
 
     /// Whether the workspace wheel is currently summoned to the pointer.
