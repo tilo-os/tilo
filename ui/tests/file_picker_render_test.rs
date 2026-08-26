@@ -6,10 +6,8 @@
 //! Skips when no wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR`
 //! to dump PNGs (`file_picker_open.png`, `file_picker_save.png`).
 
-mod support;
-
 use std::path::PathBuf;
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 use vello::Scene;
