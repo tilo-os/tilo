@@ -15548,6 +15548,7 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
+ "libc",
  "media",
  "once_cell",
  "open",
