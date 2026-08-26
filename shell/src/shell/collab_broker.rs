@@ -1208,6 +1208,16 @@ const SWEEP_HEARTBEAT: Duration = Duration::from_secs(30);
 /// survive: in the session this was written for, the drain thread went
 /// on logging for thirty-five minutes after everything else in the
 /// broker had gone quiet.
+///
+/// **This watcher is only as present as the drain thread is.** The drain
+/// exists only when the broker was given a `ShellNetwork` to pump, so a
+/// broker running without peer-sync has a sweep and nothing checking on
+/// it — the same hole this closes, one level up. It is covered where it
+/// has mattered so far, because the filmed sessions run with peer-sync
+/// on, and that is a reason it has not been fixed rather than a reason it
+/// is fine. Anyone who finds a session whose sweep stopped silently
+/// should check whether that session had a drain thread at all before
+/// concluding anything from the absence of a complaint.
 const SWEEP_WATCHDOG: Duration = Duration::from_secs(30);
 
 /// How long the sweep thread sleeps between looks at its quit flag, so
@@ -3578,7 +3588,9 @@ fn spawn_inner(
                     // can: it is the one that went on running for
                     // thirty-five minutes after the broker had otherwise
                     // gone quiet, in the session that made this
-                    // necessary.
+                    // necessary. Note that this is also the limit of the
+                    // arrangement — no drain thread, no watchdog. See
+                    // [`SWEEP_WATCHDOG`].
                     let mut sweep_checked_at = Instant::now();
                     while !quit.load(Ordering::Relaxed) {
                         if sweep_checked_at.elapsed() >= SWEEP_WATCHDOG {
