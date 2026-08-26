@@ -6376,15 +6376,11 @@ def drawn_since(s: Session, subject, budget: float = 3.0,
     waiting for and what its absence costs, and this is called from two
     beats that say very different things about it.
     """
-    def seq() -> int:
-        seen = [t.get("frame_seq") or 0 for t in tiles_for(s, subject)]
-        return max(seen) if seen else 0
-
     if was is None:
-        was = seq()
+        was = frames_taken_from(s, subject)
     due = time.time() + budget
     while time.time() < due:
-        if seq() > was:
+        if frames_taken_from(s, subject) > was:
             return True
         time.sleep(0.1)
     return False
