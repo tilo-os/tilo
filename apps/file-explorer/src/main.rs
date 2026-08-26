@@ -24,6 +24,54 @@ use vello::peniko::Color;
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
+/// PID namespace, so every instance sees itself as pid 2 and every session
+/// wrote under the *same* actor — and Automerge refuses a frame whose actor
+/// already used that sequence number:
+///
+///     blob_relay: a document frame did not parse; it is lost for this replica
+///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
+///
+/// Frames dropped, silently, in the one direction that matters: a change made
+/// on one machine never reaching another.
+///
+/// `have` is the actor `ui::persist::open` has already put on the document:
+/// `app_state::DocStore` mints one at random per state directory, persists it
+/// in an `actor` sidecar and takes a lock so a second instance cannot claim
+/// it. That is precisely the guarantee this needs, and the app used to throw
+/// it away. Prefixing keeps the readable half without inventing the unique
+/// half, and it is *stable across restarts*, which a clock reading is not.
+///
+/// Deliberately reads no environment: the whole failure was an id that was a
+/// function of things two replicas share, and a function of its arguments is
+/// the only shape that can be tested for it.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it.
+///
+/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
+/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// would be the best of both — it does not reach a sandboxed app, because the
+/// launcher builds an app's environment from an allowlist and it is not on
+/// it, so in the product neither of these answers and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID")
+        && !id.is_empty()
+    {
+        return Some(id);
+    }
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -92,10 +140,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Two windows of the file manager are two authors of the same document
     // — an inline rename is native collaborative `Text` (see
     // `actions.rs`), so concurrent edits have to be attributable to tell
-    // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
-    // so two un-configured instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID")
-        .unwrap_or_else(|_| format!("files-{}", std::process::id()));
+    // them apart. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a
+    // sandboxed launch has neither, so the fallback has to be sound on its
+    // own — see [`distinct_actor`].
+    let app_id = named_actor("files").unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
+    ui::diag!("file-explorer: automerge actor {app_id}");
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
@@ -573,4 +622,35 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("file-explorer: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// The regression, stated as the property it broke.
+    ///
+    /// Both ids below are minted inside one process, so anything derived from
+    /// the process — a pid, which is 2 in every sandbox on this system —
+    /// produces the same string twice. Automerge then refuses the second
+    /// replica's frames with `duplicate seq 1 found for actor`, and a change
+    /// made on one machine never reaches the other.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("files", a.get_actor()),
+            distinct_actor("files", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("files", doc.get_actor()).starts_with("files-"));
+    }
 }
