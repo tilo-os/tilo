@@ -72,6 +72,17 @@ impl Link {
         let stream = UnixStream::connect(path)
             .with_context(|| format!("connect to the collaboration broker at {}", path.display()))?;
         let opened_on = what_the_descriptor_names(stream.as_raw_fd());
+        // Said here so the two halves of a session's logs can be joined
+        // up. The broker records the pid on the other end of every
+        // connection it accepts; without this there was nothing on this
+        // side to match it against, and "is the peer in that log this
+        // process" had to be inferred from timestamps.
+        tracing::info!(
+            pid = std::process::id(),
+            fd = stream.as_raw_fd(),
+            on = opened_on.as_deref().unwrap_or("unknown"),
+            "dialled the collaboration broker"
+        );
         Ok(Self {
             stream,
             rbuf: Vec::new(),

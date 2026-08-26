@@ -402,37 +402,53 @@ impl Peer {
                 ));
             }
         }
-        let mut asked = libc::pollfd {
-            fd: guard.as_raw_fd(),
-            events: libc::POLLRDHUP,
-            revents: 0,
+        // A send of nothing at all.
+        //
+        // `poll` was the obvious instrument here and it is the wrong one.
+        // Measured on this kernel: a connection whose far end has done
+        // `shutdown(SHUT_RD)` polls **identically to a healthy one** —
+        // `POLLOUT` and nothing else, no `POLLRDHUP`, no `POLLHUP`, no
+        // `POLLERR`. That state is exactly the one that strands a reader
+        // thread for ever: the far end can no longer be written to, but
+        // this end's receive side was never shut down, so the reader
+        // blocks in `read` and is never woken to report anything. A sweep
+        // built on `poll` looks straight at it and sees a healthy peer.
+        //
+        // A zero-length send sees it, and measurably does not disturb
+        // anything: on a healthy connection it queues nothing — the far
+        // end's next read returns `EAGAIN`, not the zero that would fake
+        // an end of stream — and on a peer whose buffer is merely full it
+        // still reports success, so a slow reader is not mistaken for a
+        // dead one. `MSG_DONTWAIT` keeps it from ever blocking and
+        // `MSG_NOSIGNAL` keeps `EPIPE` an error rather than a signal.
+        // SAFETY: a zero-length send from a valid pointer on a descriptor
+        // this peer owns for the duration of the call.
+        let sent = unsafe {
+            libc::send(
+                guard.as_raw_fd(),
+                [].as_ptr(),
+                0,
+                libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+            )
         };
-        // SAFETY: one initialised `pollfd` describing a descriptor this
-        // peer owns for the duration of the call, and a zero timeout, so
-        // `poll` returns without waiting on anything.
-        let rc = unsafe { libc::poll(&mut asked, 1, 0) };
-        if rc < 0 {
-            // Interrupted, or a kernel refusal that says nothing about
-            // the connection. Reporting a guess here would be worse than
-            // waiting for the next sweep.
+        if sent >= 0 {
             return None;
         }
-        if asked.revents & libc::POLLNVAL != 0 {
-            return Some(
-                "its write descriptor is not open in this process any more"
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EPIPE) | Some(libc::ECONNRESET) | Some(libc::ENOTCONN) => Some(
+                "the far end can no longer be written to: it has closed the \
+                 connection, or shut down its side of it, and nothing more will \
+                 ever reach it"
                     .to_string(),
-            );
+            ),
+            Some(libc::EBADF) => Some(
+                "its write descriptor is not open in this process any more".to_string(),
+            ),
+            // Anything else says nothing certain about the connection —
+            // an interrupted call, a kernel refusal. Waiting for the next
+            // sweep is better than reporting a guess.
+            _ => None,
         }
-        if asked.revents & (libc::POLLRDHUP | libc::POLLHUP) != 0 {
-            return Some(
-                "the far end has closed; nothing more can arrive on this connection"
-                    .to_string(),
-            );
-        }
-        if asked.revents & libc::POLLERR != 0 {
-            return Some("its socket is in error".to_string());
-        }
-        None
     }
 
     /// Write one frame to this connection, refusing to write into a
@@ -5993,7 +6009,9 @@ mod tests {
             "a connection ended and nothing recorded it, got {departures:?}",
         );
         assert!(
-            departures[0].reason.contains("the far end has closed"),
+            departures[0]
+                .reason
+                .contains("the far end can no longer be written to"),
             "the record has to say the connection ended, got {:?}",
             departures[0].reason,
         );
@@ -6109,6 +6127,97 @@ mod tests {
             "and nothing should have been said about it, got {:?}",
             table.departures(),
         );
+    }
+
+    /// The far end shutting down only its *read* side is the case that
+    /// strands a reader thread for ever, and it is invisible to `poll`.
+    ///
+    /// Measured on this kernel: after the far end does
+    /// `shutdown(SHUT_RD)`, this end polls exactly as a healthy
+    /// connection does — `POLLOUT` and nothing else. No `POLLRDHUP`, no
+    /// `POLLHUP`, no `POLLERR`. Meanwhile this end's own receive side was
+    /// never shut down, so its reader thread stays blocked in `read` and
+    /// is never woken to account for anything, and the far end reads zero
+    /// and reports that the connection was closed.
+    ///
+    /// That is every symptom of the failure this was built for, and a
+    /// sweep that asked `poll` looked straight at it and saw nothing
+    /// wrong. So the sweep asks by sending nothing instead.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_far_end_that_shut_down_its_read_side_is_still_reported() {
+        use std::net::Shutdown;
+
+        let table = PeerTable::new();
+        let (_peer, far) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+
+        // The far end stops being able to receive, without closing. It is
+        // still a live descriptor at a live process; only its read side
+        // is gone.
+        far.shutdown(Shutdown::Read)
+            .expect("half-closing the far end's read side");
+
+        table.account_for_lost_peers();
+
+        assert!(
+            table.snapshot().is_empty(),
+            "a peer that can no longer be written to has to leave the fan-out, \
+             even though nothing about it looks wrong to poll",
+        );
+        let departures = table.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "the connection stopped being writable and nothing recorded it, \
+             got {departures:?}",
+        );
+        assert!(
+            departures[0]
+                .reason
+                .contains("the far end can no longer be written to"),
+            "got {:?}",
+            departures[0].reason,
+        );
+
+        // And the far end is still held here, so this cannot have passed
+        // by the peer merely having been dropped.
+        drop(far);
+    }
+
+    /// A peer whose buffer is merely full is not a peer that has gone,
+    /// and the probe must not say it is.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_that_is_only_backed_up_is_left_alone() {
+        let table = PeerTable::new();
+        let (peer, far) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+
+        // Fill the connection until it will take no more, without anyone
+        // reading the far end.
+        {
+            let mut guard = peer.writer.lock().expect("free");
+            guard
+                .set_nonblocking(true)
+                .expect("so filling it cannot block the test");
+            let block = vec![b'x'; 64 * 1024];
+            while guard.write(&block).is_ok() {}
+            guard.set_nonblocking(false).expect("back to blocking");
+        }
+
+        table.account_for_lost_peers();
+
+        assert_eq!(
+            table.snapshot().len(),
+            1,
+            "a slow reader is not a dead one, and must not be evicted for being slow",
+        );
+        assert!(
+            table.departures().is_empty(),
+            "and nothing should have been said about it, got {:?}",
+            table.departures(),
+        );
+
+        drop(far);
     }
 
     /// A route that can no longer be read is not the same thing as a
