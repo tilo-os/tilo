@@ -11,6 +11,10 @@ use automerge::{AutoCommit, ObjId, ReadDoc};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
 
+/// One block's `(block_id, start, end)` character range, as returned by the
+/// selection/format-span readers below.
+pub type BlockSpans = Vec<(String, usize, usize)>;
+
 /// Caret position: a block id plus a character offset within that block's text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Caret {
@@ -1050,10 +1054,10 @@ impl WordProcessor {
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             // 1. Clear the anchoring mark over its range so the highlight clears.
-            if let Some((b, s, e)) = &range {
-                if e > s {
-                    dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
-                }
+            if let Some((b, s, e)) = &range
+                && e > s
+            {
+                dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
             }
             // 2. Drop the comment entry from the comments container. `dm.doc` is
             //    the host `AutoCommit`; the container id comes from `Containers`.
@@ -1118,7 +1122,7 @@ impl WordProcessor {
     /// The character ranges a valued/exclusive inline mark covers: the selection
     /// per-run, or — with no selection — the whole caret block. Empty runs are
     /// kept for the caller to skip.
-    pub fn format_spans(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+    pub fn format_spans(&self, state: &AutoCommit) -> BlockSpans {
         self.font_ranges(state)
     }
 
@@ -1130,7 +1134,7 @@ impl WordProcessor {
         &self,
         state: &AutoCommit,
         name: &str,
-    ) -> Option<(Vec<(String, usize, usize)>, bool)> {
+    ) -> Option<(BlockSpans, bool)> {
         let sel = self.selection_blocks(state);
         if self.containers.is_none() || sel.iter().all(|(_, s, e)| s >= e) {
             return None;
@@ -1452,7 +1456,7 @@ impl WordProcessor {
     }
 
     /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
-    fn caret_table(&self, state: &AutoCommit) -> Option<(String, Vec<(String, usize, usize)>)> {
+    fn caret_table(&self, state: &AutoCommit) -> Option<(String, BlockSpans)> {
         let containers = self.containers.as_ref()?;
         let snap = qdoc::model::materialize(state, containers);
         let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
@@ -1601,8 +1605,8 @@ impl WordProcessor {
             for (id, c) in &to_bump {
                 dm.set_attr(id, "col", (*c + 1) as i64);
             }
-            for r in 0..nrows {
-                let id = dm.insert_block(anchors[r].as_deref(), "cell");
+            for (r, anchor) in anchors.iter().enumerate() {
+                let id = dm.insert_block(anchor.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
                 dm.set_attr(&id, "row", r as i64);
                 dm.set_attr(&id, "col", new_col as i64);
@@ -1814,21 +1818,37 @@ impl WordProcessor {
             self.seed_styles(state);
         }
         let containers = self.containers.clone().unwrap();
-        let blocks = qdoc::model::blocks_in_order(state, &containers);
+        // A document always has somewhere to write: an empty body gets its
+        // first paragraph here. Header and footer stay empty until something
+        // asks for them.
+        if qdoc::model::blocks_in_order(state, &containers).is_empty()
+            && let Some(ids) = self.ids.as_mut()
+        {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.insert_block(None, "paragraph");
+        }
+        // The caret's block has to exist in the *active region's* blocks, not
+        // the body's — otherwise a caret seated in a header or footer reads as
+        // stray on every body-only check and gets dragged back to the body.
+        let mut blocks = self.region_blocks_in_order(state);
         if blocks.is_empty() {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                let id = dm.insert_block(None, "paragraph");
-                self.caret = Caret { block: id, offset: 0 };
-            }
-        } else if !blocks.contains(&self.caret.block) {
-            self.caret = Caret { block: blocks[0].clone(), offset: 0 };
-        } else {
+            // The running head being edited has lost its last block, so there
+            // is nothing there to type into and the body is the context again.
+            self.region = Region::Body;
+            blocks = self.region_blocks_in_order(state);
+        }
+        if blocks.contains(&self.caret.block) {
             // clamp offset to the (possibly remotely-shrunk) block length
             let len = self.block_len(state, &self.caret.block);
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
+        } else if let Some(first) = blocks.first().cloned() {
+            // Nothing seated yet, or the block the caret was on is gone. The
+            // first position of this region is where to be, and an anchor
+            // into a vanished block must not survive it.
+            self.caret = Caret { block: first, offset: 0 };
+            self.selection_anchor = None;
         }
     }
 
@@ -1908,7 +1928,7 @@ impl WordProcessor {
     }
 
     fn region_insert_block(&mut self, state: &mut AutoCommit, after: Option<&str>, kind: &str) -> Option<String> {
-        let Some(containers) = self.containers.clone() else { return None };
+        let containers = self.containers.clone()?;
         let region = self.region;
         let ids = self.ids.as_mut()?;
         let mut dm = DocMut { doc: state, c: &containers, ids };
@@ -1942,10 +1962,10 @@ impl WordProcessor {
         }
         // Header/Footer: no `set_kind_in` exists yet — write the block `kind`
         // scalar directly on the region block object.
-        if let Some(container) = self.region_container_obj(state) {
-            if let Some(obj) = region_block_obj(state, &container, block) {
-                let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
-            }
+        if let Some(container) = self.region_container_obj(state)
+            && let Some(obj) = region_block_obj(state, &container, block)
+        {
+            let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
         }
     }
 
@@ -1999,14 +2019,12 @@ impl WordProcessor {
         // Header/Footer: no `remove_mark_in` exists yet — clear the mark over the
         // range directly on the region block's Text object (mirrors the body
         // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
-        if let Some(container) = self.region_container_obj(state) {
-            if let Some(obj) = region_block_obj(state, &container, block) {
-                if let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                    state.get(&obj, qdoc::schema::BLOCK_TEXT)
-                {
-                    let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
-                }
-            }
+        if let Some(container) = self.region_container_obj(state)
+            && let Some(obj) = region_block_obj(state, &container, block)
+            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+                state.get(&obj, qdoc::schema::BLOCK_TEXT)
+        {
+            let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
         }
     }
 
@@ -2363,12 +2381,12 @@ impl WordProcessor {
             return;
         }
         let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            if pos > 0 {
-                let prev = blocks[pos - 1].clone();
-                let len = self.block_len(state, &prev);
-                self.caret = Caret { block: prev, offset: len };
-            }
+        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
+            && pos > 0
+        {
+            let prev = blocks[pos - 1].clone();
+            let len = self.block_len(state, &prev);
+            self.caret = Caret { block: prev, offset: len };
         }
     }
 
@@ -2379,10 +2397,10 @@ impl WordProcessor {
             return;
         }
         let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            if pos + 1 < blocks.len() {
-                self.caret = Caret { block: blocks[pos + 1].clone(), offset: 0 };
-            }
+        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
+            && pos + 1 < blocks.len()
+        {
+            self.caret = Caret { block: blocks[pos + 1].clone(), offset: 0 };
         }
     }
 

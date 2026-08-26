@@ -63,7 +63,13 @@ recovery-restore = Restore
 recovery-discard = Discard
 
 ## Status bar
-status-count = { $words } words    { $chars } characters
+status-count = { $words } { $words ->
+        [one] word
+       *[other] words
+    }    { $chars } { $chars ->
+        [one] character
+       *[other] characters
+    }
 status-untitled = Untitled
 format-odt = ODF Text
 format-docx = Word Document
@@ -165,7 +171,10 @@ style-menu-delete = Delete style
 style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
-toast-toc-updated = Table of contents updated ({ $n } entries)
+toast-toc-updated = Table of contents updated ({ $n } { $n ->
+        [one] entry
+       *[other] entries
+    })
 toast-toc-empty = Add headings first — a table of contents lists them
 toast-style-deleted = Style deleted
 toast-style-duplicated = Style duplicated
