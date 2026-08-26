@@ -65,7 +65,8 @@ impl From<accesskit_winit::Event> for UserEvent {
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
+use crate::gpu::RenderContext;
+use vello::{Scene, Renderer, RendererOptions, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
@@ -1346,7 +1347,7 @@ impl App {
         // scope (teardown / headless) announces nothing.
         if let Some(k) = key {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!(
+                crate::diag!(
                     "[app] set scope; collab connected={}; broadcasting Arrived",
                     self.collab_manager.is_connected()
                 );
@@ -1449,7 +1450,7 @@ impl App {
         let delta = self.state.save_incremental();
         if !delta.is_empty() {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!("[app] broadcast doc delta {}B", delta.len());
+                crate::diag!("[app] broadcast doc delta {}B", delta.len());
             }
             self.collab_manager
                 .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
@@ -1662,7 +1663,7 @@ impl App {
                     // MERGE incoming full state rather than replacing the
                     // doc — a replace clobbers our own concurrent edits.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                        crate::diag!("[app] recv CRDTUpdate {}B", data.len());
                     }
                     if let Ok(mut incoming) = State::load(&data) {
                         let _ = self.state.doc.merge(&mut incoming.doc);
@@ -1680,7 +1681,7 @@ impl App {
                     // from a debug run — the two ends looked identical whether
                     // the delta was dropped in transit or applied silently.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTIncremental {}B", data.len());
+                        crate::diag!("[app] recv CRDTIncremental {}B", data.len());
                     }
                     let _ = self.state.load_incremental(&data);
                     self.needs_sync = true;
@@ -1696,7 +1697,7 @@ impl App {
                     // decryption between extraction and apply; the envelope
                     // metadata stays cleartext.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
+                        crate::diag!(
                             "[app] recv SignedCRDTIncremental from {} ({}B payload)",
                             "<peer>",
                             envelope.payload.len()
@@ -1715,7 +1716,7 @@ impl App {
                     // `exhausted` flag separately; the toolkit's
                     // default surface is just to apply.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv ScrollbackBatch ({} ops)", ops.len());
+                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
                         let _ = self.state.load_incremental(&envelope.payload);
@@ -1901,7 +1902,7 @@ impl App {
             RemotePresenceEffect::PeerArrived => {
                 let data = self.state.save();
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!("[app] recv Arrived; replying full state {}B", data.len());
+                    crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
                     .send(crate::collaboration::CollabRequest::SyncCRDT { data });
@@ -2688,7 +2689,7 @@ impl App {
             Some(id) => {
                 self.collab_manager = CollaborationManager::for_record(&id);
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!(
+                    crate::diag!(
                         "[app] checked out record {}; collab connected={}",
                         id.as_str(),
                         self.collab_manager.is_connected()
@@ -2970,7 +2971,11 @@ impl AppHandler {
     /// blocking GPU init runs AFTER the winit event loop has processed the
     /// initial `configure` and wired the seat — not inline in `resumed`,
     /// where it would starve those first events and race first-launch focus.
-    fn init_render(&mut self, window: &Arc<Window>) {
+    ///
+    /// `Err` carries a reason for a person to read. Every step here can fail
+    /// when the compositor exits while its application is still opening, and
+    /// none of those is worth aborting the process over.
+    fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         let size = window.inner_size();
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
@@ -2979,12 +2984,23 @@ impl AppHandler {
             size.height.max(1),
             vello::wgpu::PresentMode::AutoVsync,
         ))
-        .unwrap();
+        .map_err(|e| format!("could not create a drawing surface: {e}"))?;
         let device_handle = &render_cx.devices[surface.dev_id];
         // vello 0.9's `create_surface` builds the blitter pipeline against
         // the format it chose; flipping to the sRGB suffix here would
         // panic on the format mismatch in the first blit.
+        //
+        // Guarded like the worker's reconfigures (see
+        // `render_thread::configure_surface_checked`): `configure` returns no
+        // `Result`, so a surface the driver has already lost would reach
+        // wgpu's panicking default handler.
+        let configure_scope = device_handle
+            .device
+            .push_error_scope(vello::wgpu::ErrorFilter::Validation);
         surface.surface.configure(&device_handle.device, &surface.config);
+        if let Some(err) = pollster::block_on(configure_scope.pop()) {
+            return Err(format!("could not configure the drawing surface: {err}"));
+        }
         let renderer = Renderer::new(
             &device_handle.device,
             RendererOptions {
@@ -2994,11 +3010,12 @@ impl AppHandler {
                 pipeline_cache: None,
             },
         )
-        .unwrap();
+        .map_err(|e| format!("could not create the renderer: {e}"))?;
         // Hand the wgpu state off to the render worker. After this point
         // the main thread doesn't touch the surface, renderer, or
         // render_cx — every GPU call happens on the `ui-render` thread.
         self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+        Ok(())
     }
 }
 
@@ -3306,7 +3323,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // and wired the seat, rather than inline in `resumed`.
                 if self.render.is_none() {
                     qos_startup_metrics::mark("first-redraw-init-render-start");
-                    self.init_render(&window);
+                    if let Err(reason) = self.init_render(&window) {
+                        // Nothing to draw on, and retrying every redraw would
+                        // only spin. The reason reaches the compositor's
+                        // relay, which quotes it back in the notification
+                        // naming the application.
+                        crate::diag!("qos: {reason}");
+                        event_loop.exit();
+                        return;
+                    }
                     qos_startup_metrics::mark("first-redraw-init-render-done");
                 } else {
                     // Every subsequent redraw hits the "first-paint"
@@ -3328,13 +3353,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // re-request a redraw after this one so the user
                 // doesn't see a stale image.
                 let mut needs_followup_redraw = false;
+                let mut surface_gone = false;
                 while let Ok(outcome) = render.frame_complete.try_recv() {
                     match outcome {
                         FrameOutcome::Presented => {}
                         FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
                             needs_followup_redraw = true;
                         }
+                        FrameOutcome::SurfaceGone => {
+                            surface_gone = true;
+                        }
                     }
+                }
+                if surface_gone {
+                    // Normally because the compositor hosting this window
+                    // exited. Leave the way any other close does, so the
+                    // teardown already under way finishes instead of the
+                    // process aborting mid-frame.
+                    tracing::info!("drawing surface is gone; closing the window");
+                    event_loop.exit();
+                    return;
                 }
 
                 // Pull a recycled Scene buffer from the worker's
@@ -3794,7 +3832,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     // `shape=0us hit=N miss=0` — every label reused.
                     let (shape_hits, shape_misses, shape_ns) =
                         app.text_renderer.take_shape_stats();
-                    eprintln!(
+                    crate::diag!(
                         "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
