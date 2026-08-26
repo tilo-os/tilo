@@ -8608,6 +8608,27 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
                  "the two applications now share, so the shot after the "
                  "merge stays on the pair's old place")
 
+    # And leave the document in front, because the next beat types into
+    # it.
+    #
+    # This beat drops another application onto the document's tab bar,
+    # and a window dropped onto a bar now correctly comes forward -- so
+    # the beat ended with the *other* application showing. The next beat
+    # then typed its sentence into a file manager and waited nearly two
+    # minutes for it to turn up in a document: `the document was written
+    # into` failing, and a take twice its proper length. It worked
+    # before only because a joined window used to stay hidden, which was
+    # itself the bug.
+    #
+    # `show_tab` rather than a fresh gesture: it is the same click on
+    # the same pill the beat just demonstrated, so this is the beat
+    # putting back what it moved.
+    if wp is not None:
+        show_tab(int(wp["surface_id"]))
+        if active_tab_surface(quinten, merged["id"]) != int(wp["surface_id"]):
+            note("the document is not the tab in front after the merge, so "
+                 "the beat after this one will type into whatever is")
+
 
 
 def beat_nine(quinten: Session, xaver: Session, agent: Session,
