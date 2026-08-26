@@ -12,14 +12,13 @@
 //!   6. The relay's Ready reports pending_deltas=1 and immediately
 //!      delivers D1 to B.
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use qos_relay::Envelope;
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_peer_gets_queued_deltas_on_reconnect() {

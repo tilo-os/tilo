@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "threshold-identity"
 version = "0.1.0"
 edition = "2024"
@@ -78,3 +80,7 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 # Same dep that qos-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

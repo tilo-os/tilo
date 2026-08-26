@@ -2,8 +2,7 @@
 //! Pinned ones. Uses real .qpkg installs so both the payload tree and
 //! the blob store contribute to reported disk usage.
 
-mod common;
-
+use crate::common;
 use app_host::gc;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;

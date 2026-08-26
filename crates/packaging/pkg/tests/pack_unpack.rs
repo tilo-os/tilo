@@ -1,7 +1,6 @@
 //! pack → unpack → verify integration tests.
 
-mod fixtures;
-
+use crate::fixtures;
 use ed25519_dalek::SigningKey;
 use pkg::manifest::Manifest;
 use pkg::{

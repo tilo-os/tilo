@@ -1,8 +1,7 @@
 //! Manifest-level tests: TOML round-trip, schema validation,
 //! service-req parsing.
 
-mod fixtures;
-
+use crate::fixtures;
 use pkg::manifest::{Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError};
 use pkg::validate::{ManifestError, validate_manifest};
 

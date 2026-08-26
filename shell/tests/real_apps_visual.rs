@@ -13,9 +13,7 @@
 //!     -- --ignored --nocapture
 //! ```
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::frame::FrameBuilder;
