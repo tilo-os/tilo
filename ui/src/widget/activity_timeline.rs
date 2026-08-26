@@ -192,6 +192,34 @@ pub type ClearFiltersCallback = Box<dyn FnMut()>;
 /// Callback fired when the user commits a name.
 pub type NameGroupCallback = Box<dyn FnMut(&GroupNameRequest)>;
 
+/// What the user asked to take back when they pressed `[Undo]` on a band.
+///
+/// Carries the **range**, not a single change, and that is the whole point.
+/// `[Restore]` on the same header hands back one id and means "put the document
+/// back the way it was at this moment", which throws away everything after it.
+/// Undo means "take this band out and leave the rest alone" — a different
+/// operation on a different set of changes, and a host cannot tell the two apart
+/// from one id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandUndoRequest {
+    /// First change in the band.
+    pub start: HistoryEntryId,
+    /// Last change in the band.
+    pub end: HistoryEntryId,
+    /// The band's name, when it has one — what a confirmation should quote.
+    pub label: Option<String>,
+    /// Everyone who authored something in the band, in first-seen order. A band
+    /// is single-author unless a name spans a boundary, so this is usually one
+    /// person, and it is what a host filters the revert by.
+    pub authors: Vec<HistoryAuthor>,
+}
+
+/// Callback fired when the user clicks `[Undo]` on a band header.
+///
+/// Installing it is what makes the chip appear: a host with no way to invert a
+/// range must not be given a control that silently does nothing.
+pub type UndoBandCallback = Box<dyn FnMut(&BandUndoRequest)>;
+
 /// One line in the rendered list: a group header, or an individual change at a
 /// nesting depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +254,15 @@ struct RowGroup {
     total_count: usize,
     /// Whether anything in the range can be restored to.
     restorable: bool,
+}
+
+/// A band header's hover chips, in the order they are laid out.
+struct GroupChips {
+    name: Rect,
+    /// `None` unless a host installed a band-undo callback.
+    undo: Option<Rect>,
+    /// `None` when nothing in the band can be restored to.
+    restore: Option<Rect>,
 }
 
 /// The field the user is typing a name into.
@@ -282,6 +319,7 @@ pub struct ActivityTimeline {
     hover_row: Option<usize>,
     last_cursor: Point,
     on_revert: Option<RevertCallback>,
+    on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
     /// this so a snapshot stays stable; live callers leave it at `None`.
@@ -342,6 +380,7 @@ impl ActivityTimeline {
             hover_row: None,
             last_cursor: Point::ZERO,
             on_revert: None,
+            on_undo_band: None,
             on_name_group: None,
             now_override: None,
             newest_first: true,
@@ -447,6 +486,14 @@ impl ActivityTimeline {
     /// and from a group header's `[Restore]` chip.
     pub fn on_revert<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_revert = Some(Box::new(f));
+        self
+    }
+
+    /// Builder: install the band-undo callback, which also puts the `[Undo]`
+    /// chip on band headers. Without it the header keeps exactly the chips it
+    /// had — a host that cannot invert a range is not offered one.
+    pub fn on_undo_band<F: FnMut(&BandUndoRequest) + 'static>(mut self, f: F) -> Self {
+        self.on_undo_band = Some(Box::new(f));
         self
     }
 
@@ -997,6 +1044,39 @@ impl ActivityTimeline {
             full.y1 - 2.0,
         );
         Some(self.group_chip_rects_local(row, rg))
+    }
+
+    /// Hit-test the `[Undo]` chip on band header line `i`. `None` when the line
+    /// is not a band header, is off-screen, holds nothing revertible, or no host
+    /// installed [`ActivityTimeline::on_undo_band`].
+    pub fn group_undo_chip_rect(&self, i: usize) -> Option<Rect> {
+        let VisualRow::Group(g) = *self.rows.get(i)? else {
+            return None;
+        };
+        let full = self.row_rect(i)?;
+        let rg = &self.row_groups[g];
+        let row = Rect::new(
+            full.x0 + rg.depth as f64 * INDENT,
+            full.y0 + 2.0,
+            full.x1,
+            full.y1 - 2.0,
+        );
+        self.group_chip_rects_full(row, rg).undo
+    }
+
+    /// What a band header's `[Undo]` chip would ask for. `None` on a line that
+    /// is not a band header.
+    pub fn band_undo_request(&self, i: usize) -> Option<BandUndoRequest> {
+        let VisualRow::Group(g) = *self.rows.get(i)? else {
+            return None;
+        };
+        let rg = self.row_groups.get(g)?;
+        Some(BandUndoRequest {
+            start: rg.first_entry,
+            end: rg.last_entry,
+            label: rg.name.clone(),
+            authors: rg.authors.clone(),
+        })
     }
 
     /// "Now" used for relative-time rendering.
@@ -1810,6 +1890,9 @@ impl ActivityTimeline {
                 if rg.name.is_some() { "Rename" } else { "Name" },
                 rg.name.is_some(),
             );
+            if let Some(r) = self.group_chip_rects_full(row, rg).undo {
+                draw_chip(scene, transform, tr, theme, r, "Undo", false);
+            }
             if let Some(r) = restore_rect {
                 draw_chip(scene, transform, tr, theme, r, "Restore", false);
             }
@@ -1817,22 +1900,44 @@ impl ActivityTimeline {
     }
 
     /// The header's chip rects, in the already-indented row space.
-    fn group_chip_rects_local(&self, row: Rect, rg: &RowGroup) -> (Rect, Option<Rect>) {
+    ///
+    /// Laid out right to left — `[Restore]`, then `[Undo]`, then `[Name]` — so
+    /// the two that act on the document sit together and the naming control
+    /// keeps its place. `[Undo]` is only allocated when a host installed
+    /// [`ActivityTimeline::on_undo_band`].
+    fn group_chip_rects_full(&self, row: Rect, rg: &RowGroup) -> GroupChips {
         let chip_h = 20.0;
         let cy = row.y0 + 15.0;
         let narrow = self.rect.width() < NARROW_WIDTH;
         let restore_w = if narrow { 52.0 } else { 62.0 };
+        let undo_w = if narrow { 42.0 } else { 48.0 };
         let name_w = if narrow { 46.0 } else { 54.0 };
         let mut x1 = row.x1 - 6.0;
+        let chip = |x1: f64, w: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
         let restore = if rg.restorable {
-            let r = Rect::new(x1 - restore_w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
+            let r = chip(x1, restore_w);
             x1 -= restore_w + 5.0;
             Some(r)
         } else {
             None
         };
-        let name = Rect::new(x1 - name_w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
-        (name, restore)
+        let undo = if self.on_undo_band.is_some() && rg.restorable {
+            let r = chip(x1, undo_w);
+            x1 -= undo_w + 5.0;
+            Some(r)
+        } else {
+            None
+        };
+        GroupChips {
+            name: chip(x1, name_w),
+            undo,
+            restore,
+        }
+    }
+
+    fn group_chip_rects_local(&self, row: Rect, rg: &RowGroup) -> (Rect, Option<Rect>) {
+        let c = self.group_chip_rects_full(row, rg);
+        (c.name, c.restore)
     }
 
     /// Paint the filter chip strip + author typeahead.
@@ -2433,6 +2538,21 @@ impl Widget for ActivityTimeline {
                 };
                 match self.rows.get(i).copied() {
                     Some(VisualRow::Group(g)) => {
+                        // Undo is hit-tested before restore: they sit side by
+                        // side and mean different things, so a click that lands
+                        // on Undo must never fall through to a restore that
+                        // would discard everything after the band.
+                        if let Some(u) = self.group_undo_chip_rect(i)
+                            && u.contains(self.last_cursor)
+                        {
+                            if let Some(req) = self.band_undo_request(i)
+                                && let Some(cb) = self.on_undo_band.as_mut()
+                            {
+                                cb(&req);
+                            }
+                            *handled = true;
+                            return;
+                        }
                         if let Some((name, restore)) = self.group_chip_rects(i) {
                             if let Some(r) = restore
                                 && r.contains(self.last_cursor)
@@ -3360,6 +3480,118 @@ mod group_tests {
             Some("qos:group:rec"),
             "and it addresses the record that already exists"
         );
+    }
+
+    #[test]
+    fn a_band_offers_no_undo_chip_until_a_host_can_perform_one() {
+        // A control that silently does nothing is worse than no control, so the
+        // chip is opt-in: it appears when — and only when — a host installed a
+        // way to invert a range.
+        let entries = typing_run(20);
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
+        assert!(
+            t.group_undo_chip_rect(0).is_none(),
+            "no band-undo callback, no chip"
+        );
+
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries).on_undo_band(|_| {});
+        assert!(
+            t.group_undo_chip_rect(0).is_some(),
+            "with one installed, the band offers it"
+        );
+        assert!(
+            t.group_undo_chip_rect(1).is_none(),
+            "and only band headers get it, never a plain change row"
+        );
+    }
+
+    #[test]
+    fn the_undo_chip_asks_for_the_whole_band_not_one_change() {
+        // The gap this closes: a band header's only document action used to hand
+        // back a single id, so a host could not tell "take this band out" from
+        // "put the document back to this moment".
+        let entries = typing_run(20);
+        let captured: Rc<RefCell<Vec<BandUndoRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone())
+            .on_undo_band(move |r| c.borrow_mut().push(r.clone()));
+        t.set_named_ranges(vec![NamedRange {
+            id: "qos:group:rec".into(),
+            label: "The agent's pass".into(),
+            start: entries[0].id,
+            end: Some(entries[19].id),
+            named_by: Some(HistoryAuthor::new("Alice", 120.0, "deadbeef")),
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+
+        let chip = t.group_undo_chip_rect(0).expect("a named band offers undo");
+        click(&mut t, chip.center());
+
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1, "the chip fired once");
+        assert_eq!(reqs[0].start, entries[0].id, "the band's first change");
+        assert_eq!(reqs[0].end, entries[19].id, "and its last");
+        assert_ne!(
+            reqs[0].start, reqs[0].end,
+            "a range, not the single id a restore would carry"
+        );
+        assert_eq!(reqs[0].label.as_deref(), Some("The agent's pass"));
+        assert_eq!(
+            reqs[0]
+                .authors
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alice"],
+            "and who authored it, so the host can scope the revert"
+        );
+    }
+
+    #[test]
+    fn clicking_undo_never_falls_through_to_restore() {
+        // They sit side by side and do different things: undo takes the band
+        // out, restore discards everything after it. A click on one must not
+        // reach the other.
+        let entries = typing_run(20);
+        let undone: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let restored: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let (u, r) = (undone.clone(), restored.clone());
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries)
+            .on_undo_band(move |_| *u.borrow_mut() += 1)
+            .on_revert(move |_| *r.borrow_mut() += 1);
+
+        let undo_chip = t.group_undo_chip_rect(0).expect("undo chip");
+        let (_, restore) = t.group_chip_rects(0).expect("a band header");
+        let restore = restore.expect("restore chip");
+        assert!(
+            undo_chip.x1 <= restore.x0,
+            "undo sits left of restore and they do not overlap: {undo_chip:?} {restore:?}"
+        );
+
+        click(&mut t, undo_chip.center());
+        assert_eq!((*undone.borrow(), *restored.borrow()), (1, 0));
+
+        click(&mut t, restore.center());
+        assert_eq!((*undone.borrow(), *restored.borrow()), (1, 1));
+    }
+
+    #[test]
+    fn three_band_chips_still_fit_inside_the_row() {
+        for w in [360.0_f64, 620.0, 980.0] {
+            let entries = typing_run(20);
+            let t = timeline_at(Rect::new(0.0, 0.0, w, 500.0), entries).on_undo_band(|_| {});
+            let row = t.row_rect(0).expect("a band header");
+            let (name, restore) = t.group_chip_rects(0).unwrap();
+            let undo = t.group_undo_chip_rect(0).unwrap();
+            let restore = restore.unwrap();
+            assert!(restore.x1 <= row.x1, "restore inside the row at {w}");
+            assert!(undo.x1 <= restore.x0, "undo left of restore at {w}");
+            assert!(name.x1 <= undo.x0, "name left of undo at {w}");
+            assert!(
+                name.x0 >= row.x0,
+                "and the strip does not run off the left at {w}"
+            );
+        }
     }
 
     #[test]

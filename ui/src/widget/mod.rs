@@ -474,6 +474,29 @@ pub trait Widget {
         None
     }
 
+    /// Apply an action another app in this room published, if this app is the
+    /// one that owns it.
+    ///
+    /// Lets an app address a document it does not hold, by saying what should
+    /// happen rather than by writing the bytes: the app that *does* hold the
+    /// document answers, through its own
+    /// [`ActionRegistry`](qos_actions::ActionRegistry), which is the only
+    /// decoder that knows the type. That is what keeps a document to one
+    /// writer, and what made a room-wide fan-out safe in the first place.
+    ///
+    /// Delivered to every app in the room, so the default is to decline — an
+    /// action carrying a `type_id` this registry does not know is somebody
+    /// else's, and dropping it is the correct answer rather than a failure.
+    /// Return `true` only when the document actually changed.
+    fn apply_room_action(
+        &mut self,
+        _doc: &mut AutoCommit,
+        _type_id: &str,
+        _payload: &[u8],
+    ) -> bool {
+        false
+    }
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
@@ -773,6 +796,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
+pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;
 pub mod toolbar;          pub use toolbar::Toolbar;
 pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
