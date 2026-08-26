@@ -45,18 +45,20 @@ jobs:
           echo "RUST_CHANNEL=$ch" >> "$GITHUB_ENV"
           echo "building for toolchain $ch"
 
-      - name: Build
-        run: |
-          podman build \
-            --build-arg RUST_CHANNEL="$RUST_CHANNEL" \
-            -f os/Containerfile.builder \
-            -t code.podesta.ai/qos/qos-builder:"$RUST_CHANNEL" \
-            -t code.podesta.ai/qos/qos-builder:latest \
-            .
+      # The runner provides docker, not podman.
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
 
       # The Containerfile runs tools/check-build-env.sh during the build, so a
       # missing native dependency fails here rather than in every later job.
-      - name: Push
-        run: |
-          podman push code.podesta.ai/qos/qos-builder:"$RUST_CHANNEL"
-          podman push code.podesta.ai/qos/qos-builder:latest
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: os/Containerfile.builder
+          push: true
+          build-args: |
+            RUST_CHANNEL=${{ env.RUST_CHANNEL }}
+          tags: |
+            code.podesta.ai/qos/qos-builder:${{ env.RUST_CHANNEL }}
+            code.podesta.ai/qos/qos-builder:latest
