@@ -80,6 +80,22 @@ pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
     out
 }
 
+/// Where the misspelled words in `text` are, without suggesting corrections.
+///
+/// [`check`] suggests a replacement for every word it flags, and each suggestion
+/// walks the dictionary computing edit distances. Drawing a squiggle needs only
+/// the positions, and the word processor was paying the whole price on every
+/// keystroke — a half-typed word is a misspelling until it is finished, so the
+/// search ran between keypress and letter for suggestions nothing displayed.
+/// Measured on release, 12 ms of a 13 ms draw pass.
+pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
+    tokenize(text)
+        .into_iter()
+        .filter(|tok| is_spellable(tok.text) && !dict.contains(tok.text))
+        .map(|tok| (tok.start, tok.end))
+        .collect()
+}
+
 /// Returns `true` if `word` is the kind of token a spell checker should judge.
 ///
 /// Filters out pure numbers, ALL-CAPS acronyms, and URL/email-shaped tokens. The
@@ -195,6 +211,37 @@ mod tests {
             "expected zero misspellings, got {:?}",
             result
         );
+    }
+
+    /// The squiggle comes from `spans` and the correction menu from `check`, so
+    /// a disagreement means a word underlined with nothing to offer, or a
+    /// correction offered with no underline. The fixture mixes a number, an
+    /// acronym and a URL so every is-this-judgeable rule runs on both paths.
+    #[test]
+    fn spans_flag_the_same_words_check_does() {
+        let dict = builtin();
+        let text = "The recieve date is 2026 for NASA at https://example.com/x and teh rest.";
+        let full: Vec<(usize, usize)> =
+            check(&dict, text).iter().map(|m| (m.start, m.end)).collect();
+        assert_eq!(spans(&dict, text), full);
+        assert!(!full.is_empty(), "the fixture has to contain a misspelling");
+        // Guards against both paths agreeing on the same wrong answer.
+        let flagged: Vec<&str> = full.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(flagged, vec!["recieve", "teh"]);
+    }
+
+    /// Every prefix of a word is a misspelling, which is why the draw path hit
+    /// this on every keystroke.
+    #[test]
+    fn spans_agree_with_check_on_every_prefix_of_a_word() {
+        let dict = builtin();
+        let word = "rehearsal";
+        for n in 1..=word.len() {
+            let partial = &word[..n];
+            let full: Vec<(usize, usize)> =
+                check(&dict, partial).iter().map(|m| (m.start, m.end)).collect();
+            assert_eq!(spans(&dict, partial), full, "the two paths disagree on {partial:?}");
+        }
     }
 
     #[test]
