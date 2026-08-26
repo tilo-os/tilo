@@ -7,9 +7,7 @@
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
