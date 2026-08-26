@@ -20,8 +20,12 @@ out="$here/fdwatch.so"
 check_log=$(mktemp)
 trap 'rm -f "$check_log"' EXIT
 
-# One close of a live descriptor and one of the same number afterwards.
-# The second is the shape this whole thing exists to catch.
+# Three things at once: a close of a live AF_UNIX socket, a close of the
+# same number afterwards (the shape this exists to catch), and a dup2
+# onto a number that is free (the shape it must NOT cry wolf about —
+# every service-fd handoff in the launcher looks like that, and calling
+# ten of them double closes once sent a real investigation down a blind
+# alley).
 LD_PRELOAD="$out" QOS_FDWATCH=1 QOS_FDWATCH_LOG="$check_log" \
     python3 -c '
 import os, socket
@@ -32,19 +36,22 @@ try:
     os.close(fd)
 except OSError:
     pass
+spare = os.open("/dev/null", os.O_RDONLY)
+free = 60
+os.dup2(spare, free)          # onto a free number: routine, not a loss
+os.close(free)
+os.close(spare)
 s.close()
 '
 
-if ! grep -q "was-not-open" "$check_log"; then
-    echo "fdwatch built but did not report a double close — not usable" >&2
-    echo "--- what it did report ---" >&2
-    grep -v '^fdwatch --- \|^[0-9a-f]*-[0-9a-f]* ' "$check_log" >&2 || true
-    exit 1
-fi
-if ! grep -q "socket domain=1" "$check_log"; then
-    echo "fdwatch built but did not recognise an AF_UNIX socket — not usable" >&2
-    exit 1
+fail() { echo "fdwatch built but $1 — not usable" >&2; exit 1; }
+
+grep -q "DOUBLE-CLOSE" "$check_log" || fail "did not report a double close"
+grep -q "socket domain=1" "$check_log" || fail "did not recognise an AF_UNIX socket"
+if grep "dup2" "$check_log" | grep -q "DOUBLE-CLOSE"; then
+    fail "called a dup2 onto a free descriptor a double close"
 fi
 
 echo "built $out"
-echo "checked: it reports a double close and identifies AF_UNIX sockets"
+echo "checked: reports a double close, identifies AF_UNIX sockets, and does"
+echo "         not mistake a dup2 onto a free descriptor for either"
