@@ -31,8 +31,12 @@ fn root_builds_without_panic_for_bootstrap_tree() {
 }
 
 #[test]
-fn bootstrap_default_seeds_four_demo_tabs_in_order() {
-    let tree = WorkspaceTree::bootstrap_default();
+fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
+    // `bootstrap_default` (since 1c4cd284a, "a first boot starts empty
+    // instead of inventing a desktop") seeds one empty workspace with no
+    // groups; `bootstrap_demo` is the populated fixture kept for exactly
+    // this kind of test — one with a tab to act on.
+    let tree = WorkspaceTree::bootstrap_demo();
     let ws = tree.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
@@ -477,7 +481,10 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     use ui::permissions::UserId;
     use ui::presence::{PresenceCtx, PresenceKey};
 
-    let mut tree = WorkspaceTree::bootstrap_default();
+    // `bootstrap_default` seeds no groups (a first boot starts empty);
+    // `bootstrap_demo` is the populated fixture that gives this test two
+    // real tabs to attribute peers to.
+    let mut tree = WorkspaceTree::bootstrap_demo();
     // Pick a real tab id from the bootstrap tree so we're exercising the
     // actual id formatting (not a synthetic constant).
     let ws = tree.active_workspace().expect("active workspace");
@@ -694,7 +701,10 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
     // state wraps the persisted tree (not the runtime tree) so this
     // also verifies the persisted-tree `apply_workspace_drop_from_path`
     // overload wires correctly.
-    let tree = WorkspaceTree::bootstrap_default();
+    // `bootstrap_default` seeds no groups (a first boot starts empty);
+    // this test drops onto an existing group, so it needs
+    // `bootstrap_demo`'s populated fixture instead.
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
     let before_tab_count = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]

@@ -197,7 +197,12 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     let row = &layout.rows[0];
     assert_eq!(row.subject.kind, SubjectKind::App);
     assert_eq!(row.subject.id, "Terminal");
-    assert_eq!(row.allows, "Edit files under /var/workspace");
+    // `capability_allows` phrases a workspace-projected `FsPath` scope as
+    // "Edit workspace files" rather than exposing the FUSE mount point
+    // (`WORKSPACE_FILES_PATH`) — HIG §4: no internal/implementation
+    // labels in user-facing chrome. See the doc comment on
+    // `capability_allows` in workspace_settings.rs.
+    assert_eq!(row.allows, "Edit workspace files");
     assert_eq!(row.expiry, "Session");
     // The composer is laid out whether or not anything is granted yet.
     assert!(layout.choice_rect.area() > 0.0);
