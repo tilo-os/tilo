@@ -4,6 +4,7 @@
 //! `shell::shell::collab_broker` (the broker side) byte for byte.
 
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -33,19 +34,48 @@ extern "C" {
     fn libc_getuid() -> u32;
 }
 
+/// What the kernel says a descriptor names, as a string — `socket:[N]`
+/// for a socket, a path for a file.
+///
+/// Read out of `/proc/self/fd` rather than `fstat`ed because the answer
+/// wanted here is an *identity that can be compared and printed*, and
+/// this gives both without a `libc` dependency or a `struct stat`.
+fn what_the_descriptor_names(fd: std::os::fd::RawFd) -> Option<String> {
+    std::fs::read_link(format!("/proc/self/fd/{fd}"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// One connection to the broker.
 pub struct Link {
     stream: UnixStream,
     rbuf: Vec<u8>,
+    /// What this connection's descriptor named when it was opened.
+    ///
+    /// A read of zero says the far end has gone. It says that whether
+    /// the far end really went, or whether this descriptor stopped being
+    /// the connection while nobody was looking — anything in this
+    /// process that closes a descriptor number it no longer owns frees
+    /// it for the next `open`, and a read on whatever took it can return
+    /// zero just as readily. The two are the same `Ok(0)` here and they
+    /// are opposite diagnoses: one is the broker's problem and one is
+    /// this process's.
+    ///
+    /// So the answer is taken at connect and compared at the hang-up.
+    /// Cheap, and it costs nothing on the path that matters — it is read
+    /// once when the link is made and once when it ends.
+    opened_on: Option<String>,
 }
 
 impl Link {
     pub fn connect(path: &Path) -> Result<Self> {
         let stream = UnixStream::connect(path)
             .with_context(|| format!("connect to the collaboration broker at {}", path.display()))?;
+        let opened_on = what_the_descriptor_names(stream.as_raw_fd());
         Ok(Self {
             stream,
             rbuf: Vec::new(),
+            opened_on,
         })
     }
 
@@ -72,7 +102,7 @@ impl Link {
             self.stream.set_read_timeout(Some(timeout))?;
             let mut chunk = [0u8; 64 * 1024];
             match self.stream.read(&mut chunk) {
-                Ok(0) => anyhow::bail!("the broker closed the connection"),
+                Ok(0) => anyhow::bail!(self.why_the_read_ended()),
                 Ok(n) => self.rbuf.extend_from_slice(&chunk[..n]),
                 Err(e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
@@ -84,6 +114,33 @@ impl Link {
                 }
                 Err(e) => return Err(e).context("read from the broker"),
             }
+        }
+    }
+
+    /// Say what a zero-length read actually means for *this* descriptor.
+    ///
+    /// Named separately from the bail so the two diagnoses are written
+    /// down side by side. The wording of the ordinary case is unchanged
+    /// and deliberately so: it is what the harnesses grep for.
+    fn why_the_read_ended(&self) -> String {
+        let fd = self.stream.as_raw_fd();
+        let now = what_the_descriptor_names(fd);
+        match (&self.opened_on, &now) {
+            (Some(opened), Some(current)) if opened != current => format!(
+                "this connection's descriptor is no longer the socket it was opened \
+                 on: fd {fd} was {opened} and is now {current}. The broker did not \
+                 close anything — something in this process closed or replaced the \
+                 descriptor, and the read returned nothing because whatever took the \
+                 number had nothing to give"
+            ),
+            (Some(_), None) => format!(
+                "this connection's descriptor is no longer open at all: fd {fd} was \
+                 {} and now names nothing. Something in this process closed it",
+                self.opened_on.as_deref().unwrap_or("unknown"),
+            ),
+            // Same descriptor, same socket, and it read zero: the far end
+            // really did go away. The original wording, unchanged.
+            _ => "the broker closed the connection".to_string(),
         }
     }
 
@@ -157,6 +214,96 @@ mod tests {
             }
         }
         assert!(matches!(got, Some(CollabEvent::CRDTIncremental { ref data }) if data == &[1, 2, 3]));
+        server.join().unwrap();
+    }
+
+    // Replacing one descriptor with another, which is what an unrelated
+    // close of a number this process no longer owns leaves behind once
+    // something else has taken it.
+    extern "C" {
+        #[link_name = "dup2"]
+        fn libc_dup2(oldfd: i32, newfd: i32) -> i32;
+    }
+
+    /// A read of zero on a descriptor that is still the connection is the
+    /// far end hanging up, and must keep saying so in the words the
+    /// harnesses grep for.
+    #[test]
+    fn an_ordinary_hang_up_still_reads_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            drop(s); // hang up, for real
+        });
+        let mut link = Link::connect(&path).unwrap();
+        let err = loop {
+            match link.recv(Duration::from_millis(200)) {
+                Err(e) => break e.to_string(),
+                Ok(_) => continue,
+            }
+        };
+        assert_eq!(
+            err, "the broker closed the connection",
+            "a real hang-up has to keep its original wording",
+        );
+        server.join().unwrap();
+    }
+
+    /// And a read of zero on a descriptor that is *not* the connection any
+    /// more says that instead — because the two are the same `Ok(0)` and
+    /// opposite diagnoses.
+    ///
+    /// Forced rather than waited for: the descriptor is replaced outright
+    /// with another socket whose far end has gone, which is what reading
+    /// zero from a number somebody else took looks like from in here. The
+    /// replacement is a socket on purpose — in the failure this was built
+    /// for, `set_read_timeout` succeeded just before the zero-read, so
+    /// whatever the descriptor was by then was still a socket.
+    #[test]
+    fn a_descriptor_that_is_no_longer_the_connection_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            // Hold the real connection open for the length of the test, so
+            // that a zero-read cannot possibly be this end hanging up.
+            std::thread::sleep(Duration::from_millis(400));
+            drop(s);
+        });
+        let mut link = Link::connect(&path).unwrap();
+        let opened_on = link
+            .opened_on
+            .clone()
+            .expect("the link records what it opened on");
+
+        // Another socket, already at end of stream, put on the link's number.
+        let (spare, gone) = UnixStream::pair().unwrap();
+        drop(gone);
+        let rc = unsafe { libc_dup2(spare.as_raw_fd(), link.stream.as_raw_fd()) };
+        assert_ne!(rc, -1, "replacing the descriptor is the whole test");
+
+        let err = link
+            .recv(Duration::from_millis(200))
+            .expect_err("a replaced descriptor at end of stream must not read as data")
+            .to_string();
+
+        assert!(
+            err.contains("no longer the socket it was opened on"),
+            "the agent has to say the descriptor changed rather than blame the \
+             broker, got {err}",
+        );
+        assert!(
+            err.contains(&opened_on),
+            "and it has to say what the descriptor used to be, got {err}",
+        );
+        assert!(
+            !err.starts_with("the broker closed the connection"),
+            "and it must not report this as the broker hanging up, got {err}",
+        );
+
         server.join().unwrap();
     }
 
