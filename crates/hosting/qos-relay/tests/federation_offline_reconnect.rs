@@ -11,7 +11,6 @@
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.
 
-use crate::common;
 use std::path::PathBuf;
 use std::time::Duration;
 

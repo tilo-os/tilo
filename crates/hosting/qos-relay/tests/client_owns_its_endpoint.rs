@@ -13,7 +13,6 @@
 //! requires two post-handshake exchanges — the `Ready` that answers a
 //! `Subscribe`, and a `Ping`/`Pong` round trip after it.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
