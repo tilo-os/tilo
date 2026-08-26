@@ -26,7 +26,6 @@
 //!       relays does not "leak" a peer's messages onto a relay
 //!       the peer never talks to).
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

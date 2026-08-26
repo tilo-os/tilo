@@ -25,7 +25,6 @@
 //!      delta. B applies it and now fully converges with A across
 //!      *both* edits.
 
-use crate::common;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;

@@ -10,7 +10,6 @@
 //!    auth stage (user B's cert doesn't chain to user A's root);
 //!  - no state for any workspace leaks from B → A.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
