@@ -30,7 +30,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_bridge::service::BridgeCollabService;
 use collab_bridge::upstream::{ContextSnapshot, DropOldest, OpEnvelope, OpKind, PresenceEnvelope, ScrollbackReply, UpstreamHandle};
-use collab_bridge::wire::{CollabEvent, CollabRequest, Collaborator, PresencePayload, PresenceKey};
+use collab_bridge::wire::{
+    CollabEvent, CollabRequest, Collaborator, PointerSpace, PresenceKey, PresencePayload,
+};
 
 use runtime_collab::raw::collab_service;
 use runtime_collab::{CollabClient, CollabServiceClient, PresencePayload as SdkPresencePayload};
@@ -285,6 +287,79 @@ fn publish_cursor_arrives_upstream_as_pointer_presence() {
 }
 
 #[test]
+fn publish_pointer_carries_the_publishers_own_coordinate_space() {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let local = LocalSet::new();
+    local.block_on(&rt, async {
+        let (collab, captured, _inject) = stand_up_bridge().await;
+        let channel = collab.join_channel("chan-ptr", b"identity").await.unwrap();
+        let presence = channel.presence().await.unwrap();
+
+        let key = PresenceKey::Pointer {
+            space: PointerSpace::Surface { surface: "word-processor".into() },
+        };
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+        presence.publish_pointer(&key_bytes, 1.0, 2.0).await.unwrap();
+
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        let cap = captured.borrow();
+        let (sent_key, pos) = cap
+            .iter()
+            .find_map(|r| match r {
+                CollabRequest::Presence {
+                    key,
+                    payload: PresencePayload::Pointer { x, y },
+                } => Some((key.clone(), (*x, *y))),
+                _ => None,
+            })
+            .expect("bridge emitted a Pointer Presence upstream");
+        assert_eq!(pos, (1.0, 2.0));
+        // The publisher's own key, not the placeholder `publish_cursor`
+        // has to synthesize: the key is the coordinate space, so a
+        // re-keyed frame is a position measured somewhere else.
+        assert_eq!(sent_key, key);
+    });
+}
+
+#[test]
+fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let local = LocalSet::new();
+    local.block_on(&rt, async {
+        let (collab, _captured, inject) = stand_up_bridge().await;
+        let channel = collab.join_channel("chan-ptr-rx", b"identity").await.unwrap();
+        let presence = channel.presence().await.unwrap();
+        let stream = presence.subscribe_all().await.unwrap();
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        let key = PresenceKey::Pointer {
+            space: PointerSpace::Desktop { room: "room-1".into() },
+        };
+        (inject)(CollabEvent::RemotePresenceUpdate {
+            user_id: "alice".into(),
+            key: key.clone(),
+            payload: PresencePayload::Pointer { x: 230.0, y: 34.0 },
+        });
+
+        let ev = tokio::time::timeout(Duration::from_secs(3), stream.read())
+            .await
+            .expect("pointer presence arrives")
+            .unwrap();
+        assert_eq!(ev.user_id, "alice");
+        // `Pointer`, not `Cursor`: a receiver has to be able to tell a
+        // position that knows its space from one that does not.
+        assert_eq!(ev.payload, SdkPresencePayload::Pointer { x: 230.0, y: 34.0 });
+        let decoded: PresenceKey = postcard::from_bytes(&ev.key_bytes).unwrap();
+        assert_eq!(decoded, key);
+    });
+}
+
+#[test]
 fn subscribe_context_delivers_upstream_context_events() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
@@ -304,11 +379,15 @@ fn subscribe_context_delivers_upstream_context_events() {
                     id: "alice".into(),
                     name: "Alice".into(),
                     color: [1.0, 0.0, 0.0],
+                    is_agent: false,
+                    is_self: true,
                 },
                 Collaborator {
                     id: "bob".into(),
                     name: "Bob".into(),
                     color: [0.0, 1.0, 0.0],
+                    is_agent: true,
+                    is_self: false,
                 },
             ],
             permissions: vec!["write".into(), "share".into()],
@@ -324,6 +403,13 @@ fn subscribe_context_delivers_upstream_context_events() {
         assert_eq!(snap.collaborators[0].display_name, "Alice");
         assert_eq!(snap.collaborators[0].color, 0x00_ff_00_00);
         assert_eq!(snap.collaborators[1].user_id, "bob");
+        // Both facts have to survive the projection: dropping either one
+        // is what left a client unable to tell an agent from a person,
+        // or to find itself in the roster at all.
+        assert!(snap.collaborators[0].is_self, "alice is this machine's own row");
+        assert!(!snap.collaborators[0].is_agent, "alice is a person");
+        assert!(!snap.collaborators[1].is_self, "bob is somebody else");
+        assert!(snap.collaborators[1].is_agent, "bob is an agent");
         assert_eq!(snap.permissions, vec!["write".to_string(), "share".to_string()]);
     });
 }
