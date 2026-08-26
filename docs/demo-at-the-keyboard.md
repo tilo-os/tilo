@@ -109,6 +109,23 @@ still writes the clip; a second abandons it.
 
 ## Known faults, measured on 2026-08-26
 
+- **The model service can refuse you the take.** The agent asks a model
+  which of an application's exported actions answers the instruction. If
+  that call fails, it falls back to a keyword vocabulary that does not
+  know "square", so it refuses honestly and the take is lost. In the
+  agent's log this reads:
+
+      INFO qos_agent::session: the call failed: http 529:
+        {"type":"error","error":{"type":"overloaded_error", ...}}
+      WARN qos_agent::session: refused a sequence whole part=make this square
+
+  Two consecutive takes died this way in one morning, three failures in
+  one of them, so it is not rare when the service is busy. It is not a
+  fault in anything here and nothing in this tree can prevent it — check
+  the agent's log before suspecting the demo. Worth a rehearsal take
+  shortly before you record, purely to see whether the service is
+  answering.
+
 - **A narrated take comes out about twice its real length.** `--max-hold 0`
   turns the trim off but not the composer's one-frame-per-tick floor, and the
   camera captures at ~57 fps against `--fps 30`. Measured: 269.8 s of take,
