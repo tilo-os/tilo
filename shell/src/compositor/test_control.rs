@@ -58,6 +58,21 @@ use vello::kurbo::Rect;
 
 use crate::shell::search::action_api::ArgValue;
 
+/// Which pointer button a [`Command::PointerButton`] means.
+///
+/// Spelled out rather than passed as a number: `3` is the right button in
+/// X11's numbering, `BTN_RIGHT` is `0x111` in evdev's, and winit calls it
+/// `MouseButton::Right`. A harness should not have to know which of those
+/// this end speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerButtonKind {
+    #[default]
+    Left,
+    Right,
+    Middle,
+}
+
 /// Top-level command envelope. Tag is `op`; remaining fields are
 /// per-variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -211,8 +226,18 @@ pub enum Command {
     /// has no other way to compose that scene. Drives the same
     /// `WindowWidth::Fraction` + doc mirror a width drag does.
     SetGroupWidth { permille: u16 },
-    /// Press or release the left pointer button at the current position.
-    PointerButton { pressed: bool },
+    /// Press or release a pointer button at the current position.
+    ///
+    /// `button` defaults to the left one, so every existing caller keeps
+    /// working unchanged. The right button exists because a context menu
+    /// is opened with it, and a harness that cannot press it cannot drive
+    /// the gesture this desktop hangs a good deal on: select a thing,
+    /// right-click, say something about it.
+    PointerButton {
+        pressed: bool,
+        #[serde(default)]
+        button: PointerButtonKind,
+    },
     /// Copy `text` from **in-process chrome**, through the same
     /// `ui::text_selection::clipboard_copy` every hosted widget calls.
     ///
@@ -560,6 +585,16 @@ pub enum PlannedAction {
     /// Inject a left mouse button event. `pressed=true` is button-down,
     /// `false` is button-up.
     MouseLeftButton { pressed: bool },
+    /// Press or release a pointer button that is not the left one.
+    ///
+    /// Kept separate from [`Self::MouseLeftButton`] rather than folded into
+    /// it: the left button is planned from a dozen call sites here and in
+    /// `native.rs`, and widening all of them to carry a value they would
+    /// every one of them pass as `Left` is churn that buys nothing.
+    MousePointerButton {
+        pressed: bool,
+        button: PointerButtonKind,
+    },
     /// Inject a keyboard press or release for `key`. The transport
     /// translates `KeyTag` to `winit::keyboard::Key` and synthesises
     /// a `WindowEvent::KeyboardInput`.
@@ -853,10 +888,12 @@ pub fn dispatch_command<S: ControlState>(
             for c in text.chars() {
                 let tag = KeyTag::Char(c);
                 let shift = KeyTag::Named(NamedKeyTag::Shift);
-                // ASCII uppercase only: the shifted punctuation marks have
-                // no entry in the keycode table at all, so they are not
-                // delivered to a client with or without this bracket.
-                let shifted = c.is_ascii_uppercase();
+                // Letters *and* the shifted punctuation marks: both reach a
+                // client as a position on the keyboard rather than as a
+                // character, so both need the same bracket. See
+                // `client_input::unshifted`, the one place that knows which
+                // key a character sits on.
+                let (_, shifted) = crate::compositor::client_input::unshifted(c);
                 if shifted {
                     actions.push(PlannedAction::KeyboardKey {
                         key: shift,
@@ -985,9 +1022,15 @@ pub fn dispatch_command<S: ControlState>(
                 permille: *permille,
             }],
         ),
-        Command::PointerButton { pressed } => (
+        Command::PointerButton { pressed, button } => (
             Response::Ok { frame: 0 },
-            vec![PlannedAction::MouseLeftButton { pressed: *pressed }],
+            vec![match button {
+                PointerButtonKind::Left => PlannedAction::MouseLeftButton { pressed: *pressed },
+                other => PlannedAction::MousePointerButton {
+                    pressed: *pressed,
+                    button: *other,
+                },
+            }],
         ),
         // Both clipboard ops call straight into `ui`, exactly as a hosted
         // widget does, rather than reaching into the compositor's mirror
@@ -1168,6 +1211,74 @@ mod tests {
     fn parse_list_targets_command_round_trips() {
         let cmd = parse_command(r#"{"op":"list_targets"}"#).unwrap();
         assert_eq!(cmd, Command::ListTargets);
+    }
+
+    #[test]
+    fn parse_pointer_button_defaults_to_left() {
+        // Every existing caller sends no `button` at all, so the default
+        // has to be the one they already mean.
+        let cmd = parse_command(r#"{"op":"pointer_button","pressed":true}"#).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PointerButton {
+                pressed: true,
+                button: PointerButtonKind::Left,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_pointer_button_reads_the_right_button() {
+        let cmd =
+            parse_command(r#"{"op":"pointer_button","pressed":true,"button":"right"}"#).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PointerButton {
+                pressed: true,
+                button: PointerButtonKind::Right,
+            }
+        );
+    }
+
+    #[test]
+    fn dispatching_a_right_click_plans_a_typed_button_not_the_left_one() {
+        let state = StaticState::new(&[]);
+        let (_, actions) = dispatch_command(
+            &Command::PointerButton {
+                pressed: true,
+                button: PointerButtonKind::Right,
+            },
+            &state,
+        );
+        assert_eq!(
+            actions,
+            vec![PlannedAction::MousePointerButton {
+                pressed: true,
+                button: PointerButtonKind::Right,
+            }],
+            "a right-click must not plan as MouseLeftButton, or the \
+             harness would be pressing the wrong button on the wire",
+        );
+    }
+
+    #[test]
+    fn dispatching_a_left_click_still_plans_the_original_variant() {
+        // The left button keeps planning through `MouseLeftButton`, not
+        // through `MousePointerButton { button: Left }` — a dozen call
+        // sites already match on the old variant and widening every one
+        // of them for a case that never varies is churn nothing needs.
+        let state = StaticState::new(&[]);
+        let (_, actions) = dispatch_command(
+            &Command::PointerButton {
+                pressed: false,
+                button: PointerButtonKind::Left,
+            },
+            &state,
+        );
+        assert_eq!(
+            actions,
+            vec![PlannedAction::MouseLeftButton { pressed: false }],
+        );
     }
 
     #[test]
@@ -1570,6 +1681,44 @@ mod tests {
             "a capital is typed with Shift held across it, and a lowercase \
              letter is not — a bare keycode would reach the client as its \
              lowercase letter either way",
+        );
+    }
+
+    /// Typing a shifted punctuation mark holds Shift around it too.
+    ///
+    /// Before `unshifted` existed, `is_ascii_uppercase()` was the whole
+    /// bracket: `:` is not uppercase, so it planned with no Shift and
+    /// `evdev_from_char` had no entry for it at all — a colon was typed
+    /// as nothing, silently.
+    #[test]
+    fn typing_a_shifted_punctuation_mark_holds_shift_around_it() {
+        let state = StaticState::new(&[]);
+        let (_, actions) = dispatch_command(
+            &Command::Type {
+                text: ":".to_string(),
+            },
+            &state,
+        );
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char(':'),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char(':'),
+                    pressed: false,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: false,
+                },
+            ],
         );
     }
 
