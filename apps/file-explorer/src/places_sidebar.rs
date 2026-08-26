@@ -140,10 +140,8 @@ impl PlacesSidebar {
         let mut entries: Vec<(Icon, String, PathBuf)> = roots
             .into_iter()
             .map(|p| {
-                let label = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Workspace".to_string());
+                // Shared with the breadcrumb, which names the same place.
+                let label = crate::model::workspace_label(&p);
                 (Icon::CloudDownload, label, p)
             })
             .collect();
