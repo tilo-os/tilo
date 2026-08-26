@@ -192,6 +192,22 @@ pub enum CollabEvent {
         key: PresenceKey,
         payload: PresencePayload,
     },
+    /// A typed action another app in this room published.
+    ///
+    /// Delivered to every connection. A receiver decodes it through its own
+    /// [`ActionRegistry`](qos_actions::ActionRegistry) and applies it if the
+    /// registry knows `type_id`; an action belonging to a different app decodes
+    /// to nothing and is dropped, which is what makes a room-wide fan-out of
+    /// typed actions safe.
+    ///
+    /// `from_user_id` is the broker's attribution for the sender, in the same
+    /// id shape every other event here uses. It is who *sent* the frame, which
+    /// is not necessarily who the action says authored it.
+    ActionArrived {
+        type_id: String,
+        payload: Vec<u8>,
+        from_user_id: String,
+    },
     /// Phase 3: a validated signed envelope from another peer. The
     /// validation pipeline ran on the broker side; receivers extract
     /// `envelope.payload` and feed it into the same
@@ -1583,7 +1599,13 @@ async fn drive_shovel(
                 let Some(ph) = presence.as_ref() else { continue };
                 match payload {
                     PresencePayload::Pointer { x, y } => {
-                        let _ = ph.publish_cursor(x, y).await;
+                        // Keyed, like every other payload here. The key is the
+                        // pointer's coordinate space, and dropping it at this
+                        // door — which is what `publish_cursor(x, y)` does,
+                        // having nowhere to put it — is what left every
+                        // receiver guessing, and guessing once per window.
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_pointer(&key_bytes, x, y).await;
                     }
                     PresencePayload::Caret { pos } => {
                         let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
@@ -2121,6 +2143,7 @@ mod tests {
         unsigned_snapshots: Vec<Vec<u8>>,
         unsigned_incrementals: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
+        pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         caret_publishes: Vec<(Vec<u8>, u64)>,
         selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         arrived: Vec<Vec<u8>>,
@@ -2227,6 +2250,21 @@ mod tests {
                 .unwrap()
                 .cursor_publishes
                 .push((r.get_x(), r.get_y()));
+            Promise::ok(())
+        }
+
+        fn publish_pointer(
+            self: Rc<Self>,
+            params: presence_handle::PublishPointerParams,
+            _results: presence_handle::PublishPointerResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures
+                .lock()
+                .unwrap()
+                .pointer_publishes
+                .push((k.to_vec(), r.get_x(), r.get_y()));
             Promise::ok(())
         }
 
@@ -2870,6 +2908,15 @@ mod tests {
         assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
     }
 
+    /// Every presence variant reaches the SDK method that keeps its key.
+    ///
+    /// A pointer used to be the exception: it went out through
+    /// `publish_cursor(x, y)`, which has nowhere to put one, and this test
+    /// asserted that as the contract — `cursor_publishes == [(1.5, 2.5)]` and
+    /// nothing about the key. That is the defect written down as an
+    /// expectation, so it is asserted the other way round now: a pointer
+    /// publishes like a caret does, key and all. A position with no space is a
+    /// pair of numbers whose meaning the receiver has to invent.
     #[test]
     fn presence_variants_map_to_correct_sdk_publishes() {
         let broker = FakeBroker {
@@ -2914,7 +2961,7 @@ mod tests {
             wait_until(
                 || {
                     let c = captures.lock().unwrap();
-                    c.cursor_publishes.len() == 1
+                    c.pointer_publishes.len() == 1
                         && c.caret_publishes.len() == 1
                         && c.selection_publishes.len() == 1
                         && c.arrived.len() == 1
@@ -2925,7 +2972,17 @@ mod tests {
             "every presence variant must reach the corresponding SDK method",
         );
         let c = captures.lock().unwrap();
-        assert_eq!(c.cursor_publishes, vec![(1.5, 2.5)]);
+        assert_eq!(
+            c.pointer_publishes,
+            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+            "a pointer carries the key its publisher chose, like every other \
+             keyed variant here",
+        );
+        assert!(
+            c.cursor_publishes.is_empty(),
+            "and does not go out through the keyless call, which would drop \
+             the space on the way",
+        );
         assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
         assert_eq!(
             c.selection_publishes,

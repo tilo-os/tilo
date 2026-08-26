@@ -95,7 +95,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::App;
+pub use app::{App, local_surface_id};
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
@@ -147,7 +147,7 @@ pub use qos_actions;
 // `collab_types::OpClass` / `ArtifactKind` re-exports flow through
 // these widgets, so callers can build a `HistoryEntry` without taking
 // a direct dependency on the collab-types crate.
-pub use widget::activity_timeline::ActivityTimeline;
+pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
@@ -167,6 +167,17 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // through `ui::` without knowing the module layout.
 pub use history_source::{AuthorDirectory, HistorySource, heads_for_entry, version_index_for_entry};
 pub use history_source::groups as history_groups;
+// Undoing a run of changes that never reached anybody's undo stack — a remote
+// author's, an agent's — plus the cross-application run record above it.
+pub use history_source::revert::{
+    latest_run_by, plan_revert, revert_run, ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot,
+};
+pub use history_source::run_undo::{
+    refuse_run, undo_run, undo_step, unreachable_steps, RunUndoReport, StepOutcome, StepState,
+};
+pub use history_source::runs::{
+    forget_run, read_runs, record_run, run_starting_at, AgentRun, RunStep,
+};
 // Phase 5 (Channel browser) — see `widget/channel_browser.rs` module
 // doc-comment for the design intent. Source-agnostic; consumes
 // `Vec<ChannelEntry>` from chrome state.

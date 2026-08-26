@@ -6,6 +6,8 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "agent_edit_is_its_own_undo_boundary.rs"]
+mod agent_edit_is_its_own_undo_boundary;
 #[path = "animation_test.rs"]
 mod animation_test;
 #[path = "app_widget.rs"]
@@ -104,6 +106,8 @@ mod tooltip_render_test;
 mod tooltip_test;
 #[path = "undo_per_author.rs"]
 mod undo_per_author;
+#[path = "undo_the_agents_work.rs"]
+mod undo_the_agents_work;
 #[path = "warmup_no_adapter.rs"]
 mod warmup_no_adapter;
 #[path = "widget_trait_test.rs"]
