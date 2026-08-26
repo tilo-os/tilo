@@ -171,6 +171,22 @@ where
     Ok(client.bootstrap::<C>())
 }
 
+/// The same, for a caller that already holds the connection.
+///
+/// [`try_open_service`] finds its fd in the environment, which is right for a
+/// launched process: the launcher put it there and there is no other way to
+/// know it. A caller that opened the socket itself has another way, and
+/// reaching for the environment anyway is what makes two such clients in one
+/// process unsound — `set_var` is process-wide and unsafe while any other
+/// thread reads the environment, which every other service client does.
+pub fn open_service_on_fd<C>(fd: RawFd) -> Result<C, NotAvailable>
+where
+    C: capnp::capability::FromClientHook,
+{
+    let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
+    Ok(client.bootstrap::<C>())
+}
+
 /// Tiny convenience: capnp-rpc's `Promise` made return-friendly
 /// for `Result<_, capnp::Error>` futures so service-client wrappers
 /// can write `let p: Promise<_, _> = ...` without importing capnp.
