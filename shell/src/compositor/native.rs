@@ -395,6 +395,23 @@ struct FrameBuilderControlState<'a> {
     /// needs the number, and reading it here keeps the live `State` out
     /// of a struct that otherwise borrows nothing mutable.
     pointer: Option<(f64, f64)>,
+    /// Which client surface the seat's keyboard is pointed at, or `None`
+    /// when the shell itself holds the keys.
+    ///
+    /// The compositor's own field, captured by value beside `pointer` and
+    /// for the same reason. Not a re-derivation of the tree: this is the
+    /// value `deliver_client_key` consults to decide whether a keystroke
+    /// is forwarded and to which client, so a harness reading it is
+    /// reading where the next key will actually go.
+    ///
+    /// Which tab is *drawn* and which window has the *keys* are two
+    /// different questions, and only the second decides where a typed
+    /// sentence lands. Everything a script could previously ask -- the
+    /// tree's active group, the tab pills, the painted tiles -- answers
+    /// the first. A run that was typing into the wrong application could
+    /// therefore assert focus twice, pass both times, and still be
+    /// typing somewhere else.
+    keyboard_focus: Option<u64>,
     /// The live CRDT the search providers read, plus its root object.
     ///
     /// `None` for the construction sites that only exercise layout and
@@ -798,6 +815,24 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
             },
+            // Where the next keystroke goes. Read off the compositor's
+            // own seat rather than derived from the tree below it: a
+            // harness that infers focus from the active group is
+            // answering "which tab is drawn", and a beat that types a
+            // sentence needs "which window has the keys".
+            "keyboard_focus": self.keyboard_focus,
+            // Why the keyboard can be on nothing at all. The shell takes
+            // the keys outright whenever it has something up that owns
+            // them -- the palette, an overlay, the compose surface, the
+            // file chooser, the peer-sync card -- and while it does, no
+            // client receives a keystroke however plainly its window is
+            // in front. That is indistinguishable, from every other
+            // reading a script can take, from a window that simply is
+            // not focused; this is the production predicate
+            // `sync_keyboard_focus` consults, so the two answers cannot
+            // drift apart.
+            "chrome_captures_input":
+                crate::compositor::client_input::chrome_captures_input(self.fb),
             "search_scope": format!("{:?}", chrome.search_scope),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
@@ -1811,6 +1846,7 @@ fn pump_test_control_conn(
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
                             pointer,
+                            keyboard_focus: state.client_input.keyboard_focus(),
                         };
                         test_control::dispatch_command(&cmd, &state)
                     }
@@ -4996,7 +5032,7 @@ mod tests {
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None, keyboard_focus: None };
         let chrome = state.chrome_state_json();
         let overlays = chrome
             .get("overlays")
@@ -5020,7 +5056,7 @@ mod tests {
     #[test]
     fn state_dump_workspace_tree_includes_workspaces_array() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None, keyboard_focus: None };
         let tree = state.workspace_tree_json();
         let workspaces = tree
             .get("workspaces")
@@ -5054,7 +5090,7 @@ mod tests {
             let room = tree.active_workspace().expect("active workspace").room;
             assert!(tree.note_peer_present(room, 0x51, "alice"));
         }
-        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None, keyboard_focus: None };
         let tree = state.workspace_tree_json();
         let found = tree
             .get("workspaces")
@@ -5081,7 +5117,7 @@ mod tests {
     #[test]
     fn dispatch_state_dump_against_frame_builder_returns_state() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None, keyboard_focus: None };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());
