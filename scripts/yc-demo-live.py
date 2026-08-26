@@ -416,6 +416,16 @@ WATCH_IT_OPEN_S = 1.6
 #: film never shows the picture becoming square.
 CROP_DWELL_S = 3.0
 
+#: Outcomes that mean the run produced no usable film, whatever the
+#: scripted half's claims did. A take that ends before the instruction
+#: reaches the agent has nothing in it; reporting that as success is how
+#: an unusable take gets kept.
+UNFILMED_OUTCOMES = frozenset({
+    "the instruction was never sent, so there is nothing left for the "
+    "camera to film",
+    "abandoned",
+})
+
 FILM_THE_WAIT_S = 2.5
 # How often the watcher looks at anything. Every probe is a `state_dump`
 # and blocks the session it is asked of — including, while recording,
@@ -4036,6 +4046,21 @@ def main() -> int:
             print(f"  - {f}")
     elif outcome != "abandoned":
         print("every claim the scripted half made held.")
+    # A take can end without a claim failing and still be worthless: the
+    # half the claims cover is the scripted one, and if the beat that
+    # hands over never happens there is nothing for those claims to be
+    # wrong about. One run reported success on a take whose agent died
+    # before it was ever spoken to -- the transcript said so in the very
+    # line above ("the instruction was never sent") and the exit status
+    # said the opposite, which is the sort of disagreement that gets a
+    # broken take filed as a good one.
+    #
+    # Matched on the outcomes that mean the film did not happen rather
+    # than on a substring of the sentence, so a reworded outcome does not
+    # quietly stop being a failure.
+    if outcome in UNFILMED_OUTCOMES:
+        rc = 1
+        print(f"the take did not film what it exists to film: {outcome}")
     print(f"screenshots: {shots}")
     if video:
         print(f"video:       {video['path']}")
