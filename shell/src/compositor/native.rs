@@ -3702,7 +3702,7 @@ mod tests {
         );
         assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
         assert!(
-            resolved[0].host_fd >= 0,
+            resolved[0].host_fd() >= 0,
             "the launcher must hand the app a real connected descriptor"
         );
 
