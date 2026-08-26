@@ -1,0 +1,21 @@
+# One process per test, which is what makes a single consolidated test binary
+# safe: tests that set environment variables or touch process state no longer
+# share a process with the rest of the file.
+
+[profile.default]
+# A hung test should name itself rather than stall the run.
+slow-timeout = { period = "60s", terminate-after = 4 }
+failure-output = "immediate-final"
+fail-fast = false
+
+[profile.ci]
+slow-timeout = { period = "120s", terminate-after = 4 }
+failure-output = "immediate-final"
+fail-fast = false
+# GPU and socket tests are timing-sensitive under a loaded runner; a single
+# retry distinguishes a flake from a break without hiding a real failure.
+retries = 1
+status-level = "fail"
+
+[profile.ci.junit]
+path = "junit.xml"
