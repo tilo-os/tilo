@@ -28,7 +28,7 @@ pub fn default_socket_path() -> PathBuf {
 }
 
 // Avoid a `libc` dependency for one call.
-extern "C" {
+unsafe extern "C" {
     #[link_name = "getuid"]
     fn libc_getuid() -> u32;
 }

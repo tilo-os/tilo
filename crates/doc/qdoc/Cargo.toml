@@ -1,7 +1,7 @@
 [package]
 name = "qdoc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "CRDT-native canonical document model and format-provider API for qOS"
 
 [dependencies]
