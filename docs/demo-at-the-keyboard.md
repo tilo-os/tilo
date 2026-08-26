@@ -109,6 +109,19 @@ still writes the clip; a second abandons it.
 
 ## Known faults, measured on 2026-08-26
 
+- **Your sentence may go into chat instead of the document.** The beat
+  before yours drops the file manager onto the document's tab bar, and
+  the re-framing that follows can leave the keyboard in the *chat*
+  window's message box even though the document is the tab on screen.
+  Type, see nothing appear on the page, and the run stalls for nearly
+  two minutes on `the document was written into`. Measured at roughly
+  one run in three.
+
+  Tell it apart in a second: look for the caret. If the blinking cursor
+  is in chat's composer at the bottom of the neighbouring window rather
+  than on the page, click into the page before you type. Being fixed;
+  until then it is worth glancing at before beat 4.
+
 - **The model service can refuse you the take.** The agent asks a model
   which of an application's exported actions answers the instruction. If
   that call fails, it falls back to a keyword vocabulary that does not
