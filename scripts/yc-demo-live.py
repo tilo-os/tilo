@@ -3318,6 +3318,31 @@ def main() -> int:
                         "cargo build --profile demo -p shell --bin shell "
                         "--bin qos-control"):
             return 2
+        # And the agent, which is neither of the above and was checked
+        # by nothing at all.
+        #
+        # It is the one binary the film's whole second half runs on, and
+        # for seven hours it was seven hours old: the compositor and the
+        # payloads were rebuilt before every take and `qos-agent` never
+        # was, so three merged fixes to `apps/agent` -- a handshake, a
+        # flood, and the vocabulary that decides which crop an
+        # instruction means -- were tested repeatedly without once being
+        # in the binary under test. Every one of those takes reported on
+        # code that was not running.
+        #
+        # `ui/src` is in its roots for the same reason it is in the
+        # others: the agent links the toolkit, so a change there leaves
+        # it behind too.
+        agent_bin = os.path.join(REPO, "target", "demo", "qos-agent")
+        if args.agent and os.path.exists(agent_bin):
+            if refuse_stale("the agent", agent_bin,
+                            (os.path.join(REPO, "apps", "agent", "src"),
+                             os.path.join(REPO, "apps", "photos", "src"),
+                             os.path.join(REPO, "ui", "src")),
+                            "cargo build --profile demo -p agent "
+                            "--bin qos-agent"):
+                return 2
+
         # The payload is the worse of the two. A rebuild replaces the
         # binary the registry was serving through and the old app goes
         # out with no error anywhere — the run is green and the app in
