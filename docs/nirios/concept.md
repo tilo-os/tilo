@@ -3,7 +3,7 @@
 This document describes the visual design and behavior of the Nirios shell as
 prototyped in the React/TSX concept at `nirios-concept/`. It is the target we
 are converging the Rust implementation toward. Section numbers match
-`docs/superpowers/archive/parity-status.md` so individual items can be cross-referenced.
+git history so individual items can be cross-referenced.
 
 ## 1. Overall layout
 
