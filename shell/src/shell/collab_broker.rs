@@ -276,10 +276,107 @@ impl Peer {
         self.route.lock().ok().and_then(|g| g.clone())
     }
 
+    /// The announced route, or why it can no longer be read.
+    ///
+    /// [`Self::route`] answers `None` to two different questions —
+    /// "this connection has not said Hello yet" and "the lock guarding
+    /// what it said was poisoned by a panic and nothing will ever read
+    /// it again" — and the fan-out skips both in the same silence. The
+    /// first is ordinary and passes. The second is permanent: that peer
+    /// is addressed by nothing from then on, receives nothing for the
+    /// rest of the session, and no line anywhere says so.
+    fn route_or_why_not(&self) -> Result<Option<CrdtRoute>, String> {
+        match self.route.lock() {
+            Ok(g) => Ok(g.clone()),
+            Err(_) => Err("the route it announced can no longer be read: the lock \
+                           guarding it was poisoned by a panic, so nothing will ever \
+                           be addressed to it again"
+                .to_string()),
+        }
+    }
+
     /// What this connection said it wanted to be called, if anything.
     /// One input to [`LocalIdentity::resolve`], and the weakest one.
     fn announced_handle(&self) -> Option<String> {
         self.handle.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Why this connection can no longer be reached, asked without
+    /// writing a byte to it and without taking one off it.
+    ///
+    /// The broker's account of a peer ending came from two places, and
+    /// both need something to happen first: a delivery has to be
+    /// attempted before a failed write can report one, and the reader
+    /// thread has to come back from `read` before it can report the
+    /// other. A peer nothing is addressed to, whose reader is not going
+    /// to return, is therefore accounted for by nobody — it stays in
+    /// the table for the rest of the session and the log is silent.
+    ///
+    /// This is the question that needs neither. `poll` asks the kernel
+    /// directly whether the far end is still there, which is the one
+    /// thing that separates a quiet connection from a gone one, and it
+    /// neither consumes the byte stream nor competes with the reader
+    /// thread for it.
+    fn why_it_cannot_be_reached(&self) -> Option<String> {
+        use std::os::fd::AsRawFd;
+
+        let guard = match self.writer.try_lock() {
+            Ok(g) => g,
+            // Held by a delivery in flight, which is a peer being
+            // reached rather than one that cannot be. Nothing to say.
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Some(
+                    "the lock guarding its write half was poisoned by a panic, so \
+                     nothing can ever write to it again"
+                        .to_string(),
+                )
+            }
+        };
+        if let Some(accepted) = self.accepted_on {
+            let now = file_identity(&*guard);
+            if now != Some(accepted) {
+                return Some(format!(
+                    "its write descriptor no longer names the connection it was \
+                     accepted on (accepted {accepted:?}, now {})",
+                    match now {
+                        Some(id) => format!("{id:?}"),
+                        None => "nothing this process holds".to_string(),
+                    },
+                ));
+            }
+        }
+        let mut asked = libc::pollfd {
+            fd: guard.as_raw_fd(),
+            events: libc::POLLRDHUP,
+            revents: 0,
+        };
+        // SAFETY: one initialised `pollfd` describing a descriptor this
+        // peer owns for the duration of the call, and a zero timeout, so
+        // `poll` returns without waiting on anything.
+        let rc = unsafe { libc::poll(&mut asked, 1, 0) };
+        if rc < 0 {
+            // Interrupted, or a kernel refusal that says nothing about
+            // the connection. Reporting a guess here would be worse than
+            // waiting for the next sweep.
+            return None;
+        }
+        if asked.revents & libc::POLLNVAL != 0 {
+            return Some(
+                "its write descriptor is not open in this process any more"
+                    .to_string(),
+            );
+        }
+        if asked.revents & (libc::POLLRDHUP | libc::POLLHUP) != 0 {
+            return Some(
+                "the far end has closed; nothing more can arrive on this connection"
+                    .to_string(),
+            );
+        }
+        if asked.revents & libc::POLLERR != 0 {
+            return Some("its socket is in error".to_string());
+        }
+        None
     }
 
     /// Write one frame to this connection, refusing to write into a
@@ -994,6 +1091,26 @@ pub trait AppActionListener: Send + Sync {
 /// ring holds every one a live session is likely to have seen.
 pub const DEPARTURE_LOG_CAPACITY: usize = 64;
 
+/// How often the broker asks whether the peers it holds are still there.
+///
+/// A backstop, not the mechanism. An ordinary disconnection is noticed
+/// by the peer's own reader thread microseconds after it happens, and
+/// this finds nothing every time it runs in a session where nothing is
+/// wrong. It exists for the session where something is: a peer nothing
+/// is addressed to, or one whose reader is not going to come back from
+/// `read`, is reported by nothing else at all.
+///
+/// Two seconds because the cost is one `poll` and one `fstat` per
+/// connected peer — call it a microsecond of work against a handful of
+/// them — and because the number bounds how long a connection that has
+/// stopped existing can go unrecorded.
+const PEER_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long the sweep thread sleeps between looks at its quit flag, so
+/// that dropping a broker does not wait out a whole
+/// [`PEER_SWEEP_INTERVAL`]. Matches the drain thread's cadence.
+const SWEEP_QUIT_POLL: Duration = Duration::from_millis(100);
+
 /// A connection that is no longer in the fan-out table, and why.
 ///
 /// Kept **beside** the log line rather than instead of it, because the
@@ -1042,6 +1159,15 @@ pub struct PeerTable {
     /// behind it, in which case a `publishActions` is recorded nowhere and
     /// says so once rather than in silence.
     app_actions: Mutex<Option<Arc<dyn AppActionListener>>>,
+    /// Whether the table having become unreadable has already been
+    /// said. A poisoned registry lock is the one loss that is not a
+    /// peer's: [`Self::snapshot`] answers it with an empty list, which
+    /// is indistinguishable from an empty room, so every fan-out from
+    /// then on reaches nobody and reports a successful delivery to
+    /// no-one. Said once rather than every sweep, because it does not
+    /// heal and a line every two seconds for the rest of a session
+    /// buries the one that mattered.
+    table_loss_reported: AtomicBool,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -1104,6 +1230,7 @@ impl PeerTable {
             app_opener: Mutex::new(None),
             remark_composer: Mutex::new(None),
             app_actions: Mutex::new(None),
+            table_loss_reported: AtomicBool::new(false),
         }
     }
 
@@ -1212,7 +1339,13 @@ impl PeerTable {
             route
                 .as_ref()
                 .map(|r| format!("{r:?}"))
-                .unwrap_or_else(|| "none (never said Hello)".into()),
+                .unwrap_or_else(|| {
+                    if self.route_is_unreadable(peer) {
+                        "unreadable (the lock guarding it was poisoned)".into()
+                    } else {
+                        "none (never said Hello)".into()
+                    }
+                }),
             reason,
         );
         if let Ok(mut log) = self.departures.lock() {
@@ -1224,6 +1357,54 @@ impl PeerTable {
                 route,
                 reason,
             });
+        }
+    }
+
+    /// Whether `peer`'s announced route can no longer be read at all,
+    /// as opposed to never having been announced. Only for wording the
+    /// departure: the two are the same `None` to every other caller and
+    /// they are not the same thing.
+    fn route_is_unreadable(&self, peer: &Arc<Peer>) -> bool {
+        peer.route_or_why_not().is_err()
+    }
+
+    /// Take out every peer that can no longer be reached, saying why —
+    /// without waiting for anything to be addressed to it.
+    ///
+    /// This is the account that does not depend on something happening.
+    /// A failed delivery reports a peer only once a delivery is
+    /// attempted, and the reader thread reports one only once it comes
+    /// back from `read`; a connection that ends while the room is quiet,
+    /// or whose reader is not going to return, is accounted for by
+    /// neither. Run on a cadence, it means a peer that stops existing is
+    /// never merely absent from the log.
+    ///
+    /// Deliberately cheap: one `poll` and one `fstat` per connected peer,
+    /// neither of which touches the byte stream, against a handful of
+    /// peers every [`PEER_SWEEP_INTERVAL`]. It is a health check, not a
+    /// poll loop — the reader thread is still what notices an ordinary
+    /// disconnection, microseconds after it happens, and in a session
+    /// where nothing is wrong this finds nothing every time it runs.
+    pub(crate) fn account_for_lost_peers(&self) {
+        // The registry lock itself is the one loss that belongs to no
+        // peer, and the one nothing else can see: `snapshot` answers a
+        // poisoned lock with an empty list, so every fan-out afterwards
+        // addresses nobody and says it delivered to nobody, which is
+        // exactly what an empty room looks like.
+        if self.peers.lock().is_err() && !self.table_loss_reported.swap(true, Ordering::Relaxed)
+        {
+            tracing::error!(
+                "collab_broker: the connection registry can no longer be read — the                  lock guarding it was poisoned by a panic. Every connection this                  session holds is now unaddressable, and nothing further will be                  delivered to any of them."
+            );
+            return;
+        }
+        let lost: Vec<(Arc<Peer>, String)> = self
+            .snapshot()
+            .into_iter()
+            .filter_map(|peer| peer.why_it_cannot_be_reached().map(|why| (peer, why)))
+            .collect();
+        for (peer, why) in lost {
+            self.remove_because(&peer, why);
         }
     }
 
@@ -1284,16 +1465,27 @@ impl PeerTable {
             Err(_) => return 0,
         };
         let mut delivered = 0usize;
-        let mut dead: Vec<(Arc<Peer>, std::io::Error)> = Vec::new();
+        // Carries the whole reason rather than an `io::Error`, because
+        // not every way of losing a peer here is a failed write: one of
+        // them is a peer that can no longer be addressed at all.
+        let mut dead: Vec<(Arc<Peer>, String)> = Vec::new();
         for peer in self.snapshot() {
             if peer.id == except {
                 continue;
             }
-            let Some(peer_route) = peer.route() else {
+            let peer_route = match peer.route_or_why_not() {
+                Ok(Some(route)) => route,
                 // Connected but silent: it has not told us which app
                 // or cluster it belongs to, so nothing is addressed
                 // to it yet.
-                continue;
+                Ok(None) => continue,
+                // Not silent — unreachable, and permanently. Skipping
+                // it the way a silent peer is skipped is how a peer
+                // stops receiving anything with nothing said about it.
+                Err(why) => {
+                    dead.push((peer, why));
+                    continue;
+                }
             };
             if !route.delivers_to(&peer_route) {
                 continue;
@@ -1304,11 +1496,11 @@ impl PeerTable {
                 // takes the registry lock, and taking it inside the loop
                 // over a snapshot of that registry is how a fan-out
                 // deadlocks against its own bookkeeping.
-                Err(e) => dead.push((peer, e)),
+                Err(e) => dead.push((peer, format!("a fan-out write to it failed: {e}"))),
             }
         }
-        for (peer, err) in dead {
-            self.remove_because(&peer, format!("a fan-out write to it failed: {err}"));
+        for (peer, why) in dead {
+            self.remove_because(&peer, why);
         }
         for sub in self.local_subs() {
             if sub.wants(route) {
@@ -2511,6 +2703,13 @@ pub struct BrokerHandle {
     /// Drain-thread quit flag. Drop sets it; the drainer exits at
     /// its next wake.
     drain_quit: Arc<AtomicBool>,
+    /// The thread that asks, on a cadence, whether the peers in the
+    /// table are still reachable. See [`PEER_SWEEP_INTERVAL`].
+    sweep_thread: Option<JoinHandle<()>>,
+    /// Sweep-thread quit flag. Drop sets it and joins; the thread looks
+    /// at it every [`SWEEP_QUIT_POLL`], so the join is bounded by that
+    /// rather than by the sweep cadence.
+    sweep_quit: Arc<AtomicBool>,
     /// Capnp listener thread handle. `None` when the capnp interface
     /// is not bound. The thread runs a tokio LocalSet driving
     /// capnp-rpc futures.
@@ -2814,6 +3013,14 @@ impl Drop for BrokerHandle {
     fn drop(&mut self) {
         // Signal the inbound-drain thread to exit at its next wake.
         self.drain_quit.store(true, Ordering::Relaxed);
+        // And the sweep. Joined rather than detached, because it holds
+        // an `Arc` to the peer table and a sweep running against a
+        // half-torn-down broker would report losses that are only the
+        // teardown.
+        self.sweep_quit.store(true, Ordering::Relaxed);
+        if let Some(t) = self.sweep_thread.take() {
+            let _ = t.join();
+        }
         // Signal the capnp accept loop to exit.
         self.capnp_quit.store(true, Ordering::Relaxed);
         // Removing the socket file is best-effort — if the listener
@@ -3050,6 +3257,30 @@ fn spawn_inner(
     // `(app_id, cluster_id)` the publishing host stamped on the wire
     // decides which local apps see it. A frame that arrives without a
     // route reaches nobody.
+    // The account that waits for nothing. Every other record of a
+    // connection ending is produced by something happening to it — a
+    // delivery that failed, a reader that came back — so a peer that
+    // ends while the room is quiet, or whose reader is not going to
+    // return, is recorded by nobody. This thread asks instead.
+    let sweep_quit = Arc::new(AtomicBool::new(false));
+    let sweep_table = Arc::clone(&table);
+    let sweep_flag = Arc::clone(&sweep_quit);
+    let sweep_thread = std::thread::Builder::new()
+        .name("qos-collab-broker-sweep".into())
+        .spawn(move || {
+            let mut since_last_sweep = Duration::ZERO;
+            while !sweep_flag.load(Ordering::Relaxed) {
+                std::thread::sleep(SWEEP_QUIT_POLL);
+                since_last_sweep += SWEEP_QUIT_POLL;
+                if since_last_sweep < PEER_SWEEP_INTERVAL {
+                    continue;
+                }
+                since_last_sweep = Duration::ZERO;
+                sweep_table.account_for_lost_peers();
+            }
+        })
+        .ok();
+
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync
         .as_ref()
@@ -3576,6 +3807,8 @@ fn spawn_inner(
         listener_thread: Some(listener_thread),
         drain_thread,
         drain_quit,
+        sweep_thread,
+        sweep_quit,
         capnp_thread,
         capnp_quit,
         peers: table,
@@ -5606,6 +5839,146 @@ mod tests {
         drop(handle);
     }
 
+    /// A peer on a live socket pair, in `table`, the way the accept loop
+    /// would have put it there. The returned far end is the connection's
+    /// other side: hold it and the peer is reachable, drop it and it is
+    /// gone.
+    ///
+    /// Built directly rather than through a broker because what these
+    /// tests are about is a peer with **no reader thread behind it** —
+    /// which is what a reader that is never coming back from `read`
+    /// leaves the table holding, and what no other account of a
+    /// departure can see.
+    fn connected_peer(table: &PeerTable, route: Option<CrdtRoute>) -> (Arc<Peer>, UnixStream) {
+        let (near, far) = UnixStream::pair().expect("socketpair");
+        let accepted_on = file_identity(&near);
+        let peer = Arc::new(Peer {
+            id: table.next_peer_id(),
+            handle: Mutex::new(None),
+            writer: Mutex::new(near),
+            route: Mutex::new(route),
+            accepted_on,
+        });
+        table.insert(Arc::clone(&peer));
+        (peer, far)
+    }
+
+    /// A connection that ends while the room is quiet is still accounted
+    /// for.
+    ///
+    /// Both of the broker's other accounts need something to happen
+    /// first. A failed delivery reports a peer only once a delivery is
+    /// attempted; the reader thread reports one only once it comes back
+    /// from `read`. Take both away — nothing addressed to this peer, and
+    /// no reader behind it — and the connection ending used to produce
+    /// no record anywhere: the peer stayed in the table for the rest of
+    /// the session, counted among those a fan-out would reach.
+    ///
+    /// Forced, not waited for: the far end is dropped outright and the
+    /// sweep is called directly, so the ordering under test is the one
+    /// this runs every time.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_that_ends_while_nothing_is_addressed_to_it_is_still_accounted_for() {
+        let table = PeerTable::new();
+        let (_peer, far) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+        assert_eq!(
+            table.snapshot().len(),
+            1,
+            "the peer has to be in the table before it can be lost from it",
+        );
+
+        // The far end goes. Nothing is fanned out, and there is no
+        // reader thread to notice.
+        drop(far);
+        assert!(
+            table.departures().is_empty(),
+            "nothing has asked yet, so there is nothing to have found",
+        );
+
+        table.account_for_lost_peers();
+
+        assert!(
+            table.snapshot().is_empty(),
+            "a peer whose far end has gone has to leave the fan-out even though \
+             nothing was ever addressed to it",
+        );
+        let departures = table.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "a connection ended and nothing recorded it, got {departures:?}",
+        );
+        assert!(
+            departures[0].reason.contains("the far end has closed"),
+            "the record has to say the connection ended, got {:?}",
+            departures[0].reason,
+        );
+    }
+
+    /// A route that can no longer be read is not the same thing as a
+    /// route that was never announced, and the fan-out used to treat
+    /// them alike.
+    ///
+    /// `Peer::route` answered a poisoned lock with `None`, which is what
+    /// a connection that has not said Hello answers too — and the
+    /// fan-out skips that in silence, correctly, because nothing is
+    /// addressed to a peer that has not said where it is. For the
+    /// poisoned one the skip is permanent and wrong: that peer receives
+    /// nothing for the rest of the session and no line anywhere says so.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_whose_route_can_no_longer_be_read_leaves_the_fan_out() {
+        let table = PeerTable::new();
+        let (peer, _far) = connected_peer(
+            &table,
+            Some(CrdtRoute::app("dev.qos.notes", TEST_CLUSTER)),
+        );
+
+        // Poison the lock the announced route lives behind — which is
+        // all a panic on any thread holding it does. The hook is
+        // silenced so the expected panic does not read as a failure in
+        // the test output, and put back straight away.
+        let holder = Arc::clone(&peer);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poisoned = std::thread::spawn(move || {
+            let _guard = holder.route.lock().expect("not poisoned yet");
+            panic!("a panic on a thread holding the route");
+        })
+        .join();
+        std::panic::set_hook(hook);
+        assert!(poisoned.is_err(), "the thread has to have panicked");
+        assert!(
+            peer.route.is_poisoned(),
+            "the setup has to actually poison the lock, or this proves nothing",
+        );
+
+        table.fanout_to_route(
+            &CollabEvent::CRDTIncremental {
+                data: b"addressed to the room this peer is in".to_vec(),
+            },
+            u64::MAX,
+            &CrdtRoute::app("dev.qos.notes", TEST_CLUSTER),
+        );
+
+        assert!(
+            table.snapshot().is_empty(),
+            "a peer nothing can ever be addressed to has to leave the fan-out",
+        );
+        let departures = table.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "the peer was skipped and nothing recorded it, got {departures:?}",
+        );
+        assert!(
+            departures[0].reason.contains("poisoned"),
+            "the record has to say why it can no longer be addressed, got {:?}",
+            departures[0].reason,
+        );
+    }
+
     /// Every descriptor this process holds that names a socket.
     ///
     /// Read out of `/proc/self/fd` because the numbers are what the
@@ -5630,6 +6003,169 @@ mod tests {
             }
         }
         out
+    }
+
+    /// The pair of descriptors the broker took for its one connected
+    /// peer, found by the socket they name.
+    ///
+    /// By the socket rather than by diffing what this process has open:
+    /// the rest of the suite opens sockets of its own while this runs,
+    /// and a diff would pick those up too.
+    fn the_brokers_descriptors_for_its_peer(handle: &BrokerHandle, client_fd: i32) -> Vec<i32> {
+        let accepted = handle.peers_accepted_on();
+        assert_eq!(
+            accepted.len(),
+            1,
+            "one connection, one entry in the fan-out, got {accepted:?}",
+        );
+        let ino = accepted[0]
+            .1
+            .expect("the broker records the file it accepted a connection on")
+            .ino;
+        let named = format!("socket:[{ino}]");
+        let found: Vec<i32> = open_socket_fds()
+            .into_iter()
+            .filter(|(fd, name)| *fd != client_fd && *name == named)
+            .map(|(fd, _)| fd)
+            .collect();
+        assert_eq!(
+            found.len(),
+            2,
+            "an accept and its clone are the two descriptors the broker takes \
+             for one connection, got {found:?}",
+        );
+        found
+    }
+
+    /// Something to put in a descriptor's place that behaves like the
+    /// file that took the number really would: it accepts everything
+    /// written to it and never fills up.
+    ///
+    /// Both halves of that matter. A replacement that refused the write
+    /// (a regular file, say — `send` on one is `ENOTSOCK`) or that
+    /// filled up and blocked would end the peer for an ordinary reason
+    /// and prove nothing about the substitution. So this is a socket,
+    /// and a thread of the test takes off it whatever is put in.
+    struct Standin {
+        spare: UnixStream,
+        stop: Arc<AtomicBool>,
+        drainer: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Standin {
+        fn new() -> Self {
+            let (keep, spare) = UnixStream::pair().expect("a socket to stand in");
+            let stop = Arc::new(AtomicBool::new(false));
+            let drain_stop = Arc::clone(&stop);
+            let mut drain = keep;
+            drain
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("a bounded read");
+            let drainer = std::thread::spawn(move || {
+                let mut sink = [0u8; 4096];
+                while !drain_stop.load(Ordering::Relaxed) {
+                    if let Ok(0) = drain.read(&mut sink) {
+                        break;
+                    }
+                }
+            });
+            Self {
+                spare,
+                stop,
+                drainer: Some(drainer),
+            }
+        }
+
+        /// Put this socket on every one of `fds`, the way an unrelated
+        /// close of a number this process no longer owned would leave
+        /// them pointing at whatever took it next.
+        fn take_over(&self, fds: Vec<i32>) {
+            use std::os::fd::AsRawFd;
+            for fd in fds {
+                // SAFETY: `fd` is a live descriptor number in this
+                // process and `self.spare` outlives the call.
+                let rc = unsafe { libc::dup2(self.spare.as_raw_fd(), fd) };
+                assert_ne!(rc, -1, "substituting the descriptor is the whole test");
+            }
+        }
+    }
+
+    impl Drop for Standin {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = self.drainer.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// The substitution is reported even when nothing is ever sent to
+    /// the peer afterwards.
+    ///
+    /// The delivery-path check only speaks when there is a delivery. A
+    /// session where the substituted peer is addressed by nothing after
+    /// it happens — a quiet room, or a room whose traffic stops
+    /// matching — gets the same silence as before: the reader is not
+    /// coming back, no write is attempted, and the peer stays in the
+    /// table being counted as connected.
+    ///
+    /// So nothing at all is fanned out here. What has to notice is the
+    /// account that waits for nothing.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_substituted_descriptor_is_reported_even_when_nothing_is_delivered() {
+        use std::os::fd::AsRawFd;
+
+        let socket_path = temp_sock("substitution-without-traffic");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut client = UnixStream::connect(&socket_path).expect("client connects");
+        let hello = serde_json::to_vec(&CollabRequest::Hello {
+            app_id: String::new(),
+            cluster_id: TEST_CLUSTER.parse().expect("a valid cluster uuid"),
+            record: None,
+            handle: Some("a participant with no window".to_string()),
+        })
+        .expect("serialize hello");
+        client
+            .write_all(&(hello.len() as u32).to_le_bytes())
+            .expect("write hello length");
+        client.write_all(&hello).expect("write hello");
+        wait_for_announced(&handle, 1, Duration::from_secs(2));
+
+        let standin = Standin::new();
+        standin.take_over(the_brokers_descriptors_for_its_peer(&handle, client.as_raw_fd()));
+
+        // Deliberately fan out nothing. The only thing that can speak
+        // now is the sweep.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline && handle.departures().is_empty() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let departures = handle.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "a connection the broker can no longer reach was never spoken about, \
+             and nothing was going to make it speak: got {departures:?}",
+        );
+        assert!(
+            departures[0]
+                .reason
+                .contains("no longer names the connection"),
+            "the record has to say what stopped being true, got {:?}",
+            departures[0].reason,
+        );
+        assert_eq!(
+            handle.peer_count(),
+            0,
+            "and it has to leave the fan-out, not merely be mentioned",
+        );
+
+        drop(standin);
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
     }
 
     /// A connection can stop being a connection without either end
@@ -5687,60 +6223,8 @@ mod tests {
             "the connection has to be in the fan-out before it can be taken out of it",
         );
 
-        // The two the accept produced. Found by the socket they name
-        // rather than by diffing the descriptors this process holds:
-        // the rest of the suite opens sockets of its own while this
-        // runs, and a diff would pick those up too.
-        let accepted = handle.peers_accepted_on();
-        assert_eq!(
-            accepted.len(),
-            1,
-            "one connection, one entry in the fan-out, got {accepted:?}",
-        );
-        let ino = accepted[0]
-            .1
-            .expect("the broker records the file it accepted a connection on")
-            .ino;
-        let ours = client.as_raw_fd();
-        let named = format!("socket:[{ino}]");
-        let fresh: Vec<(i32, String)> = open_socket_fds()
-            .into_iter()
-            .filter(|(fd, name)| *fd != ours && *name == named)
-            .collect();
-        assert_eq!(
-            fresh.len(),
-            2,
-            "an accept and its clone are the two descriptors the broker takes \
-             for one connection, got {fresh:?}",
-        );
-
-        // Take them away. What goes in their place has to be a socket
-        // that accepts everything written to it, because the point is
-        // that nothing fails: a replacement that refused the write, or
-        // filled up and blocked, would evict the peer for an ordinary
-        // reason and prove nothing at all. So the far end is drained by
-        // a thread of this test for as long as the substitution lasts.
-        let (keep, spare) = UnixStream::pair().expect("a socket to put in their place");
-        let stop = Arc::new(AtomicBool::new(false));
-        let drain_stop = Arc::clone(&stop);
-        let mut drain = keep.try_clone().expect("a handle to drain the replacement");
-        drain
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .expect("a bounded read");
-        let drainer = std::thread::spawn(move || {
-            let mut sink = [0u8; 4096];
-            while !drain_stop.load(Ordering::Relaxed) {
-                if let Ok(0) = drain.read(&mut sink) {
-                    break;
-                }
-            }
-        });
-        for (fd, _) in &fresh {
-            // SAFETY: `fd` is a live descriptor number in this process
-            // and `spare` outlives the call.
-            let rc = unsafe { libc::dup2(spare.as_raw_fd(), *fd) };
-            assert_ne!(rc, -1, "substituting the descriptor is the whole test");
-        }
+        let standin = Standin::new();
+        standin.take_over(the_brokers_descriptors_for_its_peer(&handle, client.as_raw_fd()));
 
         // Anything sent from here reaches the replacement, not the
         // client — which is the harm, and it is silent.
@@ -5801,10 +6285,7 @@ mod tests {
             departures[0].reason,
         );
 
-        stop.store(true, Ordering::Relaxed);
-        drop(spare);
-        drop(keep);
-        let _ = drainer.join();
+        drop(standin);
         let _ = std::fs::remove_file(&socket_path);
         drop(handle);
     }
