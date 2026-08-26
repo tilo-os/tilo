@@ -40,7 +40,8 @@ pub mod resource;
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    apply_local, dispatch, replay, ActionTransport, Dispatched, HostDecision, LocalTransport,
+    apply_local, apply_local_by, dispatch, dispatch_by, replay, ActionTransport, Dispatched,
+    HostDecision, LocalTransport,
 };
 pub use registry::ActionRegistry;
 pub use resource::{
@@ -262,6 +263,7 @@ mod tests {
             base_heads: vec![],
             timestamp: 0,
             locus: ExecutionLocus::ClientLocal,
+            actor: None,
         };
         assert!(matches!(
             replay(&mut doc, &env, &reg),
