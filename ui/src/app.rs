@@ -373,6 +373,15 @@ pub struct App {
     /// [`App::broadcast_view_presence`] only sends when the view actually
     /// moves, not every frame.
     last_view_presence: Option<crate::view::ViewSubset>,
+    /// Backfill-on-hole bookkeeping. When an inbound delta parks on a
+    /// dependency this replica was never sent (`apply_remote_delta` finds the
+    /// document's heads unchanged but its missing-deps set non-empty), arrival
+    /// is re-announced so a holder replies with a whole-document snapshot and
+    /// the hole heals. This records when the last such request went out and the
+    /// missing set it was for, so a run of parked deltas asks once per distinct
+    /// hole — plus a slow retry, in case the snapshot that would have answered
+    /// was itself dropped — rather than once per frame.
+    hole_backfill: Option<(Instant, Vec<automerge::ChangeHash>)>,
     /// Optional out-of-band sink invoked alongside the Unix-socket
     /// `broadcast_presence` send. The shell registers a closure here
     /// when peer-sync is enabled so local cursor moves get fanned out
@@ -611,6 +620,7 @@ impl App {
             last_focus_presence: None,
             last_location_presence: None,
             last_view_presence: None,
+            hole_backfill: None,
             presence_broadcast_sink: None,
             frame_tick: None,
             current_cursor: CursorIcon::Default,
@@ -1554,8 +1564,22 @@ impl App {
         }
         let after = self.state.doc.get_heads();
         if before == after {
+            // The delta moved nothing. If it *parked* — carried a change whose
+            // ancestors this replica has never been sent — automerge queues it
+            // unapplied and the document reads as the state before the gap,
+            // however many later changes pile up behind it. Gossip does not
+            // retransmit the missing ancestor and the late-join snapshot
+            // handshake is one-shot per peer, so nothing heals the hole on its
+            // own: an agent's work strip posted after we joined reaches this
+            // machine and is silently dropped at the bottom of a truncated
+            // history. Re-announce arrival so a peer that holds the whole
+            // document replies with a snapshot and the queued changes apply.
+            self.request_backfill_if_parked();
             return false;
         }
+        // The document advanced, so whatever we may have been waiting on is no
+        // longer a hole worth chasing; let the next park arm a fresh request.
+        self.hole_backfill = None;
         self.state.doc.diff(&before, &after).iter().any(|p| {
             matches!(
                 p.action,
@@ -1564,6 +1588,56 @@ impl App {
                     | automerge::PatchAction::Insert { .. }
             )
         })
+    }
+
+    /// After a delta applied nothing, ask the room to re-send its whole
+    /// document if — and only if — the reason it applied nothing is a hole:
+    /// changes queued behind an ancestor this replica was never sent.
+    ///
+    /// The request is a re-announced `Arrived`. A peer already in the room
+    /// answers it the same way it answers a late joiner — with a full snapshot
+    /// (`apply_remote_presence`'s `PeerArrived` reply, and the broker arming
+    /// `note_snapshot_request` off the same frame) — and merging that snapshot
+    /// supplies the missing ancestor, so the queued changes apply. It reuses
+    /// the existing convergence handshake rather than adding a wire message.
+    ///
+    /// Debounced so a burst of parked deltas does not storm the room: a request
+    /// goes out when the hole first appears or its missing set changes, and at
+    /// most once every [`HOLE_BACKFILL_RETRY`] otherwise (a slow retry, in case
+    /// the answering snapshot was itself dropped). A scope of `None` (headless
+    /// / teardown) has no one to ask, so it asks no one.
+    fn request_backfill_if_parked(&mut self) {
+        const HOLE_BACKFILL_RETRY: Duration = Duration::from_secs(2);
+
+        let mut missing = self.state.doc.get_missing_deps(&[]);
+        if missing.is_empty() {
+            // Applied nothing for a benign reason (an empty or already-seen
+            // delta), not a hole. Nothing to backfill.
+            return;
+        }
+        missing.sort_unstable();
+
+        let due = match &self.hole_backfill {
+            None => true,
+            Some((asked_at, asked_for)) => {
+                asked_for != &missing || asked_at.elapsed() >= HOLE_BACKFILL_RETRY
+            }
+        };
+        if !due {
+            return;
+        }
+
+        let Some(scope) = self.presence_broadcast_scope.clone() else {
+            return;
+        };
+        if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+            crate::diag!(
+                "[app] delta parked on {} missing change(s); re-announcing Arrived to pull a snapshot",
+                missing.len()
+            );
+        }
+        self.hole_backfill = Some((Instant::now(), missing));
+        self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
     }
 
     /// Broadcast the document changes made since the last call as an
@@ -5729,6 +5803,114 @@ mod pointer_broadcast_tests {
             "the committed edit must survive as an incremental delta; an \
              intervening full save() would have advanced the save cursor and \
              left broadcast_doc_delta with nothing to send"
+        );
+    }
+
+    /// A delta that parks on an ancestor this replica was never sent must make
+    /// the app re-announce arrival, so a peer holding the whole document
+    /// answers with a snapshot and the queued change applies.
+    ///
+    /// Without this, a change authored after a peer joined — the motivating
+    /// case is an agent posting a work strip into a chat it opened later —
+    /// crosses to the machine, parks at the bottom of a history with a hole in
+    /// it, and is silently dropped: gossip does not retransmit the missing
+    /// ancestor and the late-join handshake fires once per peer, so nothing
+    /// heals it. The re-announced `Arrived` is what asks for the backfill.
+    #[test]
+    fn a_parked_delta_re_announces_arrival_to_backfill_the_hole() {
+        use automerge::{transaction::Transactable, AutoCommit, ReadDoc};
+
+        // Build a two-change history on a separate replica and ship only the
+        // second change. The first — the ancestor the second depends on — is
+        // drained and never handed to the app, so the delta must park.
+        let mut origin = AutoCommit::new();
+        origin
+            .put(&automerge::ROOT, "base", "ancestor")
+            .expect("put base");
+        origin.commit();
+        let _ancestor = origin.save_incremental(); // deliberately withheld
+        origin
+            .put(&automerge::ROOT, "child", "depends-on-base")
+            .expect("put child");
+        origin.commit();
+        let parked_delta = origin.save_incremental();
+        assert!(!parked_delta.is_empty(), "the child must produce a delta");
+
+        let mut app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
+        // The scope an `Arrived` is announced under. Set before the sink is
+        // installed so its own arrival announcement is not what the assertion
+        // sees.
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+            id: "home".into(),
+        }));
+
+        let announced = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = announced.clone();
+        app.set_presence_broadcast_sink(move |_key, payload| {
+            sink.lock().unwrap().push(payload.clone());
+        });
+
+        let heads_before = app.state.doc.get_heads();
+        let applied = app.apply_remote_delta(&parked_delta);
+
+        assert!(!applied, "a parked delta reports no applied edit");
+        assert_eq!(
+            app.state.doc.get_heads(),
+            heads_before,
+            "a parked delta must not move the document's heads"
+        );
+        assert!(
+            !app.state.doc.get_missing_deps(&[]).is_empty(),
+            "the delta must have parked on the withheld ancestor"
+        );
+        assert!(
+            announced
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| matches!(p, crate::collaboration::PresencePayload::Arrived)),
+            "a parked delta must re-announce Arrived so a holder backfills the hole"
+        );
+    }
+
+    /// A delta that applies nothing for a benign reason — an empty or
+    /// already-seen delta, no hole — must NOT ask the room for a snapshot.
+    /// Backfill is for holes, and asking on every no-op delta would put a
+    /// whole document on the room topic for nothing.
+    #[test]
+    fn a_benign_no_op_delta_does_not_ask_for_a_backfill() {
+        use automerge::transaction::Transactable;
+
+        let mut app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+            id: "home".into(),
+        }));
+
+        // A delta the document already holds: apply a local change and capture
+        // its bytes, so feeding them back applies nothing and leaves no hole.
+        app.state
+            .doc
+            .put(&automerge::ROOT, "body", "already here")
+            .expect("put on the root object");
+        app.state.doc.commit();
+        let already_seen = app.state.save_incremental();
+        assert!(!already_seen.is_empty(), "the local edit must produce a delta");
+
+        let announced = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = announced.clone();
+        app.set_presence_broadcast_sink(move |_key, payload| {
+            sink.lock().unwrap().push(payload.clone());
+        });
+
+        let applied = app.apply_remote_delta(&already_seen);
+        assert!(!applied, "re-applying a known delta applies nothing");
+        assert!(
+            !announced
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| matches!(p, crate::collaboration::PresencePayload::Arrived)),
+            "a no-op delta with no hole must not re-announce Arrived"
         );
     }
 

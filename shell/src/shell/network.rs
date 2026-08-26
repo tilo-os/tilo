@@ -290,13 +290,20 @@ pub struct ShellNetwork {
     /// See [`Self::inbound_app_crdt_snapshot_handle`].
     inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
     /// Rooms with an outstanding request for somebody's whole
-    /// document, keyed by cluster id.
+    /// document, keyed by cluster id, and — within a cluster — the set of
+    /// app-ids that have already answered the current arrival.
     ///
-    /// A room is entered here when a peer announces it has arrived, and
-    /// removed when a snapshot is published for it. See
-    /// [`Self::note_snapshot_request`] for why the pairing lives here
-    /// rather than in the frame.
-    snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// A cluster is entered here when a peer announces it has arrived, with
+    /// an empty answered-set; each app then publishes its whole document
+    /// *once* for that arrival ([`Self::take_snapshot_request`] marks it
+    /// answered), and its later commits stay local until somebody arrives
+    /// again. Keyed per app, not per cluster alone, because a room holds
+    /// several documents — a chat, a word processor, the files — and an
+    /// arrival needs a snapshot of *each*; a cluster-only gate let the first
+    /// document to answer consume the arrival and left the peer parked on a
+    /// hole in every other one. See [`Self::note_snapshot_request`] for why
+    /// the pairing lives here rather than in the frame.
+    snapshot_requests: Arc<Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>,
     /// Carries document content between peers, and notices when a shared
     /// record references something that has not arrived, or is waiting on a
     /// change it was never sent.
@@ -553,7 +560,7 @@ impl ShellNetwork {
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-            snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
             blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
             inbound_blob: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -1296,7 +1303,7 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
-        if !self.take_snapshot_request(&cluster_id) {
+        if !self.take_snapshot_request(&cluster_id, &app_id) {
             tracing::trace!(
                 app = %app_id,
                 room = %cluster_id,
@@ -1364,14 +1371,28 @@ impl ShellNetwork {
             return;
         }
         if let Ok(mut pending) = self.snapshot_requests.lock() {
-            pending.insert(cluster_id.to_string());
+            // A fresh arrival: arm the cluster and clear who has answered, so
+            // every app publishes its document once more for this joiner.
+            pending.insert(cluster_id.to_string(), std::collections::HashSet::new());
         }
     }
 
-    /// Take the outstanding snapshot request for `cluster_id`, if any.
-    fn take_snapshot_request(&self, cluster_id: &str) -> bool {
+    /// Take the outstanding snapshot request for `app_id` in `cluster_id`.
+    ///
+    /// True the first time each app answers a given arrival, false thereafter
+    /// — so an arrival releases one whole document *per app*, and the commits
+    /// after stay local until somebody arrives again. Keyed per app because a
+    /// room holds several documents and a joiner needs a snapshot of each; a
+    /// cluster-only gate let the first document consume the arrival.
+    fn take_snapshot_request(&self, cluster_id: &str, app_id: &str) -> bool {
         match self.snapshot_requests.lock() {
-            Ok(mut pending) => pending.remove(cluster_id),
+            // `HashSet::insert` returns true only when the app was not already
+            // in the answered-set — i.e. exactly on its first snapshot for
+            // this arrival.
+            Ok(mut pending) => match pending.get_mut(cluster_id) {
+                Some(answered) => answered.insert(app_id.to_string()),
+                None => false,
+            },
             Err(_) => false,
         }
     }
@@ -2259,7 +2280,7 @@ pub(crate) fn shell_network_for_test_with_store(
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-        snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
         blob_relay: Arc::new(Mutex::new(
             crate::network::blob_relay::BlobRelay::with_store(store),
         )),
@@ -3152,8 +3173,10 @@ mod tests {
         // changes it, and the delta alongside already carries the edit
         // to anyone who shares the history. Republishing each one would
         // put an unbounded payload on the room topic per commit, so the
-        // arming is one-shot: a peer arrives, one document goes out, and
-        // the commits after it stay local until somebody else arrives.
+        // arming is one-shot *per app*: a peer arrives, one app's document
+        // goes out, and that app's commits after it stay local until
+        // somebody arrives again. (A different app in the same room gets
+        // its own release — see `one_arrival_releases_a_snapshot_of_every_app`.)
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         let room = A_ROOM;
@@ -3184,6 +3207,39 @@ mod tests {
         assert!(
             cmd_rx.try_recv().is_err(),
             "an arrival in another room must not release this room's document",
+        );
+    }
+
+    #[test]
+    fn one_arrival_releases_a_snapshot_of_every_app() {
+        // A room holds several documents — a chat, a word processor, the
+        // files. One arrival must release a whole document for EACH app, not
+        // only the first to answer: a cluster-only gate let the first
+        // document consume the arrival and left the joiner parked on a hole
+        // in every other one (the agent's chat work strip never converged
+        // because a word-processor snapshot won the race). Each app still
+        // gets exactly one per arrival; its later commits stay local.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let room = A_ROOM;
+
+        net.note_snapshot_request(room);
+        for app in ["dev.qos.chat", "dev.qos.word-processor"] {
+            for _ in 0..2 {
+                net.publish_app_crdt_snapshot(app.into(), room.into(), String::new(), vec![0xAA]);
+            }
+        }
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "the first app releases its document for the arrival",
+        );
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "a second, different app also releases its document for the same arrival",
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no app broadcasts its document twice for one arrival",
         );
     }
 

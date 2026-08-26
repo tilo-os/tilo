@@ -977,6 +977,7 @@ impl Session {
         let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
+                self.settle_before_exit();
                 return Ok(());
             }
             if !self.addressed_seen
@@ -984,6 +985,29 @@ impl Session {
                 && joined.elapsed() >= self.cfg.await_document
             {
                 anyhow::bail!("{}", self.nothing_to_do());
+            }
+        }
+    }
+
+    /// Keep answering the room for a short window before leaving.
+    ///
+    /// The last work-strip updates go out as increments moments before a
+    /// `--once` agent exits. A peer that only just received them may still be
+    /// missing an ancestor and asking for the whole document (its re-announced
+    /// `Arrived`) — and this agent is the sole holder of the tail it just
+    /// authored. Exiting the instant the work is posted strands that tail on a
+    /// hole nobody left in the room can fill. So the loop lingers, answering
+    /// arrivals (each sends the whole of every document it holds), until the
+    /// room goes quiet for long enough that any such request has been served.
+    fn settle_before_exit(&mut self) {
+        const WINDOW: Duration = Duration::from_secs(5);
+        let deadline = Instant::now() + WINDOW;
+        while Instant::now() < deadline {
+            // `absorb_next` is what answers an `Arrived` with a full snapshot
+            // of every held document; a merge failure here is not worth
+            // aborting a clean shutdown over.
+            if self.absorb_next(Duration::from_millis(100)).is_err() {
+                break;
             }
         }
     }
@@ -1102,12 +1126,28 @@ impl Session {
                 payload: PresencePayload::Arrived,
                 ..
             }) => {
-                // A participant arriving after us deserves what we hold.
+                // A participant arriving after us deserves what we hold — and
+                // that is every document, not just the one it was summoned to
+                // work on. The agent posts its work strip into the room's chat
+                // (`self.peers`), building on a base it may be the only holder
+                // of: a peer that parked on that base heals only from the whole
+                // chat document, and if the agent answered with just its
+                // primary document the chat hole never closed. So each held
+                // document is offered; the receiving shell releases one per app
+                // per arrival, and merging is idempotent, so offering all is
+                // safe.
+                let mut sent = 0usize;
                 if let Some(ed) = self.editor.as_mut() {
                     let full = ed.full();
                     self.link.send(&CollabRequest::SyncCRDT { data: full })?;
-                    tracing::debug!(%user_id, "sent our document to a new participant");
+                    sent += 1;
                 }
+                for ed in self.peers.values_mut() {
+                    let full = ed.full();
+                    self.link.send(&CollabRequest::SyncCRDT { data: full })?;
+                    sent += 1;
+                }
+                tracing::debug!(%user_id, documents = sent, "sent our documents to a new participant");
             }
             // Where everyone else is writing. Kept because it answers the
             // question a settle timer can only guess at — see [`Written`].
