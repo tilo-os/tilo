@@ -19,9 +19,7 @@
 //! asked for ("use screenshotting here to check for issues. Only
 //! inspect screenshots where you suspect issues/changed something").
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;

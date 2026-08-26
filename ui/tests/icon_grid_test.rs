@@ -5,10 +5,8 @@
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
-mod support;
-
 use std::collections::HashMap;
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;

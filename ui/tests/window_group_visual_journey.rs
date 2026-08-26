@@ -18,10 +18,8 @@
 //! (`window_group_fresh.png`, `_search.png`, `_maximized.png`,
 //! `_post_close.png`) for by-eye inspection.
 
-mod support;
-
 use std::collections::HashMap;
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
