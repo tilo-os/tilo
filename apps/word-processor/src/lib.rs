@@ -824,7 +824,8 @@ mod tests {
     fn recovery_path_is_stable_per_document() {
         let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_recovery_dir("stable");
-        std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir);
+        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
+        unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
 
         let doc = std::path::Path::new("/home/u/My Notes.md");
         let p1 = recovery::recovery_path_for(Some(doc));
@@ -840,7 +841,9 @@ mod tests {
         assert_eq!(u1, u2, "the untitled slot is a single stable path");
         assert_ne!(u1, p1, "untitled and titled documents don't collide");
 
-        std::env::remove_var(recovery::RECOVERY_BASE_ENV);
+        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
+
+        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
     }
 
     /// `recovery::write` materializes a recovery copy under the (overridden) base
@@ -850,7 +853,8 @@ mod tests {
     fn recovery_write_read_clear_roundtrip() {
         let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_recovery_dir("rwc");
-        std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir);
+        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
+        unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
         let doc = std::path::Path::new("/tmp/whatever/doc.md");
 
         assert!(!recovery::exists(Some(doc)), "no recovery file before any write");
@@ -867,7 +871,8 @@ mod tests {
         assert!(!recovery::exists(Some(doc)), "clear() removes the recovery file");
 
         let _ = std::fs::remove_dir_all(&dir);
-        std::env::remove_var(recovery::RECOVERY_BASE_ENV);
+        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
+        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
     }
 
     /// `recovery::markdown_bytes` renders the live document to recovery Markdown
