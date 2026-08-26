@@ -3,7 +3,6 @@
 //! move. Driven end to end through the widget's real event + layout paths: a
 //! press, a threshold-crossing move that starts the drag, a move over the
 //! target that highlights it, and a release that commits the move.
-use crate::common;
 use crate::common::{row_center, Harness};
 
 use vello::kurbo::Point;

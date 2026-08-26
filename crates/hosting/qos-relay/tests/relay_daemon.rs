@@ -6,7 +6,6 @@
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
 //! receives the same delta bytes via the relay's fan-out.
 
-use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

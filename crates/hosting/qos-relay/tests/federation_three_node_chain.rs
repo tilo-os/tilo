@@ -21,7 +21,6 @@
 //! in-process over iroh's loopback; genuine cross-machine NAT traversal
 //! is out of scope for a headless test (noted in the module docs).
 
-use crate::common;
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
