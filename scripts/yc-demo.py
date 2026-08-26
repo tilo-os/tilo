@@ -8331,10 +8331,43 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # second half turns on the agent opening that editor because it decided
     # it needed one, so a take that leaves it closed has no editor to tab,
     # and lost both the tab bar and the strip framing that followed it.
-    editor = extras.get(IMAGE_EDITOR) or next(
-        (w for a, w in extras.items() if a != IMAGE_EDITOR and w is not None),
-        None,
-    )
+    def _adjacent_to_wp(candidates: list) -> object | None:
+        """The first candidate that can actually share a frame with `wp`.
+
+        Only neighbouring groups are ever on screen together, so a partner
+        with something between it and the word processor cannot be filmed
+        beside it however the strip is scrolled. Picking by app id instead
+        chose chat -- two groups away, with the file manager in between --
+        and the beat spent its seconds panning and then refused, leaving a
+        gap in the transcript and nothing in the film.
+        """
+        if wp is None:
+            return None
+        here = strip_order(quinten)
+        at_wp = group_index_of(quinten, wp, here)
+        if at_wp is None:
+            return None
+        for cand in candidates:
+            if cand is None:
+                continue
+            at = group_index_of(quinten, cand, here)
+            if at is not None and abs(at - at_wp) == 1:
+                return cand
+        return None
+
+    # The photo editor when it is up and adjacent, else whatever else on
+    # the strip actually neighbours the document. What the beat argues is
+    # that a tab bar holds *different applications*; any second application
+    # makes that argument, and only an adjacent one can be filmed making it.
+    ordered = [extras.get(IMAGE_EDITOR)] + [
+        w for a, w in extras.items() if a != IMAGE_EDITOR
+    ]
+    editor = _adjacent_to_wp(ordered)
+    if editor is None:
+        editor = extras.get(IMAGE_EDITOR) or next(
+            (w for a, w in extras.items() if a != IMAGE_EDITOR and w is not None),
+            None,
+        )
     # Only neighbours are ever in frame together on a strip, so the two
     # windows the merge happens between have to be side by side for it to
     # be watchable. Said here rather than left to be inferred from a

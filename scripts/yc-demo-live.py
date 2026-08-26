@@ -2918,6 +2918,15 @@ def _the_owners_half(q, shots: str, live: "Live",
         extras[yc.IMAGE_EDITOR] = photos
     if chat is not None:
         extras[yc.CHAT_APP] = chat
+    # The file manager is a candidate partner as well, and usually the only
+    # workable one. Only neighbours on the strip can be tabbed together, and
+    # chat opens first with Files between it and the word processor -- so
+    # when the photo editor is left for the agent to open, chat is offered,
+    # refused for not being adjacent, and the beat films nothing. Files is
+    # adjacent, and a file manager sharing a bar with a document argues the
+    # same thing: the bar belongs to the compositor, not to an application.
+    if files is not None:
+        extras[yc.FILES_APP] = files
     if extras:
         try:
             yc.beat_strip(q, extras, wp, shots)
