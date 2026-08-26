@@ -26,11 +26,14 @@
 //! ## Addressing
 //!
 //! Everything is named by id. The open photograph is a resource whose id is
-//! derived from its path, and each edit is an [`ActionSpec`] with a stable id
-//! (`rotate-right`, `crop`, …). No screen position appears anywhere in this
-//! surface: a caller with no display enumerates by id and title, and invokes by
-//! id, which is what lets the palette, a remote peer, and a headless agent all
-//! drive the same operations.
+//! derived from **its content**, and each edit is an [`ActionSpec`] with a
+//! stable id (`rotate-right`, `crop`, …). No screen position appears anywhere
+//! in this surface: a caller with no display enumerates by id and title, and
+//! invokes by id, which is what lets the palette, a remote peer, and a
+//! headless agent all drive the same operations.
+//!
+//! The content rather than the path, because an address is only worth having
+//! if it means the same thing to everybody holding it — see [`resource_id`].
 
 use automerge::AutoCommit;
 
@@ -40,7 +43,7 @@ use qos_actions::{
 };
 
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, Rect01};
+use crate::model::{Edits, OpenImage, Rect01};
 
 /// Registry `type_id` for every action this app exports.
 pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
@@ -161,13 +164,16 @@ impl ResourceProvider for PhotosResources {
         };
         let edits = PhotosDoc::edits(doc);
         let (w, h) = image.edited_size(&edits);
+        // Minted once and used for the resource and every child, so the parent
+        // and its facts cannot drift apart.
+        let id = resource_id(&image);
 
         let spec = |id: &str, label: &str, next: Edits| {
             ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, &PhotosAction::set(&next))
                 .expect("PhotosAction is always serializable")
         };
 
-        let mut resource = Resource::new(resource_id(&image.path), IMAGE_KIND, &image.name)
+        let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name)
             .with_action(
                 spec("rotate-right", "Rotate right", edits.rotated_right())
                     .with_description("Turn the photograph a quarter turn clockwise"),
@@ -180,7 +186,7 @@ impl ResourceProvider for PhotosResources {
                 spec(
                     "crop-square",
                     "Crop to a square",
-                    edits.cropped_from_view(square_of(w, h, subject_at(&image.path))),
+                    edits.cropped_from_view(square_of(w, h, subject_at(&image))),
                 )
                 .with_description(
                     "Keep the largest square of what is currently shown, placed \
@@ -222,7 +228,7 @@ impl ResourceProvider for PhotosResources {
         // than in a side channel, so a caller that can only read ids and
         // titles still learns the size it is working with.
         resource = resource.with_child(Resource::new(
-            format!("{}#size", resource_id(&image.path)),
+            format!("{id}#size"),
             "photos.size",
             format!("{w} x {h} pixels"),
         ));
@@ -240,9 +246,9 @@ impl ResourceProvider for PhotosResources {
         // Stated as a fact rather than an operation because it is not
         // something anyone can *do* — it is something true about the file,
         // which is exactly what a child resource exporting no actions is for.
-        if let Some(subject) = subject_of(&image.path) {
+        if let Some(subject) = subject_of(&image) {
             resource = resource.with_child(Resource::new(
-                format!("{}#subject", resource_id(&image.path)),
+                format!("{id}#subject"),
                 "photos.subject",
                 subject,
             ));
@@ -252,11 +258,6 @@ impl ResourceProvider for PhotosResources {
     }
 }
 
-/// Stable resource id for a photograph at `path`.
-///
-/// The path is the identity: two windows onto the same file publish the same
-/// id, and a caller that knows the path can address it without having
-/// enumerated first.
 /// Where the detail in a photograph sits, in the crop argument's own
 /// coordinates.
 ///
@@ -270,11 +271,18 @@ impl ResourceProvider for PhotosResources {
 /// alternative, which is knowing only the width and the height, from which
 /// the one derivable square is the middle one, whatever the picture shows.
 ///
-/// Reads the file rather than the decoded surface: this runs where the
-/// resource tree is built, which has the path and not the pixels, and a
-/// photograph is read once per publish rather than per frame.
-fn subject_at(path: &str) -> Option<(f64, f64)> {
-    // Once per file, not once per publish.
+/// Reads the picture's bytes rather than the decoded surface: this runs where
+/// the resource tree is built, which has the document and not the pixels, and
+/// a photograph is read once per picture rather than per frame.
+///
+/// Through [`crate::doc::bytes_of`], so a session that was handed the content
+/// and never had a file for it measures the same photograph everybody else
+/// does. Reading the path directly made `crop-square` a different operation
+/// depending on who ran it: the participant that staged the file put the
+/// square over the detail, and the one holding only the bytes had nothing to
+/// measure and centred it. Same address, same picture, two crops.
+fn subject_at(image: &OpenImage) -> Option<(f64, f64)> {
+    // Once per picture, not once per publish.
     //
     // `resources()` is rebuilt whenever the document changes -- it is a
     // function of the document, deliberately, so nothing here is ever stale.
@@ -284,30 +292,38 @@ fn subject_at(path: &str) -> Option<(f64, f64)> {
     // and never publish an operation, and gave up after thirty seconds with
     // `the open did not produce what it promised`.
     //
-    // The answer only depends on the file, so it is remembered by path. A
-    // failure is remembered too: a file that cannot be read will not become
-    // readable by being decoded again every frame.
+    // Remembered under the same name the resource is addressed by, so two
+    // sessions holding one photograph share one answer for it. A failure is
+    // remembered too: bytes that cannot be decoded will not start decoding by
+    // being tried again every frame.
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashMap<String, Option<(f64, f64)>>>> = OnceLock::new();
+    let key = subject_key(image);
     let cache = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(seen) = cache.lock() {
-        if let Some(hit) = seen.get(path) {
+        if let Some(hit) = seen.get(&key) {
             return *hit;
         }
     }
-    let answer = measure_subject(path);
+    let answer = crate::doc::bytes_of(image).as_deref().and_then(measure_subject);
     if let Ok(mut seen) = cache.lock() {
-        seen.insert(path.to_string(), answer);
+        seen.insert(key, answer);
     }
     answer
 }
 
+/// What the measurement is remembered under: the content when the picture
+/// names any, and otherwise the path, which is all an older document has.
+fn subject_key(image: &OpenImage) -> String {
+    image.content.clone().unwrap_or_else(|| image.path.clone())
+}
+
 /// The measurement itself, without the remembering. Separated so the cache
 /// above has one thing to cache and this has one thing to be right about.
-fn measure_subject(path: &str) -> Option<(f64, f64)> {
+fn measure_subject(bytes: &[u8]) -> Option<(f64, f64)> {
     const GRID: u32 = 24;
-    let img = image::open(path).ok()?.to_luma8();
+    let img = image::load_from_memory(bytes).ok()?.to_luma8();
     let (w, h) = img.dimensions();
     if w < GRID || h < GRID {
         return None;
@@ -346,9 +362,9 @@ fn measure_subject(path: &str) -> Option<(f64, f64)> {
 }
 
 /// The measurement, in words: what the child resource carries and what the
-/// tests below pin. One decode behind it, remembered by path.
-fn subject_of(path: &str) -> Option<String> {
-    subject_at(path).map(|(cx, cy)| subject_sentence(cx, cy))
+/// tests below pin. One decode behind it, remembered by content.
+fn subject_of(image: &OpenImage) -> Option<String> {
+    subject_at(image).map(|(cx, cy)| subject_sentence(cx, cy))
 }
 
 /// The measurement, said in words, for the child resource that carries it.
@@ -403,8 +419,83 @@ pub fn square_of(w: u32, h: u32, subject: Option<(f64, f64)>) -> Rect01 {
     Rect01 { x, y, w: sw, h: sh }
 }
 
-pub fn resource_id(path: &str) -> String {
-    format!("{IMAGE_KIND}:{path}")
+/// The address of a photograph: what it is, not where a machine put it.
+///
+/// # Why the path was the wrong name
+///
+/// This used to be `format!("{IMAGE_KIND}:{path}")`, and the path is true on
+/// exactly one machine. Content handed to a room is staged by each session
+/// under its own runtime directory, so one photograph had one address per
+/// participant — `…/qlva…/qos-opened/<hash>.png` here, `…/qlvx…/` there,
+/// `…/qlvq…/` in the third. An address is resolved by string equality
+/// ([`qos_actions::door::resolve`]), so an operation invoked on one of them
+/// reached exactly one session: the one whose path had won. An agent cropped
+/// the editor in `qlva…` while the person watching the editor in `qlvx…` saw
+/// their picture sit there unchanged. The run before, the same invocation
+/// worked — because that time the id happened to name the watcher's copy.
+///
+/// So the name is the content's, through the hash the document already
+/// carries beside the path (`OpenImage::content`). Content is the same word in
+/// every session, which is the property an address has to have before anyone
+/// can act through one: everybody says the same thing about the picture, and
+/// the operation lands on it wherever it is open.
+///
+/// # Why the file's name is not in it
+///
+/// Because a name is a property of whoever wrote it down, exactly as the path
+/// was. A participant who opened `harbour.png` off their own disk and one who
+/// was handed the same bytes staged as `<hash>.png` would be back to two
+/// addresses for one picture. What a person reads is the resource's **label**,
+/// which is the file's own name and travels beside the id everywhere one is
+/// rendered — the palette row, `qos_actions::FlatAction::resource_label`, the
+/// agent's survey line, the chip on a remark.
+///
+/// # A photograph with no content hash
+///
+/// Named by its path, as it always was. A document written before the hash
+/// existed parses with `content: None`, and the path is the only thing such a
+/// picture has: as good an address as it ever was in the one session the path
+/// is true of, and better than publishing nothing. Nothing is migrated,
+/// because there is nothing stored to migrate — this tree is a pure function
+/// of the document, rebuilt every frame, so a picture gains its content
+/// address the moment its bytes reach the store.
+pub fn resource_id(image: &OpenImage) -> String {
+    match &image.content {
+        Some(hash) => content_address(hash),
+        None => format!("{IMAGE_KIND}:{}", image.path),
+    }
+}
+
+/// The address the content named by `hash` is published under.
+///
+/// Split out so a caller holding the bytes but no document — the offscreen
+/// renderer posing a scenario, a host staging content for an app — spells the
+/// address the one way, rather than assembling a second spelling of it that
+/// can drift from the one the app answers to.
+pub fn content_address(hash: &str) -> String {
+    format!("{IMAGE_KIND}:{hash}")
+}
+
+/// Length of a blake3 hash written as hex, which is what a content-named id
+/// carries after its kind.
+const CONTENT_HEX_LEN: usize = 64;
+
+/// The content a resource id names, if it names content.
+///
+/// The inverse of [`resource_id`] for the ids minted from a hash, and `None`
+/// for the path-shaped id a document written before content hashes still
+/// produces. This is what keeps a portable address useful rather than merely
+/// identical everywhere: a session that was handed the picture and never had a
+/// file for it goes from the address to the bytes through
+/// `ui::blobstore::get`, the same route [`crate::doc::bytes_of`] takes for the
+/// photograph it is drawing.
+pub fn content_of(id: &str) -> Option<&str> {
+    let tail = id.strip_prefix(IMAGE_KIND)?.strip_prefix(':')?;
+    let is_content = tail.len() == CONTENT_HEX_LEN
+        && tail
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    is_content.then_some(tail)
 }
 
 #[cfg(test)]
@@ -415,7 +506,7 @@ mod tests {
 
     /// A 240x160 image, flat grey, with a patch of hard checkerboard — all the
     /// contrast there is — centred on `(fx, fy)` of the frame.
-    fn image_with_detail_at(dir: &std::path::Path, name: &str, fx: f64, fy: f64) -> String {
+    fn image_with_detail_at(dir: &std::path::Path, name: &str, fx: f64, fy: f64) -> OpenImage {
         let (w, h) = (240u32, 160u32);
         let mut img = image::GrayImage::from_pixel(w, h, image::Luma([128u8]));
         let (cx, cy) = ((fx * f64::from(w)) as u32, (fy * f64::from(h)) as u32);
@@ -427,7 +518,7 @@ mod tests {
         }
         let path = dir.join(name);
         img.save(&path).expect("the test writes a readable png");
-        path.to_string_lossy().into_owned()
+        OpenImage::from_path(&path.to_string_lossy(), w, h)
     }
 
     /// The fact has to follow the photograph, not its rectangle.
@@ -466,7 +557,41 @@ mod tests {
         image::GrayImage::from_pixel(240, 160, image::Luma([128u8]))
             .save(&path)
             .expect("the test writes a readable png");
-        assert_eq!(subject_of(&path.to_string_lossy()), None);
+        let flat = OpenImage::from_path(&path.to_string_lossy(), 240, 160);
+        assert_eq!(subject_of(&flat), None);
+    }
+
+    /// A picture is measured from its bytes, so a session that was handed the
+    /// content and never had a file for it reads the same photograph.
+    ///
+    /// Without this `crop-square` is two different operations under one
+    /// address: the session holding the file puts the square over the detail,
+    /// and the one holding only the bytes centres it.
+    #[test]
+    fn the_subject_is_found_from_content_when_there_is_no_file_to_read() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let staged = image_with_detail_at(dir.path(), "left.png", 0.20, 0.5);
+        let bytes = std::fs::read(&staged.path).expect("the fixture wrote a file");
+        let hash = ui::blobstore::put(&bytes);
+
+        // The same picture, as a participant who was handed the content holds
+        // it: a path that is true on somebody else's machine, and the hash.
+        let handed = OpenImage {
+            path: "/run/user/1000/qlvx-another-session/qos-opened/left.png".to_string(),
+            content: Some(hash),
+            ..staged.clone()
+        };
+        assert!(
+            std::fs::read(&handed.path).is_err(),
+            "the stand-in for somebody else's path is readable here, so it \
+             is not standing in for one"
+        );
+        assert_eq!(
+            subject_at(&handed),
+            subject_at(&staged),
+            "one photograph measured two ways, so `crop-square` is two \
+             operations depending on who invokes it"
+        );
     }
 
     fn doc_with_image() -> AutoCommit {
@@ -475,6 +600,45 @@ mod tests {
         let img = OpenImage::from_path("/var/tmp/qos/home/quinten/harbour.png", 800, 400);
         PhotosDoc::set_image(&mut doc, Some(&img));
         doc
+    }
+
+    /// The address of a photograph that names its content is that content.
+    ///
+    /// Asserted on the published tree rather than on `resource_id` alone, so
+    /// it is the id a caller actually resolves against.
+    #[test]
+    fn a_photograph_that_names_its_content_is_addressed_by_it() {
+        const HASH: &str =
+            "623fdbf0c19749ddd1116f8c68b561ad648e3023ca4f304a732bf7b06d1ffb82";
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let img = OpenImage::from_path("/run/user/1000/qlva3099960/qos-opened/x.png", 800, 400)
+            .with_content(HASH);
+        PhotosDoc::set_image(&mut doc, Some(&img));
+
+        let res = PhotosResources.resources(&doc);
+        assert_eq!(res[0].id.0, format!("photos.image:{HASH}"));
+        assert_eq!(
+            content_of(&res[0].id.0),
+            Some(HASH),
+            "the address does not lead back to the content it names"
+        );
+        // And the file's name is still what a person reads.
+        assert_eq!(res[0].label, "x.png");
+    }
+
+    /// The path-shaped id an older document produces is not mistaken for a
+    /// content address. A caller that got one has to fall back to the path,
+    /// and would otherwise ask the content store for a directory name.
+    #[test]
+    fn a_path_shaped_address_names_no_content() {
+        let doc = doc_with_image();
+        let res = PhotosResources.resources(&doc);
+        assert_eq!(content_of(&res[0].id.0), None);
+        assert_eq!(content_of("photos.image:"), None);
+        assert_eq!(content_of("files.entry:/x"), None);
+        // Right length, wrong alphabet: hex is what a hash is written in.
+        assert_eq!(content_of(&format!("photos.image:{}", "z".repeat(64))), None);
     }
 
     #[test]
