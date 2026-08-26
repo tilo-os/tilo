@@ -21,6 +21,7 @@ fn text_of(doc: &AutoCommit) -> String {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn live_text_edit_propagates_through_broker() {
     let sock = std::env::temp_dir()
         .join(format!("quick-collab-text-{}.sock", std::process::id()));

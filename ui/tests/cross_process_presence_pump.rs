@@ -42,6 +42,7 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     // 1. Spin up a per-pid socket so parallel test runs don't collide.
     let socket_path = std::env::temp_dir().join(format!(
