@@ -48,6 +48,9 @@ pub struct PathBar {
     editing: bool,
     current: PathBuf,
     home: Option<PathBuf>,
+    /// The workspace mounts, so the trail can name one instead of
+    /// spelling out where it happens to be mounted.
+    workspace_roots: Vec<PathBuf>,
     sink: CommandSink,
     rect: Rect,
 }
@@ -62,6 +65,7 @@ impl PathBar {
             editing: false,
             current: PathBuf::new(),
             home: None,
+            workspace_roots: Vec::new(),
             sink,
             rect: Rect::ZERO,
         }
@@ -70,12 +74,14 @@ impl PathBar {
     /// Update the trail to reflect the current directory. A no-op on the trail
     /// while editing, so navigation the user hasn't committed doesn't stomp
     /// their in-progress typing.
-    pub fn set_path(&mut self, current: PathBuf, home: Option<PathBuf>) {
+    pub fn set_path(&mut self, current: PathBuf, home: Option<PathBuf>, workspace_roots: Vec<PathBuf>) {
         self.current = current;
         self.home = home;
+        self.crumbs.set_workspace_roots(workspace_roots.clone());
+        self.workspace_roots = workspace_roots;
         if !self.editing {
             self.crumbs
-                .set_segments(breadcrumb_components(&self.current, self.home.as_deref()));
+                .set_segments(breadcrumb_components(&self.current, self.home.as_deref(), &self.workspace_roots));
         }
     }
 
@@ -100,7 +106,7 @@ impl PathBar {
         self.field.close();
         self.field.set_focus(false);
         self.crumbs
-            .set_segments(breadcrumb_components(&self.current, self.home.as_deref()));
+            .set_segments(breadcrumb_components(&self.current, self.home.as_deref(), &self.workspace_roots));
     }
 }
 
