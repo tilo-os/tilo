@@ -2305,6 +2305,12 @@ fn remote_participant_id(
                 name,
                 // The palette colour the id already resolves to.
                 color: [0.0, 0.0, 0.0],
+                // This path announces a remote network peer (`peer@…`). An
+                // agent joins over the local collaboration socket and is
+                // marked there, and a machine never announces its own
+                // participant to its own applications.
+                is_agent: false,
+                is_self: false,
             }],
             permissions: Vec::new(),
         };
