@@ -760,9 +760,50 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
     named
 }
 
+/// The unshifted key a character sits on, and whether Shift reaches it.
+///
+/// A keycode names a *position*, not a character: 39 is `;` or `:` purely
+/// by whether Shift is held when it is pressed. Letters were always
+/// handled that way — `evdev_from_char` lowercased before its lookup —
+/// but the shifted punctuation marks had no entry at all, so
+/// `evdev_from_char(':')` answered `None` and the key was never
+/// delivered to any client: not typed wrong, simply dropped.
+///
+/// US positions, which is the layout the headless session loads.
+pub(crate) fn unshifted(c: char) -> (char, bool) {
+    let pair = match c {
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+        '_' => '-',
+        '+' => '=',
+        '{' => '[',
+        '}' => ']',
+        ':' => ';',
+        '"' => '\'',
+        '~' => '`',
+        '|' => '\\',
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+        _ => return (c.to_ascii_lowercase(), c.is_ascii_uppercase()),
+    };
+    (pair, true)
+}
+
 /// Single-character → evdev keycode (US layout positions).
+///
+/// Answers about the *position*, so a shifted character resolves to the
+/// key its unshifted twin sits on — see [`unshifted`].
 fn evdev_from_char(c: char) -> Option<u32> {
-    let lower = c.to_ascii_lowercase();
+    let (lower, _) = unshifted(c);
     let code = match lower {
         'a' => 30,
         'b' => 48,
@@ -1646,6 +1687,13 @@ pub fn route_input(
     match event {
         WindowEvent::CursorMoved { position, .. } => {
             state.client_input.cursor = Some((position.x, position.y));
+            // A motion over a client tile is withheld from the chrome's own
+            // event dispatch below (it belongs to the client, not the
+            // shell), so without telling the chrome here its idea of the
+            // pointer freezes at wherever it last crossed the desktop —
+            // and every later press is hit-tested against that stale spot.
+            fb.host_mut()
+                .note_pointer(vello::kurbo::Point::new(position.x, position.y));
             let hit = current_pointer_target(state, fb, captured);
             deliver_pointer(state, hit);
             // During a chrome drag the file manager keeps drawing the ghost
@@ -1991,6 +2039,58 @@ mod tests {
     use std::time::Duration;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+
+    /// Every printable ASCII character resolves to a key on the board.
+    ///
+    /// The table used to cover the unshifted positions only and answered
+    /// `None` for every shifted punctuation mark — not typed wrongly,
+    /// simply never delivered. Asserted over the whole printable range
+    /// rather than the characters someone thought of, because the one
+    /// that mattered (`:`) was exactly the one nobody had.
+    #[test]
+    fn every_printable_ascii_character_names_a_key() {
+        let missing: Vec<char> = (0x20u8..0x7f)
+            .map(char::from)
+            .filter(|c| evdev_from_char(*c).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these characters reach a client as nothing at all: {missing:?}",
+        );
+    }
+
+    /// A shifted character names the key its unshifted twin sits on.
+    #[test]
+    fn a_shifted_character_shares_its_key_with_the_unshifted_one() {
+        for (shifted, plain) in [
+            (':', ';'),
+            ('"', '\''),
+            ('?', '/'),
+            ('_', '-'),
+            ('+', '='),
+            ('{', '['),
+            ('}', ']'),
+            ('<', ','),
+            ('>', '.'),
+            ('~', '`'),
+            ('|', '\\'),
+            ('!', '1'),
+            (')', '0'),
+        ] {
+            assert_eq!(
+                evdev_from_char(shifted),
+                evdev_from_char(plain),
+                "{shifted:?} and {plain:?} are one key",
+            );
+            assert_eq!(
+                unshifted(shifted),
+                (plain, true),
+                "{shifted:?} is {plain:?} with Shift held",
+            );
+        }
+        assert_eq!(unshifted('a'), ('a', false), "a lowercase letter is bare");
+        assert_eq!(unshifted('A'), ('a', true), "a capital is Shift held");
+    }
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
         // Mirrors the synthesis helpers already used by the test-control
@@ -2888,6 +2988,62 @@ mod tests {
             state.client_input.pointer_position(),
             Some((640.0, 610.0)),
             "and once it has been somewhere, that is where it is",
+        );
+    }
+
+    /// Routing a motion tells the chrome where the pointer went, whether
+    /// or not the chrome is the one that gets to read the event.
+    ///
+    /// The chrome hit-tests a press against the last position it was
+    /// given, because `MouseInput` carries none of its own. Motion over a
+    /// client window is withheld from the chrome's own event dispatch, so
+    /// without this its idea of the pointer froze at wherever it last
+    /// crossed the desktop — and every press made inside a window after
+    /// that was measured against a stale spot.
+    ///
+    /// Asserted through `route_input`, the one function every source of
+    /// motion in this compositor goes through, and on
+    /// `fb.host().pointer_position()` — what the chrome actually reads.
+    #[test]
+    fn routing_a_motion_keeps_the_chrome_pointer_current() {
+        let mut state = state_sharing(9_000_103);
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mods = Modifiers::default();
+
+        assert!(
+            fb.host().pointer_position().is_none(),
+            "nothing has moved a pointer through this session yet",
+        );
+
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
+            },
+            &mods,
+        );
+        assert_eq!(
+            fb.host().pointer_position(),
+            Some(vello::kurbo::Point::new(523.0, 339.0)),
+            "the chrome has to know where the pointer is to hit-test the press that follows it",
+        );
+
+        // And it follows the pointer, rather than only recording the
+        // first place it was seen.
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
+            },
+            &mods,
+        );
+        assert_eq!(
+            fb.host().pointer_position(),
+            Some(vello::kurbo::Point::new(880.0, 300.0)),
         );
     }
 
