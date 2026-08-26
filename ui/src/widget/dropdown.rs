@@ -494,7 +494,7 @@ impl Widget for Dropdown {
                     );
                 }
                 let color = if vi == self.highlight {
-                    vello::peniko::Color::WHITE
+                    theme.tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
                 } else {
                     theme.text_primary
                 };
