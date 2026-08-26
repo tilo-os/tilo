@@ -111,6 +111,8 @@ There is no message-passing layer. Consequences:
   to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
 - **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
   carries correctness, accessibility and theming that a local copy will not.
+- **Apps start empty.** No seeded feeds, messages, events or documents on the live path.
+  Sample data belongs behind `--shots` or a demo flag, never in the app a user opens.
 - Rewriting a whole CRDT `Text` or list on every keystroke blows up tombstones. Diff and
   splice.
 
