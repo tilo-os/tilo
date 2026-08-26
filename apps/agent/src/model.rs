@@ -358,12 +358,12 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
 // The key
 // ---------------------------------------------------------------------------
 
-/// The API key, from the environment or an env file.
+/// The API key, from the environment or from a file the caller names.
 ///
-/// `ANTHROPIC_API_KEY` wins. Failing that, `ANTHROPIC_ENV_FILE` names a
-/// `KEY=value` file to read it from, and failing *that* the operator's own
-/// file is tried so a demo box needs no shell preparation. The value is
-/// returned and never logged, printed, or written anywhere.
+/// `ANTHROPIC_API_KEY` wins; failing that, `ANTHROPIC_ENV_FILE` names a
+/// `KEY=value` file to read it from. Both are explicit: nothing is read from a
+/// location the caller did not ask for. The value is returned and never logged,
+/// printed, or written anywhere.
 pub fn api_key() -> Option<String> {
     if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
         let k = k.trim().to_string();
@@ -371,25 +371,8 @@ pub fn api_key() -> Option<String> {
             return Some(k);
         }
     }
-    for path in env_files() {
-        if let Some(k) = key_from_env_file(&path) {
-            return Some(k);
-        }
-    }
-    None
-}
-
-fn env_files() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(p) = std::env::var_os("ANTHROPIC_ENV_FILE") {
-        paths.push(PathBuf::from(p));
-    }
-    // The operator's key file. Nothing in the repository depends on this
-    // existing; when it does not, the agent falls back and says so.
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join("tupo").join("birke").join(".env"));
-    }
-    paths
+    let path = std::env::var_os("ANTHROPIC_ENV_FILE")?;
+    key_from_env_file(&PathBuf::from(path))
 }
 
 /// Read `ANTHROPIC_API_KEY` out of a `KEY=value` file, ignoring every other
