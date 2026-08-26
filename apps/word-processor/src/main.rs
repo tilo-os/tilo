@@ -44,6 +44,53 @@ use vello::Scene;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
+/// PID namespace, so every instance sees itself as pid 2 and every session
+/// wrote under the *same* actor — and Automerge refuses a frame whose actor
+/// already used that sequence number:
+///
+///     blob_relay: a document frame did not parse; it is lost for this replica
+///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
+///
+/// Frames dropped, silently, in the one direction that matters: a change made
+/// on one machine never reaching another.
+///
+/// `have` is the actor the document already carries — minted at random by
+/// Automerge for every `AutoCommit`, or by `app_state::DocStore` and persisted
+/// per state directory for an app that opened through `ui::persist`. Either
+/// way it is distinct by construction, which is the property the old id only
+/// looked like it had. The prefix keeps the readable half.
+///
+/// Deliberately reads no environment: the whole failure was an id that was a
+/// function of things two replicas share, and a function of its arguments is
+/// the only shape that can be tested for it.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it.
+///
+/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
+/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// would be the best of both — it does not reach a sandboxed app, because the
+/// launcher builds an app's environment from an allowlist and it is not on
+/// it, so in the product neither of these answers and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID")
+        && !id.is_empty()
+    {
+        return Some(id);
+    }
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -100,11 +147,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         // it was launched into, pumps remote ops into `State`, broadcasts
         // local deltas and caret/selection presence, and feeds the
         // resulting `PresenceCtx` into the widget's draw — all of it
-        // without an app saying so. A missing QUICK_APP_ID falls back to a
-        // per-process id so two un-configured instances still get distinct
-        // actors.
-        let app_id = std::env::var("QUICK_APP_ID")
-            .unwrap_or_else(|_| format!("wp-{}", std::process::id()));
+        // without an app saying so. `QUICK_APP_ID`/`QOS_USER_ID` name a
+        // known replica; a sandboxed launch has neither, so the fallback has
+        // to be sound on its own — see [`distinct_actor`].
+        let app_id = named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
+        ui::diag!("word-processor: automerge actor {app_id}");
         state
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
@@ -196,7 +243,6 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        drop(dm);
         let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
@@ -311,4 +357,35 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     println!("word-processor: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// The regression, stated as the property it broke.
+    ///
+    /// Both ids below are minted inside one process, so anything derived from
+    /// the process — a pid, which is 2 in every sandbox on this system —
+    /// produces the same string twice. Automerge then refuses the second
+    /// replica's frames with `duplicate seq 1 found for actor`, and a change
+    /// made on one machine never reaches the other.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("wp", a.get_actor()),
+            distinct_actor("wp", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+    }
 }
