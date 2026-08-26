@@ -226,6 +226,16 @@ impl std::fmt::Debug for FileIdentity {
 /// Which process is on the other end of `stream`, as the kernel knows
 /// it rather than as anyone claims.
 ///
+/// **The pid is the join key; the socket's inode is not.** Both ends of
+/// a connection are separate sockets with separate inodes, and the
+/// numbers are not even close: `get_next_ino` hands each CPU a batch, so
+/// two sockets created in the same microsecond on different cores were
+/// measured 22,724 apart on this machine. An inode identifies *a* socket
+/// uniquely — which is what makes it worth logging, for grepping a
+/// descriptor trace — and says nothing whatever about which other socket
+/// it is connected to. Reading a large gap as evidence of two different
+/// connections is a mistake that has already been made once here.
+///
 /// Logged beside a connection's own identity so that a session's two
 /// halves can be joined up afterwards. Three separate investigations
 /// have turned on the question "is the peer in this log the process in
@@ -1178,6 +1188,16 @@ pub const DEPARTURE_LOG_CAPACITY: usize = 64;
 /// stopped existing can go unrecorded.
 const PEER_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How often the sweep says out loud that it is still watching, while
+/// there is anything to watch.
+///
+/// A watcher that only speaks when it finds something is a watcher whose
+/// silence means two things at once: nothing is wrong, or it is not
+/// running. Both were true of this one at different points, and there
+/// was no way to tell them apart from a session log — which is the same
+/// defect it was written to fix, in the thing doing the fixing.
+const SWEEP_HEARTBEAT: Duration = Duration::from_secs(30);
+
 /// How long the sweep thread sleeps between looks at its quit flag, so
 /// that dropping a broker does not wait out a whole
 /// [`PEER_SWEEP_INTERVAL`]. Matches the drain thread's cadence.
@@ -1258,6 +1278,10 @@ pub struct PeerTable {
     /// heal and a line every two seconds for the rest of a session
     /// buries the one that mattered.
     table_loss_reported: AtomicBool,
+    /// How many sweeps have finished. The one thing that distinguishes
+    /// "looked and found nothing" from "never looked", which no amount of
+    /// log-reading could.
+    sweeps_completed: AtomicU64,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -1321,6 +1345,7 @@ impl PeerTable {
             remark_composer: Mutex::new(None),
             app_actions: Mutex::new(None),
             table_loss_reported: AtomicBool::new(false),
+            sweeps_completed: AtomicU64::new(0),
         }
     }
 
@@ -1475,7 +1500,7 @@ impl PeerTable {
     /// poll loop — the reader thread is still what notices an ordinary
     /// disconnection, microseconds after it happens, and in a session
     /// where nothing is wrong this finds nothing every time it runs.
-    pub(crate) fn account_for_lost_peers(&self) {
+    pub(crate) fn account_for_lost_peers(&self) -> usize {
         // The registry lock itself is the one loss that belongs to no
         // peer, and the one nothing else can see: `snapshot` answers a
         // poisoned lock with an empty list, so every fan-out afterwards
@@ -1484,18 +1509,45 @@ impl PeerTable {
         if self.peers.lock().is_err() && !self.table_loss_reported.swap(true, Ordering::Relaxed)
         {
             tracing::error!(
-                "collab_broker: the connection registry can no longer be read — the                  lock guarding it was poisoned by a panic. Every connection this                  session holds is now unaddressable, and nothing further will be                  delivered to any of them."
+                "collab_broker: the connection registry can no longer be read — the \
+                 lock guarding it was poisoned by a panic. Every connection this \
+                 session holds is now unaddressable, and nothing further will be \
+                 delivered to any of them."
             );
-            return;
+            self.sweeps_completed.fetch_add(1, Ordering::Relaxed);
+            return 0;
         }
-        let lost: Vec<(Arc<Peer>, String)> = self
-            .snapshot()
+        let peers = self.snapshot();
+        let examined = peers.len();
+        let looked_at: Vec<u64> = peers.iter().map(|p| p.id).collect();
+        let lost: Vec<(Arc<Peer>, String)> = peers
             .into_iter()
             .filter_map(|peer| peer.why_it_cannot_be_reached().map(|why| (peer, why)))
             .collect();
+        if lost.is_empty() && examined > 0 {
+            // A positive record of having looked, and at what. Without it
+            // "the sweep examined peer-3 and it was fine" and "the sweep
+            // never saw peer-3" are the same absence of a line.
+            tracing::debug!(
+                peers = ?looked_at,
+                "collab_broker: swept; every connection still reachable"
+            );
+        }
         for (peer, why) in lost {
             self.remove_because(&peer, why);
         }
+        self.sweeps_completed.fetch_add(1, Ordering::Relaxed);
+        examined
+    }
+
+    /// How many sweeps have finished since this broker started.
+    ///
+    /// Exists because the sweep's own silence could not be read. A
+    /// watcher that speaks only on failure is indistinguishable, from
+    /// outside, from one that was never started — and both were true of
+    /// this one at different points before anything counted its passes.
+    pub(crate) fn sweeps_completed(&self) -> u64 {
+        self.sweeps_completed.load(Ordering::Relaxed)
     }
 
     /// Why every connection that has left this broker left it, oldest
@@ -2829,6 +2881,13 @@ impl BrokerHandle {
         self.peers.peers.lock().map(|g| g.len()).unwrap_or(0)
     }
 
+    /// How many peer-liveness sweeps have finished since this broker
+    /// started. Zero and never rising means the sweep is not running,
+    /// which is a thing no amount of reading its output could establish.
+    pub(crate) fn sweeps_completed(&self) -> u64 {
+        self.peers.sweeps_completed()
+    }
+
     /// What each connected peer was accepted on, by connection id.
     ///
     /// A test seam, and a narrow one: the two descriptors the broker
@@ -3363,10 +3422,21 @@ fn spawn_inner(
     let sweep_quit = Arc::new(AtomicBool::new(false));
     let sweep_table = Arc::clone(&table);
     let sweep_flag = Arc::clone(&sweep_quit);
-    let sweep_thread = std::thread::Builder::new()
+    let sweep_thread = match std::thread::Builder::new()
         .name("qos-collab-broker-sweep".into())
         .spawn(move || {
+            // Said on the way in, so that the absence of this line is
+            // itself readable. Everything else this thread prints is a
+            // failure; without one line for "started", its silence meant
+            // either nothing was wrong or nothing was running, and a
+            // session log could not say which.
+            tracing::info!(
+                every_ms = PEER_SWEEP_INTERVAL.as_millis() as u64,
+                "collab_broker: watching connected peers for ones that have stopped \
+                 being reachable"
+            );
             let mut since_last_sweep = Duration::ZERO;
+            let mut since_heartbeat = Duration::ZERO;
             while !sweep_flag.load(Ordering::Relaxed) {
                 std::thread::sleep(SWEEP_QUIT_POLL);
                 since_last_sweep += SWEEP_QUIT_POLL;
@@ -3374,10 +3444,37 @@ fn spawn_inner(
                     continue;
                 }
                 since_last_sweep = Duration::ZERO;
-                sweep_table.account_for_lost_peers();
+                let examined = sweep_table.account_for_lost_peers();
+                since_heartbeat += PEER_SWEEP_INTERVAL;
+                // Only while there is something to watch: a session with
+                // no connections has nothing to be silent about.
+                if examined > 0 && since_heartbeat >= SWEEP_HEARTBEAT {
+                    since_heartbeat = Duration::ZERO;
+                    tracing::info!(
+                        connections = examined,
+                        "collab_broker: still watching; every connection reachable"
+                    );
+                }
             }
-        })
-        .ok();
+            tracing::info!(
+                "collab_broker: no longer watching connected peers; the broker is \
+                 shutting down"
+            );
+        }) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            // Loud, and not `.ok()`. A swallowed failure here leaves the
+            // broker with no account of a connection that ends while
+            // nothing is addressed to it — which is the exact silence the
+            // sweep exists to end, restored without a word.
+            tracing::error!(
+                "collab_broker: could not start the peer-liveness sweep ({e}); a \
+                 connection that ends while nothing is being delivered to it will \
+                 now go unrecorded"
+            );
+            None
+        }
+    };
 
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync
@@ -6035,6 +6132,85 @@ mod tests {
             "both ends of this pair are this process, and the kernel should say so",
         );
         drop(there);
+    }
+
+    /// The sweep thread actually runs.
+    ///
+    /// This is the test whose absence let a watcher ship that might not
+    /// have been watching. Everything the sweep prints is a failure, so
+    /// its silence read the same whether it had examined every connection
+    /// and found them well or had never started at all — and both were
+    /// possible: the spawn result was discarded with `.ok()`, and
+    /// dropping the broker handle stops the thread while the reader
+    /// threads and the table carry on holding their own `Arc`s.
+    ///
+    /// A session log could not distinguish those. A counter can.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_broker_actually_runs_its_sweep() {
+        let socket_path = temp_sock("sweep-actually-runs");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        assert_eq!(
+            handle.sweeps_completed(),
+            0,
+            "nothing should have been swept before the first interval elapses",
+        );
+
+        // Generously more than two intervals: what is under test is that
+        // the thread exists and advances, not how punctual it is.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < deadline && handle.sweeps_completed() < 2 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(
+            handle.sweeps_completed() >= 2,
+            "the broker's peer-liveness sweep never ran: {} passes in 20s at a {:?} \
+             cadence. Everything it reports is a failure, so if it is not running \
+             nothing says so — which is exactly how it came to be shipped not \
+             running once already",
+            handle.sweeps_completed(),
+            PEER_SWEEP_INTERVAL,
+        );
+
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
+    }
+
+    /// And it examines the peers that are actually connected, rather than
+    /// merely ticking over.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_sweep_pass_examines_the_connected_peers() {
+        let table = PeerTable::new();
+        assert_eq!(
+            table.account_for_lost_peers(),
+            0,
+            "an empty table has nothing to examine",
+        );
+
+        let (_a, far_a) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+        let (_b, far_b) = connected_peer(&table, Some(CrdtRoute::app("", TEST_CLUSTER)));
+
+        assert_eq!(
+            table.account_for_lost_peers(),
+            2,
+            "both connected peers have to be looked at, not merely counted",
+        );
+        assert_eq!(
+            table.sweeps_completed(),
+            2,
+            "and each pass has to be recorded as having happened",
+        );
+        assert!(
+            table.departures().is_empty(),
+            "neither of them has gone anywhere, got {:?}",
+            table.departures(),
+        );
+
+        drop(far_a);
+        drop(far_b);
     }
 
     /// A peer the sweep cannot examine is reported as such, rather than
