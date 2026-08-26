@@ -2,6 +2,7 @@
 //! any widget or shell source file. Every literal must flow through
 //! `theme.*` so the OS can enforce one design language.
 
+use std::collections::BTreeMap;
 use std::{fs, path::{Path, PathBuf}};
 use regex::Regex;
 
@@ -139,5 +140,161 @@ fn no_hardcoded_style_literals_in_tree() {
         "design-token audit failed with {} violation(s):\n{}",
         violations.len(),
         violations.join("\n")
+    );
+}
+
+// ===========================================================================
+// The patterns the audit above could not see
+// ===========================================================================
+//
+// `no_hardcoded_style_literals_in_tree` greps for `Color::rgb8(` — the *old*
+// peniko constructor. This tree calls `Color::from_rgb8(` / `from_rgba8(`, so
+// that pattern matched **zero** lines while 125 literal colours sat in the
+// widget draw paths it was meant to police. Two more spellings slip past the
+// same way: `Color::WHITE` / `Color::BLACK`, and the `surface_white_*` /
+// `border_white_*` tiers HIG §9.5 deprecates.
+//
+// Turning these on outright would fail on hundreds of existing lines, and a
+// mass rewrite is a worse change than the one it fixes. So they are ratcheted:
+// `design_token_baseline.txt` records what each file carries today, a file may
+// never carry more, and a file that carries fewer lowers its record in the same
+// commit. The number can only go down.
+
+/// Path to the recorded counts, relative to the crate root.
+const BASELINE: &str = "tests/design_token_baseline.txt";
+
+/// Patterns that are ratcheted rather than forbidden outright. The key is what
+/// the baseline file names; the message is what a new hit is told to do.
+fn ratcheted_patterns() -> Vec<(&'static str, Regex, &'static str)> {
+    vec![
+        (
+            "literal_color",
+            // The constructor this tree actually calls, with a literal first
+            // argument. A variable first argument (`Color::from_rgba8(c.r(), …)`,
+            // the re-alpha idiom) is passing real colour through, not stating one.
+            Regex::new(r"Color::from_rgba?8\s*\(\s*(0x)?[0-9]").unwrap(),
+            "literal colour in a draw path — read it from the Theme",
+        ),
+        (
+            "white_or_black",
+            Regex::new(r"Color::(WHITE|BLACK)").unwrap(),
+            "Color::WHITE / Color::BLACK — use the theme's on-accent ink or scrim token",
+        ),
+        (
+            "theme_blind_white",
+            Regex::new(r"\b(surface|border)_white_\d+").unwrap(),
+            "surface_white_* / border_white_* declare a strength instead of measuring it \
+             (HIG §9.5) — use Colors::lift() or Colors::hairline_on()",
+        ),
+    ]
+}
+
+/// Count every ratcheted pattern per file, skipping comments and `#[cfg(test)]`
+/// modules exactly as the audit above does.
+fn ratcheted_counts(files: &[PathBuf], root: &Path) -> BTreeMap<(String, String), usize> {
+    let patterns = ratcheted_patterns();
+    let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for f in files {
+        let content = fs::read_to_string(f).unwrap();
+        let skip = test_module_spans(&content);
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (i, line) in content.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if skip.iter().any(|(a, b)| i >= *a && i < *b) {
+                continue;
+            }
+            for (key, re, _) in &patterns {
+                if re.is_match(line) {
+                    *counts.entry((rel.clone(), (*key).to_string())).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    counts
+}
+
+fn read_baseline(path: &Path) -> BTreeMap<(String, String), usize> {
+    let raw = fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("the ratchet baseline at {} must exist: {e}", path.display()));
+    let mut out = BTreeMap::new();
+    for (n, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            parts.len(),
+            3,
+            "{}:{}: expected `<path> <pattern> <count>`, got: {line}",
+            path.display(),
+            n + 1
+        );
+        let count: usize = parts[2]
+            .parse()
+            .unwrap_or_else(|_| panic!("{}:{}: count must be a number", path.display(), n + 1));
+        out.insert((parts[0].to_string(), parts[1].to_string()), count);
+    }
+    out
+}
+
+/// The escape hatches the older audit was blind to may not grow, and a file
+/// that has shed some has to say so — the record only moves downward.
+#[test]
+fn theme_escape_hatches_do_not_grow() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    assert!(!files.is_empty(), "audit found no files to scan");
+    files.sort();
+
+    let found = ratcheted_counts(&files, root);
+    let baseline = read_baseline(&root.join(BASELINE));
+    let messages: BTreeMap<&str, &str> =
+        ratcheted_patterns().into_iter().map(|(k, _, m)| (k, m)).collect();
+
+    let mut grew = Vec::new();
+    let mut stale = Vec::new();
+    for (key, n) in &found {
+        let allowed = baseline.get(key).copied().unwrap_or(0);
+        if *n > allowed {
+            grew.push(format!(
+                "{} [{}]: {n} occurrence(s), baseline {allowed} — {}",
+                key.0,
+                key.1,
+                messages.get(key.1.as_str()).copied().unwrap_or_default(),
+            ));
+        }
+    }
+    for (key, allowed) in &baseline {
+        let n = found.get(key).copied().unwrap_or(0);
+        if n < *allowed {
+            stale.push(format!(
+                "{} [{}]: now {n}, baseline still {allowed} — lower it to {n}",
+                key.0, key.1,
+            ));
+        }
+    }
+
+    assert!(
+        grew.is_empty(),
+        "{} file(s) gained a hard-coded colour the Theme should own.\n\
+         Read the colour from the Theme instead. If it genuinely cannot be a \
+         token, say why in a comment on the line and raise its count in {BASELINE}.\n{}",
+        grew.len(),
+        grew.join("\n"),
+    );
+    assert!(
+        stale.is_empty(),
+        "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
+         The ratchet only moves down — lower these so the progress is kept:\n{}",
+        stale.len(),
+        stale.join("\n"),
     );
 }

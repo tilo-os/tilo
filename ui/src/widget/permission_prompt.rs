@@ -232,10 +232,15 @@ fn draw_button(
     let text_color = if is_disabled {
         theme.tokens.colors.text_primary.with_alpha_factor(0.4)
     } else if is_primary {
-        // Accent buttons get the white-on-accent treatment from the
-        // concept (concept ref: every `bg-indigo-500` button uses
-        // `text-white`).
-        Color::WHITE
+        // White on the accent is the intent, and where the accent is dark
+        // enough to carry it that is what comes back. Where it is not, the
+        // label steps out of white rather than shipping at a ratio that makes a
+        // consent decision hard to read.
+        theme.tokens.colors.ink_on_any(
+            &[bg],
+            Color::WHITE,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
     } else {
         theme.tokens.colors.text_primary
     };

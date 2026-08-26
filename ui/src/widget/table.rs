@@ -786,7 +786,17 @@ impl Widget for Table {
         // --- Affordances ------------------------------------------------
         let faint = theme.text_dim.with_alpha_factor(0.35);
         let accent = theme.accent_primary;
+        // The glyph inside a gutter affordance is a mark on a themed chip, so
+        // it is derived against that chip rather than assumed to be white: on
+        // the high-contrast accent white lands a hair under the non-text floor,
+        // which is the palette that can least afford it.
+        let on_accent_mark = tk.colors.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST);
         let danger = tk.colors.semantic.danger;
+        let on_danger_mark = tk.colors.ink_on_any(
+            &[danger],
+            Color::WHITE,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
 
         // Always-on, discoverable insert ticks at every boundary.
         for &x in &xs {
@@ -817,7 +827,7 @@ impl Widget for Table {
                     None,
                     &vello::kurbo::Circle::new(c, PILL_R),
                 );
-                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+                plus(scene, transform, c, 4.0, on_accent_mark, 1.75);
             }
             Hover::InsertRow(i) => {
                 let y = ys[i];
@@ -836,7 +846,7 @@ impl Widget for Table {
                     None,
                     &vello::kurbo::Circle::new(c, PILL_R),
                 );
-                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+                plus(scene, transform, c, 4.0, on_accent_mark, 1.75);
             }
             Hover::DeleteCol(c) => {
                 let col = Rect::new(xs[c], gt, xs[c + 1], gb);
@@ -844,7 +854,7 @@ impl Widget for Table {
                 let hr = self.delete_col_rect(&xs, c);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
-                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+                cross(scene, transform, hr.center(), 3.5, on_danger_mark, 1.75);
             }
             Hover::DeleteRow(r) => {
                 let row = Rect::new(gl, ys[r], gr, ys[r + 1]);
@@ -852,7 +862,7 @@ impl Widget for Table {
                 let hr = self.delete_row_rect(&ys, r);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
-                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+                cross(scene, transform, hr.center(), 3.5, on_danger_mark, 1.75);
             }
             Hover::ResizeCol(i) => {
                 let x = xs[i];

@@ -393,7 +393,17 @@ fn draw_action_button(
         None,
         &shape,
     );
-    let text_color = if is_primary { Color::WHITE } else { theme.tokens.colors.text_primary };
+    let text_color = if is_primary {
+        // The fill is a theme token, so whether white survives it is a question
+        // about the palette in force, not a constant.
+        theme.tokens.colors.ink_on_any(
+            &[bg],
+            Color::WHITE,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
+    } else {
+        theme.tokens.colors.text_primary
+    };
     let text_size = theme.tokens.typography.scale.sm;
     let (text_w, _) = text_renderer.measure(label, text_size, None);
     let text_x = rect.center().x - (text_w as f64 / 2.0);
