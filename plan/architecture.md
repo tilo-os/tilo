@@ -2,7 +2,7 @@
 
 ## Overview
 
-qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
