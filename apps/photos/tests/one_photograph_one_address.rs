@@ -186,6 +186,65 @@ fn an_operation_invoked_on_a_photograph_acts_on_it_in_a_session_that_staged_it_e
     assert_eq!(third.edited_size(), (600, 600));
 }
 
+/// A photograph opened **because a participant asked for it by content** is
+/// addressed by that content.
+///
+/// This is the route the demo takes, and the one no test covered: nobody
+/// chooses a file. A participant with no window names a hash
+/// (`CollabRequest::OpenApp { app_id, with }`), the session it asks writes
+/// those bytes under its own runtime directory named by their own hash
+/// (`shell::shell::agent_opens::stage_content`) and launches the application
+/// with that path as its argument, and the application opens what it was
+/// given. Every session that is asked does this into a directory of its own.
+///
+/// So the claim has two halves and both matter. The address must be the same
+/// in all of them — that is `an_operation_invoked_on_a_photograph…` above —
+/// and it must be **the hash that was asked for**, so a participant that
+/// named the content can address what it asked for without waiting to be told
+/// where the machine put it.
+///
+/// Read a take's logs and this is the line that says whether it holds: an
+/// address with a `/` in it is a session's own directory, and an operation
+/// invoked on one reaches the session that happened to stage it.
+#[test]
+fn a_photograph_asked_for_by_content_is_addressed_by_the_content_asked_for() {
+    let bytes = photograph();
+    // What the participant names. It has no filesystem of its own and says
+    // nothing about anybody else's.
+    let asked_for = ui::blobstore::put(&bytes);
+
+    let staging = ["qlva-", "qlvq-", "qlvx-"];
+    let sessions: Vec<Session> = staging
+        .iter()
+        .map(|prefix| Session::handed_the_content(prefix, &bytes))
+        .collect();
+
+    // The premise: three sessions really did put it in three places.
+    for (a, b) in sessions.iter().zip(sessions.iter().skip(1)) {
+        assert_ne!(
+            a.path, b.path,
+            "two sessions staged to one place, so this proves nothing about a \
+             picture that is in three of them"
+        );
+    }
+
+    for (session, prefix) in sessions.iter().zip(staging) {
+        let id = session.published_id();
+        assert_eq!(
+            id,
+            format!("photos.image:{asked_for}"),
+            "the session staging into {prefix}… published an address for \
+             where it put the picture rather than for the picture that was \
+             asked for"
+        );
+        assert!(
+            !id.contains('/'),
+            "the published address carries a filesystem path, which is true \
+             on one machine: {id}"
+        );
+    }
+}
+
 /// The name is not the identity either.
 ///
 /// One participant opens a photograph off their own disk; another is handed
