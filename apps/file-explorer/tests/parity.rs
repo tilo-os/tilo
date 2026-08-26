@@ -72,7 +72,7 @@ use file_explorer::breadcrumbs::breadcrumb_components;
 fn breadcrumb_component_click_navigates_to_that_component() {
     let home = PathBuf::from("/home/user");
     let cwd  = PathBuf::from("/home/user/Documents/Projects");
-    let comps = breadcrumb_components(&cwd, Some(&home));
+    let comps = breadcrumb_components(&cwd, Some(&home), &[]);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
     // Clean text labels — the leading root is drawn as a themed vector icon
     // by the breadcrumb bar, not a font glyph.
@@ -81,9 +81,58 @@ fn breadcrumb_component_click_navigates_to_that_component() {
     assert_eq!(comps.last().unwrap().1, cwd);
 
     // Non-home path falls through to root-based components.
-    let comps2 = breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home));
+    let comps2 = breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home), &[]);
     let labels2: Vec<&str> = comps2.iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(labels2, vec!["/", "etc", "hosts"]);
+}
+
+/// A workspace is named, not spelled out.
+///
+/// The room's folder is mounted wherever the driver put it, which in a
+/// demo is under `/var/tmp`. Spelling that out tells a reader they are
+/// looking at scratch space on somebody's laptop, which is the opposite of
+/// what a workspace is - and the app already knew better, because its own
+/// sidebar lists the same directory by name under System.
+#[test]
+fn a_workspace_root_is_named_rather_than_spelled_out() {
+    let ws = PathBuf::from("/var/tmp/qos/workspace");
+    let roots = vec![ws.clone()];
+    let home = PathBuf::from("/home/user");
+
+    // The root itself: one segment, the workspace's name.
+    let comps = breadcrumb_components(&ws, Some(&home), &roots);
+    let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(labels, vec!["workspace"]);
+    assert_eq!(comps[0].1, ws, "the root segment navigates to the mount");
+
+    // Below it, relative to the workspace - no `var`, no `tmp`, no `qos`.
+    let deep = ws.join("Designs").join("v2");
+    let labels: Vec<String> = breadcrumb_components(&deep, Some(&home), &roots)
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect();
+    assert_eq!(labels, vec!["workspace", "Designs", "v2"]);
+
+    // And the same label the places sidebar puts on the same location.
+    assert_eq!(file_explorer::model::workspace_label(&ws), "workspace");
+
+    // A workspace outranks home when the mount happens to be inside it.
+    let in_home = home.join("room");
+    let roots_in_home = vec![in_home.clone()];
+    let labels: Vec<String> =
+        breadcrumb_components(&in_home.join("notes"), Some(&home), &roots_in_home)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+    assert_eq!(labels, vec!["room", "notes"]);
+
+    // Nothing else moves: a path in no workspace is the trail it always was.
+    let labels: Vec<String> =
+        breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home), &roots)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+    assert_eq!(labels, vec!["/", "etc", "hosts"]);
 }
 
 use file_explorer::FileExplorerWidget;
