@@ -3764,6 +3764,19 @@ impl ShellOverlayHost {
             // tree write above already set the strip's active group to
             // `dest_gid`, so the per-frame `scroll_active_group_into_view`
             // pans to the merged window on its own.
+            //
+            // Nothing here has to select the arriving tab either, and
+            // adding a selection would be the wrong reading of the two
+            // lines above. Both halves have already done it:
+            // `WorkspaceTree::move_tab_into_group_at` sets the
+            // destination group's `active_tab` to the tab it inserts,
+            // and `WindowGroup::insert_detached_tab` — reached through
+            // the row merge — makes it the bar's `active_id`. They agree
+            // on purpose, because the per-frame writeback mirrors the
+            // second into the first and would otherwise undo one of
+            // them. `merged_tab_activation_tests` pins it from this
+            // entry point, which is the one the test-control socket's
+            // `merge_tab_into_group` op arrives at.
             tracing::info!(
                 "tab {tab_id} left group {source_gid} for group {dest_gid}, \
                  which now holds {count} tab(s)"
