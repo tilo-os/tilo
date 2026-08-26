@@ -8499,33 +8499,6 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
     read_hold(0.7)
 
-    # The strip, still a strip.
-    #
-    # Two windows just became one, so a camera that stays where the pair
-    # was is now looking at one group and a screenful of desktop. On
-    # film that reads as a window having been *lost*, which is the
-    # opposite of what just happened. Re-framing on the merged window
-    # and whatever is beside it shows the actual outcome: the bar gained
-    # a tab and the strip gained room.
-    #
-    # Best effort. A take where nothing else is on the strip has nothing
-    # to frame beside it, and that is not worth a gap -- the beat's own
-    # claims have already been made and asserted above.
-    neighbour = next(
-        (w for a, w in extras.items()
-         if w is not None
-         and int(w["surface_id"]) != int(editor["surface_id"])),
-        None,
-    )
-    if neighbour is not None:
-        if frame_windows(quinten, [wp, neighbour], VIEWPORT):
-            quinten.snapshot(os.path.join(shots, "12b-strip-after.png"))
-            read_hold(0.5)
-        else:
-            note("nothing on the strip could be framed beside the window "
-                 "the two applications now share, so the shot after the "
-                 "merge stays on the pair's old place")
-
     step("and the tabs switch between them")
 
     def active_tab_surface(s: Session, group_id) -> int | None:
@@ -8600,6 +8573,41 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     read_hold(0.7)
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
+
+    # The strip, still a strip.
+    #
+    # Last, after every claim above, because framing a subject
+    # *navigates* to it: `frame_windows` steps focus until the strip's
+    # focused window is the one asked for. Run between the merge and
+    # the claims, it brought the document's tab to the front and the
+    # next claim -- that the group shows the window which just joined
+    # -- then failed on a front tab this beat had itself just changed.
+    #
+    # Two windows just became one, so a camera that stays where the pair
+    # was is now looking at one group and a screenful of desktop. On
+    # film that reads as a window having been *lost*, which is the
+    # opposite of what just happened. Re-framing on the merged window
+    # and whatever is beside it shows the actual outcome: the bar gained
+    # a tab and the strip gained room.
+    #
+    # Best effort. A take where nothing else is on the strip has nothing
+    # to frame beside it, and that is not worth a gap -- the beat's own
+    # claims have already been made and asserted above.
+    neighbour = next(
+        (w for a, w in extras.items()
+         if w is not None
+         and int(w["surface_id"]) != int(editor["surface_id"])),
+        None,
+    )
+    if neighbour is not None:
+        if frame_windows(quinten, [wp, neighbour], VIEWPORT):
+            quinten.snapshot(os.path.join(shots, "12b-strip-after.png"))
+            read_hold(0.5)
+        else:
+            note("nothing on the strip could be framed beside the window "
+                 "the two applications now share, so the shot after the "
+                 "merge stays on the pair's old place")
+
 
 
 def beat_nine(quinten: Session, xaver: Session, agent: Session,
