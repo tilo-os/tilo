@@ -81,18 +81,19 @@ control socket past it.
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin qos-control      # builds alongside shell
+cargo build -p shell --bin qos-control      # lands in target/debug, NOT on PATH
+alias qc='cargo run -q --bin qos-control --' # or: cargo install --path shell --bin qos-control
 
-qos-control list-targets                             # PNAME (X, Y, W, H) per line
-qos-control click add_workspace                      # click_named
-qos-control click-at 400 300                         # click_at
-qos-control drag 100 100 300 200 12                  # drag with 12 motion steps
-qos-control key Enter                                # named key OR single char
-qos-control type "hello"                             # one press+release per character
-qos-control modifiers ctrl,shift                     # comma-separated set; empty clears all
-qos-control snapshot /tmp/state.png                  # PNG to disk
-qos-control state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
-qos-control raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
+qc list-targets                             # PNAME (X, Y, W, H) per line
+qc click add_workspace                      # click_named
+qc click-at 400 300                         # click_at
+qc drag 100 100 300 200 12                  # drag with 12 motion steps
+qc key Enter                                # named key OR single char
+qc type "hello"                             # one press+release per character
+qc modifiers ctrl,shift                     # comma-separated set; empty clears all
+qc snapshot /tmp/state.png                  # PNG to disk
+qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
 Default socket: `$QOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
