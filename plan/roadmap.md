@@ -2,7 +2,7 @@
 
 ## Where things stand
 
-Single-monitor, single-user is feature-complete: spatial tiling
+Single-monitor, single-user is feature-complete: strip tiling
 (`Workspace → Strip → WindowGroup → Tab`), drag-to-detach tabs, undo/redo,
 collaborative cursors, peer-shared tabs (H.264 over libp2p), per-workspace
 Bubblewrap sandbox with portal-mediated grants, and FUSE-projected workspaces.
