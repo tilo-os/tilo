@@ -1,0 +1,62 @@
+name: Build the CI builder image
+
+# Publishes code.podesta.ai/qos/qos-builder, which check.yml runs in. Weekly so
+# the base and the package set stay current; on dispatch, and whenever the
+# inputs that define the environment change.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  push:
+    branches: ["main"]
+    paths:
+      - "os/Containerfile.builder"
+      - "rust-toolchain.toml"
+      - "tools/check-build-env.sh"
+      - ".forgejo/workflows/build-builder-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build-builder-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      # The image bakes the toolchain the workspace pins, so a job cannot
+      # silently compile with a different one.
+      - name: Read the pinned toolchain
+        run: |
+          ch=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
+          [ -n "$ch" ] || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "RUST_CHANNEL=$ch" >> "$GITHUB_ENV"
+          echo "building for toolchain $ch"
+
+      - name: Build
+        run: |
+          podman build \
+            --build-arg RUST_CHANNEL="$RUST_CHANNEL" \
+            -f os/Containerfile.builder \
+            -t code.podesta.ai/qos/qos-builder:"$RUST_CHANNEL" \
+            -t code.podesta.ai/qos/qos-builder:latest \
+            .
+
+      # The Containerfile runs tools/check-build-env.sh during the build, so a
+      # missing native dependency fails here rather than in every later job.
+      - name: Push
+        run: |
+          podman push code.podesta.ai/qos/qos-builder:"$RUST_CHANNEL"
+          podman push code.podesta.ai/qos/qos-builder:latest
