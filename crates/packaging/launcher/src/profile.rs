@@ -51,6 +51,15 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/usr/share/fonts",
     "/usr/share/fontconfig",
     "/etc/fonts",
+    // ---- Keyboard layout data ------------------------------------
+    // `xkb_context_new` returns NULL when it cannot add its default include
+    // path, and winit `.unwrap()`s that into a panic — so without this every
+    // sandboxed Wayland app dies before it paints a frame. The compositor
+    // gets its keymap the same way and is unaffected only because it is not
+    // sandboxed. `X11/locale` carries the Compose tables; without it dead
+    // keys silently stop composing, so the two travel together.
+    "/usr/share/X11/xkb",
+    "/usr/share/X11/locale",
     // ---- GPU: loader manifests + driver data ---------------------
     // Which *device* the app may open is narrowed separately by
     // `push_gpu_selection`; these are the vendor-neutral loader
@@ -238,6 +247,14 @@ mod tests {
                 && w[1] == "/usr/share/fonts"
                 && w[2] == "/usr/share/fonts"),
             "fonts must be read-only: {argv:?}"
+        );
+        // Without it every sandboxed Wayland app panics on `XKBNotFound`
+        // before it paints.
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == "/usr/share/X11/xkb"
+                && w[2] == "/usr/share/X11/xkb"),
+            "the xkb keymap data must be read-only in the sandbox: {argv:?}"
         );
         assert!(
             argv.windows(3)
