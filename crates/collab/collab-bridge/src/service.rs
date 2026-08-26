@@ -359,6 +359,12 @@ impl context_stream::Server for BridgeContextStream {
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
                     slot.set_color(pack_color(c.color));
+                    // Both were dropped here, so a client on this
+                    // transport received every member as an unmarked
+                    // stranger and had to infer the two facts the row
+                    // exists to carry.
+                    slot.set_is_agent(c.is_agent);
+                    slot.set_is_self(c.is_self);
                 }
             }
             {
@@ -413,6 +419,30 @@ impl presence_handle::Server for BridgePresenceHandle {
                 .await
                 .map_err(|e| capnp::Error::failed(format!("upstream send failed: {e}")))
         })
+    }
+
+    fn publish_pointer(
+        self: Rc<Self>,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
+    ) -> Promise<(), capnp::Error> {
+        // Through the same keyed door as caret / selection / arrived /
+        // left. `publish_cursor` above has to invent a key because its
+        // caller gave it none; this one must not, because the key is the
+        // coordinate space the position was measured in and only the
+        // publisher knows it.
+        publish_keyed(
+            self.upstream.clone(),
+            params.get().and_then(|r| {
+                Ok((
+                    r.get_key_bytes()?.to_vec(),
+                    PresencePayload::Pointer {
+                        x: r.get_x(),
+                        y: r.get_y(),
+                    },
+                ))
+            }),
+        )
     }
 
     fn subscribe_remote_cursors(
@@ -516,7 +546,7 @@ fn default_presence_key() -> crate::wire::PresenceKey {
     }
 }
 
-/// Shared body for the four keyed publishers. Decodes the postcard
+/// Shared body for the keyed publishers. Decodes the postcard
 /// key, drops the event on decode failure, otherwise forwards.
 fn publish_keyed(
     upstream: UpstreamHandle,
@@ -602,7 +632,12 @@ impl presence_stream::Server for BridgePresenceStream {
                     let mut p: presence_payload::Builder = ev.init_payload();
                     match payload {
                         PresencePayload::Pointer { x, y } => {
-                            let mut c = p.init_cursor();
+                            // Keyed, so the `pointer` case: this arm's
+                            // `key_bytes` are the publisher's own and
+                            // name the coordinate space. The keyless
+                            // `Cursor` envelope above keeps the `cursor`
+                            // case, where they do not.
+                            let mut c = p.init_pointer();
                             c.set_x(x);
                             c.set_y(y);
                         }
