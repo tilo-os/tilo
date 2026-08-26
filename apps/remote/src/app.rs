@@ -32,7 +32,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout};
+use ui::widget::{FlapState, SplitLayout, TextInput};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -50,7 +50,7 @@ use crate::vnc::{VncConfig, VncInput, VncSession};
 /// (e.g. missing credentials) so the surface can show the honest reason
 /// without ever fabricating a session.
 enum LiveSession {
-    Ssh(SshSession),
+    Ssh(Box<SshSession>),
     Vnc(VncSession),
     Error(String),
     /// A fixed status with no transport, for `--shots`/preview rendering of
@@ -158,6 +158,68 @@ enum Field {
     Group,
 }
 
+impl Field {
+    const ALL: [Field; 6] = [Field::Search, Field::Name, Field::Host, Field::Port, Field::User, Field::Group];
+
+    /// The hint shown while the field is empty.
+    fn placeholder(self) -> &'static str {
+        match self {
+            Field::Search => "Search machines…  ( / )",
+            Field::Name => "My machine",
+            Field::Host => "hostname or IP",
+            Field::Port => "Port",
+            Field::User => "username",
+            Field::Group => "group (optional)",
+        }
+    }
+}
+
+/// The six editable fields, each a real [`TextInput`] — caret, selection,
+/// clipboard, IME, keyboard navigation and a11y come from the shared widget
+/// rather than being re-earned per field (HIG §8). The app keeps the plain
+/// `String`s these mirror (`search`, and the draft) because the rest of it
+/// filters, validates and saves from them; a focused input is the source of
+/// truth and writes back on every edit.
+struct FieldInputs {
+    search: TextInput,
+    name: TextInput,
+    host: TextInput,
+    port: TextInput,
+    user: TextInput,
+    group: TextInput,
+}
+
+impl FieldInputs {
+    fn new() -> Self {
+        let field = |f: Field| {
+            let mut t = TextInput::local().with_placeholder(f.placeholder()).with_font_size(14.0);
+            // The form paints the field box + focus ring itself; the widget
+            // paints the text, selection and caret inside it.
+            t.set_plain_chrome(true);
+            t
+        };
+        Self {
+            search: field(Field::Search),
+            name: field(Field::Name),
+            host: field(Field::Host),
+            port: field(Field::Port),
+            user: field(Field::User),
+            group: field(Field::Group),
+        }
+    }
+
+    fn get(&mut self, f: Field) -> &mut TextInput {
+        match f {
+            Field::Search => &mut self.search,
+            Field::Name => &mut self.name,
+            Field::Host => &mut self.host,
+            Field::Port => &mut self.port,
+            Field::User => &mut self.user,
+            Field::Group => &mut self.group,
+        }
+    }
+}
+
 /// A discoverable qOS peer, surfaced in the form's device picker. Offline
 /// we seed a representative set so the picker is populated.
 #[derive(Clone, Debug)]
@@ -181,6 +243,8 @@ pub struct RemoteApp {
     draft: ConnectionDraft,
     /// Which text field currently has keyboard focus.
     focus: Option<Field>,
+    /// The shared [`TextInput`] behind each editable field.
+    inputs: FieldInputs,
     /// The live transport for the open session (SSH terminal or VNC
     /// framebuffer). `None` until a session is opened with live sessions
     /// enabled; the default build leaves it `None` and shows the honest
@@ -266,6 +330,7 @@ impl RemoteApp {
             search: String::new(),
             draft: ConnectionDraft::default(),
             focus: None,
+            inputs: FieldInputs::new(),
             live: None,
             fb_image: None,
             fb_canvas: None,
@@ -373,20 +438,22 @@ impl RemoteApp {
         match action {
             Action::GoList | Action::Back => {
                 self.screen = Screen::List;
-                self.focus = None;
+                self.blur_field();
                 self.dismiss_overlay_rail();
             }
             Action::NewConnection => {
                 self.draft = ConnectionDraft::default();
                 self.screen = Screen::Form { editing: None };
-                self.focus = Some(Field::Name);
+                self.reload_inputs();
+                self.focus_field(Field::Name);
                 self.dismiss_overlay_rail();
             }
             Action::EditConnection(id) => {
                 if let Some(c) = self.workspace.get(id) {
                     self.draft = ConnectionDraft::from_connection(c);
                     self.screen = Screen::Form { editing: Some(id) };
-                    self.focus = Some(Field::Name);
+                    self.reload_inputs();
+                    self.focus_field(Field::Name);
                 }
             }
             Action::Connect(id) => {
@@ -421,7 +488,7 @@ impl RemoteApp {
                 }
             }
             Action::FocusField(f) => {
-                self.focus = Some(f);
+                self.focus_field(f);
             }
             Action::SetKind(k) => {
                 self.draft.kind = k;
@@ -435,6 +502,7 @@ impl RemoteApp {
                 {
                     self.draft.port = k.default_port().to_string();
                 }
+                self.reload_inputs();
             }
             Action::SetAuth(a) => {
                 self.draft.auth = a;
@@ -469,7 +537,8 @@ impl RemoteApp {
                     self.draft.kind = ConnectionKind::Qos;
                     self.draft.auth = AuthMethod::DeviceIdentity;
                     self.draft.port = String::new();
-                    self.focus = Some(Field::Name);
+                    self.reload_inputs();
+                    self.focus_field(Field::Name);
                 }
             }
             Action::ToggleRail => {
@@ -537,14 +606,14 @@ impl RemoteApp {
                 } else {
                     c.user.clone()
                 };
-                LiveSession::Ssh(SshSession::connect(SshConfig {
+                LiveSession::Ssh(Box::new(SshSession::connect(SshConfig {
                     host: c.host.clone(),
                     port: c.port,
                     user,
                     auth,
                     cols: 80,
                     rows: 24,
-                }))
+                })))
             }
             ConnectionKind::Vnc => LiveSession::Vnc(VncSession::connect(VncConfig {
                 host: c.host.clone(),
@@ -583,15 +652,13 @@ impl RemoteApp {
             _ => {}
         }
         // Reflect a freshly-established connection in the row's presence.
-        if let (Some(id), Some(live)) = (self.session_for, self.live.as_ref()) {
-            if live.status() == SessionStatus::Connected {
-                if let Some(m) = self.workspace.get_mut(id) {
-                    if m.presence != Presence::Online {
-                        m.presence = Presence::Online;
-                        changed = true;
-                    }
-                }
-            }
+        if let (Some(id), Some(live)) = (self.session_for, self.live.as_ref())
+            && live.status() == SessionStatus::Connected
+            && let Some(m) = self.workspace.get_mut(id)
+            && m.presence != Presence::Online
+        {
+            m.presence = Presence::Online;
+            changed = true;
         }
         changed
     }
@@ -661,42 +728,7 @@ impl RemoteApp {
             .dispatch(state, crate::actions::REMOTE_ACTION_TYPE, &action);
         self.selected = Some(id);
         self.screen = Screen::List;
-        self.focus = None;
-    }
-
-    /// Insert a character into the focused field (form or search).
-    fn type_char(&mut self, s: &str) {
-        let Some(field) = self.focus else { return };
-        let buf = self.field_buf(field);
-        // Port is numeric-only; everything else takes the raw char.
-        if field == Field::Port {
-            if s.chars().all(|c| c.is_ascii_digit()) {
-                buf.push_str(s);
-            }
-        } else {
-            buf.push_str(s);
-        }
-        self.dirty = true;
-    }
-
-    /// Backspace the focused field.
-    fn backspace(&mut self) {
-        let Some(field) = self.focus else { return };
-        let buf = self.field_buf(field);
-        buf.pop();
-        self.dirty = true;
-    }
-
-    /// Mutable handle to the buffer backing a field.
-    fn field_buf(&mut self, field: Field) -> &mut String {
-        match field {
-            Field::Search => &mut self.search,
-            Field::Name => &mut self.draft.name,
-            Field::Host => &mut self.draft.host,
-            Field::Port => &mut self.draft.port,
-            Field::User => &mut self.draft.user,
-            Field::Group => &mut self.draft.group,
-        }
+        self.blur_field();
     }
 
     /// Read-only handle to a field's current text.
@@ -709,6 +741,101 @@ impl RemoteApp {
             Field::User => &self.draft.user,
             Field::Group => &self.draft.group,
         }
+    }
+
+    /// Mirror each **unfocused** field's input from the string behind it, so a
+    /// draft loaded for an edit, a reset form, or a device picked from the
+    /// discovery list shows up in the widget. A focused field is left alone —
+    /// there it is the input that is authoritative, and it writes back through
+    /// [`Self::commit_field`].
+    fn sync_inputs(&mut self) {
+        for f in Field::ALL {
+            if self.focus == Some(f) {
+                continue;
+            }
+            let value = self.field_value(f).to_string();
+            self.inputs.get(f).set_text(&value);
+        }
+    }
+
+    /// Mirror **every** field, focused one included. For the moments the app
+    /// rewrites the draft out from under the user — loading one to edit,
+    /// switching the connection kind (which resets the port), or filling the
+    /// form from a discovered device — where the string is the newer of the two.
+    fn reload_inputs(&mut self) {
+        for f in Field::ALL {
+            let value = self.field_value(f).to_string();
+            let input = self.inputs.get(f);
+            input.set_text(&value);
+            input.set_cursor_pos(value.len());
+        }
+    }
+
+    /// Copy a field's input back into the string the rest of the app reads.
+    /// The port stays numeric here rather than per keystroke, so a pasted port
+    /// arrives whole and is cleaned once instead of being dropped character by
+    /// character on the way in.
+    fn commit_field(&mut self, f: Field) {
+        let mut value = self.inputs.get(f).value().to_string();
+        if f == Field::Port {
+            let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits != value {
+                // Push the cleaned text back so what is stored is what is
+                // shown; the caret follows to the end of it.
+                self.inputs.get(f).set_text(&digits);
+                self.inputs.get(f).set_cursor_pos(digits.len());
+                value = digits;
+            }
+        }
+        match f {
+            Field::Search => self.search = value,
+            Field::Name => self.draft.name = value,
+            Field::Host => self.draft.host = value,
+            Field::Port => self.draft.port = value,
+            Field::User => self.draft.user = value,
+            Field::Group => self.draft.group = value,
+        }
+    }
+
+    /// Move keyboard focus to `f`, telling the widgets about it.
+    fn focus_field(&mut self, f: Field) {
+        self.blur_field();
+        self.focus = Some(f);
+        self.inputs.get(f).set_focus(true);
+    }
+
+    /// Drop keyboard focus from whichever field holds it.
+    fn blur_field(&mut self) {
+        if let Some(f) = self.focus.take() {
+            self.inputs.get(f).set_focus(false);
+            self.dirty = true;
+        }
+    }
+
+    /// Route one event into the focused field's input and write the result
+    /// back. Returns whether the input consumed it.
+    #[allow(clippy::too_many_arguments)]
+    fn route_to_focused_field(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let Some(f) = self.focus else { return false };
+        let before = self.inputs.get(f).value().to_string();
+        let input = self.inputs.get(f);
+        input.set_focus(true);
+        let (mut handled, mut focus_target) = (false, None);
+        input.handle_event(event, scale, modifiers, state, path, &mut handled, &mut focus_target, node_id, taffy);
+        if self.inputs.get(f).value() != before {
+            self.commit_field(f);
+        }
+        self.dirty = true;
+        handled
     }
 
     /// Push a clickable region for this frame.
@@ -973,10 +1100,13 @@ impl Widget for RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.hits.clear();
         let tokens = &theme.tokens;
+        // Mirror the strings behind the fields into their inputs before the
+        // frame reads them; a focused input stays authoritative.
+        self.sync_inputs();
 
         // Advance the rail's eased slide for this frame. While it's still
         // settling, keep the repaint gate open so the host pumps the next
@@ -1020,9 +1150,11 @@ impl Widget for RemoteApp {
         };
 
         match self.screen.clone() {
-            Screen::List => self.draw_list(scene, transform, text_renderer, theme, content),
+            Screen::List => {
+                self.draw_list(scene, transform, text_renderer, theme, presence, content)
+            }
             Screen::Form { editing } => {
-                self.draw_form(scene, transform, text_renderer, theme, content, editing)
+                self.draw_form(scene, transform, text_renderer, theme, presence, content, editing)
             }
             Screen::Session { id } => {
                 self.draw_session(scene, transform, text_renderer, theme, content, id, immersive)
@@ -1060,11 +1192,11 @@ impl Widget for RemoteApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1074,6 +1206,11 @@ impl Widget for RemoteApp {
                     self.dirty = true; // hover feedback
                     // Stream pointer motion to a live remote desktop.
                     self.forward_vnc_pointer(p);
+                }
+                // A focused field tracks the pointer so a drag extends its
+                // selection past the edge of the box.
+                if self.focus.is_some() {
+                    self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
                 }
             }
             // A press/release over the live VNC canvas is injected into the
@@ -1134,13 +1271,25 @@ impl Widget for RemoteApp {
                     .find(|h| h.rect.contains(p))
                     .map(|h| h.action.clone())
                 {
-                    self.apply(action, state);
+                    // A press on a field focuses it *and* goes on to the input,
+                    // so the caret lands where the pointer did and a drag from
+                    // here selects — rather than the click only meaning "focus".
+                    if let Action::FocusField(f) = action {
+                        self.focus_field(f);
+                        self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+                    } else {
+                        self.apply(action, state);
+                    }
                     *handled = true;
                 } else {
                     // A click on empty space drops field focus.
-                    self.focus = None;
-                    self.dirty = true;
+                    self.blur_field();
                 }
+            }
+            // Ending a drag has to reach the field that started it, or the
+            // selection keeps extending after the button is up.
+            WindowEvent::MouseInput { state: ElementState::Released, .. } if self.focus.is_some() => {
+                self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1153,6 +1302,12 @@ impl Widget for RemoteApp {
                 ..
             } => {
                 self.handle_key(logical_key, text.as_ref().map(|s| s.as_str()), modifiers.state(), state, handled);
+                // Anything the app's own shortcuts did not claim belongs to the
+                // focused field: typing, caret movement, selection, clipboard,
+                // IME — all of it the shared input's, not this app's.
+                if !*handled && self.focus.is_some() {
+                    *handled = self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+                }
             }
             _ => {}
         }
@@ -1208,32 +1363,32 @@ impl RemoteApp {
         let ctrl = mods.control_key() || mods.super_key();
 
         // --- Global shortcuts (work regardless of focus) ---
-        if ctrl {
-            if let Key::Character(c) = key {
-                match c.to_lowercase().as_str() {
-                    "n" => {
-                        self.apply(Action::NewConnection, state);
-                        *handled = true;
-                        return;
-                    }
-                    "f" => {
-                        self.apply(Action::FocusField(Field::Search), state);
-                        if matches!(self.screen, Screen::Form { .. } | Screen::Session { .. }) {
-                            self.apply(Action::GoList, state);
-                            self.apply(Action::FocusField(Field::Search), state);
-                        }
-                        *handled = true;
-                        return;
-                    }
-                    "w" => {
-                        if matches!(self.screen, Screen::Session { .. }) {
-                            self.apply(Action::Disconnect, state);
-                            *handled = true;
-                            return;
-                        }
-                    }
-                    _ => {}
+        if ctrl
+            && let Key::Character(c) = key
+        {
+            match c.to_lowercase().as_str() {
+                "n" => {
+                    self.apply(Action::NewConnection, state);
+                    *handled = true;
+                    return;
                 }
+                "f" => {
+                    self.apply(Action::FocusField(Field::Search), state);
+                    if matches!(self.screen, Screen::Form { .. } | Screen::Session { .. }) {
+                        self.apply(Action::GoList, state);
+                        self.apply(Action::FocusField(Field::Search), state);
+                    }
+                    *handled = true;
+                    return;
+                }
+                "w" => {
+                    if matches!(self.screen, Screen::Session { .. }) {
+                        self.apply(Action::Disconnect, state);
+                        *handled = true;
+                        return;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1277,8 +1432,8 @@ impl RemoteApp {
                     Screen::List => {
                         if self.focus == Some(Field::Search) {
                             self.search.clear();
-                            self.focus = None;
-                            self.dirty = true;
+                            self.blur_field();
+                            self.sync_inputs();
                         }
                     }
                     Screen::Form { .. } => self.apply(Action::Back, state),
@@ -1307,14 +1462,7 @@ impl RemoteApp {
             }
             Key::Named(NamedKey::Tab) => {
                 if matches!(self.screen, Screen::Form { .. }) {
-                    self.focus = Some(next_field(self.focus, self.draft.kind));
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if self.focus.is_some() {
-                    self.backspace();
+                    self.focus_field(next_field(self.focus, self.draft.kind));
                     *handled = true;
                 }
             }
@@ -1327,22 +1475,13 @@ impl RemoteApp {
             }
             Key::Character(_) => {
                 // `/` focuses search on the list when nothing else is focused.
-                if let Some(t) = text {
-                    if t == "/" && matches!(self.screen, Screen::List) && self.focus.is_none() {
-                        self.focus = Some(Field::Search);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    if self.focus.is_some() && !ctrl {
-                        self.type_char(t);
-                        *handled = true;
-                    }
-                }
-            }
-            Key::Named(NamedKey::Space) => {
-                if self.focus.is_some() {
-                    self.type_char(" ");
+                // Everything else falls through to the focused field's input.
+                if let Some(t) = text
+                    && t == "/"
+                    && matches!(self.screen, Screen::List)
+                    && self.focus.is_none()
+                {
+                    self.focus_field(Field::Search);
                     *handled = true;
                 }
             }
@@ -1479,6 +1618,7 @@ impl RemoteApp {
         self.push_hit(btn, Action::ToggleRail);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_rail_button(
         &self,
         scene: &mut Scene,
@@ -1531,6 +1671,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         content: Rect,
     ) {
         let tokens = &theme.tokens;
@@ -1571,15 +1712,7 @@ impl RemoteApp {
             content.x1 - pad,
             header.y1 + 40.0,
         );
-        self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            search,
-            Field::Search,
-            "Search machines…  ( / )",
-        );
+        self.draw_field(scene, transform, text_renderer, theme, presence, search, Field::Search);
         self.push_hit(search, Action::FocusField(Field::Search));
 
         // --- Rows ---
@@ -1863,6 +1996,7 @@ impl RemoteApp {
     }
 
     /// Generic button: filled accent when `primary`, otherwise outlined.
+    #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
         scene: &mut Scene,
@@ -1903,17 +2037,26 @@ impl RemoteApp {
         );
     }
 
-    /// Draw a text field with its current value (or placeholder), focus
-    /// ring, and caret when focused.
+    /// The text band inside a field box — where the shared input lives, and
+    /// the rect a click is mapped through. One function so drawing and
+    /// hit-testing cannot drift.
+    fn field_inner(rect: Rect) -> Rect {
+        Rect::new(rect.x0 + 12.0, rect.y0, rect.x1 - 12.0, rect.y1)
+    }
+
+    /// Draw a text field: the app paints the box and the focus ring, the
+    /// shared [`TextInput`] paints the text, placeholder, selection and caret
+    /// inside it — and owns every editing behaviour that goes with them.
+    #[allow(clippy::too_many_arguments)]
     fn draw_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         rect: Rect,
         field: Field,
-        placeholder: &str,
     ) {
         let tokens = &theme.tokens;
         let focused = self.focus == Some(field);
@@ -1922,44 +2065,21 @@ impl RemoteApp {
         let border = if focused { tokens.colors.border_focus } else { tokens.colors.border_standard };
         scene.stroke(&Stroke::new(if focused { 2.0 } else { 1.0 }), transform, border, None, &rr);
 
-        let value = self.field_value(field);
-        let tx = rect.x0 + 12.0;
-        let ty = rect.center().y - 8.0;
-        if value.is_empty() {
-            text_renderer.draw_text(
-                scene,
-                placeholder,
-                14.0,
-                tokens.colors.text_dim,
-                transform * Affine::translate((tx, ty)),
-                None,
-            );
-        } else {
-            text_renderer.draw_text(
-                scene,
-                value,
-                14.0,
-                tokens.colors.text_primary,
-                transform * Affine::translate((tx, ty)),
-                None,
-            );
-        }
-        // Caret at the end of the text when focused.
-        if focused {
-            let (w, _) = text_renderer.measure(value, 14.0, None);
-            let cx = tx + w as f64 + 1.0;
-            let caret = Rect::new(cx, rect.center().y - 9.0, cx + 2.0, rect.center().y + 9.0);
-            scene.fill(Fill::NonZero, transform, tokens.colors.text_primary, None, &caret);
-        }
+        let inner = Self::field_inner(rect);
+        let input = self.inputs.get(field);
+        input.apply_layout_external(inner);
+        Widget::draw(input, scene, transform, text_renderer, theme, presence);
     }
 
     /// Draw the add/edit form.
+    #[allow(clippy::too_many_arguments)]
     fn draw_form(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         content: Rect,
         editing: Option<ConnectionId>,
     ) {
@@ -2051,7 +2171,7 @@ impl RemoteApp {
         // -- Name --
         y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
-        self.draw_field(scene, transform, text_renderer, theme, name, Field::Name, "My machine");
+        self.draw_field(scene, transform, text_renderer, theme, presence, name, Field::Name);
         self.push_hit(name, Action::FocusField(Field::Name));
         y += 56.0;
 
@@ -2061,11 +2181,11 @@ impl RemoteApp {
         let qos = self.draft.kind == ConnectionKind::Qos;
         let host_w = if qos { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
-        self.draw_field(scene, transform, text_renderer, theme, host, Field::Host, "hostname or IP");
+        self.draw_field(scene, transform, text_renderer, theme, presence, host, Field::Host);
         self.push_hit(host, Action::FocusField(Field::Host));
         if !qos {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, port, Field::Port, "Port");
+            self.draw_field(scene, transform, text_renderer, theme, presence, port, Field::Port);
             self.push_hit(port, Action::FocusField(Field::Port));
         }
         y += 56.0;
@@ -2075,10 +2195,10 @@ impl RemoteApp {
             y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
             let half = (card_w - 12.0) / 2.0;
             let user = Rect::new(card_x, y, card_x + half, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, user, Field::User, "username");
+            self.draw_field(scene, transform, text_renderer, theme, presence, user, Field::User);
             self.push_hit(user, Action::FocusField(Field::User));
             let group = Rect::new(card_x + half + 12.0, y, card_x + card_w, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, group, Field::Group, "group (optional)");
+            self.draw_field(scene, transform, text_renderer, theme, presence, group, Field::Group);
             self.push_hit(group, Action::FocusField(Field::Group));
             y += 56.0;
 
@@ -2164,6 +2284,7 @@ impl RemoteApp {
     }
 
     /// Draw a small section label and return the y just below it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_form_label(
         &self,
         scene: &mut Scene,
@@ -2228,6 +2349,7 @@ impl RemoteApp {
     }
 
     /// Draw the session surface for a connection.
+    #[allow(clippy::too_many_arguments)]
     fn draw_session(
         &mut self,
         scene: &mut Scene,
@@ -2638,6 +2760,7 @@ impl RemoteApp {
     }
 
     /// Draw a compact toolbar tool button ending at `right_x`; returns its rect.
+    #[allow(clippy::too_many_arguments)]
     fn draw_tool(
         &self,
         scene: &mut Scene,
@@ -2848,6 +2971,30 @@ mod tests {
         AutoCommit::new()
     }
 
+    /// A synthetic character key press, as winit delivers it.
+    fn char_ev(s: &str) -> WindowEvent {
+        use winit::keyboard::SmolStr;
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(SmolStr::new(s));
+        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+    }
+
+    /// Feed one event through the real `Widget::handle_event` path, with the
+    /// modifiers the host would carry.
+    fn feed(app: &mut RemoteApp, state: &mut AutoCommit, ev: &WindowEvent, mods: ModifiersState) {
+        let m = winit::event::Modifiers::from(mods);
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let (mut h, mut ft) = (false, None);
+        app.handle_event(ev, 1.0, &m, state, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
+    }
+
     /// Drive the real layout passes (`build_layout` → taffy → `apply_layout`)
     /// at a given allocation, exactly as the host does, so responsive tests
     /// assert on the production path rather than a tautological helper.
@@ -2959,6 +3106,69 @@ mod tests {
         assert!(app.workspace.connections().len() >= 6);
         assert_eq!(app.screen, Screen::List);
         assert!(app.selected.is_some());
+    }
+
+    /// A hostname or a key is exactly the sort of string nobody types by
+    /// hand, so the connection form has to take a paste — and, having taken
+    /// one, has to let you select what arrived and replace it.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn the_connection_form_takes_a_paste_and_a_selection() {
+        let ctrl = ModifiersState::CONTROL;
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        let mut state = doc();
+        app.apply(Action::NewConnection, &mut state);
+        app.apply(Action::FocusField(Field::Host), &mut state);
+
+        ui::text_selection::clipboard_copy("build-07.fleet.internal");
+        feed(&mut app, &mut state, &char_ev("v"), ctrl);
+        assert_eq!(
+            app.draft.host, "build-07.fleet.internal",
+            "Ctrl+V puts the clipboard into the focused field",
+        );
+
+        // Select-all then type replaces what is there — the other half of a
+        // real field, and impossible for a push/pop buffer.
+        feed(&mut app, &mut state, &char_ev("a"), ctrl);
+        feed(&mut app, &mut state, &char_ev("x"), ModifiersState::empty());
+        assert_eq!(app.draft.host, "x", "typing over a selection replaces it");
+    }
+
+    /// The port field stays numeric, but numeric is not a reason to lose the
+    /// clipboard: a pasted port arrives, and pasted junk is still filtered.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn the_port_field_takes_a_paste_and_stays_numeric() {
+        let ctrl = ModifiersState::CONTROL;
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        let mut state = doc();
+        app.apply(Action::NewConnection, &mut state);
+        app.apply(Action::FocusField(Field::Port), &mut state);
+        feed(&mut app, &mut state, &char_ev("a"), ctrl); // replace the default
+        ui::text_selection::clipboard_copy("2222");
+        feed(&mut app, &mut state, &char_ev("v"), ctrl);
+        assert_eq!(app.draft.port, "2222", "a pasted port arrives");
+
+        feed(&mut app, &mut state, &char_ev("a"), ctrl);
+        ui::text_selection::clipboard_copy("22ssh");
+        feed(&mut app, &mut state, &char_ev("v"), ctrl);
+        assert_eq!(app.draft.port, "22", "non-digits are still refused");
+    }
+
+    /// The search box is the sixth of these fields and gets the same deal.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn the_search_box_takes_a_paste() {
+        let ctrl = ModifiersState::CONTROL;
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 1280.0, 800.0);
+        let mut state = doc();
+        app.apply(Action::FocusField(Field::Search), &mut state);
+        ui::text_selection::clipboard_copy("build");
+        feed(&mut app, &mut state, &char_ev("v"), ctrl);
+        assert_eq!(app.search, "build");
     }
 
     #[test]
@@ -3081,25 +3291,43 @@ mod tests {
         }));
     }
 
+    /// Loading a connection to edit has to reach the widgets, not just the
+    /// draft behind them — otherwise the form shows placeholders over values
+    /// that are really there, and saving writes back whatever was on screen.
+    #[test]
+    fn editing_a_connection_loads_it_into_the_fields() {
+        let mut app = RemoteApp::new_demo();
+        let c = app.workspace.connections()[0].clone();
+        app.apply(Action::EditConnection(c.id), &mut doc());
+        assert_eq!(app.inputs.get(Field::Name).value(), c.name);
+        assert_eq!(app.inputs.get(Field::Host).value(), c.host);
+        assert_eq!(app.inputs.get(Field::Port).value(), c.port.to_string());
+    }
+
     #[test]
     fn typing_into_focused_field_appends() {
+        let none = ModifiersState::empty();
         let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        app.focus = Some(Field::Name);
-        app.type_char("a");
-        app.type_char("b");
+        let mut state = doc();
+        app.apply(Action::NewConnection, &mut state);
+        app.apply(Action::FocusField(Field::Name), &mut state);
+        feed(&mut app, &mut state, &char_ev("a"), none);
+        feed(&mut app, &mut state, &char_ev("b"), none);
         assert_eq!(app.draft.name, "ab");
     }
 
     #[test]
     fn port_field_rejects_non_digits() {
+        let none = ModifiersState::empty();
         let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        app.focus = Some(Field::Port);
+        let mut state = doc();
+        app.apply(Action::NewConnection, &mut state);
         app.draft.port.clear();
-        app.type_char("2");
-        app.type_char("x");
-        app.type_char("2");
+        app.reload_inputs();
+        app.apply(Action::FocusField(Field::Port), &mut state);
+        feed(&mut app, &mut state, &char_ev("2"), none);
+        feed(&mut app, &mut state, &char_ev("x"), none);
+        feed(&mut app, &mut state, &char_ev("2"), none);
         assert_eq!(app.draft.port, "22");
     }
 
