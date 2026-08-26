@@ -970,9 +970,9 @@ fn spawn_open(path: &Path, _is_dir: bool) {
 /// whichever branch it entered first and never returns; breadth-first
 /// spends it on the shallowest paths in the whole of `~`, which is both
 /// the fair division between trees and the right priority within one —
-/// `~/tupo/epopy/epo-docs/openapi.yaml` is more likely to be what someone
-/// meant than anything eight levels down, which is the same judgement
-/// [`DEPTH_FREE`] encodes in the score.
+/// a file three levels down is more likely to be what someone meant than
+/// anything eight levels down, which is the same judgement [`DEPTH_FREE`]
+/// encodes in the score.
 fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
     if let Ok(mut guard) = index.lock() {
