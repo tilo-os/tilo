@@ -1,7 +1,7 @@
 [package]
 name = "word-processor"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
 
 [lib]
