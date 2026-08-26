@@ -167,6 +167,17 @@ impl HistorySource {
             };
             prev_snapshot = cur_snapshot;
 
+            // The schema genesis is a change, but nobody made it: the containers
+            // are written by a fixed actor so that two independently created
+            // documents merge into one rather than shadowing each other. Listing
+            // it would attribute a revision to a person who does not exist, and
+            // put a row under an author filter that no author matches. Skipped
+            // here rather than in `versions`, which stays positional because
+            // `materialize_at` and `prefix_heads` address a change by its place.
+            if qdoc::history::is_schema_genesis(v) {
+                continue;
+            }
+
             // Naming a version is a change like any other, but it is not a row:
             // the name is already on screen as the band's title, and a "1 field"
             // row directly under the band it named says nothing. The check runs
