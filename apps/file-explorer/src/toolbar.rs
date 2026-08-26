@@ -88,6 +88,7 @@ impl FileToolbar {
         &mut self,
         current: std::path::PathBuf,
         home: Option<std::path::PathBuf>,
+        workspace_roots: Vec<std::path::PathBuf>,
         can_back: bool,
         can_forward: bool,
         can_up: bool,
@@ -97,7 +98,7 @@ impl FileToolbar {
         self.can_forward = can_forward;
         self.can_up = can_up;
         self.view_mode = view_mode;
-        self.path_bar.set_path(current, home);
+        self.path_bar.set_path(current, home, workspace_roots);
     }
 
     /// Put the path bar into editable mode (the Ctrl+L "edit location" path).
