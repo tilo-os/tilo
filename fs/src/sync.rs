@@ -26,6 +26,7 @@ use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::acl::{AclHandle, IdentityKey};
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::store::ContentStore;
@@ -161,10 +162,49 @@ pub async fn sync_with_peer(
     .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
 }
 
+/// The policy the network planes serve through, or `None` for an unenforced
+/// mount.
+///
+/// `None` is the same opt-out [`crate::QuickFS`] already has: a mount brought
+/// up without `--acl` states no policy, and inventing one here would deny a
+/// single-user workspace its own devices. `fs.service` passes `--acl`.
+///
+/// The handle is live, so a revocation lands on the next connection rather
+/// than at the next remount.
+pub type PeerPolicy = Option<AclHandle>;
+
+/// Does `peer` hold a read grant on *anything* in this workspace?
+///
+/// `None` policy ⇒ unenforced mount ⇒ yes. Otherwise the ACL decides, and it
+/// decides `false` for anyone it has never been told about.
+fn peer_may_read_anything(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
+    match policy {
+        None => true,
+        Some(acl) => acl.reads_anything(peer),
+    }
+}
+
+/// An iroh endpoint id read as a qOS identity. The two are the same 32 bytes
+/// (see [`bind_endpoint_with_key`]), which is what lets a capability written
+/// against a device key decide who may open a connection.
+fn identity_of(id: iroh::EndpointId) -> IdentityKey {
+    *id.as_bytes()
+}
+
 /// Serves the current namespace document to bootstrapping peers.
+///
+/// The document is the whole workspace's metadata, so who may fetch it is an
+/// access-control decision and not a transport detail. Denial is an absence,
+/// exactly as on the FUSE path: a stranger cannot tell a refusal from a host
+/// that is not serving.
+///
+/// Admission is all-or-nothing — an admitted peer receives the entire
+/// document, naming paths it cannot read. Serving a per-peer projection is a
+/// change to what the CRDT replicates, not a check that belongs here.
 #[derive(Clone)]
 struct SyncProtocol {
     namespace: Arc<Mutex<Namespace>>,
+    policy: PeerPolicy,
 }
 
 impl std::fmt::Debug for SyncProtocol {
@@ -175,6 +215,21 @@ impl std::fmt::Debug for SyncProtocol {
 
 impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        // Decided before a stream is accepted: the noise handshake has already
+        // bound this connection to a key, so the caller's identity is known
+        // here and is the only thing worth deciding on.
+        let peer = identity_of(connection.remote_id());
+        if !peer_may_read_anything(&self.policy, &peer) {
+            eprintln!(
+                "qos-fs-sync: refusing {} — it reads nothing in this workspace",
+                connection.remote_id()
+            );
+            // No frame, no error code, no mode byte read: the peer sees a
+            // connection that closed, which is what a host that is not hosting
+            // would also give it.
+            connection.close(0u32.into(), b"");
+            return Ok(());
+        }
         let (mut send, mut recv) = connection.accept_bi().await?;
         // Bound the exchange so a client that opens a stream but never sends
         // (or never closes) can't leak an accept task / connection forever.
@@ -222,6 +277,124 @@ impl ProtocolHandler for SyncProtocol {
     }
 }
 
+/// The connect-time verdict for a blob-plane caller, and the identity to
+/// remember for the requests that ride the connection.
+///
+/// A `None` endpoint id means the transport could not name the caller: refuse,
+/// because an unnamed caller cannot be checked and serving it would be serving
+/// whoever happens to arrive that way.
+fn admit_blob_caller(
+    policy: &PeerPolicy,
+    endpoint_id: Option<iroh::EndpointId>,
+) -> Result<IdentityKey, iroh_blobs::provider::events::AbortReason> {
+    use iroh_blobs::provider::events::AbortReason;
+
+    let Some(id) = endpoint_id else {
+        return Err(AbortReason::Permission);
+    };
+    let peer = identity_of(id);
+    if peer_may_read_anything(policy, &peer) {
+        Ok(peer)
+    } else {
+        eprintln!("iroh-blobs: refusing {id} — it reads nothing in this workspace");
+        Err(AbortReason::Permission)
+    }
+}
+
+/// Build the request interceptor iroh-blobs consults before it serves
+/// anything, or `None` for an unenforced mount.
+///
+/// `BlobsProtocol::new(store, None)` serves every blob in the store to anyone
+/// who knows its hash. The [`EventSender`](iroh_blobs::provider::events::EventSender)
+/// is the protocol's only interception point, so an identity check has to go
+/// here; nothing later still knows who is asking.
+///
+/// Only the connect event names the peer — a request event carries a
+/// connection id — so the identity is recorded at connect and looked up per
+/// request. Pushes are refused outright: this is a *read* plane, content
+/// arrives through the FUSE write path where the write side of the capability
+/// model is enforced, and a store that accepted pushed blobs would be taking
+/// writes past it.
+fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventSender> {
+    use iroh_blobs::provider::events::{
+        AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
+        ThrottleMode,
+    };
+
+    if policy.is_none() {
+        return None;
+    }
+    let mask = EventMask {
+        connected: ConnectMode::Intercept,
+        get: RequestMode::Intercept,
+        get_many: RequestMode::Intercept,
+        push: RequestMode::Disabled,
+        observe: ObserveMode::Intercept,
+        throttle: ThrottleMode::None,
+    };
+    let (sender, mut rx) = EventSender::channel(64, mask);
+    tokio::spawn(async move {
+        let mut callers: std::collections::HashMap<u64, IdentityKey> =
+            std::collections::HashMap::new();
+        // Coarse on purpose: this asks only whether the caller reads
+        // *something* here, never whether the blob it requested lies under a
+        // path it was granted. A peer granted /docs can fetch any hash in the
+        // store, and hashes are easy to learn. Narrowing it needs a hash →
+        // granted-subtree reachability walk, not a stricter predicate here.
+        //
+        // Re-asked per request against the live handle, so a revocation does
+        // not wait for the connection to end.
+        let caller_may_read_anything =
+            |callers: &std::collections::HashMap<u64, IdentityKey>, conn: u64| {
+                callers
+                    .get(&conn)
+                    .is_some_and(|peer| peer_may_read_anything(&policy, peer))
+            };
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                ProviderMessage::ClientConnected(msg) => {
+                    let verdict = admit_blob_caller(&policy, msg.inner.endpoint_id);
+                    if let Ok(peer) = verdict {
+                        callers.insert(msg.inner.connection_id, peer);
+                    }
+                    msg.tx.send(verdict.map(|_| ())).await.ok();
+                }
+                ProviderMessage::ConnectionClosed(msg) => {
+                    callers.remove(&msg.inner.connection_id);
+                }
+                ProviderMessage::GetRequestReceived(msg) => {
+                    let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
+                    msg.tx
+                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .await
+                        .ok();
+                }
+                ProviderMessage::GetManyRequestReceived(msg) => {
+                    let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
+                    msg.tx
+                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .await
+                        .ok();
+                }
+                ProviderMessage::ObserveRequestReceived(msg) => {
+                    let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
+                    msg.tx
+                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .await
+                        .ok();
+                }
+                ProviderMessage::PushRequestReceived(msg) => {
+                    msg.tx.send(Err(AbortReason::Permission)).await.ok();
+                }
+                // Notify-shaped variants carry no reply channel; the mask never
+                // asks for them.
+                _ => {}
+            }
+        }
+    });
+    Some(sender)
+}
+
 /// Enqueues local Automerge deltas for broadcast over gossip. Cheap to clone.
 #[derive(Clone)]
 pub struct SyncHandle {
@@ -255,24 +428,32 @@ pub struct Workspace {
 
 impl Workspace {
     /// Begin hosting a new workspace. Returns a ticket to share with peers.
+    ///
+    /// `policy` is what the sync and content planes serve *through*: see
+    /// [`PeerPolicy`]. `None` hosts unenforced.
     pub async fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         store: Arc<ContentStore>,
         hydrator: Arc<Hydrator>,
         namespace: Arc<Mutex<Namespace>>,
+        policy: PeerPolicy,
     ) -> Result<(Workspace, Ticket)> {
         let topic = *endpoint.id().as_bytes();
         let ticket = Ticket {
             node: endpoint.addr(),
             workspace: topic,
         };
-        let ws = Self::start(endpoint, lookup, store, hydrator, namespace, topic, vec![]).await?;
+        let ws =
+            Self::start(endpoint, lookup, store, hydrator, namespace, policy, topic, vec![]).await?;
         Ok((ws, ticket))
     }
 
     /// Join an existing workspace described by `ticket`. The caller must already
     /// have bootstrapped `namespace` from the host (see [`fetch_remote_doc`]).
+    ///
+    /// A joiner serves too — anti-entropy is symmetric — so it carries the same
+    /// `policy` a host does.
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -280,17 +461,30 @@ impl Workspace {
         hydrator: Arc<Hydrator>,
         namespace: Arc<Mutex<Namespace>>,
         ticket: Ticket,
+        policy: PeerPolicy,
     ) -> Result<Workspace> {
         let topic = ticket.workspace;
-        Self::start(endpoint, lookup, store, hydrator, namespace, topic, vec![ticket.node]).await
+        Self::start(
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            policy,
+            topic,
+            vec![ticket.node],
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn start(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         store: Arc<ContentStore>,
         hydrator: Arc<Hydrator>,
         namespace: Arc<Mutex<Namespace>>,
+        policy: PeerPolicy,
         topic_bytes: [u8; 32],
         bootstrap: Vec<EndpointAddr>,
     ) -> Result<Workspace> {
@@ -309,9 +503,10 @@ impl Workspace {
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let sync_proto = SyncProtocol {
             namespace: namespace.clone(),
+            policy: policy.clone(),
         };
         let router = Router::builder(endpoint.clone())
-            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+            .accept(iroh_blobs::ALPN, store.blobs_protocol(blob_guard(policy)))
             .accept(GOSSIP_ALPN, gossip.clone())
             .accept(QOS_FS_SYNC_ALPN, sync_proto)
             .spawn();
@@ -451,8 +646,29 @@ async fn reconcile_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acl::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
     use std::time::Duration;
+
+    /// The workspace's policy: `entitled` get the run of the tree, and nothing
+    /// is said about anybody else.
+    ///
+    /// Direct entries rather than capabilities so the test states its grant
+    /// outright; `reads_anything` is asked the same question either way (see
+    /// `acl::tests` for the capability route).
+    fn policy_granting(entitled: &[IdentityKey]) -> PeerPolicy {
+        let mut acl = WorkspaceAcl::new();
+        for id in entitled {
+            acl.grant_read(*id, "/");
+        }
+        Some(AclHandle::new(acl))
+    }
+
+    /// The identity an endpoint authenticates as — the same 32 bytes an ACL
+    /// grant names.
+    fn identity(endpoint: &Endpoint) -> IdentityKey {
+        *endpoint.id().as_bytes()
+    }
 
     async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
         for _ in 0..100 {
@@ -476,8 +692,8 @@ mod tests {
         assert_eq!(decoded.workspace, [3u8; 32]);
     }
 
-    /// The crux of Phase D: two real nodes bootstrap, then structural changes
-    /// propagate live over gossip in BOTH directions.
+    /// Two real nodes bootstrap, then structural changes propagate live over
+    /// gossip in BOTH directions.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn structural_changes_propagate_both_ways() {
         // --- host A: seed a dir, then start hosting ---
@@ -487,7 +703,7 @@ mod tests {
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
         ns_a.lock().unwrap().create_dir(ROOT_INO, "shared", 1).unwrap();
         let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
                 .await
                 .unwrap();
 
@@ -504,6 +720,7 @@ mod tests {
             hyd_b.clone(),
             ns_b.clone(),
             ticket,
+            None,
         )
         .await
         .unwrap();
@@ -554,7 +771,7 @@ mod tests {
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
         let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
                 .await
                 .unwrap();
 
@@ -571,6 +788,7 @@ mod tests {
             hyd_b.clone(),
             ns_b.clone(),
             ticket,
+            None,
         )
         .await
         .unwrap();
@@ -606,5 +824,202 @@ mod tests {
             .await
             .expect("B hydrates content from A");
         assert_eq!(got.as_slice(), content, "B must read A's real bytes");
+    }
+
+    /// A caller the transport could not name is refused, so an endpoint that
+    /// arrives without an id is not served on the strength of arriving.
+    #[test]
+    fn an_unnamed_blob_caller_is_refused() {
+        use iroh_blobs::provider::events::AbortReason;
+
+        let invited = iroh::SecretKey::generate().public();
+        let policy = policy_granting(&[identity_of(invited)]);
+
+        assert_eq!(
+            admit_blob_caller(&policy, None),
+            Err(AbortReason::Permission),
+            "an unnamed caller cannot be checked and must not be served"
+        );
+        assert_eq!(
+            admit_blob_caller(&policy, Some(invited)),
+            Ok(identity_of(invited)),
+            "and a named, entitled caller is admitted as itself"
+        );
+        assert_eq!(
+            admit_blob_caller(&policy, Some(iroh::SecretKey::generate().public())),
+            Err(AbortReason::Permission),
+            "while a named stranger is refused"
+        );
+    }
+
+    /// Revocation reaches the blob plane through the live handle: the same
+    /// caller is admitted, then refused, with no remount in between.
+    #[test]
+    fn revoking_a_grant_refuses_the_next_blob_connection() {
+        use iroh_blobs::provider::events::AbortReason;
+
+        let invited = iroh::SecretKey::generate().public();
+        let mut acl = WorkspaceAcl::new();
+        acl.grant_read(identity_of(invited), "/");
+        let handle = AclHandle::new(acl);
+        let policy: PeerPolicy = Some(handle.clone());
+
+        assert!(admit_blob_caller(&policy, Some(invited)).is_ok());
+        handle.replace(WorkspaceAcl::new());
+        assert_eq!(
+            admit_blob_caller(&policy, Some(invited)),
+            Err(AbortReason::Permission),
+            "the next connection must be decided by the ACL bound now"
+        );
+    }
+
+    /// The negative on the document plane: a peer holding no grant asks the
+    /// host for the workspace document and gets nothing it can read a
+    /// workspace out of. Asserted on the bytes that land at the far endpoint,
+    /// not on the gate having been consulted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stranger_receives_no_namespace_document() {
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
+        let (ep_b, _look_b) = bind_ephemeral_endpoint().await.unwrap();
+
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        ns_a.lock().unwrap().create_dir(ROOT_INO, "secret-plans", 1).unwrap();
+
+        // The workspace grants somebody — just not B.
+        let someone_else = identity_of(iroh::SecretKey::generate().public());
+        let (_ws_a, ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a,
+            ns_a,
+            policy_granting(&[someone_else]),
+        )
+        .await
+        .unwrap();
+
+        let leaked = match fetch_remote_doc(&ep_b, ticket.node.clone()).await {
+            Err(_) => None,
+            Ok(bytes) => Namespace::from_bytes("B", &bytes).ok(),
+        };
+        assert!(
+            leaked.is_none(),
+            "a peer with no grant must not be able to load the host's workspace document"
+        );
+    }
+
+    /// The negative on the content plane: a stranger that already knows a
+    /// blob's hash — content addressing makes a hash easy to learn and
+    /// impossible to keep secret — still cannot fetch the bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stranger_cannot_hydrate_content() {
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
+        let (ep_b, _look_b) = bind_ephemeral_endpoint().await.unwrap();
+
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let secret = b"the contents of a workspace nobody invited them to";
+        let hash = store_a.write_content(secret).await.unwrap().unwrap();
+
+        let someone_else = identity_of(iroh::SecretKey::generate().public());
+        let (_ws_a, _ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a,
+            ns_a,
+            policy_granting(&[someone_else]),
+        )
+        .await
+        .unwrap();
+
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Hydrator::new(ep_b.clone(), store_b.clone());
+        hyd_b.add_peer(ep_a.addr());
+
+        let got = hyd_b.read(hash, 0, secret.len() as u64).await;
+        assert!(
+            got.is_err(),
+            "a peer with no grant must not be served a blob it knows the hash of, got {:?}",
+            got.map(|b| String::from_utf8_lossy(&b).into_owned()),
+        );
+        assert!(
+            !store_b.has(hash).await,
+            "and nothing may have landed in its store"
+        );
+    }
+
+    /// Same host, same policy, an invited peer: bootstrap, gossip and
+    /// hydration all still work. Without this the negatives above are
+    /// satisfied by a mount that serves nobody.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_entitled_peer_still_bootstraps_and_hydrates() {
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
+        let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
+        let policy = policy_granting(&[identity(&ep_a), identity(&ep_b)]);
+
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        ns_a.lock().unwrap().create_dir(ROOT_INO, "shared", 1).unwrap();
+        let content = b"a shared collaborative document body";
+        let hash = store_a.write_content(content).await.unwrap().unwrap();
+
+        let (ws_a, ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a.clone(),
+            ns_a.clone(),
+            policy.clone(),
+        )
+        .await
+        .unwrap();
+
+        let doc = fetch_remote_doc(&ep_b, ticket.node.clone())
+            .await
+            .expect("an entitled peer bootstraps the document");
+        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
+        assert!(
+            ns_b.lock().unwrap().entry_at("shared").is_some(),
+            "the invited peer sees the host's tree"
+        );
+
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
+        let _ws_b = Workspace::join(
+            ep_b.clone(),
+            look_b,
+            store_b.clone(),
+            hyd_b.clone(),
+            ns_b.clone(),
+            ticket,
+            policy,
+        )
+        .await
+        .unwrap();
+
+        {
+            let delta = {
+                let mut n = ns_a.lock().unwrap();
+                n.create_file(ROOT_INO, "doc.txt", Some(&hash), content.len() as u64, 7)
+                    .unwrap();
+                n.save_incremental()
+            };
+            ws_a.sync.broadcast_delta(delta);
+        }
+        assert!(
+            wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
+            "an entitled peer must still receive the host's changes"
+        );
+
+        let got = hyd_b
+            .read(hash, 0, content.len() as u64)
+            .await
+            .expect("an entitled peer hydrates content");
+        assert_eq!(got.as_slice(), content, "and reads the host's real bytes");
     }
 }
