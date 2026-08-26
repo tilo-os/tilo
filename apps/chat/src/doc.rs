@@ -69,6 +69,10 @@ pub struct NewMessage {
     pub attachment: Option<Attachment>,
     pub history: Vec<EditRecord>,
     pub edited: bool,
+    /// Who the body refers to, already resolved to participant ids. Minted at
+    /// authoring time by [`crate::mention::resolve`] and carried into the
+    /// document, so a reader never has to re-parse the text.
+    pub mentions: Vec<crate::mention::Mention>,
 }
 
 pub struct ChatDoc;
@@ -550,6 +554,18 @@ impl ChatDoc {
                 let _ = doc.put(&e, "user", u.as_str());
                 ri += 1;
             }
+        }
+
+        // mentions — an ordered List of resolved participant references. A
+        // list (not a set) because two mentions of one person are two
+        // references, and the order is the order they read in the body.
+        let mentions = doc.put_object(&block, "mentions", ObjType::List).expect("mentions");
+        for (i, m) in nm.mentions.iter().enumerate() {
+            let e = doc.insert_object(&mentions, i, ObjType::Map).expect("mention");
+            let _ = doc.put(&e, "user", m.user.as_str());
+            let _ = doc.put(&e, "start", m.start as i64);
+            let _ = doc.put(&e, "len", m.len as i64);
+            let _ = doc.put(&e, "agent", m.is_agent);
         }
 
         // history
@@ -1219,6 +1235,7 @@ impl ChatDoc {
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
                     status: Presence::from_str(&get_str(doc, &u, "status")),
+                    is_agent: get_bool(doc, &u, "agent"),
                 })
             })
             .collect()
@@ -1266,8 +1283,29 @@ impl ChatDoc {
                 history: Self::read_history(doc, &m),
                 parent: if parent.is_empty() { None } else { Some(parent) },
                 reactions: Self::read_reactions(doc, &m),
+                mentions: Self::read_mentions(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
                 pinned: get_bool(doc, &m, "pinned"),
+            });
+        }
+        out
+    }
+
+    /// The resolved participant references stored on a message block.
+    fn read_mentions(doc: &AutoCommit, msg: &ObjId) -> Vec<crate::mention::Mention> {
+        let Some(list) = list_at(doc, msg, "mentions") else { return vec![] };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else { continue };
+            let user = get_str(doc, &e, "user");
+            if user.is_empty() {
+                continue;
+            }
+            out.push(crate::mention::Mention {
+                user,
+                start: get_i64(doc, &e, "start").max(0) as usize,
+                len: get_i64(doc, &e, "len").max(0) as usize,
+                is_agent: get_bool(doc, &e, "agent"),
             });
         }
         out
