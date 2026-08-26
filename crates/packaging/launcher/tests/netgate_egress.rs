@@ -544,10 +544,25 @@ fn run_probe(
     }
 
     let output = cmd.output().expect("spawn bwrap");
-    ProbeReport {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    }
+    report_from(output)
+}
+
+/// Read the child's output, refusing one that selected no test.
+///
+/// libtest exits 0 when its filter matches nothing, so a probe name that has
+/// gone stale looks exactly like a probe that ran and found nothing to say.
+/// Naming that here turns the next rename into one line instead of a hunt
+/// through a dump of `running 0 tests`.
+fn report_from(output: std::process::Output) -> ProbeReport {
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains("PROBE "),
+        "the child reported nothing. If it says `running 0 tests`, the probe's \
+         name no longer selects it — see `probe_test_name`.\nstdout:\n{stdout}\n\
+         stderr:\n{stderr}"
+    );
+    ProbeReport { stdout, stderr }
 }
 
 /// Start a gate on a unique per-test socket path.
@@ -1079,10 +1094,7 @@ fn run_device_local_probe(
     };
 
     let output = cmd.output().expect("spawn bwrap");
-    ProbeReport {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    }
+    report_from(output)
 }
 
 /// An app denied the network cannot reach a service on this device — not
