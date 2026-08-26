@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "software_store"
 version = "0.1.0"
 edition = "2024"
@@ -23,3 +25,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

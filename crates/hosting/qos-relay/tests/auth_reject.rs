@@ -10,15 +10,14 @@
 //! (e.g. skipping the revocation check) would slip past the unit
 //! tests but fail here.
 
-mod common;
-
+use crate::common;
 use qos_relay::RelayClient;
 use qos_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason,
     sign_revocation_entry,
 };
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_from_different_user_is_rejected() {

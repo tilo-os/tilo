@@ -21,8 +21,7 @@
 //! in-process over iroh's loopback; genuine cross-machine NAT traversal
 //! is out of scope for a headless test (noted in the module docs).
 
-mod common;
-
+use crate::common;
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
@@ -30,7 +29,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient, apply_sync_response, send_sync_request};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {

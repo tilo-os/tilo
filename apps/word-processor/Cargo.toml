@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "word-processor"
 version = "0.1.0"
 edition = "2024"
@@ -46,3 +48,7 @@ unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

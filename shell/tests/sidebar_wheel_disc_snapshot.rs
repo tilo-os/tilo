@@ -28,10 +28,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
-use support::snapshot::SnapshotAssertion;
+use crate::support::offscreen::OffscreenRenderer;
+use crate::support::snapshot::SnapshotAssertion;
 
 /// Directory under the crate root where golden PNGs are committed.
 fn goldens_dir() -> PathBuf {

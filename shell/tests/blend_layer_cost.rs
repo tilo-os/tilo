@@ -13,9 +13,7 @@ use std::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
-
-mod support;
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 
 const W: u32 = 1600;
 const H: u32 = 900;

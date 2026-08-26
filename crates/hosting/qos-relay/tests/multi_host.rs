@@ -26,14 +26,13 @@
 //!       relays does not "leak" a peer's messages onto a relay
 //!       the peer never talks to).
 
-mod common;
-
+use crate::common;
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
