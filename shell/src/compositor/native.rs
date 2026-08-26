@@ -104,7 +104,8 @@ use crate::compositor::present;
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
-    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
+    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, parse_command,
+    serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
@@ -1033,6 +1034,31 @@ fn execute_planned_action(
                 &mut ctx.focus,
             );
         }
+        PlannedAction::MousePointerButton { pressed, button } => {
+            let event = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: if *pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: match button {
+                    PointerButtonKind::Left => MouseButton::Left,
+                    PointerButtonKind::Right => MouseButton::Right,
+                    PointerButtonKind::Middle => MouseButton::Middle,
+                },
+            };
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return None;
+            }
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(winit_key, *pressed);
@@ -1083,19 +1109,16 @@ fn execute_planned_action(
             apply_modifier_mask(ctx, *ctrl, *shift, *alt, *logo);
         }
         PlannedAction::Snapshot { path } => {
-            // Re-paint the live scene into a fresh OffscreenRenderer
-            // sized to the FrameBuilder's current viewport. We use
-            // option 2 from the spec (re-render via OffscreenRenderer)
-            // rather than tap a backend-cached `last_frame` so the
-            // command works for every backend (winit / drm / future
-            // headless), not just the headless one.
+            // Re-render into a fresh OffscreenRenderer rather than tap a
+            // backend-cached `last_frame`, so the command works for
+            // every backend (winit / drm / future headless), not just
+            // the headless one.
             //
-            // Errors during creation, encoding, or write are logged
-            // via `eprintln!` and swallowed — the dispatcher already
+            // Errors during creation, encoding, or write are logged via
+            // `eprintln!` and swallowed — the dispatcher already
             // returned `Ok` from the wire's perspective, and crashing
-            // the compositor on a stray bad path would defeat the
-            // point of having a test surface. Phase 5 will route
-            // these into structured wire responses.
+            // the compositor on a stray bad path would defeat the point
+            // of having a test surface.
             // A snapshot has to show what the screen shows, and during a
             // drag that includes the thing being carried — which the
             // live present loop draws on top of the painted scene. A
@@ -1224,6 +1247,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         // client that never has to render anything.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
+        | PlannedAction::MousePointerButton { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -1231,6 +1255,39 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         | PlannedAction::InvokeAction { .. } => {}
     }
 }
+
+/// The snapshot renderer, cached for the lifetime of the process.
+///
+/// **Deliberately never dropped.** This used to be a `thread_local!`,
+/// and that aborted the whole `shell --lib` binary — all ~1800 tests,
+/// not just the two that take snapshots. Dropping a wgpu resource calls
+/// into wgpu's own debug-assertions tracing, which under `debug_assertions`
+/// reads a thread-local of its own; TLS destructors run in reverse
+/// registration order, and this cache registered first (touched on the
+/// way in, before any wgpu call), so at thread exit wgpu's tracing TLS
+/// was torn down first and this one then dropped a `Renderer` against
+/// the corpse. A panic inside a TLS destructor is not a test failure —
+/// it is `abort_on_dtor_unwind`, i.e. SIGABRT, taking every other
+/// result in the binary down with it and leaving no `test result:`
+/// line at all.
+///
+/// A `static` has no destructor, so the renderer outlives every thread.
+/// The leak is the point: this is a process-lifetime cache whose GPU
+/// allocations the kernel reclaims at exit, and a viewport resize still
+/// drops the previous renderer the ordinary way — mid-execution, where
+/// wgpu's TLS is alive. In a shipped build nothing reaches here at all:
+/// the socket that leads here is compiled out (`compositor::dev_env`).
+static SNAPSHOT_RENDERER: std::sync::OnceLock<
+    std::sync::Mutex<Option<ui::offscreen::OffscreenRenderer>>,
+> = std::sync::OnceLock::new();
+
+/// How many `OffscreenRenderer`s [`write_snapshot_png`] has built in this
+/// process: one per distinct viewport size, *not* one per thread. That is
+/// what `snapshot_renderer_outlives_the_thread_that_built_it` asserts on,
+/// because the abort a per-thread cache causes cannot be observed from
+/// inside the binary it kills.
+static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Re-paint the current scene into a cached `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
@@ -1276,20 +1333,10 @@ fn write_snapshot_png(
     // snapshot. Measured at 1920x1080 that was ~450 ms a frame against
     // ~70 ms of actual render and encode, i.e. the overwhelming
     // majority of a capture. `OffscreenRenderer`'s own documentation
-    // says to reuse an instance to amortise exactly this; this is the
-    // snapshot path finally doing so, and it is what makes a recording
-    // driven over this socket watchable rather than a slideshow.
+    // says to reuse an instance to amortise exactly this.
     //
-    // Thread-local because the compositor's event loop is the only
-    // thread that reaches here and an `OffscreenRenderer` is not `Send`.
-    // In a shipped build nothing reaches here at all — the socket that
-    // leads here is compiled out (`compositor::dev_env`) — so the cached
-    // texture and buffer are never allocated in production.
-    thread_local! {
-        static SNAPSHOT_RENDERER: std::cell::RefCell<
-            Option<ui::offscreen::OffscreenRenderer>,
-        > = const { std::cell::RefCell::new(None) };
-    }
+    // See [`SNAPSHOT_RENDERER`] for why the cache is a process-wide
+    // `static` and not a `thread_local!`.
 
     // `try_new` rather than `new` inside a `catch_unwind`: the shipping
     // release profile sets `panic = "abort"`, so a caught panic is not
@@ -1299,27 +1346,31 @@ fn write_snapshot_png(
     // wgpu adapter (e.g. CI without llvmpipe). A failure is not cached:
     // the slot is left empty so a later snapshot retries rather than
     // inheriting one bad moment forever.
-    let rgba = SNAPSHOT_RENDERER.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let stale = match slot.as_ref() {
-            Some(renderer) => renderer.width != w || renderer.height != h,
-            None => true,
-        };
-        if stale {
-            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-                Ok(renderer) => *slot = Some(renderer),
-                Err(e) => {
-                    eprintln!(
-                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
-                    );
-                    *slot = None;
-                    return None;
-                }
+    let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
+    // A panic elsewhere in a snapshot poisons the mutex without damaging
+    // what it guards — the slot is either an intact renderer or empty —
+    // so recover rather than turn one failure into a second one.
+    let mut slot = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let stale = match slot.as_ref() {
+        Some(renderer) => renderer.width != w || renderer.height != h,
+        None => true,
+    };
+    if stale {
+        match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+            Ok(renderer) => {
+                SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Assigning drops any previous renderer here, in the
+                // middle of execution — the one place it is safe to.
+                *slot = Some(renderer);
+            }
+            Err(e) => {
+                eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
+                *slot = None;
+                return;
             }
         }
-        slot.as_mut().map(|renderer| renderer.render_rgba(&scene))
-    });
-    let Some(rgba) = rgba else {
+    }
+    let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
         return;
     };
     let file = match std::fs::File::create(path) {
@@ -4033,7 +4084,13 @@ mod tests {
     /// file, so the pixel assertions would have nothing to run against.
     /// We check for the file's existence and skip the rest gracefully
     /// if the renderer was unavailable.
+    ///
+    /// Serialised with the other tests that reach [`SNAPSHOT_RENDERER`]:
+    /// it is now a process-wide cache (see its own doc comment), so two
+    /// of these running as different threads of the same `cargo test`
+    /// binary would share it.
     #[test]
+    #[serial_test::serial(snapshot_renderer)]
     fn execute_snapshot_writes_a_png_at_path() {
         let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
         let path = tmpdir.path().join("test.png");
@@ -4069,12 +4126,69 @@ mod tests {
         );
     }
 
+    /// The snapshot renderer must outlive the thread that built it.
+    ///
+    /// It used to live in a `thread_local!`, so its wgpu resources were
+    /// dropped from a TLS destructor at thread exit — which aborts the
+    /// process rather than failing a test, taking every other result in
+    /// the binary with it (see [`SNAPSHOT_RENDERER`] for the mechanism).
+    /// An abort cannot be observed from inside the binary it kills, so
+    /// this asserts the property that prevents it: a snapshot taken on
+    /// a thread that then *exits* must leave its renderer behind, so
+    /// the next snapshot at the same viewport builds nothing new.
+    ///
+    /// Reintroducing a per-thread cache fails this on the count before
+    /// it gets the chance to abort anything.
+    #[test]
+    #[serial_test::serial(snapshot_renderer)]
+    fn snapshot_renderer_outlives_the_thread_that_built_it() {
+        use std::sync::atomic::Ordering;
+
+        fn take_snapshot() -> bool {
+            let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
+            let path = tmpdir.path().join("shot.png");
+            let mut fb = FrameBuilder::new((640, 360));
+            let mut ctx = TestControlCtx::new();
+            execute_planned_action(
+                &PlannedAction::Snapshot { path: path.clone() },
+                &mut fb,
+                &mut ctx,
+            );
+            path.exists()
+        }
+
+        // Warm the cache on a thread that then exits. With a per-thread
+        // cache, this join is where the process died.
+        let warmed = std::thread::spawn(take_snapshot)
+            .join()
+            .expect("the snapshot thread should not panic");
+        if !warmed {
+            eprintln!(
+                "snapshot_renderer_outlives_the_thread_that_built_it: \
+                 no wgpu adapter, skipping"
+            );
+            return;
+        }
+
+        let built = SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed);
+        assert!(
+            take_snapshot(),
+            "a snapshot on this thread should still write a PNG"
+        );
+        assert_eq!(
+            SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed),
+            built,
+            "the renderer built on the now-dead thread must be reused, not \
+             rebuilt — a per-thread cache is what aborts the suite"
+        );
+    }
+
     /// Hostile path inputs — the executor must log the error and
     /// return without panicking. The dispatcher's `Ok` response was
     /// already on the wire; the compositor must not die because a
-    /// client typo asked for `/nonexistent/dir/x.png`. Phase 5 will
-    /// upgrade these logs into structured wire errors.
+    /// client typo asked for `/nonexistent/dir/x.png`.
     #[test]
+    #[serial_test::serial(snapshot_renderer)]
     fn execute_snapshot_with_bogus_dir_does_not_crash() {
         let mut fb = FrameBuilder::new((640, 360));
         let mut ctx = TestControlCtx::new();
