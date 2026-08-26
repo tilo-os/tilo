@@ -37,7 +37,7 @@ done
 
 echo
 if [ "$missing" -eq 0 ]; then
-  echo "all ${#MODULES[@]} libraries and ${#BINARIES[@]} binary present"
+  echo "all ${#MODULES[@]} libraries and ${#BINARIES[@]} binaries present"
 else
   echo "$missing missing — see DEVELOPMENT.md for the package that provides each"
 fi
