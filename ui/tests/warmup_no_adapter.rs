@@ -51,6 +51,22 @@ const NO_BACKENDS: &str = "qos-no-such-backend";
 const EXIT_SIMULATION_FAILED: i32 = 91;
 /// Child exit code for "the warmup thread unwound out of a panic".
 const EXIT_WARMUP_PANICKED: i32 = 92;
+/// Child exit code for "the warmup ran and degraded silently", i.e. the pass.
+///
+/// Not 0: libtest also exits 0 when its filter matches nothing, so a child that
+/// ran no test at all would otherwise be indistinguishable from a pass.
+const EXIT_WARMUP_OK: i32 = 90;
+
+/// The name libtest knows this test by.
+///
+/// Every `tests/*.rs` is a module of `tests/it.rs`, so the test is
+/// `warmup_no_adapter::<fn>`. `module_path!()` yields `it::warmup_no_adapter` —
+/// one segment too many, because libtest omits the binary's own crate.
+fn libtest_name(func: &str) -> String {
+    let m = module_path!();
+    let m = m.split_once("::").map_or(m, |(_, rest)| rest);
+    format!("{m}::{func}")
+}
 
 #[test]
 fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
@@ -62,7 +78,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
     let mut child = Command::new(exe)
         .args([
             "--exact",
-            "warmup_degrades_silently_when_no_wgpu_adapter_exists",
+            &libtest_name("warmup_degrades_silently_when_no_wgpu_adapter_exists"),
             "--nocapture",
             "--test-threads=1",
         ])
@@ -92,7 +108,11 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
     };
 
     match status.code() {
-        Some(0) => {}
+        Some(EXIT_WARMUP_OK) => {}
+        Some(0) => panic!(
+            "the child ran no test — libtest's filter matched nothing, so this \
+             run proves nothing. The test's module path has probably changed."
+        ),
         Some(EXIT_SIMULATION_FAILED) => panic!(
             "child still found a wgpu adapter with WGPU_BACKEND={NO_BACKENDS}; \
              the no-adapter case was never exercised, so this run proves nothing"
@@ -139,7 +159,7 @@ fn child_body() -> ! {
     match handle.join() {
         Ok(()) => {
             eprintln!("child: warmup finished without an adapter");
-            std::process::exit(0)
+            std::process::exit(EXIT_WARMUP_OK)
         }
         Err(_) => std::process::exit(EXIT_WARMUP_PANICKED),
     }
