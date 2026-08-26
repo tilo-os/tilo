@@ -178,8 +178,85 @@ pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     argv.push("--setenv".to_string());
     argv.push("XDG_RUNTIME_DIR".to_string());
     argv.push(bind.sandbox_runtime_dir.display().to_string());
+    // Redundant once [`push_clean_environment`] has emptied the environment,
+    // kept so a caller that binds a socket without going through the argv
+    // builder still does not name the privileged one.
     argv.push("--unsetenv".to_string());
     argv.push(PRIVILEGED_WAYLAND_ENV.to_string());
+}
+
+/// The `PATH` a sandboxed app runs with.
+///
+/// Fixed rather than inherited: the launching session's `PATH` names host
+/// directories that are not in the sandbox's namespace, and one that *is* — a
+/// writable directory the user put on their own `PATH` — would decide which
+/// binary the app's `exec` finds.
+pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// The whole of what a sandboxed app inherits from the launching session.
+///
+/// An allowlist rather than a filter, because a deny-list is wrong the moment
+/// somebody adds a variable and the failure is silent. Everything here
+/// describes the *user* — their language, their clock, their terminal — and
+/// nothing here names a socket, a room, an identity or a path: those reach the
+/// app through an explicit `--setenv` beside the bind that makes them
+/// reachable, and a variable naming something the app cannot open is a promise
+/// the namespace does not keep.
+pub const INHERITED_ENV: &[&str] = &[
+    // `LANGUAGE` is the GNU fallback chain and `LC_ALL` overrides the rest, so
+    // a session that set only one of these gets only that one honoured,
+    // exactly as it would outside the sandbox.
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    // `/etc/localtime` is in the system profile, so this is for the session
+    // that chose a different zone.
+    "TZ",
+    // Absent for a GUI launch, which is why these are inherited-when-set
+    // rather than given a default.
+    "TERM",
+    "COLORTERM",
+    // The same kind of preference, naming no socket and no path: without it an
+    // app's `EnvFilter::from_default_env()` falls back to errors only and
+    // everything it reports about itself is dropped before the session reads
+    // it.
+    "RUST_LOG",
+];
+
+/// Empty the environment, then put back what the app is entitled to.
+///
+/// `bwrap` passes the parent's environment straight through unless it is told
+/// not to, and the parent here is the compositor: its Wayland socket, its
+/// collaboration broker, its identity path, and every `QOS_*` variable
+/// describing a confinement this process is on the other side of. So the
+/// environment is *built*, not filtered — `--clearenv` first, because bwrap
+/// keeps only what a later `--setenv` puts back, then `PATH`, then
+/// [`INHERITED_ENV`]. Everything else is set beside the bind that makes it
+/// mean something.
+pub fn push_clean_environment(argv: &mut Vec<String>) {
+    argv.push("--clearenv".to_string());
+    argv.push("--setenv".to_string());
+    argv.push("PATH".to_string());
+    argv.push(SANDBOX_PATH.to_string());
+    for key in INHERITED_ENV {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        // Carrying an empty value over would make "unset" and "empty" two
+        // different states inside the sandbox for no reason.
+        if value.is_empty() {
+            continue;
+        }
+        argv.push("--setenv".to_string());
+        argv.push((*key).to_string());
+        argv.push(value.to_string_lossy().into_owned());
+    }
 }
 
 /// Env var the compositor uses to publish its privileged Wayland socket.
@@ -436,6 +513,10 @@ pub fn build_bwrap_argv_for_entry(
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
+
+    // First, because `--clearenv` keeps only what a *later* `--setenv` puts
+    // back — including the ones `run.rs` splices in after this returns.
+    push_clean_environment(&mut argv);
 
     // Namespace + lifetime defaults.
     //
@@ -817,6 +898,55 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
     Some(home)
 }
 
+/// Pass on the session's workspace roots, narrowed to the ones this app's
+/// capability plan has actually bound.
+///
+/// The same contract as [`push_user_home`], and deliberately **not** on
+/// [`INHERITED_ENV`]: that list is for preferences naming no path, and
+/// `QOS_WORKSPACE_ROOTS` names paths. Deriving it from the binds instead means
+/// the variable can never name a directory the app cannot read, and an app
+/// granted none of them sees no variable rather than opening on a path that is
+/// not there and reporting an empty folder.
+///
+/// Order is preserved, because the first root is the one a file manager
+/// cold-starts into.
+pub fn push_workspace_roots(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+) -> Option<String> {
+    let raw = std::env::var("QOS_WORKSPACE_ROOTS").ok()?;
+    let value = granted_workspace_roots(&raw, capabilities)?;
+    argv.push("--setenv".to_string());
+    argv.push("QOS_WORKSPACE_ROOTS".to_string());
+    argv.push(value.clone());
+    Some(value)
+}
+
+/// The roots of `raw` that `capabilities` has actually bound, in order.
+///
+/// Split out so the narrowing is testable without mutating the process
+/// environment. `None` rather than an empty string when nothing survives:
+/// "no workspace" and "a workspace with no roots" are different states.
+fn granted_workspace_roots(raw: &str, capabilities: &CapabilityPlan) -> Option<String> {
+    let kept: Vec<&str> = raw
+        .split(':')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|root| {
+            let root = Path::new(root);
+            capabilities
+                .ro_paths
+                .iter()
+                .chain(capabilities.rw_paths.iter())
+                .any(|granted| root.starts_with(granted))
+        })
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join(":"))
+}
+
 fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(kind.to_string());
     argv.push(src.display().to_string());
@@ -866,6 +996,58 @@ mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
     use std::collections::BTreeMap;
+
+    /// Naming an ungranted root would be worse than useless: the path is not
+    /// in the namespace, so the app opens on a directory that is not there and
+    /// reports an empty folder — indistinguishable, on screen, from a shared
+    /// workspace that genuinely has nothing in it.
+    #[test]
+    fn an_ungranted_workspace_root_is_not_named_to_the_app() {
+        let plan = CapabilityPlan::default();
+        assert_eq!(granted_workspace_roots("/var/workspace", &plan), None);
+    }
+
+    #[test]
+    fn a_granted_workspace_root_reaches_the_app() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(
+            granted_workspace_roots("/var/workspace", &plan).as_deref(),
+            Some("/var/workspace"),
+        );
+    }
+
+    /// Narrowed per root, not all-or-nothing.
+    #[test]
+    fn only_the_granted_roots_cross() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            rw_paths: vec![PathBuf::from("/var/tmp/qos/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(
+            granted_workspace_roots(
+                "/var/workspace:/srv/somebody-elses:/var/tmp/qos/workspace",
+                &plan,
+            )
+            .as_deref(),
+            Some("/var/workspace:/var/tmp/qos/workspace"),
+            "a root nobody granted must be dropped while the granted ones stay",
+        );
+    }
+
+    /// Matching is by path component, not string prefix: a grant on
+    /// `/var/workspace` must not carry `/var/workspace-notes` across.
+    #[test]
+    fn a_sibling_directory_is_not_covered_by_the_grant() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(granted_workspace_roots("/var/workspace-notes", &plan), None);
+    }
 
     fn mk_manifest(net_mode: &str) -> MinimalManifest {
         MinimalManifest {

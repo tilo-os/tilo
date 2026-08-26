@@ -303,10 +303,14 @@ pub struct Sandbox {
     /// `[sandbox] seccomp = "…"` — the named syscall profile the package
     /// declares. `qos-default` is the baseline and enforces write-xor-execute;
     /// `qos-jit` is the same policy without that rule, for a program that
-    /// genuinely compiles code at run time. Resolved through
+    /// genuinely compiles code at run time.
+    ///
+    /// A **request**, not a setting. Resolved through
     /// [`Sandbox::seccomp_profile`], which treats every unrecognised name as
     /// the strict one — a manifest typo must not be a route to a weaker
-    /// sandbox.
+    /// sandbox — and checks the weaker name against the image's own
+    /// entitlement list, because a package writing a string about itself is
+    /// not authority to lift a protection off itself.
     #[serde(default = "default_seccomp_profile")]
     pub seccomp: String,
     #[serde(default)]
@@ -349,9 +353,16 @@ impl Default for Sandbox {
 }
 
 impl Sandbox {
-    /// The syscall profile this manifest asked for, resolved fail-closed.
-    pub fn seccomp_profile(&self) -> crate::seccomp::SeccompProfile {
-        crate::seccomp::SeccompProfile::parse(&self.seccomp)
+    /// The syscall profile this launch gets, resolved fail-closed against the
+    /// image's entitlement policy.
+    ///
+    /// Takes the package id because the manifest's own answer is not
+    /// sufficient: whether a package may run without write-xor-execute is the
+    /// image's decision, not the packager's. See
+    /// [`crate::seccomp::resolve_profile`]. There is deliberately no id-free
+    /// variant to reach for.
+    pub fn seccomp_profile(&self, package_id: &str) -> crate::seccomp::SeccompProfile {
+        crate::seccomp::resolve_profile(&self.seccomp, package_id).applied
     }
 }
 

@@ -10,11 +10,15 @@
 //!    refusing connections, which is what a session that died without
 //!    unlinking leaves behind → log a warning, continue.
 //! 4. For sockets that exist → open the socket as a `UnixStream` and
-//!    take its raw fd. The descriptor reaches the app the way
-//!    descriptors normally do: `run::place_service_fds` dup2s it onto
-//!    the agreed `child_fd` and clears CLOEXEC, so it survives bwrap's
-//!    exec and the `__sandbox-exec` re-exec at that number. The app
-//!    reads the number from `QOS_SVC_<NAME>_FD`.
+//!    keep it, owned, for the length of the launch. The descriptor
+//!    reaches the app the way descriptors normally do:
+//!    `run::place_service_fds` dup2s it onto the agreed `child_fd` in
+//!    the forked child, and `dup2` leaves that copy without CLOEXEC, so
+//!    it survives bwrap's exec and the `__sandbox-exec` re-exec at that
+//!    number. The app reads the number from `QOS_SVC_<NAME>_FD`. The
+//!    launcher's own copy keeps CLOEXEC — nothing else it starts has any
+//!    business holding an app's connection to a session service — and is
+//!    released once the child has been forked.
 //!
 //! bwrap is deliberately not told about the socket. It has no flag
 //! that hands a live socket to the sandboxed process, and the one that
@@ -42,7 +46,7 @@
 //! changes to dial the broker instead of opening the socket directly.
 
 use std::collections::BTreeMap;
-use std::os::fd::{IntoRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -67,13 +71,26 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 /// compositor for the test that fails if the two drift apart again.
 pub const COLLAB_SERVICE: &str = "collab";
 
-/// One resolved service handoff: the open fd + the in-sandbox child fd
-/// number it should take.
+/// One resolved service handoff: the launcher's own end of the connection,
+/// plus the in-sandbox fd number the app should find it at.
 #[derive(Debug)]
 pub struct ResolvedService {
     pub name: String,
-    pub host_fd: RawFd,
+    /// The launcher's end, **owned**, so it is closed when the launch is over.
+    /// The app's descriptor and this one are two descriptors on one socket,
+    /// and the far end cannot see the connection end until the last goes.
+    pub host: OwnedFd,
+    /// Where the app is told to look for it.
     pub child_fd: i32,
+}
+
+impl ResolvedService {
+    /// The number to `dup2` onto [`Self::child_fd`] in the child. Borrowed for
+    /// the length of the spawn and never surrendered: the copy that outlives
+    /// this one is the one `dup2` makes on the other side of the fork.
+    pub fn host_fd(&self) -> RawFd {
+        self.host.as_raw_fd()
+    }
 }
 
 /// Errors during service resolution.
@@ -207,24 +224,21 @@ pub fn resolve_service_binds(
                 continue;
             }
         };
-        let host_fd = stream.into_raw_fd();
-        // Clear FD_CLOEXEC so the fd survives the bwrap exec. bwrap
-        // sets up the child explicitly anyway, but stripping CLOEXEC
-        // here is harmless and avoids the "fd vanished post-exec"
-        // class of bug if the spawn path changes.
-        unsafe {
-            let flags = libc::fcntl(host_fd, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(host_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
-        }
+        // Owned from here, and deliberately left `FD_CLOEXEC`. The launch
+        // forks and `dup2`s this onto `child_fd`, and `dup2` never sets
+        // CLOEXEC on the descriptor it creates, so the app's copy survives the
+        // exec whatever this one says. Clearing the flag here was described as
+        // harmless and was not: it handed *this* descriptor to every process
+        // started after it, and the D-Bus proxy and the egress gate are both
+        // started later in the same launch.
+        let host = OwnedFd::from(stream);
 
         let child_fd = next_child_fd;
         next_child_fd += 1;
 
         out.push(ResolvedService {
             name: name.clone(),
-            host_fd,
+            host,
             child_fd,
         });
     }
@@ -239,7 +253,7 @@ pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::Ser
         .iter()
         .map(|s| crate::sandbox::ServiceBind {
             name: s.name.clone(),
-            host_fd: s.host_fd,
+            host_fd: s.host_fd(),
             child_fd: s.child_fd,
         })
         .collect()
@@ -318,6 +332,227 @@ mod tests {
             out[0].child_fd, 17,
             "the app is told to read fd 17, so that is where it must land"
         );
+    }
+
+    /// What `/proc/self/fd/<n>` says a descriptor points at — for a connected
+    /// socket, `socket:[<inode>]`, unique to that connection while it exists.
+    /// Identifying the launches' own descriptors this way rather than counting
+    /// the process's is the difference between a check and a race: `#[serial]`
+    /// excludes the other serial tests and nothing else.
+    fn fd_target(fd: RawFd) -> Option<String> {
+        std::fs::read_link(format!("/proc/self/fd/{fd}"))
+            .ok()
+            .map(|p| p.display().to_string())
+    }
+
+    /// Every socket this process still holds a descriptor for. Failing to read
+    /// `/proc/self/fd` fails the test: a check that cannot see its subject
+    /// must not report that the subject is fine.
+    fn open_sockets() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/fd")
+            .expect(
+                "/proc/self/fd is how this test observes descriptors; without \
+                 it there is nothing here to assert",
+            )
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+            .map(|target| target.display().to_string())
+            .filter(|target| target.starts_with("socket:"))
+            .collect()
+    }
+
+    /// A launch that is over must leave no descriptor behind.
+    ///
+    /// Nothing in this repository notices a leaked descriptor — no counting
+    /// test, no `RLIMIT_NOFILE` guard — which is why one sat in the launch
+    /// path unremarked. This stands in for `run_with`'s cycle at the only part
+    /// of it that touches descriptors: resolve, read the numbers the fork will
+    /// need, let the resolution go. Standing bwrap up here would be testing
+    /// bwrap.
+    #[test]
+    #[serial_test::serial]
+    fn a_finished_launch_leaves_no_descriptor_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+
+        const LAUNCHES: usize = 8;
+        let mut handed_out: Vec<String> = Vec::with_capacity(LAUNCHES);
+        for _ in 0..LAUNCHES {
+            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+            let target = fd_target(resolved[0].host_fd())
+                .expect("the connection a launch was handed must be open");
+            assert!(
+                target.starts_with("socket:"),
+                "the launch was handed {target}, which is not a connection",
+            );
+            handed_out.push(target);
+            // What the spawn does with them: read the numbers for the
+            // `pre_exec` dup2 list, fork, and have no further use for this
+            // side of the pair.
+            let _pairs: Vec<(RawFd, i32)> =
+                resolved.iter().map(|r| (r.host_fd(), r.child_fd)).collect();
+            drop(resolved);
+        }
+
+        let still_open = open_sockets();
+        let survivors: Vec<&String> = handed_out
+            .iter()
+            .filter(|target| still_open.contains(*target))
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "{} of {LAUNCHES} finished launches left their service connection \
+             open ({survivors:?}); one per launch is a process that \
+             accumulates live connections to its session's services for as \
+             long as it runs",
+            survivors.len(),
+        );
+    }
+
+    /// Asserted from the *service's* side of the socket, because "we called
+    /// close" is not the claim being made — the claim is that the far end can
+    /// tell. Taken as a raw fd, nothing owned this descriptor and nothing
+    /// closed it, so every caller held a live connection to a session service
+    /// that nothing would ever release.
+    #[test]
+    #[serial_test::serial]
+    fn the_launchers_end_is_released_when_the_launch_is_over() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+        assert_eq!(resolved.len(), 1, "the one live service must be handed over");
+
+        let (mut served, _) = listener
+            .accept()
+            .expect("the launcher's connection has to arrive");
+        served
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("a bounded wait, so a leak fails the test instead of hanging it");
+
+        // The launch is over: either bwrap was spawned and holds the `dup2`
+        // copy, or the spawn failed and there is no child at all.
+        drop(resolved);
+
+        let mut buf = [0u8; 1];
+        let n = served.read(&mut buf).unwrap_or_else(|e| {
+            panic!(
+                "the service never saw the launcher's end close ({e}), so it is \
+                 still holding a connection nothing will ever release"
+            )
+        });
+        assert_eq!(
+            n, 0,
+            "the read returned data on a connection nobody is on the other end of",
+        );
+    }
+
+    /// The other order, driven explicitly: a fix that released the descriptor
+    /// too early would close the app's service connection at the moment it was
+    /// handed over, and a test that only watched for an eventual EOF would
+    /// call that a pass.
+    #[test]
+    #[serial_test::serial]
+    fn the_apps_copy_outlives_the_launchers() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+        let (mut served, _) = listener.accept().expect("the connection has to arrive");
+
+        // What `place_service_fds` makes on the other side of the fork:
+        // another descriptor on the same socket. It stands in for the app.
+        let app_copy = unsafe {
+            let raw = libc::dup(resolved[0].host_fd());
+            assert!(raw >= 0, "dup of the handed-over descriptor failed");
+            OwnedFd::from_raw_fd(raw)
+        };
+        drop(resolved);
+
+        served
+            .set_read_timeout(Some(std::time::Duration::from_millis(250)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        match served.read(&mut buf) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Ok(0) => panic!(
+                "the app's connection was closed the moment the launcher let go \
+                 of its own copy, so the app is handed a descriptor to a socket \
+                 nobody is serving"
+            ),
+            other => panic!("unexpected read from a live connection: {other:?}"),
+        }
+
+        drop(app_copy);
+        served
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(
+            served.read(&mut buf).expect("the service must see the end"),
+            0,
+            "every copy is gone and the service still sees a live connection",
+        );
+    }
+
+    /// The launcher's copy must not be inheritable. The launch forks, so with
+    /// CLOEXEC cleared every process started after this point — the D-Bus
+    /// proxy and the egress gate among them — held a live connection to a
+    /// session service opened on an app's behalf.
+    #[test]
+    #[serial_test::serial]
+    fn the_launchers_copy_is_not_inherited_by_the_next_child() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+        let raw = resolved[0].host_fd();
+
+        let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        assert!(flags != -1, "the handed-over descriptor is not open");
+        assert!(
+            flags & libc::FD_CLOEXEC != 0,
+            "the launcher's end is inheritable, so every process started after \
+             it gets a live copy of it",
+        );
+
+        // The property itself rather than the flag that decides it.
+        let seen = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
+            .output()
+            .expect("spawning an unrelated child");
+        let seen = String::from_utf8_lossy(&seen.stdout);
+        assert!(
+            !seen.trim_start().starts_with("socket:"),
+            "an unrelated child inherited the service socket at fd {raw}: {seen:?}",
+        );
+        drop(resolved);
     }
 
     #[test]
