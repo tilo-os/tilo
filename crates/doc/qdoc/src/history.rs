@@ -56,6 +56,12 @@ pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeH
 }
 
 /// Enumerate the document's history in causal order (oldest first).
+///
+/// Every change in the graph, the schema genesis included: the list is
+/// positional and [`materialize_at`] / [`prefix_heads`] address a version by its
+/// place in it, so nothing may be skipped here. A view that shows *authored
+/// revisions* filters the genesis out itself with [`is_schema_genesis`] — nobody
+/// wrote it, so it is not a revision, but it is still a point you can travel to.
 pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
     doc.get_changes(&[])
         .into_iter()
@@ -67,6 +73,12 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
             change_hash: ch.hash().to_string(),
         })
         .collect()
+}
+
+/// Whether `meta` describes the schema genesis rather than something a person
+/// wrote. See [`crate::model::is_schema_genesis_actor`].
+pub fn is_schema_genesis(meta: &VersionMeta) -> bool {
+    meta.actor_hex == crate::model::schema_genesis_actor_hex()
 }
 
 /// Heads of the document as of the first `upto + 1` changes in causal order.

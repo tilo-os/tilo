@@ -30,7 +30,40 @@ pub const PRESERVED_SEG_ORD: &str = "ord";
 /// the original part byte-for-byte.
 pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
-pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
+// Content-addressed binary references. `blobs` is a `Map<blake3_hex, descriptor>`
+// where a descriptor is a sub-map of *metadata only* — the bytes themselves live
+// outside the CRDT, in the content-addressed store `blobstore` owns.
+//
+// Storing the bytes inline was a correctness bug, not just a size one: a 146 KB
+// image became a 146 KB automerge change, gossipsub caps an RPC at 64 KiB, so the
+// transport dropped it silently. Automerge queues a change whose ancestors it
+// lacks rather than applying it, so every later keystroke naming that change sat
+// unapplied and the far replica froze at the line before the image while both
+// ends still reported themselves connected. A reference is a few dozen bytes and
+// cannot hit that ceiling, which is why this is the fix rather than a bigger pipe.
+pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>
+/// A blob descriptor's media type (`Str`, e.g. `image/png`). Sniffed from the
+/// content on `put_blob`, so it is present for anything we recognise.
+pub const BLOB_MIME: &str = "mime";
+/// A blob descriptor's content length in bytes (`Int`).
+pub const BLOB_LEN: &str = "len";
+/// A blob descriptor's intrinsic pixel width (`Int`), 0 when unknown.
+pub const BLOB_W: &str = "w";
+/// A blob descriptor's intrinsic pixel height (`Int`), 0 when unknown.
+pub const BLOB_H: &str = "h";
+
+// The descriptor fields as `materialize` projects them onto a referencing `image`
+// block's attrs, so a renderer reads them beside the `blob` attr it already
+// reads. Deliberately distinct from the `width`/`height` attrs, which mean
+// *requested display size* and are frequently absent: these are the intrinsic
+// size of the content, and they are what lets a not-yet-arrived image reserve
+// exactly the space it will occupy. Without them a placeholder falls back to a
+// fixed guess and every paragraph after the image reflows when the bytes land —
+// on a live shared document, while someone is typing into it.
+pub const ATTR_BLOB_MIME: &str = "blob_mime";
+pub const ATTR_BLOB_BYTES: &str = "blob_bytes";
+pub const ATTR_BLOB_W: &str = "blob_w";
+pub const ATTR_BLOB_H: &str = "blob_h";
 // Page header / footer regions. Each is a `Map<block_id, block>` with the exact
 // same shape as `blocks` (fractional order keys, same block fields), holding the
 // ordered paragraph sequence rendered at the top/bottom of every page. Created
@@ -133,6 +166,18 @@ pub const META_LANGUAGE: &str = "language"; // Str (under meta) — document def
 /// `w:rPr`→`w:lang` markup. Mirrors the other valued run marks (`color`/`fontFamily`/
 /// `fontSize`). Supports per-span spell-check locale and screen-reader language.
 pub const MARK_LANG: &str = "lang"; // Str — a per-run BCP-47 language override
+
+// Durable authorship: the inline `author` mark names who wrote a run of body
+// text, valued with that person's display name. A mark rather than a field on the
+// block because authorship follows the characters, so it survives somebody typing
+// into the middle of a run, splitting a paragraph or merging two, the same way
+// `lang` and `comment` do.
+//
+// Distinct from `CHANGE_AUTHOR`, which names the author of a *tracked change*
+// awaiting accept/reject — a proposal with a lifetime. This is a fact about text
+// already in the document. Absent means unattributed, which is the honest reading
+// of text written before anybody recorded an author.
+pub const MARK_AUTHOR: &str = "author"; // Str — the display name of whoever wrote the run
 
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
