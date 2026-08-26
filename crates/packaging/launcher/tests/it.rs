@@ -6,3 +6,5 @@ mod launcher_smoke;
 mod netgate_egress;
 #[path = "room_confinement.rs"]
 mod room_confinement;
+#[path = "sandbox_environment.rs"]
+mod sandbox_environment;
