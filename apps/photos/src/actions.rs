@@ -196,7 +196,13 @@ impl ResourceProvider for PhotosResources {
             .with_action(
                 ActionSpec::prompted(
                     "crop",
-                    "Crop",
+                    // Named for what it asks for, not for the verb it
+                    // shares with the square crop beside it. Both
+                    // answered to "crop" alone, so an instruction using
+                    // that word matched two operations and was refused as
+                    // ambiguous -- the whole cross-application hand-off
+                    // then invoked nothing at all.
+                    "Crop to a region",
                     "Region to keep, as x,y,w,h between 0 and 1",
                     "0.25,0.25,0.5,0.5",
                     ExecutionLocus::ClientLocal,
