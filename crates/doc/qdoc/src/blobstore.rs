@@ -97,10 +97,10 @@ impl FsBlobStore {
     /// overrides it, which is what lets two sessions on one host be two peers
     /// with genuinely separate stores rather than one store they both hit.
     pub fn default_root() -> PathBuf {
-        if let Ok(v) = std::env::var("QOS_BLOB_STORE") {
-            if !v.is_empty() {
-                return PathBuf::from(v);
-            }
+        if let Ok(v) = std::env::var("QOS_BLOB_STORE")
+            && !v.is_empty()
+        {
+            return PathBuf::from(v);
         }
         let base = std::env::var("XDG_CACHE_HOME")
             .ok()
@@ -228,11 +228,14 @@ fn transport_cell() -> &'static RwLock<Option<Arc<dyn BlobTransport>>> {
 /// Bounded, because this holds real content in memory. A document opening with
 /// more images than this offers the first few immediately and the rest when a
 /// peer asks, which is the path a late joiner uses anyway.
-static PENDING_OFFERS: OnceLock<RwLock<Vec<(String, Vec<u8>)>>> = OnceLock::new();
+/// Hash and bytes of a blob stored before any transport existed.
+type PendingOffer = (String, Vec<u8>);
+
+static PENDING_OFFERS: OnceLock<RwLock<Vec<PendingOffer>>> = OnceLock::new();
 
 const MAX_PENDING_OFFERS: usize = 8;
 
-fn pending_offers() -> &'static RwLock<Vec<(String, Vec<u8>)>> {
+fn pending_offers() -> &'static RwLock<Vec<PendingOffer>> {
     PENDING_OFFERS.get_or_init(|| RwLock::new(Vec::new()))
 }
 
@@ -285,10 +288,10 @@ fn may_ask(hash: &str) -> bool {
             // Bounded: a document referencing thousands of blobs must not turn
             // this into a leak. The worst case of evicting oldest-first is one
             // extra request for whatever was evicted.
-            if m.len() > 512 {
-                if let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
-                    m.remove(&k);
-                }
+            if m.len() > 512
+                && let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())
+            {
+                m.remove(&k);
             }
             m.insert(hash.to_string(), now);
             true
@@ -335,10 +338,10 @@ fn first_wanted(hash: &str) -> std::time::Instant {
     let cell = FIRST_WANTED.get_or_init(|| RwLock::new(BTreeMap::new()));
     let now = std::time::Instant::now();
     let Ok(mut m) = cell.write() else { return now };
-    if m.len() > 512 {
-        if let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
-            m.remove(&k);
-        }
+    if m.len() > 512
+        && let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())
+    {
+        m.remove(&k);
     }
     *m.entry(hash.to_string()).or_insert(now)
 }
@@ -346,10 +349,10 @@ fn first_wanted(hash: &str) -> std::time::Instant {
 /// Forget that `hash` was ever waited on, so a re-reference after it landed
 /// starts its clock fresh rather than inheriting an expired one.
 fn clear_wait(hash: &str) {
-    if let Some(cell) = FIRST_WANTED.get() {
-        if let Ok(mut m) = cell.write() {
-            m.remove(hash);
-        }
+    if let Some(cell) = FIRST_WANTED.get()
+        && let Ok(mut m) = cell.write()
+    {
+        m.remove(hash);
     }
 }
 
@@ -418,10 +421,11 @@ pub fn put(bytes: &[u8]) -> String {
         // having nowhere to offer them *yet* is the common case, not the odd
         // one. `set_transport` flushes these.
         None => {
-            if let Ok(mut q) = pending_offers().write() {
-                if q.len() < MAX_PENDING_OFFERS && !q.iter().any(|(h, _)| h == &hash) {
-                    q.push((hash.clone(), bytes.to_vec()));
-                }
+            if let Ok(mut q) = pending_offers().write()
+                && q.len() < MAX_PENDING_OFFERS
+                && !q.iter().any(|(h, _)| h == &hash)
+            {
+                q.push((hash.clone(), bytes.to_vec()));
             }
         }
     }
