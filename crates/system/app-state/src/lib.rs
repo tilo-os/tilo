@@ -71,7 +71,7 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use automerge::transaction::Transactable;
+use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
 mod autosave;
@@ -184,10 +184,56 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
     }
 }
 
-/// Write the current layout version into a document's root map.
+/// The actor every replica attributes the schema-version stamp to.
+///
+/// The stamp is the **first** write to a freshly created document, so under a
+/// per-replica actor it is a change with no dependencies — a divergent root.
+/// Every later change the document accumulates descends from it (Automerge
+/// sequences an actor's changes one after another), so a peer that was never
+/// sent this root — a second replica that created its own document before it
+/// adopted the room's, the join-races-the-first-snapshot case — cannot apply a
+/// single change built on top of it, and the whole document, an agent's chat
+/// reply included, arrives and is silently parked.
+///
+/// Attributing it to a fixed actor with a fixed timestamp makes the stamp
+/// **byte-identical on every machine that writes it**, so two replicas that
+/// create a document concurrently produce the *same* root change, which
+/// Automerge dedups to one on merge. This is the same device qdoc uses for its
+/// schema (`qdoc::model`'s `GENESIS_ACTOR`): adopting one shared genesis makes
+/// two independently-created documents one document rather than two that merge
+/// lossily.
+const SCHEMA_GENESIS_ACTOR: &[u8] = b"qos.app-state.schema.v1";
+
+/// The single, shared schema-version change, serialised once.
+///
+/// Replayed under [`SCHEMA_GENESIS_ACTOR`] with a fixed commit time so its hash
+/// is the same on every machine. The op sequence here defines the change: any
+/// change to it (a different key, value or time) is a new genesis that no
+/// existing document shares, so it is left exactly as the per-replica stamp
+/// wrote it — one `put` of the version at the root.
+fn schema_genesis_bytes() -> &'static [u8] {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(SCHEMA_GENESIS_ACTOR));
+        let _ = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION));
+        doc.commit_with(CommitOptions::default().with_time(0));
+        doc.save()
+    })
+}
+
+/// Write the current layout version into a document's root map, as the shared
+/// genesis change rather than a per-replica one. See [`SCHEMA_GENESIS_ACTOR`].
 fn stamp_schema_version(doc: &mut AutoCommit) {
-    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION)) {
-        tracing::warn!(error = %e, "could not stamp the document's schema version");
+    match AutoCommit::load(schema_genesis_bytes()) {
+        Ok(mut genesis) => {
+            if let Err(e) = doc.merge(&mut genesis) {
+                tracing::warn!(error = %e, "could not stamp the document's schema version");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not build the schema-version genesis");
+        }
     }
 }
 
@@ -1142,6 +1188,51 @@ mod tests {
     /// from one written before versioning.
     #[test]
     #[serial_test::serial]
+    fn the_schema_stamp_is_a_shared_genesis_two_replicas_converge_on() {
+        // Two documents created independently — the join-races-the-first-
+        // snapshot case, where a second replica scaffolds its own document
+        // before it has adopted the room's. The schema stamp is the first
+        // write to each, so if it were per-replica it would be a divergent
+        // root and every later change would descend from a change the other
+        // side was never sent. It must instead be the same change on both, so
+        // an edit one builds on top of it applies on the other with nothing
+        // missing.
+        let mut a = AutoCommit::new().with_actor(ActorId::from("replica-a".as_bytes()));
+        stamp_schema_version(&mut a);
+        let mut b = AutoCommit::new().with_actor(ActorId::from("replica-b".as_bytes()));
+        stamp_schema_version(&mut b);
+
+        let shared = a
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.hash())
+            .find(|h| b.get_change_by_hash(h).is_some());
+        assert!(
+            shared.is_some(),
+            "the schema stamp must be one shared change, not a per-replica root"
+        );
+
+        // An edit a makes on top of the stamp must apply on b.
+        a.put(ROOT, "title", ScalarValue::Str("from a".into())).unwrap();
+        let delta = a.save_incremental();
+        let mut incoming = AutoCommit::new();
+        incoming.load_incremental(&delta).unwrap();
+        assert!(
+            incoming
+                .get_missing_deps(&[])
+                .iter()
+                .all(|h| b.get_change_by_hash(h).is_some()),
+            "a's edit must not depend on history b was never sent"
+        );
+        b.load_incremental(&delta).unwrap();
+        assert_eq!(
+            b.get(ROOT, "title").unwrap().map(|(v, _)| v.to_str().map(str::to_owned)),
+            Some(Some("from a".to_string())),
+            "the edit built on the shared stamp must be visible on b"
+        );
+    }
+
+    #[test]
     fn a_new_document_carries_the_schema_version() {
         let _tmp = scratch_home();
         let mut store = DocStore::open_for("dev.qos.stamped").unwrap();

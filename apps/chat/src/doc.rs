@@ -46,7 +46,8 @@
 use std::collections::HashMap;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::transaction::CommitOptions;
+use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
 
 use crate::model::{
@@ -173,6 +174,13 @@ fn monogram(name: &str) -> String {
 // Seed
 // ---------------------------------------------------------------------------
 
+/// The actor every replica attributes the shared workspace scaffold to, so
+/// two replicas seeding concurrently produce the identical change rather than
+/// divergent roots. Fixed and stable by construction; it authors exactly one
+/// change (the scaffold) and nothing else ever writes under it, so it never
+/// collides on a sequence number. See [`ChatDoc::seed_starter`].
+const STARTER_ACTOR: &[u8] = b"qos.chat.starter";
+
 impl ChatDoc {
     pub fn is_seeded(doc: &AutoCommit) -> bool {
         get_bool(doc, &ROOT, "seeded")
@@ -186,21 +194,55 @@ impl ChatDoc {
     ///
     /// The rich demo workspace ([`Self::seed_if_empty`]) is reserved for the
     /// ephemeral `--shots`/test path — it never lands on a real user's disk.
+    ///
+    /// # Why the scaffold is a fixed-actor, fixed-time change
+    ///
+    /// The `seeded` guard stops a replica re-seeding a document it has
+    /// *already adopted*, but it cannot stop two replicas seeding
+    /// *concurrently*: a session that joins a room and runs its first frame
+    /// before the room's document has arrived sees an empty, unseeded
+    /// document and scaffolds one. Were that scaffold authored under this
+    /// replica's own (random) actor it would be a **divergent root** — a
+    /// change with no dependencies that the other participants were never
+    /// sent and can never be sent, because nothing offers a peer a change it
+    /// did not ask for. Every later change in this document then descends
+    /// from that root, so a peer that lacks it queues them all unapplied:
+    /// an agent's work strip, posted here, reaches the others' machines and
+    /// is silently parked because its history has a hole at the bottom.
+    ///
+    /// So the shared scaffold is built in an isolated document under a fixed
+    /// actor and a fixed timestamp, which makes its change **byte-identical
+    /// on every machine that produces it** — same actor, same ops, same
+    /// deps (none), same time, therefore the same hash. Two replicas that
+    /// seed concurrently produce the *same* change, which Automerge dedups
+    /// to one on merge; a replica that adopts a peer's document already
+    /// holds it. Either way there is no root a peer can lack. `me_id` stays
+    /// out of the shared change — membership is this participant writing
+    /// about itself, under its own replica actor — so the scaffold carries
+    /// nothing that varies between machines.
     pub fn seed_starter(doc: &mut AutoCommit, me_id: &str) {
         if Self::is_seeded(doc) {
             return;
         }
-        let _ = doc.put(&ROOT, "seeded", true);
+
+        // The shared workspace scaffold, as one deterministic change every
+        // replica reproduces identically. See the doc comment above.
+        let mut seed = AutoCommit::new();
+        seed.set_actor(ActorId::from(STARTER_ACTOR));
+        let _ = seed.put(&ROOT, "seeded", true);
+        Self::put_workspace(&mut seed, "ws_home", "My Workspace", "MW", 0, 0);
+        Self::put_category(&mut seed, "cat_home_text", "ws_home", "Channels", 0, false);
+        Self::put_category(&mut seed, "cat_home_voice", "ws_home", "Voice", 1, false);
+        Self::put_channel(&mut seed, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0);
+        Self::put_channel(&mut seed, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0);
+        seed.commit_with(CommitOptions::default().with_time(0));
+        let _ = doc.merge(&mut seed);
 
         // Membership, not a name. Scaffolding a workspace is still a peer
         // writing about itself, and the name is the room's to give — see
-        // [`Self::ensure_member`].
+        // [`Self::ensure_member`]. Authored under the document's own actor
+        // (not the shared scaffold's), because it is per-participant.
         Self::ensure_member(doc, me_id, false, Presence::Online);
-        Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
-        Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
-        Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
-        Self::put_channel(doc, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0);
-        Self::put_channel(doc, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0);
     }
 
     /// Populate the document with a believable demo workspace if it is
@@ -1670,6 +1712,65 @@ mod tests {
         ChatDoc::seed_starter(&mut doc, model::ME);
         assert_eq!(ChatDoc::list_users(&doc).len(), 1);
         assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
+    }
+
+    #[test]
+    fn concurrent_starter_seeds_converge_so_later_edits_apply() {
+        // Two sessions that each scaffold a starter before they have adopted
+        // one another's document — the join-races-the-first-snapshot case.
+        // The scaffold must be the *same* change on both, so that an edit one
+        // of them builds on top of it applies cleanly on the other rather
+        // than parking on a root the other was never sent. This is the shape
+        // of the regression where an agent's work strip reached the room and
+        // never appeared: its history descended from a divergent seed root.
+        let mut a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut a, "person:a");
+        let mut b = AutoCommit::new();
+        ChatDoc::seed_starter(&mut b, "person:b");
+
+        // The shared scaffold is one identical change on both replicas.
+        let shared: std::collections::HashSet<_> = a
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.hash())
+            .collect::<std::collections::HashSet<_>>()
+            .intersection(
+                &b.get_changes(&[])
+                    .iter()
+                    .map(|c| c.hash())
+                    .collect::<std::collections::HashSet<_>>(),
+            )
+            .copied()
+            .collect();
+        assert!(
+            !shared.is_empty(),
+            "concurrently-seeded replicas must share the scaffold change, not \
+             each hold a divergent root"
+        );
+
+        // A message a authors in #general references only the shared scaffold
+        // for its channel, so it must apply on b with nothing missing.
+        ChatDoc::push_message_with_id(
+            &mut a,
+            "c_general",
+            "m_from_a",
+            NewMessage { author: "person:a".into(), ts: 1, text: "hi".into(), ..Default::default() },
+        );
+        let delta = a.save_incremental();
+        let mut incoming = AutoCommit::new();
+        incoming.load_incremental(&delta).expect("load delta");
+        assert!(
+            incoming
+                .get_missing_deps(&[])
+                .iter()
+                .all(|h| b.get_change_by_hash(h).is_some()),
+            "a's edit must not depend on history b was never sent"
+        );
+        b.load_incremental(&delta).expect("apply a's edit on b");
+        assert!(
+            ChatDoc::list_messages(&b, "c_general").iter().any(|m| m.id == "m_from_a"),
+            "the edit built on the shared scaffold must be visible on b"
+        );
     }
 
     #[test]
