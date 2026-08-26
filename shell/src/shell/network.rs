@@ -805,7 +805,7 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
-        self.sync_content(&cluster_id, &record_id, &data);
+        self.sync_content(&app_id, &cluster_id, &record_id, &data);
         let msg = NeighbourMsg::AppCrdtIncremental {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -840,14 +840,14 @@ impl ShellNetwork {
     /// Asking is safe because the answer is content-addressed: a peer can only
     /// ever return the bytes the asker already named, and a wrong answer fails
     /// to verify and is discarded.
-    fn sync_content(&self, cluster_id: &str, record_id: &str, frame: &[u8]) {
+    fn sync_content(&self, app_id: &str, cluster_id: &str, record_id: &str, frame: &[u8]) {
         if cluster_id.is_empty() {
             return;
         }
         let Ok(mut relay) = self.blob_relay.lock() else {
             return;
         };
-        let obs = relay.observe_frame(cluster_id, record_id, frame);
+        let obs = relay.observe_frame(cluster_id, app_id, record_id, frame);
 
         if obs.missing_ancestors > 0 {
             // The document has a hole: Automerge is queueing changes it cannot
@@ -1408,7 +1408,7 @@ impl ShellNetwork {
         // establishes the record, and the relay's mirror needs it or every
         // later increment lands on a hole and the document's content becomes
         // invisible to this code.
-        self.sync_content(&cluster_id, &record_id, &data);
+        self.sync_content(&app_id, &cluster_id, &record_id, &data);
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -2077,7 +2077,7 @@ impl ShellNetwork {
                         // handing it on: that is what tells us whether the
                         // document now references content we lack, and whether
                         // its history has a hole.
-                        self.sync_content(cluster_id, record_id, data);
+                        self.sync_content(app_id, cluster_id, record_id, data);
                         self.handle_app_crdt_message(
                             peer_hash,
                             app_id.clone(),
@@ -2210,7 +2210,7 @@ impl ShellNetwork {
                         // for a document that plainly references some. That is
                         // why neither end of a real session ever logged a word
                         // about the photograph it was failing to move.
-                        self.sync_content(cluster_id, record_id, data);
+                        self.sync_content(app_id, cluster_id, record_id, data);
                         self.handle_app_crdt_snapshot_message(
                             peer_hash,
                             app_id.clone(),
@@ -3827,7 +3827,7 @@ mod tests {
         // The guest folds in what it did receive, exactly as `tick` does.
         let mut guest_doc = AutoCommit::new();
         for f in &frames {
-            guest.sync_content(ROOM, RECORD, f);
+            guest.sync_content("dev.qos.word-processor", ROOM, RECORD, f);
             guest_doc.load_incremental(f).expect("a delivered frame applies");
         }
 

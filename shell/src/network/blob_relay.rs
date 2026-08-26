@@ -111,11 +111,26 @@ struct Partial {
 pub struct BlobRelay {
     /// What this machine holds. Defaults to the process-wide store.
     store: std::sync::Arc<dyn qdoc::blobstore::BlobStore>,
-    /// A replica of each shared record, fed by every frame this shell sends or
-    /// receives for it. Only used to answer two questions the raw frame bytes
-    /// cannot: what content does this document reference, and is its history
-    /// whole.
-    mirrors: HashMap<(String, String), AutoCommit>,
+    /// A replica of each shared document, fed by every frame this shell sends
+    /// or receives for it. Only used to answer two questions the raw frame
+    /// bytes cannot: what content does this document reference, and is its
+    /// history whole.
+    ///
+    /// Keyed by `(cluster, app, record)` — the whole address, not part of it.
+    /// It was keyed by `(cluster, record)`, and an application announces the
+    /// same empty record until it adopts records, so one replica was fed the
+    /// word processor's document, the file manager's, the chat's and the photo
+    /// editor's at once. They all build the same schema at the same root, so
+    /// their containers collide; Automerge keeps every one and returns a
+    /// winner, and the losers' contents are simply not there to be read.
+    ///
+    /// What that costs is the whole job of this replica. Content referenced by
+    /// a document whose containers lost the merge is never noticed, so it is
+    /// never offered to the room and never asked for — the picture stays a
+    /// placeholder on every machine, and nothing anywhere reports a reason.
+    /// Which document wins is decided by op id, so it is also a race nobody
+    /// chose.
+    mirrors: HashMap<(String, String, String), AutoCommit>,
     /// Content already offered to a room, so a document that is edited a
     /// hundred times does not re-send its photograph a hundred times.
     announced: HashSet<(String, String)>,
@@ -173,14 +188,20 @@ impl BlobRelay {
     /// Called for frames in both directions: an outbound frame is what tells
     /// this side it now holds content worth offering, and an inbound one is
     /// what tells it something is referenced that has not arrived.
-    pub fn observe_frame(&mut self, cluster: &str, record: &str, frame: &[u8]) -> Observation {
-        let key = (cluster.to_string(), record.to_string());
+    pub fn observe_frame(
+        &mut self,
+        cluster: &str,
+        app: &str,
+        record: &str,
+        frame: &[u8],
+    ) -> Observation {
+        let key = (cluster.to_string(), app.to_string(), record.to_string());
         if !self.mirrors.contains_key(&key) && self.mirrors.len() >= MAX_MIRRORS {
             // Refusing to grow without bound is correct, but it does mean this
             // record's content is not tracked, so say so rather than behave as
             // though the document referenced nothing.
             tracing::warn!(
-                room = %cluster, record = %record, tracked = self.mirrors.len(),
+                room = %cluster, app = %app, record = %record, tracked = self.mirrors.len(),
                 "blob_relay: too many shared records to track; content for this one \
                  will not be offered or requested",
             );
@@ -191,7 +212,7 @@ impl BlobRelay {
         // which is precisely the condition `missing_ancestors` reports.
         if let Err(e) = mirror.load_incremental(frame) {
             tracing::warn!(
-                room = %cluster, record = %record, error = %e,
+                room = %cluster, app = %app, record = %record, error = %e,
                 "blob_relay: a document frame did not parse; it is lost for this replica",
             );
             return Observation::default();
@@ -434,7 +455,7 @@ mod tests {
     fn a_frame_reveals_the_content_it_references() {
         let (frame, hash) = doc_with_blob(b"the content of a picture");
         let mut relay = BlobRelay::new();
-        let obs = relay.observe_frame("room", "rec", &frame);
+        let obs = relay.observe_frame("room", "dev.qos.word-processor", "rec", &frame);
         assert_eq!(obs.have, vec![hash], "the authoring side holds what it just stored");
         assert!(obs.missing.is_empty());
         assert_eq!(obs.missing_ancestors, 0, "a complete frame leaves no hole");
@@ -529,13 +550,78 @@ mod tests {
         let f3 = doc.save_incremental();
 
         let mut relay = BlobRelay::new();
-        assert_eq!(relay.observe_frame("room", "rec", &f1).missing_ancestors, 0);
+        assert_eq!(relay.observe_frame("room", "dev.qos.word-processor", "rec", &f1).missing_ancestors, 0);
         // Deliver the third frame without the second, exactly as a dropped
         // publish would have.
-        let obs = relay.observe_frame("room", "rec", &f3);
+        let obs = relay.observe_frame("room", "dev.qos.word-processor", "rec", &f3);
         assert!(
             obs.missing_ancestors > 0,
             "a record missing a change in the middle must report it, not read as complete"
         );
+    }
+
+    /// One application's picture must not be hidden by another application
+    /// sharing its room.
+    ///
+    /// An application announces the same empty record until it adopts records,
+    /// so a room routinely carries the word processor, the file manager, the
+    /// chat and the photo editor all under `record=""`. Keyed on the room and
+    /// the record alone, every one of those documents was folded into a single
+    /// replica — and they all build the same schema at the same root, so their
+    /// containers collide. Automerge keeps every one and hands back a winner,
+    /// which means the blobs map of one document wins and the others are
+    /// simply not there to be read.
+    ///
+    /// The consequence is silent and total for the losers: content they
+    /// reference is never noticed, so it is never offered to the room and
+    /// never asked for, and the picture stays a placeholder on every machine
+    /// with nothing anywhere reporting a reason. This asserts both directions,
+    /// because which container wins a merge is decided by op id — a race
+    /// nobody chose, and one that would let a single-direction test pass on
+    /// half the runs.
+    #[test]
+    fn one_applications_picture_is_not_hidden_by_another_sharing_the_room() {
+        let (page, page_picture) = doc_with_blob(b"the photograph on the page");
+        let (message, message_picture) = doc_with_blob(b"a picture posted in the chat");
+        assert_ne!(page_picture, message_picture);
+
+        for (first, first_hash, second, second_hash) in [
+            (
+                ("dev.qos.word-processor", &page),
+                &page_picture,
+                ("dev.qos.chat", &message),
+                &message_picture,
+            ),
+            (
+                ("dev.qos.chat", &message),
+                &message_picture,
+                ("dev.qos.word-processor", &page),
+                &page_picture,
+            ),
+        ] {
+            let mut relay = BlobRelay::new();
+            let (first_app, first_frame) = first;
+            let (second_app, second_frame) = second;
+
+            let obs = relay.observe_frame("room", first_app, "", first_frame);
+            assert!(
+                obs.have.contains(first_hash),
+                "{first_app} referenced a picture this machine holds and it was \
+                 not noticed",
+            );
+
+            let obs = relay.observe_frame("room", second_app, "", second_frame);
+            assert!(
+                obs.have.contains(second_hash),
+                "{second_app}'s picture went unnoticed because {first_app} is \
+                 in the same room: content nobody notices is never offered and \
+                 never asked for, and the placeholder never resolves",
+            );
+            assert!(
+                !obs.have.contains(first_hash),
+                "{second_app}'s document was credited with {first_app}'s \
+                 picture, so the two are being read as one document",
+            );
+        }
     }
 }
