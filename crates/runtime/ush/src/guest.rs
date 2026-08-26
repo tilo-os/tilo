@@ -52,6 +52,26 @@ const LAYER_VAR_DIRS: &[&str] = &["var/lib", "var/cache", "var/log"];
 /// `pkg` even if a layer installs something by that name.
 pub const GUEST_PATH: &str = "/run/ush/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin";
 
+/// The only variables a guest inherits from the supervisor's own environment.
+///
+/// The rest of the guest's environment is *built* — see the environment block
+/// in [`build_argv`] — and this is the short list of things that describe the
+/// person rather than the session's wiring, so leaving them behind would
+/// change what the user sees for no gain.
+pub const INHERITED_ENV: &[&str] = &[
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "TZ",
+    "COLORTERM",
+];
+
 /// Everything needed to build one guest.
 #[derive(Debug, Clone)]
 pub struct GuestPlan {
@@ -130,6 +150,18 @@ pub fn build_argv(
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
     push(&mut a, "bwrap");
+
+    // ---- environment, emptied ----------------------------------------
+    // `bwrap` hands the parent's whole environment to the guest unless it is
+    // told otherwise, and this parent is the supervisor: it knows where the
+    // store is, where the broker listens, and what the session was started
+    // with. The environment block further down builds the guest's from
+    // scratch, and this is what makes that a complete list rather than a set
+    // of overrides on top of whatever the supervisor was carrying.
+    //
+    // First, because `--clearenv` keeps only what a *later* `--setenv` puts
+    // back.
+    push(&mut a, "--clearenv");
 
     // ---- namespaces --------------------------------------------------
     // A fresh user namespace is what makes every mount below possible without
@@ -324,6 +356,19 @@ pub fn build_argv(
     setenv("SHELL", &plan.shell.to_string_lossy(), &mut a);
     setenv("QOS_USH_PROFILE", plan.profile.as_str(), &mut a);
     setenv("QOS_USH_BROKER", crate::GUEST_BROKER_SOCK, &mut a);
+    // The user's language, carried across explicitly now that the guest no
+    // longer inherits it. A shell whose `LANG` went missing answers in the C
+    // locale: `ls` stops aligning non-ASCII names, `date` changes format, and
+    // every message changes language mid-session.
+    for key in INHERITED_ENV {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        setenv(key, &value.to_string_lossy(), &mut a);
+    }
     for (k, v) in &plan.env {
         setenv(k, v, &mut a);
     }
