@@ -1102,6 +1102,26 @@ class Session:
     def chrome(self) -> dict:
         return self.state()["chrome"]
 
+    def keyboard_focus(self) -> int | None:
+        """Which client surface this session's keyboard is pointed at.
+
+        The compositor's own seat field, not a re-reading of the tree:
+        `deliver_client_key` forwards a keystroke to exactly this
+        surface, so it is where the next character goes.
+
+        `None` when no client holds the keys -- the shell has them
+        (a palette, an overlay, the compose box), or nothing does.
+
+        Everything else a script can ask about focus answers a
+        different question. `strip_order` reports which group the tree
+        calls active and which tab it is showing; that is what is
+        *drawn*. A window can be the drawn tab of the active group and
+        still not hold the keyboard, and a beat that types a sentence
+        cares only about the second.
+        """
+        focus = self.chrome().get("keyboard_focus")
+        return int(focus) if focus is not None else None
+
     def tree(self) -> dict:
         return self.state()["workspace_tree"]
 
@@ -4153,6 +4173,57 @@ def subject_overflow(s: Session, subjects: list,
     return widest, over
 
 
+def focus_report(s: Session) -> str:
+    """Everything that decides where a keystroke goes, in one line.
+
+    Read in a single `state_dump`, so the seat's answer and the tree it
+    is derived from cannot be a frame apart.
+
+    The seat first, because it is the fact: `keys=` is the surface the
+    compositor will hand the next character to, and `None` means no
+    client will get it at all -- an overlay, the palette or the compose
+    box is holding the keyboard.
+
+    The rest is the chain the seat's answer comes out of
+    (`client_input::active_foreign_surface`): active workspace, its
+    active strip, that strip's active group, that group's active tab.
+    Each link has its own way of pointing at something that is not
+    there, and the compositor falls back a different way at each one --
+    to the first strip, to the first group, to the first tab. A script
+    that reads the tree without following the same chain can agree with
+    the tree and disagree with the keyboard, which is the shape of
+    every focus bug this beat has had.
+    """
+    st = s.state()
+    tree, chrome = st["workspace_tree"], st["chrome"]
+    ws = next((w for w in tree["workspaces"] if w["id"] == tree["active"]),
+              None)
+    strips = (ws or {}).get("strips", [])
+    active_strip = (tree.get("active_strip") or {}).get(str(tree["active"]))
+    active_group = tree.get("active_group") or {}
+    parts = []
+    for strip in strips:
+        sid = str(strip.get("id"))
+        here = active_group.get(sid)
+        groups = []
+        for g in strip.get("window_groups", []):
+            tabs = []
+            for t in g.get("tabs", []):
+                tile = t.get("tile") or {}
+                foreign = tile.get("Foreign") if isinstance(tile, dict) else None
+                mark = "*" if t.get("id") == g.get("active_tab") else ""
+                tabs.append(f"{mark}{(foreign or {}).get('surface_id')}")
+            groups.append(("<" if g.get("id") == here else "")
+                          + "[" + ",".join(tabs) + "]")
+        parts.append(("<<" if sid == str(active_strip) else "")
+                     + " ".join(groups))
+    held = (" (the shell is holding them)"
+            if chrome.get("chrome_captures_input") else "")
+    return (f"keys={chrome.get('keyboard_focus')}{held} "
+            f"palette={(chrome.get('palette') or {}).get('visible')} "
+            f"strips: {' | '.join(parts)}")
+
+
 def strip_order(s: Session) -> list[dict]:
     """The active strip's groups, left to right, with the surfaces in
     each and which one is focused — read off the tree, which is where
@@ -6155,9 +6226,29 @@ class Registry:
 #: exists to make visible rather than to paper over.
 WRITTEN_BUDGET_S = 15.0
 
+#: How long one ask is given before the app is asked *again*, rather
+#: than the same answer being re-read until the budget runs out.
+#:
+#: A whole-document snapshot arrives once per connection: the app sends
+#: it when it sees the reader arrive, and then sends nothing further
+#: unless the document changes. So a snapshot that was taken a moment
+#: too early is not a slow answer, it is a permanent wrong one — waiting
+#: on that connection re-searches the same frames until the budget is
+#: gone and then reports an empty page.
+#:
+#: Measured, with a screenshot of the page beside it: the words are
+#: typed, the word processor draws them, and this reported "the
+#: keystrokes were sent and the document did not take them". A fresh
+#: handshake asks the running application again, which is the question
+#: this is supposed to be asking; the attended path already worked this
+#: way (`Live.he_has_written` opens a new reader every three seconds)
+#: and did not have the fault.
+ASK_AGAIN_S = 3.0
+
 
 def written_on_the_page(s: Session, wp: dict | None, room: str, proof: str,
-                        budget: float = WRITTEN_BUDGET_S) -> float | None:
+                        budget: float = WRITTEN_BUDGET_S,
+                        since_frame: int | None = None) -> float | None:
     """Wait until the app really holds `proof`, and has drawn since.
 
     Seconds waited, or `None` if it never got there.
@@ -6179,53 +6270,94 @@ def written_on_the_page(s: Session, wp: dict | None, room: str, proof: str,
       saying it took the keystrokes rather than the compositor saying it
       sent them.
     * **the screen** — `frame_seq` is the count of frames the compositor
-      has taken from that client, so a frame taken *after* the document
-      answered is a frame drawn from a document that already had the
-      words in it. A `ui` app draws from its document; there is no third
-      state where it holds the sentence and paints something else.
+      has taken from that client, so a frame taken after the keystrokes
+      went is a frame drawn from a document that had already taken them.
+      A `ui` app draws from its document; there is no third state where
+      it holds the sentence and paints something else.
+
+      `since_frame` is that count as the caller saw it *before it
+      typed*, and passing it is what makes the question answerable. It
+      used to be read here, after the document had answered, and then
+      waited on — which asks an application that has finished drawing
+      and gone idle to draw once more for no reason. Measured, with a
+      photograph of the page beside it: the words were typed, the app
+      drew them, the document answered holding them, and this reported
+      that the film could not say they were on screen.
+
+    The document is asked **again** rather than asked once and waited
+    on. A whole-document snapshot arrives one per connection — the app
+    sends it when it sees the reader arrive and then nothing more unless
+    the document changes — so a snapshot taken a moment too early is not
+    an answer that is late, it is one that will never be corrected, and
+    a wait built on it re-searches the same frames until the budget is
+    gone. See [`ASK_AGAIN_S`], and the page that had the sentence
+    plainly on it while this said it did not.
 
     A budget that runs out is a GAP rather than a failure: it says the
     page did not catch up in the time given, which is a thing to know
     about the product and not a thing to hide from the transcript.
     """
     began = time.time()
-    reader = None
-    doc, carried = None, False
-    try:
-        reader = DocumentReader(s.collab_json_sock, str(room), None,
-                                handle="typing")
-        doc, carried = reader.await_document(proof, budget)
-    except OSError as exc:
-        gap(f"{s.name}: no broker answered on {s.collab_json_sock} ({exc}), "
-            f"so whether the words reached his own document was never "
-            f"established")
-        return None
-    except CannotDecode as exc:
-        gap(f"{exc} — so whether the words reached his own document was "
-            f"never established, which is not the same as their not having")
-        return None
-    finally:
-        if reader is not None:
-            reader.close()
+    doc, carried, asked = None, False, 0
+    while not carried and time.time() - began < budget:
+        asked += 1
+        reader = None
+        try:
+            reader = DocumentReader(s.collab_json_sock, str(room), None,
+                                    handle="typing")
+            answer, carried = reader.await_document(
+                proof,
+                min(ASK_AGAIN_S, budget - (time.time() - began)))
+        except OSError as exc:
+            gap(f"{s.name}: no broker answered on {s.collab_json_sock} "
+                f"({exc}), so whether the words reached his own document "
+                f"was never established")
+            return None
+        except CannotDecode as exc:
+            gap(f"{exc} — so whether the words reached his own document "
+                f"was never established, which is not the same as their "
+                f"not having")
+            return None
+        finally:
+            if reader is not None:
+                reader.close()
+        if answer is not None:
+            doc = answer
     if doc is None:
         gap(f"{s.name}: his own word processor never answered the "
             f"handshake within {budget:.0f}s, so nothing here knows what "
             f"is on his page")
         return None
     if not carried:
-        gap(f"{s.name}: his own app answered with {len(doc)} bytes and "
-            f"none of it is {proof!r} — the keystrokes were sent and the "
-            f"document did not take them")
+        gap(f"{s.name}: his own app answered {asked} time(s), most "
+            f"recently with {len(doc)} bytes, and none of it is {proof!r} "
+            f"— the keystrokes were sent and the document did not take "
+            f"them")
         return None
     # And on screen.
-    if drawn_since(s, wp or {}, max(0.0, budget - (time.time() - began))):
+    if drawn_since(s, wp or {}, max(0.0, budget - (time.time() - began)),
+                   was=since_frame):
         return time.time() - began
-    gap(f"{s.name}: the page holds {proof!r} and the app has not drawn a "
-        f"frame since, so the film cannot say the words are on screen")
+    gap(f"{s.name}: the page holds {proof!r} and the app has drawn no "
+        f"frame since the keystrokes went, so the film cannot say the "
+        f"words are on screen")
     return None
 
 
-def drawn_since(s: Session, subject, budget: float = 3.0) -> bool:
+def frames_taken_from(s: Session, subject) -> int:
+    """How many frames the compositor has taken from `subject`'s client.
+
+    `native.rs::foreign_frames_json` counts them, so this is the
+    compositor's own answer to "has that application drawn", and the
+    baseline a beat reads before it changes something the application
+    has to react to.
+    """
+    seen = [t.get("frame_seq") or 0 for t in tiles_for(s, subject)]
+    return max(seen) if seen else 0
+
+
+def drawn_since(s: Session, subject, budget: float = 3.0,
+                was: int | None = None) -> bool:
     """Wait for `subject`'s client to commit a frame from here on.
 
     `frame_seq` counts frames the compositor has actually taken from a
@@ -6234,26 +6366,160 @@ def drawn_since(s: Session, subject, budget: float = 3.0) -> bool:
     different question from "is it on screen" and the one a beat needs
     after it has changed something the application has to react to.
 
+    `was` is the count to measure from. Default is whatever it is right
+    now, which is the right baseline for a beat that is about to change
+    something; a caller that has *already* made its change passes the
+    count from before it, or it is asking an application that has
+    finished drawing to draw again.
+
     False when the budget runs out. Silent — the caller knows what it was
     waiting for and what its absence costs, and this is called from two
     beats that say very different things about it.
     """
-    def seq() -> int:
-        seen = [t.get("frame_seq") or 0 for t in tiles_for(s, subject)]
-        return max(seen) if seen else 0
-
-    was = seq()
+    if was is None:
+        was = frames_taken_from(s, subject)
     due = time.time() + budget
     while time.time() < due:
-        if seq() > was:
+        if frames_taken_from(s, subject) > was:
             return True
         time.sleep(0.1)
     return False
 
 
+#: How many times a beat will click into a window to give it the
+#: keyboard before it accepts that the window is not going to get it.
+#:
+#: More than one because the first click can legitimately miss the
+#: keyboard while hitting the window: the strip eases to a newly
+#: focused group over `SNAP_ANIM_MS`, so a rect read a moment earlier
+#: can be a rect the window has since moved out of, and a click aimed
+#: at a shell overlay dismisses it rather than focusing anything
+#: underneath. Both are fixed by doing it again against a freshly
+#: measured rect.
+#:
+#: Small, because this is not a retry loop around a flaky operation.
+#: Clicking a window ten times to make it take the keyboard would be a
+#: rig papering over a compositor that does not focus on click, and the
+#: honest report of that is a refusal with the reason in it.
+FOCUS_CLICK_TRIES = 3
+
+
+def tile_rect(s: Session, wp: dict | None) -> tuple[str, list] | None:
+    """The on-screen rect of `wp`'s tile, with the name it resolved by.
+
+    A foreign client's insides are not in the compositor's widget
+    registry, so there is no name inside the page to aim at; its *tile*
+    has one, and that is as close as the shell gets. `None` when the
+    window has no laid-out tile at all — it is not the tab its group is
+    showing, or the group has not been through a layout pass.
+    """
+    surface = (wp or {}).get("surface_id")
+    stem = f"foreign-surface-{surface}"
+    named = next((n for n in s.target_names()
+                  if n == stem or n.startswith(stem + "[")), None)
+    rect = s.named_rect(named) if named else None
+    return (named, rect) if rect else None
+
+
+def keys_on_the_document(s: Session, wp: dict | None,
+                         tries: int = FOCUS_CLICK_TRIES) -> int | None:
+    """Give the word processor this session's keyboard, and report what
+    actually holds it afterwards.
+
+    The document's own surface id when this worked. Anything else is the
+    window a sentence typed now would go into; `None` means the shell has
+    the keys and no client would see a keystroke at all.
+
+    **Which tab is drawn and which window has the keys are two different
+    questions, and every route a script had went to the first one.** The
+    strip's tree says which group is active and which tab that group is
+    showing, and a beat can walk the strip until the tree agrees with it
+    — and the tree agreeing is not the keyboard arriving. The compositor
+    resolves the seat's focus down a chain the tree only starts (active
+    workspace → active strip → active group → active tab → is that tab a
+    client → is the shell holding the keys anyway), and every link has
+    its own fallback. So a beat that asserted on the tree could assert
+    twice, pass twice, and type its sentence into the window next door.
+    This asks the seat instead: `chrome.keyboard_focus` is the field
+    `deliver_client_key` consults, so it is where the next character
+    goes and not an inference about where it ought to go.
+
+    The gesture is a click inside the page, which is what a person does
+    before typing and is the compositor's own click-to-focus
+    (`client_input.rs`: a press over a foreign tile raises that tile's
+    group and syncs the seat). Always at least one, because it is the
+    gesture a viewer sees before the words appear and a beat that
+    skipped it on the runs where focus happened to be right would film a
+    sentence arriving with nothing on screen having caused it.
+
+    Two things have to be true before it stops, and only one of them is
+    about the keyboard:
+
+    * the seat is on the document, and
+    * the shell was not holding the keys when the click was sent.
+
+    The second is what stops a click from being counted that the window
+    never received. It is repeated against a *freshly measured* rect
+    rather than the first one, because both ways a click goes astray are
+    cured by measuring again: a strip still easing to a newly focused
+    group has moved the window out from under a rect read a moment ago,
+    and a click that landed on a shell overlay has dismissed the overlay
+    rather than focused anything under it.
+    """
+    surface = (wp or {}).get("surface_id")
+    if surface is None:
+        return None
+    surface = int(surface)
+    held = None
+    for _ in range(max(1, tries)):
+        # Whether this click is going to reach the window at all, asked
+        # before it is sent. While the shell holds the keyboard — an
+        # overlay, the palette, the compose box, the file chooser — a
+        # press over a tile is the *shell's*: it dismisses whatever was
+        # up and the client never sees it.
+        #
+        # The keyboard can then land on the right window anyway, on the
+        # next tick, and a beat that stopped at that would be typing at
+        # an application which has had no press and no caret put in it.
+        # Measured: the seat reports the document, the document takes
+        # none of the sentence, and the beat waits out its whole
+        # document budget discovering that. So a click the shell was
+        # going to take is a reason to click again by itself, quite
+        # apart from where the keys ended up.
+        taken_by_the_shell = bool(s.chrome().get("chrome_captures_input"))
+        found = tile_rect(s, wp)
+        if found is None:
+            # No tile to click. Nothing here can make one, and the
+            # caller says what its absence costs.
+            return s.keyboard_focus()
+        _named, (bx, by, bw, bh) = found
+        s.click_at(bx + bw * 0.4, by + bh * 0.35)
+        # Long enough for the click to be taken and the caret drawn where
+        # it landed. This is an input round trip, not a frame any beat is
+        # about.
+        s.settle(0.6)
+        held = s.keyboard_focus()
+        if held == surface and not taken_by_the_shell:
+            return held
+        # Only when it did not take. A click that put the keyboard where
+        # it was aimed is the ordinary case and says nothing worth a
+        # line; a click that did not is the one fact a later "the
+        # document stayed empty" cannot be read without.
+        note(f"{s.name}: a click at "
+             f"({bx + bw * 0.4:.0f}, {by + bh * 0.35:.0f}) inside the "
+             f"document left the keyboard on {held} rather than on "
+             f"{surface}"
+             + (" — the shell was holding the keys, so the press "
+                "dismissed that and never reached the window"
+                if taken_by_the_shell else "")
+             + "; clicking again")
+    return held
+
+
 def type_into_the_document(s: Session, wp: dict | None, text: str,
                            room: str | None = None,
-                           proof: str | None = None) -> bool:
+                           proof: str | None = None,
+                           shots: str | None = None) -> bool:
     """Put the caret in the page and type, the way a person would.
 
     With a `room`, this does not return until the words are in the app's
@@ -6272,26 +6538,40 @@ def type_into_the_document(s: Session, wp: dict | None, text: str,
     start of the body, draws it there, and takes keystrokes with
     nothing clicked (`apps/word-processor/tests/opens_ready_to_type.rs`
     and the framebuffer reading beside it in `widget.rs`). What the
-    click also does is settle which window the seat is pointed at, and
-    that is worth keeping in a scripted run.
+    click also does is settle which window the seat is pointed at.
+
+    **Nothing is typed until the seat says the document has the keys.**
+    That is not caution; it is the difference between a beat that fails
+    and a beat that does damage. A sentence typed at a window which does
+    not hold the keyboard is a sentence delivered to whichever window
+    does — a chat box, a search field, somebody else's document — and
+    the only symptom is *this* document staying empty, which reads as a
+    collaboration fault a long way from the window that took the words.
+    Twice that was read as the page being slow, and twice the remedy
+    aimed at where the tree said focus was rather than at where the
+    keyboard was. See `keys_on_the_document`.
     """
     surface = (wp or {}).get("surface_id")
-    stem = f"foreign-surface-{surface}"
-    named = next((n for n in s.target_names()
-                  if n == stem or n.startswith(stem + "[")), None)
-    rect = s.named_rect(named) if named else None
-    if not rect:
+    found = tile_rect(s, wp)
+    if found is None:
         others = [n for n in s.target_names()
                   if n.startswith("foreign-surface-")]
         note(f"{s.name}: no laid-out tile for surface {surface}; "
              f"laid out now: {others or 'none'}")
         return False
-    bx, by, bw, bh = rect
-    s.click_at(bx + bw * 0.4, by + bh * 0.35)
-    # Long enough for the click to be taken and the caret drawn where it
-    # landed. This is an input round trip, not a frame the beat is about:
-    # the beat is the words appearing, which starts below.
-    s.settle(0.6)
+    named, _rect = found
+    was = s.keyboard_focus()
+    held = keys_on_the_document(s, wp)
+    if held != int(surface):
+        note(f"{s.name}: nothing is typed — the keyboard was on {was} "
+             f"before the click into {named}, and is on {held} after it "
+             f"rather than on the document's surface {surface}. "
+             f"{focus_report(s)}")
+        if shots:
+            s.snapshot(os.path.join(shots, "12c-keys-elsewhere.png"))
+        return False
+    note(f"{s.name}: the keyboard was on {was}; the document ({surface}) "
+         f"has it now, so the sentence goes there")
     # To the end of what is already there, rather than wherever the
     # click happened to land. By this point the document has a sentence
     # and an image in it, and a caret dropped into the middle of that
@@ -6305,6 +6585,10 @@ def type_into_the_document(s: Session, wp: dict | None, text: str,
     # the *line*, not of the document — and did it silently, which is
     # exactly the kind of thing that only shows up as a list typed into
     # the middle of a paragraph.
+    # What the compositor has taken from this client so far, read
+    # before a key is pressed: it is the baseline the "and it is on
+    # screen" half is measured against below.
+    drew_before = frames_taken_from(s, wp or {})
     s.key_down("Control")
     s.key("End")
     s.key_up("Control")
@@ -6316,8 +6600,17 @@ def type_into_the_document(s: Session, wp: dict | None, text: str,
         # the strip out from under it.
         s.settle(0.7)
         return True
-    waited = written_on_the_page(s, wp, room, proof or text.strip())
+    waited = written_on_the_page(s, wp, room, proof or text.strip(),
+                                 since_frame=drew_before)
     if waited is None:
+        # Where the sentence went, rather than only that it did not
+        # arrive. A beat that reports an empty document and nothing else
+        # sends the next person to read the document; the answer has
+        # twice been in another window on the same screen.
+        note(f"{s.name}: the document is surface {surface} and nothing "
+             f"reached it; {focus_report(s)}")
+        if shots:
+            s.snapshot(os.path.join(shots, "12d-after-typing.png"))
         return False
     note(f"{s.name}: the page had the whole sentence on it {waited:.1f}s "
          f"after the last keystroke went")
@@ -8628,6 +8921,28 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         if active_tab_surface(quinten, merged["id"]) != int(wp["surface_id"]):
             note("the document is not the tab in front after the merge, so "
                  "the beat after this one will type into whatever is")
+        # Which tab is drawn and which window has the keys are two
+        # different things, and only the second decides where a sentence
+        # goes. Bringing the document's tab to the front left it visible
+        # and unfocused: the next beat typed into the window beside it and
+        # waited nearly two minutes for words to appear in a document that
+        # was never being typed into -- twice, the second time after a fix
+        # that moved only the drawn tab and reported success.
+        if not jump_to_group(quinten, wp):
+            note("the strip's focus did not reach the document, so the "
+                 "sentence the next beat types will go to whatever holds "
+                 "the keys")
+        # Both guards above read the strip's tree, and the tree is
+        # not where a keystroke goes: the seat is. A hand-over that
+        # asks the tree can be told the document is the front tab of
+        # the focused group and still be leaving the keyboard on the
+        # window next door, so it is asked here, of the seat, by the
+        # beat that moved it.
+        keys = quinten.keyboard_focus()
+        if keys != int(wp["surface_id"]):
+            note(f"the strip is leaving the keyboard on {keys} rather "
+                 f"than on the document ({wp['surface_id']}) — "
+                 f"{focus_report(quinten)}")
 
 
 
