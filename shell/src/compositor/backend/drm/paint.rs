@@ -44,7 +44,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pollster::FutureExt;
 use vello::peniko::Color;
-use vello::util::RenderContext;
+// `ui::gpu`'s context, not `vello::util`'s: this device is shared with
+// every other client on the machine, so it needs the same memory hint
+// every other consumer asks for — see the header of `ui/src/gpu.rs`.
+use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 
 /// Errors the bridge can return. Each variant maps to an operator-
