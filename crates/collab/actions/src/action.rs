@@ -84,6 +84,15 @@ pub enum ActionError {
     /// The concrete action could not be serialized into a payload.
     #[error("failed to encode action: {0}")]
     Encode(serde_json::Error),
+    /// The action was well-formed and the app declined to carry it out, in its
+    /// own words.
+    ///
+    /// Every variant above is a fault in the plumbing; this one is the app
+    /// answering. A caller has to be able to tell "I asked wrongly" from "I
+    /// asked correctly and the answer is no" — only the second is worth
+    /// repeating to whoever asked.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// A value that deterministically mutates a CRDT [`Doc`].
