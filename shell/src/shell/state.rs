@@ -3052,6 +3052,13 @@ impl WorkspaceTree {
     /// ([`Self::apply_room_changes`]) refuses a batch that breaks the
     /// rule.
     ///
+    /// The other half of that, and the one it is easy to leave out: an
+    /// entry **this** machine owns is written here and never read back.
+    /// `merge_strip` and `merge_group` skip one rather than hydrate it,
+    /// because the cache is what is true about it and the document is a
+    /// copy that can be a round behind — behind exactly when it matters,
+    /// which is the moment after a window moved or a group closed here.
+    ///
     /// Two people opening a window at the same moment therefore both
     /// win — disjoint salts make two map keys, not one contested key.
     ///
@@ -3564,6 +3571,14 @@ impl WorkspaceTree {
             out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
         }
         for (sid, rep) in by_strip {
+            // Ours to write and never to read back — see `merge_strip`.
+            // Every peer's strip was drained into `peer_groups` above, so
+            // what is left here is a strip this machine owns and no longer
+            // has: one closed here whose entry the projection has not
+            // swept yet.
+            if is_local(sid) {
+                continue;
+            }
             out.push((rep.order, sid, Self::hydrate_strip(rep)));
             changed = true;
         }
@@ -3627,6 +3642,25 @@ impl WorkspaceTree {
             }
         }
         for (gid, rep) in by_group {
+            // **One writer per entry, in both directions.** A group this
+            // machine owns is written into the document by
+            // `project_owned_contents` and must never be read back out of
+            // it: the cache is the truth about it, and the document is a
+            // copy that can be a round behind. It is behind exactly when
+            // it matters — the moment after a window was dragged out of
+            // this group, or the group was closed — and hydrating it then
+            // puts the group back on the strip holding a *peer window*
+            // card for a tab that is alive and well one group over. That
+            // card is an open nobody asked for, and
+            // `peer_windows::examine` answers it by starting a second copy
+            // of the application.
+            //
+            // Nothing is lost by skipping it: the entry is this machine's,
+            // so this machine's next projection sweeps it out of the
+            // document.
+            if is_local(gid) {
+                continue;
+            }
             out.push((rep.order, gid, Self::hydrate_group(rep)));
             *changed = true;
         }
@@ -3692,6 +3726,14 @@ impl WorkspaceTree {
             }
         }
         for (tid, rep) in by_tab {
+            // Ours to write and never to read back — see `merge_strip`. A
+            // tab of this machine's that the document still files under
+            // this group, while the cache has it in another, is a tab that
+            // has just been moved; hydrating it mints a second copy of one
+            // window, under one id, in two groups at once.
+            if is_local(tid) {
+                continue;
+            }
             out.push((rep.order, tid, Self::hydrate_tab(rep)));
             *changed = true;
         }
@@ -8112,6 +8154,191 @@ mod automerge_foundation_tests {
             ws.strips[0].window_groups.len(),
             2,
             "one group each, side by side",
+        );
+    }
+
+    /// One window group holding one application's window, built with ids
+    /// in `salt`'s range so replication can tell whose it is.
+    fn one_window(group: u64, tab: u64, title: &str, app_id: &str, surface: u64) -> WindowGroup {
+        WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: title.into(),
+                tile: TileContent::Foreign {
+                    app_id: app_id.into(),
+                    surface_id: surface,
+                },
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }
+    }
+
+    /// Every tile in the room's workspace, so a test can say what is on
+    /// the strip rather than assert on an index.
+    fn tiles_in_room(tree: &WorkspaceTree, room: RoomId) -> Vec<(u64, TileContent)> {
+        tree.workspaces
+            .iter()
+            .filter(|w| w.room == room)
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .map(|t| (t.id, t.tile.clone()))
+            .collect()
+    }
+
+    /// A window this machine has moved is not handed back by the room's
+    /// own copy of where it used to be.
+    ///
+    /// The document is written by the projection and read by the merge,
+    /// and there is a gap between the two: a peer's batch arrives on the
+    /// network thread and owes nothing to this machine's projection
+    /// cadence, so it can land while the cache has already moved a tab
+    /// and the document still files it under the group it left. Reading
+    /// this machine's own entry back then re-creates that group with the
+    /// window still in it — and as a *card*, not a window, because a
+    /// `Foreign` tile names a surface only this compositor can resolve
+    /// and localises to [`TileContent::PeerWindow`] on the way through.
+    ///
+    /// That card is an open nobody asked for. `peer_windows::examine`
+    /// reads an unanswered peer window as news that the room has this
+    /// application open, and starts a second copy of it here — which is
+    /// how dragging one window onto another's tab bar came to leave three
+    /// pills on a bar that had just been merged to hold two, two of them
+    /// the same application twice.
+    #[test]
+    fn a_window_moved_here_is_not_put_back_by_a_stale_room_document() {
+        const HOST: u16 = 0x4141;
+        const GUEST: u16 = 0x5252;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+
+        let strip = StripId::from(salted(HOST, 1));
+        let left = salted(HOST, 2);
+        let right = salted(HOST, 3);
+        let files = salted(HOST, 4);
+        let editor = salted(HOST, 5);
+        let hi = host.workspaces.iter().position(|w| w.room == room).unwrap();
+        host.workspaces[hi].strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![
+                one_window(left, files, "Files", "dev.qos.file-explorer", 6),
+                one_window(right, editor, "Word Processor", "dev.qos.word-processor", 9),
+            ],
+        }];
+
+        // The room has been told about both, as it is on every sync round.
+        ship(&mut host, &mut guest, room, 1);
+
+        // The gesture: one window dropped onto the other's tab bar. The
+        // cache moves now; the document says otherwise until the next
+        // projection.
+        assert_eq!(
+            host.move_tab_into_group(files, right),
+            Some(left),
+            "fixture: the merge has to take, or there is no stale entry to \
+             read back",
+        );
+
+        // A peer's batch lands in that gap.
+        ship(&mut guest, &mut host, room, 2);
+
+        let groups: Vec<u64> = host
+            .workspaces
+            .iter()
+            .filter(|w| w.room == room)
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(
+            groups,
+            vec![right],
+            "the group the window was dragged out of is empty and gone; the \
+             room document's copy of it must not put it back",
+        );
+        let tiles = tiles_in_room(&host, room);
+        assert_eq!(
+            tiles.iter().filter(|(id, _)| *id == files).count(),
+            1,
+            "one window is one tab: {tiles:?}",
+        );
+        assert!(
+            !tiles
+                .iter()
+                .any(|(_, tile)| matches!(tile, TileContent::PeerWindow { .. })),
+            "nobody else has a window in this room, so a peer-window card \
+             here describes an open that was never made: {tiles:?}",
+        );
+        assert!(
+            !crate::shell::peer_windows::any_pending(&host),
+            "and the reader that turns such a card into a second copy of the \
+             application must have nothing to answer",
+        );
+    }
+
+    /// Two people opening the same application in one workspace get two
+    /// windows side by side, not two pills on one bar.
+    ///
+    /// A tab group is the deliberate gesture of putting two windows in
+    /// one frame, and the two windows here belong to two different
+    /// people: each can close, move and resize their own, and a bar shows
+    /// one of its tabs at a time, so sharing one would hide one person's
+    /// window behind the other's. The same application twice is the case
+    /// worth pinning, because it is the one where the two are hardest to
+    /// tell apart on screen — both pills read "Files".
+    #[test]
+    fn two_members_windows_of_one_app_are_two_windows_not_two_tabs() {
+        const HOST: u16 = 0x6161;
+        const GUEST: u16 = 0x7272;
+        const FILES: &str = "dev.qos.file-explorer";
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+
+        for (tree, salt, surface) in [(&mut host, HOST, 6u64), (&mut guest, GUEST, 7u64)] {
+            let idx = tree.workspaces.iter().position(|w| w.room == room).unwrap();
+            tree.workspaces[idx].strips = vec![Strip {
+                id: StripId::from(salted(salt, 1)),
+                name: "Main".into(),
+                window_groups: vec![one_window(
+                    salted(salt, 2),
+                    salted(salt, 3),
+                    "Files",
+                    FILES,
+                    surface,
+                )],
+            }];
+        }
+
+        ship(&mut host, &mut guest, room, 1);
+
+        let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
+        let mut groups: Vec<Vec<u64>> = ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .map(|g| g.tabs.iter().map(|t| t.id).collect())
+            .collect();
+        groups.sort();
+        // The set, not the order: which of the two is further left is a
+        // question about the strip, and this is a question about windows.
+        let mut expected = vec![vec![salted(GUEST, 3)], vec![salted(HOST, 3)]];
+        expected.sort();
+        assert_eq!(
+            groups,
+            expected,
+            "one window each, in a window of its own — a shared bar would \
+             hide one person's file manager behind the other's",
+        );
+        assert_eq!(
+            ws.strips.len(),
+            1,
+            "and beside each other on one strip, not stacked",
         );
     }
 
