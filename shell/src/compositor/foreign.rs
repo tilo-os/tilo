@@ -70,8 +70,8 @@ use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
-use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -760,6 +760,33 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Open this surface's entry at the moment its toplevel is adopted,
+    /// so [`ForeignEntry::first_seen`] dates from the window being asked
+    /// for rather than from its first buffer.
+    ///
+    /// Both waits this store bounds — the opening configure in
+    /// [`flush_configures`] and the presentation grace in
+    /// [`Self::mark_presented`] — run from that instant, and a client
+    /// with no configure has no reason to commit a buffer to open the
+    /// entry itself.
+    pub fn note_adopted(&self, id: SurfaceId) {
+        self.with_entry(id, |_| {});
+    }
+
+    /// Whether this surface has waited longer than
+    /// [`OPENING_CONFIGURE_GRACE`] since it was adopted.
+    ///
+    /// Read only by [`flush_configures`], to decide when to stop waiting
+    /// for a laid-out tab and configure the client anyway. A surface
+    /// with no entry has not been adopted and is not waiting on
+    /// anything.
+    pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(&id)
+            .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
+    }
+
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
         let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -834,15 +861,19 @@ impl ForeignFrameStore {
     /// - **A capture failed.** Then there is something to say, and the
     ///   tile says it. An app that cannot be shown must not be silently
     ///   invisible.
-    /// - **A frame has landed that fits the tab.** Not merely a frame:
+    /// - **A frame has landed that answers the tab.** Not merely a frame:
     ///   the first buffer a client commits is the size *it* chose, because
     ///   the compositor's opening configure carries no size and the real
     ///   one is only sent once the tab has been laid out. Painting that
     ///   first buffer means [`ForeignSurfaceWidget::fit_rect`] scales it
     ///   to fit — the app appears magnified, then snaps down to 1:1 when
     ///   the correctly-sized buffer arrives a moment later. Waiting for a
-    ///   frame that already fits is what makes an opened window keep the
-    ///   size it opened at.
+    ///   frame sized to the tab is what makes an opened window keep the
+    ///   size it opened at. What counts as sized to the tab is [`fills`],
+    ///   which also admits a client that kept a strip of that size for
+    ///   decorations it draws itself — a client the decoration protocol
+    ///   could not talk out of it — because otherwise the answer never
+    ///   comes and the window waits out the grace below.
     /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
     ///   this cannot strand a window: an app that never presents, or one
     ///   whose buffers never match its tab, becomes visible anyway and
@@ -857,13 +888,30 @@ impl ForeignFrameStore {
             if e.presented {
                 return true;
             }
-            let ready = e.last_error.is_some()
-                || fills(e.width, e.height, tile)
-                || e.first_seen.elapsed() >= PRESENT_GRACE;
-            if ready {
-                e.presented = true;
+            let waited = e.first_seen.elapsed();
+            let backstop = waited >= PRESENT_GRACE;
+            if e.last_error.is_none() && !fills(e.width, e.height, tile) && !backstop {
+                return false;
             }
-            ready
+            e.presented = true;
+            // Reaching the backstop is a defect every time: the window was
+            // a hole in the strip for the whole grace period. On screen
+            // that is indistinguishable from an app that was simply slow
+            // — which is how a client short by its own title bar went
+            // unnoticed while it delayed every launch on this machine.
+            if backstop {
+                tracing::warn!(
+                    target: "shell::compositor::foreign",
+                    surface_id = id,
+                    waited_ms = waited.as_millis() as u64,
+                    buffer_w = e.width,
+                    buffer_h = e.height,
+                    tab_w = tile.width().round() as u32,
+                    tab_h = tile.height().round() as u32,
+                    "no frame answered this tab; showing the window anyway",
+                );
+            }
+            true
         })
     }
 }
@@ -886,17 +934,54 @@ pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
 /// notification the launch raised is on screen for all of it. Ten
 /// seconds is past every launch observed and still short enough that an
 /// app which is never going to paint stops being a hole in the strip.
-const PRESENT_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const PRESENT_GRACE: Duration = Duration::from_secs(10);
 
-/// Whether a `w`x`h` buffer, fitted into `tile` the way
-/// [`ForeignSurfaceWidget::fit_rect`] fits it, covers that tile.
+/// How long a newly adopted toplevel may go without its tab being laid
+/// out before the compositor configures it anyway.
 ///
-/// `fit_rect` scales uniformly by the smaller of the two ratios, so the
-/// buffer covers the tile exactly when its aspect ratio matches — any
-/// mismatch leaves a band down one side, and closing that band later is
-/// the visible resize. Sizes are not compared directly because they need
-/// not be equal to look right: a buffer twice the tile in both axes is
-/// drawn at exactly the tile, sharper and in the same place.
+/// The ordinary case does not spend this: the tab is spliced into the
+/// tree as the toplevel is adopted, the next layout pass gives it a
+/// rect, and [`flush_configures`] answers the client on the following
+/// frame — one frame, not a quarter of a second.
+///
+/// What this bounds is the case where no rect ever arrives: a tab
+/// collapsed under a maximized sibling, or one in a workspace that is
+/// not on screen, is laid out to nothing and publishes no placement. A
+/// client that has never been configured cannot map, so waiting on that
+/// rect forever would be a window that never opens at all — strictly
+/// worse than the wrong-sized frame this whole path exists to prevent.
+const OPENING_CONFIGURE_GRACE: Duration = Duration::from_millis(250);
+
+/// Whether a `w`x`h` buffer is this client's answer to the tab it was
+/// configured into, rather than the size it picked before being asked.
+///
+/// Two ways to be an answer, because there are two kinds of client.
+///
+/// **It covers the tab.** [`ForeignSurfaceWidget::fit_rect`] scales
+/// uniformly by the smaller of the two ratios, so a buffer covers the
+/// tile exactly when its aspect ratio matches. Sizes are not compared
+/// directly because they need not be equal to look right: a buffer
+/// twice the tile in both axes is drawn at exactly the tile, sharper
+/// and in the same place.
+///
+/// **It fits inside the tab and matches one of its axes.** A client
+/// that draws its own frame keeps the title bar out of the size it was
+/// given and commits the remainder, so it answers one axis exactly and
+/// comes up short on the other — forever, because there is no later
+/// buffer in which it gives that strip back. Configured 670x668, such a
+/// client commits 670x633, which under the covering test alone is not
+/// an answer at all, and its window waits out [`PRESENT_GRACE`] — ten
+/// seconds of empty tab over an app that painted in two. That was every
+/// winit client on this compositor until it began advertising
+/// `zxdg_decoration_manager_v1` and answering `ServerSide` (see
+/// `State`'s `XdgDecorationHandler`), which is the real fix — a client
+/// told the compositor decorates keeps nothing back and is admitted by
+/// the covering arm above with no band left under it. This arm remains
+/// as the backstop for clients negotiation cannot reach: one that never
+/// binds the global, or a toolkit that decorates itself regardless of
+/// the answer. Overflowing either axis still disqualifies the buffer —
+/// a client's own idea of its size is not derived from the tab and does
+/// not fit inside it.
 ///
 /// The half-percent tolerance absorbs the rounding in the logical-size
 /// configure (a 1-px disagreement at 1400 px is 0.07%) without admitting
@@ -905,10 +990,21 @@ fn fills(w: u32, h: u32, tile: Rect) -> bool {
     if w == 0 || h == 0 || tile.width() <= 0.0 || tile.height() <= 0.0 {
         return false;
     }
-    let scale = (tile.width() / w as f64).min(tile.height() / h as f64);
-    let covers = |drawn: f64, avail: f64| drawn / avail >= 0.995;
-    covers(w as f64 * scale, tile.width()) && covers(h as f64 * scale, tile.height())
+    let (bw, bh) = (w as f64, h as f64);
+    let scale = (tile.width() / bw).min(tile.height() / bh);
+    let at_least = |a: f64, b: f64| a >= b * (1.0 - FIT_TOLERANCE);
+    let at_most = |a: f64, b: f64| a <= b * (1.0 + FIT_TOLERANCE);
+    if at_least(bw * scale, tile.width()) && at_least(bh * scale, tile.height()) {
+        return true;
+    }
+    at_most(bw, tile.width())
+        && at_most(bh, tile.height())
+        && (at_least(bw, tile.width()) || at_least(bh, tile.height()))
 }
+
+/// How far a buffer may disagree with its tab and still be the same
+/// size. See [`fills`].
+const FIT_TOLERANCE: f64 = 0.005;
 
 // ---------------------------------------------------------------------------
 // The widget
@@ -1153,8 +1249,16 @@ impl Widget for ForeignSurfaceWidget {
         }
 
         let (headline, detail) = self.unshowable_text();
-        let on_card = theme.tokens.colors.neutral[1];
-        let on_card_dim = theme.tokens.colors.neutral[4];
+        // Fixed ramp indices were a guess about which way round the card
+        // is, not an answer. `neutral[1]` is near-black on the dark ramp
+        // and the card under it is `#16171b`, so the app's own name —
+        // the one thing on screen saying what failed to open — measured
+        // 1.03:1 and was invisible; under high contrast the same
+        // near-black sat on pure black. `on_card` derives both tiers from
+        // the card's actual luminance instead.
+        let tiers = theme.tokens.colors.on_card();
+        let on_card = tiers.ink;
+        let on_card_dim = tiers.ink_dim;
         let size = theme.tokens.typography.scale.xl;
         let (tw, _) = text_renderer.measure(&headline, size, None);
         let cx = self.rect.center().x;
@@ -1243,7 +1347,11 @@ impl AppWidget for ForeignSurfaceWidget {
         AppKind::Settings
     }
     fn app_title(&self) -> &str {
-        &self.app_id
+        // The app's name, not its address. This handed back the raw
+        // wayland app-id — `dev.qos.chat` — while `Self::display_name`
+        // already resolves that to "Chat" through the manifest (and
+        // humanises it when no manifest names it).
+        self.display_name()
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
@@ -1268,11 +1376,36 @@ pub struct ForeignTab {
 
 /// Every `TileContent::Foreign` tab in `tree`'s active workspace, in
 /// traversal order.
+///
+/// Scoped to the active workspace because its callers are asking what is
+/// on screen. Anything asking whether a surface *has* a tab must use
+/// [`foreign_tabs_anywhere`] instead — see the note there.
 pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
     let mut out = Vec::new();
     let Some(ws) = tree.active_workspace() else {
         return out;
     };
+    collect_foreign_tabs(ws, &mut out);
+    out
+}
+
+/// Every `TileContent::Foreign` tab in `tree`, across all its workspaces.
+///
+/// A window keeps its tab when the user walks to another workspace, and a
+/// launch can place one in a workspace that was never the active one. So
+/// "does this surface already have a tab?" is a question about the whole
+/// tree, and asking it of the active workspace alone reports a window
+/// that exists as missing — which is how one launch came to produce two
+/// windows.
+pub fn foreign_tabs_anywhere(tree: &WorkspaceTree) -> Vec<ForeignTab> {
+    let mut out = Vec::new();
+    for ws in &tree.workspaces {
+        collect_foreign_tabs(ws, &mut out);
+    }
+    out
+}
+
+fn collect_foreign_tabs(ws: &crate::shell::state::Workspace, out: &mut Vec<ForeignTab>) {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
@@ -1287,7 +1420,6 @@ pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
             }
         }
     }
-    out
 }
 
 /// Whether `surface_id` is the active tab of its group in the active
@@ -1324,8 +1456,14 @@ pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
 /// signal to bump the chrome revision so the strip resync splices the tab
 /// into the live widget tree.
 pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTree) -> bool {
-    let wanted = foreign_tabs(source);
-    let present = foreign_tabs(rendered);
+    // Both sides are read across every workspace. Which workspace a
+    // window is in has nothing to do with whether it exists, and the
+    // two trees move their active pointers independently — the
+    // chrome's follows the user, the protocol side's never moves at
+    // all. Comparing only the active workspaces made the mirror
+    // re-adopt a window the moment the user walked away from it.
+    let wanted = foreign_tabs_anywhere(source);
+    let present = foreign_tabs_anywhere(rendered);
     let mut changed = false;
 
     // Remove foreign tabs the protocol side no longer has.
@@ -1343,11 +1481,20 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
         }
     }
 
+    // Collapse any surface that already has more than one tab. A
+    // session saved before this mirror compared whole trees carries its
+    // duplicates on disk, so preventing new ones is not enough — the
+    // desktop the user reopens has to come back with one window per
+    // window.
+    if drop_duplicate_foreign_tabs(rendered) {
+        changed = true;
+    }
+
     // Add foreign tabs the rendered tree is missing. `adopt_toplevel` is
     // the same production splice the protocol side uses, so placement
     // rules (empty-workspace bootstrap, first strip / first group) stay in
     // exactly one place.
-    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs(rendered)
+    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs_anywhere(rendered)
         .iter()
         .map(|t| t.surface_id)
         .collect();
@@ -1386,6 +1533,50 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
     changed
 }
 
+/// Keep the first tab showing each surface and remove the rest.
+///
+/// One window is one tab. A second tab onto the same surface draws the
+/// same client twice, offers it two sets of configures, and outlives it
+/// — a destroyed surface closes one tab, leaving the other pointing at
+/// nothing.
+///
+/// A session saved while the mirror was still comparing active
+/// workspaces carries its duplicates on disk, so this runs every
+/// reconcile rather than only at adoption: preventing new duplicates
+/// does not repair a desktop that already has one.
+///
+/// Returns whether anything was removed.
+fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
+    let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
+    let mut removed = false;
+    for ws in tree.workspaces.iter_mut() {
+        for strip in ws.strips.iter_mut() {
+            for group in strip.window_groups.iter_mut() {
+                let active = group.active_tab;
+                let mut dropped_active = false;
+                group.tabs.retain(|tab| {
+                    let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
+                        return true;
+                    };
+                    if seen.insert(*surface_id) {
+                        return true;
+                    }
+                    dropped_active |= active == tab.id;
+                    removed = true;
+                    false
+                });
+                // The duplicate may have been the tab the group was
+                // showing. Fall back the way a closed tab does rather
+                // than leaving the group pointing at something gone.
+                if dropped_active {
+                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                }
+            }
+        }
+    }
+    removed
+}
+
 // ---------------------------------------------------------------------------
 // Per-frame compositor passes
 // ---------------------------------------------------------------------------
@@ -1399,9 +1590,20 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 /// with the compositor's current display scale, which is the same value
 /// pushed to clients through `wp_fractional_scale_v1` on commit.
 ///
+/// This is also where a toplevel gets its **opening** configure, and that
+/// is the point of running it here rather than at `get_toplevel`. A tab's
+/// size is a fact about the strip, and the strip does not know it until it
+/// has laid the tab out; a configure sent any earlier carries no size,
+/// which tells the client to choose one — how an app came to draw a whole
+/// frame at a size the strip never asked for before being corrected.
+/// Sending the opening configure from the pass that runs *after* layout
+/// means the first size a client is ever given is the size its tab
+/// actually has.
+///
 /// Returns the number of configures sent — used by the wiring test.
 pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let scale = state.scale;
+    let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; the configure calls
     // below don't touch `State`, so a cheap clone of the handles releases
     // the borrow for the loop.
@@ -1409,23 +1611,82 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        let Some((w, h)) = store().take_pending_configure(id, scale) else {
+        if let Some((w, h)) = store().take_pending_configure(id, scale) {
+            configure_to(&toplevel, w, h);
+            sent += 1;
+            tracing::debug!(
+                target: "shell::compositor::foreign",
+                surface_id = id,
+                width = w,
+                height = h,
+                "configured foreign toplevel to its tab size"
+            );
             continue;
-        };
-        toplevel.with_pending_state(|pending| {
-            pending.size = Some((w, h).into());
-        });
-        toplevel.send_configure();
+        }
+        // No laid-out size. For a toplevel already configured that is
+        // the ordinary case — an unchanged layout must not re-configure
+        // the client every frame. For one never configured it means the
+        // tab has not been laid out yet, and waiting is right only for
+        // as long as the rect might still be coming: a client with no
+        // configure at all cannot map, so it cannot be left waiting
+        // forever.
+        if toplevel.is_initial_configure_sent() || !store().opening_wait_expired(id) {
+            continue;
+        }
+        let (w, h) = fallback;
+        configure_to(&toplevel, w, h);
         sent += 1;
-        tracing::debug!(
+        tracing::warn!(
             target: "shell::compositor::foreign",
             surface_id = id,
             width = w,
             height = h,
-            "configured foreign toplevel to its tab size"
+            grace_ms = OPENING_CONFIGURE_GRACE.as_millis() as u64,
+            "no tab rect for an opening toplevel; configuring it to the \
+             strip's full tile so it can map at all",
         );
     }
     sent
+}
+
+/// Put `size` in the toplevel's pending state and send it.
+///
+/// The pending state is what smithay writes into the configure, so the
+/// size has to be staged before the send rather than passed to it — and
+/// staging it also means any other pending change the client is owed
+/// (the decoration mode, notably) rides out in the same event.
+fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32) {
+    toplevel.with_pending_state(|pending| {
+        pending.size = Some((w, h).into());
+    });
+    toplevel.send_configure();
+}
+
+/// The size to configure an opening toplevel to when its tab was never
+/// laid out, in surface-local (logical) pixels.
+///
+/// An approximation of the tile a full-width window gets: the output,
+/// less the chrome around a strip — the top bar above it, the tab bar
+/// over the tile, and the sidebar wheel's slot beside it. It is not the
+/// answer the layout would have given, because the layout declined to
+/// give one; it is a size the window can honestly render at, close
+/// enough to its eventual tile that a later correction is small, and
+/// far better than the client's own idea of how big it is.
+fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) {
+    let scale = if state.scale.is_finite() && state.scale > 0.0 {
+        state.scale
+    } else {
+        1.0
+    };
+    let (out_w, out_h) = state.output_size;
+    let logical = |px: f64| ((px / scale).round() as i32).max(1);
+    let chrome_w = crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64;
+    let chrome_h =
+        crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64 + ui::widget::tabs::TAB_BAR_HEIGHT;
+    (
+        logical((out_w as f64 - chrome_w).max(1.0)),
+        logical((out_h as f64 - chrome_h).max(1.0)),
+    )
 }
 
 /// Release the frame throttle for foreign surfaces that are actually on
@@ -1703,13 +1964,47 @@ mod tests {
         store().forget(id);
     }
 
+    /// A client that answered the size it was configured to, less the
+    /// strip its own toolkit kept for decorations, has arrived.
+    ///
+    /// Not a hypothetical: before the compositor advertised
+    /// `zxdg_decoration_manager_v1`, every winit client fell back to
+    /// drawing its own frame and reserved the title bar out of the size
+    /// it was given — configured 670x668, it committed 670x633 and
+    /// never committed anything else. Judged on aspect alone that
+    /// buffer never fits, so the window was held back until
+    /// [`PRESENT_GRACE`] ran out — ten seconds of empty tab over an app
+    /// that had painted in two.
+    ///
+    /// Negotiation now stops qOS's own apps ever committing it, but the
+    /// case is not retired with them: a client that never binds the
+    /// global, or one whose toolkit decorates itself whatever it is
+    /// told, produces exactly this buffer and must still be shown when
+    /// it does.
+    #[test]
+    fn a_frame_short_by_the_clients_own_decorations_is_shown() {
+        let id = sid(45);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        // The tab less a title bar the client kept for itself.
+        let (w, h) = (1200u32, 765u32);
+        store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+        assert!(
+            store().mark_presented(id, TILE),
+            "{w}x{h} is the tab's width and answers its height as closely \
+             as a client that draws its own frame ever will — waiting for \
+             it to give that strip back is waiting for the grace period",
+        );
+        store().forget(id);
+    }
+
     /// `fills` is what the gate is made of, and the grace period is what
     /// stops it stranding a window. Both are asserted on the predicate
     /// directly — the ten-second wait itself is not something a test can
     /// sit through, so what is proved here is that a mismatch is the
     /// only thing keeping the window back.
     #[test]
-    fn fills_accepts_the_tabs_aspect_and_nothing_else() {
+    fn fills_accepts_a_buffer_sized_to_the_tab_and_nothing_else() {
         assert!(fills(1200, 800, TILE));
         assert!(fills(300, 200, TILE), "same aspect, quarter size");
         assert!(!fills(800, 600, TILE));
@@ -1718,6 +2013,20 @@ mod tests {
         assert!(
             !fills(1200, 800, Rect::ZERO),
             "a tab with no area cannot be judged against",
+        );
+
+        // A client that kept a title bar out of the size it was given:
+        // one axis answered exactly, the other short, nothing overflowing.
+        assert!(fills(1200, 765, TILE), "short by a title bar it drew itself");
+        assert!(fills(1160, 800, TILE), "short by a frame down one side");
+        assert!(
+            !fills(1210, 765, TILE),
+            "wider than the tab is not an answer to it, however close",
+        );
+        assert!(
+            !fills(600, 500, TILE),
+            "inside the tab but answering neither axis is the client's own \
+             idea of its size, which is the frame this gate keeps back",
         );
     }
 
@@ -1932,6 +2241,208 @@ mod tests {
         assert!(foreign_tabs(&rendered).is_empty());
     }
 
+    /// One window, one tab — wherever in the tree that tab happens to sit.
+    ///
+    /// The mirror used to ask "is this surface in the workspace the user is
+    /// looking at?" and treat "no" as "not adopted yet". A window in any other
+    /// workspace therefore got adopted a second time the moment the user
+    /// switched away from it, and the desktop grew a duplicate of an
+    /// application nobody had opened twice.
+    #[test]
+    fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = 31;
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.word-processor".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the mirror should adopt the window exactly once",
+        );
+
+        // The user goes to another workspace. Nothing about the window
+        // changed; it is simply no longer the one on screen.
+        let elsewhere = rendered
+            .workspaces
+            .iter()
+            .map(|w| w.id)
+            .find(|id| *id != rendered.active)
+            .expect("the demo tree has more than one workspace");
+        rendered.active = elsewhere;
+
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "switching workspaces opened a second window onto the same surface",
+        );
+
+        // And back again, which is the sequence a person actually performs.
+        rendered.active = source.active;
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "returning to the window's own workspace duplicated it",
+        );
+    }
+
+    /// A window the launcher placed in a workspace other than the active one
+    /// is already adopted, and must not be adopted again.
+    ///
+    /// This is the launch path rather than the switch path: a launch records
+    /// where the user asked for the window, and the toplevel can map after
+    /// they have moved on.
+    #[test]
+    fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = 32;
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+        // Move the adopted tab into a workspace that is not the active one,
+        // the way a recorded placement or a peer's room does.
+        let elsewhere = rendered
+            .workspaces
+            .iter()
+            .map(|w| w.id)
+            .find(|id| *id != rendered.active)
+            .expect("the demo tree has more than one workspace");
+        let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
+        let ws = rendered
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == elsewhere)
+            .expect("the other workspace");
+        let strip = ws.strips.first_mut().expect("the other workspace's strip");
+        strip.window_groups.push(crate::shell::state::WindowGroup {
+            id: crate::shell::state::next_id(),
+            active_tab: moved.id,
+            tabs: vec![moved],
+            width: crate::shell::state::WindowWidth::Normal,
+            maximized: false,
+        });
+
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the window was adopted again because its tab was in another workspace",
+        );
+    }
+
+    /// A desktop that already has the duplicate — restored from a session
+    /// saved before the mirror compared whole trees — comes back with one
+    /// window, not two. Preventing new duplicates does not repair an old one,
+    /// and the tab bar the person is looking at is the one on disk.
+    #[test]
+    fn a_duplicate_already_in_the_tree_is_collapsed() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = 33;
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+        // Stage the state a pre-fix session left behind: a second tab onto
+        // the same surface, in the same tab bar, showing the same name.
+        let twin = {
+            let one = foreign_tabs_anywhere(&rendered)
+                .into_iter()
+                .find(|t| t.surface_id == surface)
+                .expect("the adopted tab");
+            crate::shell::state::Tab {
+                id: one.tab_id + 1_000_000,
+                title: one.title.clone(),
+                tile: ShellTile::Foreign {
+                    app_id: one.app_id.clone(),
+                    surface_id: surface,
+                },
+            }
+        };
+        let group = rendered
+            .active_workspace_mut()
+            .and_then(|w| w.strips.first_mut())
+            .and_then(|s| s.window_groups.first_mut())
+            .expect("the group the window was adopted into");
+        group.tabs.push(twin);
+        assert_eq!(tabs_for_surface(&rendered, surface), 2, "the fixture is staged");
+
+        assert!(
+            reconcile_foreign_tabs(&source, &mut rendered),
+            "collapsing the duplicate is a change the chrome has to be told about",
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the restored desktop still shows the application twice",
+        );
+
+        // And the group is still showing something that exists.
+        let group = rendered
+            .active_workspace()
+            .and_then(|w| w.strips.first())
+            .and_then(|s| s.window_groups.first())
+            .expect("the group");
+        assert!(
+            group.tabs.iter().any(|t| t.id == group.active_tab),
+            "the group is pointing at a tab that is no longer there",
+        );
+    }
+
+    /// How many tabs anywhere in `tree` show `surface`. Walks the tree the
+    /// chrome renders from, so a duplicate is counted where it would be drawn.
+    fn tabs_for_surface(tree: &WorkspaceTree, surface: SurfaceId) -> usize {
+        tree.workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .filter(|t| {
+                matches!(&t.tile, ShellTile::Foreign { surface_id, .. } if *surface_id == surface)
+            })
+            .count()
+    }
+
+    /// Detach the tab showing `surface` from wherever it is, so a test can put
+    /// it somewhere else.
+    fn take_foreign_tab(
+        tree: &mut WorkspaceTree,
+        surface: SurfaceId,
+    ) -> Option<crate::shell::state::Tab> {
+        for ws in tree.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                for group in strip.window_groups.iter_mut() {
+                    if let Some(i) = group.tabs.iter().position(|t| {
+                        matches!(
+                            &t.tile,
+                            ShellTile::Foreign { surface_id, .. } if *surface_id == surface
+                        )
+                    }) {
+                        return Some(group.tabs.remove(i));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn reconcile_propagates_a_late_set_app_id() {
         let mut source = WorkspaceTree::bootstrap_demo();
@@ -1948,16 +2459,36 @@ mod tests {
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         let t = &foreign_tabs(&rendered)[0];
         assert_eq!(t.app_id, "io.example.late");
-        // The identifier propagates; the *title* is humanised from it.
-        // `a50d47498` ("Put the app's own name on its tab") made that so,
-        // because Files was appearing as `app` and the word processor as
-        // `word-processor` — machine identifiers nobody chose, on camera.
-        // This test predates it and expected the raw trailing component,
-        // which is what a revert would restore and what this fails on.
+        // The identifier propagates; the *title* is humanised from it —
+        // Files used to appear as `app` and the word processor as
+        // `word-processor`, machine identifiers nobody chose.
         assert_eq!(
             t.title, "Late",
             "a tab wears a name, not the last segment of an app id"
         );
+    }
+
+    /// The window itself has to answer with the same name its tab does.
+    ///
+    /// The tab title was fixed once already; the widget standing for the
+    /// surface kept handing back the raw wayland app-id from
+    /// `app_title()`, so anything that asked the tile what it was called
+    /// — rather than reading the tab's stored title — got `dev.qos.chat`,
+    /// an address the user never chose.
+    #[test]
+    fn a_foreign_window_answers_with_its_name_not_its_app_id() {
+        let w = ForeignSurfaceWidget::new(3, "dev.qos.chat".into());
+        assert_eq!(
+            w.app_title(),
+            "Chat",
+            "a window says what it is called, not how it is addressed",
+        );
+
+        // A dotted id with a multi-word tail humanises the same way the
+        // package registry does, so an app reaches one name by either
+        // route.
+        let w = ForeignSurfaceWidget::new(4, "dev.qos.word-processor".into());
+        assert_eq!(w.app_title(), "Word Processor");
     }
 
     #[test]

@@ -55,6 +55,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -67,7 +69,8 @@ use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
     delegate_pointer_gestures, delegate_primary_selection, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -186,6 +189,15 @@ pub struct State {
     pub compositor_state: CompositorState,
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
+    /// `zxdg_decoration_manager_v1` global state — who draws the frame
+    /// around a toplevel.
+    ///
+    /// This compositor does, always: a window lives in a tab, and the
+    /// tab's chrome *is* its decoration. Without this global a toolkit
+    /// has nothing to negotiate with and falls back to drawing its own
+    /// title bar — a second frame inside the first, and one that
+    /// subtracts itself from the size the client was configured to.
+    pub xdg_decoration_state: XdgDecorationState,
     /// `wl_shm` global state — software buffer support. Empty extra-format
     /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
     pub shm_state: ShmState,
@@ -444,6 +456,10 @@ impl State {
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        // Advertised to every client, without a filter: a toolkit that
+        // cannot see this global does not ask, it decorates itself — so
+        // hiding it from anyone is choosing the broken behaviour for them.
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
@@ -602,6 +618,7 @@ impl State {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             data_device_state,
             dmabuf_state,
@@ -1637,12 +1654,29 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
+    /// A client has created an `xdg_toplevel`. Adopt it into the active
+    /// workspace's tab tree, and **do not configure it yet**.
+    ///
+    /// A window here is a tab, so its size is its tab's size — and
+    /// nobody knows that yet: this runs before the strip has laid a
+    /// single pixel of the tab out, so a configure sent from here could
+    /// only carry no size at all, which in xdg-shell means "you choose".
+    /// The client would then commit a first buffer at a size the strip
+    /// never asked for and get corrected a frame later, which is every
+    /// app opening at the wrong size and snapping to the right one in
+    /// front of whoever is watching.
+    ///
+    /// So the handshake finishes one pass later instead, in
+    /// [`crate::compositor::foreign::flush_configures`], which runs
+    /// after the layout that gives this tab its rect and puts that rect
+    /// into the first configure the client ever receives. The wait is
+    /// bounded: a toplevel whose tab never gets laid out is configured
+    /// anyway once `flush_configures`'s own grace period runs out.
+    ///
+    /// The `app_id` may be unset at this point; `adopt_toplevel` falls
+    /// back to a synthetic `anon-<id>` placeholder, and
+    /// [`Self::app_id_changed`] rewrites it once the client provides one.
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Phase 6 Task 6.1 — adopt the freshly-committed toplevel into
-        // the active workspace's tab tree. The `app_id` may be unset at
-        // this point; `adopt_toplevel` falls back to a synthetic
-        // `anon-<id>` placeholder, and a future Task 6.2 step (re-adopt
-        // on `set_app_id`) rewrites it once the client provides one.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -1659,10 +1693,11 @@ impl XdgShellHandler for State {
         self.client_input
             .register_toplevel(surface_id, surface.wl_surface().clone(), app_id);
 
-        // Send a default configure so the client can map. Phase 4 will pick a
-        // real size/position from the cluster layout; Phase 2 just needs the
-        // handshake to complete.
-        surface.send_configure();
+        // Start the clock the deferred opening configure is bounded
+        // against. Adoption is the moment the window was asked for, so
+        // it is the moment "the strip has not laid this out yet"
+        // becomes a wait worth giving up on.
+        crate::compositor::foreign::store().note_adopted(surface_id);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -1793,6 +1828,83 @@ impl XdgShellHandler for State {
     }
 }
 
+/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// always, and to every client that asks.
+///
+/// This is the shell's model being stated, not a preference: a window
+/// lives in a tab, so the title, controls and border around the tile
+/// are the compositor's to draw, and a client drawing its own is
+/// drawing a second frame inside the first. `ServerSide` is therefore
+/// the answer regardless of what was requested, which the protocol
+/// allows — a compositor's configure is a decision, not an
+/// acknowledgement.
+///
+/// The size is the sharper reason. A client that decorates itself does
+/// not add a title bar to the size it was given; it subtracts one and
+/// renders the remainder — configured 670x668, every winit app on this
+/// machine committed 670x633 and never committed anything else, a
+/// 35-pixel band of empty tab under every window for the life of the
+/// session. This handler is what stops that at the source; the fitted-
+/// buffer check in `compositor::foreign` stays behind it as the backstop
+/// for clients that never bind this global at all.
+impl XdgDecorationHandler for State {
+    /// The client has asked for a decoration object — the first point at
+    /// which the compositor can state a mode. Stating it here rather
+    /// than waiting for a request matters: this configure reaches the
+    /// client before its first buffer, so the size it renders is the one
+    /// the compositor asked for.
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has stated a preference. It is heard and answered with
+    /// the same mode as always — including when the preference was
+    /// `ClientSide`, which is the request this exists to refuse.
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        tracing::debug!(
+            target: "shell::compositor::decoration",
+            surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
+            requested = ?mode,
+            "client stated a decoration preference; answering ServerSide",
+        );
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has withdrawn its preference and left the choice to
+    /// the compositor. The choice was never anywhere else.
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+}
+
+impl State {
+    /// Put `ServerSide` in the toplevel's pending state, and send it if
+    /// the client has already had its opening configure.
+    ///
+    /// Smithay only puts a decoration configure on the wire when the
+    /// mode changed or the initial one has not been sent, so calling
+    /// this on every request costs one event per real change.
+    ///
+    /// Before the opening configure, the answer is staged and *not*
+    /// sent. A toolkit negotiates decorations in the same round trip in
+    /// which it creates the toplevel — while the tab is still being laid
+    /// out — and a configure put on the wire then would be the client's
+    /// *first*, carrying the decoration mode and no size: exactly the
+    /// "you pick your own size" event [`XdgShellHandler::new_toplevel`]
+    /// stopped sending. Staging loses nothing — smithay writes the mode
+    /// into the first configure that does go out, since it has not been
+    /// sent yet — and the client learns the decoration mode and its real
+    /// size in one event instead of two.
+    fn decorate(toplevel: &ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    }
+}
+
 impl SeatHandler for State {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -1837,6 +1949,10 @@ impl FractionalScaleHandler for State {
 
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
+// `zxdg_decoration_manager_v1`: the compositor draws window chrome, and
+// this is how a client is told so rather than left to guess. See the
+// `XdgDecorationHandler` impl above.
+delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
