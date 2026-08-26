@@ -34,9 +34,16 @@
  * traced that way, treat a silent log as "not proven" rather than
  * "clean".
  *
- * Interposes close(2), dup2(2), dup3(2) and close_range(2) — the four
- * ways a descriptor number stops meaning what it meant — and for each
- * records:
+ * Interposes close(2), dup2(2), dup3(2), close_range(2) and
+ * shutdown(2) — the ways a descriptor stops meaning what it meant — and
+ * for each records:
+ *
+ * `shutdown` is here for a measured reason. A connection whose far end
+ * has done `shutdown(SHUT_RD)` polls *identically to a healthy one* from
+ * the other side — POLLOUT and nothing else — while that far end's own
+ * reads return zero. It is the one operation that makes two ends of a
+ * live connection disagree about whether it is over, so every call to it
+ * is recorded whatever it names.
  *
  *   - whether the descriptor being destroyed was open at all. A *close*
  *     of a descriptor that is already closed is the smoking gun — it is
@@ -108,6 +115,7 @@ static int (*real_close)(int);
 static int (*real_dup2)(int, int);
 static int (*real_dup3)(int, int, int);
 static int (*real_close_range)(unsigned int, unsigned int, int);
+static int (*real_shutdown)(int, int);
 
 static int armed;
 static int log_fd = -1;
@@ -132,6 +140,9 @@ static void resolve_reals(void)
     }
     if (!real_close_range) {
         real_close_range = dlsym(RTLD_NEXT, "close_range");
+    }
+    if (!real_shutdown) {
+        real_shutdown = dlsym(RTLD_NEXT, "shutdown");
     }
 }
 
@@ -354,6 +365,42 @@ int dup3(int oldfd, int newfd, int flags)
         return real_dup3(oldfd, newfd, flags);
     }
     return (int) syscall(SYS_dup3, oldfd, newfd, flags);
+}
+
+int shutdown(int sockfd, int how)
+{
+    if (!real_shutdown) {
+        resolve_reals();
+    }
+    if (armed && !inside && sockfd != log_fd) {
+        void *caller = __builtin_return_address(0);
+        inside = 1;
+        char what[192];
+        int was_open = 0;
+        int is_socket = 0;
+        describe(sockfd, what, sizeof what, &was_open, &is_socket);
+        dump_maps_once();
+        char who[512];
+        name_caller(caller, who, sizeof who);
+        const char *side = how == SHUT_RD    ? "SHUT_RD"
+                           : how == SHUT_WR  ? "SHUT_WR"
+                           : how == SHUT_RDWR ? "SHUT_RDWR"
+                                              : "?";
+        char line[1024];
+        int n = snprintf(line, sizeof line,
+                         "fdwatch pid=%d tid=%ld shutdown fd=%d how=%s %s from %s\n",
+                         (int) getpid(), (long) syscall(SYS_gettid), sockfd, side,
+                         what, who);
+        if (n > 0) {
+            size_t len = (size_t) n < sizeof line ? (size_t) n : sizeof line - 1;
+            emit(line, len);
+        }
+        inside = 0;
+    }
+    if (real_shutdown) {
+        return real_shutdown(sockfd, how);
+    }
+    return (int) syscall(SYS_shutdown, sockfd, how);
 }
 
 int close_range(unsigned int first, unsigned int last, int flags)

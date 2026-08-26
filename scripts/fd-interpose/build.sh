@@ -41,6 +41,12 @@ free = 60
 os.dup2(spare, free)          # onto a free number: routine, not a loss
 os.close(free)
 os.close(spare)
+t = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    t.shutdown(socket.SHUT_RD)   # the one poll cannot see from the far side
+except OSError:
+    pass
+t.close()
 s.close()
 '
 
@@ -52,6 +58,9 @@ if grep "dup2" "$check_log" | grep -q "DOUBLE-CLOSE"; then
     fail "called a dup2 onto a free descriptor a double close"
 fi
 
+grep -q "shutdown fd=" "$check_log" || fail "did not record a shutdown"
+
 echo "built $out"
-echo "checked: reports a double close, identifies AF_UNIX sockets, and does"
-echo "         not mistake a dup2 onto a free descriptor for either"
+echo "checked: reports a double close, identifies AF_UNIX sockets, records"
+echo "         shutdown, and does not mistake a dup2 onto a free descriptor"
+echo "         for a loss"
