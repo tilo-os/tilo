@@ -106,6 +106,12 @@ impl UndoLog {
             self.last_heads = doc.get_heads();
             true
         } else {
+            // Nothing to undo, but the baseline still moves up: `last_heads` is
+            // where the *next* action starts from, and changes reach a document
+            // by routes that never pass through here — a peer's ops merged in,
+            // the shared schema genesis. A baseline left behind puts those
+            // inside the next action's bracket, and one Ctrl+Z reverts both.
+            self.last_heads = doc.get_heads();
             false
         }
     }
@@ -120,16 +126,43 @@ impl UndoLog {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
     ) {
+        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
+    }
+
+    /// As [`Self::record_committed_action`], naming who performed it.
+    ///
+    /// For a change that reached this document from *outside* the window — an
+    /// agent or a collaborator invoking an operation this app published. Such a
+    /// change is applied under the caller's own actor and never passes through
+    /// a local commit, so without a boundary here two things go wrong at once:
+    /// the action is reachable by nobody, and `last_heads` stays behind it, so
+    /// the next local edit brackets a range that *contains* somebody else's
+    /// work and one Ctrl+Z reverts both.
+    ///
+    /// The name is what keeps them apart afterwards — the local user's Ctrl+Z
+    /// walks past an entry belonging to someone else, and the entry stays
+    /// revertible under the name that made it.
+    pub fn record_committed_action_authored(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
         let after = doc.get_heads();
         if after == before {
-            return; // nothing actually changed
+            // Nothing to undo, but the baseline moves up all the same — same
+            // reason as the empty-transaction path in `commit_action_authored`.
+            self.last_heads = after;
+            return;
         }
         self.undo_stack.push(UndoEntry {
             before,
             after: after.clone(),
             focused_node_idx,
             widget_metadata: metadata,
-            author: None,
+            author,
         });
         self.redo_stack.clear();
         self.last_heads = after;
@@ -174,6 +207,28 @@ impl UndoLog {
         Some(entry)
     }
 
+    /// Whether `author` may revert `entry`: their own work, and anything
+    /// **unattributed**.
+    ///
+    /// The second half is not a convenience — it is what makes an
+    /// author-scoped undo reach the entries the toolkit records for an app's
+    /// own affordances. [`UndoLog::record_committed_action`] is the drain
+    /// behind
+    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
+    /// — every toolbar button, context-menu item and palette dispatch — and it
+    /// has no author to give, so those entries land with `author: None`.
+    /// Matching only on `Some(a) == author` left every one of them permanently
+    /// unreachable, because the interactive Ctrl+Z always carries an author.
+    ///
+    /// Claiming them is sound rather than merely expedient: an entry only
+    /// reaches these stacks by way of a *local* commit boundary, and a peer's
+    /// ops arrive through `State::load_incremental`, which re-baselines without
+    /// pushing anything. An entry that names a different person still belongs
+    /// to them and is still walked past.
+    fn claimable_by(entry: &UndoEntry, author: &UserId) -> bool {
+        entry.author.as_ref().is_none_or(|a| a == author)
+    }
+
     pub fn undo_for_author(
         &mut self,
         doc: &mut AutoCommit,
@@ -184,7 +239,7 @@ impl UndoLog {
         let idx = self
             .undo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(a) if a == author))?;
+            .rposition(|e| Self::claimable_by(e, author))?;
         let entry = self.undo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.redo_stack.push(UndoEntry {
@@ -241,7 +296,7 @@ impl UndoLog {
         let idx = self
             .redo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+            .rposition(|e| Self::claimable_by(e, a))?;
         let entry = self.redo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.undo_stack.push(UndoEntry {
@@ -381,6 +436,25 @@ impl State {
     ) {
         self.undo
             .record_committed_action(&mut self.doc, before, focused_node_idx, metadata);
+    }
+
+    /// As [`Self::record_committed_action`], naming who performed it — for a
+    /// change that reached this document from outside the window. See
+    /// [`UndoLog::record_committed_action_authored`].
+    pub fn record_committed_action_authored(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
+        self.undo.record_committed_action_authored(
+            &mut self.doc,
+            before,
+            focused_node_idx,
+            metadata,
+            author,
+        );
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
@@ -595,8 +669,30 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
-    let entry_after = from_heads;
-    let entry_before = to_heads;
+    write_patches(doc, patches, to_heads, from_heads);
+}
+
+/// Write an already-derived patch set forward into `doc`'s open transaction.
+///
+/// The half of [`write_revert_patches`] after the diff, split out so a caller
+/// that needs to *filter* the patch set can reuse the index translation rather
+/// than reimplement it — [`crate::history_source::revert`] drops the patches
+/// that would overwrite somebody's later edit and writes the rest.
+///
+/// The two anchors are the head sets the patch indices are expressed against.
+/// `insert_anchor` is the state in which a re-inserted element's boundary is
+/// meaningful (the element does not exist after the action being inverted);
+/// `index_anchor` is the state in which an element the patch deletes or
+/// overwrites still exists. Passing them the wrong way round silently moves
+/// edits to neighbouring positions, so both are named rather than positional.
+pub fn write_patches(
+    doc: &mut AutoCommit,
+    patches: Vec<automerge::Patch>,
+    insert_anchor: &[ChangeHash],
+    index_anchor: &[ChangeHash],
+) {
+    let entry_after = index_anchor;
+    let entry_before = insert_anchor;
         // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
         // so nested child patches target the new object.
         let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
