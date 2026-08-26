@@ -2387,6 +2387,67 @@ mod style_tests {
 }
 
 #[cfg(test)]
+mod genesis_detection_tests {
+    use super::*;
+    use automerge::transaction::Transactable;
+    use automerge::{AutoCommit, ObjType, ROOT};
+
+    /// The two helpers a caller uses to tell a schema change from a person's
+    /// edit have no consumer in this crate — the version view that filters on
+    /// them lives elsewhere — so without these they can drift unnoticed.
+    #[test]
+    fn the_genesis_change_is_told_apart_from_an_authored_one() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        doc.splice_text(&c.blocks, 0, 0, "").ok();
+        doc.put(&ROOT, "title", "an edit somebody made").unwrap();
+        doc.commit();
+
+        let changes = doc.get_changes(&[]);
+        let genesis: Vec<_> =
+            changes.iter().filter(|ch| is_schema_genesis_actor(ch.actor_id())).collect();
+        let authored: Vec<_> =
+            changes.iter().filter(|ch| !is_schema_genesis_actor(ch.actor_id())).collect();
+
+        assert!(!genesis.is_empty(), "the schema has to be written by the genesis actor");
+        assert!(!authored.is_empty(), "the edit has to be attributed to this replica");
+        assert_eq!(
+            genesis[0].actor_id().to_hex_string(),
+            schema_genesis_actor_hex(),
+            "the hex form must match what a recorded actor_hex is compared against"
+        );
+    }
+
+    /// A document created before the genesis existed, merged with one created
+    /// after it, is the case the genesis was introduced to prevent: two
+    /// candidates per container key, one of them unreachable for good.
+    #[test]
+    fn a_second_minting_of_the_schema_is_reported_as_shadowed() {
+        let mut shared = AutoCommit::new();
+        init(&mut shared, &ROOT);
+        assert!(
+            shadowed_containers(&shared, &ROOT).is_empty(),
+            "a document written with the genesis reaches one object per key"
+        );
+
+        // What a replica that minted its own schema produces: the same keys,
+        // written under its own actor.
+        let mut own = AutoCommit::new();
+        own.put_object(&ROOT, KEY_BLOCKS, ObjType::List).unwrap();
+        own.put_object(&ROOT, KEY_STYLES, ObjType::Map).unwrap();
+        own.commit();
+
+        let mut merged = shared.clone();
+        merged.merge(&mut own).unwrap();
+        let shadowed = shadowed_containers(&merged, &ROOT);
+        assert!(
+            shadowed.contains(&KEY_BLOCKS.to_string()),
+            "two candidates for {KEY_BLOCKS:?} must be reported, got {shadowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod region_tests {
     use super::*;
     use crate::schema::*;
