@@ -223,6 +223,37 @@ impl std::fmt::Debug for FileIdentity {
     }
 }
 
+/// Which process is on the other end of `stream`, as the kernel knows
+/// it rather than as anyone claims.
+///
+/// Logged beside a connection's own identity so that a session's two
+/// halves can be joined up afterwards. Three separate investigations
+/// have turned on the question "is the peer in this log the process in
+/// that one", and it was never answerable from the logs: the two ends of
+/// a Unix connection are different sockets with different inodes, so
+/// there is nothing to compare. The peer's pid is the one thing both
+/// sides can name.
+fn peer_process(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut who: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `who` and `len` are live and correctly sized for
+    // SO_PEERCRED, and `stream` is borrowed for the call.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut who as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 || who.pid <= 0 {
+        return None;
+    }
+    Some(who.pid as u32)
+}
+
 /// Ask the kernel which file `fd` names right now. `None` when it
 /// cannot be stat'ed at all, which is itself a change worth reporting
 /// rather than a reason to skip the question.
@@ -3236,10 +3267,17 @@ fn spawn_inner(
                             accepted_on,
                             unexaminable_sweeps: AtomicU32::new(0),
                         });
+                        let from = peer_process(&stream);
                         listener_table.insert(Arc::clone(&peer));
                         tracing::info!(
-                            "collab_broker: peer-{id} connected ({} total)",
-                            listener_table.snapshot().len()
+                            "collab_broker: peer-{id} connected ({} total), from pid {}, \
+                             on {}",
+                            listener_table.snapshot().len(),
+                            from.map(|p| p.to_string())
+                                .unwrap_or_else(|| "unknown".into()),
+                            accepted_on
+                                .map(|id| format!("{id:?}"))
+                                .unwrap_or_else(|| "an unstattable descriptor".into()),
                         );
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
@@ -5959,6 +5997,26 @@ mod tests {
             "the record has to say the connection ended, got {:?}",
             departures[0].reason,
         );
+    }
+
+    /// The broker can name the process on the other end of a connection,
+    /// which is the only thing the two sides of a session's logs have in
+    /// common.
+    ///
+    /// The two ends of a Unix connection are separate sockets with
+    /// separate inodes, so "is the peer in the compositor's log the
+    /// process in the agent's log" has never been answerable from the
+    /// logs at all — it has been assumed, three times, in investigations
+    /// that turned on it. `SO_PEERCRED` answers it.
+    #[test]
+    fn a_connections_peer_is_named_by_the_kernel_not_by_claim() {
+        let (here, there) = UnixStream::pair().expect("socketpair");
+        assert_eq!(
+            peer_process(&here),
+            Some(std::process::id()),
+            "both ends of this pair are this process, and the kernel should say so",
+        );
+        drop(there);
     }
 
     /// A peer the sweep cannot examine is reported as such, rather than
