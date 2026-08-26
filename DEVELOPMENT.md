@@ -87,10 +87,16 @@ build and LLVM at 29%, the rest rustc lowering MIR to IR.
 Run-to-run noise on a busy machine is ±20%, which is larger than most of the
 effects above. Measure on an idle machine or not at all.
 
-The cost that *is* real for concurrent work: every change to `build.rustflags`
-invalidates the entire sccache for everyone at once. Rust hit rate measured
-1.75% during a day of flag changes and recovered to 33% once they stopped.
-Batch them.
+What *is* real for concurrent work, where several worktrees build the same
+tree at once: sccache is the only sharing there is, since target directories
+cannot be shared. Measured, a fresh worktree building `ui` takes 126 s at 77%
+hits against ~562 s cold.
+
+That is also the thing easiest to destroy. Every change to `build.rustflags`
+invalidates the whole cache for every worktree simultaneously — measured at
+1.75% hits during a day of flag changes, recovering to 33% once they stopped.
+Batch flag changes, and do not make one while a long verification run is in
+flight.
 
 ### Sizing the compilation cache
 
