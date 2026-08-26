@@ -1753,6 +1753,14 @@ class Live:
     CROP_OP = re.compile(
         r"performed an operation the room exports id=photos\.")
 
+    #: The agent having *opened* the photo editor. The camera goes there
+    #: on this rather than on the crop: a crop is over by the time it is
+    #: logged, so a camera that arrives on it films the result and never
+    #: the change. Arriving when the editor opens puts it on screen
+    #: before the picture is square, so the moment is in the shot.
+    OPEN_OP = re.compile(
+        r"performed an operation the room exports id=photos\.app#open")
+
     #: The agent putting the result *in the document*. This is the one
     #: the closing frame is about, and the only one worth moving the
     #: camera off the editor for.
@@ -1974,7 +1982,16 @@ class Live:
         # agent's first act and it happens in the photo editor; framing
         # the document for it filmed a still page while the only thing
         # moving on the desktop was somewhere else.
-        if self.CROP_OP.search(fresh) and not self.watched_the_crop:
+        #
+        # On the *open*, not the crop. An operation is logged once it has
+        # been performed, so a camera cued by the crop arrives after the
+        # picture is already square: it films the outcome and misses the
+        # change. Cued by the open it is on the editor while the picture
+        # is still whole, and the crop happens in front of it. One take
+        # showed the change only because the two happened to be seconds
+        # apart; the next had them 304ms apart and showed nothing.
+        if (self.OPEN_OP.search(fresh) or self.CROP_OP.search(fresh)) \
+                and not self.watched_the_crop:
             self.watched_the_crop = True
             self.something_is_happening()
             self.the_editor_works()
