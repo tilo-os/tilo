@@ -324,6 +324,21 @@ pub struct App {
     /// disables outbound pointer broadcast — useful for headless tests
     /// and the `quick-ui` examples, which have no meaningful scope.
     presence_broadcast_scope: Option<PresenceKey>,
+    /// The coordinate space this process's own pointer is measured in.
+    ///
+    /// `None` means the ordinary case: a window inside a desktop, whose winit
+    /// coordinates are its own content's
+    /// ([`PresenceKey::local_surface_pointer`]). The shell sets it to
+    /// [`crate::presence::PointerSpace::Desktop`] for the one surface where
+    /// that is not true — its own chrome, whose window *is* the desktop, so
+    /// its coordinates are the ones every other surface's position has to be
+    /// resolved against.
+    ///
+    /// Set rather than guessed: no app can work out which of the two it is,
+    /// and a process that guesses wrong publishes a position in a space it is
+    /// not in — unfalsifiable from the outside, because a pointer in the wrong
+    /// place looks like a pointer.
+    pointer_space: Option<crate::presence::PointerSpace>,
     /// The peer we're currently "following", if any — set by clicking a
     /// peer's presence indicator (their off-screen mist, in particular).
     /// [`App::followed_peer_target`] resolves this to their live pointer so
@@ -551,6 +566,7 @@ impl App {
             },
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
+            pointer_space: None,
             followed_peer: None,
             last_pointer_broadcast: None,
             last_focus_presence: None,
@@ -624,6 +640,12 @@ impl App {
         if let Some(scope) = PresenceKey::for_local_workspace() {
             app.set_presence_broadcast_scope(Some(scope));
         }
+        // Name the surface this process draws, so a content-space pointer
+        // measured in it can be recognised as placeable here and one measured
+        // in somebody else's content cannot. Same value the outbound pointer
+        // is scoped with, from the same function, so the two spellings cannot
+        // drift.
+        app.presence_ctx.set_surface_id(crate::local_surface_id());
         app
     }
 
@@ -1331,11 +1353,30 @@ impl App {
         self.presence_broadcast_sink = None;
     }
 
+    /// Declare the coordinate space this process's pointer is measured in. See
+    /// the `pointer_space` field — the shell calls this for its own chrome,
+    /// whose window is the desktop.
+    pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
+        self.pointer_space = Some(space);
+    }
+
+    /// The key this process publishes its own pointer under: whatever space it
+    /// was told it is in, or its own surface's content.
+    fn local_pointer_key(&self) -> PresenceKey {
+        match self.pointer_space.clone() {
+            Some(space) => PresenceKey::Pointer { space },
+            None => PresenceKey::local_surface_pointer(),
+        }
+    }
+
     /// Set (or clear) the presence key under which local pointer moves
     /// are broadcast during the event loop. The shell calls this after
     /// resolving the active workspace so remote peers see the cursor
     /// attributed to the right scope. Passing `None` disables outbound
     /// pointer broadcast.
+    ///
+    /// This decides *whether* to publish, not what space the pointer is in —
+    /// see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         self.presence_broadcast_scope = key.clone();
         // Reset the throttle so a new scope's first pointer move fires
@@ -1626,7 +1667,30 @@ impl App {
             any = true;
             match event {
                 CollabEvent::Context { collaborators, .. } => {
-                    for c in collaborators {
+                    // The one row addressed to this machine about itself. It
+                    // goes somewhere no roster, picker, caret or cursor reads
+                    // from, so the row still does not exist as a participant
+                    // here — but the two facts only the room knows now arrive:
+                    // the address other machines use for this participant, and
+                    // the name the host wrote for it.
+                    //
+                    // Without the first, an app authoring under an id it
+                    // derived locally can never be recognised in a roster
+                    // keyed by the room's; without the second, a guest is
+                    // called one thing by everybody else and another by their
+                    // own screen.
+                    if let Some(me) = collaborators.iter().find(|c| c.is_self) {
+                        self.presence_ctx.set_self_participant(
+                            crate::permissions::UserId(me.id.clone()),
+                            me.name.clone(),
+                        );
+                    }
+                    // Presence is what this app knows about *other*
+                    // participants — their carets, their pointers, the names
+                    // drawn beside them. The row a machine sends about its own
+                    // participant is not that, and letting it in would put the
+                    // local user in every list built from this store.
+                    for c in collaborators.into_iter().filter(|c| !c.is_self) {
                         // The roster says who is here and what they are
                         // called. It does **not** say where their
                         // pointer is, so it does not make one: a
@@ -1658,6 +1722,41 @@ impl App {
                 }
                 CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
                     self.apply_remote_presence(user_id, key, payload);
+                }
+                CollabEvent::ActionArrived {
+                    type_id,
+                    payload,
+                    from_user_id,
+                } => {
+                    // Offered to the root widget, which decides. Every app in
+                    // the room is handed every action, and the one whose
+                    // registry knows the type is the one that applies it — so
+                    // the app that owns a document stays its only writer.
+                    //
+                    // The heads are read *first*, and that is the whole point
+                    // of the two lines around this call: somebody else's
+                    // change is about to land in a document whose undo
+                    // baseline has no idea. A baseline left behind it is not
+                    // merely a missing entry — the next thing the person types
+                    // brackets a range containing this change, and their next
+                    // Ctrl+Z reverts it along with their own keystroke.
+                    let before = self.state.doc.get_heads();
+                    let applied =
+                        self.root_widget
+                            .apply_room_action(&mut self.state.doc, &type_id, &payload);
+                    if applied {
+                        // One boundary, named after whoever published it, so
+                        // the local Ctrl+Z walks past it instead of through it
+                        // and it stays revertible under the name that made it.
+                        self.state.record_committed_action_authored(
+                            before,
+                            None,
+                            None,
+                            Some(crate::permissions::UserId(from_user_id.clone())),
+                        );
+                        self.needs_sync = true;
+                        self.structure_dirty = true;
+                    }
                 }
                 CollabEvent::CRDTUpdate { data } => {
                     // MERGE incoming full state rather than replacing the
@@ -1779,6 +1878,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Who is sitting at this window — the author every local commit and every
+    /// Ctrl+Z is scoped to.
+    pub fn local_author(&self) -> &crate::permissions::UserId {
+        &self.local_author
     }
 
     /// Test-only accessor: a mutable reference to the app's CRDT state so
@@ -2834,6 +2939,23 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
     )
 }
 
+/// The identity of this process's surface: the app id it announces.
+///
+/// `QOS_PACKAGE_ID` under the launcher (`dev.qos.word-processor`), the
+/// binary's own name in a dev run. Public because it is half of a protocol
+/// and not an internal detail: it is what a pointer published in this
+/// surface's content coordinates is scoped to (see
+/// [`crate::presence::PointerSpace::Surface`]), and what a receiver compares
+/// against to decide whether a content position is one it can place. Both
+/// ends must spell the surface the same way, so both ends call this.
+pub fn local_surface_id() -> String {
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_app_id(package_id.as_deref(), binary.as_deref())
+}
+
 /// Resolve the wayland `app_id` this process announces.
 ///
 /// `QOS_PACKAGE_ID` when the launcher set it — that is the package's
@@ -3882,15 +4004,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                     _ => {}
                 }
-                // Outbound pointer-presence broadcast: if the
-                // shell has declared a presence scope, relay
-                // every pointer move (throttled to ~30 Hz) so
-                // peers can render this user's cursor on the
-                // same scope. CursorLeft clears the peer-side
-                // pointer via the `Left` payload so their
-                // cursor stops rendering when we wander out
-                // of the window.
-                if let Some(scope) = app.presence_broadcast_scope.clone() {
+                // Outbound pointer-presence broadcast: if the shell has
+                // declared a presence scope, relay every pointer move
+                // (throttled to ~30 Hz) so peers can render this user's
+                // cursor. CursorLeft clears the peer-side pointer via the
+                // `Left` payload so their cursor stops rendering when we
+                // wander out of the window.
+                //
+                // The room scope decides *whether* to publish — presence
+                // outside a room addresses nobody. It is not what the pointer
+                // is scoped to: a winit `CursorMoved` is measured in this
+                // window's own content, not on the desktop, and saying "room"
+                // of it would name the audience while leaving the coordinate
+                // space unsaid. Every receiver then had to supply a space of
+                // its own, and each supplied itself — one person drawn once
+                // per open window, at the same offset in each.
+                //
+                // So the pointer says which surface it was measured in, and
+                // only a surface showing that same content can place it. Where
+                // the pointer is on the *desktop* is a different fact,
+                // published by the compositor, which is the only layer that
+                // knows it.
+                if app.presence_broadcast_scope.is_some() {
                     match &event {
                         WindowEvent::CursorMoved { position, .. } => {
                             let now = Instant::now();
@@ -3900,8 +4035,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                             ) {
                                 app.last_pointer_broadcast = Some(now);
+                                let where_it_is = app.local_pointer_key();
                                 app.broadcast_presence(
-                                    scope.clone(),
+                                    where_it_is,
                                     PresencePayload::Pointer {
                                         x: position.x as f32,
                                         y: position.y as f32,
@@ -3910,7 +4046,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             }
                         }
                         WindowEvent::CursorLeft { .. } => {
-                            app.broadcast_presence(scope.clone(), PresencePayload::Left);
+                            let where_it_was = app.local_pointer_key();
+                            app.broadcast_presence(where_it_was, PresencePayload::Left);
                             app.last_pointer_broadcast = None;
                         }
                         _ => {}
