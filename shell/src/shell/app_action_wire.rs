@@ -361,7 +361,13 @@ impl RemoteAppActions {
             );
             return Err(InvokeError::Unknown);
         }
-        tracing::debug!(
+        // At `info!`, because its absence is the interesting case and a
+        // level nobody films at cannot show one. The refusal beside this is
+        // `warn!`, so a dispatch that never happened at all -- no refusal,
+        // no ask -- looked exactly like a dispatch that worked. That is the
+        // difference between a take where the picture reaches the other
+        // machine and one where it does not, and it was unobservable.
+        tracing::info!(
             id, peer, %app, resource = %address.resource, action = %address.action,
             "asked an application to perform one of its own operations"
         );
