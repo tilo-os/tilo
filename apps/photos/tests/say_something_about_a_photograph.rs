@@ -255,7 +255,7 @@ fn right_click_picture(app: &mut PhotosApp, state: &mut ui::State, fx: f64, fy: 
 /// what the remark must equal.
 fn open_address(state: &ui::State) -> String {
     let image = PhotosDoc::image(&state.doc).expect("something is open");
-    photos::actions::resource_id(&image.path)
+    photos::actions::resource_id(&image)
 }
 
 fn overlap(a: Rect, b: Rect) -> f64 {

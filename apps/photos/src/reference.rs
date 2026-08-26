@@ -9,8 +9,8 @@
 //! ## The address is the one the app already publishes
 //!
 //! [`crate::actions::PhotosResources`] publishes the open photograph as
-//! `photos.image:<path>`, carrying the operations that can be performed on it —
-//! rotate, crop, reset. A remark minted here names *that same id*, through
+//! `photos.image:<content>`, carrying the operations that can be performed on
+//! it — rotate, crop, reset. A remark minted here names *that same id*, through
 //! [`crate::actions::resource_id`], rather than a parallel spelling. That is
 //! the whole point: somebody says "this one, but it needs to be square", and
 //! whoever reads it resolves the address to the resource whose `crop` action
@@ -40,15 +40,14 @@ use crate::doc::PhotosDoc;
 /// The address of the photograph open in `doc`, or `None` when none is.
 ///
 /// The label is the file's own name — what a person recognises in a chip —
-/// while the path is the address, exactly the split
-/// [`ResourceRef`] exists to hold.
+/// while the content is the address, exactly the split [`ResourceRef`] exists
+/// to hold. A remark therefore keeps naming the picture on the machine it is
+/// read on, rather than a directory that only existed in the session that
+/// wrote it.
 pub fn image_reference(doc: &AutoCommit) -> Option<ResourceRef> {
     let image = PhotosDoc::image(doc)?;
-    Some(ResourceRef::whole(
-        IMAGE_KIND,
-        resource_id(&image.path),
-        image.name,
-    ))
+    let id = resource_id(&image);
+    Some(ResourceRef::whole(IMAGE_KIND, id, image.name))
 }
 
 impl Referent for PhotosApp {
@@ -134,10 +133,10 @@ mod tests {
         assert!(image_reference(&doc).is_none());
     }
 
-    /// The name is the label and the path is the address: two photographs that
-    /// share a filename must not share an identity.
+    /// The name is the label and the picture is the address: two photographs
+    /// that share a filename must not share an identity.
     #[test]
-    fn the_name_is_the_label_and_the_path_is_the_address() {
+    fn the_name_is_the_label_and_the_picture_is_the_address() {
         let a = image_reference(&doc_with_image("/var/workspace/a/harbour.png")).unwrap();
         let b = image_reference(&doc_with_image("/var/workspace/b/harbour.png")).unwrap();
         assert_eq!(a.label, "harbour.png");

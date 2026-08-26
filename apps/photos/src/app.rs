@@ -212,6 +212,13 @@ struct Rendered {
 pub struct PhotosApp {
     /// Decoded original, before any edit. `None` until a file opens.
     original: Option<(String, Rgba)>,
+    /// The address the open photograph is published under, kept because
+    /// `Widget::resource_rects` is handed no document and must key the place
+    /// it publishes by the same id the resource tree does. Set from the
+    /// document in `refresh`, and cleared whenever there is nothing drawn —
+    /// a rect published for a picture this machine cannot render would mark a
+    /// participant as having touched an empty canvas.
+    open_id: Option<String>,
     rendered: Option<Rendered>,
     viewer: Option<ImageViewer>,
     buttons: Vec<(Hit, Button)>,
@@ -269,6 +276,7 @@ impl PhotosApp {
         }
         Self {
             original: None,
+            open_id: None,
             rendered: None,
             viewer: None,
             buttons,
@@ -474,6 +482,7 @@ impl PhotosApp {
             self.rendered = None;
             self.viewer = None;
             self.original = None;
+            self.open_id = None;
             return;
         };
         let edits = PhotosDoc::edits(doc);
@@ -485,6 +494,7 @@ impl PhotosApp {
                 Some(img) => self.original = Some((open.path.clone(), img)),
                 None => {
                     self.original = None;
+                    self.open_id = None;
                     self.rendered = None;
                     self.viewer = None;
                     return;
@@ -494,6 +504,11 @@ impl PhotosApp {
         let Some((_, original)) = self.original.as_ref() else {
             return;
         };
+        // There is a picture, so there is somewhere to point at it. Set before
+        // the early return below: the edits changing does not move the
+        // address, and a frame that skipped the re-render must still publish
+        // one.
+        self.open_id = Some(crate::actions::resource_id(&open));
 
         let unchanged = self
             .rendered
@@ -1585,15 +1600,22 @@ impl Widget for PhotosApp {
     /// `photograph_rect` is the viewer's answer to where the pixels ended up,
     /// which is the same rect the compose surface is already placed against.
     ///
-    /// Keyed by the id [`crate::actions::resource_id`] mints from the path, so
-    /// the address a caller invokes — `photos.image:/…/harbour.png#crop` — is
-    /// the address that resolves here. Nothing open publishes nothing, exactly
-    /// as the resource tree does.
+    /// Keyed by the id [`crate::actions::resource_id`] mints from the picture's
+    /// content, so the address a caller invokes — `photos.image:<content>#crop`
+    /// — is the address that resolves here. Nothing open publishes nothing,
+    /// exactly as the resource tree does.
+    ///
+    /// From the document rather than from the local path, and that is the
+    /// point: a session showing a photograph a collaborator staged has the
+    /// picture on screen but somebody else's path in hand, and keying the
+    /// place by the path published a region under an address nobody was
+    /// invoking. The mark then had nowhere to go on the one screen that was
+    /// watching.
     fn resource_rects(&self) -> Vec<(String, Rect)> {
-        let Some(path) = self.open_image_path() else {
+        let Some(id) = self.open_id.clone() else {
             return Vec::new();
         };
-        vec![(crate::actions::resource_id(path), self.photograph_rect())]
+        vec![(id, self.photograph_rect())]
     }
 
     fn get_rect(&self) -> Rect {
@@ -1606,7 +1628,7 @@ impl Widget for PhotosApp {
 /// standing a placeholder card where the photograph should be.
 ///
 /// The point is not convenience. An action addressed at
-/// `photos.image:/…/harbour.png` can only be *shown* landing if something on
+/// `photos.image:<content>` can only be *shown* landing if something on
 /// this desktop is drawing that photograph; a placeholder tile publishes no
 /// resource rects, so the address would resolve to no region and the mark
 /// would have nowhere to go.

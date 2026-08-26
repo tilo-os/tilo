@@ -1938,7 +1938,7 @@ fn demo_photograph_path() -> &'static str {
 /// photograph.
 ///
 /// The frames this exists for. Everything a viewer is shown here is a
-/// consequence of a real invocation: the address `photos.image:<path>#crop`
+/// consequence of a real invocation: the address `photos.image:<content>#crop`
 /// is resolved against the same catalogue the control socket serves, the
 /// capability gate runs, the app's own registry decodes the action and
 /// applies it to its own document — and only then is there a mark. Nothing is
@@ -1957,13 +1957,18 @@ fn demo_photograph_path() -> &'static str {
 ///   really did change, and it changed where the mark was.
 fn agent_touches_the_photograph() -> Scenario {
     let path = demo_photograph_path();
-    let address: &'static str =
-        Box::leak(format!("photos.image:{path}#crop").into_boxed_str());
+    // The address is the picture's own, minted from the bytes the app is about
+    // to open and hash — not from this machine's path to them. Spelled here
+    // the way a caller that had enumerated the room would have received it, so
+    // the scenario cannot reach the photograph by a name the app never
+    // publishes.
+    let resource =
+        photos::actions::content_address(&ui::blobstore::hash_bytes(&flight_test_content()));
+    let address: &'static str = Box::leak(format!("{resource}#crop").into_boxed_str());
     // The same photograph, and the operation that would undo the crop. Aimed
     // at a participant this room has never heard of, so the catalogue's
     // capability gate leaves the row out and the address resolves to nothing.
-    let undo: &'static str =
-        Box::leak(format!("photos.image:{path}#reset").into_boxed_str());
+    let undo: &'static str = Box::leak(format!("{resource}#reset").into_boxed_str());
     Scenario {
         name: "agent-touches-the-photograph",
         description: "an operation an agent performed, marked on the resource \
@@ -4105,6 +4110,51 @@ mod tests {
         assert!(
             back_x < 1.0,
             "focusing the first window again returns the strip home (scroll_x = {back_x})"
+        );
+    }
+
+    /// The film invokes the photograph by an address it mints itself, and the
+    /// app resolves that address against the tree it publishes. Nothing joins
+    /// the two but this.
+    ///
+    /// If they drift, every frame still renders and the capture is of a
+    /// desktop where the agent asked for a crop and nothing happened — which
+    /// is indistinguishable from the feature being broken, and is what a
+    /// path-shaped address produced the moment the session that staged the
+    /// file was not the session being filmed.
+    #[test]
+    fn the_address_the_film_invokes_is_the_one_the_app_publishes() {
+        use qos_actions::ResourceProvider;
+
+        let scenario = super::agent_touches_the_photograph();
+        let invoked = scenario
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                super::Action::InvokeAppAction { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("the scenario invokes an action on the photograph");
+
+        // The app's own answer, reached the way the desktop reaches it: open
+        // the same file, then read the tree it publishes.
+        let mut doc = automerge::AutoCommit::new();
+        photos::doc::PhotosDoc::seed(&mut doc);
+        photos::PhotosApp::new().open_path(&mut doc, super::demo_photograph_path());
+        let published = photos::actions::PhotosResources.resources(&doc);
+        let resource = published
+            .first()
+            .expect("the app publishes the photograph it was given")
+            .id
+            .0
+            .clone();
+
+        assert_eq!(
+            invoked,
+            format!("{resource}#crop"),
+            "the film asks for an operation at an address the app does not \
+             publish, so the capture would be of a desktop where nothing \
+             happened"
         );
     }
 
