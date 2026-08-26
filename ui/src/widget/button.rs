@@ -6,6 +6,7 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::permissions::PermissionScope;
 use crate::i18n;
@@ -272,35 +273,55 @@ pub fn face_colors(
     use vello::peniko::Color;
     match style {
         ButtonStyle::Neutral => {
+            let rest = theme.tokens.colors.surfaces.raised;
             let bg = if interact.pressed {
                 theme.bg_active
             } else if interact.hovered {
                 theme.bg_hover
             } else {
-                theme.tokens.colors.surfaces.raised
+                rest
             };
-            (bg, Some(theme.tokens.colors.border_standard), theme.tokens.colors.text_primary)
+            let fg = theme.tokens.colors.ink_on_any(
+                &[rest, theme.bg_hover, theme.bg_active],
+                theme.tokens.colors.text_primary,
+                ON_FILL_MIN_CONTRAST,
+            );
+            (bg, Some(theme.tokens.colors.border_standard), fg)
         }
         ButtonStyle::Primary => {
-            let bg = if interact.hovered || interact.pressed {
-                theme.accent_hover
-            } else {
-                theme.accent_primary
-            };
-            (bg, None, Color::WHITE)
+            let rest = theme.accent_primary;
+            let active = theme.accent_hover;
+            let bg = if interact.hovered || interact.pressed { active } else { rest };
+            // White is the label this style wants, and on a dark enough accent
+            // it is what comes back. On a bright one it does not survive its
+            // own fill, so the ink walks out of white far enough to be read —
+            // once, over both fills, so it does not change under the pointer.
+            let fg =
+                theme.tokens.colors.ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+            (bg, None, fg)
         }
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
             let d = theme.tokens.colors.semantic.danger;
-            // Solid danger at rest; lifted ~15% toward white on hover/press so
-            // the destructive action gives feedback without a second token.
-            let bg = if interact.hovered || interact.pressed {
-                let mix = |a: u8| (a as f32 * 0.85 + 255.0 * 0.15).round() as u8;
-                Color::from_rgba8(mix(d.r()), mix(d.g()), mix(d.b()), d.a())
+            // The label first: it is what the feedback then has to respect.
+            let fg = theme.tokens.colors.ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
+            // Hover/press shift the fill ~15% for feedback, and the direction
+            // is not a constant. Lifting a mid-tone danger toward white is what
+            // took a white label from 4.97:1 at rest to 3.96:1 the moment the
+            // pointer arrived — a control cannot buy feedback with the
+            // legibility of its own label. So the shift always moves the fill
+            // *away* from the ink that sits on it.
+            let toward: u8 = if crate::a11y::contrast_ratio(fg, Color::WHITE)
+                > crate::a11y::contrast_ratio(fg, Color::from_rgb8(0, 0, 0))
+            {
+                255
             } else {
-                d
+                0
             };
-            (bg, None, Color::WHITE)
+            let shift = |a: u8| (a as f32 * 0.85 + toward as f32 * 0.15).round() as u8;
+            let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
+            let bg = if interact.hovered || interact.pressed { active } else { d };
+            (bg, None, fg)
         }
         ButtonStyle::Ghost => {
             // Transparent + borderless at rest; a themed surface tint only
@@ -313,7 +334,17 @@ pub fn face_colors(
             } else {
                 Color::TRANSPARENT
             };
-            (bg, None, theme.tokens.colors.text_dim)
+            // At rest the ghost paints nothing, so the ground is whatever it
+            // was placed over; the base surface is the closest the widget can
+            // know. The hover and press surfaces are its own, and a dim label
+            // is most at risk on `bg_hover` — close enough to the dim tier that
+            // the label all but vanishes on it.
+            let fg = theme.tokens.colors.ink_on_any(
+                &[theme.tokens.colors.surfaces.base, theme.bg_hover, theme.bg_active],
+                theme.tokens.colors.text_dim,
+                ON_FILL_MIN_CONTRAST,
+            );
+            (bg, None, fg)
         }
     }
 }
@@ -897,41 +928,70 @@ mod tests {
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Ghost, rest);
         assert_eq!(bg, vello::peniko::Color::TRANSPARENT, "ghost rest fill is transparent");
         assert_eq!(border, None, "ghost has no border");
-        assert_eq!(fg, theme.tokens.colors.text_dim, "ghost label/icon is dim");
+        // The ghost label is the quiet tier, but quiet is a rank and not a
+        // licence to be unreadable: the tone starts at `text_dim` and steps out
+        // only as far as the hover surface demands.
+        use crate::a11y::contrast_ratio;
+        let base = theme.tokens.colors.surfaces.base;
+        assert!(
+            contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
+            "ghost label must stay quieter than the primary tier",
+        );
+        assert!(
+            contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST,
+            "ghost label must survive the surface hover paints under it",
+        );
         assert_eq!(face_colors(&theme, ButtonStyle::Ghost, hover).0, theme.bg_hover);
         assert_eq!(face_colors(&theme, ButtonStyle::Ghost, press).0, theme.bg_active);
     }
 
     #[test]
-    fn face_colors_primary_is_accent_borderless_white() {
+    fn face_colors_primary_is_accent_borderless_and_readable() {
+        use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
         assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
         assert_eq!(border, None, "accent fill is self-defining — no border");
-        assert_eq!(fg, vello::peniko::Color::WHITE, "accent-filled label is white");
-        assert_eq!(
-            face_colors(&theme, ButtonStyle::Primary, hover).0,
-            theme.accent_hover,
-            "primary hover darkens to the accent-hover token",
+        // The label used to be pinned to white. What the style actually needs
+        // is a label that can be read on its own fill; white is only the right
+        // answer when the accent is dark enough for it.
+        let r = contrast_ratio(fg, bg);
+        assert!(
+            r >= ON_FILL_MIN_CONTRAST,
+            "primary label {fg:?} on {bg:?} is {r:.2}:1, under the {ON_FILL_MIN_CONTRAST}:1 floor",
         );
+        let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Primary, hover);
+        assert_eq!(hbg, theme.accent_hover, "primary hover darkens to the accent-hover token");
+        assert_eq!(hfg, fg, "the label must not change colour under the pointer");
     }
 
     #[test]
-    fn face_colors_danger_is_solid_at_rest_borderless_white() {
+    fn face_colors_danger_is_solid_at_rest_borderless_and_readable() {
+        use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Danger, rest);
         assert_eq!(bg, theme.tokens.colors.semantic.danger, "danger rest = solid danger");
         assert_eq!(border, None);
-        assert_eq!(fg, vello::peniko::Color::WHITE);
+        let r = contrast_ratio(fg, bg);
+        assert!(
+            r >= ON_FILL_MIN_CONTRAST,
+            "danger label {fg:?} on {bg:?} is {r:.2}:1, under the {ON_FILL_MIN_CONTRAST}:1 floor",
+        );
+        let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Danger, hover);
         assert_ne!(
-            face_colors(&theme, ButtonStyle::Danger, hover).0,
+            hbg,
             theme.tokens.colors.semantic.danger,
             "danger hover lifts off the rest colour for feedback",
         );
+        // The hover lift moves the fill, and the direction it moves is exactly
+        // what can cost the label its contrast. It has to hold.
+        let hr = contrast_ratio(hfg, hbg);
+        assert!(hr >= ON_FILL_MIN_CONTRAST, "danger hover label {hfg:?} on {hbg:?} is {hr:.2}:1");
+        assert_eq!(hfg, fg, "the label must not change colour under the pointer");
     }
 
     #[test]
@@ -945,7 +1005,18 @@ mod tests {
         let (bg, border, fg) = f.colors(&theme);
         assert_eq!(bg, theme.accent_hover);
         assert_eq!(border, None);
-        assert_eq!(fg, vello::peniko::Color::WHITE);
+        // The immediate-mode face resolves through `face_colors`, so it carries
+        // the same derived label rather than a literal of its own.
+        assert_eq!(
+            fg,
+            face_colors(
+                &theme,
+                ButtonStyle::Primary,
+                ButtonInteract { hovered: true, ..Default::default() }
+            )
+            .2,
+        );
+        assert!(crate::a11y::contrast_ratio(fg, bg) >= ON_FILL_MIN_CONTRAST);
         assert_eq!(f.spoken_name(), "Send", "visible label is the spoken name");
     }
 

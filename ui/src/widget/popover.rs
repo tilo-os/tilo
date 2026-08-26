@@ -395,9 +395,19 @@ impl Widget for Popover {
                     &RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64),
                 );
             }
-            let text_color = if is_hl { vello::peniko::Color::WHITE } else { c.text_primary };
+            let text_color = if is_hl {
+                c.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                c.text_primary
+            };
             if self.selected == Some(idx) {
-                let check_color = if is_hl { vello::peniko::Color::WHITE } else { c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX] };
+                // The tick is a mark, not text, so it answers to the lower
+                // non-text floor — but it still has to answer to something.
+                let check_color = if is_hl {
+                    c.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
+                } else {
+                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                };
                 Self::draw_check(scene, transform, row, check_color);
             }
             let (_lw, lh) = text_renderer.measure_weighted(label, fs, None, TextWeight::Medium);

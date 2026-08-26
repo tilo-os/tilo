@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -382,7 +381,7 @@ impl Widget for DatePicker {
             // selected / in-view-month / out-of-view-month.
             let day_str = date.day().to_string();
             let color = if is_selected {
-                Color::WHITE
+                tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else if is_in_view_month {
                 text_color
             } else {
