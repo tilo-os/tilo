@@ -35,28 +35,22 @@ impl SheetProvider for XlsxCodec {
         let workbook_xml = pkg
             .get("xl/workbook.xml")
             .ok_or_else(|| CodecError::Parse("xlsx: missing xl/workbook.xml".into()))?;
-        // rId → worksheet part path, from xl/_rels/workbook.xml.rels.
         let rels = pkg.get("xl/_rels/workbook.xml.rels").map(parse_workbook_rels).unwrap_or_default();
-        // The shared string table (cells with t="s" index into this).
         let sst = pkg.get("xl/sharedStrings.xml").map(parse_shared_strings).unwrap_or_default();
-        // (sheet name, rId) in document order.
         let sheet_defs = parse_workbook_sheets(workbook_xml)?;
 
         for (name, rid) in sheet_defs {
             let sheet_id = wb.add_sheet(&name);
-            // Resolve the worksheet part path (rels target is relative to xl/).
             let Some(target) = rels.get(&rid) else { continue };
             let part = normalize_xl_target(target);
             let Some(ws_xml) = pkg.get(&part) else { continue };
             parse_worksheet(ws_xml, &sst, wb, &sheet_id)?;
         }
 
-        // Document properties from docProps/core.xml (dc:title / dc:creator / …).
         if let Some(core) = pkg.get("docProps/core.xml") {
             import_core_props(core, wb);
         }
-        // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts
-        // survive; the structural parts are regenerated on export.
+        // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for name in pkg.names() {
             if is_preserved_part(name) {
                 if let Some(b) = pkg.get(name) {
@@ -74,27 +68,21 @@ impl SheetProvider for XlsxCodec {
         let styles_xml = wb.preserved_part("xlsx/part/xl/styles.xml");
         let has_styles = styles_xml.is_some();
 
-        // [Content_Types].xml
         pkg.set("[Content_Types].xml", content_types_xml(snap.sheets.len(), has_styles).into_bytes());
-        // _rels/.rels → workbook + docProps/core.
         pkg.set("_rels/.rels", root_rels_xml().into_bytes());
-        // xl/workbook.xml + its rels.
         pkg.set("xl/workbook.xml", workbook_xml(&snap).into_bytes());
         pkg.set("xl/_rels/workbook.xml.rels", workbook_rels_xml(snap.sheets.len(), has_styles).into_bytes());
-        // One worksheet part per sheet, in order (sheet1.xml, sheet2.xml, …).
         for (i, sheet) in snap.sheets.iter().enumerate() {
             pkg.set(&format!("xl/worksheets/sheet{}.xml", i + 1), worksheet_xml(sheet).into_bytes());
         }
         // styles.xml: re-emit the preserved original, else a minimal default.
         pkg.set("xl/styles.xml", styles_xml.unwrap_or_else(|| minimal_styles_xml().into_bytes()));
-        // docProps/core.xml from the model's properties.
         pkg.set("docProps/core.xml", core_props_xml(&snap.properties).into_bytes());
 
         pkg.write_opc()
     }
 }
 
-// ---- workbook.xml + rels parsing ------------------------------------------
 
 /// `(sheet name, r:id)` in document order.
 fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError> {
@@ -134,8 +122,7 @@ fn parse_workbook_rels(xml: &[u8]) -> BTreeMap<String, String> {
     out
 }
 
-/// A worksheet rels `Target` (e.g. `worksheets/sheet1.xml`, `/xl/worksheets/…`)
-/// resolved to a package part path.
+/// A worksheet rels `Target` (e.g. `worksheets/sheet1.xml`, `/xl/worksheets/…`) resolved to a package part path.
 fn normalize_xl_target(target: &str) -> String {
     let t = target.trim_start_matches('/');
     if t.starts_with("xl/") {
@@ -145,7 +132,6 @@ fn normalize_xl_target(target: &str) -> String {
     }
 }
 
-// ---- sharedStrings parsing -------------------------------------------------
 
 /// The shared-string table: each `<si>` → its concatenated `<t>` text.
 fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
@@ -185,12 +171,10 @@ fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
     out
 }
 
-// ---- worksheet parsing -----------------------------------------------------
 
-/// Parse a worksheet's `<sheetData>` into the workbook model, resolving shared
-/// strings and preserving formulas. A streaming state machine over `<c>` cells:
-/// `<f>` is the formula source, `<v>` the value (or a shared-string index when
-/// `t="s"`), `<is><t>` an inline string.
+/// Parses a worksheet's `<sheetData>` into the workbook model, resolving shared
+/// strings and preserving formulas: `<f>` is the formula source, `<v>` the value
+/// (or a shared-string index when `t="s"`), `<is><t>` an inline string.
 fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str) -> Result<(), CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -255,9 +239,8 @@ fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str
     Ok(())
 }
 
-/// Resolve one parsed `<c>` cell into a [`CellInput`] and write it. A cell with no
-/// value, formula, or style carries no information and is skipped (the grid is
-/// sparse). Shared-string cells (`t="s"`) resolve their index against `sst`.
+/// Resolves one parsed `<c>` cell into a [`CellInput`] and writes it (skipped if it
+/// carries no value/formula/style — the grid is sparse); `t="s"` resolves against `sst`.
 #[allow(clippy::too_many_arguments)]
 fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Option<String>, t: &str, style: Option<String>, value: &str, formula: &str, has_formula: bool) {
     let Some(reference) = reference else { return };
@@ -272,7 +255,6 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Opti
         "d" => (CellType::Text, value.to_string()), // ISO date string, preserved as text
         _ => (CellType::Number, value.to_string()), // absent or "n"
     };
-    // Nothing to store: empty value, no formula, no style.
     if resolved.is_empty() && !has_formula && style.is_none() {
         return;
     }
@@ -289,7 +271,6 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Opti
     wb.set_cell(sheet_id, &reference, input);
 }
 
-// ---- docProps ----------------------------------------------------------------
 
 fn import_core_props(xml: &[u8], wb: &mut Workbook) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
@@ -328,7 +309,6 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
     }
 }
 
-// ---- export: part builders -------------------------------------------------
 
 fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
     let mut overrides = String::new();
@@ -421,9 +401,8 @@ fn cell_xml(cell: &crate::sheet::CellView) -> String {
     let f_xml = cell.formula.as_deref().map(|f| format!("<f>{}</f>", xml_escape(f))).unwrap_or_default();
     let has_formula = cell.formula.is_some();
 
-    // Value serialization + the `t` attribute per cell type. A formula's string
-    // result uses `t="str"` (a cached formula string), a literal string uses
-    // `t="inlineStr"`.
+    // Value serialization + the `t` attribute per cell type: a formula's string result
+    // uses `t="str"` (a cached formula string), a literal string uses `t="inlineStr"`.
     let (t_attr, body): (&str, String) = match cell.cell_type {
         CellType::Number => ("", format!("{f_xml}<v>{}</v>", xml_escape(&cell.value))),
         CellType::Bool => (" t=\"b\"", format!("{f_xml}<v>{}</v>", bool01(&cell.value))),
@@ -464,9 +443,7 @@ fn core_props_xml(props: &BTreeMap<String, String>) -> String {
     )
 }
 
-/// Whether a part should be preserved verbatim (unmodeled content the codec keeps
-/// so it survives a round-trip). The structural parts (workbook, worksheets, rels,
-/// content-types, sharedStrings, docProps) are regenerated and thus not preserved.
+/// Whether a part should be preserved verbatim; the regenerated structural parts (workbook, worksheets, rels, content-types, sharedStrings, docProps) are not.
 fn is_preserved_part(name: &str) -> bool {
     let structural = name == "[Content_Types].xml"
         || name == "_rels/.rels"

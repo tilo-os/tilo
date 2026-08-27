@@ -1,10 +1,7 @@
 //! Integration tests for the runtime encoder probe in
 //! [`shell::collab::flatpak_share::SharedFlatpakSession`], which walks
-//! `NVENC → VA-API → openh264` in priority order and picks the
-//! highest-priority backend that comes up.
-//!
-//! Exercises the **session-start probe** only, not the tracker or encode
-//! loop — those live in `flatpak_share_e2e.rs`.
+//! `NVENC -> VA-API -> openh264` in priority order. Session-start probe
+//! only — the tracker/encode loop lives in `flatpak_share_e2e.rs`.
 
 use shell::collab::encoder::EncoderKind;
 use shell::collab::flatpak_share::SharedFlatpakSession;
@@ -22,8 +19,8 @@ fn cfg(choice: EncoderChoice) -> FlatpakShareConfig {
     }
 }
 
-/// On a stripped host the Auto choice must resolve to openh264 — the
-/// software fallback is always available.
+/// On a stripped host Auto must resolve to openh264 — the software
+/// fallback is always available.
 #[test]
 fn auto_resolves_to_openh264_on_stripped_host() {
     let session = SharedFlatpakSession::start(
@@ -35,13 +32,12 @@ fn auto_resolves_to_openh264_on_stripped_host() {
         cfg(EncoderChoice::Auto),
     )
     .expect("session should start");
-    // Without the `vaapi` / `nvenc` cargo features the probe walks
-    // past both hardware backends and lands on Openh264.
+    // Without the `vaapi` / `nvenc` features the probe walks past both
+    // hardware backends and lands on Openh264.
     #[cfg(not(feature = "vaapi"))]
     #[cfg(not(feature = "nvenc"))]
     assert_eq!(session.chosen_encoder(), EncoderKind::Openh264);
-    // On feature-on builds, a hardware backend may legitimately win.
-    // The test just asserts a valid encoder was chosen.
+    // On feature-on builds a hardware backend may legitimately win.
     let kind = session.chosen_encoder();
     assert!(matches!(
         kind,
@@ -50,8 +46,8 @@ fn auto_resolves_to_openh264_on_stripped_host() {
     eprintln!("auto probe chose: {}", kind.as_str());
 }
 
-/// Explicit openh264 skips the hardware probes — no `/dev/dri` open,
-/// no NVIDIA init.
+/// Explicit openh264 skips the hardware probes — no `/dev/dri` open, no
+/// NVIDIA init.
 #[test]
 fn explicit_openh264_never_probes_hardware() {
     let session = SharedFlatpakSession::start(
@@ -66,10 +62,9 @@ fn explicit_openh264_never_probes_hardware() {
     assert_eq!(session.chosen_encoder(), EncoderKind::Openh264);
 }
 
-/// Requesting VA-API on a host that doesn't have it falls back to
-/// openh264 (best-effort mode). The reason is recorded in
-/// `chosen_encoder` — the OSD surfaces "vaapi requested → fell back to
-/// software" without the session refusing to start.
+/// Requesting VA-API where it isn't available falls back to openh264, with
+/// the reason recorded in `chosen_encoder` so the OSD can surface
+/// "vaapi requested -> fell back to software" rather than refusing to start.
 #[test]
 fn requested_vaapi_falls_back_when_hardware_absent() {
     let session = SharedFlatpakSession::start(
@@ -89,13 +84,12 @@ fn requested_vaapi_falls_back_when_hardware_absent() {
             "no vaapi feature: probe must fall back to openh264"
         );
     }
-    // On a vaapi-feature build with a real `/dev/dri`, the probe may
-    // succeed and pick VA-API instead — both outcomes are valid here.
+    // On a vaapi build with a real `/dev/dri` the probe may pick VA-API
+    // instead — both outcomes are valid.
     let _ = session.chosen_encoder();
 }
 
-/// Explicit NVENC on a non-NVIDIA host falls back — same pattern as
-/// the VA-API case above.
+/// Explicit NVENC on a non-NVIDIA host falls back, as VA-API does above.
 #[test]
 fn requested_nvenc_falls_back_when_hardware_absent() {
     let session = SharedFlatpakSession::start(
@@ -119,10 +113,8 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
 }
 
 /// On a real VA-API host with a wired encoder, Auto picks VaApi.
-/// `#[ignore]`d because CI runners don't ship `/dev/dri`; run with
-/// `--include-ignored` on a workstation. Self-skips when the host
-/// doesn't have a functional H.264 VA-API path (e.g. the render node
-/// exists but the driver doesn't expose H.264 encode).
+/// `#[ignore]`d (CI runners lack `/dev/dri`); run with `--include-ignored`
+/// on a workstation. Self-skips without a functional H.264 VA-API path.
 #[test]
 #[ignore = "requires --features vaapi + a real /dev/dri render node; run with --include-ignored on a workstation"]
 fn auto_probe_picks_vaapi_when_hardware_present() {
@@ -138,9 +130,8 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
     #[cfg(feature = "vaapi")]
     {
         use shell::collab::encoder::{Codec, probe as encoder_probe};
-        // Self-skip if the underlying probe reports unavailable — some
-        // hosts have a render node but no H.264 encode entrypoint
-        // (older iGPUs, discrete GPUs without an encode block, etc.).
+        // Some hosts have a render node but no H.264 encode entrypoint (older
+        // iGPUs, discrete GPUs without an encode block).
         let (chosen_by_probe, _outcomes) = encoder_probe(Codec::H264, Some(EncoderChoice::Vaapi));
         if chosen_by_probe != EncoderKind::VaApi {
             eprintln!(

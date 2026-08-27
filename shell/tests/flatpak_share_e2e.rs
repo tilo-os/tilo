@@ -1,17 +1,15 @@
 //! End-to-end integration test for the Flatpak-share pipeline.
 //!
-//! In-process rather than two network namespaces or processes: the
-//! gossipsub transport is already covered by the `hub`/`actor` and
-//! `peer_sync_test.rs` suites, this runner has no root for netns tests,
-//! and what's actually under test is the encoder+decoder+registry+
-//! `NeighbourMsg`s composition against the spec's latency/backpressure
-//! budget, which is orthogonal to the transport.
+//! In-process rather than two netns/processes: gossipsub transport is
+//! already covered by the `hub`/`actor` and `peer_sync_test.rs` suites,
+//! this runner has no root for netns, and what's under test
+//! (encoder+decoder+registry+`NeighbourMsg` composition against the
+//! latency/backpressure budget) is orthogonal to the transport.
 //!
-//! Asserts: a [`SharedFlatpakSession`] sustains >= 30 fps over a 3 s
-//! window (the openh264 SW encoder's ceiling, below the 60 fps spec
-//! target) with motion-to-photon latency under 60 ms per frame, and
-//! that a stalled paint side drops video frames without ever dropping
-//! input events.
+//! Asserts a [`SharedFlatpakSession`] sustains >= 30 fps over a 3s window
+//! (the openh264 SW encoder's ceiling, below the 60 fps spec target) with
+//! motion-to-photon latency under 60 ms/frame, and that a stalled paint
+//! side drops video frames without ever dropping input.
 
 use std::time::{Duration, Instant};
 
@@ -21,12 +19,10 @@ use shell::diagnostics::PeerSurfaceMetrics;
 use shell::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
 use shell::network::streaming::{InputEvent, RemoteInputSink};
 use shell::shell::peer_view::{PeerView, PushOutcome};
-// `mark_drawn` lives on the `Widget` trait (implemented by PeerView) —
-// bring it into scope so the trait method resolves.
+// `mark_drawn` lives on the `Widget` trait (implemented by PeerView).
 use ui::widget::Widget;
 
-/// Recording sink for input events — same shape as the private one in
-/// `network::streaming::test_support`, not visible from integration tests.
+/// Recording sink for input events — the one in `test_support` is private.
 #[derive(Default)]
 struct EventRecorder {
     events: Vec<(PeerId, SurfaceId, InputEvent)>,
@@ -38,8 +34,8 @@ impl RemoteInputSink for EventRecorder {
     }
 }
 
-/// Deterministic RGBA gradient — matches the fixture the encoder tests
-/// use so PSNR + decoder behaviour is predictable.
+/// Deterministic RGBA gradient, matching the encoder tests' fixture so
+/// PSNR + decoder behaviour is predictable.
 fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
@@ -68,8 +64,7 @@ const HOST_PEER: PeerId = 0xAAAA;
 const VIEWER_PEER: PeerId = 0xBBBB;
 const SURFACE: SurfaceId = 42;
 
-/// Runs headless in the test process; no GPU required — the encoder is
-/// openh264 SW, which runs cleanly in CI.
+/// Headless, no GPU: the encoder is openh264 SW, which runs cleanly in CI.
 #[test]
 fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     const W: u32 = 320;
@@ -86,8 +81,7 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     .expect("session construction");
     session.add_viewer(VIEWER_PEER, false);
 
-    // Extract the sender-side monotonic-ns from the announcement so we
-    // can feed the receiver's clock-offset handshake below.
+    // The sender-side monotonic-ns feeds the receiver's clock-offset handshake.
     #[allow(unused_assignments)]
     let mut sender_ns_at_send: u64 = 0;
     match session.stream_start_msg() {
@@ -117,9 +111,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     let metrics = PeerSurfaceMetrics::default();
     let mut view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
 
-    // Both sides are in-process and share `origin`, the reference the
-    // wire ts is measured from, so the clock-offset handshake below is
-    // trivially near-zero.
+    // Both sides are in-process and share `origin` (the reference the wire ts
+    // is measured from), so the clock-offset handshake is trivially near-zero.
     let origin = session.origin();
 
     let receiver_ns_at_recv = origin.elapsed().as_nanos() as u64;
@@ -135,8 +128,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     );
     let frame_bytes = gradient_frame(W, H);
 
-    // `mark_drawn` after each accepted frame keeps this on the happy
-    // path — the backpressure test below drives the drop-oldest path.
+    // `mark_drawn` per accepted frame keeps this on the happy path; the
+    // backpressure test below drives the drop-oldest path.
     let deadline = origin + Duration::from_secs(3);
     let mut sent = 0u32;
     let mut received = 0u32;
@@ -150,9 +143,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
                 NeighbourMsg::SurfaceFrame {
                     encoded_h264, ts, ..
                 } => {
-                    // Sender+receiver share `origin`, so subtraction
-                    // against the wire ts is a direct motion-to-photon
-                    // delta.
+                    // Sender+receiver share `origin`, so subtraction against the wire ts is a
+                    // direct motion-to-photon delta.
                     let now_ns = origin.elapsed().as_nanos() as u64;
                     let latency_ns = now_ns.saturating_sub(ts);
                     let outcome = view.push_encoded_with_latency(&encoded_h264, Some(latency_ns));
@@ -208,8 +200,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     session.stop();
 }
 
-/// Holding off `mark_drawn` simulates the paint side stalling under
-/// real CPU / bandwidth pressure.
+/// Holding off `mark_drawn` simulates the paint side stalling under real
+/// CPU / bandwidth pressure.
 #[test]
 fn backpressure_drops_frames_but_input_stream_still_delivers() {
     const W: u32 = 128;
@@ -224,8 +216,8 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
     let mut input_sink = EventRecorder::default();
     let frame_bytes = gradient_frame(W, H);
 
-    // Advance the tick time between pushes so encode_next_frame always
-    // accepts — frames beyond the pending ceiling drop-oldest.
+    // Advance tick time between pushes so encode_next_frame always accepts;
+    // frames beyond the pending ceiling drop-oldest.
     let mut fake_now = Instant::now();
     let mut encoded_frames = Vec::new();
     for _ in 0..10 {

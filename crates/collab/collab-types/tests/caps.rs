@@ -1,14 +1,13 @@
 //! Op-application enforcement: the `(subject × scope × verb)` capability
 //! layer, proven on the **real** validate/apply path
-//! (`validate_inbound_op` + `ChannelState::apply_and_relay`), not a
-//! helper.
+//! (`validate_inbound_op` + `ChannelState::apply_and_relay`), not a helper.
 //!
-//! The headline proof: a `commenter` may add a comment op but an *edit*
-//! op from the same actor is rejected **at validation** — not applied,
-//! not relayed. Plus the richer layer doing real work: an `editor`
-//! restricted to comment-only inside one app has its edit denied
-//! (something the coarse role table alone would allow), and a per-user
-//! share extends a viewer's authority on one artifact.
+//! Headline proof: a `commenter` may add a comment op but an edit op from
+//! the same actor is rejected **at validation** — not applied, not
+//! relayed. Plus the richer layer: an `editor` restricted to
+//! comment-only inside one app has its edit denied (something the
+//! coarse role table alone would allow), and a per-user share extends a
+//! viewer's authority on one artifact.
 
 use std::time::{Duration, SystemTime};
 
@@ -100,10 +99,8 @@ fn build_op(
     op
 }
 
-// ---------------------------------------------------------------------
-// The headline proof: commenter may comment, may NOT edit — enforced at
-// validation, not applied, not relayed.
-// ---------------------------------------------------------------------
+// The headline proof: commenter may comment, may NOT edit — enforced
+// at validation, not applied, not relayed.
 
 #[test]
 fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
@@ -124,9 +121,8 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         "seq advanced for the applied comment"
     );
 
-    // An EDIT op (EditMeta — a metadata mutation) from the SAME actor is
-    // rejected at validation: the real validate path returns the role
-    // denial...
+    // An EDIT op (EditMeta) from the SAME actor is rejected at
+    // validation: the real validate path returns the role denial...
     let edit = build_op(artifact, author_pk, &author_sk, att, OpClass::EditMeta, 2);
     assert_eq!(
         validate_inbound_op(&edit, &mut state.clone()),
@@ -155,10 +151,8 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     assert_eq!(state.op_log.len(), before_log, "rejected splice was NOT applied");
 }
 
-// ---------------------------------------------------------------------
 // The richer layer does real work: an app-scoped Restrict narrows an
 // Editor below what the coarse role table allows.
-// ---------------------------------------------------------------------
 
 #[test]
 fn app_scoped_restriction_caps_an_editor_to_comment_only() {
@@ -203,10 +197,8 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
     assert_eq!(state.op_log.len(), 1);
 }
 
-// ---------------------------------------------------------------------
 // Per-resource share: a Grant extends a Viewer's authority on ONE
 // artifact without changing their role.
-// ---------------------------------------------------------------------
 
 #[test]
 fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
@@ -254,9 +246,7 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
     );
 }
 
-// ---------------------------------------------------------------------
 // Denied is an explicit block: no grant can rescue it.
-// ---------------------------------------------------------------------
 
 #[test]
 fn denied_role_cannot_be_rescued_by_a_grant() {
@@ -281,11 +271,9 @@ fn denied_role_cannot_be_rescued_by_a_grant() {
     assert_eq!(state.op_log.len(), 0);
 }
 
-// ---------------------------------------------------------------------
 // The cap-bundle model is coherent with the coarse role table: for
-// every (role, op-class), role_permits agrees with "role's cap ceiling
-// implies the op's required verb".
-// ---------------------------------------------------------------------
+// every (role, op-class), role_permits agrees with "role's cap
+// ceiling implies the op's required verb".
 
 #[test]
 fn caps_agree_with_role_table() {

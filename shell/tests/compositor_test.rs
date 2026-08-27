@@ -1,14 +1,13 @@
 //! End-to-end Wayland integration test for the native compositor: spawns
 //! `quick-desktop --mode native --backend winit`, scrapes the listening
-//! socket out of its stderr (the `listening on "wayland-N"` line is a
-//! stable contract of `compositor::native::run`), drives a raw
-//! `wayland-client` toplevel with a unique app-id, and asserts the
-//! compositor's `WorkspaceTree` adopts then reaps the matching foreign tab
-//! — observed through the `NIRIOS_TEST_STATE_DUMP` introspection hook.
+//! socket out of its stderr (`listening on "wayland-N"` is a stable
+//! contract of `compositor::native::run`), drives a raw `wayland-client`
+//! toplevel with a unique app-id, and asserts the compositor's
+//! `WorkspaceTree` adopts then reaps the matching foreign tab — observed
+//! through the `NIRIOS_TEST_STATE_DUMP` introspection hook.
 //!
-//! `#[ignore]` by default: winit needs a real Wayland or X11 display, which
-//! fully headless CI cannot supply, so its backend init would panic.
-//! Un-ignoring in CI is gated on a virtual display server in the runner image.
+//! `#[ignore]` by default: winit needs a real Wayland/X11 display, which
+//! headless CI can't supply.
 //!
 //! ```text
 //! cargo build -p quick-desktop
@@ -26,13 +25,10 @@ use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-/// Walks the compositor's `WorkspaceTree` JSON dump untyped, looking for a
-/// `TileContent::Foreign` tab whose `app_id` matches. `None` when the file
-/// is unreadable or not JSON.
-///
-/// Untyped because a strongly-typed mirror would have to enumerate every
-/// `TileContent` variant the production code adds — `#[serde(other)]` only
-/// catches unit variants — and would break whenever a tile shape grows a field.
+/// Walks the `WorkspaceTree` JSON dump untyped, looking for a
+/// `TileContent::Foreign` tab whose `app_id` matches. Untyped because a
+/// typed mirror would have to enumerate every `TileContent` variant and
+/// would break whenever a tile shape grows a field.
 fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<bool> {
     let bytes = std::fs::read(dump_path).ok()?;
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -68,8 +64,7 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
     Some(false)
 }
 
-/// Block on a closure returning `Option<bool>` until it yields `Some(true)`
-/// or `timeout` expires. The closure is re-polled every 50ms.
+/// Re-polls every 50ms until the closure yields `Some(true)` or `timeout`.
 fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -81,7 +76,6 @@ fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool 
     false
 }
 
-/// Spawn the compositor child + wait for the "listening on …" line.
 /// Returns (child handle, socket name like `wayland-3`).
 fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
     // Built by `cargo test`'s pre-build step, at `target/debug/quick-desktop`
@@ -109,8 +103,8 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
         .spawn()
         .expect("spawn quick-desktop");
 
-    // Stream stderr on a worker thread so it reaches the test logs and is
-    // scanned for the "listening on" marker; first matching line wins.
+    // Streamed on a worker thread so it reaches the test logs and is scanned
+    // for the "listening on" marker; first matching line wins.
     let stderr = child.stderr.take().expect("child stderr piped");
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -139,8 +133,6 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     panic!("compositor never printed `nirios compositor listening on …` within 8s");
 }
 
-/// Pull the socket name out of a stderr line. Returns `None` if the line
-/// doesn't match the compositor's contract format.
 fn extract_socket_name(line: &str) -> Option<String> {
     // The contract is `nirios compositor listening on "wayland-N"`.
     let marker = "nirios compositor listening on ";
@@ -265,8 +257,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
     }
 }
 
-/// Drive the queue until both globals are bound or `timeout` elapses,
-/// returning whatever it has so the caller reports the failure.
+/// Returns whatever it has on timeout so the caller reports the failure.
 fn round_trip_until_bound(
     conn: &Connection,
     queue: &mut EventQueue<TestClient>,
@@ -284,7 +275,6 @@ fn round_trip_until_bound(
 #[test]
 #[ignore = "requires a host display server (WAYLAND_DISPLAY or DISPLAY) to back winit"]
 fn native_compositor_adopts_and_reaps_foreign_tab() {
-    // 1. Set up the introspection sink + spawn the compositor.
     let dump_path = std::env::temp_dir().join(format!("nirios-state-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&dump_path);
 
@@ -307,8 +297,8 @@ fn native_compositor_adopts_and_reaps_foreign_tab() {
 fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     let app_id = format!("nirios-test-{}", std::process::id());
 
-    // 2. Connect to the freshly-bound socket. `wayland-client` reads
-    // `WAYLAND_DISPLAY`, so we set it just for the connection scope.
+    // Connect to the freshly-bound socket via `WAYLAND_DISPLAY`, which
+    // `wayland-client` reads, set just for the connection scope.
     // SAFETY: tests run single-threaded; the env is restored after.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", socket_name) };
     let conn = Connection::connect_to_env().expect("connect to compositor socket");
@@ -330,23 +320,20 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
         .cloned()
         .expect("xdg_wm_base global never advertised");
 
-    // 3. Create the surface stack and set the unique app-id.
     let surface = compositor.create_surface(&qh, ());
     let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg_surface.get_toplevel(&qh, ());
     toplevel.set_app_id(app_id.clone());
     surface.commit();
     let _ = conn.flush();
-    // Roundtrip so the server processes get_toplevel + set_app_id + commit
-    // and fires `new_toplevel` / `app_id_changed`; this only unsticks the
-    // request queue, the state dump is polled below.
+    // Roundtrip so the server processes get_toplevel + set_app_id + commit;
+    // this only unsticks the request queue, the state dump is polled below.
     for _ in 0..10 {
         let _ = conn.roundtrip();
         let _ = queue.dispatch_pending(&mut client);
     }
 
-    // 4. Poll the state dump until the foreign tab with our app-id
-    // appears, or 3s elapses.
+    // Poll the state dump until the foreign tab with our app-id appears.
     let adopted = poll_for(Duration::from_secs(3), || {
         // Re-pump inside the poll: without it the test blocks on the file
         // system alone and nothing drives the compositor's loop after the
@@ -368,16 +355,14 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
         dump_path.display()
     );
 
-    // 5. Tear the client down. `wayland-client` proxies do not auto-send
-    // destroy on drop, so explicit `.destroy()` calls are what fire
-    // smithay's `toplevel_destroyed`. xdg-shell requires reverse-creation
-    // order (toplevel → xdg_surface → surface).
+    // `wayland-client` proxies don't auto-destroy on drop, so explicit
+    // `.destroy()` calls are what fire smithay's `toplevel_destroyed`;
+    // xdg-shell requires reverse-creation order.
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
     let _ = conn.flush();
-    // Drive the queue once so the destroys reach the server before the
-    // connection drops.
+    // Drive the queue so the destroys reach the server before the drop.
     let _ = conn.roundtrip();
     drop(queue);
     drop(conn);

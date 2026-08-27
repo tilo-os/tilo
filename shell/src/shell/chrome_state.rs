@@ -1,16 +1,10 @@
 //! Shared chrome state for the nirios shell root.
 //!
-//! Chrome widgets (TopBarChrome, SidebarWheelChrome, ShellOverlayHost)
-//! live at sibling positions in the widget tree and need to mutate the
-//! same set of fields — overlay visibility flags and the workspace tree
-//! itself. This module packages that state into one `Rc<RefCell<_>>`
-//! handle so each widget can hold a clone and read/write without routing
-//! every interaction through the tree's root.
-//!
-//! This is the shell's equivalent of the Elm-style `Model` that widgets
-//! mutate via events; keeping it out of the Automerge doc is deliberate
-//! — overlay visibility is local UI state that should not sync to peers,
-//! and the WorkspaceTree already has its own JSON persistence layer.
+//! Chrome widgets sit at sibling positions in the widget tree and mutate
+//! the same fields, so this packages that state into one
+//! `Rc<RefCell<_>>` handle each can hold without routing through the
+//! root. Kept out of the automerge doc deliberately: overlay visibility
+//! is local UI state that must not sync to peers.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -29,28 +23,19 @@ use crate::shell::state::{
 };
 pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 
-/// One capability request waiting for the user to answer it.
-///
-/// Two things raise these, and the difference is the `reply` field. A
-/// portal method call is *blocked* on the answer — its D-Bus caller is
-/// sitting in `flow::resolve` awaiting the oneshot, so the answer has
-/// to travel back or the app hangs. A prompt the shell raised on its
-/// own behalf (a dropped file, a menu action) has nobody waiting, so
-/// there is no channel to carry.
-///
-/// Dropping a `PendingPrompt` without answering drops the sender, which
-/// the portal side reads as deny — the failure mode is a refusal, not a
-/// hang.
+/// One capability request waiting for the user to answer it. Dropping
+/// without answering drops the `reply` sender, which the portal side
+/// reads as deny — refusal, not a hang.
 pub struct PendingPrompt {
     pub app_id: AppId,
     pub capability: Capability,
-    /// Reply channel back to the blocked portal request, when there is
-    /// one. `None` for shell-originated prompts.
+    /// Reply channel to a blocked portal request; `None` for
+    /// shell-originated prompts nobody is waiting on.
     pub reply: Option<tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>>,
 }
 
 impl PendingPrompt {
-    /// A prompt nobody is blocked on — the shell asking on its own behalf.
+    /// The shell asking on its own behalf; nobody is blocked on this.
     pub fn new(app_id: AppId, capability: Capability) -> Self {
         Self {
             app_id,
@@ -59,7 +44,6 @@ impl PendingPrompt {
         }
     }
 
-    /// A prompt a portal request is awaiting the answer to.
     pub fn with_reply(
         app_id: AppId,
         capability: Capability,
@@ -95,38 +79,22 @@ pub struct OverlayFlags {
     pub overview: bool,
     pub quick_settings: bool,
     pub ws_settings: bool,
-    /// Collaborator dropdown, opened by clicking the avatar stack in the
-    /// top bar's right cluster. Lists every peer by name so invites and
-    /// session handoff have a visible surface; pure UI state — the roster
-    /// itself lives on `WorkspaceTree::collaborators`.
+    /// Pure UI state — the peer roster itself lives on
+    /// `WorkspaceTree::collaborators`.
     pub collaborators: bool,
-    /// Room-activity sheet — the workspace's own change history, by everyone.
-    /// Opened from the command palette or from the foot of the collaborator
-    /// dropdown. Pure UI state; the history it shows is derived from
+    /// Pure UI state — the history shown is derived from
     /// `WorkspaceTree::doc`, which is shared and replicated.
     pub room_activity: bool,
 }
 
-/// Global-search scope. Defaults to `Workspace` so a bare open stays
-/// scoped to the active workspace unless the user explicitly widens or
-/// narrows.
-///
 /// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`] (the focused app's own resources and
-/// actions); `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (every app plus full-text over the filesystem —
-/// the only scope that can launch something not already open).
-/// `Alt+Space` exists because a nested Wayland client can't claim Super
-/// from the host DE.
-///
-/// A narrowing scope degrades rather than empties: with no provider
-/// claiming the focused tab, [`SearchScope::ActiveApp`] allows every
-/// provider; with nothing focused at all, the palette widens to
-/// [`SearchScope::All`].
+/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
+/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
+/// claim Super from the host DE). Degrades rather than empties: no
+/// provider claiming the focused tab widens `ActiveApp` to every
+/// provider; nothing focused widens the palette to `All`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchScope {
-    /// Scoped to the currently focused tab's content. Seeded by
-    /// `Ctrl+K` and by the focused group's search affordance.
     ActiveApp,
     #[default]
     Workspace,
@@ -134,13 +102,9 @@ pub enum SearchScope {
 }
 
 impl SearchScope {
-    /// Short label shown inside the scope pill. `ActiveApp`'s label
-    /// depends on which tab is focused, so callers render that variant
-    /// with the tab's title instead of this static string.
-    ///
-    /// These name *places* to search; the kind-filter chip band above
-    /// names *sorts of result* — the two rows must not share a word, or
-    /// a scope pill reads as one of the chips above it.
+    /// `ActiveApp` renders the tab's title instead of this static
+    /// string. Must not share a word with the kind-filter chips —
+    /// those name result sorts, this names places.
     pub fn label(self) -> &'static str {
         match self {
             SearchScope::ActiveApp => "This app",
@@ -149,29 +113,21 @@ impl SearchScope {
         }
     }
 
-    /// Whether this scope can hide results a wider scope would show.
     /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope
-    /// rather than to the query.
+    /// prefix so an empty result list is attributable to the scope,
+    /// not the query.
     pub fn narrows_results(self) -> bool {
         matches!(self, SearchScope::ActiveApp)
     }
 }
 
-/// Where the next window opened from the command palette should land.
-///
 /// Normally decided by
-/// [`crate::shell::placement::placement_for_new_window`] — opens beside
-/// the active window, joining it as a tab if that window is already
-/// tabbed.
-///
+/// [`crate::shell::placement::placement_for_new_window`].
 /// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
-/// sets: the next launch joins *that* group as a tab regardless. One-
-/// shot — the palette clears it on close, so a later launch is never
-/// silently aimed at a stale group.
+/// sets — one-shot, cleared on palette close, so a later launch is
+/// never silently aimed at a stale group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpenTarget {
-    /// Follow the placement rule.
     #[default]
     Beside,
     /// Force the new window into `GroupId` as a tab.
@@ -179,8 +135,8 @@ pub enum OpenTarget {
 }
 
 impl OpenTarget {
-    /// Short clause appended to launchable palette rows so a result says
-    /// where it will land before the user commits to it.
+    /// Appended to launchable palette rows so a result says where it
+    /// will land before the user commits.
     pub fn result_hint(self) -> &'static str {
         match self {
             OpenTarget::Beside => "Opens beside",
@@ -189,35 +145,29 @@ impl OpenTarget {
     }
 }
 
-/// Quick-settings tray values. Local UI state; does not sync to peers —
-/// device settings like brightness, volume, and radio toggles are always
-/// per-device, never shared.
+/// Local UI state; does not sync to peers — device settings like
+/// brightness, volume, and radio toggles are always per-device.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuickSettingsState {
-    /// Brightness level, 0.0..=1.0.
+    /// 0.0..=1.0.
     pub brightness: f32,
-    /// Volume level, 0.0..=1.0.
+    /// 0.0..=1.0.
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
-    /// Navigation stack for the popover. The renderer dispatches on
-    /// `nav_stack.last()` (always at least `Root`) — pushing `Wifi` or
-    /// `Bluetooth` flips the popover body to the drill-in list.
+    /// The renderer dispatches on `nav_stack.last()` (always at least
+    /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
+    /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
-    /// WiFi networks shown in the drill-in list. Mock data until real
-    /// scanning lands.
     pub wifi_networks: Vec<WifiNetwork>,
-    /// Bluetooth devices shown in the drill-in list. Mock data until
-    /// real pairing lands.
     pub bt_devices: Vec<BtDevice>,
-    /// The passphrase prompt for a protected network, while one is up.
-    /// `None` the rest of the time — the buffer only exists for as long
-    /// as the user is typing into it.
+    /// The passphrase prompt for a protected network; `None` except
+    /// while the user is typing into it.
     pub wifi_password: Option<crate::shell::quick_settings::WifiPasswordPrompt>,
-    /// Active power profile, mirrored from `powerprofilesctl` when the
-    /// panel opens and pushed back via `set_power_profile` when the
-    /// user cycles the chip. Defaults to `Balanced` so a host without
-    /// `power-profiles-daemon` still renders a sensible label.
+    /// Mirrored from `powerprofilesctl` when the panel opens and
+    /// pushed back via `set_power_profile` on cycle. Defaults to
+    /// `Balanced` so a host without `power-profiles-daemon` still
+    /// renders a sensible label.
     pub power_profile: PowerProfile,
 }
 
@@ -229,10 +179,8 @@ impl Default for QuickSettingsState {
             wifi: true,
             bluetooth: false,
             nav_stack: vec![QsLevel::Root],
-            // Empty until the Wi-Fi / Bluetooth drill-in asks for it — nmcli /
-            // bluetoothctl populate live lists on the popover's rising
-            // edge. Starting empty keeps the "no fake content" contract:
-            // a fresh boot never shows a network it isn't actually seeing.
+            // Populated by nmcli/bluetoothctl on the popover's rising
+            // edge — no fake content.
             wifi_networks: Vec::new(),
             bt_devices: Vec::new(),
             wifi_password: None,
@@ -242,20 +190,17 @@ impl Default for QuickSettingsState {
 }
 
 impl QuickSettingsState {
-    /// Currently visible level — the renderer's dispatch key. Defaults to
-    /// `Root` if the stack is somehow empty (`new()` always seeds it).
+    /// The renderer's dispatch key. Defaults to `Root` if the stack is
+    /// somehow empty (`new()` always seeds it).
     pub fn current_level(&self) -> &QsLevel {
         self.nav_stack.last().unwrap_or(&QsLevel::Root)
     }
 
-    /// Push a new level onto the nav stack. Used by the toggle-card
-    /// chevron-affordance click in `draw_quick_settings`.
     pub fn push_level(&mut self, level: QsLevel) {
         self.nav_stack.push(level);
     }
 
-    /// Pop the top level. No-op when only `Root` remains so the popover
-    /// can't be emptied.
+    /// No-op when only `Root` remains so the popover can't be emptied.
     pub fn pop_level(&mut self) {
         if self.nav_stack.len() > 1 {
             self.nav_stack.pop();
@@ -266,253 +211,129 @@ impl QuickSettingsState {
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 pub struct ChromeState {
-    /// Shared workspace tree handle. The portal (grants) and peer-sync
-    /// (replica) hold clones of the same `Arc<RwLock<_>>` so every
-    /// mutation is observed across subsystems. See C-3 RFC at
-    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
-    ///
-    /// Field is named `tree_handle` (not `tree`) so unmigrated call-sites
-    /// that still read `chrome.tree.workspaces.iter()` get a clear
-    /// type-mismatch error rather than silently borrowing the wrong
-    /// thing. Use [`Self::tree`] / [`Self::tree_mut`] for guarded access.
+    /// Shared with the portal (grants) and peer-sync (replica), all
+    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// (not `tree`) so unmigrated call-sites get a type-mismatch error
+    /// instead of silently borrowing the wrong thing; use
+    /// [`Self::tree`] / [`Self::tree_mut`].
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
-    /// When `Some`, the workspace-settings modal's Name input is in text-
-    /// entry mode. The string is the edit buffer (may diverge from the
-    /// active workspace's persisted name until the user commits with
-    /// Enter). Cleared on commit or Esc.
+    /// `Some` while the workspace-settings modal's Name input is in
+    /// text-entry mode — the edit buffer, which may diverge from the
+    /// persisted name until Enter commits it.
     pub editing_workspace_name: Option<String>,
-    /// Caret + selection inside `editing_workspace_name`. Only
-    /// meaningful while the option is `Some(_)` — when no edit is
-    /// in flight this is a collapsed `Selection::default()` placeholder.
-    /// `begin_workspace_name_edit` seeds it to a collapsed selection
-    /// at the buffer's end so typing immediately appends; the overlay
-    /// host's keyboard handler mutates it on arrow / shift / backspace
-    /// / Ctrl-chord events.
+    /// Caret + selection inside `editing_workspace_name`.
     pub editing_workspace_name_selection: ui::text_selection::Selection,
-    /// Active global-search scope. The overlay host paints a scope-pill
-    /// banner above the palette, and clicking a pill rotates through the
-    /// variants of [`SearchScope`].
     pub search_scope: SearchScope,
-    /// Where a window launched from the palette should land. Set by the
-    /// tab strip's "+" and cleared when the palette closes.
+    /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
-    /// Latest battery / network / volume reading, copied here once per
-    /// frame from [`crate::shell::status::StatusBridge`] so the top bar
-    /// reads it the same way it reads everything else — off the chrome,
-    /// synchronously, with no lock held across a draw. Every field is
-    /// `None` until a poller publishes one, and the tray draws an unread
-    /// field as absent rather than as a plausible default.
+    /// Copied here once per frame from
+    /// [`crate::shell::status::StatusBridge`] with no lock held across
+    /// a draw. `None` until a poller publishes.
     pub status: crate::shell::status::SystemStatus,
-    /// The transient on-screen readout raised by a hardware key, if one
-    /// is currently up. At most one: an OSD is a readout of a value
-    /// being changed, not a message, so eight volume presses show one
-    /// slab counting up rather than eight stacked banners. See
-    /// [`crate::shell::osd`].
+    /// At most one — an OSD counts a value up, so eight volume presses
+    /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
-    /// Currently-active tab inside the Workspace Settings modal.
-    /// Independent of [`Self::editing_workspace_name`] (which is only
-    /// the name-input edit buffer). `Default::default()` is
-    /// [`WsTab::General`]; the renderer dispatches its modal-body
-    /// content on this field.
     pub ws_settings_tab: WsTab,
-    /// The grant the Permissions tab's composer is composing: who it is
-    /// for, what it allows, and how long it lasts. Lives here rather
-    /// than on the overlay host so it survives a re-render, and holds
-    /// picker indices rather than a resolved capability so a subject
-    /// leaving the workspace can't leave a dangling reference.
+    /// The Permissions tab's in-progress grant. Lives here (not the
+    /// overlay host) so it survives a re-render, and holds picker
+    /// indices rather than a resolved capability so a subject leaving
+    /// the workspace can't leave a dangling reference.
     pub ws_grant_draft: crate::shell::workspace_settings::GrantDraft,
-    /// Monotonic counter bumped every time the tree is mutated. Widgets
-    /// poll this in `update` to re-sync their caches; cheaper than running
-    /// diff logic and easier than an event bus.
+    /// Bumped on every tree mutation. Widgets poll this in `update` to
+    /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
-    /// Queue of pending capability grants the user must respond to.
-    ///
-    /// The portal D-Bus backend's prompt queue is drained onto the back
-    /// of this every frame; the overlay host renders a
-    /// [`PermissionPrompt`] for `front()` and drains the entry once the
-    /// user clicks an action button. The capability's `scope` is set by
-    /// whoever pushes (typically `GRANT_ONCE`, since the prompt itself
-    /// escalates to `Session`/`Always` based on the user's click).
-    /// Entries carry the portal's reply channel when a D-Bus caller is
-    /// blocked on the answer — see [`PendingPrompt`].
+    /// The portal D-Bus backend's prompt queue drains onto the back
+    /// every frame; the overlay host renders `front()` and drains it
+    /// on click. Entries carry the portal's reply channel when a D-Bus
+    /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
-    /// Test-only override for the `is_active_workspace_owner` helper
-    /// in `overlay_host.rs`. `None` (the default) keeps production
-    /// behaviour: the helper returns `true` unconditionally because
-    /// the shell has no logged-in-user identity yet. `Some(false)`
-    /// flips it to non-owner so tests can exercise the disabled-Revoke
-    /// code path. Real ownership tracking will replace this field once
-    /// peer-sync lands a `local_user_id` + `Workspace::owner_id` pair.
+    /// Test-only override for `is_active_workspace_owner`. `None` is
+    /// production behaviour (always owner, no logged-in-user identity
+    /// yet); `Some(false)` exercises the disabled-Revoke path.
     pub test_only_owner_override: Option<bool>,
-    /// Who is sitting at this machine.
-    ///
-    /// Every permission decision the compositor makes on a person's
-    /// behalf is made for *this* id: it is what
-    /// [`crate::shell::overlay_host`] compares against a workspace's
-    /// owner, and the subject of any capability the local user grants.
-    /// Seeded at boot from the device identity
-    /// ([`crate::shell::state::local_user_id`]).
+    /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
-    /// Active toast / banner notifications. Ordered oldest-first so the
-    /// stack widget paints from the top of the screen downward in the
-    /// same order entries were pushed. Capped at
-    /// [`MAX_NOTIFICATIONS`]; pushing past the cap evicts the oldest
-    /// entry (FIFO drop). Any subsystem can append via
-    /// [`Self::push_notification`] / [`Self::push_notification_full`];
-    /// the [`crate::shell::notification::NotificationStack`] widget
-    /// reads from here and drives expiry via
-    /// [`Self::update_notification_lifecycle`] each frame.
+    /// Oldest-first, capped at [`MAX_NOTIFICATIONS`] (FIFO drop).
     pub notifications: Vec<Notification>,
-    /// Bridge to the `org.freedesktop.Notifications` D-Bus service.
-    /// `None` until the compositor wires it up
-    /// ([`Self::set_notification_bridge`]); tests and the offscreen
-    /// `shots` path run without it. When present, toast lifecycle
-    /// transitions (dismiss / expire / close / action) emit the
-    /// corresponding D-Bus signal back to the originating app via the
-    /// bridge's reverse-event queues.
+    /// `None` until the compositor wires it up; tests and offscreen
+    /// `shots` run without it.
     notification_bridge: Option<NotificationBridge>,
-    /// Notification history — the message-log the notification centre
-    /// reads. Ordered oldest-first. Every notification that leaves the
-    /// active stack (dismissed / expired / closed / cap-evicted) is
-    /// appended here, as is every notification suppressed while
-    /// [`Self::dnd`] is on. Bounded to [`MAX_HISTORY`] entries (oldest
-    /// dropped from the front). Distinct from [`Self::notifications`]:
-    /// active toasts are *currently on screen*; history is what has
-    /// already come and gone (plus anything Do-Not-Disturb held back).
+    /// Oldest-first, bounded to [`MAX_HISTORY`]. Every notification
+    /// that leaves [`Self::notifications`] lands here, as does
+    /// anything [`Self::dnd`] suppressed.
     notification_history: Vec<Notification>,
-    /// Do-Not-Disturb. While `true`, freshly posted notifications are
-    /// **not** shown as banners — they go straight into
-    /// [`Self::notification_history`] instead — so the display surface
-    /// stays quiet but nothing is lost. The compositor owns this flag
-    /// (OS-owned chrome); the user toggles it via the command palette /
-    /// quick settings. Independent of [`Self::session_locked`], which
-    /// suppresses *content* on the lock screen but still shows a count.
+    /// While `true`, fresh notifications go straight to
+    /// [`Self::notification_history`] instead of showing as banners.
+    /// Independent of [`Self::session_locked`], which suppresses
+    /// lock-screen *content* but still shows a count.
     dnd: bool,
-    /// Whether the session is currently locked (mirrored from the
-    /// compositor's `SessionManager` each frame). Drives notification
-    /// lock-suppression: while `true`, the notification stack withholds
-    /// app names / summaries / bodies and shows only a count.
+    /// Mirrored from the compositor's `SessionManager` each frame.
+    /// While `true`, the notification stack withholds app
+    /// names/summaries/bodies and shows only a count.
     session_locked: bool,
-    /// **Transient fullscreen surface** — the id of the window group that has
-    /// requested `xdg_toplevel.set_fullscreen` and is currently promoted to
-    /// occupy the whole output. `None` in the normal tiled state. NOT
-    /// persisted (a live presentation must never survive a reboot) — the
-    /// compositor sets it from its live fullscreen state each frame via
-    /// [`Self::set_fullscreen_group`]. The top bar reads it to suppress
-    /// itself; the overlay host reads it to promote the group and hide the
-    /// sidebar + other strips. Clearing it restores the exact prior layout.
+    /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
+    /// NOT persisted — the compositor sets it from live state each
+    /// frame via [`Self::set_fullscreen_group`].
     fullscreen_group: Option<u64>,
-    /// **User-expanded window group** — the id of the group the user put full
-    /// screen with the tab's Expand chip. Deliberately a *separate* field from
-    /// [`Self::fullscreen_group`]: the compositor rewrites that one every frame
-    /// from its live client-fullscreen state (normally `None`), so a value
-    /// parked there by the Expand harvest would be wiped on the next tick.
-    ///
-    /// Both fields feed [`Self::is_fullscreen`], which is the single lever the
-    /// top bar and the sidebar wheel gate their suppression on — so an
-    /// expanded window covers the whole output (wheel included) exactly like a
-    /// client-driven fullscreen surface does.
+    /// Id of the group put full screen with the tab's Expand chip. Kept
+    /// separate from [`Self::fullscreen_group`], which the compositor
+    /// rewrites every frame — a value parked there by Expand would be
+    /// wiped on the next tick. Both feed [`Self::is_fullscreen`].
     maximized_group: Option<u64>,
-    /// The invite token the local user last minted with `/invite`.
-    ///
-    /// Shown on screen so the user can read it back — a token that only
-    /// ever reached the clipboard is invisible to anyone checking that
-    /// the command did anything, and a headless session has no
-    /// clipboard at all.
+    /// Shown on screen so anyone checking the command did anything
+    /// can see it even without a clipboard (headless sessions have
+    /// none).
     pub peer_sync_invite_token: Option<String>,
-    /// In-progress token entry for `/connect`. `Some` means the prompt
-    /// is open; the string is what has been typed so far. An overlay
-    /// rather than a widget because it owns the keyboard outright while
-    /// it is up.
+    /// `Some` means the `/connect` token prompt is open; an overlay
+    /// rather than a widget since it owns the keyboard outright.
     pub peer_sync_connect_input: Option<String>,
-    /// In-progress answer to "who are you inviting?". `Some` means the
-    /// invite composer is open; the string is the name typed so far.
-    ///
-    /// Inviting somebody is inviting *somebody*, so the panel's Invite
-    /// asks before it mints. The answer is what the room will call them
-    /// once they arrive — written by this machine, which administers the
-    /// room, rather than announced by the guest.
+    /// "Who are you inviting?" — asked before minting, since the
+    /// answer is what the room will call them.
     pub peer_sync_invite_name: Option<String>,
-    /// Who [`Self::peer_sync_invite_token`] was minted for, when it was
-    /// minted for anyone.
-    ///
-    /// `None` for a plain `/invite`, which says nothing about who its
-    /// token is for. The card reads a person's name off this instead of
-    /// making them recognise a token by its base64.
+    /// Who [`Self::peer_sync_invite_token`] was minted for, so the
+    /// card can show a name instead of a base64 token.
     pub peer_sync_invite_for: Option<String>,
-    /// Last thing the peer-sync layer said back — the room joined, or
-    /// why the token was refused. Rendered under the prompt.
+    /// The room joined, or why the token was refused — rendered under
+    /// the prompt.
     pub peer_sync_status: Option<String>,
-    /// Whether this session is running peer sync, and so whether the
-    /// palette should offer the invite / connect commands at all.
+    /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
-    /// Why this session has no CRDT fan-out broker, when it has none.
-    ///
-    /// `None` is the working case. `Some(reason)` means every app in
-    /// the session is running alone: edits are local, nobody else's
-    /// changes arrive, and presence is empty. That is the one failure
-    /// in the collaboration stack that an app cannot report for
-    /// itself — it asks for the `collab` service, is told the service
-    /// is absent, and carries on looking exactly like an app whose
-    /// collaborators happen to be idle. So the chrome says it instead,
-    /// which is also where it belongs: who else is here is a fact
-    /// about the session, not about any one app.
+    /// `None` is working; `Some(reason)` means every app runs alone —
+    /// the one collaboration failure an app can't report for itself.
     pub collab_unavailable: Option<String>,
-    /// The documents the open tabs are showing, one record each.
-    ///
-    /// Held here because the chrome is what everything outside the widget
-    /// tree already reaches through: in-app search reads a tab's body from
-    /// the tab's own document, and it has the chrome, not the tile. Starts
-    /// in-memory so a `ChromeState` built by a test or a headless probe
-    /// writes nothing to disk; the session installs the persistent one.
+    /// The documents open tabs are showing. Held here because chrome
+    /// is what everything outside the widget tree already reaches
+    /// through. Starts in-memory so tests write nothing to disk.
     records: RecordStore,
-    /// Peer-sync commands the user has picked and the shell has not yet
-    /// carried out. Written by the palette's action rows, drained once
-    /// per frame by `ShellOverlayHost::pump_peer_sync`.
+    /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
-    /// Records an exported action asked to be brought into the room the
-    /// user is in, as `(record id, record kind)`.
-    ///
-    /// Queued rather than performed for the same reason the peer-sync
-    /// requests above are: the room's index lives on the overlay host,
-    /// which the chrome cannot reach from inside an action's `apply`.
-    /// The frame pump drains this where it holds both.
+    /// An exported action asked into the current room, as `(record
+    /// id, record kind)`. Queued because the room's index lives on
+    /// the overlay host, unreachable from an action's `apply`.
     record_requests: Vec<(String, String)>,
-    /// Where the workspace wheel has been summoned to, if anywhere.
-    ///
-    /// The wheel is docked at the strip's left edge and pans with it by
-    /// default; `Some(point)` detaches it to the pointer instead, so the
-    /// workspace list is reachable without scrolling the whole strip home
-    /// first. Cleared on Escape and on picking a workspace. Held here
-    /// (not on the widget) because both the wheel and the overlay host
-    /// need to read it.
+    /// Docked at the strip's left edge by default; `Some(point)`
+    /// detaches the wheel to the pointer. Cleared on Escape or
+    /// picking a workspace.
     wheel_summon: Option<vello::kurbo::Point>,
-    /// Where the active strip's window groups sit and which part the
-    /// displays are showing, as of the last layout pass. Published by
-    /// `ShellOverlayHost::apply_layout` so placement can ask "which
-    /// border can the user actually see" without reaching into the
-    /// widget tree. `None` before the first layout.
+    /// Last layout pass, so placement can ask "which border can the
+    /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<crate::shell::placement::StripViewport>,
 }
 
 impl ChromeState {
-    /// Back-compat constructor: takes an owned [`WorkspaceTree`] and
-    /// wraps it in a fresh [`WorkspaceTreeHandle`]. Existing call-sites
-    /// (every test fixture in `quick-shell/tests/*`) keep this shape;
-    /// production callers that need to share the handle with portal /
-    /// peer-sync go through [`Self::new_with_handle`] instead.
+    /// Wraps an owned [`WorkspaceTree`] in a fresh handle. Production
+    /// callers sharing the handle with portal/peer-sync use
+    /// [`Self::new_with_handle`] instead.
     pub fn new(tree: WorkspaceTree) -> Rc<RefCell<Self>> {
         Self::new_with_handle(tree.shared())
     }
 
-    /// Construct a [`ChromeState`] sharing an existing
-    /// [`WorkspaceTreeHandle`]. Used by the hosted entry point so the
-    /// portal's `GrantStoreHandle` and peer-sync's
-    /// `WorkspaceTreeReplica` mutate the same underlying tree as the
-    /// shell chrome — closes audit finding C-3.
+    /// Shares an existing [`WorkspaceTreeHandle`], so the portal's
+    /// `GrantStoreHandle` and peer-sync's `WorkspaceTreeReplica` mutate
+    /// the same tree as the shell chrome.
     pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             tree_handle,
@@ -552,8 +373,7 @@ impl ChromeState {
         }))
     }
 
-    /// Summon the workspace wheel to `at`, or send it back to its dock
-    /// with `None`. See [`ChromeState::wheel_summon`].
+    /// Summon the wheel to `at`, or send it back to its dock with `None`.
     pub fn set_wheel_summon(&mut self, at: Option<vello::kurbo::Point>) {
         if self.wheel_summon != at {
             self.wheel_summon = at;
@@ -561,13 +381,12 @@ impl ChromeState {
         }
     }
 
-    /// Where the wheel is summoned to, if it is.
     pub fn wheel_summon(&self) -> Option<vello::kurbo::Point> {
         self.wheel_summon
     }
 
-    /// Publish the active strip's layout so the placement rule can read
-    /// it. Called once per layout pass by the overlay host.
+    /// Called once per layout pass by the overlay host, so the
+    /// placement rule can read the active strip's layout.
     pub fn set_strip_viewport(
         &mut self,
         viewport: Option<crate::shell::placement::StripViewport>,
@@ -575,12 +394,10 @@ impl ChromeState {
         self.strip_viewport = viewport;
     }
 
-    /// The active strip's layout as of the last pass, if one has run.
     pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
         self.strip_viewport.as_ref()
     }
 
-    /// Queue a peer-sync command for the shell to carry out.
     pub fn push_peer_sync_request(
         &mut self,
         request: crate::shell::overlay_host::PeerSyncAction,
@@ -588,51 +405,39 @@ impl ChromeState {
         self.peer_sync_requests.push(request);
     }
 
-    /// Take everything queued since the last call.
     pub fn take_peer_sync_requests(
         &mut self,
     ) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
     }
 
-    /// Ask for a record to be brought into the room the user is in.
-    ///
-    /// The same effect as activating that record's row in search — a
-    /// reference is added to this room's index, and no bytes move.
+    /// Same effect as activating that record's row in search — a
+    /// reference is added to this room's index, no bytes move.
     pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
         self.record_requests.push((id.into(), kind.into()));
     }
 
-    /// Take everything queued since the last call.
     pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.record_requests)
     }
 
-    /// The window group currently promoted to full-output (a surface that
-    /// requested `xdg_toplevel.set_fullscreen`), or `None` in the normal tiled
-    /// state.
     pub fn fullscreen_group(&self) -> Option<u64> {
         self.fullscreen_group
     }
 
-    /// Whether anything currently holds the output fullscreen — either a
-    /// client that requested `xdg_toplevel.set_fullscreen`, or a group the
-    /// user expanded with the tab's Expand chip. The top bar and the sidebar
-    /// wheel both suppress themselves on this, so either route genuinely
-    /// covers the whole output.
+    /// Either a client-requested fullscreen or a group the user
+    /// expanded with the tab's Expand chip — both suppress the top bar
+    /// and sidebar wheel.
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_group.is_some() || self.maximized_group.is_some()
     }
 
-    /// The group the user expanded to full screen, if any. See
-    /// [`Self::maximized_group`]'s field docs for why this is distinct from
-    /// [`Self::fullscreen_group`].
     pub fn maximized_group(&self) -> Option<u64> {
         self.maximized_group
     }
 
-    /// Set (or clear) the user-expanded group and bump the revision so the top
-    /// bar / overlay host re-sync their presentation next frame. Idempotent.
+    /// Idempotent, so cheap to call every frame from the compositor's
+    /// fullscreen reconcile.
     pub fn set_maximized_group(&mut self, group: Option<u64>) {
         if self.maximized_group != group {
             self.maximized_group = group;
@@ -640,10 +445,6 @@ impl ChromeState {
         }
     }
 
-    /// Set (or clear) the transient fullscreen surface and bump the revision so
-    /// the top bar / overlay host re-sync their fullscreen presentation on the
-    /// next frame. Idempotent — a no-op when the value is unchanged, so it's
-    /// cheap to call every frame from the compositor's fullscreen reconcile.
     pub fn set_fullscreen_group(&mut self, group: Option<u64>) {
         if self.fullscreen_group != group {
             self.fullscreen_group = group;
@@ -651,47 +452,35 @@ impl ChromeState {
         }
     }
 
-    /// Read-guard accessor for the shared workspace tree. The returned
-    /// guard derefs to `&WorkspaceTree`, so existing patterns like
-    /// `state.tree().workspaces.iter()` work verbatim. Cheap (~10 ns
-    /// uncontended on `parking_lot::RwLock`).
+    /// Cheap (~10 ns uncontended on `parking_lot::RwLock`).
     pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
         self.tree_handle.read()
     }
 
-    /// The store holding each open tab's document.
     pub fn records(&self) -> &RecordStore {
         &self.records
     }
 
-    /// Install the session's record store — the persistent one, built once
-    /// as the shell starts. Anything that had already bound a tile to the
-    /// previous (in-memory) store keeps that store, so this is called
-    /// before the window tree is built.
+    /// Install the session's persistent record store; called before
+    /// the window tree is built.
     pub fn set_records(&mut self, records: RecordStore) {
         self.records = records;
     }
 
-    /// Write-guard accessor for the shared workspace tree. Used by
-    /// mutating helpers (`append_empty_workspace`, `set_active`, etc.)
-    /// — the guard is dropped at the end of the borrow scope, so
-    /// concurrent readers (paint, portal lookup, peer-sync export)
-    /// unblock as soon as the mutation lands.
+    /// The guard drops at the end of the borrow scope, so concurrent
+    /// readers (paint, portal lookup, peer-sync export) unblock as soon
+    /// as the mutation lands.
     pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
         self.tree_handle.write()
     }
 
-    /// Test-only / observability accessor for the underlying shared
-    /// handle. Tests use this to assert that portal mutations land on
-    /// the same instance the chrome reads from (see
-    /// `grant_inserted_via_portal_is_visible_in_ws_settings`).
+    /// Test-only: asserts that portal mutations land on the same
+    /// instance the chrome reads from.
     pub fn tree_handle(&self) -> WorkspaceTreeHandle {
         self.tree_handle.clone()
     }
 
-    /// Commit the current `editing_workspace_name` buffer (if any) to the
-    /// active workspace's name and clear the buffer. Empty buffers are
-    /// treated as a cancel — we never overwrite the name with "".
+    /// Empty buffers are a cancel — never overwrite the name with "".
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
@@ -708,15 +497,8 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Put `tab` in front of the user: switch to its workspace, its strip
-    /// and its group, and make it the active tab inside that group.
-    ///
-    /// The one way anything in the shell focuses a tab it located by
-    /// walking the tree — a search hit on a note, a document that turns
-    /// out to be open already. Focus is four coordinates, not one, and a
-    /// caller that sets a subset leaves the user looking at a different
-    /// workspace than the tab they asked for; having it in one place is
-    /// what stops each caller getting that wrong differently.
+    /// Focus is four coordinates, not one; setting all four in one place
+    /// stops callers getting a subset wrong differently.
     pub fn focus_tab(
         &mut self,
         workspace: WorkspaceId,
@@ -742,10 +524,8 @@ impl ChromeState {
         self.bump();
     }
 
-    /// Route a winit `WindowEvent::DroppedFile` payload into the active
-    /// workspace's first strip's first window group via
-    /// [`super::workspace_drop::apply_workspace_drop_from_path`]. Bumps
-    /// the revision counter so widgets re-sync on the next frame.
+    /// Routes into the active workspace's first strip/group via
+    /// [`super::workspace_drop::apply_workspace_drop_from_path`].
     /// Returns the new tab id, or `None` if the path has no filename.
     pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
         let tab_id = {
@@ -758,17 +538,10 @@ impl ChromeState {
         tab_id
     }
 
-    /// Cursor-targeted file drop: splice the dropped file's app into the
-    /// specific `(strip_id, group_id)` the pointer was over at drop time,
-    /// then record a per-workspace filesystem grant so the target app can
-    /// read the file. Production `WindowEvent::DroppedFile` path — the
-    /// overlay host resolves the group under the cursor the same way
-    /// click-focus does and hands the winner here.
-    ///
-    /// Returns `None` (no-op, no grant) when the target is stale or the
-    /// path has no filename. A file whose type an installed app declares
-    /// opens *in that app* instead (see [`crate::shell::doc_open`]); this
-    /// path only handles folders and types nothing installed claims.
+    /// Splices the file's app into the `(strip_id, group_id)` the
+    /// pointer was over, then records a per-workspace filesystem grant.
+    /// A type an installed app declares opens in that app instead (see
+    /// [`crate::shell::doc_open`]).
     pub fn handle_file_drop_at(
         &mut self,
         path: &std::path::Path,
@@ -783,27 +556,17 @@ impl ChromeState {
         };
         if let Some(tab_id) = tab_id {
             // A dropped file is an explicit capability grant to the app
-            // the user aimed at — record it before the widget re-syncs,
-            // keyed by the identity of the tab the drop actually created.
+            // the user aimed at, keyed by the tab the drop created.
             self.grant_dropped_file_access(path, strip_id, group_id, tab_id);
             self.bump();
         }
         tab_id
     }
 
-    /// Record the dropped file as a per-workspace filesystem capability
-    /// for the app that will open it, honouring the sandbox: goes through
-    /// the SAME [`GrantStoreHandle`] the portal / permission prompt uses,
-    /// so `sandbox::profile::apply_grants` picks it up when the app
-    /// spawns.
-    ///
-    /// Keyed by the **real app identity of the target tab** — a foreign
-    /// Wayland client's actual `xdg_toplevel::set_app_id`, or a built-in
-    /// app's canonical [`AppKind::app_id`] — the same namespace the
-    /// portal keys grants by, not a display label.
-    ///
-    /// Treated like the permission prompt's "Session" choice: read-only,
-    /// session-scoped, skipped if the app already holds a covering grant.
+    /// Through the SAME [`GrantStoreHandle`] the portal uses, so
+    /// `sandbox::profile::apply_grants` picks it up on spawn. Keyed by
+    /// real app identity, not a display label. Read-only,
+    /// session-scoped — same as the permission prompt's "Session" choice.
     fn grant_dropped_file_access(
         &self,
         path: &std::path::Path,
@@ -812,9 +575,8 @@ impl ChromeState {
         tab_id: u64,
     ) {
         use crate::shell::state::{Expiry, FsMode};
-        // Resolve the identity of the tab the drop landed on. If the tab
-        // can't be found (raced away between splice and grant) we skip
-        // silently rather than key a grant to a guessed identity.
+        // If the tab can't be found (raced away between splice and
+        // grant) skip silently rather than key a grant to a guess.
         let Some(app_id) = self.tab_app_id(strip_id, group_id, tab_id) else {
             return;
         };
@@ -832,14 +594,8 @@ impl ChromeState {
         store.insert(&caller, cap);
     }
 
-    /// Resolve the app-id of the tab `tab_id` inside `(strip_id, group_id)`
-    /// of the active workspace, from its live `TileContent`:
-    /// * [`TileContent::Foreign`] → the client's real Wayland app-id.
-    /// * [`TileContent::AppPlaceholder`] / [`TileContent::Stub`] → the
-    ///   built-in app's canonical [`AppKind::app_id`].
-    ///
-    /// Returns `None` if any of the ids no longer resolve (the tab closed
-    /// or moved between the drop splice and this lookup).
+    /// Real Wayland app-id for `Foreign`, or the built-in
+    /// `AppKind::app_id` for a placeholder/stub.
     fn tab_app_id(
         &self,
         strip_id: StripId,
@@ -853,32 +609,24 @@ impl ChromeState {
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
         Some(match &tab.tile {
+            // A peer window carries an app id in the same namespace
+            // `AppKind::app_id` maps the others into.
             TileContent::Foreign { app_id, .. }
-            // A peer window already carries an app id, in the same
-            // namespace `AppKind::app_id` maps the others into.
             | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
             TileContent::AppPlaceholder { kind, .. }
             | TileContent::Stub { kind, .. } => kind.app_id(),
         })
     }
 
-    /// Add a new empty workspace, activate it, and bump the revision so
-    /// widgets re-sync. Returns the new workspace's id.
-    ///
-    /// The wheel-disc's "+" slot
-    /// (`sidebar_wheel_disc::SidebarWheelDisc::plus_rect`) calls this
-    /// directly — creates a workspace and switches to it without opening
-    /// a settings modal. Closes `docs/nirios/wheel-disc-design.md`'s
-    /// "Known gaps" #4 ("Plus button").
+    /// Called directly by the wheel-disc's "+" slot to create and
+    /// switch without opening a settings modal.
     pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
-            // grant anything in it — including the person who just made
-            // it. Idempotent: workspaces that already have an owner are
-            // left alone.
+            // grant anything in it, including the person who just made it.
             tree.adopt_ownerless_workspaces(&self.local_user_id);
             id
         };
@@ -886,11 +634,8 @@ impl ChromeState {
         id
     }
 
-    /// Title of the currently focused tab, or `None` when nothing is
-    /// focused (no workspace / no strip / no group / no tabs). Read by
-    /// the search-scope pill so the "This app" pill can display the
-    /// tab's title (e.g. `Notes`, `Files`) instead of the static
-    /// [`SearchScope::label`].
+    /// Read by the search-scope pill so "This app" can show the tab's
+    /// title instead of the static [`SearchScope::label`].
     pub fn active_app_title(&self) -> Option<String> {
         let tab = self.active_tab_ref()?;
         let title = tab.title.trim();
@@ -901,36 +646,25 @@ impl ChromeState {
         }
     }
 
-    /// Id of the currently focused tab, if any. Read by the search
-    /// registry to pick the "this app" scope provider via
-    /// [`crate::shell::search::SearchProvider::owns_tab`].
+    /// Read by the search registry to pick the "this app" scope
+    /// provider via [`crate::shell::search::SearchProvider::owns_tab`].
     pub fn active_tab_id(&self) -> Option<crate::shell::state::TabId> {
         self.active_tab_ref().map(|t| t.id)
     }
 
-    /// Look up the currently focused tab. `None` when no workspace is
-    /// active, or when `active_strip` / `active_group` haven't been
-    /// tracked yet — matches the honest "no focused app" state instead
-    /// of falling back to `strips.first()` / `window_groups.first()`.
-    /// A live focus-writeback reconciler (see
-    /// `overlay_host::harvest_active_tab_writeback`) keeps
-    /// `group.active_tab` in sync with the tab the user actually
-    /// clicked, so this method can rely on the tree pointer being
-    /// current.
+    /// `None` when no workspace/strip/group is tracked yet — the honest
+    /// "no focused app" state rather than falling back to `.first()`.
     fn active_tab_ref(&self) -> Option<crate::shell::state::TabRef> {
         let tree = self.tree();
         let ws_id = tree.active;
         let strip_id = tree.active_strip.get(&ws_id).copied()?;
         let group_id = tree.active_group.get(&strip_id).copied()?;
-        // Guard: if any of these dangle (a workspace/strip/group that no
-        // longer exists) we don't want to walk them silently.
         let ws = tree.workspaces.iter().find(|w| w.id == ws_id)?;
         let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == group.active_tab)?;
-        // The `Option<TabRef>` is opaque so callers can't stash a bare
-        // borrow into `tree` past the guard's lifetime — we clone the
-        // small fields the callers actually need.
+        // Opaque return type so callers can't stash a borrow into
+        // `tree` past this scope — clone the fields they need instead.
         Some(crate::shell::state::TabRef {
             id: tab.id,
             title: tab.title.clone(),
@@ -957,8 +691,6 @@ impl ChromeState {
         (count, focused)
     }
 
-    /// Move focus to the strip at `index` in the active workspace.
-    /// Returns whether focus actually moved.
     pub fn focus_strip_index(&mut self, index: usize) -> bool {
         let (changed, name) = {
             let mut tree = self.tree_mut();
@@ -985,8 +717,8 @@ impl ChromeState {
         changed
     }
 
-    /// Move strip focus by `dir` within the active workspace. Clamps at
-    /// the ends rather than wrapping, matching workspace switching.
+    /// Clamps at the ends rather than wrapping, matching workspace
+    /// switching.
     pub fn switch_strip(&mut self, dir: i32) -> bool {
         let (count, focused) = self.strip_focus();
         if count == 0 {
@@ -996,8 +728,6 @@ impl ChromeState {
         self.focus_strip_index(next)
     }
 
-    /// Switch to the workspace at the given direction (±1). Returns true
-    /// if the active workspace changed.
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
         let changed = {
             let mut tree = self.tree_mut();
@@ -1015,16 +745,13 @@ impl ChromeState {
 
     // ---------- Notifications ----------
 
-    /// Put a transient readout on screen, replacing whatever was there.
-    /// Bumps the revision so the frame that raised it also repaints.
     pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
         crate::shell::osd::raise(&mut self.osd, osd);
         self.bump();
     }
 
-    /// Drop the readout once its hold has elapsed. Returns `true` when
-    /// something was cleared, so the caller can bump once rather than
-    /// every frame.
+    /// Returns `true` when something was cleared, so the caller can
+    /// bump once rather than every frame.
     pub fn expire_osd(&mut self, now: std::time::Instant) -> bool {
         if crate::shell::osd::expire(&mut self.osd, now) {
             self.bump();
@@ -1033,30 +760,17 @@ impl ChromeState {
         false
     }
 
-    /// Read-only view of the currently active notifications, ordered
-    /// oldest first.
     pub fn notifications(&self) -> &[Notification] {
         &self.notifications
     }
 
-    /// Push a new info-level notification with the given title and
-    /// body. Returns the freshly assigned id so callers can dismiss
-    /// it later via [`Self::dismiss_notification`]. Bumps the chrome
-    /// revision so widgets re-sync on the next frame.
     pub fn push_notification(&mut self, title: impl Into<String>, body: impl Into<String>) -> u64 {
         self.push_notification_full(Notification::new(title, body))
     }
 
-    /// Push a fully-formed [`Notification`] (typically constructed
-    /// with `.with_severity(...)` / `.with_dismiss_after(...)`).
-    /// Returns the notification's id. Enforces the
-    /// [`MAX_NOTIFICATIONS`] cap by dropping oldest entries first.
-    ///
-    /// **Do-Not-Disturb**: when [`Self::dnd`] is set the notification is
-    /// *not* shown as a banner — it goes straight to history and the id
-    /// is still returned. A notification carrying
-    /// [`Notification::bypass_dnd`] is shown anyway; that flag is the
-    /// shell's alone and nothing on the D-Bus path can set it.
+    /// Enforces the [`MAX_NOTIFICATIONS`] cap. When [`Self::dnd`] is
+    /// set, goes straight to history instead of a banner, unless it
+    /// carries [`Notification::bypass_dnd`] (shell-only; D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
         if self.dnd && !n.bypass_dnd {
@@ -1065,9 +779,7 @@ impl ChromeState {
             return id;
         }
         self.notifications.push(n);
-        // Entries pushed off the active stack by the cap are still real
-        // notifications the user may want to review — retire them to
-        // history rather than dropping them on the floor.
+        // Cap-evicted entries retire to history rather than dropping.
         while self.notifications.len() > MAX_NOTIFICATIONS {
             let evicted = self.notifications.remove(0);
             self.record_history(evicted);
@@ -1076,11 +788,8 @@ impl ChromeState {
         id
     }
 
-    /// Append a notification to the bounded history log, evicting the
-    /// oldest entry once [`MAX_HISTORY`] is exceeded. Every path that
-    /// removes a toast from the active stack — and the DND-suppression
-    /// path — funnels through here so history is the single, complete
-    /// record of what has been posted.
+    /// Every path that removes a toast (and the DND-suppression path)
+    /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
         self.notification_history.push(n);
         while self.notification_history.len() > MAX_HISTORY {
@@ -1088,7 +797,6 @@ impl ChromeState {
         }
     }
 
-    /// Convenience: push a warning-severity notification.
     pub fn push_warning_notification(
         &mut self,
         title: impl Into<String>,
@@ -1101,7 +809,6 @@ impl ChromeState {
         )
     }
 
-    /// Convenience: push an error-severity notification.
     pub fn push_error_notification(
         &mut self,
         title: impl Into<String>,
@@ -1114,13 +821,8 @@ impl ChromeState {
         )
     }
 
-    /// Record that this session has no CRDT fan-out, and say so.
-    ///
-    /// Both halves matter. The flag is what the collaborator surfaces
-    /// read so they stop claiming an empty roster means "nobody else
-    /// is here", and the notification is what makes the user aware at
-    /// the moment it happens rather than after an afternoon of edits
-    /// that reached nobody.
+    /// The flag stops collaborator surfaces reading an empty roster as
+    /// "nobody else is here"; the notification tells the user directly.
     pub fn set_collab_unavailable(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         if self.collab_unavailable.as_deref() == Some(reason.as_str()) {
@@ -1133,20 +835,16 @@ impl ChromeState {
         self.collab_unavailable = Some(reason);
     }
 
-    /// The broker is up; clear any standing unavailable state.
     pub fn clear_collab_unavailable(&mut self) {
         self.collab_unavailable = None;
     }
 
-    /// Is collaboration working in this session?
     pub fn collab_available(&self) -> bool {
         self.collab_unavailable.is_none()
     }
 
-    /// Dismiss a notification by its internal id. No-op if the id has
-    /// already expired or was never pushed. If the removed toast came
-    /// from a D-Bus `Notify`, emits `NotificationClosed(id, 2)` (reason:
-    /// dismissed-by-user) via the bridge.
+    /// No-op if the id already expired or was never pushed. A toast
+    /// from D-Bus `Notify` emits `NotificationClosed(id, 2)` (dismissed).
     pub fn dismiss_notification(&mut self, id: u64) {
         if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
             let removed = self.notifications.remove(pos);
@@ -1156,12 +854,9 @@ impl ChromeState {
         }
     }
 
-    /// Activate a notification by its internal id (the user clicked the
-    /// toast body, not the X). If the toast carries actions, emits
-    /// `ActionInvoked(id, key)` for the default/first action before
-    /// removing it; otherwise behaves exactly like
-    /// [`Self::dismiss_notification`]. Returns `true` if a toast was
-    /// found.
+    /// The user clicked the toast body, not the X. Emits
+    /// `ActionInvoked` for the default action before removing, if the
+    /// toast carries one; otherwise like [`Self::dismiss_notification`].
     pub fn activate_notification(&mut self, id: u64) -> bool {
         let Some(pos) = self.notifications.iter().position(|n| n.id == id) else {
             return false;
@@ -1179,9 +874,8 @@ impl ChromeState {
         true
     }
 
-    /// Close a notification by its freedesktop (`dbus_id`) id with an
-    /// explicit reason. Used by the `CloseNotification` pump path. No-op
-    /// if no live toast carries that id.
+    /// Used by the `CloseNotification` pump path. No-op if no live
+    /// toast carries that id.
     pub fn close_notification_by_dbus_id(&mut self, dbus_id: u32, reason: CloseReason) {
         if let Some(pos) = self
             .notifications
@@ -1195,11 +889,9 @@ impl ChromeState {
         }
     }
 
-    /// Drop every notification whose `created_at + dismiss_after`
-    /// has passed `now`. Returns the number of entries removed.
-    /// Called by [`crate::shell::notification::NotificationStack::update`]
-    /// each frame so the stack shrinks automatically. Expired toasts that
-    /// came from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
+    /// Called each frame by
+    /// [`crate::shell::notification::NotificationStack::update`].
+    /// Expired toasts from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
         let mut expired: Vec<Notification> = Vec::new();
         let mut kept: Vec<Notification> = Vec::with_capacity(self.notifications.len());
@@ -1228,19 +920,14 @@ impl ChromeState {
         dropped
     }
 
-    /// Number of currently active notifications (used by the lock screen
-    /// to show "N notifications" without exposing any content).
+    /// Used by the lock screen to show "N notifications" without
+    /// exposing content.
     pub fn notification_count(&self) -> usize {
         self.notifications.len()
     }
 
     // ---------- History ----------
 
-    /// Read-only view of the notification history log, ordered
-    /// oldest-first. Contains every notification that has left the
-    /// active stack (dismissed / expired / closed / cap-evicted) plus
-    /// anything Do-Not-Disturb suppressed. A notification-centre surface
-    /// reads this to let the user review what they missed.
     pub fn notification_history(&self) -> &[Notification] {
         &self.notification_history
     }
@@ -1268,8 +955,7 @@ impl ChromeState {
         self.dnd
     }
 
-    /// Set Do-Not-Disturb on/off. Idempotent — a no-op (no revision
-    /// bump) when the value is unchanged.
+    /// No-op (no revision bump) when the value is unchanged.
     pub fn set_dnd(&mut self, on: bool) {
         if self.dnd != on {
             self.dnd = on;
@@ -1277,8 +963,6 @@ impl ChromeState {
         }
     }
 
-    /// Toggle Do-Not-Disturb, returning the new state. Wired to the
-    /// command-palette "Toggle Do Not Disturb" action.
     pub fn toggle_dnd(&mut self) -> bool {
         self.dnd = !self.dnd;
         self.bump();
@@ -1287,16 +971,12 @@ impl ChromeState {
 
     // ---------- D-Bus notification wiring ----------
 
-    /// Install the [`NotificationBridge`] the compositor shares with the
-    /// `org.freedesktop.Notifications` D-Bus service. Once set, the toast
-    /// lifecycle emits `NotificationClosed` / `ActionInvoked` events back
-    /// to apps via the bridge.
+    /// Once set, the toast lifecycle emits `NotificationClosed` /
+    /// `ActionInvoked` events back to apps via the bridge.
     pub fn set_notification_bridge(&mut self, bridge: NotificationBridge) {
         self.notification_bridge = Some(bridge);
     }
 
-    /// Mirror the compositor's session-lock state into the chrome so the
-    /// notification stack can suppress content while locked.
     pub fn set_session_locked(&mut self, locked: bool) {
         if self.session_locked != locked {
             self.session_locked = locked;
@@ -1304,24 +984,18 @@ impl ChromeState {
         }
     }
 
-    /// Whether the session is currently locked.
     pub fn session_locked(&self) -> bool {
         self.session_locked
     }
 
-    /// Drain the D-Bus notification bridge into the live toast stack:
-    /// every queued `Notify` becomes a toast (honouring `replaces_id` by
-    /// evicting the prior toast with the same `dbus_id` first), and every
-    /// `CloseNotification` removes the matching toast. Called once per
-    /// frame by the compositor; a no-op when no bridge is installed.
+    /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
-            // `replaces_id` semantics: a fresh Notify with an existing id
-            // supersedes the prior toast.
+            // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
             self.push_notification_full(Notification::from_incoming(inc));
         }
@@ -1330,8 +1004,6 @@ impl ChromeState {
         }
     }
 
-    /// Emit a `NotificationClosed` for a removed toast iff it originated
-    /// from D-Bus and the bridge is installed.
     fn emit_closed(&self, removed: &Notification, reason: CloseReason) {
         if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
         {
@@ -1344,12 +1016,8 @@ pub type Chrome = Rc<RefCell<ChromeState>>;
 
 #[cfg(test)]
 mod active_tab_tests {
-    //! Pin the "which tab is Ctrl+K scoped to" contract: `active_app_title`
-    //! / `active_tab_id` are the source of truth the search registry reads
-    //! to seed `SearchScope::ActiveApp`, and must return `None` rather than
-    //! fall back to `strips.first()` when the tree hasn't tracked a real
-    //! focus target. The shell's `harvest_active_tab_writeback` reconciler
-    //! keeps `group.active_tab` in sync with the widget-side `bar.active_id`.
+    //! `active_app_title`/`active_tab_id` must return `None`, not
+    //! `strips.first()`, when no real focus target is tracked.
     use super::*;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
@@ -1424,8 +1092,6 @@ mod active_tab_tests {
 
     #[test]
     fn no_active_returns_none_instead_of_first_group() {
-        // Blank tree — no strips, no groups. Must not fall back to a
-        // ghost first-of-nothing.
         let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
         let chrome = ChromeState::new_with_handle(handle);
         let st = chrome.borrow();
@@ -1435,8 +1101,6 @@ mod active_tab_tests {
 
     #[test]
     fn without_active_strip_returns_none_not_first_strip() {
-        // An active `WorkspaceId` exists but `active_strip` hasn't been
-        // stamped yet — must report None, not `strips.first()`.
         let mut tree = tree_with(100);
         tree.active_strip.clear();
         let handle = Arc::new(RwLock::new(tree));
@@ -1445,10 +1109,8 @@ mod active_tab_tests {
         assert_eq!(st.active_tab_id(), None);
     }
 
-    /// Build a tree whose active workspace has one strip / one group
-    /// holding the single `tile`. Returns the handle plus the ids needed
-    /// to address that tab. Used to drive `grant_dropped_file_access`
-    /// against tabs of a chosen `TileContent` identity.
+    /// A tree with one strip/group holding `tile`, plus the ids to
+    /// drive `grant_dropped_file_access` against it.
     fn tree_with_single_tab(
         tile: TileContent,
     ) -> (WorkspaceTree, StripId, GroupId, u64) {
@@ -1523,7 +1185,6 @@ mod active_tab_tests {
             )),
             "the dropped path must be recorded as a Filesystem grant: {caps:?}"
         );
-        // The old stand-in ("Foreign"/label) must NOT be a key.
         assert!(
             !grants.contains_key("Foreign"),
             "grant must not be keyed by a display label: {:?}",
@@ -1531,8 +1192,8 @@ mod active_tab_tests {
         );
     }
 
-    /// Gap-2 proof: a built-in app (drawn in-process, no `set_app_id`) is
-    /// keyed by its canonical reverse-DNS app-id, not the display label.
+    /// A built-in app (no `set_app_id`) is keyed by its canonical
+    /// reverse-DNS app-id, not the display label.
     #[test]
     fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
         let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(
@@ -1565,7 +1226,6 @@ mod active_tab_tests {
         );
     }
 
-    /// Strip focus is real state that moves, and the ribbon reads it.
     #[test]
     fn switching_strips_moves_focus_and_clamps_at_the_ends() {
         let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -1605,8 +1265,6 @@ mod active_tab_tests {
         assert!(!st.switch_strip(1), "focus wrapped past the last strip");
     }
 
-    /// Clicking a ribbon segment focuses that exact strip, not a
-    /// neighbour, for every segment in the ribbon.
     #[test]
     fn focusing_a_strip_by_index_selects_that_strip() {
         let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());

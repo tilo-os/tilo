@@ -29,8 +29,8 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 
-// Client-side state: collects registry advertisements and drives the walk,
-// exposing intermediate object handles so the test body can send requests.
+// Client-side state: registry advertisements plus intermediate object
+// handles the test body sends requests against.
 
 #[derive(Default)]
 struct ClientAppState {
@@ -174,11 +174,9 @@ impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> fo
     }
 }
 
-// Helpers to drive both sides.
 
-/// Pump the client → server → client round-trip until pending events settle:
-/// both sides flush and dispatch in a bounded loop so events queued at
-/// either end propagate.
+/// Pump the client → server → client round-trip until pending events
+/// settle: both sides flush and dispatch in a bounded loop.
 fn pump(
     conn: &Connection,
     ev: &mut wayland_client::EventQueue<ClientAppState>,
@@ -193,8 +191,8 @@ fn pump(
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
         let _ = display.flush_clients();
-        // `roundtrip` blocks, so drain without blocking and interleave with
-        // the server dispatch.
+        // `roundtrip` blocks, so drain without blocking and interleave with the
+        // server dispatch.
         let _ = ev.dispatch_pending(app);
         if let Some(guard) = conn.prepare_read() {
             let _ = guard.read();
@@ -218,13 +216,11 @@ fn pump(
 
 #[test]
 fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
-    // Server side: minimal State (compositor + color_manager globals).
     let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
     let mut display: Display<State> = Display::new().expect("wayland display");
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);
 
-    // Client ⇄ server via a UnixStream pair.
     let (client_side, server_side) = UnixStream::pair().expect("socket pair");
     let _client = display
         .handle()
@@ -240,7 +236,6 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
 
     let mut app = ClientAppState::default();
 
-    // Registry walk + color-manager advertisement.
     pump(
         &conn,
         &mut event_queue,
@@ -251,7 +246,6 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
         "wait for color_manager done",
     );
 
-    // Sanity: compositor advertised the canonical HDR set.
     assert!(
         app.supported_primaries.contains(&(Primaries::Srgb as u32)),
         "sRGB primaries not advertised: {:?}",
@@ -344,8 +338,7 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
     cm_surface.set_image_description(&desc, RenderIntent::Perceptual);
     surface.commit();
 
-    // 4. Drain the server dispatch loop, then read the surface's
-    //    `ColorManagementSurfaceData` server-side.
+    // 4. Read the surface's `ColorManagementSurfaceData` server-side.
     let surface_protocol_id = surface.id().protocol_id();
     let _ = conn.flush();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -373,6 +366,6 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
         "compositor's SurfaceData did not record the attached BT.2020/PQ image description"
     );
 
-    // The SurfaceData import is consumed indirectly via `surface_current_colorimetry`.
+    // SurfaceData is consumed indirectly via `surface_current_colorimetry`.
     let _ = std::marker::PhantomData::<ColorManagementSurfaceData>;
 }

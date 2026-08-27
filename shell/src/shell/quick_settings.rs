@@ -1,17 +1,7 @@
-//! `QuickSettings` — the top-right status-area popover.
-//!
-//! Owns the headline controls (brightness, volume) and the popover
-//! navigation state (root → WiFi/Bluetooth drill-in via `nav_stack`).
-//!
-//! State model:
-//! - `brightness`, `volume`: `f32` in `[0.0, 100.0]`. Setters clamp.
-//! - `nav_stack`: starts with `vec![QsLevel::Root]`; `push_level`/`pop_level`
-//!   drive WiFi/BT drill-in.
-//! - `power_profile`: cycles Saver → Balanced → Performance → Saver via
-//!   [`QuickSettings::cycle_power_profile`].
-//! - `wifi_ssid` / `bluetooth_device`: optional connection identifiers used
-//!   to populate the toggle-card sub-line. When the toggle is off (or the
-//!   field is `None`) the sub-line falls back to `"Not connected"`.
+//! `QuickSettings` — the top-right status-area popover. Owns the headline
+//! controls (brightness, volume) and popover navigation (root →
+//! WiFi/Bluetooth drill-in via `nav_stack`). `wifi_ssid`/`bluetooth_device`
+//! populate the toggle-card sub-line, falling back to "Not connected" when off or unset.
 
 /// A single frame in the QuickSettings navigation stack.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,11 +13,9 @@ pub enum QsLevel {
     BluetoothDetails(String),
 }
 
-/// A single WiFi entry rendered in the drill-in list. `signal` is a
-/// signal-strength bucket in `[0, 4]` (mapped to bar-count in the
-/// renderer); `secure` flips the lock-icon trailing affordance;
-/// `connected` flags the active-radio dot. Mock data until real
-/// scanning lands.
+/// A WiFi entry in the drill-in list. `signal` is a strength bucket
+/// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
+/// `connected` flags the active-radio dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
@@ -36,29 +24,22 @@ pub struct WifiNetwork {
     pub connected: bool,
 }
 
-/// An in-flight "join this protected network" prompt.
-///
-/// A plain `connect_wifi(ssid, None)` works for an open network and for
-/// one whose profile NetworkManager already holds, and fails for every
-/// protected network the machine has not seen before — which is every
-/// network on first boot. There is nowhere else to type a passphrase:
-/// Settings doesn't help a machine with no network yet to install
-/// anything from. So the chrome asks for it.
+/// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
+/// None)` fails for every protected network not seen before — every
+/// network on first boot — and there's nowhere else to type a passphrase
+/// on a machine with no network yet, so the chrome asks for it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WifiPasswordPrompt {
-    /// The network being joined.
     pub ssid: String,
-    /// What has been typed. Held in the clear only for as long as the
-    /// prompt is up: it is cleared on submit, on cancel, and whenever
-    /// the popover closes.
+    /// Held in the clear only while the prompt is up — cleared on
+    /// submit, cancel, or popover close.
     pub password: String,
-    /// Caret + selection into [`Self::password`].
     pub selection: ui::text_selection::Selection,
-    /// Set after a failed attempt, so a wrong passphrase says so instead
-    /// of silently reopening an empty prompt.
+    /// Set after a failed attempt, so a wrong passphrase says so
+    /// instead of reopening an empty prompt.
     pub error: Option<String>,
-    /// True while `nmcli` is associating. The prompt stays up and inert
-    /// so the user is not left wondering whether the click registered.
+    /// True while `nmcli` is associating, so the prompt stays inert
+    /// instead of looking unresponsive.
     pub connecting: bool,
 }
 
@@ -73,17 +54,13 @@ impl WifiPasswordPrompt {
         }
     }
 
-    /// Whether the Connect button is live. An empty passphrase would be
-    /// rejected by every WPA network, so offering it is a wasted round
-    /// trip and a confusing failure.
+    /// An empty passphrase is rejected by every WPA network.
     pub fn can_submit(&self) -> bool {
         !self.connecting && !self.password.is_empty()
     }
 }
 
-/// A single Bluetooth device entry rendered in the drill-in list.
-/// `battery` is a percentage in `[0, 100]`; `connected` flags the
-/// active-radio dot. Mock data until real pairing lands.
+/// A Bluetooth device entry in the drill-in list. `connected` flags the active-radio dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtDevice {
     pub name: String,
@@ -91,9 +68,7 @@ pub struct BtDevice {
     pub connected: bool,
 }
 
-/// Power-management profile shown in the Power Profile row at the bottom
-/// of the QuickSettings popover — the three canonical profiles
-/// `powerprofilesctl` exposes on Linux.
+/// The three canonical profiles `powerprofilesctl` exposes on Linux.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerProfile {
     Saver,
@@ -102,7 +77,6 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    /// Human-readable label rendered in the popover row.
     pub fn label(self) -> &'static str {
         match self {
             PowerProfile::Saver => "Power Saver",
@@ -117,23 +91,17 @@ pub struct QuickSettings {
     brightness: f32,
     volume: f32,
     pub(crate) nav_stack: Vec<QsLevel>,
-    /// Active power profile. Cycled by [`Self::cycle_power_profile`].
+    /// Cycled by [`Self::cycle_power_profile`].
     pub power_profile: PowerProfile,
-    /// SSID of the currently connected Wi-Fi network, if any. The toggle
-    /// card sub-line reads this when `wifi_on` is true.
+    /// Read by the toggle-card sub-line when `wifi_on` is true.
     pub wifi_ssid: Option<String>,
-    /// Display name of the currently paired Bluetooth device, if any.
     pub bluetooth_device: Option<String>,
 }
 
 impl QuickSettings {
-    /// Construct a popover rooted at `QsLevel::Root`. Brightness and volume
-    /// initialise to 50%; the power profile defaults to `Balanced`.
-    ///
-    /// Both connection labels start unset, and read "Not connected" until
-    /// something actually reports a connection. Seeding them kept the
-    /// sub-lines from rendering blank by naming a network and a headset
-    /// the machine had never seen.
+    /// Rooted at `QsLevel::Root`; brightness/volume at 50%, power profile
+    /// `Balanced`. Connection labels start unset rather than naming a
+    /// network/headset the machine has never seen.
     pub fn new() -> Self {
         Self {
             brightness: 50.0,
@@ -153,12 +121,10 @@ impl QuickSettings {
         self.volume
     }
 
-    /// Set brightness, clamped to `[0.0, 100.0]`.
     pub fn set_brightness(&mut self, value: f32) {
         self.brightness = value.clamp(0.0, 100.0);
     }
 
-    /// Set volume, clamped to `[0.0, 100.0]`.
     pub fn set_volume(&mut self, value: f32) {
         self.volume = value.clamp(0.0, 100.0);
     }
@@ -170,7 +136,6 @@ impl QuickSettings {
             .expect("nav_stack always has at least Root")
     }
 
-    /// Push a new level onto the nav stack (drill into WiFi/BT details).
     pub fn push_level(&mut self, level: QsLevel) {
         self.nav_stack.push(level);
     }
@@ -183,11 +148,7 @@ impl QuickSettings {
         }
     }
 
-    /// Cycle the power profile in the order
-    /// `Balanced → Performance → Saver → Balanced`.
-    ///
-    /// Mirrors the chevron on the Power Profile row — each click advances
-    /// to the next profile and wraps around at the end.
+    /// `Balanced → Performance → Saver → Balanced`, mirroring the Power Profile row's chevron.
     pub fn cycle_power_profile(&mut self) {
         self.power_profile = match self.power_profile {
             PowerProfile::Saver => PowerProfile::Balanced,
@@ -196,11 +157,7 @@ impl QuickSettings {
         };
     }
 
-    /// Sub-line text rendered under the "Wi-Fi" label on the toggle card.
-    ///
-    /// Returns the SSID when `wifi_on` is true and an SSID is known; falls
-    /// back to `"Not connected"` otherwise so the sub-line never goes
-    /// blank.
+    /// SSID when `wifi_on` and known, else "Not connected".
     pub fn wifi_connection_label(&self, wifi_on: bool) -> &str {
         if wifi_on {
             self.wifi_ssid.as_deref().unwrap_or("Not connected")
@@ -209,8 +166,7 @@ impl QuickSettings {
         }
     }
 
-    /// Sub-line text rendered under the "Bluetooth" label on the toggle
-    /// card. Same fallback rules as [`Self::wifi_connection_label`].
+    /// Same fallback rules as [`Self::wifi_connection_label`].
     pub fn bluetooth_connection_label(&self, bluetooth_on: bool) -> &str {
         if bluetooth_on {
             self.bluetooth_device.as_deref().unwrap_or("Not connected")

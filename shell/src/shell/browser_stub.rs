@@ -32,26 +32,21 @@ pub struct BrowserStubWidget {
     rect: Rect,
     runner: Runner,
     last_url: Option<String>,
-    /// Scene cache — the browser stub is purely a function of `rect`
-    /// (white card, chrome strip, traffic-light circles, address pill,
-    /// preview tile) with no per-frame state, so we encode once at the
-    /// current size and replay on subsequent frames via the outer
-    /// transform. Mirrors the cache pattern in `ui::widget::button`
-    /// and `shell::desktop_backdrop`.
+    /// Scene cache — the stub is purely a function of `rect`'s size, so
+    /// this is encoded once and replayed via the outer transform.
+    /// Mirrors `ui::widget::button` and `shell::desktop_backdrop`.
     cached: Scene,
-    /// Rect at which the cached scene was encoded. `Rect::ZERO`
-    /// sentinel means "no cache yet"; width/height mismatch triggers
-    /// a rebuild so a resized tile re-renders correctly.
+    /// Rect at which `cached` was encoded. `Rect::ZERO` means no cache
+    /// yet; a size mismatch triggers a rebuild.
     cache_rect: Rect,
 }
 
 impl BrowserStubWidget {
-    /// Construct with the default runner (`xdg-open`).
     pub fn new() -> Self {
         Self::with_runner(Box::new(default_xdg_open))
     }
 
-    /// Construct with a caller-supplied runner. Primary test injection seam.
+    /// Primary test injection seam.
     pub fn with_runner(runner: Runner) -> Self {
         Self {
             rect: Rect::ZERO,
@@ -62,15 +57,11 @@ impl BrowserStubWidget {
         }
     }
 
-    /// Record the URL and invoke the runner. Exposed for test injection —
-    /// the integration test in `apps_integration.rs` substitutes a recording
-    /// runner via `with_runner`.
     pub fn open_external(&mut self, url: &str) {
         self.last_url = Some(url.to_string());
         (self.runner)(url);
     }
 
-    /// The most recent URL passed through `open_external`.
     pub fn last_url(&self) -> Option<&str> {
         self.last_url.as_deref()
     }
@@ -126,10 +117,8 @@ impl Widget for BrowserStubWidget {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Cache fast-path: the browser stub is purely a function of
-        // `self.rect`'s size — no hover/focus/animation state ever
-        // changes the painted pixels. Replay the cached scene with a
-        // translation delta when the rect has only moved.
+        // Purely a function of rect size; replay via translation when
+        // only the position moved.
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
@@ -143,26 +132,19 @@ impl Widget for BrowserStubWidget {
             return;
         }
 
-        // Cache miss — encode into `self.cached` at IDENTITY, then
-        // splice with `out_transform`. The `std::mem::take` dance
-        // keeps the borrow checker happy across the `&self.rect`
-        // read in the encode helper (no closure over `&mut self`).
+        // `std::mem::take` keeps the borrow checker happy across the
+        // `&self.rect` read below (no closure over `&mut self`).
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
         let scene = &mut local;
         let transform = Affine::IDENTITY;
-        // Concept-style browser chrome: white card, 48 px header with three
-        // traffic-light circles on the left + a pill-shaped address bar
-        // centred in the remaining width, and a body with a placeholder
-        // "App Preview" canvas. Matches
-        // `nirios-concept/src/components/apps/BrowserApp.tsx`; the outer
-        // rounded card is clipped against `self.rect` so the chrome paints
-        // inside the host's tile boundary.
+        // Matches `nirios-concept/src/components/apps/BrowserApp.tsx`;
+        // the outer rounded card is clipped against `self.rect` so the
+        // chrome paints inside the host's tile boundary.
         let tokens = &theme.tokens;
         let radius = tokens.radii.lg as f64;
         let card = vello::kurbo::RoundedRect::from_rect(self.rect, radius);
 
-        // White card background, matching concept's `bg-white`.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -179,9 +161,6 @@ impl Widget for BrowserStubWidget {
             self.rect.y0 + chrome_h,
         );
 
-        // Chrome strip — slate-50-ish tone. The window card is already
-        // white, so we overlay a thin slate-tinted band clipped to the
-        // chrome rect for the header.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -189,7 +168,6 @@ impl Widget for BrowserStubWidget {
             None,
             &chrome_rect,
         );
-        // Divider under the chrome.
         let divider = Rect::new(
             self.rect.x0,
             self.rect.y0 + chrome_h - 1.0,
@@ -204,9 +182,7 @@ impl Widget for BrowserStubWidget {
             &divider,
         );
 
-        // Three traffic-light circles (slate-300-ish, concept doesn't
-        // colour them red/yellow/green). 12 px diameter, 8 px apart,
-        // starting 16 px from the chrome's left edge.
+        // Concept doesn't colour the traffic lights red/yellow/green.
         let light_y = self.rect.y0 + chrome_h / 2.0;
         for i in 0..3 {
             let cx = self.rect.x0 + 22.0 + (i as f64) * 18.0;
@@ -220,9 +196,8 @@ impl Widget for BrowserStubWidget {
             );
         }
 
-        // Address-bar pill. Concept clamps it to `max-w-2xl` (≈ 672 px);
-        // here we clamp by the card width minus the traffic-light gutter
-        // and right-hand padding, so it centres inside the remaining band.
+        // Concept clamps the address bar to `max-w-2xl` (≈ 672 px); here
+        // it's the card width minus the gutter and padding instead.
         let bar_left = self.rect.x0 + 78.0;
         let bar_right = (self.rect.x1 - 24.0).min(self.rect.x0 + 78.0 + 560.0);
         if bar_right > bar_left + 80.0 {
@@ -243,7 +218,6 @@ impl Widget for BrowserStubWidget {
                 &pill,
             );
 
-            // Globe glyph + URL text inside the pill.
             let globe = "󰖟";
             let glyph_size = tokens.typography.scale.base;
             let (ggw, ggh) = text_renderer.measure(globe, glyph_size, None);
@@ -271,9 +245,8 @@ impl Widget for BrowserStubWidget {
             );
         }
 
-        // Body: a centred indigo tile + headline, in the concept's
-        // "App Preview" placeholder style. Painted only if we have
-        // enough vertical room for the whole composition.
+        // Painted only if there's enough vertical room for the whole
+        // composition.
         let body_top = self.rect.y0 + chrome_h + 16.0;
         if self.rect.y1 - body_top > 200.0 {
             let tile_size = 96.0_f64;
@@ -309,11 +282,10 @@ impl Widget for BrowserStubWidget {
                 &inner,
             );
 
-            // On the white browser card `text_primary` (pure white) would
-            // be invisible — use the dark-on-white pairing the concept shows
-            // (`text-slate-800` headline, `text-slate-500` subtitle).
-            let on_card_headline = tokens.colors.neutral[1]; // slate-900 in dark theme
-            let on_card_subtle = tokens.colors.neutral[4]; // slate-600
+            // `text_primary` (pure white) would be invisible on this
+            // white card, so use dark-on-white instead.
+            let on_card_headline = tokens.colors.neutral[1];
+            let on_card_subtle = tokens.colors.neutral[4];
 
             let headline = "App Preview";
             let headline_size = tokens.typography.scale.xl;
@@ -344,10 +316,6 @@ impl Widget for BrowserStubWidget {
             );
         }
 
-        // End of cache build — splice the freshly-encoded local scene
-        // into the caller's `out_scene` with the host transform, then
-        // restore `self.cached` and update `self.cache_rect` so the
-        // next frame can take the fast path.
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_rect = self.rect;
@@ -375,29 +343,21 @@ impl Widget for BrowserStubWidget {
         self.rect
     }
 
-    /// The stub renders a fixed placeholder card. After the first
-    /// successful draw populates `cache_rect`, the painted pixels are
-    /// frame-invariant — so we report not-dirty until either the rect
-    /// resizes (`apply_layout` will trigger a rebuild via the cache's
-    /// size-mismatch check on the next draw) or a fresh widget instance
-    /// is constructed (`cache_rect == ZERO`).
+    /// The painted pixels are frame-invariant once `cache_rect` is
+    /// populated, so not-dirty until a resize (caught by the cache's
+    /// size-mismatch check) or a fresh instance (`cache_rect == ZERO`).
     fn needs_redraw(&self) -> bool {
         self.cache_rect == Rect::ZERO
     }
 
-    /// The browser stub has no intrinsic size — it stretches to
-    /// `percent(1.0)` of its tile slot. Layout only needs recomputing
-    /// when the slot itself changes, which the parent container will
-    /// report independently; the stub itself is layout-clean after
-    /// the first pass.
+    /// No intrinsic size — stretches to `percent(1.0)` of its tile
+    /// slot, so layout is clean after the first pass.
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
     }
 
     fn mark_drawn(&mut self) {
-        // No per-event dirty flag — `cache_rect` carries the "has been
-        // drawn" signal directly, so this is a no-op. Leaf widgets in
-        // `ui::widget::button` follow the same pattern.
+        // `cache_rect` carries the "has been drawn" signal directly.
     }
 }
 

@@ -9,17 +9,13 @@
 
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
-/// Alpha the shell overlay host tints the GlobalSearch palette surface
-/// with. Kept in sync with
-/// [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`] — see that
-/// constant for the full rationale.
+/// Alpha the shell overlay host tints the GlobalSearch surface with. Kept
+/// in sync with [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`].
 pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 
-/// Which slice of the command catalog the palette is focusing on.
-///
-/// `Any` shows everything; the narrower variants restrict to a prefix family
-/// (`file.*`, `ws.*`, `app.*`) while always leaving `settings.*` visible so
-/// the user never loses the escape hatch to Settings.
+/// Which slice of the command catalog the palette is focusing on. `Any`
+/// shows everything; narrower variants restrict to a prefix family while
+/// always leaving `settings.*` visible as the escape hatch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SearchContext {
     Any,
@@ -42,8 +38,6 @@ impl GlobalSearch {
         }
     }
 
-    /// Seed the default system command set. Idempotent-safe to call once at
-    /// construction.
     pub fn seed_default_commands(&mut self) {
         let defaults: &[(&str, &str)] = &[
             ("ws.create", "Create Workspace"),
@@ -69,24 +63,19 @@ impl GlobalSearch {
         &self.context
     }
 
-    /// Tint alpha for the palette surface. See
-    /// [`PALETTE_SURFACE_ALPHA`] for background — the palette paints
-    /// solid slate-900 and gets its depth from the scrim beneath it, not
-    /// from letting the desktop through the card.
+    /// Tint alpha for the palette surface — solid slate-900, depth comes
+    /// from the scrim beneath it, not from letting the desktop through.
     pub fn surface_alpha() -> f32 {
         PALETTE_SURFACE_ALPHA
     }
 
-    /// Install a context-aware filter on the underlying palette.
-    ///
-    /// `settings.*` entries are always kept visible so the user can reach
-    /// Settings from any context; the narrow contexts additionally keep the
-    /// matching prefix family (`file.*`, `ws.*`, `app.*`).
+    /// Install a context-aware filter: `settings.*` always stays visible
+    /// as the escape hatch, narrow contexts additionally keep their prefix
+    /// family (`file.*`, `ws.*`, `app.*`).
     pub fn set_context_kind(&mut self, ctx: SearchContext) {
         self.context = ctx.clone();
         match ctx {
             SearchContext::Any => {
-                // Restore "everything visible" by installing a pass-all filter.
                 self.palette
                     .set_filter(Box::new(|_entry: &CommandEntry| true));
             }

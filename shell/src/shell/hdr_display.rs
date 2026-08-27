@@ -16,9 +16,8 @@
 /// between tone-map and passthrough.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DisplayCapabilities {
-    /// Peak sustainable luminance in cd/m² — SDR 100, HDR400 400, HDR1000
-    /// 1000+. Sets the tone-map target: a bright panel wants less
-    /// aggressive compression than a dim one.
+    /// Peak sustainable luminance in cd/m² (SDR 100, HDR400 400, HDR1000
+    /// 1000+); sets the tone-map target.
     pub max_luminance_nits: f32,
     /// PQ (SMPTE ST 2084) can be driven out through the DRM connector or
     /// Vulkan swapchain: true → passthrough, false → tone-map to SDR.
@@ -26,9 +25,8 @@ pub struct DisplayCapabilities {
     /// The compositor can output HLG. Independent of PQ — some
     /// broadcast HDR TVs prefer HLG.
     pub supports_hlg_output: bool,
-    /// Panel approximately covers BT.2020. When false and PQ is on,
-    /// gamut-mapping still runs in the HDR path so out-of-gamut colours
-    /// compress toward the display's real chromaticities.
+    /// Panel approximately covers BT.2020; when false, gamut-mapping still
+    /// runs in the HDR path to compress toward the display's real gamut.
     pub bt2020_gamut: bool,
 }
 
@@ -61,11 +59,9 @@ impl Default for DisplayCapabilities {
     }
 }
 
-/// Probe a wgpu adapter + surface for HDR capabilities, returning SDR
-/// defaults on any error path so callers never send PQ pixels to an SDR
-/// display. Read-only format-list inspection, safe to re-probe after
-/// hotplug. EDID HDR static metadata is not read here; the compositor
-/// supplies that peak separately.
+/// Returns SDR defaults on any error path so callers never send PQ pixels
+/// to an SDR display. Read-only, safe to re-probe after hotplug; EDID HDR
+/// static metadata is not read here — the compositor supplies that peak.
 pub fn detect_hdr_display(
     adapter: &vello::wgpu::Adapter,
     surface: &vello::wgpu::Surface,
@@ -85,15 +81,12 @@ pub fn detect_hdr_display(
     }
 
     let backend = adapter.get_info().backend;
-    // Vulkan + KMS is the only backend with the `VK_EXT_hdr_metadata`
-    // handshake; others route through shims without it, so no PQ passthrough
-    // regardless of format availability.
+    // Only Vulkan+KMS has the `VK_EXT_hdr_metadata` handshake; other
+    // backends route through shims without it, no PQ regardless of format.
     let backend_supports_hdr = matches!(backend, vello::wgpu::Backend::Vulkan);
     if !backend_supports_hdr {
         return DisplayCapabilities {
-            // Format is present, so bump max luminance modestly for
-            // headroom on a "bright SDR" monitor.
-            max_luminance_nits: 200.0,
+            max_luminance_nits: 200.0, // format present: some "bright SDR" headroom
             supports_pq_output: false,
             supports_hlg_output: false,
             bt2020_gamut: false,
@@ -117,8 +110,7 @@ pub fn preferred_hdr_swapchain_format(
     if !caps.supports_pq_output {
         return None;
     }
-    // Rgb10a2Unorm is the standard HDR10-carrying swapchain format;
-    // Rgba16Float only suits an scRGB-style intermediate, rare here.
+    // Rgba16Float only suits a rare scRGB-style intermediate.
     if caps.max_luminance_nits >= 800.0 {
         Some(vello::wgpu::TextureFormat::Rgba16Float)
     } else {

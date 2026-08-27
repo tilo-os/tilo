@@ -1,9 +1,7 @@
-//! Golden-image snapshot comparison for PNG renders.
-//!
-//! Lets E2E tests assert that a freshly rendered PNG matches a
-//! repo-checked-in golden image within a per-channel absolute diff
-//! tolerance. Uses the `png` crate (already a dev-dep) to decode; no
-//! new crates are pulled in.
+//! Golden-image snapshot comparison for PNG renders: asserts a freshly
+//! rendered PNG matches a repo-checked-in golden within a per-channel
+//! absolute diff on R/G/B/A (`tolerance = 4` accepts `|r1-r2| <= 4`); any
+//! pixel whose max channel delta exceeds it counts as a mismatch.
 //!
 //! # Behaviour matrix
 //!
@@ -11,29 +9,21 @@
 //! | ------------- | -------------------- | ------------------------------------- |
 //! | yes           | unset                | Compare; panic on mismatch            |
 //! | yes           | set                  | Overwrite golden with rendered        |
-//! | no            | unset                | **Update-on-first-run**: copy rendered
-//! |               |                      | over → golden, print a notice, pass   |
+//! | no            | unset                | Update-on-first-run: copy rendered    |
+//! |               |                      | over -> golden, print a notice, pass  |
 //! | no            | set                  | Same as above                         |
 //!
-//! The "update-on-first-run" policy is deliberate — it means the first
-//! pass in a new CI environment produces goldens the maintainer then
-//! reviews and commits. Turning a missing golden into a hard failure
-//! would block that initial seeding step.
-//!
-//! # Tolerance
-//!
-//! Per-channel absolute diff. `tolerance = 4` accepts `|r1-r2| <= 4`
-//! etc. on R, G, B. Alpha is also checked with the same tolerance so
-//! transparency regressions don't slip through. Any pixel whose max
-//! channel delta exceeds the tolerance counts as a mismatch.
+//! Update-on-first-run is deliberate: the first pass in a new CI
+//! environment produces goldens the maintainer reviews, so a missing
+//! golden isn't a hard failure that blocks seeding.
 
 #![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Drives one golden-image assertion: `rendered` (produced by the
-/// test) vs `golden` (checked in under `tests/snapshots/`).
+/// `rendered` is produced by the test; `golden` is checked in under
+/// `tests/snapshots/`.
 pub struct SnapshotAssertion {
     pub rendered_png: PathBuf,
     pub golden_png: PathBuf,
@@ -41,9 +31,6 @@ pub struct SnapshotAssertion {
 }
 
 impl SnapshotAssertion {
-    /// `rendered` is the PNG the test just wrote (e.g. under
-    /// `target/nirios-screenshots/...`). `golden` is the repo-checked-in
-    /// expected image (e.g. `shell/tests/snapshots/e2e/foo.png`).
     pub fn new(rendered: impl Into<PathBuf>, golden: impl Into<PathBuf>) -> Self {
         Self {
             rendered_png: rendered.into(),
@@ -52,14 +39,12 @@ impl SnapshotAssertion {
         }
     }
 
-    /// Override the default `tolerance = 4`.
     pub fn with_tolerance(mut self, t: u8) -> Self {
         self.tolerance = t;
         self
     }
 
-    /// Compare rendered vs golden. See the module doc for the full
-    /// behaviour matrix.
+    /// See the module doc for the full behaviour matrix.
     pub fn assert(self) {
         let update = std::env::var_os("UPDATE_SNAPSHOTS")
             .map(|v| v == "1")
@@ -67,14 +52,10 @@ impl SnapshotAssertion {
         self.assert_with(update);
     }
 
-    /// [`Self::assert`] with the refresh decision handed in rather than
-    /// read from the environment.
-    ///
-    /// This module's own tests need to exercise both sides of that
-    /// decision, and the environment is process-global — reading it
-    /// directly here would race other tests over `UPDATE_SNAPSHOTS`.
-    /// Reading it exactly once, at [`Self::assert`]'s call site, avoids
-    /// that coupling.
+    /// [`Self::assert`] with the refresh decision handed in rather than read
+    /// from the environment — this module's own tests exercise both sides of
+    /// it, and the environment is process-global, so reading it here would
+    /// race other tests over `UPDATE_SNAPSHOTS`.
     pub fn assert_with(self, update: bool) {
         if !self.rendered_png.exists() {
             panic!(
@@ -127,7 +108,6 @@ impl SnapshotAssertion {
     }
 }
 
-/// Copy `src` over `dst`, creating parent directories as needed.
 fn copy_over(src: &Path, dst: &Path) {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
@@ -216,15 +196,10 @@ fn diff_rgba(a: &[u8], b: &[u8], tolerance: u8) -> DiffResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-//
-// Live alongside the helper rather than in a sibling `tests/` binary —
-// `tests/support/` is included from each integration test crate as
-// `mod support;`, so `#[cfg(test)]` blocks here only compile when a
-// test binary that has `mod support;` is being built, which is exactly
-// what we want.
+// Unit tests live here rather than a sibling `tests/` binary:
+// `tests/support/` is included from each integration test crate as `mod
+// support;`, so these `#[cfg(test)]` blocks only compile when a test
+// binary with `mod support;` is being built.
 
 #[cfg(test)]
 mod tests {
@@ -232,9 +207,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Pull in a tempdir-equivalent without adding `tempfile`. Each test
-    /// gets its own subdirectory under `target/snapshot-tests-<n>/` so
-    /// parallel cargo-test workers don't stomp.
+    /// A tempdir-equivalent without adding `tempfile`. Each test gets its own
+    /// subdirectory under `target/snapshot-tests-<n>/` so parallel
+    /// cargo-test workers don't stomp.
     fn scratch_dir() -> PathBuf {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -252,7 +227,6 @@ mod tests {
         base
     }
 
-    /// Write a tiny solid-colour RGBA8 PNG at `path`.
     fn write_png(path: &Path, width: u32, height: u32, rgba_fill: [u8; 4]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -347,7 +321,6 @@ mod tests {
 
         SnapshotAssertion::new(&rendered, &golden).assert_with(true);
 
-        // Verify the golden now matches the rendered (both red).
         let g = decode_png(&golden);
         assert_eq!(&g.rgba[..4], &[255, 0, 0, 255]);
     }

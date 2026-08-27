@@ -1,23 +1,16 @@
 //! Cursor position interpolation and fade-out.
 //!
 //! Remote cursor moves arrive as discrete presence samples over the peer
-//! mesh at roughly 30 Hz. Rendering them raw makes the cursor jump between
-//! frames; this module smooths them out.
+//! mesh at roughly 30 Hz; rendering them raw makes the cursor jump between
+//! frames. For each peer we keep a rolling (previous, latest) pair and
+//! cubic-ease between them at any wall-clock instant `t`. After
+//! [`FADE_AFTER`] of silence the cursor fades to zero opacity over
+//! [`FADE_DURATION`] and disappears — which is also what retires a peer
+//! that drops off the mesh without ever announcing `PresencePayload::Left`.
 //!
-//! For each peer we keep a rolling pair of samples (previous, latest). At
-//! any wall-clock instant `t`, the peer's rendered position is the cubic-
-//! eased interpolation between the two bracketing samples. After
-//! [`FADE_AFTER`] of silence, the cursor fades linearly to zero opacity
-//! over [`FADE_DURATION`], then disappears entirely — which is also what
-//! retires the cursor of a peer that drops off the mesh without ever
-//! announcing `PresencePayload::Left`.
-//!
-//! [`CursorInterpolator::apply_to`] is the compositor's entry point: it
-//! reflects the interpolated state into a [`PresenceCtx`] so the
-//! `RemoteCursorOverlay` paints smoothed, fading cursors. Colour is
-//! deliberately *not* computed here — [`PresenceCtx::color_for`] owns it,
-//! so a peer keeps one colour across the top bar, tab presence dots and
-//! the cursor overlay alike.
+//! [`CursorInterpolator::apply_to`] is the compositor's entry point.
+//! Colour is deliberately *not* computed here — [`PresenceCtx::color_for`]
+//! owns it, so a peer keeps one colour everywhere it's drawn.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -40,11 +33,10 @@ struct Sample {
 /// Per-peer interpolation state: the two most recent samples.
 #[derive(Clone, Debug)]
 struct PeerState {
-    /// The sample the cursor was at before the most recent update.
-    /// `None` before we've received two samples.
+    /// Sample before the most recent update; `None` until we've received two.
     prev: Option<Sample>,
     latest: Sample,
-    /// Optional human label for the cursor's chip.
+    /// Human label for the cursor's chip.
     label: String,
 }
 
@@ -75,9 +67,7 @@ impl CursorInterpolator {
             Some(state) => {
                 state.prev = Some(state.latest);
                 state.latest = sample;
-                // Refresh the friendly label if the caller supplied a
-                // non-empty one; empty means "no update", so we keep the
-                // last known name.
+                // Empty label means "no update"; keep the last known name.
                 if !label.is_empty() {
                     state.label = label.to_string();
                 }
@@ -123,9 +113,8 @@ impl CursorInterpolator {
         out
     }
 
-    /// Drop peers whose fade-out has fully completed. Callers can invoke
-    /// this once per second to keep the map from accumulating stale
-    /// entries when peers vanish without a `Left`.
+    /// Drop peers whose fade-out has fully completed, so the map doesn't
+    /// accumulate stale entries when peers vanish without a `Left`.
     pub fn gc(&mut self, t: Instant) {
         self.peers.retain(|_, state| {
             let age = t.saturating_duration_since(state.latest.t);
@@ -133,20 +122,11 @@ impl CursorInterpolator {
         });
     }
 
-    /// Reflect the interpolated state at `now` into `ctx`, then reclaim
-    /// fully-faded peers. This is what the compositor's frame tick calls
-    /// after draining inbound presence samples.
-    ///
-    /// Live peers are upserted at their eased position with their current
-    /// opacity. A peer this interpolator tracks but which has faded out
-    /// completely has its cursor removed — without that, a peer who stops
-    /// moving or silently drops off the mesh leaves an arrow parked on
-    /// screen forever, because the mesh presence path has no `Left`
-    /// event to trigger [`PresenceCtx::remove_remote_cursor`].
-    ///
-    /// Cursors belonging to peers this interpolator has never seen are
-    /// left untouched, so it can coexist with the toolkit's own
-    /// socket-driven presence pump.
+    /// Reflects state at `now` into `ctx`, then reclaims fully-faded peers
+    /// — otherwise a peer that silently drops off the mesh (no `Left`
+    /// event) leaves an arrow parked on screen forever. Peers this
+    /// interpolator has never seen are left untouched, so it coexists with
+    /// the toolkit's own socket-driven presence pump.
     pub fn apply_to(&mut self, ctx: &mut PresenceCtx, now: Instant) {
         let live = self.sample_at(now);
         for cursor in &live {
@@ -184,10 +164,8 @@ fn cubic_ease(t: f32) -> f32 {
 }
 
 fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<InterpolatedCursor> {
-    // Fade is measured relative to the *latest* sample time — even if
-    // `now` sits between `prev` and `latest` (the caller renders "in the
-    // past" mid-interpolation), we treat that as fully-active because
-    // the peer moved recently.
+    // Fade is relative to the *latest* sample; `now` between `prev` and
+    // `latest` counts as fully-active since the peer moved recently.
     let alpha = if now >= state.latest.t {
         let age = now.saturating_duration_since(state.latest.t);
         if age <= FADE_AFTER {
@@ -262,8 +240,7 @@ mod tests {
         i.push_sample("alice", "Alice", [100.0, 100.0], t100);
         let cs = i.sample_at(t50);
         assert_eq!(cs.len(), 1);
-        // Cubic ease at t=0.5 is exactly 0.5 (smoothstep symmetry), so
-        // midpoint interpolation is exact at the midpoint.
+        // Cubic ease at t=0.5 is exactly 0.5 (smoothstep symmetry).
         let (x, y) = (cs[0].position[0], cs[0].position[1]);
         assert!(
             (x - 50.0).abs() < 5.0 && (y - 50.0).abs() < 5.0,
@@ -278,8 +255,7 @@ mod tests {
         let mut i = CursorInterpolator::new();
         i.push_sample("alice", "Alice", [0.0, 0.0], t0);
         i.push_sample("alice", "Alice", [100.0, 100.0], t100);
-        // Sampling well past t100 (but before fade) sticks to latest.
-        let cs = i.sample_at(t100 + Duration::from_millis(500));
+        let cs = i.sample_at(t100 + Duration::from_millis(500)); // well past t100, before fade
         assert_eq!(cs[0].position, [100.0, 100.0]);
     }
 
@@ -311,16 +287,13 @@ mod tests {
         let mut i = CursorInterpolator::new();
         i.push_sample("alice", "Alice", [10.0, 10.0], t0);
 
-        // Just before fade begins: fully opaque.
-        let cs = i.sample_at(t0 + FADE_AFTER);
+        let cs = i.sample_at(t0 + FADE_AFTER); // just before fade begins
         assert!(cs[0].alpha >= 0.99);
 
-        // Mid-fade: strictly between 0 and 1.
-        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION / 2);
+        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
         assert!(cs[0].alpha > 0.0 && cs[0].alpha < 1.0);
 
-        // After fade: gone.
-        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION * 2);
+        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION * 2); // after fade: gone
         assert!(cs.is_empty());
     }
 
@@ -331,8 +304,7 @@ mod tests {
         i.push_sample("alice", "Alice", [10.0, 10.0], t0);
         i.push_sample("bob", "Bob", [20.0, 20.0], t0 + Duration::from_secs(1));
         assert_eq!(i.len(), 2);
-        // Well past both peers' fade windows.
-        i.gc(t0 + Duration::from_secs(1) + FADE_AFTER + FADE_DURATION * 2);
+        i.gc(t0 + Duration::from_secs(1) + FADE_AFTER + FADE_DURATION * 2); // well past both fade windows
         assert_eq!(i.len(), 0);
     }
 
@@ -374,8 +346,6 @@ mod tests {
         let c = &ctx.remote_cursors[0];
         assert_eq!(c.user_id, "alice");
         assert_eq!(c.label, "Alice");
-        // Raw sampling would have parked the cursor at the latest sample
-        // (100, 100); interpolation puts it near the midpoint.
         assert!(
             (c.position[0] - 50.0).abs() < 5.0 && (c.position[1] - 50.0).abs() < 5.0,
             "expected the eased midpoint, got {:?}",
@@ -385,8 +355,6 @@ mod tests {
 
     #[test]
     fn apply_to_uses_the_shared_palette_not_a_private_one() {
-        // Peer colour is owned by `PresenceCtx::color_for`, so a pinned
-        // palette id renders the same here as in the top bar.
         let t0 = Instant::now();
         let mut ctx = PresenceCtx::empty();
         let mut i = CursorInterpolator::new();
@@ -410,15 +378,12 @@ mod tests {
         i.apply_to(&mut ctx, t0);
         assert_eq!(ctx.remote_cursors[0].color[3], 1.0, "fresh sample is opaque");
 
-        // Mid-fade the cursor is still painted, but translucent.
-        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION / 2);
+        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
         assert_eq!(ctx.remote_cursors.len(), 1);
         let a = ctx.remote_cursors[0].color[3];
         assert!(a > 0.0 && a < 1.0, "expected a partial fade, got {a}");
 
-        // Past the fade window the cursor is retired rather than left
-        // parked on screen — the mesh presence path never sends `Left`.
-        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2);
+        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2); // past the fade window
         assert!(
             ctx.remote_cursors.is_empty(),
             "a peer that went silent must not leave a cursor behind",
@@ -427,8 +392,6 @@ mod tests {
 
     #[test]
     fn apply_to_leaves_cursors_it_does_not_own_alone() {
-        // The toolkit's socket-driven pump writes into the same vec.
-        // Retiring a faded peer must not evict those.
         let t0 = Instant::now();
         let mut ctx = PresenceCtx::empty();
         ctx.upsert_remote_cursor("bob".into(), [7.0, 7.0], Some("Bob"));

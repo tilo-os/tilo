@@ -1,15 +1,10 @@
-//! End-to-end integration coverage for the nirios shell chrome.
+//! End-to-end integration coverage for the nirios shell chrome. Exercises
+//! the root widget tree from [`build_nirios_root`] against a bootstrap
+//! workspace + shared chrome state, verifying cross-widget wiring holds
+//! together in one pass (no live compositor; plain crate APIs only).
 //!
-//! Exercises the root widget tree produced by [`build_nirios_root`] against
-//! a bootstrap workspace plus the shared chrome state, and verifies that
-//! the cross-widget wiring (sidebar + chrome state + notes app) holds
-//! together in one pass. No live compositor is required — every assertion
-//! goes through plain crate APIs.
-//!
-//! Complements the per-widget unit tests in:
-//!   - `tests/shell_chrome_test.rs` (OverviewView, GlobalSearch, QuickSettings, …)
-//!   - `ui/src/widget/tabs.rs` (TabBar close + reorder)
-//!   - `src/shell/notes_app.rs` (NotesApp sync/insert/delete).
+//! Complements the per-widget unit tests in `tests/shell_chrome_test.rs`,
+//! `ui/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
 
 use shell::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::notes_app::{BODY_KEY, NotesApp};
@@ -25,23 +20,20 @@ use ui::widget::Widget;
 fn root_builds_without_panic_for_bootstrap_tree() {
     let tree = WorkspaceTree::bootstrap_default();
     let _root = build_nirios_root(&tree);
-    // Reaching here means every chrome widget constructed cleanly against
-    // the default Home workspace (Notes + Files + Terminal + Browser).
 }
 
 #[test]
 fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
-    // `bootstrap_default` seeds one empty workspace with no groups (a
-    // first boot starts empty); `bootstrap_demo` is the populated fixture
-    // kept for exactly this kind of test — one with a tab to act on.
+    // A first boot starts empty, so `bootstrap_demo` is the fixture with a tab
+    // to act on.
     let tree = WorkspaceTree::bootstrap_demo();
     let ws = tree.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
     let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
-    // A window the user never opened, showing an app that doesn't exist,
-    // is worse than not offering it — so nothing seeded here may be a Stub.
+    // A window the user never opened, showing an app that doesn't exist, is
+    // worse than not offering it — nothing seeded here may be a Stub.
     for tab in &group.tabs {
         match &tab.tile {
             TileContent::AppPlaceholder { .. } => {}
@@ -52,11 +44,9 @@ fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
             ),
         }
     }
-    // And each one must come online as a live widget rather than falling
-    // through the hydration match into a placeholder card.
     for tab in &group.tabs {
-        // The terminal is the one tab whose hydration can legitimately
-        // fail (no /dev/ptmx in a sandbox), and it says so in its label.
+        // The terminal is the one tab whose hydration can legitimately fail (no
+        // /dev/ptmx in a sandbox), and it says so in its label.
         if tab.title == "Terminal" {
             continue;
         }
@@ -74,16 +64,13 @@ fn chrome_state_shared_across_sibling_widgets() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
 
-    // Two clones of the handle represent two chrome widgets (e.g.
-    // TopBarChrome + SidebarWheelChrome) holding the same state.
+    // Two clones stand for two chrome widgets holding the same state.
     let a = chrome.clone();
     let b = chrome.clone();
 
     a.borrow_mut().overlays.overview = true;
     assert!(b.borrow().overlays.overview);
 
-    // The revision bumps on mutation so polling consumers can detect it
-    // without a diff.
     let before = b.borrow().revision;
     a.borrow_mut().bump();
     assert_eq!(b.borrow().revision, before.wrapping_add(1));
@@ -96,8 +83,6 @@ fn sidebar_plus_button_appends_workspace_and_activates_it() {
     let ws = SidebarWheel::new().click_management_new_workspace(&mut tree);
     assert_eq!(tree.workspaces.len(), before + 1);
     assert_eq!(tree.active, ws);
-    // Newly-created workspaces come with an empty "Main" strip so the
-    // shell has something to show in the StripView.
     let active = tree.active_workspace().expect("active workspace");
     assert!(active.strips.iter().any(|s| s.name == "Main"));
 }
@@ -106,23 +91,21 @@ fn sidebar_plus_button_appends_workspace_and_activates_it() {
 fn quick_settings_state_defaults_and_mutates_through_chrome() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
-    // Defaults are deliberate: brightness > 0 so the slider has a visible
-    // fill, wifi on / bluetooth off to match most fresh installs.
+    // Defaults are deliberate: brightness > 0 so the slider has a visible fill,
+    // wifi on / bluetooth off to match most fresh installs.
     let defaults = QuickSettingsState::default();
     assert_eq!(chrome.borrow().quick_settings, defaults);
     assert!(defaults.wifi && !defaults.bluetooth);
 
-    // Writes go through the shared handle so every chrome widget
-    // (topbar pill + overlay host popover) sees the same values.
+    // Writes go through the shared handle so every chrome widget sees them.
     {
         let mut st = chrome.borrow_mut();
         st.quick_settings.brightness = 0.25;
         st.quick_settings.bluetooth = true;
         st.bump();
     }
-    // `QuickSettingsState` no longer derives `Copy` — the WiFi/BT
-    // drill-in vectors made it un-Copyable — so we explicitly clone the
-    // value out from behind the `Ref` borrow before asserting against it.
+    // `QuickSettingsState` isn't `Copy` (the drill-in vectors), so clone out
+    // from behind the `Ref` before asserting.
     let qs = chrome.borrow().quick_settings.clone();
     assert!((qs.brightness - 0.25).abs() < 1e-5);
     assert!(qs.bluetooth);
@@ -133,7 +116,6 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
 
-    // Seed an edit-in-flight and commit it.
     {
         let mut st = chrome.borrow_mut();
         st.editing_workspace_name = Some("Research".to_string());
@@ -160,8 +142,8 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
 fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
-    // Default narrows ⌘K to the current workspace so peers don't get
-    // cross-workspace result leakage by accident.
+    // Default narrows Cmd-K to the current workspace so peers don't leak
+    // cross-workspace results by accident.
     assert_eq!(chrome.borrow().search_scope, SearchScope::Workspace);
 
     {
@@ -176,9 +158,8 @@ fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
 
 #[test]
 fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
-    // The top bar reads the active workspace's roster first (with a
-    // tree-level fallback only when the workspace is empty), so this
-    // test seeds onto the active workspace directly.
+    // The top bar reads the active workspace's roster first (tree-level
+    // fallback only when it is empty), so seed onto the active workspace.
     let mut tree = WorkspaceTree::bootstrap_default();
     let active_id = tree.active;
     let active_ws = tree
@@ -213,11 +194,9 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 
 #[test]
 fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
-    // If the active workspace itself has no roster, the top bar must
-    // fall back to the tree-level roster — mirrors the precedence
-    // applied by `SidebarWheelChrome::sync_from_tree`. Without this
-    // path, single-workspace demo trees that only set
-    // `tree.collaborators` would render an empty avatar stack.
+    // With no roster on the active workspace the top bar falls back to the
+    // tree-level one (mirroring `SidebarWheelChrome::sync_from_tree`) —
+    // without it, demo trees that only set `tree.collaborators` render empty.
     let mut tree = WorkspaceTree::bootstrap_default();
     let active_id = tree.active;
     let active_ws = tree
@@ -235,11 +214,8 @@ fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
 
 #[test]
 fn sidebar_active_card_inherits_tree_collaborator_count() {
-    // The fallback under test only fires when the active workspace has
-    // no roster of its own. A freshly bootstrapped tree already has
-    // none — nobody has joined it — but clear every workspace anyway so
-    // the precondition is stated here rather than borrowed from what
-    // `bootstrap_default` happens to do.
+    // The fallback only fires when the active workspace has no roster of its
+    // own; clear every workspace so the precondition is stated, not borrowed.
     let mut tree = WorkspaceTree::bootstrap_default();
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
@@ -247,8 +223,6 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
     let wheel = SidebarWheelChrome::from_tree(&tree);
     assert_eq!(wheel.active_collaborator_count(), 0);
 
-    // Tree-level collaborators flow into the active card's presence count
-    // when the active workspace's own roster is empty.
     tree.collaborators = vec![
         Collaborator::new("a", "Ada"),
         Collaborator::new("b", "Ben"),
@@ -262,11 +236,9 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
 
 #[test]
 fn sidebar_cards_read_per_workspace_collaborator_rosters() {
-    // Each workspace's own `Workspace::collaborators` populates its card,
-    // with a tree-level fallback only on the active card (and only when
-    // the workspace itself is empty).
+    // Each workspace's own `collaborators` populates its card, with a
+    // tree-level fallback only on the active card.
     let mut tree = WorkspaceTree::bootstrap_default();
-    // Seed a second workspace so we have two cards to compare.
     let w1_id = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
     let w2_id = tree.workspaces[1].id;
@@ -289,10 +261,8 @@ fn sidebar_cards_read_per_workspace_collaborator_rosters() {
 
 #[test]
 fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
-    // Falls back to tree-level peers only on the *active* card — an
-    // inactive card with no per-workspace peers should not borrow the
-    // tree-level roster, otherwise every card would display the same
-    // phantom "everyone is here" roster.
+    // The fallback applies only to the *active* card — otherwise every card
+    // would show the same phantom roster.
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -300,8 +270,6 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
         ws.collaborators.clear();
     }
     tree.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
-    // Workspace 0 is active + has no per-ws roster: borrows tree (2).
-    // Every other card is inactive + has no per-ws roster: stays at 0.
     tree.active = w0;
 
     let wheel = SidebarWheelChrome::from_tree(&tree);
@@ -313,18 +281,16 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
 fn collaborators_overlay_defaults_off_and_toggles_through_chrome() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
-    // Defaults: all overlay flags off — the shell starts clean.
     assert!(!chrome.borrow().overlays.collaborators);
     assert!(!chrome.borrow().overlays.quick_settings);
-    // Flip through the shared handle; overlay host reads the same field.
     {
         let mut st = chrome.borrow_mut();
         st.overlays.collaborators = true;
         st.bump();
     }
     assert!(chrome.borrow().overlays.collaborators);
-    // Collaborators + quick-settings are sibling overlays — opening one
-    // doesn't implicitly close the other (the outside-click handler does).
+    // Sibling overlays: opening one doesn't implicitly close the other (the
+    // outside-click handler does).
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
@@ -340,7 +306,6 @@ fn center_widget_cycles_forward_and_backward() {
     assert_eq!(CenterWidget::Clock.next(), CenterWidget::SystemMonitor);
     assert_eq!(CenterWidget::SystemMonitor.next(), CenterWidget::Calendar);
     assert_eq!(CenterWidget::Calendar.next(), CenterWidget::Clock);
-    // Backward scroll is the inverse.
     assert_eq!(CenterWidget::Clock.prev(), CenterWidget::Calendar);
     assert_eq!(CenterWidget::Calendar.prev(), CenterWidget::SystemMonitor);
     assert_eq!(CenterWidget::SystemMonitor.prev(), CenterWidget::Clock);
@@ -349,7 +314,6 @@ fn center_widget_cycles_forward_and_backward() {
     assert_eq!(CenterWidget::from_index(1), CenterWidget::SystemMonitor);
     assert_eq!(CenterWidget::from_index(2), CenterWidget::Calendar);
     assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
-    // And the top bar starts on Clock by default so the first frame is sane.
     let tree = WorkspaceTree::bootstrap_default();
     assert_eq!(
         TopBarChrome::from_tree(&tree).center_widget(),
@@ -374,14 +338,12 @@ fn notes_app_roundtrips_through_crdt() {
         "hello"
     );
 
-    // A second Notes widget that attaches to the same tile picks up the
-    // existing body on sync — this is the CRDT-backed "join the session"
-    // story in a tiny.
+    // A second Notes widget on the same tile picks up the existing body on
+    // sync — the CRDT-backed "join the session" path.
     let mut b = NotesApp::new();
     b.sync(&mut doc, &tile);
-    // `NotesApp::text` is private; we prove the read-through by firing an
-    // undo-safe insert and verifying the CRDT length grows from the
-    // attached state rather than the widget's own initial buffer.
+    // `NotesApp::text` is private, so the read-through is proved by an insert
+    // growing the CRDT from the attached state, not the widget's own buffer.
     let body = match doc.get(&tile, BODY_KEY).unwrap().unwrap() {
         (Value::Object(ObjType::Text), id) => id,
         _ => panic!("expected Text body"),
@@ -392,10 +354,9 @@ fn notes_app_roundtrips_through_crdt() {
 
 #[test]
 fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
-    // The runtime demo workspace (what `cargo run -p quick-desktop` shows)
-    // carries five tabs in a single group: Terminal, Files, Notes, Editor,
-    // Browser. Editor must be present and hosted as a live AppWidget (not
-    // a Stub); this test locks the tab set down against regressions.
+    // The runtime demo workspace (`cargo run -p quick-desktop`) carries five
+    // tabs in one group: Terminal, Files, Notes, Editor, Browser; Editor must
+    // be a live AppWidget, not a Stub.
     use shell::shell::Shell;
     use shell::shell::tile::TileContent as RuntimeTile;
 
@@ -414,8 +375,7 @@ fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
         vec!["Terminal", "Files", "Notes", "Editor", "Browser"]
     );
 
-    // The Editor tab must host a live AppWidget (not fall through to Stub).
-    // We identify it by title rather than index so the assertion survives a
+    // Identified by title rather than index so the assertion survives a
     // future reshuffling of the tab order.
     let editor_tab = group
         .tabs
@@ -441,7 +401,6 @@ fn editor_app_persists_edits_through_crdt() {
         .put_object(&root, "tile", ObjType::Map)
         .expect("tile obj");
 
-    // First Editor widget writes its seed into the shared doc on sync.
     let mut a = EditorApp::with_seed("let x = 1;\n");
     a.sync(&mut doc, &tile);
     let body = match doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap() {
@@ -450,8 +409,7 @@ fn editor_app_persists_edits_through_crdt() {
     };
     assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
 
-    // A second Editor widget binding to the same doc picks up the existing
-    // body (the CRDT-backed "join the session" story, identical to Notes).
+    // A second Editor on the same doc picks up the existing body, as Notes does.
     let mut b = EditorApp::new();
     b.sync(&mut doc, &tile);
     assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
@@ -459,18 +417,15 @@ fn editor_app_persists_edits_through_crdt() {
 
 #[test]
 fn sync_tab_presence_seeds_per_tab_peer_registrations() {
-    // Each `Collaborator` with `active_tab = Some(id)` should show up on
-    // `PresenceCtx.peers_on(PresenceKey::Tab{ hex(id) })` after running the
-    // shell's sync helper. This is what turns the tab-pill presence dots
-    // on in practice — without it `TabBar` reads an empty peers list and
-    // draws no dots, regardless of how many peers the top-bar shows.
+    // A `Collaborator` with `active_tab` must reach
+    // `PresenceCtx.peers_on(PresenceKey::Tab{hex(id)})` after sync — this is
+    // what lights the tab-pill dots, whatever the top-bar count says.
     use shell::shell::sync_tab_presence_from_tree;
     use ui::permissions::UserId;
     use ui::presence::{PresenceCtx, PresenceKey};
 
     let mut tree = WorkspaceTree::bootstrap_demo();
-    // Pick a real tab id from the bootstrap tree so we're exercising the
-    // actual id formatting (not a synthetic constant).
+    // A real tab id from the tree, so the actual id formatting is exercised.
     let ws = tree.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("strip");
     let grp = strip.window_groups.first().expect("group");
@@ -501,8 +456,7 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     assert_eq!(ctx.peers_on(&key_a), &[UserId("a".into())]);
     assert_eq!(ctx.peers_on(&key_b), &[UserId("b".into())]);
 
-    // Cae has no `active_tab` → not attributed anywhere. The map for any
-    // tab id Cae might plausibly live on should therefore not mention "c".
+    // Cae has no `active_tab`, so no tab id may attribute her.
     let all_peers: Vec<&UserId> = ctx.here.values().flat_map(|v| v.iter()).collect();
     assert!(
         all_peers.iter().all(|u| u.0 != "c"),
@@ -513,12 +467,9 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 
 #[test]
 fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
-    // A `Collaborator` carrying a `cursor_color` hex override must be
-    // copied into `PresenceCtx::color_overrides` during the sync step so
-    // every downstream affordance (tab dots, caret, selection, pointer)
-    // reads the authoritative colour from one place. Concept peers that
-    // don't carry a per-peer `cursorColor` still fall through to the
-    // palette-pinned `user_color`, so the map must stay empty for them.
+    // A `cursor_color` override must copy into `PresenceCtx::color_overrides`
+    // during sync so every affordance reads one authoritative colour; peers
+    // without one fall through to the palette-pinned `user_color`.
     use shell::shell::sync_tab_presence_from_tree;
     use ui::permissions::UserId;
     use ui::presence::PresenceCtx;
@@ -529,8 +480,8 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
         .iter_mut()
         .find(|w| w.id == tree.active)
         .expect("active ws mut");
-    // Ada has an override, Ben does not; Cae lives on the tree-level
-    // roster (not the workspace) — her override must also be seeded.
+    // Ada has an override, Ben does not; Cae is on the tree-level roster, and
+    // her override must be seeded too.
     ws_mut.collaborators = vec![
         Collaborator::new("a", "Ada").with_cursor_color("#abcdef"),
         Collaborator::new("b", "Ben"),
@@ -558,11 +509,9 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
     );
 }
 
-/// An Editor tab with no peers in the workspace has no peer caret in it —
-/// presence on the editor body comes from peers or it does not exist. The
-/// key is built the way `EditorApp` builds it, naming the tab's record as
-/// well as the body field, so this fails if anything starts publishing
-/// there without a real peer behind it.
+/// An Editor tab with no peers has no peer caret — presence on the body
+/// comes from peers or not at all. The key is built the way `EditorApp`
+/// builds it (tab record + body field), so a false publish fails this.
 #[test]
 fn an_editor_body_has_no_peer_caret_without_peers() {
     use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
@@ -584,8 +533,8 @@ fn an_editor_body_has_no_peer_caret_without_peers() {
         id
     };
 
-    // The startup seeding the shell actually does: per-tab presence from
-    // the workspace's real collaborator roster, and nothing else.
+    // The seeding the shell actually does at startup: per-tab presence from
+    // the workspace's real roster, nothing else.
     let mut ctx = PresenceCtx::empty();
     shell::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
 
@@ -606,10 +555,8 @@ fn an_editor_body_has_no_peer_caret_without_peers() {
 
 #[test]
 fn shell_file_drop_appends_tab_to_active_workspace() {
-    // End-to-end: dropping a .ts file onto the workspace area should
-    // append a new tab to the active workspace's first group via
-    // `Shell::handle_file_drop`, matching the concept's `DesktopView.tsx`
-    // `handleDrop` path.
+    // Dropping a .ts file appends a tab to the active workspace's first group
+    // via `Shell::handle_file_drop`.
     use shell::shell::Shell;
 
     let mut shell = Shell::new_for_test();
@@ -620,15 +567,13 @@ fn shell_file_drop_appends_tab_to_active_workspace() {
     .map(|t| t.title.clone())
     .collect();
 
-    // File does not need to exist on disk; `DraggedItem::from_path` falls
-    // back to the non-directory branch when `is_dir()` returns false, which
-    // matches the concept's drop payload semantics.
+    // The file need not exist: `DraggedItem::from_path` takes the
+    // non-directory branch whenever `is_dir()` is false.
     let path = std::path::PathBuf::from("/tmp/main.ts");
     let tab_id = shell.simulate_file_drop(&path).expect("tab_id");
 
     let ws = &shell.workspace_tree().workspaces[0];
     let group = &ws.strips[0].window_groups[0];
-    // New tab was appended + activated.
     assert_eq!(group.active_tab, tab_id);
     assert_eq!(
         group.tabs.len(),
@@ -636,8 +581,7 @@ fn shell_file_drop_appends_tab_to_active_workspace() {
         "exactly one new tab should be appended"
     );
     assert_eq!(group.tabs.last().unwrap().title, "main.ts");
-    // Every pre-existing tab must still be present; the drop must not
-    // replace or reorder earlier tabs.
+    // The drop must not replace or reorder earlier tabs.
     for t in &before_titles {
         assert!(
             group.tabs.iter().any(|x| &x.title == t),
@@ -651,9 +595,8 @@ fn shell_folder_drop_labels_the_tab_with_files_prefix() {
     use shell::shell::Shell;
 
     let mut shell = Shell::new_for_test();
-    // `is_dir()` returns false on /no/such/path, so this exercises the
-    // non-filesystem branch of `DraggedItem::from_path` classification.
-    // Use a real temp directory so the folder classification kicks in.
+    // `is_dir()` is false on /no/such/path, exercising the non-filesystem
+    // classification branch; a real temp dir exercises the folder branch.
     let dir = std::env::temp_dir().join("nirios-drop-folder-test");
     let _ = std::fs::create_dir_all(&dir);
 
@@ -671,10 +614,8 @@ fn shell_folder_drop_labels_the_tab_with_files_prefix() {
 
 #[test]
 fn chrome_file_drop_appends_tab_and_bumps_revision() {
-    // Production-path counterpart of `shell_file_drop_*`: exercises the
-    // `ChromeState::handle_file_drop` hook `ShellOverlayHost` invokes on
-    // `WindowEvent::DroppedFile`, and the persisted-tree
-    // `apply_workspace_drop_from_path` overload the chrome state uses.
+    // Production-path counterpart: `ChromeState::handle_file_drop` (invoked on
+    // `WindowEvent::DroppedFile`) and `apply_workspace_drop_from_path`.
     let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
@@ -699,13 +640,9 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 }
 
 /// Clicking the top-bar overview button must toggle
-/// `chrome.overlays.overview`. This test drives the widget end-to-end:
-/// build_layout → compute → apply_layout → draw (populates the
-/// button rect) → CursorMoved + MouseInput::Pressed → assert.
-///
-/// Reproduces the user-reported "overview button doesn't work" bug: if
-/// the event dispatch path is intercepted before TopBarChrome sees the
-/// click, `overview` stays false.
+/// `chrome.overlays.overview`, driven end-to-end. Reproduces the
+/// user-reported "overview button doesn't work" bug: if dispatch is
+/// intercepted before TopBarChrome sees the click, `overview` stays false.
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;
@@ -732,7 +669,6 @@ fn overview_button_click_toggles_overview_overlay() {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-    // Wrap the bar in a viewport so it lays out inside known bounds.
     let viewport = taffy
         .new_with_children(
             Style {
@@ -770,9 +706,8 @@ fn overview_button_click_toggles_overview_overlay() {
     );
     let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
 
-    // Synthesise a cursor move + press at the button centre. The widget
-    // tracks cursor internally because winit delivers MouseInput without
-    // a position.
+    // The widget tracks the cursor itself, because winit delivers MouseInput
+    // without a position.
     let mut state = AutoCommit::new();
     let root = automerge::ROOT.clone();
     let mut handled = false;
@@ -820,7 +755,6 @@ fn overview_button_click_toggles_overview_overlay() {
         "first click should open the overview overlay"
     );
 
-    // Second click closes it again.
     let mut handled2 = false;
     bar.handle_event(
         &mi,
@@ -840,17 +774,10 @@ fn overview_button_click_toggles_overview_overlay() {
     );
 }
 
-/// Drive the **full** `build_nirios_root` tree (ShellOverlayHost →
-/// Container → Column → TopBarChrome + …) with a synthetic click on the
-/// overview button. Reproduces the user-reported bug where the button did
-/// nothing in the real shell: routing via `ShellOverlayHost::handle_event`
-/// must reach `TopBarChrome`, not be short-circuited by an overlay
-/// click-guard.
-///
-/// The test locates the button rect by building a throwaway sibling
-/// `TopBarChrome` laid out in the same viewport and reading its
-/// `overview_btn_rect()`. Topbar geometry is purely DPI/width-driven, so
-/// the sibling's rect matches the real tree's.
+/// Drives the **full** `build_nirios_root` tree, where routing via
+/// `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`.
+/// The button rect comes from a throwaway sibling `TopBarChrome` in the
+/// same viewport — topbar geometry is DPI/width-driven, so the rects match.
 #[test]
 fn full_root_click_toggles_overview_via_topbar_button() {
     use automerge::AutoCommit;
@@ -869,9 +796,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
 
     let tree = WorkspaceTree::bootstrap_default();
 
-    // Probe: a sibling TopBarChrome laid out standalone at the same width.
-    // We draw it once so its overview_btn_rect is populated and we know
-    // the click coords.
+    // Sibling probe, drawn once so its overview_btn_rect gives click coords.
     let probe_chrome = ChromeState::new(tree.clone());
     let mut probe = TopBarChrome::from_tree(&tree).with_chrome(probe_chrome.clone());
     let theme = Theme::dark();
@@ -901,8 +826,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         )
         .expect("probe compute_layout");
     // The real tree's outer Container + foreground Column are both
-    // `with_no_padding` so the topbar lands flush at y=0 / x=0. The
-    // probe matches: zero offset.
+    // `with_no_padding`, so the topbar lands flush at y=0/x=0 — zero offset.
     let topbar_offset = 0.0_f64;
     probe.apply_layout(
         &probe_taffy,
@@ -922,7 +846,6 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     let btn = probe.overview_btn_rect();
     let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
 
-    // Real tree: drive the full root through winit events.
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 
@@ -961,7 +884,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     root.apply_layout(&taffy, root_node, Point::ORIGIN);
 
     // A draw pass is required so the inner TopBarChrome populates its
-    // overview_btn_rect — that's what handle_event hit-tests against.
+    // overview_btn_rect, which handle_event hit-tests against.
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1011,11 +934,9 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         "click on overview button via full root must open the overview overlay"
     );
 
-    // Second click while the overview is open must close it again — no
-    // matter *where* the handler for that click lives in the widget tree.
-    // Currently ShellOverlayHost's click-to-activate-workspace handler
-    // swallows the event on any click when `flags.overview` is true; we
-    // just want the end effect (overview closed) to hold.
+    // A second click must close it wherever the handler lives —
+    // `ShellOverlayHost` currently swallows any click while `flags.overview`
+    // is set, so only the end effect matters.
     let mut handled = false;
     root.handle_event(
         &cm,
@@ -1046,13 +967,10 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     );
 }
 
-/// Clicking the overview button must kick off an animation the host can
-/// keep ticking. `ShellOverlayHost` reports `needs_animation_frame() ==
-/// true` while the transition is still running; `App` polls this in
-/// `AboutToWait` to schedule the next redraw. Without this signal the
-/// overview crossfade would paint one post-click frame at `t ≈ 0` and
-/// then freeze — which is what the user observed as "overview button
-/// doesn't work".
+/// Clicking must start an animation the host keeps ticking:
+/// `needs_animation_frame()` stays true through the transition and `App`
+/// polls it to schedule redraws. Without it the crossfade paints one frame
+/// and freezes (the "overview button doesn't work" report).
 #[test]
 fn overview_toggle_signals_animation_frames_until_settled() {
     use automerge::AutoCommit;
@@ -1070,15 +988,13 @@ fn overview_toggle_signals_animation_frames_until_settled() {
     let tree = WorkspaceTree::bootstrap_default();
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
 
-    // Before any interaction no animation is in flight.
     assert!(
         !root.needs_animation_frame(),
         "static root should not request animation frames"
     );
 
-    // Toggle the overview directly via the shared chrome handle — the
-    // click path is covered by other tests; here we only care about the
-    // animation signal.
+    // Toggled directly through the chrome handle — only the animation signal
+    // is under test here.
     chrome.borrow_mut().overlays.overview = true;
     chrome.borrow_mut().bump();
 
@@ -1128,9 +1044,8 @@ fn overview_toggle_signals_animation_frames_until_settled() {
         "host must request animation frames while the overview crossfade is in flight"
     );
 
-    // Drive the animation to completion: sleep longer than the configured
-    // transition duration, then draw once more so the elapsed check
-    // inside `tick_overview_transition` clears `transition_started`.
+    // Sleep past the configured transition duration, then draw once more so
+    // `tick_overview_transition`'s elapsed check clears `transition_started`.
     std::thread::sleep(std::time::Duration::from_millis(400));
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 

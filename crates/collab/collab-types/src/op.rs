@@ -1,26 +1,17 @@
 //! The signed-op envelope: `SignedOp`.
 //!
-//! Every CRDT mutation that crosses a process or network boundary
-//! (local broker → other apps, broker → libp2p peers, device A →
-//! device B of the same user) is wrapped in a `SignedOp`. The
-//! envelope binds:
+//! Every CRDT mutation crossing a process or network boundary is wrapped
+//! in a `SignedOp`, binding: the opaque payload (an Automerge change
+//! blob); the artifact id it applies to; the author's identity public
+//! key; the attestation id underwriting "this author may apply ops of
+//! this class to this artifact"; a self-declared op class (cross-checked
+//! against the role table); a wall-clock timestamp (checked against the
+//! attestation's validity window); a monotonic per-author sequence
+//! number (replay defence); and a detached Ed25519 signature over all of it.
 //!
-//! - the opaque payload (an Automerge change blob);
-//! - the artifact id the payload applies to;
-//! - the author's identity public key;
-//! - the attestation id underwriting "this author may apply ops of
-//!   this class to this artifact";
-//! - a self-declared op class (which the validator cross-checks
-//!   against the role table);
-//! - a wall-clock timestamp (checked against the attestation's
-//!   validity window);
-//! - a monotonic per-author sequence number (replay defence);
-//! - a detached Ed25519 signature over all the above fields.
-//!
-//! The metadata fields stay cleartext even after MLS encryption is
-//! layered in Phase 7; only the `payload` is encrypted. This is
-//! deliberate — the broker needs to route by artifact id and
-//! filter by op class without decrypting.
+//! Metadata fields stay cleartext even once MLS encryption is layered
+//! in — only `payload` is encrypted — so the broker can route by
+//! artifact id and filter by op class without decrypting.
 
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -33,113 +24,83 @@ use crate::role::OpClass;
 
 /// Metadata describing how a `SignedOp.payload` was encrypted.
 ///
-/// Added in Phase 7 (group encryption with MLS). The presence of
-/// this field, not a separate wire flag, is what tells a receiver
-/// the payload is ciphertext rather than cleartext:
+/// The presence of this field (not a separate wire flag) tells a
+/// receiver the payload is ciphertext: `None` means `payload` is a
+/// cleartext Automerge change blob (legacy/unencrypted channels);
+/// `Some(meta)` means `payload` is MLS ciphertext from
+/// `channel_crypto::ChannelGroup::encrypt` — the receiver looks up the
+/// `ChannelGroup` for `channel`, checks `epoch` is reachable, and decrypts.
 ///
-/// - `encryption == None` → `payload` is a cleartext Automerge change
-///   blob, as in Phases 2-6. Legacy and unencrypted channels keep
-///   working in this mode.
-/// - `encryption == Some(_)` → `payload` is an MLS ciphertext from
-///   `channel_crypto::ChannelGroup::encrypt`. The receiver looks
-///   up the `ChannelGroup` for `channel`, checks `epoch` is
-///   reachable, and calls `decrypt`. The cleartext is then handed
-///   to the existing pipeline as if it had arrived unencrypted.
-///
-/// The `SignedOp.signature` covers (cipher)bytes either way: tampering
-/// with the payload after signing breaks the signature regardless of
-/// the encryption mode. The `encryption` field is also covered by
-/// the signature so a malicious peer cannot strip the metadata and
-/// re-route the ciphertext to a different channel.
+/// `SignedOp.signature` covers (cipher)bytes either way, and covers
+/// `encryption` itself too, so a malicious peer can't strip the metadata
+/// and re-route the ciphertext to a different channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EncryptionMetadata {
-    /// MLS epoch counter the ciphertext was produced under. Mirrors
-    /// `openmls::group::MlsGroup::epoch().as_u64()` at the moment
-    /// `encrypt` was called. A receiver whose local `ChannelGroup`
-    /// is at an earlier epoch than `epoch` cannot decrypt and drops
-    /// the message until it catches up (or, with openmls's default
-    /// out-of-order tolerance, it accepts older-than-current
-    /// ciphertexts up to a window).
+    /// MLS epoch counter the ciphertext was produced under
+    /// (`MlsGroup::epoch().as_u64()` at encrypt time). A receiver at an
+    /// earlier local epoch can't decrypt and drops the message until it
+    /// catches up (or accepts it within openmls's out-of-order window).
     pub epoch: u64,
     /// Channel id the ciphertext belongs to. Redundant with the
-    /// artifact→channel lookup the broker performs anyway, but
-    /// cheap (a 16-byte UUID) and lets the receiver pick the
-    /// `ChannelGroup` to ask for decryption without consulting any
-    /// other table.
+    /// artifact→channel lookup the broker performs anyway, but cheap (a
+    /// 16-byte UUID) and lets the receiver pick the `ChannelGroup` directly.
     pub channel: ChannelId,
 }
 
-/// One signed CRDT mutation.
-///
-/// The struct is `Clone` because the broker fans an op to multiple
-/// peers, and `PartialEq` so tests can assert envelope identity.
-/// It deliberately does *not* implement `Hash` — we don't want
-/// envelopes used as map keys; use the signature bytes if a stable
-/// key is needed.
+/// One signed CRDT mutation. `Clone` because the broker fans an op to
+/// multiple peers; `PartialEq` for envelope-identity assertions in tests.
+/// Deliberately not `Hash` — use the signature bytes as a map key if needed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignedOp {
-    /// The opaque payload bytes. In Phase 2 this is an Automerge
-    /// change blob; in Phase 7+ this is MLS-encrypted ciphertext
-    /// of the same. The validator does not interpret this field —
-    /// it is opaque from the envelope's perspective.
+    /// The opaque payload bytes — an Automerge change blob, or (once
+    /// encrypted) MLS ciphertext of the same. The validator does not
+    /// interpret this field.
     #[serde(with = "serde_bytes")]
     pub payload: Vec<u8>,
     /// The artifact this op mutates.
     pub artifact: ArtifactId,
-    /// The author's identity public key. Must equal
-    /// `attestation.subject` (validator check 4).
+    /// The author's identity public key. Must equal `attestation.subject`
+    /// (validator check 4).
     pub author: Ed25519PublicKey,
-    /// Id of the attestation underwriting this op. Resolved
-    /// against the channel's attestation store by the validator.
+    /// Id of the attestation underwriting this op, resolved against the
+    /// channel's attestation store by the validator.
     pub attestation_id: AttestationId,
-    /// The author's self-declared op class. Cross-checked against
-    /// the role table (validator check 5). A lying client doesn't
-    /// gain capability: the validator looks up
-    /// `role_permits(attestation.role, artifact.kind, op_class)`
-    /// and that has to be true regardless of what the client says.
+    /// The author's self-declared op class, cross-checked against the role
+    /// table (validator check 5). A lying client doesn't gain capability —
+    /// `role_permits(attestation.role, artifact.kind, op_class)` must be
+    /// true regardless of what the client claims.
     pub op_class: OpClass,
-    /// Wall-clock time the op was created. Checked to fall inside
-    /// `[attestation.valid_from, attestation.valid_until]`
-    /// (validator check 6). Clock skew tolerance is the
-    /// validator's responsibility.
+    /// Wall-clock time the op was created, checked to fall inside
+    /// `[attestation.valid_from, attestation.valid_until]` (validator check
+    /// 6). Clock skew tolerance is the validator's responsibility.
     pub timestamp: SystemTime,
-    /// Per-(author, channel) monotonic sequence number. Replay
-    /// defence: the validator rejects an inbound op whose `seq`
-    /// is not strictly greater than the last seen for the same
-    /// author (validator check 7). Different authors maintain
-    /// independent sequences.
+    /// Per-(author, channel) monotonic sequence number. Replay defence: the
+    /// validator rejects an inbound op whose `seq` isn't strictly greater
+    /// than the last seen for that author (validator check 7). Independent
+    /// per author.
     pub seq: u64,
-    /// Encryption mode. `None` is the Phase 2-6 legacy form
-    /// (`payload` is cleartext). `Some(meta)` is the Phase 7+ form
-    /// (`payload` is `channel-crypto` ciphertext). The field is
-    /// part of the signed bytes so a peer cannot rewrite the
-    /// metadata to mis-route a ciphertext.
+    /// Encryption mode. `None` means `payload` is cleartext (the legacy
+    /// form); `Some(meta)` means MLS ciphertext. Part of the signed bytes so
+    /// a peer can't rewrite the metadata to mis-route a ciphertext.
     ///
-    /// Default-`None` is intentional: existing tests built before
-    /// Phase 7 keep their canonical-bytes stability because
-    /// `Option<T>` postcards as a single discriminant byte + the
-    /// optional payload. The serialised tail of an unencrypted op
-    /// now carries one extra `0x00` byte compared to pre-Phase-7
-    /// channels — accepted as a wire bump for this phase.
+    /// Default-`None` keeps canonical-bytes stability for ops built before
+    /// encryption existed — `Option<T>` postcards as a discriminant byte
+    /// plus the optional payload, so an unencrypted op's serialised tail now
+    /// carries one extra `0x00` byte, accepted as a wire bump.
     #[serde(default)]
     pub encryption: Option<EncryptionMetadata>,
-    /// Detached Ed25519 signature by `author` over the
-    /// canonical-bytes view of every other field of this struct.
-    /// See `SignedOp::signing_bytes`.
+    /// Detached Ed25519 signature by `author` over the canonical-bytes view
+    /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
 }
 
 impl SignedOp {
-    /// Build a fresh op envelope with a placeholder signature.
-    /// Pass the result to [`crate::crypto::sign_op`] to stamp in
-    /// the real signature in-place before sending.
-    ///
-    /// Defaults the `encryption` field to `None`. For an encrypted
-    /// op, mutate the field before signing — see
-    /// [`SignedOp::new_unsigned_with_encryption`] for a one-shot
-    /// helper.
+    /// Build a fresh op envelope with a placeholder signature; pass to
+    /// [`crate::crypto::sign_op`] to stamp the real one in-place. Defaults
+    /// `encryption` to `None` — see
+    /// [`SignedOp::new_unsigned_with_encryption`] for the encrypted form.
     pub fn new_unsigned(
         payload: Vec<u8>,
         artifact: ArtifactId,
@@ -162,13 +123,10 @@ impl SignedOp {
         }
     }
 
-    /// Construct an unsigned op carrying an MLS ciphertext payload.
-    ///
-    /// The caller has already encrypted the cleartext through a
-    /// `channel_crypto::ChannelGroup::encrypt` call; the
-    /// ciphertext bytes go into `payload` and the matching `epoch`
-    /// + `channel` metadata into `encryption`. After construction,
-    /// stamp the signature with [`crate::crypto::sign_op`] as usual.
+    /// Construct an unsigned op carrying an MLS ciphertext payload. The
+    /// caller has already encrypted via `ChannelGroup::encrypt`; the
+    /// ciphertext goes into `payload`, the matching `epoch`/`channel` into
+    /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
     #[allow(clippy::too_many_arguments)]
     pub fn new_unsigned_with_encryption(
         payload: Vec<u8>,
@@ -193,11 +151,8 @@ impl SignedOp {
         }
     }
 
-    /// Canonical bytes the author signs to mint this envelope.
-    ///
-    /// Mirrors the struct minus the `signature` field. Signing the
-    /// envelope after construction stamps the signature into the
-    /// last field; the `signing_bytes` view is stable regardless.
+    /// Canonical bytes the author signs to mint this envelope — the struct
+    /// minus `signature`, stable regardless of when signing happens.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         #[derive(Serialize)]
         struct View<'a> {
@@ -273,10 +228,9 @@ mod tests {
 
     #[test]
     fn encryption_metadata_changes_signing_bytes() {
-        // Two ops differing only in `encryption` must NOT have
-        // matching signing-bytes — otherwise a peer could strip the
-        // metadata to redirect a ciphertext, with the signature
-        // unchanged.
+        // Two ops differing only in `encryption` must NOT have matching
+        // signing-bytes — otherwise a peer could strip the metadata to
+        // redirect a ciphertext with the signature unchanged.
         let (_, pk) = generate_keypair();
         let cid = crate::channel::ChannelId::new();
         let a = SignedOp::new_unsigned(

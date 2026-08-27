@@ -26,11 +26,10 @@ use std::rc::Rc;
 
 use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
-// Generated schema lands in OUT_DIR with the filename
-// `<schema>_capnp.rs`. The generated code references its own module
-// path absolutely as `crate::collab_capnp`, so we MUST include it
-// at the crate root with that exact module name. This is the same
-// pattern capnp's own samples use.
+// Generated schema lands in OUT_DIR as `<schema>_capnp.rs`, which
+// references its own module path absolutely as `crate::collab_capnp`
+// — must be included at the crate root with that exact name (the
+// same pattern capnp's own samples use).
 #[allow(clippy::all)]
 #[allow(unused)]
 #[allow(dead_code)]
@@ -49,16 +48,14 @@ pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 
-/// Try to dial the qOS collab broker via the launcher-supplied
-/// service fd. Returns [`NotAvailable`] when the env var is unset
-/// (most likely: app is running as a Flatpak on stock Linux) or
-/// the fd is no longer open.
+/// Try to dial the qOS collab broker via the launcher-supplied service
+/// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
+/// running as a Flatpak on stock Linux) or the fd is no longer open.
 ///
 /// The returned client is the typed root capability; wrap it in a
-/// [`CollabClient`] if you want the idiomatic Rust surface.
-///
-/// Must be called from within a `tokio::task::LocalSet`-driven
-/// context — capnp-rpc futures are `!Send`.
+/// [`CollabClient`] for the idiomatic Rust surface. Must be called from
+/// within a `tokio::task::LocalSet`-driven context — capnp-rpc futures
+/// are `!Send`.
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -118,11 +115,9 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// LEGACY — publish an unsigned full-document snapshot. Present
-    /// so apps that have not yet been provisioned with a signing
-    /// identity keep working across the ui-collab → runtime-collab
-    /// migration; will be removed once identity provisioning covers
-    /// the whole fleet. Prefer [`Self::send`] with a signed op.
+    /// LEGACY — publish an unsigned full-document snapshot, for apps not yet
+    /// provisioned with a signing identity (removed once the whole fleet is
+    /// provisioned). Prefer [`Self::send`] with a signed op.
     pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_unsigned_snapshot_request();
         req.get().set_data(data);
@@ -172,12 +167,10 @@ impl ChannelHandle {
 
     /// Hand the broker content this app has just stored.
     ///
-    /// A document holds a reference to its binaries and never the
-    /// bytes, so this is the only way the content behind a reference
-    /// leaves the process that produced it. An app's blob store lives
-    /// inside its sandbox — every app gets a private `HOME` and
-    /// `XDG_CACHE_HOME` — so the shell cannot go and read it, and there
-    /// must not be a directory where it could.
+    /// A document holds a reference to its binaries, never the bytes, so
+    /// this is the only way the content behind a reference leaves the
+    /// process that produced it — an app's blob store lives inside its
+    /// sandbox, so the shell cannot go and read it directly.
     pub async fn offer_blob(&self, hash: &str, bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.offer_blob_request();
         {
@@ -190,11 +183,9 @@ impl ChannelHandle {
     }
 
     /// Ask for content a document here references and this app lacks.
-    ///
-    /// Returns as soon as the broker has the request, not when the
-    /// content lands: the answer arrives on [`Self::subscribe_blobs`]. A
-    /// caller that blocked on the bytes would be blocking a frame on a
-    /// transfer that may take several round trips.
+    /// Returns as soon as the broker has the request, not when the content
+    /// lands — the answer arrives on [`Self::subscribe_blobs`], so a caller
+    /// doesn't block a frame on a transfer that may take several round trips.
     pub async fn want_blob(&self, hash: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.want_blob_request();
         req.get().set_hash(hash);
@@ -214,14 +205,12 @@ impl ChannelHandle {
     /// Publish a typed action into the room, for whichever app owns the
     /// document it belongs to.
     ///
-    /// Every other send verb here carries Automerge bytes, which an app
-    /// can only produce for a document it holds. This one carries an
-    /// action, so an app can address a document it has no replica of and
-    /// no schema for — it says what should happen, and the app that owns
-    /// the document decides whether it recognises the request.
-    ///
-    /// Fanned out at cluster scope; a receiver applies it only if its
-    /// own registry knows `type_id`.
+    /// Every other send verb carries Automerge bytes, which an app can only
+    /// produce for a document it holds. This one carries an action, so an
+    /// app can address a document it has no replica of and no schema for —
+    /// it says what should happen, and the owning app decides whether it
+    /// recognises the request. Fanned out at cluster scope; a receiver
+    /// applies it only if its own registry knows `type_id`.
     pub async fn send_action(&self, type_id: &str, payload: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_action_request();
         {
@@ -242,19 +231,16 @@ impl ChannelHandle {
         Ok(ActionStream { inner: Rc::new(stream) })
     }
 
-    /// Tell this session what this application currently has open and
-    /// what may be done to it.
+    /// Tell this session what this application currently has open and what
+    /// may be done to it.
     ///
-    /// Level-triggered: each call replaces this connection's whole
-    /// published surface, so a resource that has closed stops being
-    /// addressable rather than lingering as an address that resolves to
-    /// something gone.
-    ///
-    /// What crosses is inert. An [`ExportedAction`] carries ids and
-    /// labels; the closure an `ActionSpec` holds never leaves the
+    /// Level-triggered: each call replaces this connection's whole published
+    /// surface, so a closed resource stops being addressable rather than
+    /// lingering. What crosses is inert — an [`ExportedAction`] carries ids
+    /// and labels; the closure an `ActionSpec` holds never leaves the
     /// process that built it, so nothing published here can be fired by
-    /// whoever reads it — they have to come back through
-    /// [`Self::subscribe_invocations`] and ask this process to do it.
+    /// whoever reads it, only requested back through
+    /// [`Self::subscribe_invocations`].
     pub async fn publish_actions(
         &self,
         app_id: &str,
@@ -293,13 +279,10 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Open a server-pulled stream of invocations the session has
-    /// addressed to *this* application.
-    ///
-    /// Distinct from [`Self::subscribe_actions`], which is a room-wide
-    /// fan-out: an invocation names one connection, because it is an
-    /// instruction to one application to perform one operation it
-    /// published.
+    /// Open a server-pulled stream of invocations the session has addressed
+    /// to *this* application — distinct from [`Self::subscribe_actions`]
+    /// (room-wide fan-out): an invocation names one connection, an
+    /// instruction to one app to perform one operation it published.
     pub async fn subscribe_invocations(&self) -> Result<InvocationStream, NotAvailable> {
         let req = self.inner.subscribe_invocations_request();
         let reply = req.send().promise.await?;
@@ -307,12 +290,10 @@ impl ChannelHandle {
         Ok(InvocationStream { inner: Rc::new(stream) })
     }
 
-    /// Report what became of an invocation.
-    ///
-    /// An empty `code` means it ran. Anything else is a refusal, and the
-    /// session reports it to whoever asked rather than swallowing it: a
-    /// caller that cannot see the screen has no other way to tell a
-    /// completed operation from one that quietly did nothing.
+    /// Report what became of an invocation. An empty `code` means it ran;
+    /// anything else is a refusal, reported to whoever asked rather than
+    /// swallowed — a caller that can't see the screen has no other way to
+    /// tell a completed operation from one that quietly did nothing.
     pub async fn complete_invocation(
         &self,
         id: u64,
@@ -330,17 +311,14 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Ask this session to open the "say something about this" surface.
-    ///
-    /// Addressed to the compositor on the far end of this socket, not to
-    /// the room. `reference` is a serialised `qos_reference::ResourceRef`
-    /// (JSON); `beside` is the `(x, y, w, h)` rect to sit next to, **in
-    /// this window's own coordinates** — the session converts, because
-    /// only the session knows where this window sits on a desktop.
-    ///
-    /// The panel cannot be drawn here. It opens beside the app's context
-    /// menu, and beside a menu near a window's edge is outside the
-    /// window; a Wayland client has no way to paint there.
+    /// Ask this session to open the "say something about this" surface,
+    /// addressed to the compositor on the far end of this socket, not the
+    /// room. `reference` is a serialised `qos_reference::ResourceRef`
+    /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
+    /// coordinates** — the session converts, since only it knows where this
+    /// window sits on a desktop. The panel can't be drawn here: it opens
+    /// beside the app's context menu, and a Wayland client has no way to
+    /// paint outside its own window.
     pub async fn compose_remark(
         &self,
         reference: &str,
@@ -359,14 +337,12 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Fetch a page of previously-validated signed ops with
-    /// `seq < before_seq`. See [`ScrollbackBatch`] for the response
-    /// shape.
+    /// Fetch a page of previously-validated signed ops with `seq <
+    /// before_seq`. See [`ScrollbackBatch`] for the response shape.
     ///
-    /// LEGACY — this method does not carry an artifact id and the
-    /// broker keys the read on `ArtifactId::default()`. Prefer
-    /// [`Self::fetch_scrollback_for`] when a specific artifact is
-    /// available.
+    /// LEGACY — doesn't carry an artifact id (the broker keys the read on
+    /// `ArtifactId::default()`). Prefer [`Self::fetch_scrollback_for`] when
+    /// a specific artifact is available.
     pub async fn fetch_scrollback(
         &self,
         before_seq: u64,
@@ -427,11 +403,9 @@ impl ChannelHandle {
 
 /// What an [`OpEvent`]'s bytes are.
 ///
-/// Three kinds of frame share the op stream and they are not
-/// interchangeable: a delta is applied on top of the document the
-/// reader holds, a whole document is merged into it, and a signed
-/// envelope is decoded before either. A reader that assumes one kind
-/// discards the others without saying so.
+/// Three kinds of frame share the op stream and are not interchangeable:
+/// a delta applies on top of the document the reader holds, a whole
+/// document merges into it, a signed envelope decodes before either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpKind {
     /// `op` is a postcard-encoded `SignedOp`.
@@ -443,10 +417,10 @@ pub enum OpKind {
     UnsignedSnapshot,
 }
 
-/// A single op as delivered by [`OpStream::read`]. `kind` says what
-/// `op` is; `from_user_id` is the broker's attribution string for the
-/// author. Duplicating the id on the RPC lets non-Rust clients cheaply
-/// route by author without decoding the payload.
+/// A single op as delivered by [`OpStream::read`]. `kind` says what `op`
+/// is; `from_user_id` is the broker's attribution string for the author
+/// — duplicated on the RPC so non-Rust clients can route by author
+/// without decoding the payload.
 #[derive(Debug, Clone)]
 pub struct OpEvent {
     pub op: Vec<u8>,
@@ -473,12 +447,10 @@ impl OpStream {
             .to_str()
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 from_user_id: {e}")))?
             .to_owned();
-        // An unrecognised ordinal comes from a newer broker naming a
-        // kind this build has no handler for. Reading it as `Signed`
-        // would hand raw bytes to the envelope decoder; leaving it
-        // unmapped and letting the caller ignore it is the honest
-        // direction, so it decodes to the default and the caller's
-        // match arms decide.
+        // An unrecognised ordinal comes from a newer broker naming a kind
+        // this build has no handler for. Reading it as `Signed` would hand
+        // raw bytes to the envelope decoder; leaving it unmapped and letting
+        // the caller ignore it is the honest direction.
         let kind = match r.get_kind() {
             Ok(collab_capnp::OpKind::Signed) => OpKind::Signed,
             Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
@@ -510,11 +482,9 @@ pub struct BlobStream {
 }
 
 impl BlobStream {
-    /// Pull the next piece of arrived content.
-    ///
-    /// The caller MUST verify the bytes against `hash` before storing
-    /// them. The key is the content's identity, so bytes that hash to
-    /// something else are not the content that was asked for.
+    /// Pull the next piece of arrived content. The caller MUST verify the
+    /// bytes against `hash` before storing them — the key is the content's
+    /// identity, so bytes hashing to something else aren't what was asked for.
     pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -576,12 +546,10 @@ impl ActionStream {
 }
 
 /// What one exported action's invocation must carry, as it crosses the
-/// wire.
-///
-/// The transport-side twin of `qos_actions::door::InputSpec`. Kept here
-/// rather than depending on `qos-actions` so this crate stays what it is
-/// — a client for one socket — and an app that wants the richer type
-/// converts at its own edge.
+/// wire — the transport-side twin of `qos_actions::door::InputSpec`.
+/// Kept here rather than depending on `qos-actions` so this crate stays
+/// a client for one socket; an app wanting the richer type converts at
+/// its own edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportedInput {
     None,
@@ -683,13 +651,10 @@ impl PresenceHandle {
     }
 
     /// Publish the local pointer at `(x, y)` in the coordinate space
-    /// `key_bytes` names.
-    ///
-    /// [`Self::publish_cursor`] with the space kept. `key_bytes` is a
-    /// postcard-encoded `ui::PresenceKey` — for a pointer, a
-    /// `PresenceKey::Pointer` carrying a `PointerSpace`. The broker
-    /// relays those bytes untouched, so the receiver reads the space its
-    /// publisher chose rather than one synthesised on the way.
+    /// `key_bytes` names — [`Self::publish_cursor`] with the space kept.
+    /// `key_bytes` is a postcard-encoded `ui::PresenceKey`
+    /// (`PresenceKey::Pointer` for a pointer); the broker relays those bytes
+    /// untouched, so the receiver reads the space its publisher chose.
     pub async fn publish_pointer(
         &self,
         key_bytes: &[u8],
@@ -812,15 +777,13 @@ impl CursorStream {
     }
 }
 
-/// Rust mirror of the capnp `PresencePayload` union. Kept as a
-/// typed enum here so app code doesn't have to touch the generated
-/// Reader / Builder types.
+/// Rust mirror of the capnp `PresencePayload` union, kept as a typed
+/// enum so app code doesn't touch the generated Reader/Builder types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresencePayload {
     /// A pointer published without a coordinate space — the legacy
-    /// `publish_cursor` shape. The event's `key_bytes` say nothing about
-    /// where this position was measured, so a reader must not invent a
-    /// space for it.
+    /// `publish_cursor` shape. `key_bytes` says nothing about where this
+    /// position was measured; a reader must not invent a space for it.
     Cursor { x: f32, y: f32 },
     /// A pointer published *with* its space, by
     /// [`PresenceHandle::publish_pointer`]. The event's `key_bytes`
@@ -833,10 +796,9 @@ pub enum PresencePayload {
     Left,
 }
 
-/// A single remote presence update. `user_id` is the broker's
-/// attribution string, `key_bytes` is the postcard of a
-/// `ui::PresenceKey` (opaque to the SDK), `payload` discriminates
-/// the variant.
+/// A single remote presence update: `user_id` is the broker's
+/// attribution, `key_bytes` is the postcard of a `ui::PresenceKey`
+/// (opaque to the SDK), `payload` discriminates the variant.
 #[derive(Debug, Clone)]
 pub struct PresenceEvent {
     pub user_id: String,
@@ -908,12 +870,10 @@ pub struct Collaborator {
     /// recorded when it admitted them. Carried so no consumer has to
     /// read the id and guess.
     pub is_agent: bool,
-    /// Whether this row is this machine's own participant.
-    ///
-    /// `user_id` is the address other machines use for a participant,
-    /// and a machine never announces its own participant to its own
-    /// applications — so without this an application had no way to find
-    /// itself in the room's own list of who is in it.
+    /// Whether this row is this machine's own participant. `user_id` is the
+    /// address other machines use for a participant, and a machine never
+    /// announces its own participant to its own applications — without
+    /// this, an app had no way to find itself in the room's own roster.
     pub is_self: bool,
 }
 

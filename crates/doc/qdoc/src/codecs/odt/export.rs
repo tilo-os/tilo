@@ -1,7 +1,6 @@
-//! Export the canonical model back to a `.odt`. Phase 4 Task 4 generates a
-//! fresh minimal ODF from the model (model round-trip). Verbatim preservation of
-//! the *original* container's parts + prologue is Task 5 — this exporter is what
-//! Task 5 will splice the generated body into.
+//! Export the canonical model back to a `.odt`: generate a fresh minimal ODF body from
+//! the model, then splice it into the original container's preserved parts (styles.xml,
+//! images, meta.xml, manifest, …) so unmodeled content survives verbatim.
 
 use super::container::OdtContainer;
 use crate::document::MarkSpan;
@@ -15,9 +14,8 @@ use crate::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
-/// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a
-/// `pm1` page-layout) used as the splice target when a multi-column document had no
-/// `styles.xml` of its own. Mirrors the namespaces the column splice needs.
+/// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a `pm1`
+/// page-layout), used as the splice target when a multi-column document had no styles.xml.
 const MINIMAL_STYLES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>"#;
 const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -29,10 +27,8 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     let preserved = crate::model::preserved_parts(doc.doc, doc.c);
-    // Named styles already defined in a preserved `styles.xml` must not be
-    // re-emitted into `content.xml` (that would duplicate the definition); we
-    // only reference them. Freshly-authored styles (not in any styles.xml) are
-    // emitted into content.xml's automatic-styles.
+    // Named styles already defined in a preserved `styles.xml` must not be re-emitted into
+    // `content.xml` (that would duplicate the definition) — only referenced.
     let existing_style_names = preserved
         .iter()
         .find(|(k, _)| k == "odt/part/styles.xml")
@@ -41,8 +37,6 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let content = build_content_xml(&snap, &existing_style_names);
 
     let mut c = OdtContainer { parts: Vec::new() };
-    // Re-emit every preserved part verbatim (styles.xml, settings.xml, images,
-    // the original manifest/mimetype, …).
     let mut had_mimetype = false;
     let mut had_manifest = false;
     let mut had_meta = false;
@@ -64,11 +58,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             c.set(name, bytes);
         }
     }
-    // Page header/footer → `styles.xml` master-page: splice the regenerated
-    // `style:header`/`style:footer` into a copy of the original `styles.xml` (or
-    // synthesise a minimal one if the source had none). Only runs when the document
-    // actually has a header or footer, so a doc with neither leaves `styles.xml`
-    // untouched (or absent).
+    // Page header/footer → `styles.xml` master-page: splice regenerated header/footer into a
+    // copy of `styles.xml` (or synthesise one). No-op when the document has neither.
     if let Some(styles_xml) = super::headers::export_master_headers(&doc, original_styles.as_deref()) {
         let is_new = !had_styles;
         c.set("styles.xml", styles_xml);
@@ -76,13 +67,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_styles = true;
         }
     }
-    // Multi-column section layout → `styles.xml` page-layout: splice the document's
-    // `style:columns` (count + gap) into the first page-layout properties, preserving
-    // the rest of the page-layout. Operates on whatever `styles.xml` exists at this
-    // point (the preserved original or the header/footer-augmented copy above), or a
-    // synthesised minimal one when the document is multi-column but had no styles.xml.
-    // Only runs when the document has more than one column, so a single-column doc
-    // leaves `styles.xml` untouched (or absent).
+    // Multi-column layout → `styles.xml` page-layout: splice `style:columns` into the first
+    // page-layout properties, preserving the rest. No-op for a single-column document.
     {
         let base = c
             .get("styles.xml")
@@ -96,12 +82,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
         }
     }
-    // Document default language → `styles.xml` paragraph default-style: splice the
-    // document's `fo:language`/`fo:country` (split from the BCP-47 tag) into a
-    // `<style:default-style style:family="paragraph">` in `<office:styles>`,
-    // synthesising the section / a minimal styles.xml when the source had none. Only
-    // runs when the document declares a default language, so a doc without one leaves
-    // `styles.xml` untouched (or absent).
+    // Document default language → `styles.xml` paragraph default-style: splice the BCP-47 tag
+    // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
     {
         let base = c
             .get("styles.xml")
@@ -115,10 +97,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
         }
     }
-    // Document properties → `meta.xml`: regenerate the part from the canonical
-    // properties, merging in any unmodeled `office:meta` children from the
-    // preserved original so they survive. Created when the doc has properties even
-    // if the source had no meta.xml (so freshly-authored properties export).
+    // Document properties → `meta.xml`: regenerate from the canonical properties, merging in
+    // any unmodeled `office:meta` children from the preserved original so they survive.
     if let Some(meta_xml) = super::meta::export_meta(&doc, original_meta.as_deref()) {
         let is_new = !had_meta;
         c.set("meta.xml", meta_xml);
@@ -126,8 +106,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_meta = true;
         }
     }
-    // Fall back to generated mimetype/manifest when the source had none (e.g. a
-    // doc created from scratch rather than imported).
+    // Fall back to generated mimetype/manifest when the source had none (e.g. a doc created from scratch).
     if !had_mimetype {
         c.set("mimetype", MIMETYPE.to_vec());
     }
@@ -135,9 +114,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("META-INF/manifest.xml", MANIFEST.to_vec());
     }
 
-    // Write each image block's blob into the zip as `Pictures/<hash>.<ext>` and
-    // collect manifest entries (the `draw:image` hrefs in content.xml match). A
-    // freshly-created `meta.xml` also needs a manifest entry.
+    // Write each image block's blob into the zip as `Pictures/<hash>.<ext>` and collect manifest entries.
     let mut pic_entries: Vec<(String, &'static str)> = Vec::new();
     if had_meta {
         pic_entries.push(("meta.xml".to_string(), "text/xml"));
@@ -169,8 +146,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     c.write()
 }
 
-/// Detect an image's file extension + ODF media type from its magic bytes.
-/// Unknown payloads fall back to a generic binary stream.
+/// Detect an image's file extension + ODF media type from its magic bytes; unknown payloads fall back to a generic binary stream.
 fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
     if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
         ("png", "image/png")
@@ -189,8 +165,7 @@ fn picture_href(hash: &str, bytes: &[u8]) -> String {
     format!("Pictures/{hash}.{ext}")
 }
 
-/// Insert `manifest:file-entry` rows for `entries` (path, media-type) not already
-/// present, just before the closing `</manifest:manifest>`.
+/// Insert `manifest:file-entry` rows for `entries` not already present, just before the closing `</manifest:manifest>`.
 fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) -> Vec<u8> {
     let s = String::from_utf8_lossy(manifest);
     let mut inserts = String::new();
@@ -226,8 +201,7 @@ fn escape_text(s: &str) -> String {
     out
 }
 
-/// Codec-authored automatic *text* style for a mark: `(style name, properties)`.
-/// Boolean marks map to fixed styles; valued font marks get a per-value style.
+/// Codec-authored automatic *text* style for a mark: `(style name, properties)`. Boolean marks map to fixed styles; valued font marks get a per-value style.
 fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     match m.name.as_str() {
         "strong" => Some(("qdoc-strong".into(), r#"fo:font-weight="bold""#.into())),
@@ -237,17 +211,14 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
         "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
         "color" => m.value.as_str().map(|c| (format!("qdoc-color-{}", color_token(c)), format!(r#"fo:color="{}""#, c))),
-        // Text background (highlight): ODF `fo:background-color`.
         "highlight" => m
             .value
             .as_str()
             .map(|c| (format!("qdoc-hl-{}", color_token(c)), format!(r#"fo:background-color="{}""#, c))),
-        // Vertical alignment: ODF `style:text-position` (keyword + 58% font height,
-        // matching what LibreOffice writes for menu super/subscript).
+        // Vertical alignment: ODF `style:text-position` (keyword + 58% font height, matching what LibreOffice writes for menu super/subscript).
         "super" => Some(("qdoc-super".into(), r#"style:text-position="super 58%""#.into())),
         "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
-        // Per-run language override: split BCP-47 `de-DE` into ODF
-        // `fo:language="de" fo:country="DE"` text-properties.
+        // Per-run language override: split BCP-47 `de-DE` into ODF `fo:language="de" fo:country="DE"` text-properties.
         "lang" => m
             .value
             .as_str()
@@ -257,21 +228,18 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     }
 }
 
-/// A style-name-safe token for a colour value (`#rrggbb` → `rrggbb`); keeps the
-/// generated automatic-style name a valid XML name.
+/// A style-name-safe token for a colour value (`#rrggbb` → `rrggbb`); keeps the generated automatic-style name a valid XML name.
 fn color_token(c: &str) -> String {
     c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
 }
 
-/// A style-name-safe token for a BCP-47 tag (`de-DE` → `deDE`); keeps the generated
-/// automatic-style name a valid XML name.
+/// A style-name-safe token for a BCP-47 tag (`de-DE` → `deDE`); keeps the generated automatic-style name a valid XML name.
 fn lang_token(c: &str) -> String {
     c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
 }
 
-/// The ODF `style:text-properties` attribute string for a BCP-47 language tag: split
-/// `xx-YY` into `fo:language="xx" fo:country="YY"` (an `xx`-only tag emits just
-/// `fo:language`). Re-imported by `styles::marks_from_text_props` / `reassemble_bcp47`.
+/// The ODF `style:text-properties` attribute string for a BCP-47 tag: `xx-YY` splits into
+/// `fo:language="xx" fo:country="YY"` (`xx` alone emits just `fo:language`).
 fn lang_text_props(code: &str) -> String {
     match code.split_once('-') {
         Some((lang, country)) if !country.is_empty() => {
@@ -314,15 +282,13 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// A note-id → `&NoteView` lookup for resolving body reference markers on export.
 type NoteIndex<'a> = std::collections::BTreeMap<String, &'a crate::snapshot::NoteView>;
 
 fn note_index(snap: &DocSnapshot) -> NoteIndex<'_> {
     snap.notes.iter().map(|n| (n.id.clone(), n)).collect()
 }
 
-/// A comment-id → `&CommentView` lookup for emitting `office:annotation`(+`-end`) at
-/// a commented range's boundaries on export.
+/// A comment-id → `&CommentView` lookup for emitting `office:annotation`(+`-end`) at a commented range's boundaries on export.
 type CommentIndex<'a> = std::collections::BTreeMap<String, &'a crate::snapshot::CommentView>;
 
 fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
@@ -337,8 +303,7 @@ fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
         .and_then(|m| m.value.as_str().map(|s| s.to_string()))
 }
 
-/// The comment ids whose anchoring `comment` mark starts exactly at `i` (sorted for
-/// deterministic output) / ends exactly at `i` (i.e. `mark.end == i`).
+/// The comment ids whose anchoring `comment` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
 fn comment_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
@@ -359,8 +324,7 @@ fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
-/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends
-/// exactly at `i` (i.e. `mark.end == i`), sorted for deterministic output.
+/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
 fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
@@ -381,8 +345,7 @@ fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
-/// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`,
-/// sorted for deterministic output.
+/// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`, sorted for deterministic output.
 fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
@@ -403,14 +366,9 @@ fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
-/// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style
-/// wrappers (inner) for its marks. The link wrapper and the span set are each
-/// closed and re-opened whenever they change, so the output is always
-/// well-nested even for overlapping marks. A placeholder covered by a `note-ref`
-/// mark is emitted as the referenced inline `text:note` (advancing `note_ctr`). A
-/// `comment` mark emits an `office:annotation` at its start and an
-/// `office:annotation-end` at its end (both outside the span/link wrappers so the
-/// output stays well-nested).
+/// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style wrappers
+/// (inner), closing and re-opening each whenever it changes so output stays well-nested even
+/// for overlapping marks; a `note-ref` placeholder emits the referenced inline `text:note`.
 fn render_inline(
     text: &str,
     marks: &[MarkSpan],
@@ -430,8 +388,7 @@ fn render_inline(
         }
         open.clear();
     };
-    // Emit annotation boundary markers at `i`, closing spans/link first so the
-    // annotation element is a clean sibling of the surrounding inline content.
+    // Emit annotation boundary markers at `i`, closing spans/link first so the annotation element is a clean sibling of the surrounding inline content.
     let emit_comment_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
         let ends = comment_ends_at(marks, i);
         let starts = comment_starts_at(marks, i);
@@ -455,9 +412,7 @@ fn render_inline(
             }
         }
     };
-    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link
-    // first so each marker is a clean sibling of the surrounding inline content (ODF
-    // bookmark markers are empty elements that sit between runs).
+    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
     let emit_bookmark_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
         let ends = bookmark_ends_at(marks, i);
         let starts = bookmark_starts_at(marks, i);
@@ -477,8 +432,7 @@ fn render_inline(
             out.push_str(&format!(r#"<text:bookmark-start text:name="{}"/>"#, escape_attr(&name)));
         }
     };
-    // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing
-    // spans/link first so each marker is a clean sibling of the surrounding content.
+    // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing spans/link first so each marker is a clean sibling of the surrounding content.
     let emit_change_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
         let ends = change_ends_at(marks, i);
         let starts = change_starts_at(marks, i);
@@ -504,8 +458,7 @@ fn render_inline(
         emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
-            // A link is the outer element, so close any open spans first, then the
-            // old link, then open the new link (spans re-open below).
+            // A link is the outer element, so close any open spans first, then the old link, then open the new link (spans re-open below).
             close_spans(&mut out, &mut open);
             if cur_link.is_some() {
                 out.push_str("</text:a>");
@@ -534,14 +487,12 @@ fn render_inline(
                 open.push(name.clone());
             }
         }
-        // A placeholder carrying a `note-ref` mark renders as the inline note.
         if chars[i] == crate::schema::FIELD_PLACEHOLDER {
             if let Some(note_id) = note_ref_at(marks, i) {
                 if let Some(note) = notes.get(&note_id) {
                     *note_ctr += 1;
                     out.push_str(&super::notes::render_inline_note(note, *note_ctr));
                 }
-                // A note-ref placeholder is consumed by the note; emit nothing else.
                 continue;
             }
         }
@@ -551,26 +502,20 @@ fn render_inline(
     if cur_link.is_some() {
         out.push_str("</text:a>");
     }
-    // A bookmark ending exactly at the block's end (`mark.end == n`) emits its
-    // `text:bookmark-end` after the last char.
     for name in bookmark_ends_at(marks, n) {
         out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
     }
-    // A comment ending exactly at the block's end (`mark.end == n`) emits its
-    // annotation-end after the last char.
     for id in comment_ends_at(marks, n) {
         if let Some(c) = comments.get(&id) {
             out.push_str(&super::comments::render_annotation_end(c));
         }
     }
-    // A tracked change ending exactly at the block's end emits its change-end marker.
     for id in change_ends_at(marks, n) {
         out.push_str(&super::changes::render_change_end(&id));
     }
     out
 }
 
-/// ODF font name for a generic family (round-trips with `font_from_name`).
 fn font_name(generic: &str) -> &'static str {
     match generic {
         "serif" => "Liberation Serif",
@@ -579,8 +524,7 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// Paragraph-properties for a block's alignment, if non-default. (Font is a
-/// per-run mark, handled by `render_inline`.)
+/// Paragraph-properties for a block's alignment, if non-default (font is a per-run mark, handled by `render_inline`).
 fn para_props(b: &BlockView) -> Option<(String, String)> {
     let mut pp = String::new();
     if let Some(AttrVal::Str(a)) = b.attrs.get("align") {
@@ -607,7 +551,6 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
-/// The model `anchor` value of an image block (default `inline`).
 fn image_anchor(b: &BlockView) -> &str {
     match b.attrs.get("anchor") {
         Some(AttrVal::Str(s)) => s.as_str(),
@@ -615,7 +558,6 @@ fn image_anchor(b: &BlockView) -> &str {
     }
 }
 
-/// The model `wrap` value of an image block (default `none`).
 fn image_wrap(b: &BlockView) -> &str {
     match b.attrs.get("wrap") {
         Some(AttrVal::Str(s)) => s.as_str(),
@@ -623,12 +565,8 @@ fn image_wrap(b: &BlockView) -> &str {
     }
 }
 
-/// Build the `draw:frame` XML for an `image` block, or `None` if its blob is
-/// absent from the document. The `xlink:href` matches the `Pictures/<hash>.<ext>`
-/// part `export()` writes for the same blob. When the image is floating (anchor
-/// other than `inline`) and/or wraps text, a per-image graphic automatic style is
-/// pushed onto `graphic_styles` (name, `style:wrap` value) and referenced via
-/// `draw:style-name`.
+/// Build the `draw:frame` XML for an `image` block, or `None` if its blob is absent; the
+/// `xlink:href` matches the `Pictures/<hash>.<ext>` part `export()` writes for the same blob.
 fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(String, String)>) -> Option<String> {
     let hash = match b.attrs.get("blob") {
         Some(AttrVal::Str(h)) => h,
@@ -640,15 +578,13 @@ fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(
     let wrap = image_wrap(b);
     let mut frame = String::from("<draw:frame");
     frame.push_str(&format!(r#" draw:name="{}""#, escape_attr(&b.id)));
-    // ODF anchor type: inline → as-char; page → page; everything else → paragraph.
     let anchor_type = match anchor {
         "inline" => "as-char",
         "page" => "page",
         _ => "paragraph",
     };
     frame.push_str(&format!(r#" text:anchor-type="{anchor_type}""#));
-    // A graphic automatic style carries the wrap; only emit it when meaningful
-    // (a floating frame, since `as-char` ignores wrap in ODF anyway).
+    // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
         let gname = format!("gr{}", graphic_styles.len() + 1);
         graphic_styles.push((gname.clone(), super::styles::model_wrap_to_odf(wrap).to_string()));
@@ -675,7 +611,6 @@ fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(
     Some(frame)
 }
 
-/// A list item's 0-based nesting level (absent attr → 0).
 fn snap_list_level(b: &BlockView) -> i64 {
     match b.attrs.get("level") {
         Some(AttrVal::Int(n)) if *n >= 0 => *n,
@@ -683,12 +618,10 @@ fn snap_list_level(b: &BlockView) -> i64 {
     }
 }
 
-/// Whether a list item is ordered (numbered).
 fn snap_list_ordered(b: &BlockView) -> bool {
     matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)))
 }
 
-/// The model numbering format string of a list item (default `decimal`).
 fn snap_num_format(b: &BlockView) -> &str {
     match b.attrs.get("num_format") {
         Some(AttrVal::Str(s)) => s.as_str(),
@@ -696,7 +629,6 @@ fn snap_num_format(b: &BlockView) -> &str {
     }
 }
 
-/// The numbering start value of a list item (default 1).
 fn snap_num_start(b: &BlockView) -> i64 {
     match b.attrs.get("num_start") {
         Some(AttrVal::Int(n)) => *n,
@@ -704,13 +636,11 @@ fn snap_num_start(b: &BlockView) -> i64 {
     }
 }
 
-/// Whether a list item restarts numbering (vs continuing).
 fn snap_num_restart(b: &BlockView) -> bool {
     matches!(b.attrs.get("num_restart"), Some(AttrVal::Bool(true)))
 }
 
-/// Map the model's canonical numbering format onto an ODF `style:num-format`
-/// value (inverse of `styles::map_num_format`).
+/// Map the model's canonical numbering format onto an ODF `style:num-format` value (inverse of `styles::map_num_format`).
 fn odf_num_format(fmt: &str) -> &'static str {
     match fmt {
         "lower-roman" => "i",
@@ -721,9 +651,8 @@ fn odf_num_format(fmt: &str) -> &'static str {
     }
 }
 
-/// A `text:list-style` definition reconstructing a level-0 numbering (format +
-/// start) so an ordered list re-imports with its numbering intact. `name` is the
-/// generated automatic-style name referenced by the `text:list`.
+/// A `text:list-style` definition reconstructing a level-0 numbering (format + start) so an
+/// ordered list re-imports with its numbering intact; `name` is the generated automatic-style name.
 fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
     let nf = odf_num_format(fmt);
     let sv = if start != 1 { format!(r#" text:start-value="{start}""#) } else { String::new() };
@@ -732,27 +661,23 @@ fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
     )
 }
 
-/// A registered reconstructed list-style: its generated name + the `(format,
-/// start)` key it encodes + its full `text:list-style` XML.
+/// A registered reconstructed list-style: its generated name + the `(format, start)` key it encodes + its full XML.
 struct ListStyle {
     name: String,
     key: (String, i64),
     xml: String,
 }
 
-/// The opening `<text:list …>` tag for the list `li` lives in. An ordered item
-/// with a non-default format and/or start gets a reconstructed `text:list-style`
-/// (registered in `list_styles`, deduped on `(format, start)`) referenced via
-/// `text:style-name`, plus `text:start-value` (a restart) or
-/// `text:continue-numbering` on the element.
+/// The opening `<text:list …>` tag for the list `li` lives in. An ordered item with a
+/// non-default format and/or start gets a reconstructed `text:list-style` (deduped on
+/// `(format, start)`), plus `text:start-value` (a restart) or `text:continue-numbering`.
 fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
     if !snap_list_ordered(li) {
         return "<text:list>".to_string();
     }
     let fmt = snap_num_format(li);
     let start = snap_num_start(li);
-    // Plain decimal-from-1 ordered lists need no explicit style (LibreOffice's
-    // default), keeping the output minimal.
+    // Plain decimal-from-1 ordered lists need no explicit style (LibreOffice's default), keeping the output minimal.
     if fmt == "decimal" && start == 1 {
         return "<text:list>".to_string();
     }
@@ -770,8 +695,7 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
     if start != 1 && snap_num_restart(li) {
         tag.push_str(&format!(r#" text:start-value="{start}""#));
     } else if start != 1 {
-        // A non-default start that continues: mark it continuing so the importer
-        // doesn't treat it as a fresh restart.
+        // A non-default start that continues: mark it continuing so the importer doesn't treat it as a fresh restart.
         tag.push_str(r#" text:continue-numbering="true""#);
     }
     tag.push('>');
@@ -793,8 +717,7 @@ fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
     (g("row"), g("col"))
 }
 
-/// Get-or-create a paragraph automatic style for `(parent, paragraph-props,
-/// text-props)`, returning its `P{n}` name. Dedups identical styles.
+/// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
 fn register_auto(styles: &mut Vec<(Option<String>, String, String)>, key: (Option<String>, String, String)) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
         format!("P{}", i + 1)
@@ -804,9 +727,8 @@ fn register_auto(styles: &mut Vec<(Option<String>, String, String)>, key: (Optio
     }
 }
 
-/// The ` text:style-name="…"` attribute for a block, resolving an explicit named
-/// style (from the styles container) and/or an alignment override. Registers any
-/// referenced named style + derived automatic style as a side effect.
+/// The `text:style-name="…"` attribute for a block, resolving an explicit named style and/or
+/// an alignment override; registers any referenced named/derived automatic style as a side effect.
 fn resolve_para_style(
     b: &BlockView,
     styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
@@ -835,7 +757,6 @@ fn resolve_para_style(
     format!(r#" text:style-name="{name}""#)
 }
 
-/// Format a float for ODF: integral values without a trailing `.0`.
 fn fmt_num(f: f64) -> String {
     if f.fract() == 0.0 {
         format!("{}", f as i64)
@@ -845,8 +766,7 @@ fn fmt_num(f: f64) -> String {
     }
 }
 
-/// Style names (`style:name="…"`) already declared in a preserved `styles.xml`,
-/// so the exporter can reference rather than redefine them.
+/// Style names already declared in a preserved `styles.xml`, so the exporter can reference rather than redefine them.
 fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     let s = String::from_utf8_lossy(xml);
     let mut out = BTreeSet::new();
@@ -864,8 +784,7 @@ fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     out
 }
 
-/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container
-/// style, so LibreOffice renders the document's named styles.
+/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container style, so LibreOffice renders the document's named styles.
 fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let name = super::styles::encode_style_name(id);
     let getf = |k: &str| match props.get(k) {
@@ -938,22 +857,14 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<(Option<String>, String, String)> = Vec::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
-    // Reconstructed `text:list-style`s for ordered lists with non-default
-    // numbering (format/start), emitted into automatic-styles.
     let mut list_styles: Vec<ListStyle> = Vec::new();
     let list_styles = &mut list_styles;
-    // Per-image graphic automatic styles (name, `style:wrap` value) for floating
-    // images, emitted into automatic-styles and referenced by `draw:style-name`.
     let mut graphic_styles: Vec<(String, String)> = Vec::new();
-    // Footnotes/endnotes referenced from body text, numbered 1.. in reference order.
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
     let note_ctr = &mut note_ctr;
-    // Comments/annotations anchored to body ranges, emitted at each range's boundaries.
     let comments = comment_index(snap);
     let comments = &comments;
-    // Tracked changes: declared up front in a `text:tracked-changes` block; the body
-    // references each by `text:change-start`/`-end` markers (emitted in `render_inline`).
     let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
     let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
@@ -973,23 +884,18 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 i += 1;
             }
             "list_item" => {
-                // Emit a run of consecutive list items as (possibly nested) ODF
-                // lists, reconstructing the `text:list`/`text:list-item` nesting
-                // from each item's 0-based `level` so depth round-trips. A nested
-                // list lives inside its parent item, so items stay open until we
-                // know whether the next item is deeper. The list opening the run of
-                // a given level carries a reconstructed `text:list-style` reference
-                // (format + start) when the item is ordered with non-default
-                // numbering, so the numbering survives the round-trip.
+                // Emit a run of consecutive list items as (possibly nested) ODF lists, reconstructing the
+                // `text:list`/`text:list-item` nesting from each item's 0-based `level`. A nested list lives
+                // inside its parent item, so items stay open until we know whether the next item is deeper;
+                // the list opening a run at a level carries a reconstructed numbering reference when needed.
                 let mut depth: i64 = 0; // number of <text:list> currently open
                 let mut item_open = false; // a <text:list-item> awaiting its close
                 while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
                     let li = &snap.blocks[i];
                     let target = snap_list_level(li) + 1; // lists that should be open
                     if target > depth {
-                        // Deeper: open new lists nested inside the current open item.
-                        // The innermost (last) list opened is the one `li` lives in,
-                        // so it gets `li`'s numbering reference.
+                        // Deeper: open new lists nested inside the current open item. The innermost (last) list
+                        // opened is the one `li` lives in, so it gets `li`'s numbering reference.
                         while depth < target {
                             depth += 1;
                             let open = if depth == target {
@@ -1000,8 +906,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                             body.push_str(&open);
                         }
                     } else {
-                        // Sibling or shallower: close the current item, then unwind
-                        // any deeper lists (each wrapped in its parent item).
+                        // Sibling or shallower: close the current item, then unwind any deeper lists (each wrapped in its parent item).
                         if item_open {
                             body.push_str("</text:list-item>");
                             item_open = false;
@@ -1017,7 +922,6 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     item_open = true;
                     i += 1;
                 }
-                // Close the final item + all remaining open lists.
                 if item_open {
                     body.push_str("</text:list-item>");
                 }
@@ -1030,9 +934,8 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 }
             }
             "image" => {
-                // Emit a top-level `draw:frame` referencing the blob written as a
-                // `Pictures/<hash>.<ext>` part. Size (svg:width/height in px) and
-                // alt (svg:title) round-trip when present.
+                // Emit a top-level `draw:frame` referencing the blob written as a `Pictures/<hash>.<ext>`
+                // part; size (svg:width/height) and alt (svg:title) round-trip when present.
                 if let Some(frame) = image_frame_xml(b, snap, &mut graphic_styles) {
                     body.push_str(&frame);
                 }
@@ -1046,7 +949,6 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 i += 1;
             }
             "cell" => {
-                // Emit a run of same-`table` cells as a real ODF table.
                 let tid = snap_cell_table(b).unwrap_or_default();
                 let start = i;
                 while i < snap.blocks.len() && snap_cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str()) {
@@ -1061,7 +963,6 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     body.push_str("<table:table-row>");
                     for c in 0..ncols {
                         let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
-                        // The cell's alignment lives on the inner paragraph in ODF.
                         let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
                         let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used, &notes, note_ctr, comments)).unwrap_or_default();
                         body.push_str(&format!(r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#));
@@ -1087,9 +988,8 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             r#"<style:style style:name="{name}" style:family="text"><style:text-properties {props}/></style:style>"#
         ));
     }
-    // Named (common) styles referenced by a block's `style` attr — emitted unless
-    // already declared in a preserved styles.xml. These make the document's CRDT
-    // styles render in LibreOffice as real ODF named styles.
+    // Named (common) styles referenced by a block's `style` attr, emitted unless already
+    // declared in a preserved styles.xml, so the document's CRDT styles render in LibreOffice.
     for id in &named_refs {
         if existing_style_names.contains(&super::styles::encode_style_name(id)) {
             continue;
@@ -1105,20 +1005,17 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             idx + 1
         ));
     }
-    // Reconstructed list-styles (numbering format + start) for ordered lists.
     for ls in list_styles.iter() {
         styles.push_str(&ls.xml);
     }
-    // Per-image graphic styles carrying the frame wrap (`style:wrap`).
     for (name, wrap) in &graphic_styles {
         styles.push_str(&format!(
             r#"<style:style style:name="{name}" style:family="graphic"><style:graphic-properties style:wrap="{wrap}"/></style:style>"#
         ));
     }
 
-    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables,
-    // drawings, …) stay well-formed. Truly exotic namespaces are only fully
-    // preserved once the original content prologue is carried verbatim (future).
+    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay
+    // well-formed. Exotic namespaces are only preserved once the content prologue is (future).
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
@@ -1148,8 +1045,7 @@ mod tests {
             .collect()
     }
 
-    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the
-    /// volatile per-import block id so two independent imports compare equal.
+    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
     fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<(String, Vec<(usize, usize, String, crate::document::MarkValue)>)> {
         blocks
             .iter()
@@ -1190,7 +1086,6 @@ mod tests {
     #[test]
     fn paragraph_props_roundtrip() {
         use crate::document::MarkValue;
-        // Alignment (paragraph attr) + per-run font marks must survive .odt round-trip.
         let mut d = Document::new();
         let id = d.insert_block(None, "paragraph");
         d.splice_text(&id, 0, 0, "styled");
@@ -1215,8 +1110,7 @@ mod tests {
     #[test]
     fn highlight_super_and_line_spacing_roundtrip() {
         use crate::document::MarkValue;
-        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing`
-        // attr must all survive the .odt export → import cycle.
+        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing` attr must all survive the .odt export → import cycle.
         let mut d = Document::new();
         let id = d.insert_block(None, "paragraph");
         d.splice_text(&id, 0, 0, "E=mc2");
@@ -1228,7 +1122,6 @@ mod tests {
         }
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
-        // The export carries the ODF properties we expect.
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(content.contains(r##"fo:background-color="#ffff00""##), "highlight bg: {content}");
@@ -1303,8 +1196,7 @@ mod tests {
     #[test]
     fn bookmark_and_cross_reference_roundtrip() {
         use crate::document::MarkValue;
-        // A bookmark "intro" over a word + a cross-reference pointing at it must survive
-        // an `.odt` export+import with both names and ranges intact.
+        // A bookmark "intro" over a word + a cross-reference pointing at it must survive an `.odt` export+import with both names and ranges intact.
         let mut d = Document::new();
         let target = d.insert_block(None, "paragraph");
         d.splice_text(&target, 0, 0, "the intro section");
@@ -1316,7 +1208,6 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-        // Bookmark markers + the cross-ref `text:a` href appear in the markup.
         assert!(content.contains(r#"<text:bookmark-start text:name="intro"/>"#), "bookmark-start emitted: {content}");
         assert!(content.contains(r#"<text:bookmark-end text:name="intro"/>"#), "bookmark-end emitted: {content}");
         assert!(content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##), "cross-ref text:a emitted: {content}");
@@ -1324,17 +1215,14 @@ mod tests {
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        // The bookmark survives with its name + range.
         assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
         let bm = &snap.bookmarks[0];
         assert_eq!(bm.name, "intro");
         assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
-        // The bookmarked block carries the `bookmark` mark.
         let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
         let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
         assert_eq!((mark.start, mark.end), (4, 9));
         assert_eq!(mark.value, MarkValue::Str("intro".into()));
-        // The cross-reference survives as a `link` mark valued `#intro`.
         let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
         let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
         assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
@@ -1416,7 +1304,6 @@ mod tests {
 
     #[test]
     fn image_block_roundtrips_through_odt() {
-        // Build: paragraph, image (with blob + alt + size), paragraph.
         let mut d = Document::new();
         let p1 = d.insert_block(None, "paragraph");
         d.splice_text(&p1, 0, 0, "before");
@@ -1434,7 +1321,6 @@ mod tests {
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
 
-        // The zip carries the picture + a manifest entry for it.
         let cont = OdtContainer::read(&exported).unwrap();
         let pic = cont
             .parts
@@ -1451,7 +1337,6 @@ mod tests {
         assert!(content.contains("<draw:frame"), "draw:frame emitted: {content}");
         assert!(content.contains(&format!(r#"xlink:href="{}""#, pic.0)), "image href matches part: {content}");
 
-        // Re-import: order preserved, image survives with bytes + alt + size.
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
@@ -1474,15 +1359,11 @@ mod tests {
 
         let bytes = snap.blobs.get(&blob_hash).expect("blob bytes present after round-trip");
         assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
-        // And the read-side accessor returns them too.
         assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
     }
 
     #[test]
     fn image_positioning_roundtrips_through_odt() {
-        // A floating, paragraph-anchored image that wraps text on its right, with an
-        // explicit display size, must survive an .odt round-trip with anchor + wrap +
-        // size intact (and the wrap carried on a real graphic style).
         let mut d = Document::new();
         let p1 = d.insert_block(None, "paragraph");
         d.splice_text(&p1, 0, 0, "text");
@@ -1518,8 +1399,6 @@ mod tests {
 
     #[test]
     fn nested_list_levels_roundtrip_through_odt() {
-        // A list nested as 0,0,1,0 must export as real nested `text:list`s and
-        // re-import with the same per-item levels.
         let mut d = Document::new();
         let a = d.insert_block(None, "list_item");
         d.splice_text(&a, 0, 0, "a");
@@ -1532,7 +1411,6 @@ mod tests {
         d.splice_text(&c, 0, 0, "c");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
-        // Export reconstructs nesting: the nested list lives inside item "b".
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1558,8 +1436,6 @@ mod tests {
     #[test]
     fn colored_serif_20pt_justified_run_roundtrips_through_odt() {
         use crate::document::MarkValue;
-        // The headline task: a coloured + serif + 20pt run in a justified
-        // paragraph must round-trip export→import with every attribute intact.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "styled");
@@ -1587,9 +1463,8 @@ mod tests {
 
     #[test]
     fn list_numbering_format_and_start_roundtrip_through_odt() {
-        // An upper-roman ordered list starting at 3: the format + start must
-        // survive an .odt export then re-import (fidelity preservation — the editor
-        // renders decimal, but the numbering metadata must not be lost).
+        // An upper-roman ordered list starting at 3 must survive export then re-import — fidelity
+        // preservation: the editor renders decimal, but the numbering metadata must not be lost.
         let mut d = Document::new();
         let a = d.insert_block(None, "list_item");
         d.splice_text(&a, 0, 0, "three");
@@ -1622,7 +1497,6 @@ mod tests {
             assert_eq!(it.attrs.get("num_start"), Some(&AttrVal::Int(3)), "start survives: {:?}", it.attrs);
         }
 
-        // Idempotent: a second round-trip preserves the same numbering attrs.
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -1631,9 +1505,8 @@ mod tests {
 
     #[test]
     fn named_paragraph_style_roundtrips_through_odt() {
-        // A paragraph that references a custom CRDT-native named style must export
-        // as a real ODF `style:style` (family paragraph) + `text:style-name`, and
-        // re-import with the style intact and still applied to the block.
+        // A paragraph referencing a custom CRDT-native named style must export as a real ODF
+        // `style:style` (family paragraph) + `text:style-name`, and re-import with it still applied.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "fancy");
@@ -1679,7 +1552,6 @@ mod tests {
         assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
         assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
 
-        // The round-trip is idempotent: exporting d2 yields the same model again.
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -1688,8 +1560,6 @@ mod tests {
 
     #[test]
     fn document_properties_roundtrip_through_odt() {
-        // Title/author/subject/keywords/dates/generator set on a fresh doc must
-        // export into meta.xml and re-import as the same properties.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "body");
@@ -1702,7 +1572,6 @@ mod tests {
         d.set_doc_prop("generator", "qdoc/1.0");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
-        // The meta.xml part carries the dc:/meta: fields.
         let cont = OdtContainer::read(&exported).unwrap();
         let meta = std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
         assert!(meta.contains("<dc:title>My Title</dc:title>"), "title in meta.xml: {meta}");
@@ -1712,7 +1581,6 @@ mod tests {
         assert!(meta.contains("<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>"), "created: {meta}");
         assert!(meta.contains("<dc:date>2021-06-07T08:09:10</dc:date>"), "modified: {meta}");
         assert!(meta.contains("<meta:generator>qdoc/1.0</meta:generator>"), "generator: {meta}");
-        // A fresh meta.xml is registered in the manifest.
         let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
         assert!(manifest.contains("meta.xml"), "meta.xml registered in manifest: {manifest}");
 
@@ -1726,10 +1594,8 @@ mod tests {
         assert_eq!(props.get("created").map(String::as_str), Some("2020-01-02T03:04:05"));
         assert_eq!(props.get("modified").map(String::as_str), Some("2021-06-07T08:09:10"));
         assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
-        // Body content still intact alongside the metadata.
         assert_eq!(d2.materialize().blocks[0].text, "body");
 
-        // Idempotent across a second round-trip.
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -1738,8 +1604,7 @@ mod tests {
 
     #[test]
     fn meta_xml_preserves_unmodeled_fields_and_updates_modeled() {
-        // An imported meta.xml with an unmodeled field (editing-cycles) plus an
-        // existing title: the unmodeled field survives and the title updates.
+        // An imported meta.xml with an unmodeled field (editing-cycles) plus an existing title: the unmodeled field survives and the title updates.
         let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
@@ -1750,7 +1615,6 @@ mod tests {
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         assert_eq!(d.doc_prop("title").as_deref(), Some("Old"), "title imported");
-        // Change the title; keywords are new.
         d.set_doc_prop("title", "New");
         d.set_doc_prop("keywords", "k");
 
@@ -1765,7 +1629,6 @@ mod tests {
 
     #[test]
     fn no_meta_part_when_no_properties_and_none_imported() {
-        // A from-scratch doc with no properties must not synthesise a meta.xml.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "plain");
@@ -1778,8 +1641,6 @@ mod tests {
     fn header_footer_with_page_number_roundtrip_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
-        // A header "Title" + a footer with a page-number field must export into the
-        // master-page in styles.xml and re-import as the same header/footer + field.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "body");
@@ -1790,25 +1651,20 @@ mod tests {
         d.insert_footer_page_number(&f, 5);
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
-        // styles.xml carries the master-page header/footer + a page-number field.
         let cont = OdtContainer::read(&exported).unwrap();
         let styles = std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
         assert!(styles.contains("<style:header>") && styles.contains("Title"), "header in master-page: {styles}");
         assert!(styles.contains("<style:footer>"), "footer in master-page: {styles}");
         assert!(styles.contains("<text:page-number/>"), "page-number field emitted: {styles}");
-        // The freshly-created styles.xml is registered in the manifest.
         let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
         assert!(manifest.contains("styles.xml"), "styles.xml registered in manifest: {manifest}");
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        // Body intact.
         assert_eq!(d2.materialize().blocks[0].text, "body");
-        // Header survives.
         let header = d2.header();
         assert_eq!(header.len(), 1, "header block present: {header:?}");
         assert_eq!(header[0].text, "Title");
-        // Footer + field survive.
         let footer = d2.footer();
         assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
         assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER), "placeholder kept: {:?}", footer[0].text);
@@ -1816,8 +1672,7 @@ mod tests {
         assert_eq!((field.start, field.end), (5, 6), "field spans the placeholder: {:?}", footer[0].marks);
         assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
-        // Idempotent across a second round-trip (block ids are volatile per import,
-        // so compare on text + marks, not the full BlockView).
+        // Idempotent across a second round-trip: block ids are volatile per import, so compare on text + marks, not the full BlockView.
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -1827,9 +1682,8 @@ mod tests {
 
     #[test]
     fn header_footer_preserve_existing_master_page_content() {
-        // An imported styles.xml whose master-page references a page-layout must keep
-        // that reference (+ any other master-page content) when the header/footer are
-        // re-emitted on export.
+        // An imported styles.xml whose master-page references a page-layout must keep that
+        // reference (+ any other master-page content) when the header/footer are re-emitted.
         let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Old Header</text:p></style:header></style:master-page></office:master-styles></office:document-styles>"#;
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
@@ -1840,7 +1694,6 @@ mod tests {
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         assert_eq!(d.header()[0].text, "Old Header", "existing header imported");
-        // Replace the header text.
         let hid = d.header_blocks_in_order()[0].clone();
         d.splice_header_text(&hid, 0, 9, "New Header"); // replace "Old Header"
 
@@ -1855,9 +1708,7 @@ mod tests {
     fn footnote_imports_from_inline_text_note() {
         use crate::document::MarkValue;
         use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
-        // A paragraph "see ref" with an inline footnote right after "see ": the body
-        // gets a `note-ref` marker over a placeholder, and the note's body becomes a
-        // note in the `notes` container.
+        // A paragraph "see ref" with an inline footnote right after "see ": the body gets a `note-ref` marker over a placeholder, and the note's body becomes a note in the `notes` container.
         let body = concat!(
             r#"<text:p>see <text:note text:id="ftn1" text:note-class="footnote">"#,
             r#"<text:note-citation>1</text:note-citation>"#,
@@ -1869,7 +1720,6 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
 
-        // Body paragraph carries the placeholder + a note-ref mark over it.
         let p = &snap.blocks[0];
         assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline: {:?}", p.text);
         let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
@@ -1879,7 +1729,6 @@ mod tests {
             other => panic!("note-ref value is the note id, got {other:?}"),
         };
 
-        // The note exists with the right kind + body text.
         assert_eq!(snap.notes.len(), 1, "one note: {:?}", snap.notes);
         let note = &snap.notes[0];
         assert_eq!(note.id, nid, "marker references the note by id");
@@ -1892,9 +1741,8 @@ mod tests {
     fn footnote_and_endnote_roundtrip_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::MARK_NOTE_REF;
-        // Build from scratch: a paragraph "see ref" with a footnote after "see ", and
-        // a second paragraph with an endnote. Both must export as inline text:note
-        // and re-import as the same markers + note bodies + kinds.
+        // Build from scratch: a paragraph "see ref" with a footnote after "see ", and a second
+        // paragraph with an endnote — both must export as inline `text:note` and re-import intact.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "see ref");
@@ -1918,14 +1766,12 @@ mod tests {
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        // Body text + markers survive.
         assert_eq!(snap.blocks[0].text.chars().filter(|c| *c != '\u{FFFC}').collect::<String>(), "see ref");
         let nref = snap.blocks[0].marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("footnote marker survives");
         let f_id = match &nref.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("note-ref value"),
         };
-        // Notes survive with kinds + bodies.
         assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
         let foot = snap.notes.iter().find(|n| n.id == f_id).expect("footnote note present by id");
         assert_eq!(foot.kind, "footnote");
@@ -1933,7 +1779,6 @@ mod tests {
         let end = snap.notes.iter().find(|n| n.kind == "endnote").expect("endnote present");
         assert_eq!(end.blocks[0].text, "an endnote");
 
-        // Idempotent across a second round-trip (ids volatile; compare on kind+text).
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -1950,8 +1795,7 @@ mod tests {
     fn comment_imports_from_inline_annotation() {
         use crate::document::MarkValue;
         use crate::schema::MARK_COMMENT;
-        // A paragraph "fix this word" with an annotation spanning "this word": the
-        // annotation sits at the range start, an annotation-end at the range end.
+        // A paragraph "fix this word" with an annotation spanning "this word": the annotation sits at the range start, an annotation-end at the range end.
         let body = concat!(
             r#"<text:p>fix "#,
             r#"<office:annotation office:name="c1"><dc:creator>Ada</dc:creator><dc:date>2021-01-02T03:04:05</dc:date><text:p>note: fix</text:p></office:annotation>"#,
@@ -1964,7 +1808,6 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
 
-        // The body text excludes the annotation markup; a `comment` mark spans "this word".
         let p = &snap.blocks[0];
         assert_eq!(p.text, "fix this word", "annotation markup not in text: {:?}", p.text);
         let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
@@ -1973,7 +1816,6 @@ mod tests {
             MarkValue::Str(s) => s.clone(),
             other => panic!("comment value is the comment id, got {other:?}"),
         };
-        // The comment exists with author + date + body.
         assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
         let comment = &snap.comments[0];
         assert_eq!(comment.id, cid, "marker references the comment by id");
@@ -1986,8 +1828,6 @@ mod tests {
     fn comment_roundtrips_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::MARK_COMMENT;
-        // The headline task: a comment over a word must export as an inline
-        // office:annotation(+ -end) and re-import with author/text + anchored range.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "please fix this word now");
@@ -2005,7 +1845,6 @@ mod tests {
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        // Body text intact; the comment mark anchors "this word".
         assert_eq!(snap.blocks[0].text, "please fix this word now");
         let cm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment marker survives");
         assert_eq!((cm.start, cm.end), (11, 20), "anchored range survives: {:?}", snap.blocks[0].marks);
@@ -2013,14 +1852,12 @@ mod tests {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("comment value"),
         };
-        // The comment survives with author + body.
         assert_eq!(snap.comments.len(), 1, "comment survives: {:?}", snap.comments);
         let cmt = snap.comments.iter().find(|c| c.id == new_id).expect("comment present by id");
         assert_eq!(cmt.author, "Ada Lovelace");
         assert_eq!(cmt.blocks[0].text, "note: fix");
         assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
 
-        // Idempotent across a second round-trip (ids volatile; compare author+text+span).
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
@@ -2050,9 +1887,8 @@ mod tests {
     fn tracked_changes_roundtrip_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::{MARK_DEL, MARK_INS};
-        // A tracked insertion + a tracked deletion (with author) must export as a
-        // text:tracked-changes block + inline change-start/change-end markers, and
-        // re-import with kind/author + anchored ranges intact.
+        // A tracked insertion + a tracked deletion (with author) must export as a text:tracked-changes
+        // block + inline change-start/change-end markers, and re-import with kind/author + ranges intact.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "hello world");
@@ -2076,7 +1912,6 @@ mod tests {
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        // Body text retains both the insertion and the (struck) deletion.
         assert_eq!(snap.blocks[0].text, "hello there world", "ins kept, del retained: {:?}", snap.blocks[0].text);
         let im = snap.blocks[0].marks.iter().find(|m| m.name == MARK_INS).expect("ins mark survives");
         assert_eq!((im.start, im.end), (5, 11), "ins range survives: {:?}", snap.blocks[0].marks);
@@ -2100,8 +1935,7 @@ mod tests {
         assert_eq!(dc.author, "Bob");
         assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
 
-        // Accept on the imported document: insertion clears its mark (text kept),
-        // deletion removes its struck text.
+        // Accept on the imported document: insertion clears its mark (text kept), deletion removes its struck text.
         d2.accept_change(&ins_id);
         d2.accept_change(&del_id);
         let after = d2.materialize();
@@ -2111,7 +1945,6 @@ mod tests {
 
     #[test]
     fn preserves_unmodeled_parts() {
-        // Inject a part the codec doesn't model.
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
         let mut c = OdtContainer::read(&base).unwrap();
         c.set("settings.xml", b"<office:settings>custom</office:settings>".to_vec());
@@ -2133,8 +1966,7 @@ mod tests {
 
     #[test]
     fn columns_roundtrip_synthesised_styles() {
-        // A freshly-authored 2-column document (no styles.xml) must synthesise one
-        // carrying the page-layout `style:columns`, and re-import the count + gap.
+        // A freshly-authored 2-column document (no styles.xml) must synthesise one carrying the page-layout `style:columns`, and re-import the count + gap.
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "flows across columns");
@@ -2158,8 +1990,7 @@ mod tests {
 
     #[test]
     fn columns_preserve_existing_page_layout() {
-        // An imported styles.xml whose page-layout carries page-size/margins must
-        // keep them when `style:columns` is injected; only the columns change.
+        // An imported styles.xml whose page-layout carries page-size/margins must keep them when `style:columns` is injected — only the columns change.
         let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"/></style:page-layout></office:automatic-styles></office:document-styles>"#;
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
@@ -2186,8 +2017,7 @@ mod tests {
 
     #[test]
     fn columns_replace_existing_style_columns() {
-        // A page-layout that already declares a `style:columns` must have it replaced
-        // (not duplicated) by the document's setting.
+        // A page-layout that already declares `style:columns` must have it replaced (not duplicated) by the document's setting.
         let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
@@ -2207,8 +2037,7 @@ mod tests {
         assert!(styles_out.contains(r#"style:column-count="2""#), "count updated to 2: {styles_out}");
     }
 
-    /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level
-    /// style atoms — the canonical "two unmodeled regions in one part" shape.
+    /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level style atoms — the canonical "two unmodeled regions in one part" shape.
     fn odt_with_two_style_atoms() -> Vec<u8> {
         let styles_xml = concat!(
             r#"<?xml version="1.0" encoding="UTF-8"?>"#,
@@ -2233,9 +2062,8 @@ mod tests {
             .unwrap_or_else(|| panic!("no preserved styles.xml atom contains {needle:?}"))
     }
 
-    /// Round-trip fidelity: a preserved multi-atom `styles.xml` re-emits verbatim
-    /// through the full import→export codec path even though it is now stored as
-    /// per-atom segments rather than one opaque blob.
+    /// Round-trip fidelity: a preserved multi-atom `styles.xml` re-emits verbatim through the full
+    /// import→export codec path even though it is now stored as per-atom segments, not one blob.
     #[test]
     fn preserved_multi_atom_part_round_trips_verbatim() {
         let odt = odt_with_two_style_atoms();
@@ -2278,16 +2106,13 @@ mod tests {
         assert_eq!(id_caption, atom_containing(&b, "CaptionFont").0, "fork shares atom ids");
         assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
 
-        // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom. Each is
-        // a read-modify-write that keeps the atom's framing (the prologue/root-open
-        // tags that ride on the first atom, the close tags on the last) — mirroring
-        // how a codec re-models one region in place.
+        // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom — each a read-modify-write
+        // that keeps the atom's framing (prologue/root-open tags on the first atom, close tags on the last).
         let edited_quote = String::from_utf8(quote_bytes).unwrap().replace("QuoteFont", "QuoteFont-EDITED");
         let edited_caption = String::from_utf8(caption_bytes).unwrap().replace("CaptionFont", "CaptionFont-EDITED");
         a.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_quote, edited_quote.as_bytes());
         b.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_caption, edited_caption.as_bytes());
 
-        // Cross-merge.
         a.merge(&mut b);
         b.merge(&mut a);
 

@@ -1,18 +1,13 @@
 //! What the compositor actually puts on the wire.
 //!
-//! A client doesn't care which `*State::new` calls a constructor made; it
-//! cares which globals arrive in the registry. So this connects a **real**
+//! A client cares which globals arrive in the registry, not which
+//! `*State::new` calls a constructor made — so this connects a **real**
 //! `wayland-client` to a **real** `wayland-server` display driven by the
-//! compositor's own `State`, and reads the registry the way GTK, Qt or SDL would.
-//!
-//! The regression this catches was live: qOS's own toolkit never asks for
-//! `wl_data_device_manager`, so nothing in-tree noticed it was missing —
-//! and GTK refuses a Wayland display without it. Every GTK application,
-//! most Flatpaks included, silently fell back to a nonexistent X11
-//! display; nothing in the compositor logged an error.
-//!
-//! A check that couldn't observe the wire couldn't have caught that,
-//! which is why this test talks to a socket.
+//! compositor's own `State`, and reads the registry the way GTK, Qt or SDL
+//! would. GTK refuses a Wayland display without `wl_data_device_manager`
+//! and silently falls back to a nonexistent X11 display with no logged
+//! error, and qOS's own toolkit never asks for it — so nothing in-tree
+//! noticed it was missing until the wire itself was observed.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -68,10 +63,9 @@ fn advertised_globals() -> Vec<String> {
     let mut seen = Seen::default();
     let sink = seen.0.clone();
 
-    // One blocking round for the registry burst, then non-blocking drains
-    // for anything that trails it. Deliberately *one* blocking dispatch:
-    // once the globals arrive there's nothing further for the server to
-    // send, so a second blocking read would wait forever.
+    // One blocking round for the registry burst, then non-blocking drains for
+    // the trailer — a second blocking dispatch would wait forever once the
+    // globals arrive and the server has nothing more to send.
     let _ = queue.flush();
     display.dispatch_clients(&mut state).expect("server dispatch");
     display.flush_clients().expect("flush");
@@ -89,20 +83,14 @@ fn advertised_globals() -> Vec<String> {
     out
 }
 
-/// Globals a toolkit needs that the compositor advertises from construction.
+/// Globals a toolkit needs that the compositor advertises from
+/// construction. `wl_compositor`, `wl_shm` and `wl_data_device_manager`
+/// are the three `gdk_wayland_display_open` checks before using a Wayland
+/// display at all; the rest are what a client needs to get a window up.
 ///
-/// `wl_compositor`, `wl_shm` and `wl_data_device_manager` are the three
-/// GTK's `gdk_wayland_display_open` checks together before it will use a
-/// Wayland display at all; miss one and it warns and falls back to X11.
-/// The rest are what a client needs to get a window on screen and drive it.
-///
-/// **`wl_output` is deliberately not here.** It isn't a global the
-/// compositor constructs — one is created per attached monitor by the
-/// backend, so a `State` with no backend has none, and asserting on it
-/// would fail for a reason unrelated to this test. The xdg-output manager
-/// (what *is* constructed) is checked separately below; covering
-/// `wl_output` needs a harness that attaches an output, which this one
-/// doesn't have.
+/// **`wl_output` is deliberately absent** — the backend creates it per
+/// attached monitor, so a `State` with no backend has none; the
+/// xdg-output manager is checked separately below.
 const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "wl_compositor",
     "wl_shm",
@@ -135,8 +123,8 @@ fn every_interface_a_toolkit_requires_is_advertised() {
     );
 }
 
-/// Named separately because it is the one that was actually absent, and
-/// a specific failure message beats being one entry in a list.
+/// Named separately because it is the one that was actually absent, and a
+/// specific failure message beats being one entry in a list.
 #[test]
 fn the_clipboard_global_is_advertised() {
     let globals = advertised_globals();

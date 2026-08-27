@@ -1,8 +1,6 @@
-// Fixture for `tests/room_confinement.rs`.
-//
-// Deliberately does file I/O rather than reporting what it was
-// configured with: the point of the tests that use it is that a bind
-// list is not proof. Every line it prints is the answer a syscall gave.
+// Fixture for `tests/room_confinement.rs`. Does real file I/O rather
+// than reporting its config — every line printed is the answer a
+// syscall gave, since a bind list is not proof.
 //
 //   write <relative path> <contents>   write inside $QOS_APP_DIR
 //   writeabs <path> <contents>         write to an absolute path
@@ -11,8 +9,8 @@
 //   env   <name>                       print the variable's value
 //   envall                             print every variable name it has
 //
-// Exit code is always 0 — the caller reads stdout. A test that asserted
-// on the exit code could not tell "denied" from "the fixture crashed".
+// Exit code is always 0 — a test that asserted on it couldn't tell
+// "denied" from "the fixture crashed".
 
 use std::io::Write;
 
@@ -57,10 +55,8 @@ fn main() {
             let v = std::env::var(&args[1]).unwrap_or_else(|_| "<unset>".into());
             writeln!(out, "ENV {}={}", &args[1], v).unwrap()
         }
-        // Names only, never values: a value can be a socket path or a home
-        // directory that has no business in a test log. Read out of the real
-        // `environ` after `exec`, so this is what the process has rather than
-        // what the argv asked for.
+        // Names only, never values: a value could be a socket path or home
+        // directory with no business in a test log.
         Some("envall") => {
             let mut names: Vec<String> = std::env::vars_os()
                 .map(|(k, _)| k.to_string_lossy().into_owned())
@@ -72,10 +68,9 @@ fn main() {
     }
 }
 
-/// `io::ErrorKind` has no stable string form worth matching on, and the
-/// raw OS message is localised. The tests want to distinguish "the path
-/// is not in my namespace" from "it is there and I may not touch it",
-/// so map to the errno name.
+/// `io::ErrorKind` has no stable string form, and the raw OS message is
+/// localised, so map to the errno name to tell "not in my namespace"
+/// from "there but denied".
 trait KindStr {
     fn kind_str(&self) -> String;
 }

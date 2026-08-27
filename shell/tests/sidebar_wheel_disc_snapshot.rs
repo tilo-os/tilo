@@ -1,17 +1,9 @@
-//! Screenshot harness for the `SidebarWheelDisc` widget.
-//!
-//! Renders a 3-spoke disc (one spoke per workspace) onto a canvas shaped
-//! like the live sidebar slot and writes it to
-//! `target/nirios-screenshots/wheel-disc-01-baseline.png`, pinned against
-//! a committed golden.
-//!
-//! Two tests share one layout + draw helper. The golden one catches any
-//! visual regression by eye at review time; the high-contrast one reads
-//! pixels back, because "the wheel went invisible under this palette" is
-//! not something a dark-theme golden can see.
-//!
-//! Soft-skips when no wgpu adapter is available (same pattern as
-//! `e2e_shell_flows.rs`).
+//! Screenshot harness for the `SidebarWheelDisc` widget: renders a 3-spoke
+//! disc onto a canvas shaped like the live sidebar slot, pinned against a
+//! committed golden. The golden catches visual regressions by eye; the
+//! high-contrast test reads pixels back, since a dark-theme golden can't
+//! see "the wheel went invisible under this palette". Soft-skips when no
+//! wgpu adapter is available.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,7 +23,6 @@ use ui::widget::Widget;
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::SnapshotAssertion;
 
-/// Directory under the crate root where golden PNGs are committed.
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -39,12 +30,10 @@ fn goldens_dir() -> PathBuf {
         .join("wheel_disc")
 }
 
-/// Canvas proportions matter as much as the size here. The disc derives
-/// its radius from the slot's *width* and then shows whatever slice of
-/// that circle the slot's *height* reaches, so the height-to-width ratio
-/// decides how many degrees of rim — and therefore how many workspaces —
-/// land on screen. The live shell's sidebar slot is roughly 234 × 690, a
-/// ratio near 2.9; these numbers keep that ratio in a compact frame.
+/// Canvas proportions matter as much as size: the disc takes its radius
+/// from the slot's *width* and shows whatever slice the slot's *height*
+/// reaches, so the ratio decides how many workspaces land on screen.
+/// The live slot is ~234x690 (~2.9); these numbers keep that ratio.
 const CANVAS_W: u32 = 290;
 const CANVAS_H: u32 = 700;
 
@@ -67,13 +56,10 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     .ok()
 }
 
-/// Build and paint the three-workspace disc under `theme`, laid out the
-/// way the live shell mounts it: pinned to the slot's left edge, with the
-/// disc's centre off-canvas so only the right arc protrudes.
-///
-/// Shared by the golden test and the high-contrast one so both exercise
-/// the same production layout + draw path and can only disagree about the
-/// palette.
+/// Paint the three-workspace disc under `theme`, mounted as the live shell
+/// mounts it (pinned to the slot's left edge, centre off-canvas). Shared
+/// by the golden and high-contrast tests so they can only disagree about
+/// the palette.
 fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, SidebarWheelDisc) {
     render_disc_at(theme, tr, 0.0)
 }
@@ -82,7 +68,6 @@ fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, Side
 /// rotation test can ask for "half a detent" without hardcoding it.
 const SPOKE_STEP_DEG: f32 = 15.0;
 
-/// Same disc, laid out and painted at `rotation_deg` of wheel rotation.
 fn render_disc_at(
     theme: &Theme,
     tr: &mut TextRenderer,
@@ -102,26 +87,18 @@ fn render_disc_at(
             workspace_id: Some(3),
         },
     ];
-    // Size the disc so its visible sliver fits this canvas, the way the
-    // live shell does — the overlay host overrides the wheel's slot to
-    // a viewport-derived width rather than taking the widget's default.
-    // Without this the sliver is wider than the canvas and the rim, the
-    // markers and the label all land off the right edge, leaving the
-    // snapshot pinned on empty background.
-    //
-    // `visible_width_px` is linear in the diameter, so one ratio solves
-    // it exactly without the test needing the geometry constant. The
-    // 48 px of slack keeps the active marker's halo — which is centred
-    // on the rim, at the sliver's right edge — inside the frame.
+    // Size the disc so its visible sliver fits the canvas, as the live shell
+    // does (viewport-derived slot width, not the widget default), or the
+    // sliver runs off the right edge and the snapshot pins empty background.
+    // `visible_width_px` is linear in the diameter, so one ratio solves it;
+    // the 48px of slack keeps the active marker's halo in frame.
     let mut disc = SidebarWheelDisc::new(spokes);
     let target_visible = CANVAS_W as f64 - 48.0;
     let scaled_diameter = disc.diameter_px * (target_visible / disc.visible_width_px());
     disc = disc.with_diameter(scaled_diameter);
-    // Keep the default 4500 px diameter. The disc mounts at the canvas's
-    // LEFT edge so the partial-arc design reads correctly: only the right
-    // ~66° of the rim protrudes into the visible canvas, the rest sits
-    // off-screen-left. `align_items: Center` keeps the sliver vertically
-    // centred.
+    // Keep the default 4500px diameter. Mounted at the canvas's LEFT edge,
+    // only the right ~66° of rim protrudes; `align_items: Center` keeps the
+    // sliver vertically centred.
 
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -134,11 +111,8 @@ fn render_disc_at(
                     width: Dimension::length(CANVAS_W as f32),
                     height: Dimension::length(CANVAS_H as f32),
                 },
-                // Pin the disc to the left edge — the live shell mounts
-                // it at `left: 0` of the absolute-positioned sidebar
-                // slot, so we mirror that here. The disc's logical
-                // centre then sits OFF-CANVAS to the left and only the
-                // visible-arc sliver paints inside the canvas.
+                // Mirrors `left: 0` on the live shell's absolute-positioned sidebar slot:
+                // the logical centre sits off-canvas, only the visible arc paints.
                 justify_content: Some(taffy::JustifyContent::Start),
                 align_items: Some(taffy::AlignItems::Center),
                 ..Default::default()
@@ -192,10 +166,8 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         path
     );
 
-    // Pin against the committed golden. Guarded on `path.exists()` to
-    // match the soft-skip-on-missing-GPU convention: if the renderer
-    // couldn't produce the PNG we've already returned above, but belt-
-    // and-braces here too.
+    // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
+    // convention.
     if path.exists() {
         SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
     }
@@ -203,10 +175,9 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
 
 
 /// High contrast is the sharp case: it grounds everything on pure black,
-/// including `surfaces.overlay`, which is the disc body's own hue — so the
-/// body genuinely is black on black there, and the rim is the only thing
-/// left saying the wheel exists. Reading the pixels back is the only way
-/// to hold that: a golden rendered in the dark theme cannot see it.
+/// including the disc body's own hue, so the body is black on black and
+/// the rim is all that says the wheel exists — only reading pixels back
+/// can see that.
 #[test]
 fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -216,10 +187,8 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
     let mut tr = TextRenderer::new();
     let (scene, _disc) = render_three_spoke_disc(&Theme::high_contrast(), &mut tr);
     let rgba = renderer.render(&scene, Color::BLACK);
-    // Written out as well as sampled. The pixel probe below can only say
-    // the rim survived; whether the whole wheel is still legible under a
-    // palette that grounds every surface on pure black is a question for
-    // someone looking at it.
+    // The pixel probe can only say the rim survived; whether the whole wheel
+    // still reads under an all-black palette needs a human.
     renderer.render_png(
         &scene,
         Color::BLACK,
@@ -247,23 +216,13 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
     );
 }
 
-/// Summoning lifts the disc off the strip and puts it wherever the pointer
-/// is — which is usually on top of an app, and apps are frequently bright.
-/// The band has to be a real surface there, or the shell's near-white
-/// labels land on a near-white document.
-///
-/// It also has to END. A wheel that blacks out the whole screen passes
-/// "is it a surface" just as happily, and is the other way to fail: the
-/// disc is a slice of something large, so the app must still be plainly
-/// visible beyond the disc's own footprint.
-///
-/// The body is solid, reaching the disc's own centre — no hollow for the
-/// app to show through — so the probe for "still a slice" sits off the
-/// left edge of the footprint instead.
-///
-/// Sample points are derived from the band the widget actually paints
-/// rather than hardcoded, so tuning the depth moves the probes with it
-/// instead of silently testing open wallpaper.
+/// Summoning lifts the disc onto the strip under the pointer — usually
+/// over a bright app — so the band must be a real surface there, or
+/// near-white labels land on a near-white document. It must also END: a
+/// wheel blacking out the screen would pass "is it a surface" too. The
+/// body is solid to the centre, so the "still a slice" probe sits off the
+/// left edge; sample points come from the band the widget actually paints
+/// so tuning its depth moves the probes with it.
 #[test]
 fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -303,8 +262,7 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
          — the labels painted on it have nothing to read against; see {path:?}"
     );
 
-    // Solid: the body reaches the centre, so this point is surface too,
-    // and just as opaque.
+    // The body reaches the centre, so this point is surface too, and as opaque.
     let inner = luma(inside_arc, row_y);
     assert!(
         inner < 110,
@@ -313,11 +271,9 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
          solid segment, filled to the centre; see {path:?}"
     );
 
-    // ...and it still ends. The disc mounts flush to the left edge here,
-    // exactly as it does in the shell's sidebar column, so the edge it
-    // has to end at is the RIM: past that — clear of the rim's outward
-    // shadow — the app must be plainly visible, or the wheel has taken
-    // over the screen instead of occupying a slice of it.
+    // ...and it still ends. Mounted flush left as in the sidebar column, so
+    // past the rim — clear of its outward shadow — the app must be plainly
+    // visible.
     let outside = ((c.x + r_out + RIM_SHADOW_CLEARANCE).round() as u32).min(CANVAS_W - 1);
     assert!(
         (outside as f64) > footprint.x1 - 1.0 || (outside as f64) > c.x + r_out,
@@ -332,21 +288,16 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     );
 }
 
-/// Pixels past the rim at which the app must be fully visible again —
-/// clear of the rim's outward shadow, which is allowed to reach a little
-/// beyond the rim by design.
+/// Pixels past the rim at which the app must be fully visible again,
+/// clear of the rim's outward shadow.
 const RIM_SHADOW_CLEARANCE: f64 = 36.0;
 
-/// The body is one colour: a gradient reads on screen as a grey smear
-/// that never resolves into an object.
-///
-/// Walks the band's radial run at its vertical middle and requires every
-/// sample to agree. A gradient of any consequence fails; so does a ring
-/// fill, which leaves a brighter seam where two translucent rings overlap.
-///
-/// Rendered on a mid-grey ground so a translucent body has something to
-/// differ against — over black an alpha ramp reads as almost no delta at
-/// all and this would pass on a smear.
+/// The body is one colour — a gradient reads as a grey smear that never
+/// resolves into an object. Walks the band's radial run at its vertical
+/// middle and requires every sample to agree (a gradient or a ring-fill
+/// seam both fail). Rendered on mid-grey so a translucent body has
+/// something to differ against; over black an alpha ramp reads as almost
+/// no delta and would pass on a smear.
 #[test]
 fn the_band_is_filled_flat_with_a_single_colour() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -394,14 +345,10 @@ fn the_band_is_filled_flat_with_a_single_colour() {
     );
 }
 
-/// The disc is a thing you spin, so its contents have to turn WITH it.
-///
-/// A label lying on the surface tips as its sector comes round, and that
-/// is the difference, so that is what this measures. The active label is
-/// horizontal at rest — its box is exactly as tall as the label — and a
-/// tilted one needs a taller box to hold the same text. Half a detent is
-/// also the hardest frame to look at, two sectors equally near the
-/// middle, so both renders are written out.
+/// The disc is a thing you spin, so its contents must turn WITH it: the
+/// active label is horizontal at rest (box exactly as tall as the label)
+/// and needs a taller box once tipped. Half a detent is the hardest
+/// frame, two sectors equally near the middle, so both are written out.
 #[test]
 fn spinning_the_wheel_turns_the_labels_with_it() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -451,12 +398,9 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
     );
 }
 
-/// Renders the disc under every theme track the shell can be switched
-/// into, and requires the surface to actually change with the theme.
-///
-/// Sampling the active wedge in three themes and requiring three
-/// different answers is the guard against a hardcoded palette: a
-/// constant colour cannot pass a test that asks the theme to move it.
+/// Renders under every theme track and requires the surface to change
+/// with it — three themes giving three different answers is what a
+/// hardcoded palette cannot do.
 #[test]
 fn the_disc_takes_its_colours_from_the_theme() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -477,14 +421,10 @@ fn the_disc_takes_its_colours_from_the_theme() {
         renderer.render_png(&scene, ground, &path);
         assert!(path.exists(), "snapshot PNG should be written to {path:?}");
 
-        // Probe the active wedge against an inactive neighbour at the
-        // same radius. Comparing the two isolates the wedge's own tint
-        // from the body fill underneath, which is themed as well and
-        // would otherwise be most of the difference.
-        //
-        // Both probes sit 4° off their sector's centreline, which is
-        // clear of the label chip drawn there and well inside the
-        // dividers at ±7.5°.
+        // Probe the active wedge against an inactive neighbour at the same
+        // radius, isolating the wedge's own tint from the (also themed) body
+        // fill underneath. Both probes sit 4° off their sector's centreline,
+        // clear of the label chip and well inside the ±7.5° dividers.
         let rgba = renderer.render(&scene, ground);
         let (r_in, r_out) = disc.label_band_radii();
         let c = disc.disc_centre();

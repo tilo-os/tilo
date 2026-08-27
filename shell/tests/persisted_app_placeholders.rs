@@ -1,12 +1,8 @@
-//! Verifies that `ShellTile::AppPlaceholder { kind: Terminal }` and
-//! `{ kind: FileExplorer }` in a persisted `WorkspaceTree` resolve to live
-//! `UiTile::App` widgets (rather than falling through to `UiTile::Stub`) when
-//! the shell builds its root widget tree.
-//!
-//! The assertion uses `resolve_tile_shape_for_test` — a test-only probe that
-//! returns the discriminator string (`"App"` vs `"Stub"`) without exposing the
-//! full `UiTile` type (which carries a `Box<dyn AppWidget>`) on the public
-//! shell API.
+//! `ShellTile::AppPlaceholder { kind: Terminal | FileExplorer }` in a
+//! persisted `WorkspaceTree` must resolve to live `UiTile::App` widgets,
+//! not `UiTile::Stub`, when the shell builds its root tree. Uses
+//! `resolve_tile_shape_for_test`, a probe returning `"App"`/`"Stub"`
+//! without exposing `UiTile` (which carries a `Box<dyn AppWidget>`).
 
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
@@ -14,13 +10,13 @@ use shell::shell::state::{
 use shell::shell::{build_nirios_root, resolve_tile_shape_for_test};
 use std::collections::HashMap;
 
-/// Build a minimal single-workspace tree whose sole window-group holds one
-/// `AppPlaceholder` tab of `kind`. Avoids `bootstrap_default` so the test
-/// doesn't spuriously fail if the default tree's tile kinds drift.
+/// A single-workspace tree whose sole window-group holds one
+/// `AppPlaceholder` tab of `kind`. Avoids `bootstrap_default` so drift in
+/// the default tree's tile kinds can't fail this spuriously.
 fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
     let ws_id = shell::shell::state::WorkspaceId::new();
     let strip_id = shell::shell::state::StripId::new();
-    // IDs for group / tab — any unique u64 works; `next_id` isn't exported.
+    // Any unique u64 works; `next_id` isn't exported.
     let group_id: u64 = 9_001;
     let tab_id: u64 = 9_002;
     let strip = Strip {
@@ -64,11 +60,10 @@ fn terminal_placeholder_resolves_to_live_app_tile() {
         kind: AppKind::Terminal,
         label: "Terminal".into(),
     };
-    // PTY spawn can legitimately fail in some CI sandboxes; accept either
-    // "App" (happy path) or "Stub" (documented fallback). The regression
-    // guarded against is a silent fall-through to Stub with the
-    // *original* placeholder label — on spawn failure the fallback now
-    // carries a `"Terminal: <err>"` prefix.
+    // PTY spawn can legitimately fail in some CI sandboxes, so accept either
+    // shape. The regression guarded against is a silent fall-through to Stub
+    // with the *original* placeholder label — on spawn failure the fallback
+    // carries a "Terminal: <err>" prefix.
     let shape = resolve_tile_shape_for_test(&tile);
     assert!(
         shape == "App" || shape == "Stub",
@@ -91,8 +86,7 @@ fn file_explorer_placeholder_resolves_to_live_app_tile() {
 
 #[test]
 fn build_nirios_root_accepts_terminal_and_files_placeholders() {
-    // Smoke: the full root-build path must not panic when the persisted
-    // tree carries Terminal/FileExplorer placeholders.
+    // The full root-build path must not panic on persisted placeholders.
     let term_tree = tree_with_single_placeholder(AppKind::Terminal, "Terminal");
     let _ = build_nirios_root(&term_tree);
     let files_tree = tree_with_single_placeholder(AppKind::FileExplorer, "Files");

@@ -1,26 +1,14 @@
 //! Navigating along a strip, and the affordances that must not.
 //!
 //! A strip is a horizontal run of window groups wider than the display, so
-//! "where am I looking" is real state (`GroupRow::scroll_x`) that several
-//! unrelated interactions can move. Pinned here:
+//! "where am I looking" (`GroupRow::scroll_x`) is real state several
+//! unrelated interactions can move. A bare wheel does *not* move the view
+//! (see `desktop_env_interactions::wheel_over_strip_does_not_move_it`) —
+//! the view travels through focus changes, so a sideways scroll here steps
+//! focus rather than free-panning the canvas.
 //!
-//!   * The tab strip's `+` opens the picker and moves nothing — a button
-//!     that pans the desktop under the pointer is the kind of thing a
-//!     person notices immediately and cannot explain.
-//!   * Stepping focus along the strip works from the keyboard and from a
-//!     horizontal scroll, and both land on the same window, because they
-//!     are one operation.
-//!   * The rail says how much strip there is and which part is on screen
-//!     — and goes there when clicked.
-//!
-//! A bare wheel does *not* move the view (see
-//! `desktop_env_interactions::wheel_over_strip_does_not_move_it`) — the
-//! view travels through focus changes, which is why a sideways scroll
-//! here steps focus rather than free-panning the canvas.
-//!
-//! The harness builds a real `ShellOverlayHost` over a real
-//! `WorkspaceTree`, runs a real layout pass, and drives real
-//! `WindowEvent`s — nothing here asserts against a reimplementation.
+//! The harness builds a real `ShellOverlayHost`/`WorkspaceTree`, runs a
+//! real layout pass, and drives real `WindowEvent`s.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -43,19 +31,15 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// Half the display each, so three of them plus the wheel-disc gutter
-/// overflow the viewport and the strip genuinely has somewhere to pan — a
-/// strip whose content fits cannot demonstrate anything about panning
-/// (`scroll_x` clamps to 0 and every assertion passes for the wrong reason).
+/// Half the display each, so three plus the wheel-disc gutter overflow the
+/// viewport — content that fits cannot demonstrate anything about panning.
 const HALF_DISPLAY_PERMILLE: u16 = 500;
 
-/// How many window groups the fixture strip holds — enough that travelling
-/// to the far end pushes the near end entirely off screen. With fewer, the
-/// first group would still poke in at maximum scroll, making "the strip
-/// moved" indistinguishable from "the strip moved enough to matter".
+/// Enough groups that travelling to the far end pushes the near end
+/// entirely off screen; with fewer, the first would still poke in at
+/// maximum scroll.
 const GROUPS: usize = 5;
 
-/// Windows on one strip, two tabs per group.
 fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
     let ws_id = WorkspaceId::new();
     let strip_id = StripId::new();
@@ -141,9 +125,8 @@ impl Harness {
         h
     }
 
-    /// `build_layout → compute_layout → apply_layout`, the same three
-    /// calls `App::layout` makes, so every group's rect is in the same
-    /// screen space a click carries.
+    /// The same three calls `App::layout` makes, so every group's rect is in
+    /// the screen space a click carries.
     fn lay_out(&mut self) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -204,8 +187,8 @@ impl Harness {
         handled
     }
 
-    /// The per-frame reconcilers this file's subjects ride on, in the
-    /// order `Widget::update` runs them.
+    /// The per-frame reconcilers this file's subjects ride on, in the order
+    /// `Widget::update` runs them.
     fn tick(&mut self) {
         if self.host.tick_pending_new_tab_for_tests() {
             let mut doc = automerge::AutoCommit::new();
@@ -215,8 +198,8 @@ impl Harness {
         self.host.tick_clear_stale_open_target_for_tests();
         self.host.tick_active_tab_writeback_for_tests();
         self.host.tick_scroll_active_into_view_for_tests();
-        // Run the focus-follow pan (an eased curve on wall time) to its
-        // end via `tick_snap_at`, rather than asserting mid-animation.
+        // Run the focus-follow pan (an eased curve on wall time) to its end via
+        // `tick_snap_at`, rather than asserting mid-animation.
         if let Some(row) = self.host.group_row_mut_for_tests(self.strip) {
             row.tick_snap_at(Instant::now() + Duration::from_secs(2));
         }
@@ -240,11 +223,9 @@ impl Harness {
         });
     }
 
-    /// A key press with `mods` held, through the same `handle_event`
-    /// entry point the compositor calls.
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the
-        // struct is zero-initialised and every public field overwritten.
+        // winit's `KeyEvent` carries a private platform field, so the struct is
+        // zero-initialised and every public field overwritten.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
         ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
@@ -276,8 +257,8 @@ impl Harness {
         );
     }
 
-    /// A horizontally-dominant wheel event with the pointer over the
-    /// strip, the way a two-finger sideways swipe arrives.
+    /// A horizontally-dominant wheel event over the strip, the way a
+    /// two-finger sideways swipe arrives.
     fn scroll_horizontally(&mut self, dx: f32) {
         self.event(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -299,7 +280,6 @@ impl Harness {
             .expect("the strip under test must report a pan offset")
     }
 
-    /// The `+` chip's rect on group `idx`, in screen space.
     fn plus_rect(&mut self, idx: usize) -> Rect {
         let r = self
             .host
@@ -348,16 +328,16 @@ fn the_fixture_strip_is_wider_than_its_viewport() {
     );
 }
 
-/// Clicking a group's `+` opens the picker and leaves the desktop where
-/// it was. Reported from a live session as "if I click the + in a window
+/// Clicking a group's `+` opens the picker and leaves the desktop where it
+/// was. Reported from a live session as "if I click the + in a window
 /// group, somehow the viewport changes".
 #[test]
 fn the_plus_chip_does_not_move_the_viewport() {
     let mut h = Harness::new();
     let parked = h.scroll_x();
-    // Group 1 straddles the right edge: its `+` chip is fully clickable
-    // while the rest of the group is off screen — the shape that made the
-    // press pan the desktop (a focus change asking for a half-visible group).
+    // Group 1 straddles the right edge, so its `+` is fully clickable while
+    // the rest of the group is off screen — the shape that made the press pan
+    // the desktop.
     let row_right = h
         .host
         .group_row_rect_for_tests(h.strip)
@@ -388,8 +368,8 @@ fn the_plus_chip_does_not_move_the_viewport() {
     assert!(visible, "clicking + must open the picker");
 }
 
-/// And the picker it opens is offering apps, not everything the machine
-/// can find. "+ on a window group" is a request for a program.
+/// The picker offers apps, not everything the machine can find: "+ on a
+/// window group" is a request for a program.
 #[test]
 fn the_plus_chip_opens_the_picker_filtered_to_apps() {
     let mut h = Harness::new();
@@ -408,21 +388,17 @@ fn the_plus_chip_opens_the_picker_filtered_to_apps() {
     assert!(visible, "clicking + must open the picker");
 }
 
-// =====================================================================
-// Travelling along the strip. These pin the three ways in, and that they
-// are one operation rather than three.
-// =====================================================================
+// Travelling along the strip: three ways in, one operation.
 
-/// Super+Right walks forward through the strip's windows, and does not
-/// stop at the group boundary — the strip is one sequence of windows,
-/// not a set of independent tab bars.
+/// Super+Right walks forward through the strip's windows and does not stop
+/// at a group boundary — the strip is one sequence of windows, not a set
+/// of independent tab bars.
 #[test]
 fn super_right_walks_the_whole_strip() {
     let mut h = Harness::new();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    // Every window on the strip, in visual order, built from the fixture
-    // so the assertion cannot drift out of step with it.
+    // Built from the fixture so the expectation cannot drift out of step.
     let expected: Vec<(GroupId, u64)> = h
         .groups
         .iter()
@@ -442,13 +418,12 @@ fn super_right_walks_the_whole_strip() {
     }
 }
 
-/// Super+Left is its inverse, and neither wraps: the end of the strip is
-/// the end. Wrapping would teleport the viewport the whole length of the
-/// strip for what the user asked to be one step.
+/// Super+Left is its inverse, and neither wraps: wrapping would teleport
+/// the viewport the whole length of the strip for what the user asked to
+/// be one step.
 #[test]
 fn super_left_is_the_inverse_and_neither_wraps() {
     let mut h = Harness::new();
-    // Walk past the far end.
     for _ in 0..GROUPS * 2 + 3 {
         h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
@@ -470,7 +445,7 @@ fn super_left_is_the_inverse_and_neither_wraps() {
     );
 }
 
-/// Focus travelling off-screen brings the strip with it. Without this the
+/// Focus travelling off-screen brings the strip with it; without this the
 /// chord silently focuses a window the user cannot see.
 #[test]
 fn stepping_to_an_offscreen_window_pans_the_strip() {
@@ -508,8 +483,8 @@ fn stepping_to_an_offscreen_window_pans_the_strip() {
 }
 
 /// A sideways two-finger swipe is the same operation as the chord —
-/// literally, not merely similar. Two navigation models that agree on the
-/// easy case and diverge at a group boundary is the failure this pins.
+/// literally. Two navigation models agreeing on the easy case and
+/// diverging at a group boundary is the failure this pins.
 #[test]
 fn a_horizontal_swipe_and_the_chord_are_one_operation() {
     let by_key = {
@@ -533,8 +508,8 @@ fn a_horizontal_swipe_and_the_chord_are_one_operation() {
         by_key, by_swipe,
         "three swipes and three Super+Rights must land on the same window"
     );
-    // …and that window is across a group boundary, so this is not two
-    // implementations agreeing inside one tab bar.
+    // …and across a group boundary, so this is not two implementations
+    // agreeing inside one tab bar.
     let mut h = Harness::new();
     assert_ne!(
         by_key.0,
@@ -543,12 +518,10 @@ fn a_horizontal_swipe_and_the_chord_are_one_operation() {
     );
 }
 
-// =====================================================================
 // The rail: the thing that says there is more strip.
-// =====================================================================
 
-/// The rail reports what the strip holds and which part of it is on
-/// screen — the fact whose absence produced "how do I change windows?".
+/// The rail reports what the strip holds and which part is on screen —
+/// the fact whose absence produced "how do I change windows?".
 #[test]
 fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
     let mut h = Harness::new();
@@ -582,9 +555,9 @@ fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
     );
 }
 
-/// And it is a control: clicking a segment goes there, including to a
-/// window that is off screen — which is the one pointer action that is
-/// allowed to pan the strip, because its target may not be visible.
+/// And it is a control: clicking a segment goes there, including to an
+/// off-screen window — the one pointer action allowed to pan the strip,
+/// because its target may not be visible.
 #[test]
 fn clicking_a_rail_segment_travels_to_that_window() {
     let mut h = Harness::new();
@@ -608,9 +581,8 @@ fn clicking_a_rail_segment_travels_to_that_window() {
     );
 }
 
-/// The filter the `+` seeds belongs to the picker it opened. Left
-/// standing it would be invisible state that silently decides what an
-/// unrelated later query is allowed to find.
+/// The filter the `+` seeds belongs to the picker it opened; left standing
+/// it would silently decide what an unrelated later query can find.
 #[test]
 fn the_apps_filter_does_not_outlive_the_picker() {
     let mut h = Harness::new();
