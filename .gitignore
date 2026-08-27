@@ -27,11 +27,6 @@ keys/*.password
 keys/*.private.pem
 keys/**/*.key
 keys/**/*.private.pem
-
-# Signing keys — private material must never be committed (public keys are tracked)
-keys/*.key
-keys/*.password
-keys/*.private.pem
 # runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
 *.crdt
 .claude/test-scratch/
@@ -52,7 +47,3 @@ keys/*.private.pem
 # freshly built qos-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
-
-# Recorded demo output. Large binaries; regenerate with scripts/yc-demo.py --record.
-.claude/demo-artifacts/
-.claude/agent-scratch/
