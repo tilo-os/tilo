@@ -24,7 +24,7 @@ use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-// ---------- frame helpers ----------
+// frame helpers
 
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
@@ -65,24 +65,19 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-rd-{label}-{pid}-{nanos}.sock"))
 }
 
-/// The collaboration cluster every client in these scenarios joins.
-///
-/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
-/// client announces on its `Hello`, so peers that are meant to observe
-/// each other's edits must announce the same pair — these scenarios
-/// pair this cluster with a single app id per file. A per-client
-/// random uuid would put every client in a cluster of its own, which
-/// is how a real deployment keeps unrelated documents apart.
+/// The collaboration cluster every client in these scenarios joins. The
+/// broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on `Hello`, so peers meant to observe each other
+/// must announce the same pair — a per-client random uuid would put
+/// every client in a cluster of its own.
 fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
-/// Block until `n` clients have announced their route.
-///
-/// Connecting and saying `Hello` are separate steps, and only the
-/// second makes a client addressable — the broker routes CRDT traffic
-/// by the announced `(app_id, cluster_id)` pair. A send that races
-/// another client's `Hello` would reach nobody.
+/// Block until `n` clients have announced their route. Connecting and
+/// saying `Hello` are separate steps; only the second makes a client
+/// addressable, so a send that races another client's `Hello` would
+/// reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -110,7 +105,7 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     }
 }
 
-// ---------- attestation / op factories ----------
+// attestation / op factories
 
 /// A channel state with `owner_pk` as the authorised signer, plus an
 /// Owner attestation for `owner_pk` and an Editor attestation for
@@ -167,9 +162,7 @@ fn build_redact_op(
     )
 }
 
-// =====================================================================
 // Scenario 1: happy path
-// =====================================================================
 
 #[test]
 fn owner_can_redact_a_recent_op() {
@@ -282,9 +275,7 @@ fn owner_can_redact_a_recent_op() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 2: editor cannot redact
-// =====================================================================
 
 #[test]
 fn editor_redact_request_is_rejected() {
@@ -373,9 +364,7 @@ fn editor_redact_request_is_rejected() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 3: redaction persists across compaction
-// =====================================================================
 
 #[test]
 fn redaction_persists_through_audit_log_across_compaction() {
@@ -486,9 +475,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 4: redacted op is filtered from scrollback
-// =====================================================================
 
 #[test]
 fn redacted_op_is_filtered_from_scrollback() {
@@ -590,9 +577,7 @@ fn redacted_op_is_filtered_from_scrollback() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 5: late-arriving already-redacted op is dropped
-// =====================================================================
 
 #[test]
 fn late_arriving_op_with_already_redacted_id_is_dropped() {
@@ -689,17 +674,14 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 6: redaction of MLS-encrypted op succeeds
-// =====================================================================
 
 #[test]
 fn redaction_of_mls_encrypted_op_succeeds() {
-    // A Redact targeting an MLS-encrypted op never decrypts it — the
-    // validator's role + redaction checks apply regardless of encryption.
-    // The op-log payload is rewritten to the marker; the original
-    // ciphertext is kept in `original_envelopes` so audit can re-verify
-    // `target_op_hash`.
+    // A Redact targeting an MLS-encrypted op never decrypts it — validator
+    // role/redaction checks apply regardless of encryption. The op-log
+    // payload is rewritten to the marker; the original ciphertext stays in
+    // `original_envelopes` so audit can re-verify `target_op_hash`.
     let socket = unique_socket("redact-mls");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -774,9 +756,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 7: recursive redaction is rejected
-// =====================================================================
 
 #[test]
 fn recursive_redaction_is_rejected() {
@@ -890,9 +870,7 @@ fn recursive_redaction_is_rejected() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 8: audit entry carries structured fields
-// =====================================================================
 
 #[test]
 fn audit_entry_carries_reason_and_redactor_pk() {

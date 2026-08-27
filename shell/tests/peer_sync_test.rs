@@ -1,14 +1,8 @@
-//! End-to-end peer-sync test using two `Actor`s over TCP loopback.
-//!
-//! Validates:
-//!   1. Two actors converge on a workspace append via `SyncResp`.
-//!   2. Cursor presence broadcasts (`PresenceMoved`) arrive at the other peer.
-//!   3. Invite token round-trips through `make_invite_token` /
-//!      `validate_invite_token` (signature gates correctness).
-//!
-//! Modelled on the in-crate `two_actors_exchange_publish_via_loopback` test
-//! in `src/network/actor.rs`, but lives in `tests/` so it exercises the
-//! crate's public API surface only and runs as a separate binary in CI.
+//! End-to-end peer-sync test using two `Actor`s over TCP loopback:
+//! workspace-append convergence via `SyncResp`, `PresenceMoved`
+//! broadcast, and invite-token round-trip. Mirrors the in-crate
+//! `two_actors_exchange_publish_via_loopback` test but exercises only the
+//! public API surface.
 
 use std::time::Duration;
 
@@ -25,8 +19,8 @@ use tokio::time::timeout;
 
 const WS: u64 = 42;
 
-/// Build a swarm using the same transport stack as the in-crate actor
-/// test — TCP + noise + yamux + the project's combined behaviour.
+/// Same transport stack as the in-crate actor test: TCP + noise + yamux
+/// + the project's combined behaviour.
 fn build_swarm() -> Swarm<NiriosBehaviour> {
     libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
@@ -42,8 +36,6 @@ fn build_swarm() -> Swarm<NiriosBehaviour> {
         .build()
 }
 
-/// Start `swarm` listening on an ephemeral loopback port, drain its first
-/// `NewListenAddr` event, and return the resulting concrete multiaddr.
 async fn listen_loopback(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
     swarm
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -59,8 +51,6 @@ async fn listen_loopback(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
     .expect("listen addr within 5 s")
 }
 
-/// Build, listen, and join a workspace. Returns the cmd channel, the
-/// event receiver, and the listening multiaddr.
 async fn spawn_actor() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, Multiaddr) {
     let mut swarm = build_swarm();
     let addr = listen_loopback(&mut swarm).await;
@@ -76,10 +66,9 @@ async fn spawn_actor() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, Multi
     (cmd_tx, ev_rx, addr)
 }
 
-/// Wait until `ev_rx` reports any `PeerJoined` for our workspace. The
-/// gossipsub mesh is up at that point, so subsequent publishes are
-/// guaranteed to be delivered (modulo timing for the very first one,
-/// which we still hedge with a brief sleep at the call site).
+/// Wait for any `PeerJoined` on our workspace — the gossipsub mesh is up
+/// at that point, so later publishes are reliably delivered (the first
+/// one is still hedged with a brief sleep at the call site).
 async fn wait_peer_joined(ev_rx: &mut mpsc::Receiver<NetEvent>) {
     timeout(Duration::from_secs(10), async {
         loop {
@@ -94,29 +83,22 @@ async fn wait_peer_joined(ev_rx: &mut mpsc::Receiver<NetEvent>) {
     .expect("PeerJoined within 10 s");
 }
 
-/// Two actors over TCP loopback exchange a workspace-append change via
-/// `SyncResp` and the receiver's tree converges on the new workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_actors_exchange_a_workspace_append_change() {
     let (cmd_a, mut ev_rx_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut ev_rx_b, _addr_b) = spawn_actor().await;
 
-    // Have B dial A so the gossipsub mesh forms.
     cmd_b
         .send(NetCmd::Connect { addr: addr_a })
         .await
         .expect("dial");
 
-    // Block until B sees A join the topic — that's our mesh-up signal.
     wait_peer_joined(&mut ev_rx_b).await;
     // Brief settle so the first publish is delivered reliably.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // A constructs a tree with a workspace, which mints that workspace's
-    // room, and exports that room's document. Replication is per room:
-    // what crosses the wire is one room's own state, so what A ships is
-    // addressed by A's room id rather than by A's local workspace handle
-    // (which means nothing on B).
+    // Replication is per room, so what A ships is addressed by A's room id,
+    // not its local workspace handle (which means nothing on B).
     let mut tree_a = WorkspaceTree::default();
     let local_a = tree_a.append_empty_workspace("Renamed");
     let room = tree_a.room_of(local_a).expect("a fresh workspace has a room");
@@ -125,7 +107,6 @@ async fn two_actors_exchange_a_workspace_append_change() {
         .expect("A is in the room it is exporting");
     assert!(!changes.is_empty(), "the room must produce a change blob");
 
-    // A publishes a SyncResp with the change blobs.
     cmd_a
         .send(NetCmd::Publish {
             ws: WS,
@@ -137,9 +118,8 @@ async fn two_actors_exchange_a_workspace_append_change() {
         .await
         .expect("publish");
 
-    // B should observe the SyncResp. The reconnect-sync path also emits a
-    // roomless `SyncReq` on PeerJoined, so the loop drains until it sees
-    // the SyncResp variant we care about.
+    // The reconnect-sync path also emits a roomless `SyncReq` on PeerJoined,
+    // so drain until the SyncResp variant shows up.
     let received = timeout(Duration::from_secs(10), async {
         loop {
             match ev_rx_b.recv().await {
@@ -163,9 +143,8 @@ async fn two_actors_exchange_a_workspace_append_change() {
         "the response must name the room it carries"
     );
 
-    // B is in the same room — its own workspace, its own local id, joined
-    // to A's room the way accepting an invite joins it. Apply and assert
-    // convergence on the room's state.
+    // B joins A's room the way accepting an invite does, then applies and
+    // asserts convergence on the room's state.
     let mut tree_b = WorkspaceTree::default();
     let local_b = tree_b.append_empty_workspace("Placeholder");
     assert!(tree_b.set_room(local_b, room), "B joins A's room");
@@ -186,11 +165,9 @@ async fn two_actors_exchange_a_workspace_append_change() {
     assert_eq!(synced.name, "Renamed");
     assert_eq!(synced.room, room);
 
-    // Drain so the actors shut down cleanly when we exit the test.
     let _ = ev_rx_a.try_recv();
 }
 
-/// `PresenceMoved` round-trips between two actors over loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn presence_moved_round_trips_between_two_actors() {
     let (cmd_a, _ev_rx_a, addr_a) = spawn_actor().await;
@@ -235,10 +212,8 @@ async fn presence_moved_round_trips_between_two_actors() {
     assert_eq!(received, presence);
 }
 
-/// Sanity check that the public invite-token API is reachable from an
-/// integration-test binary and survives a make/validate round-trip.
-/// In-crate unit tests already cover tampering / expiry; this is a
-/// minimal cross-crate-boundary smoke test.
+/// Tampering and expiry are already covered by in-crate unit tests; this
+/// only pins that the API is reachable across the crate boundary.
 #[test]
 fn invite_token_round_trips() {
     use shell::shell::state::{Workspace, WorkspaceId};
@@ -249,19 +224,14 @@ fn invite_token_round_trips() {
     let parsed = validate_invite_token(&token).expect("validate");
     assert_eq!(parsed.workspace_id, 99);
     assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/8888");
-    // The room the invite grants access to has to survive the crate
-    // boundary too — it is the field the receiver adopts, and a token
-    // that arrived without it would join a topic and reach nobody.
+    // The room the invite grants access to has to survive the crate boundary
+    // too — a token arriving without it would join a topic and reach nobody.
     assert_eq!(parsed.room_id, workspace.room.to_string());
 }
 
-/// End-to-end smoke test — A encodes an RGBA gradient, publishes the
-/// NALU bytes as a [`NeighbourMsg::SurfaceFrame`], and B decodes the
-/// payload back into an image-shaped frame whose dimensions match the
-/// source. This is the cross-actor analogue of
-/// `network::encoder::tests::gradient_round_trip_psnr_at_least_35_db`
-/// — the unit test proves the codec, this test proves the bytes survive
-/// the gossipsub round-trip.
+/// Cross-actor analogue of
+/// `network::encoder::tests::gradient_round_trip_psnr_at_least_35_db`:
+/// that proves the codec, this proves the bytes survive gossipsub.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn surface_frame_round_trips_through_gossipsub() {
     use shell::network::{H264Decoder, H264Encoder};
@@ -327,18 +297,14 @@ async fn surface_frame_round_trips_through_gossipsub() {
 
     assert_eq!(received_bytes, nalus, "gossipsub-relayed bytes must match");
 
-    // Decode confirms the bitstream still represents the original size —
-    // i.e. the gossipsub layer didn't corrupt the payload.
+    // Decode confirms the bitstream still represents the original size, i.e.
+    // gossipsub didn't corrupt the payload.
     let mut dec = H264Decoder::new();
     let frame = dec.decode(&received_bytes).expect("decode");
     assert_eq!(frame.width, W);
     assert_eq!(frame.height, H);
 }
 
-/// Remote-input smoke test — A publishes a `RemoteInput` with a
-/// serialised `InputEvent::PointerMotion` payload; B receives it and
-/// recovers the same event after deserialisation. End-to-end proof that
-/// the wire-level vocabulary survives the gossipsub round-trip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_input_round_trips_through_gossipsub() {
     use shell::network::InputEvent;

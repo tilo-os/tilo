@@ -1,40 +1,19 @@
-//! Built-in RTF (Rich Text Format) **import** codec. The inverse of the
-//! `qdoc-rtf` export crate: it parses an `{\rtf1 …}` document back onto the
-//! canonical rich-text model so the word processor can *open* `.rtf` files.
+//! Built-in RTF **import** codec — parses `{\rtf1 …}` back onto the canonical
+//! rich-text model (`qdoc-rtf` handles export). Groups `{ … }` push/pop
+//! formatting state; control words `\word`/`\wordN` take an optional signed
+//! parameter; control symbols cover literal specials (`\\ \{ \}`), `\'XX` hex
+//! bytes, `\uN` Unicode units, and `\*` (skip-destination).
 //!
-//! RTF is a plain-text control-word format. The grammar this parser understands:
+//! Control word → model: `\par`/`\pard` close the paragraph (`\pard` also
+//! resets paragraph state); `\b`/`\i`/`\ul`/`\strike` (+ `0`/`none` forms) →
+//! `strong`/`em`/`underline`/`strike`; `\cfN` → `color` (0 = auto); `\fsN` →
+//! `fontSize` in points (`N` is half-points); a bulleted paragraph →
+//! `list_item`. `\fonttbl`/`\stylesheet`/`\info`/`\*\…` are skipped; `\colortbl`
+//! is parsed for the color lookup; escapes decode to literal text.
 //!
-//! - **groups** `{ … }` — push/pop the formatting state (a balanced brace stack).
-//! - **control words** `\word` / `\wordN` — a keyword plus an optional signed
-//!   numeric parameter, terminated by a space (consumed) or any non-alnum char.
-//! - **control symbols** `\\` `\{` `\}` (literal specials), `\'XX` (a hex byte),
-//!   `\uN` (a signed-16-bit Unicode code unit followed by a fallback char), and
-//!   `\*` (skip-this-destination marker).
-//! - **plain text** — everything else, spliced into the current block.
-//!
-//! ### Control-word → model mapping (mirrors `qdoc-rtf`'s emit side)
-//!
-//! - `\par` / `\pard` → close the current paragraph; the next text opens a fresh
-//!   `paragraph` block. `\pard` also resets paragraph-level state (indent, list).
-//! - `\b` / `\b0`, `\i` / `\i0`, `\ul` / `\ulnone` (or `\ul0`), `\strike` /
-//!   `\strike0` → `strong` / `em` / `underline` / `strike` boolean run marks.
-//! - `\cfN` → a `color` mark valued with the `#rrggbb` of color-table entry `N`
-//!   (index 0 is the reserved "auto" entry and clears the color).
-//! - `\fsN` → a `fontSize` mark in **points** (`N` is half-points, so `N / 2`).
-//! - `\bullet` / `\b7` list bullet glyphs, and `\pntext` list-marker groups, are
-//!   best-effort: a paragraph carrying a bullet becomes a `list_item` block.
-//! - `\fonttbl`, `\stylesheet`, `\info`, `\*\…` and other non-content
-//!   destinations are skipped wholesale (their text is not document body).
-//! - `\colortbl` is parsed (not skipped) to build the color lookup.
-//! - Escapes `\\ \{ \}`, `\'XX` hex bytes, and `\uN` Unicode → literal text.
-//!
-//! RTF has **no semantic headings**, so every body paragraph maps to a
-//! `paragraph` block (a bulleted one to `list_item`) — heading reconstruction
-//! would require style-table heuristics that are out of scope for a best-effort
-//! importer. `export` is intentionally `Unsupported`: RTF *export* lives in the
-//! editor via the `qdoc-rtf` crate (it renders from a materialized snapshot, which
-//! a `FormatProvider` does not get), so there is exactly one RTF writer.
-
+//! RTF has no semantic headings, so every paragraph maps to `paragraph` (or
+//! `list_item` if bulleted). `export` is `Unsupported`: RTF export lives in
+//! `qdoc-rtf` (needs a materialized snapshot a `FormatProvider` doesn't get).
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
 
@@ -46,7 +25,6 @@ impl FormatProvider for RtfCodec {
     }
 
     fn detect(&self, head: &[u8]) -> Confidence {
-        // The RTF signature is a leading `{\rtf` (optionally after a BOM/whitespace).
         let s = head.iter().take_while(|b| b.is_ascii()).cloned().collect::<Vec<u8>>();
         let trimmed = s.iter().skip_while(|b| b.is_ascii_whitespace()).cloned().collect::<Vec<u8>>();
         if trimmed.starts_with(b"{\\rtf") {
@@ -57,50 +35,37 @@ impl FormatProvider for RtfCodec {
     }
 
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
-        // RTF is ASCII-with-escapes; non-ASCII bytes only appear inside `\'XX`
-        // hex escapes or `\uN` units, both of which we decode ourselves. Treat the
-        // input as Latin-1-ish: map each byte to a char so the tokenizer indexes
-        // by char == byte for the control-word/brace machinery, and raw high bytes
-        // (rare; most encoders escape them) degrade to their code point.
+        // RTF is ASCII-with-escapes; non-ASCII only appears inside `\'XX`/`\uN`, which
+        // we decode ourselves — map each byte to a char (Latin-1-ish) so char index == byte index.
         let src: String = bytes.iter().map(|&b| b as char).collect();
         import_rtf(&src, doc);
         Ok(())
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Export deliberately lives in the editor via `qdoc_rtf::render_rtf`, which
-        // renders from a materialized `DocSnapshot`. A `FormatProvider::export`
-        // only gets a `DocRef`; rather than duplicate the writer here we keep a
-        // single source of truth and surface a clear error if someone routes RTF
-        // export through the registry.
+        // Reusing `qdoc-rtf`'s writer here would need `qdoc` to depend on it — a cycle.
         Err(CodecError::Unsupported(
             "RTF export is provided by the `qdoc-rtf` crate (editor), not the qdoc codec".to_string(),
         ))
     }
 }
 
-// ---- tokenizer --------------------------------------------------------------
 
-/// One lexical unit of an RTF stream.
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     GroupOpen,
     GroupClose,
-    /// A control word `\word` with an optional signed numeric parameter.
     Control(String, Option<i32>),
-    /// A control symbol: a single non-alpha char after `\` (`\\`, `\{`, `\}`,
-    /// `\*`, `\~`, `\-`, etc.). `\'XX` and `\uN` are lexed as their own tokens.
+    /// A control symbol: a single non-alpha char after `\` (`\\ \{ \}`, `\*`, `\~`, `\-`, …); `\'XX`/`\uN` lex as their own tokens.
     Symbol(char),
     /// A `\'XX` hex byte escape → the decoded byte value.
     HexByte(u8),
     /// A `\uN` Unicode escape → the signed 16-bit code unit `N`.
     Unicode(i32),
-    /// A run of literal text.
     Text(String),
 }
 
-/// Tokenize the RTF source. Operates over chars (== bytes after the import-side
-/// byte→char map), so indexing is straightforward.
+/// Tokenizes the RTF source over chars (== bytes after the import-side byte→char map).
 fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<char> = src.chars().collect();
     let n = chars.len();
@@ -129,7 +94,6 @@ fn tokenize(src: &str) -> Vec<Token> {
                 out.push(Token::GroupClose);
                 i += 1;
             }
-            // CR/LF inside the RTF stream are insignificant (not document text).
             '\r' | '\n' => {
                 i += 1;
             }
@@ -141,7 +105,6 @@ fn tokenize(src: &str) -> Vec<Token> {
                 }
                 let d = chars[i];
                 if d.is_ascii_alphabetic() {
-                    // Control word: letters, then an optional signed integer.
                     let mut word = String::new();
                     while i < n && chars[i].is_ascii_alphabetic() {
                         word.push(chars[i]);
@@ -160,26 +123,20 @@ fn tokenize(src: &str) -> Vec<Token> {
                         }
                         param = num.parse::<i32>().ok();
                     }
-                    // A single trailing space is the control-word delimiter and is
-                    // consumed (not literal text).
+                    // A single trailing space is the control-word delimiter and is consumed.
                     if i < n && chars[i] == ' ' {
                         i += 1;
                     }
-                    // `\u` Unicode escape: the parameter is the code unit; an RTF
-                    // `\ucN` count governs how many following fallback chars to
-                    // skip (default 1). We skip exactly one byte/char of fallback.
+                    // `\u`: the parameter is the code unit; RTF's `\ucN` governs how many fallback chars follow (default 1) — we always skip exactly one.
                     if word == "u" {
                         if let Some(cu) = param {
                             out.push(Token::Unicode(cu));
-                            // Skip one fallback char (the `?` `qdoc-rtf` emits, or a
-                            // literal substitute). A control word counts as one.
                             i = skip_one_fallback(&chars, i, n);
                         }
                     } else {
                         out.push(Token::Control(word, param));
                     }
                 } else if d == '\'' {
-                    // `\'XX` — two hex digits → one byte.
                     i += 1;
                     let mut hex = String::new();
                     while i < n && hex.len() < 2 && chars[i].is_ascii_hexdigit() {
@@ -190,9 +147,7 @@ fn tokenize(src: &str) -> Vec<Token> {
                         out.push(Token::HexByte(byte));
                     }
                 } else {
-                    // Control symbol: the single char is the symbol. `\\ \{ \}`
-                    // are literal specials; others (`\*`, `\~`, `\-`, …) carry
-                    // meaning the parser interprets.
+                    // The single char is the symbol; `\\ \{ \}` are literal specials, others (`\*`, `\~`, `\-`, …) carry meaning the parser interprets.
                     out.push(Token::Symbol(d));
                     i += 1;
                 }
@@ -207,16 +162,13 @@ fn tokenize(src: &str) -> Vec<Token> {
     out
 }
 
-/// Skip exactly one Unicode-fallback unit after a `\uN` escape: either a single
-/// literal char, or a whole `\'XX` / control-word substitute. Returns the new
-/// index. (RTF's `\ucN` defaults to 1, which is what `qdoc-rtf` and most encoders
-/// emit; we don't track a custom `\uc`.)
+/// Skips one Unicode-fallback unit after `\uN`: a literal char, or a whole `\'XX`/
+/// control-word substitute. Assumes RTF's default `\ucN 1`; a custom `\uc` isn't tracked.
 fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
     if i >= n {
         return i;
     }
     if chars[i] == '\\' {
-        // A `\'XX` or `\word` fallback counts as one unit.
         i += 1;
         if i < n && chars[i] == '\'' {
             i += 1;
@@ -236,11 +188,8 @@ fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
     i
 }
 
-// ---- color table ------------------------------------------------------------
 
-/// Parse a `{\colortbl;\redR\greenG\blueB; …}` group's tokens (after the leading
-/// `\colortbl`) into a 1-based list of `#rrggbb` strings. Index 0 (the leading
-/// empty `;`) is the reserved "auto" entry and maps to `None`.
+/// Parses a `{\colortbl;\redR\greenG\blueB; …}` group into a 1-based list of `#rrggbb` strings; index 0 is the reserved auto entry.
 fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = Vec::new();
     let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
@@ -256,7 +205,6 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
                     _ => {}
                 }
             }
-            // A `;` terminates one color-table entry.
             Token::Text(s) => {
                 for ch in s.chars() {
                     if ch == ';' {
@@ -278,7 +226,6 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     out
 }
 
-// ---- import state machine ---------------------------------------------------
 
 /// Per-scope character formatting, pushed/popped on `{`/`}`.
 #[derive(Clone, Default)]
@@ -293,8 +240,7 @@ struct CharState {
     fs_halfpt: Option<i32>,
 }
 
-/// A run mark gathered during parsing, applied after the block's text is
-/// complete (so `ExpandMark::After` doesn't stretch it over trailing text).
+/// A run mark gathered during parsing, applied after the block's text is complete (so `ExpandMark::After` doesn't stretch it over trailing text).
 struct PendingMark {
     block: String,
     start: usize,
@@ -311,12 +257,10 @@ enum MarkVal {
 fn import_rtf(src: &str, doc: &mut DocMut) {
     let tokens = tokenize(src);
 
-    // Brace-depth scoped char-format stack. Index 0 is the document scope.
     let mut stack: Vec<CharState> = vec![CharState::default()];
     let mut colors: Vec<Option<String>> = Vec::new();
 
-    // Current block being filled, its char length, and whether the *next* text
-    // should open a fresh paragraph (true initially and after every `\par`).
+    // Current block being filled, its char length, and whether the *next* text should open a fresh paragraph (true initially and after every `\par`).
     let mut prev_block: Option<String> = None;
     let mut cur_block: Option<String> = None;
     let mut cur_len: usize = 0;
@@ -326,10 +270,8 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
 
     let mut pending_marks: Vec<PendingMark> = Vec::new();
 
-    // Skip-destination depth: when we enter an ignorable destination (`\*`, or a
-    // known non-content one like `\fonttbl`/`\info`/`\stylesheet`), we drop all
-    // tokens until its closing brace. Tracked as the brace depth at which the
-    // skip began (`None` = not skipping).
+    // Skip-destination depth: entering an ignorable destination (`\*`, or a known
+    // non-content one) drops tokens until its closing brace (`None` = not skipping).
     let mut skip_depth: Option<usize> = None;
     let mut depth: usize = 0;
 
@@ -337,11 +279,9 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
     while idx < tokens.len() {
         let tok = &tokens[idx];
 
-        // ---- color table: intercept the whole `\colortbl … ;}` group --------
         if skip_depth.is_none() {
             if let Token::Control(w, _) = tok {
                 if w == "colortbl" {
-                    // Consume tokens until this group's closing brace.
                     let mut j = idx + 1;
                     let mut inner_depth = 1; // we are inside the colortbl's group
                     let start = j;
@@ -357,7 +297,6 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                         j += 1;
                     }
                     colors = parse_color_table(&tokens[start..j]);
-                    // Leave the closing brace for the normal handler to pop depth.
                     idx = j;
                     continue;
                 }
@@ -387,13 +326,10 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     continue;
                 }
                 match sym {
-                    // `\*` marks the *current* group as an ignorable destination.
                     '*' => skip_depth = Some(depth),
-                    // Literal specials.
                     '\\' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\\'),
                     '{' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '{'),
                     '}' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '}'),
-                    // Non-breaking space / optional hyphen → their literal glyphs.
                     '~' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\u{a0}'),
                     '_' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\u{2011}'),
                     '-' => {} // optional hyphen: no visible glyph
@@ -426,10 +362,8 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     idx += 1;
                     continue;
                 }
-                // Decode the byte as Latin-1 (the common ANSI fallback). Most
-                // documents using a different code page still escape ASCII as
-                // ASCII, so this is correct for the printable range and a
-                // reasonable best-effort above it.
+                // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
+                // different code page still escape ASCII as ASCII, so this is correct in the printable range.
                 push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, *b as char);
             }
             Token::Unicode(cu) => {
@@ -437,8 +371,6 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     idx += 1;
                     continue;
                 }
-                // A signed 16-bit code unit. Reinterpret negatives as their
-                // unsigned u16, then decode (lone surrogates degrade to U+FFFD).
                 let u = (*cu as i64 & 0xffff) as u16;
                 let ch = char::from_u32(u as u32).unwrap_or('\u{fffd}');
                 push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, ch);
@@ -465,7 +397,6 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
         idx += 1;
     }
 
-    // Apply gathered run marks now that all text is in place.
     for pm in pending_marks {
         if pm.end <= pm.start {
             continue;
@@ -504,8 +435,7 @@ fn open_block(
     *cur_len = 0;
 }
 
-/// Ensure a current block exists (opening one if a paragraph break is pending),
-/// then return its id.
+/// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
 #[allow(clippy::too_many_arguments)]
 fn ensure_block(
     doc: &mut DocMut,
@@ -523,7 +453,6 @@ fn ensure_block(
     cur.clone().expect("block was just opened")
 }
 
-/// Push a single literal char into the current block.
 #[allow(clippy::too_many_arguments)]
 fn push_char(
     doc: &mut DocMut,
@@ -540,8 +469,7 @@ fn push_char(
     *cur_len += 1;
 }
 
-/// Push a run of literal text under the active char formatting, gathering the
-/// run marks it implies.
+/// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
 #[allow(clippy::too_many_arguments)]
 fn push_text(
     s: &str,
@@ -565,7 +493,6 @@ fn push_text(
     let end = start + len;
     *cur_len = end;
 
-    // Gather the marks the active char state implies over [start, end).
     if cs.bold {
         pending.push(PendingMark { block: id.clone(), start, end, name: "strong", value: None });
     }
@@ -609,21 +536,17 @@ fn handle_control(
     let cs = stack.last_mut().expect("scope stack is never empty");
 
     match word {
-        // ---- paragraph breaks --------------------------------------------
         "par" => {
-            // Close the current paragraph; the next text opens a fresh one.
             *need_new_block = true;
             *cur = None;
         }
         "pard" => {
-            // Reset paragraph-level state. We also treat it as a soft break so a
-            // `\pard` between paragraphs starts a new block (qdoc-rtf emits one
-            // `\pard … \par` per paragraph). Does not reset *character* state.
+            // Reset paragraph-level state; also a soft break so `\pard` between paragraphs
+            // starts a new block (`qdoc-rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
             *need_new_block = true;
             *cur = None;
             *pending_bullet = false;
         }
-        // A line break inside a paragraph → a space (we don't model hard breaks).
         "line" => {
             let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
             doc.splice_text(&id, *cur_len, 0, " ");
@@ -634,7 +557,6 @@ fn handle_control(
             doc.splice_text(&id, *cur_len, 0, "\t");
             *cur_len += 1;
         }
-        // ---- character toggles -------------------------------------------
         "b" => cs.bold = on,
         "i" => cs.italic = on,
         "ul" => cs.underline = on,
@@ -642,25 +564,19 @@ fn handle_control(
         "strike" => cs.strike = on,
         "cf" => cs.color = param.unwrap_or(0).max(0) as usize,
         "fs" => cs.fs_halfpt = param,
-        // Reset all character formatting (`\plain`).
         "plain" => *cs = CharState::default(),
-        // ---- list markers ------------------------------------------------
-        // A literal bullet glyph (qdoc-rtf emits `\bullet\tab `) marks the
-        // paragraph as a list item. `\pntext`/`\pn` groups are list-marker
-        // destinations we skip but still flag the bullet.
+        // A literal bullet glyph (`qdoc-rtf` emits `\bullet\tab `) marks the paragraph as a
+        // list item; `\pntext`/`\pn` groups are list-marker destinations we skip but still flag it.
         "bullet" => *pending_bullet = true,
         "pntext" | "pn" | "listtext" => {
             *pending_bullet = true;
-            // The marker content itself is not body text → skip the group.
             *skip_depth = Some(depth);
         }
-        // ---- non-content destinations to skip wholesale ------------------
         "fonttbl" | "stylesheet" | "info" | "colortbl" | "pict" | "header" | "footer"
         | "footnote" | "field" | "object" | "themedata" | "datastore" | "generator" => {
             *skip_depth = Some(depth);
         }
-        // Everything else (alignment, indents, font selection, doc-level flags,
-        // etc.) is intentionally ignored — it doesn't map onto a modeled mark.
+        // Everything else (alignment, indents, font selection, doc-level flags, etc.) is intentionally ignored — it doesn't map onto a modeled mark.
         _ => {}
     }
 }
@@ -701,7 +617,6 @@ mod tests {
 
     #[test]
     fn bold_run_yields_strong_mark() {
-        // `\b … \b0` over a middle run.
         let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
         let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
         assert_eq!(p.text, "aboldc");
@@ -712,7 +627,6 @@ mod tests {
 
     #[test]
     fn bold_toggle_without_group() {
-        // `\b text \b0` — toggle on, then explicitly off, same scope.
         let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
         let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
         assert_eq!(p.text, "xony");
@@ -754,8 +668,7 @@ mod tests {
 
     #[test]
     fn escapes_and_unicode_decode_to_text() {
-        // `\\ \{ \}` literals, a `\'XX` hex byte (é = 0xE9 in Latin-1), and a
-        // `\uN?` Unicode escape (✓ = U+2713 = 10003).
+        // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
         let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
         let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
         assert_eq!(p.text, "a\\b{c} é ✓z");
@@ -785,21 +698,16 @@ mod tests {
         assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
     }
 
-    /// Round-trip sanity over a hand-written RTF snapshot shaped exactly like
-    /// `qdoc-rtf`'s emit side (`{\pard\fs22 …{\b run}…\par}`): the text and the
-    /// bold run must both survive import. (The full `qdoc-rtf`-driven round-trip
-    /// lives in the `editor` crate, which depends on both `qdoc-rtf` and `qdoc` —
-    /// `qdoc` cannot depend on `qdoc-rtf` without a dependency cycle.)
+    /// A hand-written RTF snapshot shaped like `qdoc-rtf`'s emit side; the full
+    /// round-trip lives in `editor` (avoiding the `qdoc`↔`qdoc-rtf` dependency cycle).
     #[test]
     fn roundtrip_docrtf_shaped_rtf_preserves_text_and_bold() {
-        // The exact shape `qdoc_rtf::render_rtf` produces for "Hello **world** today".
         let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
 {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
         let snap = import(rtf);
         let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("a paragraph survives");
         assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
         let strong = p.marks.iter().find(|m| m.name == "strong").expect("bold run survives");
-        // "world" sits at chars 6..11.
         assert_eq!(&p.text[strong.start..strong.end], "world", "bold covers the right run: {:?}", p.marks);
     }
 }

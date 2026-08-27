@@ -1,11 +1,8 @@
-//! HDR display-capability probe.
-//!
-//! On a real display driver (Vulkan on a physical GPU) the probe could
-//! report HDR-capable; on the CI llvmpipe path it must not — that's the
-//! false positive under test. `preferred_hdr_swapchain_format` cross-
-//! checks that the SDR default yields no HDR swapchain format, so a
-//! caller plugging it into `SurfaceConfiguration::format` degrades to
-//! `Rgba8UnormSrgb`.
+//! HDR display-capability probe. On a real driver (Vulkan on a physical
+//! GPU) the probe could report HDR-capable; on the CI llvmpipe path it
+//! must not — that false positive is the subject.
+//! `preferred_hdr_swapchain_format` cross-checks that the SDR default
+//! yields no HDR format, so a caller degrades to `Rgba8UnormSrgb`.
 
 use shell::shell::hdr_display::{DisplayCapabilities, preferred_hdr_swapchain_format};
 
@@ -21,9 +18,8 @@ fn sdr_default_disallows_pq_output() {
     assert!(preferred_hdr_swapchain_format(&caps).is_none());
 }
 
-/// Real-adapter probe. Depends on llvmpipe / a real GPU being present.
-/// On systems without either, `wgpu::Adapter` creation returns None
-/// and the test self-skips.
+/// Real-adapter probe: self-skips when `wgpu::Adapter` creation returns
+/// None (no llvmpipe and no real GPU).
 #[test]
 fn adapter_probe_returns_sensible_capabilities_on_this_host() {
     use pollster::FutureExt;
@@ -53,9 +49,8 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
     if matches!(info.backend, wgpu::Backend::Vulkan)
         && !matches!(info.device_type, wgpu::DeviceType::Cpu)
     {
-        // A real Vulkan GPU could plausibly claim HDR — either outcome
-        // is fine here; just verify the format-preference path is
-        // self-consistent.
+        // A real Vulkan GPU could plausibly claim HDR — either outcome is fine;
+        // this only checks the format-preference path is self-consistent.
         let fmt = preferred_hdr_swapchain_format(&DisplayCapabilities::hdr10_baseline());
         assert!(
             fmt.is_some(),

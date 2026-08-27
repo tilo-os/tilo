@@ -36,8 +36,7 @@ impl SheetProvider for OdsCodec {
         if let Some(meta) = pkg.get("meta.xml") {
             import_meta(meta, wb);
         }
-        // Preserve styles + other unmodeled parts so table:style-name refs resolve
-        // and the package stays valid; content.xml is regenerated on export.
+        // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for name in pkg.names() {
             if is_preserved_part(name) {
                 if let Some(b) = pkg.get(name) {
@@ -63,11 +62,8 @@ impl SheetProvider for OdsCodec {
     }
 }
 
-// ---- content.xml parsing ---------------------------------------------------
 
-/// Parse the spreadsheet body: `table:table` (sheets) → `table:table-row` →
-/// `table:table-cell` (positional cells, honouring column/row repeats and
-/// preserving `table:formula`).
+/// Parses the spreadsheet body: `table:table` → `table:table-row` → `table:table-cell` (positional, honouring column/row repeats and formulas).
 fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -78,7 +74,6 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
     let mut row_repeat: u32 = 1;
     let mut col: u32 = 0; // column cursor within the current row
 
-    // Current-cell scratch.
     let mut cur = OdsCell::default();
     let mut in_text_p = false;
 
@@ -177,10 +172,8 @@ fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> (OdsCell, u32
     (cell, repeat)
 }
 
-/// Resolve a parsed ODS cell into a [`CellInput`] and write it (skipping cells
-/// with no value, formula, or style). Repeated *populated* cells are placed once
-/// at their first column — the common repeat is a run of empty cells, which carry
-/// nothing to store.
+/// Resolves a parsed ODS cell into a [`CellInput`] and writes it (skipping cells with
+/// no value/formula/style); a repeated *populated* cell is placed once at its first column.
 fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
     let (cell_type, value) = match cell.value_type.as_str() {
         "float" | "percentage" | "currency" => (CellType::Number, cell.office_value.clone().unwrap_or_else(|| cell.text.clone())),
@@ -213,7 +206,6 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
     wb.set_cell(sheet_id, &reference, CellInput { value, cell_type, formula: cell.formula.clone(), style: cell.style.clone() });
 }
 
-// ---- meta.xml --------------------------------------------------------------
 
 fn import_meta(xml: &[u8], wb: &mut Workbook) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
@@ -252,7 +244,6 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
     }
 }
 
-// ---- export: content.xml ---------------------------------------------------
 
 const CONTENT_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0""#;
 
@@ -278,7 +269,6 @@ fn table_xml(sheet: &SheetView) -> String {
     let mut rows_xml = String::new();
     let mut prev_row = 0u32;
     for (&row, cells) in &by_row {
-        // Collapse the empty rows between the previous populated row and this one.
         if row > prev_row + 1 {
             let gap = row - prev_row - 1;
             rows_xml.push_str(&format!(r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#));
@@ -328,7 +318,6 @@ fn cell_xml(cell: &CellView) -> String {
     format!(r#"<table:table-cell{value_attrs}{formula_attr}{style_attr}>{body}</table:table-cell>"#)
 }
 
-// ---- export: meta.xml + manifest.xml ---------------------------------------
 
 fn meta_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
@@ -362,9 +351,7 @@ fn manifest_xml(has_styles: bool) -> String {
     )
 }
 
-/// Whether an ODS part is preserved verbatim (kept so `table:style-name` refs
-/// resolve and the package stays valid). The regenerated parts — `mimetype`,
-/// `content.xml`, `meta.xml`, the manifest — are not preserved.
+/// Whether an ODS part is preserved verbatim; the regenerated parts (`mimetype`, `content.xml`, `meta.xml`, the manifest) are not.
 fn is_preserved_part(name: &str) -> bool {
     !(name == "mimetype" || name == "content.xml" || name == "meta.xml" || name == "META-INF/manifest.xml" || name.ends_with('/'))
 }

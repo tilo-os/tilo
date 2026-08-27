@@ -1,27 +1,17 @@
 //! Remote-cursor bounds helper and overlay widget.
 //!
-//! There is deliberately no simulated feed here. A fabricated peer is
+//! There is deliberately no simulated feed here: a fabricated peer is
 //! indistinguishable on screen from a real one, which makes "is
 //! collaboration working?" unanswerable by looking. Peers reach this
 //! overlay from `shell::shell::peer_presence` or not at all.
 //!
-//! [`RemoteCursorOverlay`] is a [`Widget`] that draws a small caret
-//! triangle + label chip for each remote cursor currently over the active
-//! tile. Cursors outside the tile's bounds are filtered out via
-//! `cursor_in_bounds`, and the scene is clipped to the tile rect so the
-//! overlay can never leak pixels into surrounding chrome. Per-cursor colors
-//! come from `RemoteCursor::color` (RGBA f32); label text + chip background
-//! use the theme's neutral surfaces so overlay text stays legible regardless
-//! of peer color.
-//!
-//! The bounds are `[x, y, w, h]` in scene-space — the same coordinate space
-//! that `PresenceCtx::remote_cursors[_].position` uses, so callers can pass
-//! the active tile's layout rect directly.
+//! [`RemoteCursorOverlay`] draws a caret triangle + label chip for each
+//! remote cursor over the active tile, clipped to the tile rect so it can
+//! never leak pixels into surrounding chrome. Bounds are `[x, y, w, h]` in
+//! scene-space, matching `PresenceCtx::remote_cursors[_].position`.
 
-/// Returns true when `pos` lies inside the rectangle `bounds = [x, y, w, h]`.
-///
-/// The check is half-open on the right and bottom edges, matching the
-/// convention used by taffy-derived `Rect`s elsewhere in the shell.
+/// Returns true when `pos` lies inside `bounds = [x, y, w, h]`, half-open
+/// on the right and bottom edges, matching taffy-derived `Rect`s elsewhere.
 pub fn cursor_in_bounds(pos: [f32; 2], bounds: [f32; 4]) -> bool {
     let [x, y, w, h] = bounds;
     let [px, py] = pos;
@@ -30,16 +20,15 @@ pub fn cursor_in_bounds(pos: [f32; 2], bounds: [f32; 4]) -> bool {
 
 /// Overlay widget that draws remote peer cursors on top of the active tile.
 ///
-/// The active-tile bounds default to a zero rect; the shell sets them on each
-/// frame before delegating draw. Cursors whose scene-space position falls
-/// outside those bounds are filtered before draw and the scene is additionally
-/// clipped to the same rect, so the overlay can never paint over surrounding
-/// chrome even if a cursor position drifts slightly out of bounds mid-frame.
+/// Bounds default to zero; the shell sets them each frame before draw.
+/// Out-of-bounds cursors are filtered before draw and the scene is also
+/// clipped to the rect, so a cursor drifting mid-frame still can't paint
+/// over surrounding chrome.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteCursorOverlay {
     active_tile_bounds: [f32; 4],
-    /// Layout rect assigned by taffy. Mirrors the active-tile bounds in
-    /// steady state but is the authoritative rect for `Widget::get_rect`.
+    /// Layout rect assigned by taffy — the authoritative rect for
+    /// `Widget::get_rect`.
     rect: vello::kurbo::Rect,
 }
 
@@ -56,10 +45,8 @@ impl RemoteCursorOverlay {
         self.active_tile_bounds = bounds;
     }
 
-    /// Collects the remote cursors that should render on top of the active
-    /// tile this frame. Cursors whose position falls outside the active tile
-    /// rect are filtered out via `cursor_in_bounds`; the returned slice
-    /// preserves the input order so peer-ordering is stable across frames.
+    /// Remote cursors that should render on top of the active tile this
+    /// frame, in stable input order.
     pub fn cursors_to_draw<'a>(
         &self,
         presence: &'a ui::presence::PresenceCtx,
@@ -68,20 +55,15 @@ impl RemoteCursorOverlay {
             .remote_cursors
             .iter()
             // A pointer the compositor overlay already paints is not
-            // painted again by a widget inside the tree. This overlay
-            // is not currently mounted, but it reads the same store the
-            // duplicate came out of, so it carries the same rule — see
-            // `ui::presence::PointerOwner`.
+            // painted again here — see `ui::presence::PointerOwner`.
             .filter(|c| c.painted_by_window())
             .filter(|c| cursor_in_bounds(c.position, self.active_tile_bounds))
             .collect()
     }
 }
 
-/// Caret triangle half-width (in scene-space logical pixels). The caret
-/// points down-and-right from the cursor position so the apex sits on the
-/// actual pointer coordinate, matching the shared "peer caret" helper the
-/// spec §Presence calls for.
+/// Caret triangle half-width (scene-space logical pixels); points
+/// down-and-right so the apex sits on the actual pointer coordinate.
 const CARET_SIZE: f64 = 10.0;
 /// Gap between the caret apex and the label chip's top-left corner.
 const CHIP_OFFSET: f64 = 2.0;
@@ -104,8 +86,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         _theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
-        // The overlay sits on top of the active tile; in the shell tree it's
-        // stacked by a parent `Stack`, so it fills the available box and
+        // Stacked by a parent `Stack`, so it fills the available box and
         // relies on `active_tile_bounds` (set externally) for its clip rect.
         let node = taffy
             .new_leaf(taffy::Style {
@@ -149,16 +130,13 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         }
 
         let [bx, by, bw, bh] = self.active_tile_bounds;
-        // Skip when the overlay hasn't been positioned yet — drawing into a
-        // zero-area clip is wasteful and vello rejects empty layers.
+        // vello rejects an empty layer, and the overlay may not be positioned yet.
         if bw <= 0.0 || bh <= 0.0 {
             return;
         }
         let clip_rect =
             vello::kurbo::Rect::new(bx as f64, by as f64, (bx + bw) as f64, (by + bh) as f64);
 
-        // Clip to the active-tile rect so out-of-bounds cursors (e.g. mid-
-        // frame drift between filter and draw) never paint over chrome.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -178,7 +156,6 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             let apex = vello::kurbo::Point::new(px as f64, py as f64);
             let color = peer_color_to_peniko(cursor.color);
 
-            // Caret triangle: apex at the cursor position, opening down-right.
             let mut caret = vello::kurbo::BezPath::new();
             caret.move_to(apex);
             caret.line_to((apex.x + CARET_SIZE, apex.y + CARET_SIZE * 0.4));
@@ -186,9 +163,6 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             caret.close_path();
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
-            // Label chip: a rounded rect sized to the peer's name, tinted
-            // with the raised surface so it remains legible over any tile
-            // background, bordered with the peer color.
             let (text_w, _text_h) = text_renderer.measure(&cursor.label, label_size, None);
             let chip_w = text_w as f64 + CHIP_PADDING_X * 2.0;
             let chip_h = label_size as f64 + CHIP_PADDING_Y * 2.0;
@@ -211,8 +185,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
                 None,
                 &chip,
             );
-            // Thin peer-colored underline so the chip's owner is obvious
-            // even when two peers pick similar surface-tinted chips.
+            // Peer-colored underline so the chip's owner is obvious.
             let underline = vello::kurbo::Rect::new(
                 chip_rect.x0,
                 chip_rect.y1 - 2.0,
@@ -254,8 +227,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         _node_id: taffy::NodeId,
         _taffy: &taffy::TaffyTree<()>,
     ) {
-        // The overlay is purely visual: remote cursor motion is fed in via
-        // `PresenceCtx`, not winit events.
+        // Purely visual: cursor motion is fed via `PresenceCtx`, not winit events.
     }
 
     fn name(&self) -> &str {

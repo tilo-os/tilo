@@ -3,18 +3,10 @@
 //! The shell's global palette fans out to any number of [`SearchProvider`]s,
 //! each owning a domain (shell actions, notes, filesystem, an app's own
 //! resources). Providers answer a single [`query`] call per keystroke — no
-//! re-query per resource kind, so a provider hitting a network backend gets
-//! exactly one round-trip per input.
-//!
-//! [`SearchRegistry::registered_kinds`] feeds the palette's filter chip
-//! strip; a new provider exposing a new [`ResourceKind`] gets a chip free.
-//! Result opening runs through [`SearchResult::on_open`], executed after
-//! every chrome borrow is dropped so it can freely mutate state.
-//!
-//! [`SearchScope::ActiveApp`] narrows the fanout to whichever provider owns
-//! the focused tab ([`SearchProvider::owns_tab`]); `Workspace` and `All` fan
-//! out to every provider, differing only in whether results are treated as
-//! workspace-local.
+//! re-query per resource kind, so a network-backed provider gets exactly one
+//! round-trip per input. [`SearchScope::ActiveApp`] narrows the fanout to
+//! whichever provider owns the focused tab ([`SearchProvider::owns_tab`]);
+//! `Workspace` and `All` fan out to every provider.
 
 pub mod action_api;
 pub mod files_index;
@@ -30,14 +22,9 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use action_api::{ActionArgs, ActionError, ActionParam};
 
-/// One well-known category a result can belong to. This is the domain
-/// vocabulary the chip strip and grouping use — providers pick from it
-/// (or, via [`ResourceKind::Custom`], mint a new one).
-///
-/// Ordering here also drives the default group order in the palette:
-/// actions on top, then notes, then files/folders, then app-specific
-/// kinds. Callers that want a different sort override
-/// [`SearchResult::score`].
+/// One well-known category a result can belong to — the domain vocabulary
+/// the chip strip and grouping use. Providers pick from it or, via
+/// [`ResourceKind::Custom`], mint a new one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
@@ -45,20 +32,13 @@ pub enum ResourceKind {
     /// An installed qOS application. Enter launches it, sandboxed, into
     /// the workspace you are looking at.
     Application,
-    /// An application qOS did not package — a Flatpak or a
-    /// distribution binary, found by reading its `.desktop` entry.
-    ///
-    /// A **separate kind** rather than more rows under `Application`: a
-    /// qOS app runs sandboxed, in a room, with one writable directory the
-    /// launcher chose; a host app runs unconfined, in no room. Its own
-    /// chip and group header shows that at a glance instead of hiding it
-    /// in a subtitle.
+    /// An app qOS did not package (Flatpak, distro binary). Its own kind
+    /// because a qOS app runs sandboxed in a room; a host app runs unconfined.
     HostApplication,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
-    /// A record an app made, collected or imported — a book, a playlist, a
-    /// document. Enter brings it into the current room (a reference, not a
-    /// copy) and opens it if it is something openable.
+    /// A record an app made, collected or imported. Enter brings it into
+    /// the current room (a reference, not a copy) and opens it if openable.
     Record,
     File,
     Folder,
@@ -67,8 +47,7 @@ pub enum ResourceKind {
     Creator,
     Video,
     Playlist,
-    /// Escape hatch for provider-specific kinds. The string is shown
-    /// verbatim in the chip strip.
+    /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
     Custom(String),
 }
 
@@ -92,15 +71,9 @@ impl ResourceKind {
     }
 
     /// Stable sort key pinning the well-known kinds to a fixed palette
-    /// order (Actions → Applications → Host Apps → Notes → Records →
-    /// Files → Folders → Creator → Video → Playlist → Custom(alphabetical)).
-    ///
-    /// Applications rank above content kinds because Enter activates the
-    /// top row — a typed app name must launch the app, not surface a
-    /// source file whose path happens to contain that word. Host apps
-    /// rank just below qOS applications so the confined one wins when
-    /// both are plausible. Records sit above files because the thing the
-    /// user worked on should outrank a path that merely mentions it.
+    /// order. Applications rank above content kinds because Enter
+    /// activates the top row — a typed app name must launch the app, not
+    /// surface a source file that merely contains the word.
     fn sort_key(&self) -> (u8, String) {
         match self {
             ResourceKind::Action => (0, String::new()),
@@ -118,54 +91,37 @@ impl ResourceKind {
     }
 }
 
-/// Fired by the shell after the user picks a result. Gets the live
-/// Automerge doc, its root, and the chrome handle to mutate persisted
-/// state directly. `Rc<dyn OpenFn>` (not `Arc`) because the shell UI is
-/// single-threaded — providers with heavy backends spawn worker threads
-/// inside `query` instead.
-///
-/// Also receives the [`ActionArgs`] bound against [`SearchResult::params`];
-/// a nullary row just ignores it, so a parameterised action stays an
-/// ordinary row rather than needing a second dispatch path.
-///
-/// Returns a [`Result`] because an action can be addressed correctly and
-/// still have nothing to act on — "it ran" and "there was nothing here"
-/// are different answers a headless caller has no other way to tell apart.
+/// Fired by the shell after the user picks a result, with the live
+/// Automerge doc, its root, and the chrome handle to mutate persisted state
+/// directly. Returns a [`Result`] because an action can be addressed
+/// correctly and still have nothing to act on — "it ran" and "there was
+/// nothing here" are different answers a headless caller must tell apart.
 pub type OpenFn =
     dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
 
-/// One row the palette will render.
-///
-/// `score` is provider-supplied and used for ranking within a kind
-/// group. Higher scores rank first. Providers should use a stable scale —
-/// prefix matches ~100, substring matches ~50, fuzzy subsequence ~10.
+/// One row the palette will render. `score` is provider-supplied, higher
+/// ranks first; a stable scale is expected — prefix matches ~100,
+/// substring matches ~50, fuzzy subsequence ~10.
 #[derive(Clone)]
 pub struct SearchResult {
     pub kind: ResourceKind,
     pub provider_id: String,
-    /// Stable identifier within the provider — used for de-dup so a
-    /// re-emission from the same provider replaces an older row rather
-    /// than doubling it.
+    /// Stable identifier within the provider, used for de-dup.
     pub id: String,
     pub title: String,
     /// Optional secondary line under the title — path, preview snippet,
     /// creator handle.
     pub subtitle: Option<String>,
     pub score: i32,
-    /// What an invocation must carry. Empty for the nullary majority,
-    /// which is why every existing provider builds a row without naming
-    /// it (see [`SearchResult::nullary`]).
+    /// What an invocation must carry; empty for the nullary majority (see
+    /// [`SearchResult::nullary`]).
     pub params: Vec<ActionParam>,
     pub on_open: Rc<OpenFn>,
 }
 
 impl SearchResult {
-    /// Build a row whose invocation takes no arguments.
-    ///
-    /// Most rows are this: opening a note, launching an app, toggling an
-    /// overlay. The constructor exists so those providers state what they
-    /// *are* — nullary — instead of repeating `params: Vec::new()` and
-    /// an ignored argument binding at every construction site.
+    /// Build a row whose invocation takes no arguments — most rows: opening
+    /// a note, launching an app, toggling an overlay.
     #[allow(clippy::too_many_arguments)]
     pub fn nullary(
         kind: ResourceKind,
@@ -191,15 +147,9 @@ impl SearchResult {
         }
     }
 
-    /// [`SearchResult::nullary`] for a row that can refuse.
-    ///
-    /// Taking no arguments and always succeeding are separate
-    /// properties, and rows that launch something have the first
-    /// without the second: the package can be missing, the sandbox can
-    /// decline, there can be no display to open onto. Those rows need
-    /// to say so, and a caller driving the palette over the control
-    /// socket has no other way to find out — it cannot see the
-    /// notification the on-screen user gets.
+    /// [`SearchResult::nullary`] for a row that can refuse — a launch can
+    /// still fail (missing package, declined sandbox, no display), and the
+    /// return value is how a control-socket caller learns that.
     #[allow(clippy::too_many_arguments)]
     pub fn nullary_fallible(
         kind: ResourceKind,
@@ -237,44 +187,31 @@ impl std::fmt::Debug for SearchResult {
     }
 }
 
-/// A provider that turns a query into results. Providers own the
-/// domain-specific matching logic — the shell doesn't do a second fuzzy
-/// pass on top, and a heavy backend (network, disk index) spawns its own
-/// worker(s) inside `query`. The trait doesn't require `Send + Sync`
-/// because the shell UI is single-threaded and Rc-based; the interior of
-/// a provider can still be `Send`.
+/// A provider that turns a query into results, owning its own
+/// domain-specific matching logic — a heavy backend (network, disk index)
+/// spawns its own worker(s) inside `query`.
 pub trait SearchProvider {
     /// Stable id, used to route results back for de-dup and to build the
     /// per-scope filter (`ActiveApp` looks up providers by this id).
     fn id(&self) -> &str;
-    /// Human-readable name used as the group header when results are
-    /// grouped by provider rather than by kind.
+    /// Group header when results are grouped by provider rather than kind.
     fn name(&self) -> &str;
-    /// The set of kinds this provider CAN return. Contributes chips to
-    /// the palette's filter strip. Providers may return a subset of this
-    /// list from `query` — e.g. an empty query returns nothing at all.
+    /// The set of kinds this provider CAN return; contributes chips to
+    /// the palette's filter strip.
     fn resource_kinds(&self) -> &[ResourceKind];
-    /// Run the search. `wanted` is the set of kinds the UI is currently
-    /// asking for (filter chips + scope). Providers that hit a remote
-    /// backend should dispatch ONE query and split the response into the
-    /// wanted kinds; providers with a local index can filter as they walk.
+    /// Run the search. `wanted` is the set of kinds currently asked for
+    /// (filter chips + scope); a remote-backed provider should dispatch
+    /// ONE query and split the response into the wanted kinds.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
-    /// The score this provider awards its strongest possible match -
-    /// the top of its own scale.
-    ///
-    /// Scores are only meaningful within one provider: the files
-    /// provider awards 120 for a leaf-name prefix while applications cap
-    /// at 100 for a display-name prefix, so comparing the raw numbers
-    /// across providers ranks a file called `Calculator.h` above the
-    /// Calculator app. [`SearchRegistry::query`] divides by this to get
-    /// a comparable strength. Override it if your scale isn't 0..=100.
+    /// Top of this provider's own score scale. Scores are only meaningful
+    /// within one provider — files award 120 for a leaf-name prefix while
+    /// applications cap at 100, so raw numbers would rank `Calculator.h`
+    /// above the Calculator app. [`SearchRegistry::query`] divides by this.
     fn max_score(&self) -> i32 {
         100
     }
     /// Does this provider own the tab at `tab_id`? Used by
-    /// [`SearchScope::ActiveApp`] to narrow the fanout. Default returns
-    /// `false` — providers that don't map to a tab (chrome actions,
-    /// files) leave it alone.
+    /// [`SearchScope::ActiveApp`] to narrow the fanout.
     fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
         false
     }
@@ -309,23 +246,19 @@ impl SearchRegistry {
         }
     }
 
-    /// Register a provider. Providers are queried in registration order;
-    /// results are re-sorted by score before display, so the order only
-    /// affects which provider's ID wins the de-dup tiebreak.
+    /// Results are re-sorted by score before display, so registration
+    /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
         self.providers.push(provider);
     }
 
-    /// Iterate over the registered providers. Read-only so callers
-    /// can't accidentally register mid-loop; used by the shell's
-    /// scope-narrow helper to look up which provider owns a tab.
+    /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
     pub fn providers_iter(&self) -> impl Iterator<Item = &dyn SearchProvider> {
         self.providers.iter().map(|p| p.as_ref())
     }
 
-    /// Union of every registered provider's [`ResourceKind`]s, ordered
-    /// by [`ResourceKind::sort_key`]. Fed to the palette's chip strip so
-    /// it renders one chip per kind.
+    /// Union of every registered provider's [`ResourceKind`]s, ordered by
+    /// [`ResourceKind::sort_key`] — one chip per kind in the palette.
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
         let mut out: Vec<ResourceKind> = Vec::new();
         for provider in &self.providers {
@@ -340,9 +273,7 @@ impl SearchRegistry {
     }
 
     /// Fan out `needle` to every provider whose id passes the scope
-    /// filter. `wanted_kinds` filters the returned results by kind — the
-    /// UI passes the union of active chip filters (or all registered
-    /// kinds when nothing is filtered). Empty `wanted_kinds` means "any
+    /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(
         &self,
@@ -382,10 +313,8 @@ impl SearchRegistry {
             };
             let top = provider.max_score().max(1);
             for r in provider.query(ctx) {
-                // A provider that outgrows its declared ceiling silently
-                // takes over the palette: strength is score/top, so a
-                // score above `top` exceeds 1.0 and outranks every other
-                // provider's perfect match.
+                // A score above `top` exceeds strength 1.0 and silently
+                // outranks every other provider's perfect match.
                 debug_assert!(
                     r.score <= top,
                     "provider {:?} returned {} but declares max_score() = {top}; \
@@ -397,10 +326,9 @@ impl SearchRegistry {
                 merged.push((r, strength));
             }
         }
-        // Order groups by how well their best member matched, then by the
-        // fixed kind order: Enter activates the top row, so typing an
-        // app's name must not open a chrome action that merely mentions
-        // the word in its subtitle.
+        // Order groups by how well their best member matched, then the
+        // fixed kind order: Enter activates the top row, so an app's name
+        // must not open an action that merely mentions the word.
         let mut best: HashMap<(u8, String), f32> = HashMap::new();
         for (r, strength) in &merged {
             let slot = best.entry(r.kind.sort_key()).or_insert(f32::MIN);
@@ -412,9 +340,7 @@ impl SearchRegistry {
             b_group
                 .partial_cmp(&a_group)
                 .unwrap_or(Ordering::Equal)
-                // Equally strong groups fall back to the fixed kind
-                // order, which is what makes the arrangement stable
-                // rather than dependent on float noise.
+                // Equally strong groups fall back to the fixed kind order.
                 .then_with(|| a.kind.sort_key().cmp(&b.kind.sort_key()))
                 .then_with(|| {
                     b_strength
@@ -422,26 +348,17 @@ impl SearchRegistry {
                         .unwrap_or(Ordering::Equal)
                 })
             // No further tiebreak: `sort_by` is stable, so equally strong
-            // results keep the provider's own order — the files provider,
-            // for one, has already broken ties by path depth. Sorting
-            // equal scores by title instead turns a query like "open"
-            // into an alphabetical card of one directory's files.
+            // results keep the provider's own order rather than being
+            // re-alphabetised by title.
         });
         merged.into_iter().map(|(r, _)| r).collect()
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
-    /// trimmed to a `row_budget` shared round-robin between the groups.
-    ///
-    /// Ranking alone doesn't make the right answer reachable: the palette
-    /// paints ~10 rows, and a legitimately-outscoring kind (e.g. forty
-    /// file hits for a common word) can push a correctly-ranked app off
-    /// the bottom of the card. Splitting the budget evenly between
-    /// matching kinds fixes that — no kind can push the next kind's
-    /// header off the card. A lone group is exempt: narrowing to one kind
-    /// is the gesture that means "show me all of these".
-    /// [`KindGroup::total`] keeps the uncapped count so the palette can
-    /// say what a section is holding back.
+    /// trimmed to a `row_budget` shared round-robin: the palette paints
+    /// ~10 rows, and an outscoring kind (forty file hits) can otherwise
+    /// push a correctly-ranked app off the bottom. A lone group is exempt
+    /// — narrowing to one kind means "show me all of these".
     pub fn query_grouped(
         &self,
         needle: &str,
@@ -483,9 +400,8 @@ impl SearchRegistry {
             return groups;
         }
         // Fair share, front to back: each group takes an equal cut of
-        // whatever budget remains, and whatever it can't fill rolls
-        // forward. Surplus must never flow backwards — that would push
-        // later groups' headers further down the card.
+        // whatever budget remains, and what it can't fill rolls forward
+        // (never backward, or later headers push further down the card).
         let n = groups.len();
         let mut remaining = row_budget;
         for (i, g) in groups.iter_mut().enumerate() {
@@ -536,8 +452,7 @@ mod tests {
         id: String,
         kinds: Vec<ResourceKind>,
         results: Vec<SearchResult>,
-        /// Top of this fake's own score scale, mirroring the real
-        /// provider it stands in for. `None` takes the trait default.
+        /// Top of this fake's own score scale. `None` takes the trait default.
         max_score: Option<i32>,
     }
 
@@ -613,17 +528,14 @@ mod tests {
             &root,
         );
         assert_eq!(out.len(), 3);
-        // Group order follows the best match, not a fixed table: the
-        // notes provider's strongest hit (50) beats the action's (30).
+        // Notes' strongest hit (50) beats the action's (30).
         assert_eq!(out[0].kind, ResourceKind::Note);
         assert_eq!(out[0].id, "n2");
         assert_eq!(out[1].id, "n1");
         assert_eq!(out[2].kind, ResourceKind::Action);
     }
 
-    /// Same two providers, but now the action is the strongest hit - it
-    /// must lead. Together with the test above this pins the ordering to
-    /// the scores rather than to either kind.
+    /// Same two providers, but now the action is the strongest hit and must lead.
     #[test]
     fn the_same_providers_flip_when_the_action_scores_highest() {
         let mut reg = SearchRegistry::new();
@@ -710,9 +622,8 @@ mod tests {
         assert_eq!(out[0].kind, ResourceKind::Note);
     }
 
-    /// Enter activates the top row. A typed app name has to put the app
-    /// there — not a source file whose path happens to contain the word,
-    /// even when the files provider returns several high-scoring hits.
+    /// A typed app name must put the app in the row Enter activates, not a
+    /// source file whose path happens to contain the word.
     #[test]
     fn a_matching_application_outranks_file_hits_for_the_same_word() {
         let mut reg = SearchRegistry::new();
@@ -723,8 +634,6 @@ mod tests {
                 mk_result(ResourceKind::File, "files", "f1", "Calculator.h", 120),
                 mk_result(ResourceKind::File, "files", "f2", "calculator.rs", 120),
             ],
-            // Real files provider's scale: a leaf-name prefix is 120, not
-            // 100. Without this the fake claims a 1.2-strength match.
             max_score: Some(120),
         }));
         reg.register(Rc::new(FakeProvider {
@@ -761,12 +670,8 @@ mod tests {
         assert_eq!(out[0].id, "dev.qos.calculator");
     }
 
-    /// Both of these came out of a real sweep: typing "settings" or
-    /// "permissions" and pressing Enter opened the workspace-settings
-    /// *action* instead of the installed app, because actions sort above
-    /// applications and that action matched on its subtitle - "General,
-    /// roles, files, permissions". A word that exactly names an app must
-    /// not lose to a word buried in another entry's subtitle.
+    /// A word that exactly names an app must not lose to a word buried in
+    /// another entry's subtitle, even though actions sort above applications.
     #[test]
     fn an_exact_app_name_beats_an_action_that_only_matched_its_subtitle() {
         for (needle, action_title, action_subtitle, action_score) in [
@@ -777,8 +682,6 @@ mod tests {
                 "General, roles, files, permissions",
                 25,
             ),
-            // "settings" appears inside the action's label but does not
-            // start it (50).
             (
                 "settings",
                 "Workspace settings",
@@ -802,8 +705,6 @@ mod tests {
             reg.register(Rc::new(FakeProvider {
                 id: "applications".into(),
                 kinds: vec![ResourceKind::Application],
-                // A display-name prefix hit: the top of the
-                // applications provider's scale.
                 results: vec![mk_result(
                     ResourceKind::Application,
                     "applications",
@@ -834,9 +735,7 @@ mod tests {
         }
     }
 
-    /// The converse, so the fix is a reordering and not a blanket
-    /// demotion of actions: when the typed word genuinely names the
-    /// action and nothing else matches as strongly, the action leads.
+    /// The converse: this is a reordering, not a blanket demotion of actions.
     #[test]
     fn an_action_still_leads_when_it_is_the_strongest_match() {
         let mut reg = SearchRegistry::new();
@@ -883,8 +782,7 @@ mod tests {
         );
     }
 
-    /// Each kind still renders as one contiguous block, so the palette
-    /// draws a single header per group rather than interleaving.
+    /// Each kind renders as one contiguous block, not interleaved.
     #[test]
     fn reordering_groups_keeps_each_kind_contiguous() {
         let mut reg = SearchRegistry::new();
@@ -943,11 +841,7 @@ mod tests {
     }
 
     /// Every provider's declared ceiling must actually bound it — the
-    /// invariant the whole cross-provider comparison rests on. A provider
-    /// scoring above its own `max_score()` normalises above 1.0 and
-    /// outranks every other provider's perfect match (a note once scored
-    /// a title prefix at 110 while declaring 100, burying the Notes app
-    /// under a note titled "Notes").
+    /// invariant the whole cross-provider comparison rests on.
     #[test]
     fn a_provider_never_scores_above_its_declared_ceiling() {
         use crate::shell::search::providers::{
@@ -969,16 +863,14 @@ mod tests {
         }
     }
 
-    /// The concrete ordering the notes ceiling controls: a note titled
-    /// exactly like an installed app must not take the row Enter
-    /// activates.
+    /// A note titled exactly like an installed app must not take the row
+    /// Enter activates.
     #[test]
     fn an_app_is_not_buried_by_a_note_of_the_same_name() {
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(FakeProvider {
             id: "notes".into(),
             kinds: vec![ResourceKind::Note],
-            // A title prefix - the top of the notes provider's scale.
             results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 110)],
             max_score: Some(110),
         }));
@@ -1014,12 +906,8 @@ mod tests {
         );
     }
 
-    /// The headline promise, driven through the **real**
-    /// [`ApplicationsProvider`](providers::applications::ApplicationsProvider)
-    /// against a real installed-app registry on disk: typing an installed
-    /// app's name offers that app first, ahead of files that merely
-    /// mention the word. The fakes above pin the merge arithmetic; this
-    /// pins the thing a user can see.
+    /// Driven through the **real** applications provider against a real
+    /// installed-app registry on disk, not the fakes above.
     #[test]
     #[serial_test::serial]
     fn typing_an_installed_apps_name_offers_the_app_first() {
@@ -1033,8 +921,7 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
-        // Registered after files, so winning cannot be an artefact of
-        // registration order.
+        // Registered after files, so winning cannot be an artefact of order.
         reg.register(Rc::new(FakeProvider {
             id: "files".into(),
             kinds: vec![ResourceKind::File],
@@ -1045,9 +932,6 @@ mod tests {
                         "files",
                         &format!("f{i}"),
                         &format!("calculator_{i}.rs"),
-                        // A leaf-name prefix: the top of the real files
-                        // provider's scale, i.e. as strong as a file hit
-                        // can possibly be.
                         120,
                     )
                 })
@@ -1086,9 +970,8 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// …and it stays first once the palette caps the sections: the app
-    /// group must survive the trim that keeps a forty-hit file group
-    /// from filling the card.
+    /// The app group must survive the trim that keeps a forty-hit file
+    /// group from filling the card.
     #[test]
     #[serial_test::serial]
     fn a_capped_palette_still_leads_with_the_app() {
@@ -1119,10 +1002,8 @@ mod tests {
 
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        // "editor" is the case ranking alone cannot fix: it is a
-        // leaf-name prefix for every one of those forty files (the top
-        // of the files scale) but only a substring of "Hex Editor", so
-        // Files legitimately outranks Applications.
+        // "editor" is a leaf-name prefix for all forty files but only a
+        // substring of "Hex Editor", so Files legitimately outranks it.
         let groups = reg.query_grouped(
             "editor",
             SearchScope::Workspace,
@@ -1148,9 +1029,7 @@ mod tests {
             .expect("the app must still be in the result set at all");
         assert_eq!(apps.results.len(), 1);
 
-        // And it must be reachable, not merely present: flattened in
-        // group order, the app has to land within the rows the palette
-        // paints.
+        // Must be reachable, not merely present: within the flattened rows.
         let flat: Vec<&SearchResult> =
             groups.iter().flat_map(|g| g.results.iter()).collect();
         let app_row = flat
@@ -1166,17 +1045,14 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Equally-strong results keep their provider's ordering rather than
-    /// being re-sorted by title (which degrades to dictionary order for a
-    /// query where every hit matches exactly as well).
+    /// Equally-strong results keep their provider's ordering, not re-sorted by title.
     #[test]
     fn equally_strong_results_keep_the_providers_order() {
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(FakeProvider {
             id: "files".into(),
             kinds: vec![ResourceKind::File],
-            // Emitted worst-alphabetical-first on purpose: a title sort
-            // would reverse this exactly.
+            // Emitted worst-alphabetical-first: a title sort would reverse this.
             results: vec![
                 mk_result(ResourceKind::File, "files", "f1", "zebra.rs", 80),
                 mk_result(ResourceKind::File, "files", "f2", "middle.rs", 80),
@@ -1202,8 +1078,7 @@ mod tests {
         );
     }
 
-    /// Narrowing to a single kind is the gesture that means "show me all
-    /// of these", so it must not be trimmed.
+    /// Narrowing to a single kind means "show me all of these" and must not be trimmed.
     #[test]
     fn a_lone_group_is_never_trimmed() {
         let mut reg = SearchRegistry::new();
@@ -1237,9 +1112,7 @@ mod tests {
         );
     }
 
-    /// Write the on-disk shape `launcher::gui_apps` reads, so the
-    /// applications provider under test is the real one enumerating a
-    /// real registry.
+    /// Write the on-disk shape `launcher::gui_apps` reads.
     fn install_fake_app(root: &std::path::Path, package_id: &str, display_name: &str) {
         let payload = root.join("payloads").join(package_id);
         std::fs::create_dir_all(payload.join("bin")).expect("payload dir");

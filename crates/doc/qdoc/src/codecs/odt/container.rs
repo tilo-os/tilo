@@ -15,8 +15,7 @@ pub struct OdtContainer {
 }
 
 impl OdtContainer {
-    /// Read an untrusted `.odt` package. Bounded against zip bombs and rejects
-    /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
+    /// Read an untrusted `.odt` package; bounded against zip bombs and rejects DTD-bearing XML (XXE) via [`read_zip_parts`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         let parts = read_zip_parts(bytes, &ZipLimits::default())?;
         Ok(Self { parts })
@@ -60,8 +59,7 @@ impl OdtContainer {
     }
 }
 
-/// Build a minimal valid `.odt` with the given `office:text` body — used by
-/// tests so the suite is self-contained (no LibreOffice dependency).
+/// Build a minimal valid `.odt` body for self-contained tests (no LibreOffice dependency).
 #[cfg(test)]
 pub(crate) fn minimal_odt(body_xml: &str) -> Vec<u8> {
     minimal_odt_styled("", body_xml)
@@ -104,7 +102,6 @@ mod tests {
         );
         assert!(c.get("content.xml").is_some());
 
-        // Re-write and re-read → identical part names + content.
         let out = c.write().unwrap();
         let c2 = OdtContainer::read(&out).unwrap();
         let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
@@ -119,9 +116,9 @@ mod tests {
         let mut c = OdtContainer { parts: vec![] };
         c.set("a", b"1".to_vec());
         c.set("b", b"2".to_vec());
-        c.set("a", b"3".to_vec()); // replace in place
+        c.set("a", b"3".to_vec());
         assert_eq!(c.parts.len(), 2);
         assert_eq!(c.get("a").unwrap(), b"3");
-        assert_eq!(c.parts[0].0, "a"); // position preserved
+        assert_eq!(c.parts[0].0, "a");
     }
 }

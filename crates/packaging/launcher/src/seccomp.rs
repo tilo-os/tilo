@@ -1,41 +1,30 @@
 //! Baseline seccomp-bpf policy.
 //!
-//! Policy source: based on Flatpak's published seccomp profile —
-//! `common/flatpak-run.c`'s `setup_seccomp` in
-//! <https://github.com/flatpak/flatpak> — which itself is derived from
-//! the Bubblewrap reference deny-list. Specifically we copy the
-//! "always denied" set: namespace manipulation (`unshare`, `setns`),
+//! Policy source: based on Flatpak's published seccomp profile
+//! (`common/flatpak-run.c`'s `setup_seccomp`), itself derived from the
+//! Bubblewrap reference deny-list. Copies the "always denied" set:
+//! namespace manipulation (`unshare`, `setns`),
 //! `mount`/`umount2`/`pivot_root`/`chroot`, `ptrace`, raw socket
-//! creation (`socket` with `AF_PACKET`), `bpf`, `keyctl`, and
-//! `clone3` (Flatpak treats this as a transitional always-deny so
-//! older container managers behave consistently).
+//! creation (`AF_PACKET`), `bpf`, `keyctl`, and `clone3` (Flatpak's
+//! transitional always-deny for older container managers).
 //!
-//! We deliberately keep the policy small and *deny-list*, not a
-//! sweeping allow-list: a hand-rolled allow-list breaks unpredictably
-//! when glibc adds a new syscall (e.g. `getrandom`, `clone3`,
-//! `faccessat2`) and the syscall surface differs per architecture.
-//! The same shape as the per-workspace filter in
-//! `shell/src/sandbox/seccomp.rs` — kept independent so the launcher
-//! has zero dep on the compositor.
+//! Deliberately small and *deny-list*, not a sweeping allow-list: a
+//! hand-rolled allow-list breaks unpredictably when glibc adds a new
+//! syscall and the surface differs per architecture. Same shape as the
+//! per-workspace filter in `shell/src/sandbox/seccomp.rs`, kept
+//! independent so the launcher has zero dep on the compositor.
 //!
-//! The write-xor-execute rules below exist only here, not in that copy.
-//! That is on purpose: the compositor does not spawn applications, it
-//! execs this launcher, and `shell/src/sandbox/mod.rs` says outright that
-//! its own profile is on no launch path. Hardening a filter nothing
-//! installs would read as protection that is not there.
+//! The write-xor-execute rules below exist only here, not in that copy:
+//! the compositor doesn't spawn applications, it execs this launcher,
+//! and its own profile is on no launch path — hardening a filter
+//! nothing installs would read as protection that isn't there.
 //!
-//! At runtime the launcher compiles this filter into a BPF blob,
-//! writes it to a temp file, and passes the open fd to `bwrap`'s
-//! `--seccomp <fd>`. (Alternative: build it at *build time* and ship
-//! the blob in `share/qos-default.bpf` — see [`baked_blob_path`].)
-//!
-//! The compiled blob is identical to `compile_baseline()`'s output for
-//! the current build arch. We expose both APIs:
-//!
-//! - [`compile_baseline`] — compile at runtime; default fast path.
-//! - [`baked_blob_path`] — return the on-disk blob path under
-//!   `share/qos-default.bpf` if it has been pre-populated. Useful for
-//!   environments where seccompiler can't run inside the sandbox.
+//! At runtime the launcher compiles this filter into a BPF blob, writes
+//! it to a temp file, and passes the open fd to `bwrap`'s `--seccomp
+//! <fd>`. [`compile_baseline`] is the default fast path;
+//! [`baked_blob_path`] returns a pre-populated on-disk blob under
+//! `share/qos-default.bpf` for environments where seccompiler can't run
+//! inside the sandbox — identical output for the current build arch.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -71,16 +60,11 @@ fn host_target_arch() -> Result<TargetArch, SeccompError> {
 
 /// The deny-list, named so a future Flatpak-policy bump diffs cleanly.
 ///
-/// `clone3` is deliberately NOT denied — Flatpak's historical rationale
-/// for blocking it was "some older container tooling doesn't understand
-/// clone3, force the clone(2) fallback for consistency." That deny
-/// broke modern glibc's `pthread_create`, which uses clone3 as the
-/// primary syscall and only occasionally falls back to clone. Symptom
-/// was `zbus` (portal client) panicking with "Operation not permitted"
-/// on worker-thread spawn. Since we already allow `clone`, denying
-/// `clone3` blocks nothing of substance — it just makes a common code
-/// path unreliable. Enabling clone3 restores the portal-inside-sandbox
-/// path.
+/// `clone3` is deliberately NOT denied: modern glibc's `pthread_create`
+/// uses it as the primary syscall, and since `clone` is already
+/// allowed, denying `clone3` blocks nothing of substance — it just
+/// makes a common code path (including the portal client's
+/// worker-thread spawn) unreliable.
 const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_ptrace,
     libc::SYS_mount,
@@ -93,15 +77,15 @@ const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_keyctl,
 ];
 
-/// Which named seccomp profile a package's `[sandbox] seccomp = "…"` asked
-/// for.
+/// Which named seccomp profile a package's `[sandbox] seccomp = "…"`
+/// asked for.
 ///
-/// The only thing the name currently decides is whether the app may create
-/// memory that is writable and executable at the same time. That is a
-/// per-package question and not a per-user one, which is why it is not a
-/// runtime grant — but it is not the manifest's answer either. The manifest
-/// asks; the image's entitlement list decides. See [`resolve_profile`], and
-/// prefer it to [`Self::parse`] anywhere a real launch is being confined.
+/// The only thing the name decides is whether the app may create
+/// memory that is writable and executable at once — a per-package
+/// question, not a per-user one, so it's not a runtime grant, but it's
+/// not the manifest's answer either: the manifest asks, the image's
+/// entitlement list decides. See [`resolve_profile`], and prefer it to
+/// [`Self::parse`] anywhere a real launch is being confined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SeccompProfile {
     /// `qos-default` — write-xor-execute enforced. An app cannot turn data it
@@ -109,19 +93,16 @@ pub enum SeccompProfile {
     #[default]
     QosDefault,
     /// `qos-jit` — the baseline minus the write-xor-execute rules, for the
-    /// one class of program that genuinely compiles code at run time: a web
-    /// engine's JavaScript tier. Everything else in the deny-list still
-    /// applies.
+    /// one class of program that genuinely compiles code at run time: a
+    /// web engine's JavaScript tier. Everything else still applies.
     QosJit,
 }
 
 impl SeccompProfile {
     /// Resolve a manifest profile name.
     ///
-    /// Unknown names resolve to [`SeccompProfile::QosDefault`], i.e. the
-    /// strict one. A typo must not be a way to acquire a weaker sandbox: the
-    /// app then fails visibly on its first attempt to allocate W+X memory,
-    /// which is the direction of failure we want.
+    /// Unknown names resolve to [`SeccompProfile::QosDefault`], the strict
+    /// one — a typo must not be a way to acquire a weaker sandbox.
     pub fn parse(name: &str) -> Self {
         match name {
             "qos-jit" => Self::QosJit,
@@ -144,32 +125,32 @@ impl SeccompProfile {
     }
 }
 
-/// Image-owned list of package ids that may run without write-xor-execute.
+/// Image-owned list of package ids that may run without
+/// write-xor-execute.
 ///
-/// One entry per line, `#` starts a comment, a trailing `*` is a prefix match.
-/// Same format as [`crate::hardening::POLICY_PATH`] and read with the same
-/// matcher, so the two image-owned policies cannot drift into different
-/// syntaxes.
+/// One entry per line, `#` starts a comment, a trailing `*` is a prefix
+/// match — same format as [`crate::hardening::POLICY_PATH`], so the two
+/// image-owned policies cannot drift into different syntaxes.
 pub const JIT_POLICY_PATH: &str = "/usr/lib/qos/jit-entitled.conf";
 
 /// Overrides [`JIT_POLICY_PATH`], so a test can point at a fixture.
 pub const JIT_POLICY_PATH_ENV: &str = "QOS_JIT_ENTITLED_FILE";
 
-/// Fallback when [`JIT_POLICY_PATH`] is absent — the packages in this tree
-/// that genuinely compile code at run time.
+/// Fallback when [`JIT_POLICY_PATH`] is absent — the packages in this
+/// tree that genuinely compile code at run time.
 ///
-/// One entry, and it should stay that way. The browser ships a web engine
-/// whose JavaScript tier emits machine code into a mapping it then executes;
-/// anything else that thinks it needs this almost certainly wants a
-/// write-then-flip JIT, which the strict profile already allows.
+/// One entry, and it should stay that way: the browser's JavaScript
+/// tier emits machine code it then executes; anything else almost
+/// certainly wants a write-then-flip JIT, which the strict profile
+/// already allows.
 pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.qos.browser"];
 
 /// Whether the image lets `package_id` run without write-xor-execute.
 ///
-/// Same shape as [`crate::hardening::for_package`], and for the same reason: a
-/// missing file must degrade to the known set rather than to "nobody", which
-/// would leave the browser unable to render a page on any image that did not
-/// ship the file.
+/// Same shape as [`crate::hardening::for_package`], for the same
+/// reason: a missing file must degrade to the known set, not to
+/// "nobody" — which would leave the browser unable to render on any
+/// image that didn't ship the file.
 pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
     let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV)
         .map(PathBuf::from)
@@ -187,9 +168,9 @@ pub struct ProfileDecision {
     pub applied: SeccompProfile,
     /// The name the manifest wrote, verbatim.
     pub requested: String,
-    /// Set when the manifest named a real, weaker profile it is not entitled
-    /// to — as distinct from a typo, which [`SeccompProfile::parse`] already
-    /// resolves strict.
+    /// Set when the manifest named a real, weaker profile it is not
+    /// entitled to — as distinct from a typo, which [`SeccompProfile::parse`]
+    /// already resolves strict.
     pub refused: bool,
 }
 
@@ -229,9 +210,9 @@ const PROT_ARG_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_pkey_mprotect,
 ];
 
-/// `PROT_WRITE | PROT_EXEC`, used both as the mask and as the value so the
-/// rule reads "both of these bits are set" rather than "the protection is
-/// exactly this" — `PROT_READ` is almost always set alongside them.
+/// `PROT_WRITE | PROT_EXEC`, used as both mask and value so the rule
+/// reads "both bits are set" rather than "exactly this" — `PROT_READ`
+/// is almost always set alongside them.
 fn write_exec_bits() -> u64 {
     (libc::PROT_WRITE | libc::PROT_EXEC) as u64
 }
@@ -244,25 +225,25 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
         rules.insert(*nr as i64, Vec::new());
     }
 
-    // Write-xor-execute. A page that is writable and executable at the same
-    // time is what turns a heap or stack write into code execution: the
-    // attacker no longer needs to find existing instructions to reuse, they
-    // can write their own. Refusing the combination costs an app nothing
-    // unless it compiles code at run time, and the only such app here is the
-    // browser's web engine, which asks for `qos-jit`.
+    // Write-xor-execute. A page that is writable and executable at the
+    // same time is what turns a heap or stack write into code execution:
+    // the attacker no longer needs to reuse existing instructions, they can
+    // write their own. Refusing the combination costs nothing unless an app
+    // compiles code at run time — the only one here is the browser's web
+    // engine, which asks for `qos-jit`.
     //
-    // `MaskedEq` compares `(prot & mask) == (value & mask)`, so this matches
-    // any protection with both bits set and leaves `PROT_READ|PROT_WRITE`
-    // (ordinary data) and `PROT_READ|PROT_EXEC` (a loaded library, or the
-    // second half of a well-behaved JIT's write-then-flip) alone. `Dword`
-    // because `prot` is an `int`; a `Qword` compare could pick up whatever
-    // occupies the upper half of the register.
+    // `MaskedEq` compares `(prot & mask) == (value & mask)`, matching any
+    // protection with both bits set and leaving `PROT_READ|PROT_WRITE`
+    // (ordinary data) and `PROT_READ|PROT_EXEC` (a loaded library, or a
+    // well-behaved JIT's write-then-flip) alone. `Dword` because `prot` is
+    // an `int`; `Qword` could pick up whatever occupies the register's
+    // upper half.
     //
-    // Honest limit: this does not stop an app that maps the same memfd twice,
-    // once writable and once executable. Blocking that needs the file
-    // descriptor's history, which a syscall-argument filter cannot see. What
-    // it does remove is every one-call route to W+X, which is the shape that
-    // actually appears in exploit chains against a renderer.
+    // Honest limit: this does not stop mapping the same memfd twice, once
+    // writable and once executable — that needs the fd's history, which a
+    // syscall-argument filter can't see. What it removes is every one-call
+    // route to W+X, the shape that actually appears in exploit chains
+    // against a renderer.
     if !profile.allows_dynamic_code() {
         for nr in PROT_ARG_SYSCALLS {
             rules.insert(
@@ -288,9 +269,8 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
         )?])?],
     );
 
-    // Default-allow, denied-syscalls return -EPERM (Flatpak convention:
-    // a clean errno rather than SIGSYS, so apps log the failure
-    // instead of getting killed).
+    // Default-allow, denied syscalls return -EPERM (Flatpak convention: a
+    // clean errno so apps log the failure instead of getting killed).
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Allow,
@@ -313,9 +293,8 @@ fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 
 /// Compile the baseline policy to a raw BPF blob.
 ///
-/// Takes the profile explicitly rather than defaulting, so every call site has
-/// to have decided whether the program it is about to confine is allowed to
-/// generate code.
+/// Takes the profile explicitly rather than defaulting, so every call
+/// site has decided whether the program is allowed to generate code.
 pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError> {
     let filter = build_baseline_filter(profile)?;
     let program: BpfProgram = filter.try_into()?;
@@ -332,11 +311,10 @@ pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf,
     Ok(path)
 }
 
-/// Path the launcher checks for a pre-baked blob. If present, prefer it
-/// over compiling. Looked up relative to `$CARGO_MANIFEST_DIR` at build
-/// time and `<crate_root>/share/qos-default.bpf` at runtime — but in
-/// production the file lives in a fixed location alongside the binary,
-/// so this is a developer convenience only.
+/// Path the launcher checks for a pre-baked blob, preferred over
+/// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
+/// at build time and `<crate_root>/share/qos-default.bpf` at runtime —
+/// a developer convenience only; production has a fixed location.
 pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("share")
@@ -396,13 +374,13 @@ mod tests {
         assert_eq!(jit.len() % 8, 0);
     }
 
-    /// The filter is only worth anything if the kernel enforces it, so install
-    /// it for real and try the mappings.
+    /// The filter is only worth anything if the kernel enforces it, so
+    /// install it for real and try the mappings.
     ///
-    /// Runs in a forked child because a seccomp filter cannot be removed once
-    /// applied — the test process has to survive to run the rest of the suite.
-    /// The child does nothing but raw syscalls and `_exit`, so no allocator or
-    /// lock is touched after the fork.
+    /// Runs in a forked child because a seccomp filter cannot be removed
+    /// once applied — the test process has to survive to run the rest of
+    /// the suite. The child does nothing but raw syscalls and `_exit`, so
+    /// no allocator or lock is touched after the fork.
     ///
     /// Exit codes are the report channel:
     ///   0  = behaved exactly as the profile says it should
@@ -589,8 +567,8 @@ mod tests {
         assert_eq!(decision.requested, "qos-jit");
     }
 
-    /// The refusal reaches the kernel, not just the enum: a test comparing two
-    /// enum values would pass on a launcher that resolved strictly and
+    /// The refusal reaches the kernel, not just the enum: a test comparing
+    /// two enum values would pass on a launcher that resolved strictly and
     /// compiled the other one.
     #[test]
     #[serial_test::serial(process_env)]
@@ -716,9 +694,9 @@ mod tests {
         );
     }
 
-    /// Two lists that can disagree is a machine whose confinement depends on
-    /// whether a file was copied, showing up only as a browser that behaves
-    /// differently on one image than another.
+    /// Two lists that can disagree is a machine whose confinement depends
+    /// on whether a file was copied — a browser that behaves differently
+    /// on one image than another.
     #[test]
     fn the_shipped_policy_file_and_the_builtin_list_agree() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))

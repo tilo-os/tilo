@@ -4,9 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The value type of a cell's stored/cached value. A *formula* is orthogonal —
-/// a formula cell still carries a `cell_type` for its cached result (or `Empty`
-/// if it has never been evaluated).
+/// The value type of a cell's stored/cached value; orthogonal to whether it's a
+/// formula (a formula cell still carries a `cell_type` for its cached result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CellType {
     Empty,
@@ -28,8 +27,7 @@ impl CellType {
             CellType::Error => CELL_TYPE_ERROR,
         }
     }
-    /// Parse a schema string back into a [`CellType`] (unknown → `Text`, the safe
-    /// default for arbitrary content).
+    /// Parses a schema string back into a [`CellType`] (unknown → `Text`, the safe default).
     pub fn from_str(s: &str) -> Self {
         use crate::sheet::schema::*;
         match s {
@@ -42,8 +40,7 @@ impl CellType {
     }
 }
 
-/// One materialized cell: its A1 reference + coordinates, stored value and type,
-/// preserved formula (source without the leading `=`), and opaque style ref.
+/// One materialized cell: its A1 reference + coordinates, stored value and type, preserved formula, and opaque style ref.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellView {
     /// A1 reference, e.g. `"B7"`.
@@ -55,8 +52,7 @@ pub struct CellView {
     /// The literal / cached value as text (interpreted per `cell_type`).
     pub value: String,
     pub cell_type: CellType,
-    /// The formula source (without the leading `=`), preserved verbatim. `None`
-    /// for a plain value cell.
+    /// The formula source (without the leading `=`), preserved verbatim; `None` for a plain value cell.
     #[serde(default)]
     pub formula: Option<String>,
     /// Opaque style reference carried through the round-trip. `None` if unstyled.
@@ -69,8 +65,7 @@ pub struct CellView {
 pub struct SheetView {
     pub id: String,
     pub name: String,
-    /// Cells in row-major order (`(row, col)` ascending). Sparse — only cells that
-    /// carry a value, formula, or style are present.
+    /// Cells in row-major order (`(row, col)` ascending); sparse — only cells carrying a value, formula, or style are present.
     pub cells: Vec<CellView>,
 }
 
@@ -81,8 +76,7 @@ impl SheetView {
     }
 }
 
-/// The whole workbook materialized: schema id/version, ordered sheets, and the
-/// document properties.
+/// The whole workbook materialized: schema id/version, ordered sheets, and document properties.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkbookSnapshot {
     pub schema: String,

@@ -1,20 +1,15 @@
-//! Hardware-gated integration test for the DRM backend.
-//!
-//! Asserts that, on a free TTY where the caller owns the seat,
-//! [`DrmBackend::new`] succeeds. Gated by the `NIRIOS_DRM_HARDWARE_TEST` env
-//! var so the default `cargo test` run on a developer's desktop (where
-//! Gnome / KDE already holds the seat) skips it cleanly.
-//!
-//! How to run on real hardware:
+//! Hardware-gated integration test for the DRM backend: on a free TTY
+//! where the caller owns the seat, [`DrmBackend::new`] must succeed. Gated
+//! by `NIRIOS_DRM_HARDWARE_TEST` so the default run on a desktop (where
+//! Gnome/KDE already holds the seat) skips cleanly.
 //!
 //! ```bash
 //! # From a TTY (Ctrl+Alt+F2, log in to a shell):
 //! NIRIOS_DRM_HARDWARE_TEST=1 cargo test --test drm_backend_boot
 //! ```
 //!
-//! Does NOT exercise rendering — only that the backend can claim the seat,
-//! enumerate at least one KMS card node, and attach libinput.
-//! Pixel-on-screen validation lives in `bin/shots` and the manual VM-boot smoke.
+//! No rendering — only that the backend claims the seat, enumerates at
+//! least one KMS card node, and attaches libinput.
 
 use shell::compositor::backend::Backend;
 use shell::compositor::backend::drm::DrmBackend;
@@ -31,10 +26,9 @@ fn drm_backend_boot_smoke() {
     let backend = DrmBackend::new();
     match backend {
         Ok(b) => {
-            // Connector enumeration must produce at least one output on
-            // real hardware — zero on a TTY system is a regression (or a
-            // headless server, which can disable this assert via
-            // NIRIOS_DRM_NO_OUTPUTS_OK=1).
+            // Connector enumeration must produce at least one output on real
+            // hardware — zero on a TTY system is a regression (disable via
+            // NIRIOS_DRM_NO_OUTPUTS_OK=1 for a headless server).
             let outputs = b.outputs();
             if std::env::var("NIRIOS_DRM_NO_OUTPUTS_OK").is_err() {
                 assert!(

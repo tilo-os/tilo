@@ -1,19 +1,15 @@
 //! Notes — a minimal CRDT-backed plaintext editor hosted as an `AppWidget`.
 //!
-//! The whole body lives in a single Automerge `Text` object under the tile's
-//! root at [`BODY_KEY`], edited through [`CrdtTextBody`] so edits merge with
-//! peers via the existing `CollabRequest::Apply` path — collaborative for
-//! free, no per-app presence wiring.
+//! The body lives in a single Automerge `Text` object under the tile's root
+//! at [`BODY_KEY`], edited through [`CrdtTextBody`] so edits merge with
+//! peers via the existing `CollabRequest::Apply` path for free.
 //!
 //! Selection + clipboard model mirrors `ui::widget::TextInput`: click drops
 //! the caret, drag extends a selection, double/triple-click selects word or
 //! line, Shift+arrow/Home/End/Ctrl+A extend or set it, and Ctrl+C/X/V route
-//! through the shared [`ui::text_selection`] clipboard helpers.
-//!
-//! The `TextRenderer`'s soft-wrap (cosmic-text) wraps long paragraphs; caret
-//! and selection highlight are positioned by splitting at `\n` and measuring
-//! prefix widths — approximate across wrap boundaries but close enough to
-//! the cursor's row/column model.
+//! through the shared [`ui::text_selection`] clipboard helpers. Caret and
+//! selection highlight are positioned by splitting at `\n` and measuring
+//! prefix widths — approximate across wrap boundaries but close enough.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -56,30 +52,20 @@ pub struct NotesApp {
     focused: bool,
     /// CRDT-backed body plus the caret arithmetic over it.
     body: CrdtTextBody,
-    /// Caret + selection anchor pair. `selection.cursor` is the live
-    /// caret byte offset into `body.text`. `selection.anchor == cursor`
-    /// means no selection is active.
+    /// `anchor == cursor` means no selection is active.
     selection: Selection,
     last_mouse: Point,
-    /// True while the user is dragging the mouse to extend a selection
-    /// (between MouseInput::Pressed and MouseInput::Released).
     is_dragging: bool,
-    /// Time + position of the most recent click — used to detect
-    /// double / triple clicks (within `MULTI_CLICK_INTERVAL` and
-    /// `MULTI_CLICK_RADIUS`).
+    /// For double/triple-click detection.
     last_click_time: Option<Instant>,
     last_click_pos: Point,
     click_count: u32,
-    /// Cached geometry of the body content area — used to map mouse
-    /// positions back to byte offsets in the same coordinate system the
-    /// draw pass laid the text out in.
+    /// For mapping mouse positions to byte offsets in the draw pass's
+    /// coordinate system.
     body_origin: Point,
     wrap_width: f32,
-    /// Bounds of the zero-state's call-to-action pill, resolved by the
-    /// draw pass and `Rect::ZERO` whenever the zero-state isn't showing.
-    /// Only drives the pointer cursor — the pill sits inside the tile, so
-    /// the ordinary "click anywhere to place the caret" path already
-    /// focuses the note when it is pressed.
+    /// `Rect::ZERO` when not showing. Only drives the pointer cursor —
+    /// clicking anywhere already focuses the note.
     empty_action_rect: Rect,
 }
 
@@ -136,8 +122,8 @@ impl NotesApp {
         self.selection.move_to(caret);
     }
 
-    /// Single-char backspace path for a collapsed selection; selection-aware
-    /// paths route through `delete_selection`.
+    /// Collapsed-selection path; selection-aware paths route through
+    /// `delete_selection`.
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let cur = self.selection.cursor;
         if cur == 0 {
@@ -148,7 +134,6 @@ impl NotesApp {
         self.selection.move_to(caret);
     }
 
-    /// Single-char delete-forward path for when the selection is collapsed.
     fn delete_after(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let cur = self.selection.cursor;
         if cur >= self.body.text.len() {
@@ -200,21 +185,13 @@ impl Widget for NotesApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Notes paints no background: the body sits straight on the window
-        // card the frame draws, so its ink comes from the card rather than
-        // from a ramp slot chosen for one theme's card. `Theme::on_card`
-        // answers that for the whole fleet — the stub tile and the
-        // foreign-surface placeholder ask it the same question.
+        // Notes paints no background: its ink comes from the window card
+        // the frame already draws, via `Theme::on_card`.
         let card_theme = theme.on_window_card();
         let text_color = theme.on_card().ink;
-        // Caret is a *fill* state (focused-but-not-hovered), so use the
-        // semantic `accent_primary` (indigo-500) accessor — the concept's
-        // dominant accent — rather than the raw `accent[4]` (indigo-600)
-        // ramp slot, which is the hover shade.
+        // Fill-state accent (focused-but-not-hovered), not the hover ramp slot.
         let accent = theme.accent_primary;
-        // Translucent selection background — concept calls for indigo-500
-        // at ~30% alpha (matches `TextInput`'s 0.35 visually for a thinner
-        // body weight).
+        // ~30% alpha (matches `TextInput`'s 0.35 for a thinner body weight).
         let sel_color = accent.with_alpha_factor(0.30);
 
         let content_x = self.rect.x0 + PADDING;
@@ -222,18 +199,12 @@ impl Widget for NotesApp {
         let wrap_w = (self.rect.width() - PADDING * 2.0).max(40.0) as f32;
         self.wrap_width = wrap_w;
 
-        // No header row: the app name already lives on the tab pill the
-        // shell draws above this tile, and a corner hint here would be the
-        // app drawing chrome it doesn't own. The zero-state below carries
-        // the "you can write here" invitation as an actual control instead.
+        // No header row: the app name lives on the shell's tab pill, and a
+        // corner hint here would be chrome this app doesn't own.
         let body_top = content_y;
         self.body_origin = Point::new(content_x, body_top);
 
         if self.body.text.is_empty() && !self.focused {
-            // A blank note is a *designed* state via the shared `EmptyState`
-            // (hero icon, title, dim explanation, accent CTA) rather than a
-            // stray line of placeholder text. Nothing is invented to fill
-            // the space — the note stays empty until the user types.
             self.empty_action_rect = EmptyState::paint(
                 scene,
                 transform,
@@ -249,10 +220,8 @@ impl Widget for NotesApp {
             .unwrap_or(Rect::ZERO);
             return;
         }
-        // Once there is text (or focus), the note is its own affordance.
         self.empty_action_rect = Rect::ZERO;
 
-        // Selection highlight (behind the text).
         if !self.selection.is_collapsed() {
             let sel_lo = self.selection.min();
             let sel_hi = self.selection.max();
@@ -277,8 +246,7 @@ impl Widget for NotesApp {
                     );
                     scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
                 } else if sel_lo <= line_end && sel_hi > line_end {
-                    // Selection spans this line's trailing newline — paint a
-                    // small indicator past the line content for it.
+                    // Selection spans this line's trailing newline.
                     let (full_w, _) = tr.measure(line_text, TEXT_SIZE, Some(wrap_w));
                     let y0 = body_top + row as f64 * LINE_HEIGHT as f64;
                     let rect = Rect::new(
@@ -304,10 +272,8 @@ impl Widget for NotesApp {
         );
 
         if self.focused {
-            // Count newlines before cursor to pick a row, then measure the
-            // last visual line's prefix width for the column — treats each
-            // logical line as a single wrap-unit rather than a glyph-by-glyph
-            // layout round-trip.
+            // Count newlines before cursor for the row, measure the last
+            // line's prefix for the column.
             let cur = self.selection.cursor;
             let prefix = &self.body.text[..cur];
             let nl_count = prefix.matches('\n').count();
@@ -349,12 +315,9 @@ impl Widget for NotesApp {
                 }
 
                 if self.is_dragging {
-                    // Hit-test needs a TextRenderer, which the event path
-                    // doesn't have; approximate via a per-character advance
-                    // heuristic. Acceptable because the selection re-snaps
-                    // to true glyph bounds on the next draw, and the row is
-                    // always right even while the column drifts — it
-                    // settles to the glyph grid on mouse-up.
+                    // No TextRenderer on the event path; approximate hit
+                    // via per-character advance. The selection re-snaps to
+                    // true glyph bounds on the next draw.
                     let new_pos = self.approximate_hit(p);
                     if new_pos != self.selection.cursor {
                         self.selection.extend_to(new_pos);
@@ -432,8 +395,6 @@ impl Widget for NotesApp {
                 let shift = mods.shift_key();
                 let ctrl = mods.control_key() || mods.super_key();
 
-                // Ctrl combos: clipboard + select-all; everything else
-                // falls through to the local key handler.
                 if ctrl {
                     if let Key::Character(c) = logical_key {
                         let lc = c.to_lowercase();
@@ -465,8 +426,7 @@ impl Widget for NotesApp {
                             "v" => {
                                 if let Some(paste) = clipboard_paste() {
                                     if !paste.is_empty() {
-                                        // Notes preserves \n — strip only
-                                        // other control chars.
+                                        // Preserve \n, strip other control chars.
                                         let cleaned: String = paste
                                             .chars()
                                             .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
@@ -520,7 +480,6 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         if !shift && !self.selection.is_collapsed() {
-                            // Matches every native editor.
                             self.selection.move_to(self.selection.min());
                         } else {
                             let mut p = self.selection.cursor;
@@ -658,9 +617,8 @@ impl Widget for NotesApp {
         "NotesApp"
     }
 
-    /// The record this tab's document is. Folded into the body's presence
-    /// key so a peer's caret arriving for one tab is not drawn in another
-    /// tab of the same app.
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
     fn set_record_scope(&mut self, record: &ui::record::RecordId) {
         self.body.set_record(record);
     }
@@ -689,9 +647,8 @@ impl Widget for NotesApp {
         self.is_dragging
     }
 
-    /// The zero-state's call-to-action reads as a button, so it points like
-    /// one. Everywhere else the tile is a text surface and keeps the
-    /// default cursor.
+    /// The zero-state CTA points like a button; elsewhere the tile keeps
+    /// the default cursor.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.empty_action_rect.area() > 0.0 && self.empty_action_rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
@@ -731,11 +688,8 @@ impl Widget for NotesApp {
 }
 
 impl NotesApp {
-    /// Coarse hit-test used inside `handle_event`, which has no
-    /// `TextRenderer` available — approximates with a per-character
-    /// advance. Good enough for "drag selects roughly the right text";
-    /// the visual selection rect is drawn against true glyph metrics in
-    /// `draw`.
+    /// Coarse hit-test for `handle_event` (no `TextRenderer` there); the
+    /// visual selection is drawn against true glyph metrics in `draw`.
     fn approximate_hit(&self, point: Point) -> usize {
         if self.body.text.is_empty() {
             return 0;
@@ -744,9 +698,8 @@ impl NotesApp {
         let rel_y = (point.y - self.body_origin.y).max(0.0);
         let row = (rel_y / LINE_HEIGHT as f64).floor() as usize;
 
-        // Approximate width per character. For 15px text the average
-        // advance is around 8px for proportional fonts; we use a slightly
-        // tighter 7.2 to avoid overshooting on the common case.
+        // ~8px average advance for 15px proportional text; 7.2 avoids
+        // overshooting on the common case.
         const APPROX_ADVANCE_PX: f64 = 7.2;
 
         let mut line_starts: Vec<usize> = std::iter::once(0)
@@ -805,9 +758,8 @@ mod tests {
         (doc, tile_root)
     }
 
-    /// Run the real draw pass over a tile-sized rect. Nothing is rasterised —
-    /// we only care about the geometry the pass resolves — but it is the
-    /// production `Widget::draw`, not a stand-in for it.
+    /// Runs the real `Widget::draw`, not a stand-in — nothing is rasterised,
+    /// only the geometry it resolves matters here.
     fn draw_tile(app: &mut NotesApp, rect: Rect) {
         app.rect = rect;
         let theme = Theme::dark();
@@ -817,7 +769,6 @@ mod tests {
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    /// A blank note shows the shared zero-state, centred in the tile.
     #[test]
     fn a_blank_note_paints_the_shared_zero_state_centred() {
         let mut app = NotesApp::new();
@@ -837,9 +788,8 @@ mod tests {
             pill.center().x,
             tile.center().x,
         );
-        // The pill is the last element of the stack, so it sits below the
-        // tile's midline while the stack as a whole straddles it. A
-        // top-aligned layout would put it in the upper half.
+        // Trails a vertically-centred stack, so a top-aligned layout would
+        // instead put it in the upper half.
         assert!(
             pill.center().y > tile.center().y,
             "the pill trails a vertically-centred stack, so it is past the midline: \
@@ -853,7 +803,6 @@ mod tests {
         );
     }
 
-    /// The call-to-action is wired as a control, not a decoration.
     #[test]
     fn the_zero_state_action_points_like_a_button() {
         let mut app = NotesApp::new();
@@ -870,9 +819,7 @@ mod tests {
         );
     }
 
-    /// The zero-state is for a note with nothing in it. As soon as there is
-    /// text the note is its own affordance, and no pill is left behind to
-    /// keep claiming the pointer.
+    /// Once there is text, no pill is left behind claiming the pointer.
     #[test]
     fn a_note_with_text_paints_no_zero_state() {
         let (mut doc, tile_root) = bind();
@@ -888,8 +835,6 @@ mod tests {
         assert_eq!(app.cursor_shape(tile.center()), None);
     }
 
-    /// Focusing a blank note drops straight into editing — the zero-state
-    /// gets out of the way rather than sitting behind the caret.
     #[test]
     fn focusing_a_blank_note_clears_the_zero_state() {
         let mut app = NotesApp::new();
@@ -903,7 +848,6 @@ mod tests {
         assert_eq!(app.cursor_shape(tile.center()), None);
     }
 
-    /// The body starts at the tile padding — no header row is reserved.
     #[test]
     fn body_text_starts_at_the_padding_with_no_header_gap() {
         let (mut doc, tile_root) = bind();
@@ -955,8 +899,6 @@ mod tests {
         assert_eq!(app.selection.cursor, 4);
     }
 
-    /// Shift+Right extends the selection by one character (anchor stays
-    /// pinned at the original cursor). Routed via `selection.extend_to`.
     #[test]
     fn shift_right_extends_selection() {
         let mut app = NotesApp::with_seed("hello");
@@ -973,7 +915,6 @@ mod tests {
         assert_eq!(&app.body.text[app.selection.range()], "hel");
     }
 
-    /// Double-click selects the word containing the byte position.
     #[test]
     fn double_click_selects_word() {
         let app = NotesApp::with_seed("hello world quick");
@@ -983,7 +924,6 @@ mod tests {
         assert_eq!(&app.body.text[s..e], "world");
     }
 
-    /// Ctrl+A behavior: anchor=0, cursor=len.
     #[test]
     fn ctrl_a_selects_all() {
         let mut app = NotesApp::with_seed("alpha\nbeta\ngamma");
@@ -995,8 +935,6 @@ mod tests {
         assert_eq!(&app.body.text[app.selection.range()], "alpha\nbeta\ngamma");
     }
 
-    /// Backspace with an active selection deletes the range and collapses,
-    /// rather than chopping a single char to the left.
     #[test]
     fn backspace_with_selection_deletes_range() {
         let (mut doc, tile) = bind();
@@ -1010,8 +948,6 @@ mod tests {
         assert_eq!(app.selection.cursor, 6);
     }
 
-    /// `insert_str` over an active selection replaces the range (paste
-    /// path).
     #[test]
     fn insert_str_replaces_selection() {
         let (mut doc, tile) = bind();
@@ -1025,7 +961,6 @@ mod tests {
         assert_eq!(app.selection.cursor, "hello there".len());
     }
 
-    /// Triple-click line selection routes through `line_boundaries`.
     #[test]
     fn triple_click_selects_line() {
         let app = NotesApp::with_seed("alpha\nbeta\ngamma");
@@ -1036,7 +971,6 @@ mod tests {
         assert_eq!(&app.body.text[s..e], "beta");
     }
 
-    /// State serialization round-trips anchor + cursor across undo.
     #[test]
     fn state_serializes_anchor_and_cursor() {
         let mut app = NotesApp::with_seed("hello world");
@@ -1050,7 +984,6 @@ mod tests {
         assert_eq!(app2.selection.cursor, 11);
     }
 
-    /// Backwards-compat: pre-selection state blobs were the cursor only.
     #[test]
     fn state_backcompat_cursor_only() {
         let mut app = NotesApp::with_seed("hello");
@@ -1059,14 +992,10 @@ mod tests {
         assert_eq!(app.selection.anchor, 3);
     }
 
-    /// Ctrl+C copies the selected text to the clipboard, Ctrl+V pastes
-    /// it back. Skipped if arboard isn't available (CI without a
-    /// display, etc).
     #[test]
     #[cfg(target_os = "linux")]
     fn ctrl_c_then_ctrl_v_round_trips_through_arboard() {
-        // Write a sentinel and read it back; None means no usable arboard
-        // backend (CI without a display, etc.) — treat as skip.
+        // Skip without a usable arboard backend (CI, no display).
         clipboard_copy("__qos_clip_probe__");
         if clipboard_paste().as_deref() != Some("__qos_clip_probe__") {
             eprintln!("clipboard backend unavailable; skipping round-trip test");

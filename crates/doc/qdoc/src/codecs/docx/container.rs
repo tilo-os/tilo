@@ -1,10 +1,8 @@
-//! OOXML (`.docx`) container: a `.docx` is an ordinary ZIP (Open Packaging
-//! Conventions) whose parts include `word/document.xml` (the body),
-//! `word/styles.xml`, `[Content_Types].xml`, `_rels/.rels`, etc. Unlike ODF
-//! there is no special first/stored entry, so every part is deflated. This reads
-//! every part into memory preserving entry order and re-writes byte-faithfully;
-//! it is the lossless backbone — parts the codec doesn't model are carried
-//! verbatim through the preservation layer.
+//! OOXML (`.docx`) container: an ordinary ZIP (Open Packaging Conventions) whose parts
+//! include `word/document.xml`, `word/styles.xml`, `[Content_Types].xml`, `_rels/.rels`,
+//! etc. Unlike ODF there is no special first/stored entry, so every part is deflated.
+//! This reads every part preserving entry order and re-writes byte-faithfully — the
+//! lossless backbone for parts the codec doesn't model, carried verbatim as preservation.
 
 use crate::codecs::safety::{read_zip_parts, ZipLimits};
 use crate::format::CodecError;
@@ -18,7 +16,7 @@ pub struct DocxContainer {
 }
 
 impl DocxContainer {
-    /// Read an untrusted `.docx` package. Bounded against zip bombs and rejects
+    /// Read an untrusted `.docx` package, bounded against zip bombs and rejecting
     /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         let parts = read_zip_parts(bytes, &ZipLimits::default())?;
@@ -54,8 +52,6 @@ impl DocxContainer {
     }
 }
 
-// ---- in-test fixtures ------------------------------------------------------
-
 /// Wrap a `w:body` inner XML into a complete `word/document.xml`.
 #[cfg(test)]
 pub(crate) fn document_xml(body_inner: &str) -> String {
@@ -71,15 +67,13 @@ pub(crate) fn minimal_docx(body_inner: &str) -> Vec<u8> {
     build_docx("", "", body_inner)
 }
 
-/// As [`minimal_docx`], with explicit `word/styles.xml` inner content (the
-/// `<w:style>` elements that go inside `<w:styles>`).
+/// As [`minimal_docx`], with explicit `word/styles.xml` inner content.
 #[cfg(test)]
 pub(crate) fn minimal_docx_styled(styles_inner: &str, body_inner: &str) -> Vec<u8> {
     build_docx(styles_inner, "", body_inner)
 }
 
-/// As [`minimal_docx_styled`], plus `word/numbering.xml` inner content (the
-/// `<w:abstractNum>`/`<w:num>` elements that go inside `<w:numbering>`).
+/// As [`minimal_docx_styled`], plus `word/numbering.xml` inner content.
 #[cfg(test)]
 pub(crate) fn minimal_docx_numbered(styles_inner: &str, numbering_inner: &str, body_inner: &str) -> Vec<u8> {
     build_docx(styles_inner, numbering_inner, body_inner)

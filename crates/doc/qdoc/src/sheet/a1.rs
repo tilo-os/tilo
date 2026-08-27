@@ -20,8 +20,7 @@ pub fn col_to_index(letters: &str) -> Option<u32> {
     Some(idx)
 }
 
-/// Render a 1-based column index back into its letter run (`1` → `"A"`, `27` →
-/// `"AA"`). A zero index (invalid) renders as an empty string.
+/// Renders a 1-based column index back into its letter run (`1` → `"A"`, `27` → `"AA"`); a zero index (invalid) renders as an empty string.
 pub fn index_to_col(mut idx: u32) -> String {
     if idx == 0 {
         return String::new();
@@ -36,9 +35,8 @@ pub fn index_to_col(mut idx: u32) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Split an A1 reference (`"AB12"`) into `(column, row)` 1-based coordinates, or
-/// `None` if it is malformed (missing letters, missing digits, or out of the
-/// bounded range). Any `$` absolute-reference markers are ignored.
+/// Splits an A1 reference (`"AB12"`) into `(column, row)` 1-based coordinates, or
+/// `None` if malformed (missing letters/digits, or out of the bounded range); any `$` absolute-reference markers are ignored.
 pub fn parse_ref(reference: &str) -> Option<(u32, u32)> {
     let cleaned: String = reference.chars().filter(|c| *c != '$').collect();
     let split = cleaned.find(|c: char| c.is_ascii_digit())?;

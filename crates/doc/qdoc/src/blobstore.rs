@@ -1,27 +1,19 @@
-//! Content-addressed storage for document binaries, and the sniffer that
-//! derives a blob's descriptor from its bytes.
+//! Content-addressed storage for document binaries, and the sniffer that derives a blob's
+//! descriptor from its bytes.
 //!
-//! The bytes are deliberately not in the document. Storing them inline made a
-//! 146 KB image a 146 KB automerge change, and a change is what the sync path
-//! carries: gossipsub caps one RPC at 64 KiB, so the transport rejected it
-//! without a word. Automerge queues a change whose ancestors it lacks rather
-//! than applying it, so every keystroke after the image named a change nobody
-//! downstream would ever receive, and the far replica froze at the line before
-//! it while both ends still reported themselves connected.
-//!
-//! So the document holds `{hash, mime, len, w, h}` and the bytes live here —
-//! the shape `fs/src/hydration.rs` already uses. A reference is a few dozen
-//! bytes and cannot hit that ceiling, dedup is free because the key *is* the
-//! content hash, and history stops carrying megabytes.
+//! The bytes are deliberately not in the document: storing them inline made a 146 KB image a
+//! 146 KB automerge change, and gossipsub caps one RPC at 64 KiB, so the transport silently
+//! dropped it and automerge queued every later change behind the one it never received — the far
+//! replica froze at the line before the image while both ends still reported themselves connected.
+//! So the document holds `{hash, mime, len, w, h}` and the bytes live here; a reference cannot hit
+//! that ceiling, dedup is free (the key *is* the content hash), and history stops carrying megabytes.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// Metadata a document carries *instead of* a blob's bytes.
-///
-/// Enough for a renderer to lay out a placeholder occupying exactly the space
-/// the image will, so nothing reflows when the bytes arrive.
+/// Metadata a document carries *instead of* a blob's bytes — enough for a renderer to lay out a
+/// placeholder occupying exactly the space the image will, so nothing reflows when the bytes arrive.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobMeta {
     /// Media type, sniffed from the content (`image/png`, …). Empty if unknown.
@@ -33,12 +25,9 @@ pub struct BlobMeta {
     pub h: u32,
 }
 
-/// A content-addressed byte store keyed by blake3 hex.
-///
-/// Implementations must treat the key as authoritative and verify that the bytes
-/// hash to it. A store that trusts the key would let one peer poison every
-/// replica that later reads that hash, which is the point of addressing by
-/// content rather than by name.
+/// A content-addressed byte store keyed by blake3 hex. Implementations must treat the key as
+/// authoritative and verify the bytes hash to it — a store that trusts the key would let one peer
+/// poison every replica that later reads that hash.
 pub trait BlobStore: Send + Sync {
     fn get(&self, hash: &str) -> Option<Vec<u8>>;
     fn put(&self, hash: &str, bytes: &[u8]) -> bool;
@@ -93,9 +82,8 @@ impl FsBlobStore {
         Self { root: root.into() }
     }
 
-    /// The store this machine uses unless told otherwise. `QOS_BLOB_STORE`
-    /// overrides it, which is what lets two sessions on one host be two peers
-    /// with genuinely separate stores rather than one store they both hit.
+    /// The store this machine uses unless told otherwise. `QOS_BLOB_STORE` overrides it, letting two
+    /// sessions on one host be genuinely separate peers rather than one store they both hit.
     pub fn default_root() -> PathBuf {
         if let Ok(v) = std::env::var("QOS_BLOB_STORE")
             && !v.is_empty()
@@ -172,11 +160,8 @@ fn cell() -> &'static RwLock<Arc<dyn BlobStore>> {
     STORE.get_or_init(|| RwLock::new(Arc::new(MemoryBlobStore::default())))
 }
 
-/// Install the process-wide store.
-///
-/// A global rather than a handle threaded through `DocMut`, because otherwise
-/// every codec and every caller of `put_blob` needs the parameter, and the store
-/// is a property of the machine rather than of a document.
+/// Install the process-wide store. A global rather than a handle threaded through `DocMut`,
+/// because otherwise every codec and every caller of `put_blob` needs the parameter, and the store is a property of the machine rather than of a document.
 pub fn set_store(store: Arc<dyn BlobStore>) {
     if let Ok(mut s) = cell().write() {
         *s = store;
@@ -193,17 +178,12 @@ pub fn store() -> Arc<dyn BlobStore> {
 
 /// How this process reaches the rest of the system for content.
 ///
-/// A content-addressed store makes a blob's *identity* portable; it does not
-/// move the bytes, and nothing else here was going to. An app holds its blobs in
-/// its own sandbox — the launcher gives every app a private `HOME` and
-/// `XDG_CACHE_HOME`, deliberately — so there is no directory an app and its
-/// shell can both read, and there must not be one. Without this door an app
-/// could put an image in a document that the shell then had to send to the room
-/// without ever holding its bytes, and both ends would read a store that was
-/// simply not the store the content was in.
+/// A content-addressed store makes a blob's *identity* portable; it does not move the bytes. An
+/// app holds its blobs in its own sandbox (the launcher gives every app a private `HOME`/
+/// `XDG_CACHE_HOME`), so there is no directory an app and its shell can both read — without this
+/// door an app could reference an image the shell then had no way to send to the room.
 ///
-/// Whatever owns this process's link to the rest of the system installs one;
-/// then [`put`] announces and a missed [`get`] asks.
+/// Whatever owns this process's link to the rest of the system installs one; then [`put`] announces and a missed [`get`] asks.
 pub trait BlobTransport: Send + Sync {
     /// This process now holds `hash`. Anyone who might need it should hear.
     fn offer(&self, hash: &str, bytes: &[u8]);
@@ -218,16 +198,10 @@ fn transport_cell() -> &'static RwLock<Option<Arc<dyn BlobTransport>>> {
     TRANSPORT.get_or_init(|| RwLock::new(None))
 }
 
-/// Content stored before a transport existed, waiting to be offered.
-///
-/// A document is opened — and its images stored — while the app is still
-/// starting, which is before anything has had a chance to install a transport.
-/// Dropping those offers meant the case that matters most, an image that was in
-/// the document from the moment it opened, was the one that never travelled.
-///
-/// Bounded, because this holds real content in memory. A document opening with
-/// more images than this offers the first few immediately and the rest when a
-/// peer asks, which is the path a late joiner uses anyway.
+/// Content stored before a transport existed, waiting to be offered: a document is opened (and its
+/// images stored) before anything can install a transport, so dropping these offers would silently
+/// lose the image that was there from the start. Bounded (holds real content in memory); the rest
+/// go out when a peer asks, which is the path a late joiner uses anyway.
 /// Hash and bytes of a blob stored before any transport existed.
 type PendingOffer = (String, Vec<u8>);
 
@@ -254,12 +228,8 @@ pub fn set_transport(t: Arc<dyn BlobTransport>) {
     }
 }
 
-/// Take the transport away again — the collaboration socket closed, or the app
-/// left the room.
-///
-/// Content already here still reads; content that is not stops claiming to be on
-/// its way, because with nothing able to fetch it that is no longer true (see
-/// [`state`]).
+/// Take the transport away again (collaboration socket closed, or the app left the room). Content
+/// already here still reads; content that is not stops claiming to be on its way, since nothing can fetch it any more (see [`state`]).
 pub fn clear_transport() {
     if let Ok(mut s) = transport_cell().write() {
         *s = None;
@@ -271,9 +241,7 @@ pub fn transport() -> Option<Arc<dyn BlobTransport>> {
     transport_cell().read().ok()?.clone()
 }
 
-/// How long to wait before asking again for the same content. A renderer calls
-/// [`get`] for its image every frame, so without this one missing image would
-/// put sixty requests a second on the room's topic.
+/// How long to wait before asking again for the same content. A renderer calls [`get`] every frame, so without this one missing image would flood the room's topic.
 const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_millis(1000);
 
 static ASKED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
@@ -285,9 +253,8 @@ fn may_ask(hash: &str) -> bool {
     match m.get(hash) {
         Some(t) if now.duration_since(*t) < ASK_AGAIN_AFTER => false,
         _ => {
-            // Bounded: a document referencing thousands of blobs must not turn
-            // this into a leak. The worst case of evicting oldest-first is one
-            // extra request for whatever was evicted.
+            // Bounded: a document referencing thousands of blobs must not turn this into a leak. Evicting
+            // oldest-first costs at most one extra request for whatever was evicted.
             if m.len() > 512
                 && let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())
             {
@@ -301,10 +268,8 @@ fn may_ask(hash: &str) -> bool {
 
 /// Where a reference's content has got to.
 ///
-/// A renderer that only knows "the bytes are not here" draws the same grey box
-/// for a transfer in flight and for one that will never complete, and a reader
-/// cannot tell a slow link from a lost image. The two have to be
-/// distinguishable before anything can be drawn honestly.
+/// A renderer that only knows "the bytes are not here" draws the same grey box for a transfer in
+/// flight and one that will never complete; the two must be distinguishable before anything can be drawn honestly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobState {
     /// The content is here; [`get`] returns it.
@@ -312,28 +277,21 @@ pub enum BlobState {
     /// Not here, and expected: this process has asked and the answer has had
     /// less than [`GIVE_UP_AFTER`] to arrive.
     Pending,
-    /// Not here, and not coming — either nothing in this process can fetch it
-    /// (no transport, so a miss is permanent by construction), or it has been
-    /// asked for long enough that the honest answer is that nobody has it.
+    /// Not here, and not coming: either nothing in this process can fetch it (no transport, so a miss
+    /// is permanent by construction), or it has been asked for long enough that nobody has it.
     Unavailable,
 }
 
-/// How long a missing blob stays [`BlobState::Pending`] before this process
-/// stops calling it "arriving".
-///
-/// Sized against the layer that does the fetching: the shell asks the room and
-/// retries a handful of times, taking well under a minute. Declaring failure
-/// sooner would call an image lost while it was still transferring; much later
-/// leaves a reader watching a box that says "arriving" about something that
-/// stopped arriving a minute ago.
+/// How long a missing blob stays [`BlobState::Pending`] before this process stops calling it
+/// "arriving". Sized against the fetching layer: the shell asks the room and retries a handful of
+/// times, taking well under a minute — sooner would call an in-flight image lost, much later leaves
+/// a reader watching a box that says "arriving" long after it stopped.
 pub const GIVE_UP_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
 
 static FIRST_WANTED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
 
-/// When this process first went looking for `hash`, recording now if it never
-/// has. The [`BlobState::Pending`] clock starts here rather than when the
-/// reference arrived, because a document can hold a reference for a long time
-/// before anything draws it.
+/// When this process first went looking for `hash`, recorded once. The [`BlobState::Pending`]
+/// clock starts here rather than when the reference arrived, since a document can hold a reference long before anything draws it.
 fn first_wanted(hash: &str) -> std::time::Instant {
     let cell = FIRST_WANTED.get_or_init(|| RwLock::new(BTreeMap::new()));
     let now = std::time::Instant::now();
@@ -356,11 +314,8 @@ fn clear_wait(hash: &str) {
     }
 }
 
-/// Whether the content behind `hash` is here, on its way, or not coming.
-///
-/// Reports; it does not ask. [`get`] is what asks, and a renderer calls that
-/// every frame anyway — a second request raised from a state query would be the
-/// same flood arriving by another route.
+/// Whether the content behind `hash` is here, on its way, or not coming. Reports; does not ask —
+/// [`get`] is what asks, and a renderer already calls that every frame, so a state query triggering another request would just be the same flood by another route.
 pub fn state(hash: &str) -> BlobState {
     if store().has(hash) {
         clear_wait(hash);
@@ -378,11 +333,9 @@ pub fn state(hash: &str) -> BlobState {
     }
 }
 
-/// Read a blob's bytes from the process-wide store.
-///
-/// A miss asks the transport and still returns `None`: the caller renders its
-/// placeholder now, the bytes arrive out of band, and the next frame draws the
-/// image. A blocking fetch here would stall a compositor frame on a peer.
+/// Read a blob's bytes from the process-wide store. A miss asks the transport and still returns
+/// `None`: the caller renders its placeholder now and the next frame draws the image once bytes
+/// arrive out of band — a blocking fetch here would stall a compositor frame on a peer.
 pub fn get(hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = store().get(hash) {
         clear_wait(hash);
@@ -399,10 +352,8 @@ pub fn get(hash: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Write bytes to the process-wide store, returning their hash.
-///
-/// Also *offers* them to the transport, which is what carries an image out of
-/// the process that produced it — the document only ever gains the reference.
+/// Write bytes to the process-wide store, returning their hash. Also *offers* them to the
+/// transport, which is what carries an image out of the process that produced it — the document only ever gains the reference.
 pub fn put(bytes: &[u8]) -> String {
     let hash = hash_bytes(bytes);
     if !store().put(&hash, bytes) {
@@ -417,9 +368,8 @@ pub fn put(bytes: &[u8]) -> String {
     }
     match transport() {
         Some(t) => t.offer(&hash, bytes),
-        // A document's images are stored while the app is still starting, so
-        // having nowhere to offer them *yet* is the common case, not the odd
-        // one. `set_transport` flushes these.
+        // A document's images are stored while the app is still starting, so having nowhere to offer them
+        // *yet* is the common case, not the odd one; `set_transport` flushes these.
         None => {
             if let Ok(mut q) = pending_offers().write()
                 && q.len() < MAX_PENDING_OFFERS
@@ -432,12 +382,9 @@ pub fn put(bytes: &[u8]) -> String {
     hash
 }
 
-/// Derive a descriptor from content: media type plus intrinsic dimensions.
-///
-/// Dimensions come from the container header rather than a full decode — the
-/// point is to know how much space to reserve, which every one of these formats
-/// states in its first few dozen bytes. An unrecognised format still gets a
-/// correct `len`, and simply reserves no particular size.
+/// Derive a descriptor from content: media type plus intrinsic dimensions, read from the container
+/// header rather than a full decode (the point is only to know how much space to reserve). An
+/// unrecognised format still gets a correct `len` and reserves no particular size.
 pub fn sniff(bytes: &[u8]) -> BlobMeta {
     let mut m = BlobMeta { len: bytes.len() as u64, ..Default::default() };
     if let Some((mime, w, h)) = sniff_image(bytes) {
@@ -485,9 +432,8 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
             _ => return Some(("image/webp", 0, 0)),
         }
     }
-    // JPEG: walk the marker segments to the start-of-frame, the only one
-    // carrying the dimensions. Honouring each segment's declared length is what
-    // skips the entropy-coded scan, which a scan for the next 0xFF would not.
+    // JPEG: walk the marker segments to the start-of-frame, honouring each segment's declared length
+    // to skip the entropy-coded scan (which a scan for the next 0xFF would not).
     if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 {
         let mut i = 2usize;
         while i + 3 < b.len() {

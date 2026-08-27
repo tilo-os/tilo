@@ -1,17 +1,14 @@
-//! Headless end-to-end snapshot harness for nirios-shell flows.
+//! Headless end-to-end snapshot harness for nirios-shell flows. Drives the
+//! real widget tree through synthesised `winit::WindowEvent`s and a full
+//! build/layout/draw cycle (no window, no compositor), writing frames to
+//! `target/nirios-screenshots/e2e-*.png`; only existence/PNG validity are
+//! asserted, no pixel-diff yet.
 //!
-//! Drives the real widget tree through synthesised `winit::WindowEvent`s and
-//! a full build/layout/draw cycle, with no window and no compositor, writing
-//! each frame to `target/nirios-screenshots/e2e-*.png`. Only existence and
-//! PNG validity are asserted — pixel-diff regression isn't wired up yet.
-//!
-//! There's no clock test hook, so animations are driven by sleeping past
-//! `OVERVIEW_TRANSITION_MS` (`overlay_host.rs`) between click and "settled"
-//! render.
-//!
-//! `OffscreenRenderer::new` panics with no wgpu adapter (e.g. sandboxed CI
-//! without llvmpipe); each test catches that and skips rather than failing
-//! in a way that masks unrelated regressions.
+//! No clock test hook, so animations are driven by sleeping past
+//! `OVERVIEW_TRANSITION_MS` between click and "settled" render.
+//! `OffscreenRenderer::new` panics with no wgpu adapter (e.g. sandboxed CI);
+//! each test catches that and skips rather than failing in a way that masks
+//! unrelated regressions.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,8 +37,7 @@ use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGrou
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::SnapshotAssertion;
 
-/// Directory under the crate root where golden PNGs are committed.
-/// Mirrors `screenshots_dir()` but lives in source, not `target/`.
+/// Where golden PNGs are committed (in source, not `target/`).
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -49,15 +45,12 @@ fn goldens_dir() -> PathBuf {
         .join("e2e")
 }
 
-// ---------------------------------------------------------------------------
 // Shared harness plumbing
-// ---------------------------------------------------------------------------
 
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
 
-/// PNG output root. Everything lands in `target/nirios-screenshots/` so
-/// gitignored + easy to find with `ls target/nirios-screenshots/e2e-*`.
+/// PNG output root, under `target/nirios-screenshots/` so it's gitignored.
 fn screenshots_dir() -> PathBuf {
     // CARGO_TARGET_DIR respects workspace overrides; default to `target/`
     // under the crate root, which `cargo test` uses.
@@ -72,8 +65,7 @@ fn screenshots_dir() -> PathBuf {
     root.join("nirios-screenshots")
 }
 
-/// Try to spin up the offscreen renderer; return `None` if no wgpu
-/// adapter is available (catch_unwind-guarded like screenshot_test.rs).
+/// `None` when no wgpu adapter is available (catch_unwind-guarded).
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         OffscreenRenderer::new(w, h)
@@ -102,15 +94,13 @@ struct Harness {
 
 impl Harness {
     fn new(tree: &WorkspaceTree) -> Self {
-        // Pin the top-bar clock before the root is built so the first sync
-        // reads it — the bar is inside frames this file compares pixel for
-        // pixel, and a live clock would fail them once a minute.
+        // Pin the top-bar clock before the first sync — frames here are compared
+        // pixel-for-pixel and a live clock would fail once a minute.
         // SAFETY: single-threaded test setup, under `TEST_LOCK`.
         unsafe { std::env::set_var("QOS_CLOCK", "09:41") };
         let mut owned = tree.clone();
-        // Without this, harness rooms have no recorded access, and any
-        // surface that reports on access asserts against a state no user
-        // has ever been in.
+        // Rooms need recorded access, or access-reporting surfaces assert against
+        // a state no user has ever been in.
         owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
         let tree = &owned;
         let (root, chrome) = build_nirios_root_with_chrome(tree);
@@ -133,8 +123,7 @@ impl Harness {
             .unwrap();
 
         let mut tr = TextRenderer::new();
-        // Clone the map by converting into a local so the closure borrow
-        // doesn't collide with the `node_map` we keep on the struct.
+        // Clone into a local so the closure borrow doesn't collide with `node_map`.
         let measure_map = node_map.clone();
         taffy
             .compute_layout_with_measure(
@@ -155,7 +144,6 @@ impl Harness {
         root.apply_layout(&taffy, child, Point::ORIGIN);
 
         let mut doc = AutoCommit::new();
-        // Grab a stable path for the root so handle_event has an ObjId.
         let doc_root = automerge::ROOT.clone();
         let _ = &mut doc; // silence unused-mut warnings on older toolchains
 
@@ -174,8 +162,7 @@ impl Harness {
         }
     }
 
-    /// No re-build of the taffy tree here — that would discard animation
-    /// state. Writes to `path` via the offscreen renderer when present.
+    /// No taffy rebuild — that would discard animation state.
     fn draw_to(&mut self, renderer: Option<&mut OffscreenRenderer>, path: &Path) {
         self.root
             .apply_layout(&self.taffy, self.root_node, Point::ORIGIN);
@@ -189,16 +176,14 @@ impl Harness {
             &presence,
         );
         if let Some(r) = renderer {
-            // Opaque slate-950 background so the shell chrome composites
-            // over a consistent base across every snapshot.
+            // Opaque slate-950 so chrome composites over a consistent base everywhere.
             let bg = Color::from_rgb8(0x02, 0x06, 0x14);
             r.render_png(&scene, bg, path);
         }
     }
 
-    /// Unused on `nirios-shell` because the sidebar wheel swallows clicks
-    /// at the topbar hit regions (see probe helpers); kept so new tests
-    /// can drive clicks against the root once that regression is fixed.
+    /// Unused on `nirios-shell` — the sidebar wheel swallows clicks at the
+    /// topbar hit regions — kept for when that regression is fixed.
     #[allow(dead_code)]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(WindowEvent::CursorMoved {
@@ -233,18 +218,16 @@ impl Harness {
         handled
     }
 
-    /// `pump_host` can't answer this for a key the shell *declines*: it
-    /// hands the host a zeroed taffy node on the promise that the hotkey
-    /// pre-pass returns before any child walk — exactly the promise a
-    /// declined key breaks.
+    /// `pump_host` can't answer this for a declined key: it hands the host a
+    /// zeroed taffy node, relying on the hotkey pre-pass returning before any
+    /// child walk.
     fn key(&mut self, key: Key) -> bool {
         self.pump(key_press(key))
     }
 }
 
-// winit's `KeyEvent` has a private `platform_specific` field, so it can't
-// be built from a plain struct literal — zero-init the whole struct (see
-// SAFETY below) and overwrite the public fields we care about.
+// winit's `KeyEvent` has a private field, so it can't come from a struct
+// literal — zero-init instead (see SAFETY below).
 fn escape_event() -> WindowEvent {
     // SAFETY: `KeyEvent`'s pub fields are all safe to zero-init
     // (`Option<SmolStr>` → `None`; `PhysicalKey`, `Key`, `KeyLocation`,
@@ -270,23 +253,13 @@ fn escape_event() -> WindowEvent {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test serialisation
-// ---------------------------------------------------------------------------
-//
-// Tests in this binary share a wgpu adapter / vello / cosmic-text static
-// cache via `try_new_renderer`; running them in parallel has SIGSEGV'd on
-// the shared GPU/text resources, so every test holds `TEST_LOCK` for its
-// duration. Distinct test binaries still run in parallel — each is its own
-// process, so OS-level contention is bounded per-process.
-//
+// Test serialisation: tests share a wgpu/vello/cosmic-text static cache and
+// have SIGSEGV'd in parallel, so each holds `TEST_LOCK` for its duration.
 // `unwrap_or_else(|e| e.into_inner())` so a panicking test doesn't poison
-// the mutex and fail the rest of the suite.
+// the mutex for the rest of the suite.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-// ---------------------------------------------------------------------------
 // Test 1: open + close overview
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_open_close_overview() {
@@ -300,14 +273,11 @@ fn e2e_open_close_overview() {
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
-    // Pre-click frame — also primes the topbar's `overview_btn_rect` so
-    // the probe-computed hit coordinates below are valid.
+    // Pre-click frame — also primes `overview_btn_rect` for the probe below.
     h.draw_to(renderer_opt.as_mut(), &out_dir.join("e2e-01-desktop.png"));
 
-    // The sibling `TopBarChrome` probe below only computes the button's
-    // centre coordinates; the click itself flows through
-    // `ShellOverlayHost::handle_event`, which narrows the sidebar wheel's
-    // click-guard to its own y-range.
+    // The probe only computes the button's centre; the click flows through
+    // `ShellOverlayHost::handle_event`, narrowed to the sidebar wheel's y-range.
     let hit = overview_btn_hit(&tree, &theme, h.chrome.clone());
     h.click(hit.x, hit.y);
     assert!(
@@ -326,13 +296,12 @@ fn e2e_open_close_overview() {
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     }
 
-    // `needs_animation_frame()` is `true` during the transition; used as a
-    // weak loop guard so this doesn't sleep forever if nothing's animating.
+    // `needs_animation_frame()` is a weak loop guard so this can't sleep forever.
     let deadline = Instant::now() + Duration::from_millis(600);
     while h.root.needs_animation_frame() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
-        // Re-draw so ShellOverlayHost's tick functions see elapsed time;
-        // they only advance on draw, not on wall clock.
+        // Re-draw so the tick functions see elapsed time — they advance on draw,
+        // not on wall clock.
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         h.root
@@ -344,14 +313,12 @@ fn e2e_open_close_overview() {
         &out_dir.join("e2e-02-overview-open.png"),
     );
 
-    // Press Escape — the ShellOverlayHost Esc handler closes the overview.
     h.pump(escape_event());
     assert!(
         !h.chrome.borrow().overlays.overview,
         "Escape should close the overview overlay"
     );
 
-    // Same priming-draw trick as the open path above.
     {
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
@@ -372,9 +339,8 @@ fn e2e_open_close_overview() {
         &out_dir.join("e2e-03-overview-closed.png"),
     );
 
-    // If renderer is available, verify the PNGs actually landed on disk
-    // (non-empty + PNG signature). Without a renderer we just assert the
-    // state transitions above, matching the soft-skip convention.
+    // With a renderer, verify the PNGs landed (non-empty + PNG signature);
+    // without one, only the state transitions above are asserted.
     if renderer_opt.is_some() {
         for name in [
             "e2e-01-desktop.png",
@@ -383,9 +349,8 @@ fn e2e_open_close_overview() {
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
-        // Pin only the settled open-overview frame — the pre-click and
-        // post-Esc frames are the same "desktop" steady state, so one
-        // golden covers the flow.
+        // Only the settled open-overview frame is pinned — pre-click and post-Esc
+        // are the same desktop steady state.
         let rendered = out_dir.join("e2e-02-overview-open.png");
         SnapshotAssertion::new(
             rendered,
@@ -399,10 +364,8 @@ fn e2e_open_close_overview() {
     }
 }
 
-/// Centre of the topbar's overview-toggle grid icon, in the real shell's
-/// viewport-local coordinates. Built from a throwaway sibling
-/// `TopBarChrome` laid out at the same width — topbar geometry is purely
-/// width-driven, so its `overview_btn_rect()` matches the real tree's.
+/// Centre of the topbar's overview-toggle icon, from a sibling
+/// `TopBarChrome` — topbar geometry is width-driven, so its rect matches.
 fn overview_btn_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
@@ -412,8 +375,6 @@ fn overview_btn_hit(
     centre
 }
 
-/// Same pattern as [`overview_btn_hit`] for the three-dot tray pill
-/// (quick settings).
 fn tray_pill_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
@@ -423,11 +384,10 @@ fn tray_pill_hit(
     centre
 }
 
-/// Shared probe helper: lays out a sibling `TopBarChrome` at the real
-/// shell's topbar origin and width, and returns the `extract`-selected
-/// rect along with its centre point. Topbar geometry is purely
-/// width-driven, so matching the viewport width is what lines up the
-/// right-edge cluster (tray pill, avatar stack) with the live root.
+/// Shared probe helper: lays out a sibling `TopBarChrome` at the shell's
+/// topbar origin/width and returns the `extract`-selected rect + its
+/// centre. Matching viewport width is what lines up the right-edge
+/// cluster (tray pill, avatar stack) with the live root.
 fn probe_topbar(
     tree: &WorkspaceTree,
     theme: &Theme,
@@ -438,9 +398,8 @@ fn probe_topbar(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, theme, &mut map);
-    // The shell's outer Container + foreground Column both use
-    // `with_no_padding`, so the topbar lands flush at y=0/x=0; the probe
-    // matches with zero offset and the full viewport width.
+    // The shell's Container + Column use `with_no_padding`, so the topbar is
+    // flush at y=0/x=0 and the probe matches at zero offset.
     let topbar_offset = 0.0_f64;
     let probe_w = W;
     let vp = taffy
@@ -475,28 +434,23 @@ fn probe_topbar(
     (r, centre)
 }
 
-// ---------------------------------------------------------------------------
-// Test 2: tab drag-to-reorder (Files → after Browser)
-// ---------------------------------------------------------------------------
+// Test 2: tab drag-to-reorder (Files -> after Browser)
 
 #[test]
 fn e2e_tab_drag_reorder() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Standalone WindowGroup with four Stub tabs — matches the tab set
-    // in the bootstrap workspace but avoids the full-root plumbing. Tab
-    // 1 (Files) is the drag source; tab 3 (Browser) is the drop target.
+    // Standalone WindowGroup with four Stub tabs, avoiding full-root plumbing.
+    // Tab 1 (Files) is the drag source; tab 3 (Browser) the drop target.
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
         tab_stub(2, "Files", AppKind::Files, "files"),
         tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
         tab_stub(4, "Browser", AppKind::Browser, "browser"),
     ];
-    // Active tab = Notes so the reorder doesn't accidentally also
-    // change the active id mid-drag.
+    // Active tab = Notes so the reorder can't also change the active id.
     let mut standalone = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
-    // A width is a fraction of the strip it lives in; with no `GroupRow` to
-    // supply one, tell the group the 960 px capture surface *is* its strip
-    // — otherwise it resolves against the toolkit's fallback.
+    // A width is a fraction of its strip; with no `GroupRow`, tell the group the
+    // 960 px capture surface *is* its strip, or it uses the toolkit fallback.
     standalone.set_strip_usable_px(960.0);
     let mut group: Box<dyn Widget> = Box::new(standalone);
 
@@ -517,8 +471,7 @@ fn e2e_tab_drag_reorder() {
         )
         .unwrap();
     let mut tr = TextRenderer::new();
-    // Capture node_map into the closure as a Map clone to side-step
-    // simultaneous borrow of `&mut tr` vs `&mut node_map`.
+    // Clone node_map into the closure to side-step a double borrow with `&mut tr`.
     let map_for_measure = node_map.clone();
     taffy
         .compute_layout_with_measure(
@@ -538,7 +491,6 @@ fn e2e_tab_drag_reorder() {
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
 
-    // Drive a draw to populate tab_rects on the bar.
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
     group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -555,13 +507,11 @@ fn e2e_tab_drag_reorder() {
         );
     }
 
-    // `WindowGroup` doesn't expose `bar` directly, so read tab geometry via
-    // a parallel TabBar built with the same args, to pick cursor coords.
+    // `bar` isn't exposed, so read tab geometry from a parallel TabBar.
     let tab_centers = probe_tab_centers();
     let from = tab_centers[1]; // Files pill centre
     let to = tab_centers[3]; // Browser pill centre
 
-    // Mouse down at the Files pill.
     let mut doc = AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
     let modifiers = Modifiers::default();
@@ -595,8 +545,8 @@ fn e2e_tab_drag_reorder() {
         },
     );
 
-    // Cross the DRAG_START threshold (8 px in the bar) in steps; capture
-    // one mid-drag snapshot so the drop-zone highlight is visible.
+    // Cross the 8 px DRAG_START threshold in steps, capturing one mid-drag
+    // frame so the drop-zone highlight is visible.
     let midway = Point::new((from.x + to.x) / 2.0, from.y);
     for step in [0.33_f64, 0.66, 1.0] {
         let p = Point::new(
@@ -629,8 +579,8 @@ fn e2e_tab_drag_reorder() {
         );
     }
 
-    // TabBar's `MouseInput::Released` branch reads the cached
-    // `last_cursor`, so the final step above must already be at `to`.
+    // `MouseInput::Released` reads the cached `last_cursor`, so the final step
+    // must already be at `to`.
     pump(
         &mut group,
         &taffy,
@@ -647,14 +597,10 @@ fn e2e_tab_drag_reorder() {
     );
 
     // WindowGroup drains `bar.take_reorder()` and permutes its hosts, but
-    // `WindowGroup::tabs()` still returns descriptor order — TabBar doesn't
-    // apply the `(from, to)` permutation to its own `tabs` vec (content
-    // order follows the drop target; visible tab label order stays stable
-    // during the drag). So this asserts a reorder was requested, via a
-    // sibling TabBar's `TabBar::reorder`, rather than via `group.tabs()`.
-    //
-    // If TabBar+WindowGroup ever reorder the descriptor list too, switch
-    // this to the post-drop descriptor list on `group.tabs()`.
+    // `WindowGroup::tabs()` still returns descriptor order (visible labels stay
+    // stable during drag; content order follows the drop target). So this
+    // asserts the reorder request via a sibling TabBar's `reorder`, not
+    // `group.tabs()` — switch if that ever changes.
     let post = expected_post_drop_descriptor_order();
     assert_eq!(
         post,
@@ -667,8 +613,7 @@ fn e2e_tab_drag_reorder() {
     // `prev_rect` to `tab_rects[i]` before the golden capture — without it
     // the spring is still ~70% interpolated and back-to-back runs diverge.
     std::thread::sleep(Duration::from_millis(250));
-    // Event-less pump + draw so the bar sees "post-LAYOUT_ANIM_MS" on its
-    // next draw and `needs_animation_frame` flips false.
+    // Event-less pump + draw so the bar sees "post-LAYOUT_ANIM_MS" next draw.
     {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -692,9 +637,8 @@ fn e2e_tab_drag_reorder() {
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
-        // Only the final, post-spring frame is pinned — midway is
-        // mid-animation (ghost position + drop-zone expand are
-        // frame-timer driven) and would be inherently flaky.
+        // Only the post-spring frame is pinned — midway is frame-timer driven and
+        // inherently flaky.
         let rendered = out_dir.join("e2e-06-tabs-reordered.png");
         SnapshotAssertion::new(
             rendered,
@@ -720,8 +664,8 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
     )
 }
 
-/// Each tab pill's centre in the same layout the real WindowGroup
-/// produces, via a parallel TabBar run through build/compute/apply/draw.
+/// Each tab pill's centre, via a parallel TabBar run through the same
+/// build/compute/apply/draw the real WindowGroup uses.
 fn probe_tab_centers() -> [Point; 4] {
     let descs = vec![
         TabDescriptor {
@@ -785,8 +729,7 @@ fn probe_tab_centers() -> [Point; 4] {
     let presence = PresenceCtx::default();
     bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    // `tab_rects` isn't reachable through `Box<dyn Widget>`, so rebuild as
-    // a concrete TabBar to read the rects directly.
+    // `tab_rects` isn't reachable through `Box<dyn Widget>`; rebuild as concrete.
     let mut concrete = TabBar::new(
         "g100",
         vec![
@@ -850,9 +793,8 @@ fn probe_tab_centers() -> [Point; 4] {
     let mut s2 = Scene::new();
     concrete.draw(&mut s2, Affine::IDENTITY, &mut tr2, &theme, &presence);
     let rs = concrete.tab_rects();
-    // Safety net: if layout returned fewer than 4 rects, fall back to
-    // evenly-spaced guesses so the test produces a helpful error rather
-    // than an index panic.
+    // Fall back to evenly-spaced guesses if layout returned fewer than 4 rects,
+    // so a failure reports usefully instead of panicking on an index.
     let pick = |i: usize| {
         rs.get(i).copied().unwrap_or_else(|| {
             let gap = 960.0 / 4.0;
@@ -871,10 +813,8 @@ fn center(r: vello::kurbo::Rect) -> Point {
     Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
 }
 
-/// The post-drop descriptor order we expect given the `(from, to) = (1, 3)`
-/// permutation applied by `TabBar::reorder`. Kept separate from the
-/// live widget so the assertion documents intent even if the TabBar
-/// descriptor list doesn't yet get mutated by the drop pipeline.
+/// Expected post-drop order for `(from, to) = (1, 3)`, kept separate from the
+/// live widget so it documents intent even if the descriptor list is unchanged.
 fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
     let mut order = vec!["Notes", "Files", "Terminal", "Browser"];
     // Matches `TabBar::reorder(1, 3)`: pull `Files`, re-insert at idx 3.
@@ -883,9 +823,7 @@ fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
     order
 }
 
-// ---------------------------------------------------------------------------
 // Test 3: open quick settings via the tray pill
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_open_quick_settings() {
@@ -899,15 +837,13 @@ fn e2e_open_quick_settings() {
     let mut h = Harness::new(&tree);
     assert!(!h.chrome.borrow().overlays.quick_settings);
 
-    // A draw pass is required so the inner `TopBarChrome` populates its
-    // `tray_pill_rect` — that's what its handle_event hit-tests against.
+    // A draw pass populates `tray_pill_rect`, which handle_event hit-tests.
     h.draw_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-06-quick-settings-pre.png"),
     );
 
-    // With the sidebar's click-guard narrowed to its own y-range, the
-    // root-level click reaches `TopBarChrome::handle_event` directly.
+    // With the sidebar click-guard narrowed, the click reaches TopBarChrome.
     let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
     h.click(hit.x, hit.y);
     assert!(
@@ -915,8 +851,7 @@ fn e2e_open_quick_settings() {
         "root-level click on the three-dot tray pill should open the quick-settings overlay"
     );
 
-    // Drive the 180 ms open fade to settle before snapshotting so the
-    // captured image shows the fully-open tray.
+    // Let the 180 ms open fade settle so the capture shows a fully-open tray.
     let deadline = Instant::now() + Duration::from_millis(400);
     while h.root.needs_animation_frame() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(30));
@@ -933,33 +868,22 @@ fn e2e_open_quick_settings() {
     if renderer_opt.is_some() {
         let rendered = out_dir.join("e2e-07-quick-settings-open.png");
         assert_png_nonempty(&rendered);
-        // The topbar clock (`chrono::Local`) is visible behind the
-        // quick-settings popover, so this render is wall-clock-dependent —
-        // pinning a golden would turn every PR red once the minute ticks.
-        // Only the state transition + non-empty PNG are asserted until the
-        // clock is mockable.
+        // The topbar clock (chrono::Local) shows behind the quick-settings
+        // popover, making this render wall-clock-dependent — a golden would flake
+        // once a minute, so only the state transition + non-empty PNG are
+        // asserted until the clock is mockable.
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
 }
 
-// ---------------------------------------------------------------------------
 // Test 4: maximized tile renders the floating-controls chrome
-// ---------------------------------------------------------------------------
 //
-// Drives the per-tab hover-cluster's Maximize2 click on a standalone
-// `WindowGroup` and captures the maximized render — title pill +
-// `[Restore][×]` floating-controls cluster that WindowGroup paints over
-// its own rect while `maximized == true`.
-//
-// Standalone rather than the full shell tree: `max_rects` has no public
-// accessor on `TabBar` (its coordinates are derived below from
-// `tab_rects()` instead), and `WindowGroup.maximized` is `pub` on the
-// concrete type but unreachable through the shell's `Box<dyn Widget>`
-// tree without a new widget accessor. The standalone group gives direct
-// access to `.maximized` while still exercising the full click pipeline
-// end to end (max_rects hit-test → pending_max → WindowGroup::take_max →
-// flip maximized → floating-controls draw).
+// Standalone `WindowGroup`, not the full shell tree: `max_rects` has no
+// public `TabBar` accessor and `WindowGroup.maximized` isn't reachable
+// through the shell's `Box<dyn Widget>` tree. This still exercises the
+// full click pipeline (max_rects hit-test -> pending_max -> take_max ->
+// flip maximized -> floating-controls draw).
 #[test]
 fn e2e_maximized_tile_floating_controls() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -970,8 +894,7 @@ fn e2e_maximized_tile_floating_controls() {
         tab_stub(4, "Browser", AppKind::Browser, "browser"),
     ];
     let mut group = WindowGroup::new(200, tabs, /* active_id */ 1, WindowWidth::Normal);
-    // See the note in `e2e_tab_drag_reorder`: no row here, so the capture
-    // surface is the strip.
+    // See `e2e_tab_drag_reorder`: no row here, so the capture surface is the strip.
     group.set_strip_usable_px(960.0);
     assert!(!group.maximized, "group starts un-maximized");
 
@@ -1011,16 +934,14 @@ fn e2e_maximized_tile_floating_controls() {
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
 
-    // Prime the bar so `tab_rects` is populated — max_rect coordinates
-    // are derived from the active tab's pill rect.
+    // Prime the bar — max_rect coordinates derive from the active pill's rect.
     let presence = PresenceCtx::default();
     {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    // Derive the active tab's Maximize2 rect from its pill rect + the
-    // hover-cluster offsets baked into `TabBar::apply_layout`.
+    // Derive the Maximize2 rect from the pill rect + `TabBar::apply_layout` offsets.
     let tab_rects = probe_tab_rects();
     let active_idx = 0usize;
     let pill = tab_rects[active_idx];
@@ -1033,14 +954,14 @@ fn e2e_maximized_tile_floating_controls() {
         (max_rect.y0 + max_rect.y1) / 2.0,
     );
 
-    // Synthesise the click: CursorMoved (populates `last_cursor` + the
-    // hover_max_idx cache), then press+release at the same spot.
+    // CursorMoved populates `last_cursor` + the hover_max_idx cache, then
+    // press+release at the same spot.
     let mut doc = AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
     let modifiers = Modifiers::default();
     let mut focus: Option<NodeId> = None;
-    // Calls `group.handle_event` directly (not via the boxed `pump`
-    // helper) so `.maximized` stays reachable on the concrete type.
+    // Direct `group.handle_event` (not the boxed `pump`) keeps `.maximized`
+    // reachable on the concrete type.
     let root_node = child;
     let mut pump_ev = |group: &mut WindowGroup, event: WindowEvent| {
         let mut handled = false;
@@ -1071,10 +992,8 @@ fn e2e_maximized_tile_floating_controls() {
             button: MouseButton::Left,
         },
     );
-    // Release isn't strictly required — `TabBar::handle_event` publishes
-    // `pending_max` on Pressed, and `WindowGroup::handle_event` drains
-    // it at the end of the same event. But a release keeps the event
-    // stream realistic and matches how the live binary forwards clicks.
+    // Release isn't required (Pressed publishes pending_max, drained same event)
+    // but keeps the event stream realistic.
     pump_ev(
         &mut group,
         WindowEvent::MouseInput {
@@ -1089,9 +1008,7 @@ fn e2e_maximized_tile_floating_controls() {
         "clicking the active tab's Maximize2 glyph should toggle `maximized = true`"
     );
 
-    // Settle any spawn-fade / animation timers the group might still
-    // be pumping (defensive — a freshly-built group without a
-    // `start_spawn_animation` call shouldn't have one in flight).
+    // Defensive: settle any spawn-fade timers still pumping.
     std::thread::sleep(Duration::from_millis(50));
     {
         let mut s = Scene::new();
@@ -1110,8 +1027,7 @@ fn e2e_maximized_tile_floating_controls() {
         );
         let rendered = out_dir.join("e2e-maximized-tile-controls.png");
         assert_png_nonempty(&rendered);
-        // Floating-controls chrome (title pill + `[Restore][×]`) is what
-        // regresses if the hover-cluster geometry or post-click chrome drifts.
+        // Floating-controls chrome is what regresses if hover-cluster geometry drifts.
         SnapshotAssertion::new(
             rendered,
             goldens_dir().join("e2e-maximized-tile-controls.png"),
@@ -1124,10 +1040,8 @@ fn e2e_maximized_tile_floating_controls() {
     }
 }
 
-/// Builds a sibling `TabBar` with the same tabs as
-/// `e2e_maximized_tile_floating_controls` and returns the full
-/// `tab_rects` — unlike `probe_tab_centers`, so callers can derive
-/// per-pill hover-cluster coordinates without a new `TabBar` accessor.
+/// Sibling `TabBar` returning full `tab_rects` (unlike `probe_tab_centers`),
+/// for per-pill hover-cluster coordinates.
 fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
     let mut concrete = TabBar::new(
         "g200",
@@ -1196,9 +1110,7 @@ fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
     concrete.tab_rects().to_vec()
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn pump(
     widget: &mut Box<dyn Widget>,
@@ -1244,20 +1156,15 @@ fn assert_png_nonempty(path: &Path) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 5: live-binary global hotkey routing
-// ---------------------------------------------------------------------------
 //
-// Guards the Cmd+K / Cmd+Tab / Escape hotkeys that fire in the running
-// `quick-desktop` binary. `Shell::dispatch_key` is never constructed by
-// `main.rs` — main builds the widget tree via `build_nirios_root` and hands
-// it to `ui::App`, bypassing the `Shell` struct — so the only hotkey path a
-// real user hits is the pre-pass inside `ShellOverlayHost::handle_event`.
-// These tests pin that pre-pass.
+// Guards Cmd+K / Cmd+Tab / Escape as the running binary actually wires
+// them: `main.rs` bypasses `Shell::dispatch_key` entirely, so the only
+// hotkey path a real user hits is the pre-pass inside
+// `ShellOverlayHost::handle_event`.
 
 /// Same zero-init workaround as [`escape_event`] — winit 0.30 keeps
-/// `KeyEventExtra` `pub(crate)`, so a `KeyEvent` can't come from a struct
-/// literal.
+/// `KeyEventExtra` `pub(crate)`.
 fn key_press(logical_key: Key) -> WindowEvent {
     // SAFETY: see the note on `escape_event` — all pub fields of `KeyEvent`
     // tolerate the all-zero bit pattern, and the overlay-host pre-pass
@@ -1276,9 +1183,8 @@ fn key_press(logical_key: Key) -> WindowEvent {
     }
 }
 
-/// Builds a throwaway `AutoCommit` + empty taffy tree so the hotkey
-/// pre-pass short-circuits before it would otherwise walk the widget
-/// tree's children.
+/// Throwaway `AutoCommit` + empty taffy tree, so the hotkey pre-pass
+/// short-circuits before walking children.
 fn pump_host(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     event: &WindowEvent,
@@ -1289,8 +1195,7 @@ fn pump_host(
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let taffy: TaffyTree<()> = TaffyTree::new();
-    // `node_id` is only dereferenced when the host walks into children;
-    // the global-hotkey pre-pass returns before that.
+    // `node_id` is only dereferenced when walking children; the pre-pass returns first.
     let dummy_node: NodeId = unsafe { std::mem::zeroed() };
     host.handle_event(
         event,
@@ -1309,9 +1214,8 @@ fn pump_host(
 #[test]
 fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // `build_nirios_overlay_host_with_chrome` is the concrete-type sibling
-    // of `build_nirios_root_with_chrome` the live binary uses — exercises
-    // the real widget tree, not a hand-rolled stub.
+    // The concrete-type sibling of what the live binary builds — exercises the
+    // real widget tree, not a hand-rolled stub.
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
@@ -1331,14 +1235,13 @@ fn e2e_escape_closes_search_palette() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
-    // Open via Ctrl+K first rather than bypassing the host's own state
-    // machine — guards against a mutation ordering regression.
+    // Open via Ctrl+K rather than bypassing the host's state machine, guarding
+    // against a mutation-ordering regression.
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
     let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), &mods);
     assert!(host.palette_visible());
 
-    // Escape with no modifiers must close the palette (priority order:
-    // palette > overview > ws_settings > quick_settings).
+    // Escape priority order: palette > overview > ws_settings > quick_settings.
     let no_mods = Modifiers::default();
     let handled = pump_host(
         &mut host,
@@ -1368,10 +1271,8 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     );
 }
 
-/// The overview is a switcher, so it has to finish on the keyboard: arrows
-/// walk the room list, Enter commits and closes the panel. A surface you
-/// open with a chord but finish with the mouse isn't a switcher — it's a
-/// page you were shown.
+/// The overview finishes on the keyboard: arrows walk the room list, Enter
+/// commits and closes.
 #[test]
 fn e2e_overview_arrows_select_and_enter_switches_room() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1387,7 +1288,6 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     assert!(pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), &ctrl));
     assert!(chrome.borrow().overlays.overview, "precondition: panel is open");
 
-    // Arrow with no modifier steps the selection off the room you are in.
     let no_mods = Modifiers::default();
     let handled = pump_host(
         &mut host,
@@ -1400,7 +1300,6 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
          desktop underneath it scroll"
     );
 
-    // Enter commits to the selected room and leaves.
     let handled = pump_host(
         &mut host,
         &key_press(Key::Named(NamedKey::Enter)),
@@ -1418,11 +1317,9 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     );
 }
 
-/// Arrows are only the switcher's while it's up; with the panel closed
-/// they belong to whatever is focused on the desktop. Driven through the
-/// real root over a real layout tree, because the claim is about a key
-/// the shell *declines* — the event goes on to the content, and the
-/// content has to be really there.
+/// Arrows belong to the switcher only while it's open. Driven through the
+/// real root/layout since the claim concerns a key the shell declines — the
+/// event must actually reach the content.
 #[test]
 fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1444,30 +1341,19 @@ fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 6 + 7: undo / redo round-trip against a CRDT-mutating widget
-// ---------------------------------------------------------------------------
 //
-// Both build a standalone `WindowGroup` (960×540, like `e2e_tab_drag_reorder`)
-// with one tab hosting a real `EditorApp`. Typing splices into the
-// `BODY_KEY` Automerge `Text` under the state root — the only gesture in
-// the shell tree that actually mutates the CRDT through the widget event
-// pipeline (tab close/reorder/maximize live entirely in widget state, so
-// `state.undo` is a no-op for them — see the eprintln below).
+// Both build a standalone `WindowGroup` (960x540) with one tab hosting a
+// real `EditorApp` — typing splices into the `BODY_KEY` Automerge `Text`,
+// the only gesture in the shell tree that mutates the CRDT through the
+// widget event pipeline (tab close/reorder/maximize live entirely in
+// widget state; `state.undo` is a no-op for them).
 //
-// `state.undo()` / `state.redo()` are called directly rather than
-// synthesising Ctrl+Z through winit: the undo/redo keymap is wired in
-// `ui::App::run`, which this integration test never runs (it drives
-// widgets directly), so a synthesised key would never reach it.
-//
-// Tab close/reorder/maximize do NOT push to `state.undo_stack`:
-// `TabBar::sync` is empty, tabs aren't persisted in the CRDT, and
-// `WindowGroup::handle_event`'s close/reorder handlers mutate
-// `self.bar`/`self.hosts` directly without `state.commit_action`. The
-// `eprintln!` below surfaces that gap.
+// `state.undo()`/`redo()` are called directly rather than synthesising
+// Ctrl+Z: that keymap lives in `ui::App::run`, which this test never runs.
 
-/// Same zero-init workaround as `key_press`, but carries a real `text`
-/// payload so `EditorApp` sees it as a user-typed character.
+/// Like `key_press`, but carries a real `text` payload so `EditorApp` sees
+/// a user-typed character.
 fn char_key_press(ch: &str) -> WindowEvent {
     // SAFETY: see the note on `escape_event`.
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -1484,10 +1370,8 @@ fn char_key_press(ch: &str) -> WindowEvent {
     }
 }
 
-/// Common setup for the undo/redo tests: builds a 960×540 `WindowGroup`
-/// holding a single focused `EditorApp` tab, seeds the CRDT's `BODY_KEY`
-/// Text object via an initial sync, and commits that seed so the undo
-/// stack starts clean.
+/// Common undo/redo setup: 960x540 group, one focused `EditorApp` tab,
+/// `BODY_KEY` seeded and committed so the undo stack starts clean.
 struct UndoHarness {
     group: WindowGroup,
     state: State,
@@ -1498,9 +1382,8 @@ struct UndoHarness {
 
 impl UndoHarness {
     fn new() -> Self {
-        // EditorApp needs focus before it processes keyboard; we flip
-        // the flag up front because there's no App loop to route a
-        // click-triggered focus_target back into `set_focus`.
+        // EditorApp needs focus before it processes keyboard, and there's no App
+        // loop to route a click-triggered focus_target back into `set_focus`.
         let mut editor = shell::shell::editor_app::EditorApp::new();
         editor.set_focus(true);
 
@@ -1511,7 +1394,6 @@ impl UndoHarness {
         };
         let tabs = vec![(tab, TileContent::App(Box::new(editor)))];
         let mut group = WindowGroup::new(300, tabs, 1, WindowWidth::Normal);
-        // See the note in `e2e_tab_drag_reorder`.
         group.set_strip_usable_px(960.0);
 
         let theme = Theme::dark();
@@ -1550,23 +1432,19 @@ impl UndoHarness {
             .expect("compute_layout");
         group.apply_layout(&taffy, child, Point::ORIGIN);
 
-        // Seed BODY_KEY before counting undo entries — EditorApp.sync
-        // creates it lazily on first call against an empty root, and
-        // without this the "first real mutation" would land as entry #2
-        // behind the seeding entry. Sync against a throwaway State, then
-        // reload the post-sync doc bytes into a fresh `State::load` for a
-        // clean `[undo:0, redo:0]` stack with a live BODY_KEY field.
+        // Seed BODY_KEY before counting undo entries — EditorApp.sync creates it
+        // lazily on first call, so without this the first real mutation would land
+        // as entry #2 behind the seeding entry. Sync against a throwaway State,
+        // then reload into a fresh `State::load` for a clean [undo:0, redo:0] stack.
         let state = {
             let mut seed = State::new();
             group.sync(&mut seed.doc, &seed.root);
-            // Commit any staged ops so `save()` reflects them — AutoCommit
-            // panics if you try to save with a live transaction open.
+            // Commit staged ops — AutoCommit panics on save with a live transaction.
             let _ = seed.doc.commit();
             let bytes = seed.doc.save();
             State::load(&bytes).expect("reload seeded doc")
         };
 
-        // Prime the bar so tab_rects / everything downstream is drawn.
         let presence = PresenceCtx::default();
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1616,13 +1494,8 @@ impl UndoHarness {
     }
 }
 
-/// Typing 'a' splices into the CRDT `BODY_KEY` Text, `commit_action`
-/// captures the baseline on the undo stack, `undo` pops it back, and the
-/// next sync re-reads the empty body — restoring the pre-mutation render.
-///
-/// `state.undo()` is called directly rather than synthesising Ctrl+Z — the
-/// wiring lives in `ui::App::run`, which this test deliberately doesn't
-/// instantiate. See the module-level comment above for why.
+/// Typing 'a' splices into `BODY_KEY`, `commit_action` captures the baseline,
+/// `undo` pops it back, and the next sync re-reads the empty body.
 #[test]
 fn e2e_undo_redo_round_trip_restores_golden() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1637,15 +1510,12 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         &out_dir.join("e2e-undo-baseline.png"),
     );
 
-    // Confirms the tab-close undo gap noted in the module comment above —
-    // surfaced via eprintln even though this test passes via the
+    // Confirms the tab-close undo gap noted above; this test passes via the
     // editor-character path below.
     {
         let before = h.state.peek_last_undo().is_some();
-        // Close-rect geometry from TabBar layout offsets (close_w=18,
-        // close_inset=4), as `e2e_maximized_tile_floating_controls` does;
-        // only one tab, so `probe_tab_rects()[0].x1` is close enough to
-        // the live pill's right edge.
+        // Close-rect geometry from TabBar offsets (close_w=18, close_inset=4); with
+        // one tab, probe_tab_rects()[0].x1 is close enough to the live pill's edge.
         let probe = probe_tab_rects();
         if let Some(pill) = probe.first() {
             let close_cx = pill.x1 - 13.0; // x0 = x1 - 22 + 9 for centre
@@ -1686,8 +1556,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
                  undo plumbing end-to-end."
             );
         }
-        // Reset to a fresh editor for the real gesture below. The tab
-        // list might already have been clobbered, so rebuild from scratch.
+        // Rebuild a fresh editor — the tab list may already have been clobbered.
     }
     let mut h = UndoHarness::new();
     h.render_to(
@@ -1698,8 +1567,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
     // --- Mutate: type 'a'; EditorApp splices into state.doc's BODY_KEY Text. ---
     let mods = Modifiers::default();
     h.pump_event(char_key_press("a"), &mods);
-    // Finalise the transaction — same thing the App loop does via
-    // `commit_action` after a handled event.
+    // Finalise the transaction, as the App loop does after a handled event.
     h.state.commit_action(None, None);
 
     assert!(
@@ -1725,9 +1593,8 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         "after one undo the undo stack should be empty again"
     );
 
-    // Re-sync so the editor re-reads the restored CRDT body. Without
-    // this the EditorApp still holds the post-mutation `self.text`
-    // and would render "a" regardless of the doc state.
+    // Re-sync so the editor re-reads the restored CRDT body; otherwise it still
+    // holds the post-mutation `self.text` and renders "a" regardless.
     h.render_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-undo-restored.png"),
@@ -1740,8 +1607,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         for p in [&baseline, &after, &restored] {
             assert_png_nonempty(p);
         }
-        // Proof: after != baseline (mutation was visible) — guards against
-        // a vacuous round-trip by checking the PNGs aren't byte-identical.
+        // Guards against a vacuous round-trip: the PNGs must not be byte-identical.
         let a_bytes = std::fs::read(&baseline).unwrap();
         let b_bytes = std::fs::read(&after).unwrap();
         assert_ne!(
@@ -1757,7 +1623,6 @@ fn e2e_undo_redo_round_trip_restores_golden() {
             .with_tolerance(2)
             .assert();
 
-        // Also pin against a checked-in golden, for dimension/theme drift.
         SnapshotAssertion::new(&restored, goldens_dir().join("e2e-undo-restored.png"))
             .with_tolerance(2)
             .assert();
@@ -1769,11 +1634,8 @@ fn e2e_undo_redo_round_trip_restores_golden() {
     }
 }
 
-/// Extends `e2e_undo_redo_round_trip_restores_golden` with a `redo()` step
-/// — the restored-after-redo frame must match the post-mutation frame
-/// pixel-for-pixel. Uses the direct state API for the same reason as
-/// Test 1: the Ctrl+Shift+Z / Ctrl+Y handlers live in `ui::App::run`,
-/// which we don't instantiate.
+/// Extends the undo test with `redo()`: the restored-after-redo frame must
+/// match the post-mutation frame pixel-for-pixel.
 #[test]
 fn e2e_redo_after_undo_rehydrates_golden() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1796,8 +1658,7 @@ fn e2e_redo_after_undo_rehydrates_golden() {
         &out_dir.join("e2e-redo-after-mutation.png"),
     );
 
-    // After undo the redo stack should have one entry; after redo the
-    // undo stack should be repopulated and the redo stack empty.
+    // Undo leaves one redo entry; redo repopulates undo and empties redo.
     let _ = h.state.undo(None, None).expect("undo must succeed");
     h.render_to(
         renderer_opt.as_mut(),
@@ -1814,14 +1675,11 @@ fn e2e_redo_after_undo_rehydrates_golden() {
          undo can unwind the redone mutation"
     );
 
-    // `State::undo`/`redo` only restore the CRDT snapshot; widget-local
-    // state (e.g. `EditorApp`'s cursor offset, in
-    // `UndoEntry::widget_metadata`) is applied by
-    // `ui::App::apply_undo_entry`, which this harness — driving
-    // `WindowGroup` directly, not through `App` — never calls. To match
-    // the post-mutation render pixel-for-pixel, re-sync (picks up the
-    // redone "a" body) then send `End` to park the cursor where it sat
-    // right after `char_key_press("a")`.
+    // `State::undo`/`redo` only restore the CRDT snapshot; widget-local state
+    // (EditorApp's cursor offset) is normally reapplied by
+    // `ui::App::apply_undo_entry`, which this harness never calls. To match the
+    // post-mutation render pixel-for-pixel, re-sync then send `End` to park the
+    // cursor where it sat right after typing "a".
     h.render_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-redo-rehydrated-precaret.png"),
@@ -1839,7 +1697,6 @@ fn e2e_redo_after_undo_rehydrates_golden() {
         for p in [&after, &mid, &rehydrated] {
             assert_png_nonempty(p);
         }
-        // Guard: after != mid (mutation was visible, undo rewound).
         let after_bytes = std::fs::read(&after).unwrap();
         let mid_bytes = std::fs::read(&mid).unwrap();
         assert_ne!(
@@ -1848,7 +1705,6 @@ fn e2e_redo_after_undo_rehydrates_golden() {
              undo didn't visibly rewind and the redo-round-trip is vacuous"
         );
 
-        // Core assertion: post-redo matches post-mutation, pixel-for-pixel.
         SnapshotAssertion::new(&rehydrated, &after)
             .with_tolerance(2)
             .assert();

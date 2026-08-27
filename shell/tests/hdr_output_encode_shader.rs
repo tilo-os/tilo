@@ -2,17 +2,12 @@
 //!
 //! The compositor's HDR output path renders SDR surfaces into an sRGB
 //! intermediate, then lifts them into the output's PQ BT.2020 signal so
-//! SDR UI composits correctly alongside HDR video. Two tracks, matching
-//! the tone-map shader test:
-//!
-//! 1. **CPU reference** — `map_sdr_pixel_to_pq_bt2020` places sRGB white
-//!    at the BT.2408 reference-white level and keeps black at PQ zero.
-//! 2. **GPU shader** — the WGSL kernel parses + validates through naga so
-//!    a shader edit can't silently break the production encode path.
-//!
-//! Both use the same maths (203-nit white, BT.709→2020, PQ inverse
-//! EOTF), so shader validity + the CPU spot-check together prove the
-//! pipeline is coherent.
+//! SDR UI composits correctly alongside HDR video. Two tracks: the CPU
+//! reference (`map_sdr_pixel_to_pq_bt2020` places sRGB white at the
+//! BT.2408 reference-white level, black at PQ zero) and the GPU shader
+//! (the WGSL kernel parses + validates through naga so an edit can't
+//! silently break the production encode path) — both use the same maths
+//! (203-nit white, BT.709->2020, PQ inverse EOTF).
 
 use shell::shell::color_pipeline::{
     map_sdr_pixel_to_pq_bt2020, pq_eotf, OUTPUT_ENCODE_SHADER_SOURCE, SDR_REFERENCE_WHITE_NITS,

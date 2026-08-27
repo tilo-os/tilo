@@ -1,7 +1,6 @@
 //! Shell-level horizontal split layout: a bare taffy flex row where the left
-//! child keeps its intrinsic width and the right child stretches to fill the
-//! remaining space. `ui::Row` cannot serve — it is opinionated toward
-//! wrapping, gap-spaced, `AlignItems::Center` toolbar layouts.
+//! child keeps its intrinsic width and the right stretches to fill the rest.
+//! `ui::Row` doesn't serve — it's opinionated toward wrapping toolbar layouts.
 
 use std::collections::HashMap;
 
@@ -53,9 +52,8 @@ impl Widget for SplitRow {
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
 
-        // Override whatever the child's `build_layout` returned so a
-        // Container-with-percent(1)-height still gets flex-grow 1 — without
-        // it taffy sizes the right child by its intrinsic content width.
+        // Force flex-grow 1 — without it taffy sizes the right child by
+        // its intrinsic content width.
         let mut right_style = taffy.style(right_node).unwrap().clone();
         right_style.flex_grow = 1.0;
         right_style.size = Size {

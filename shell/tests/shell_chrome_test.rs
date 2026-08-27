@@ -1,7 +1,5 @@
 //! Interaction tests for shell chrome widgets (OverviewView, GlobalSearch,
 //! QuickSettings, WorkspaceSettings, SidebarWheel, TopBar, …).
-//!
-//! Tasks land their chrome pieces one at a time and add their own test here.
 
 #[test]
 fn visual_smoke_checklist_is_documented() {
@@ -24,8 +22,8 @@ fn visual_smoke_checklist_is_documented() {
 use shell::shell::overview::OverviewView;
 use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
-/// Helper that builds a workspace with a caller-supplied id so each test
-/// keeps a stable shape without minting fresh monotonic ids.
+/// Caller-supplied workspace id, so each test keeps a stable shape
+/// without minting fresh monotonic ids.
 fn mk_workspace(id: u64, name: &str) -> Workspace {
     Workspace::new(WorkspaceId::from(id), name)
 }
@@ -193,10 +191,8 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     assert_eq!(row.subject.kind, SubjectKind::App);
     assert_eq!(row.subject.id, "Terminal");
     // `capability_allows` phrases a workspace-projected `FsPath` scope as
-    // "Edit workspace files" rather than exposing the FUSE mount point
-    // (`WORKSPACE_FILES_PATH`) — no internal/implementation labels in
-    // user-facing chrome. See the doc comment on `capability_allows` in
-    // workspace_settings.rs.
+    // "Edit workspace files" rather than exposing the FUSE mount point — no
+    // internal labels in user-facing chrome.
     assert_eq!(row.allows, "Edit workspace files");
     assert_eq!(row.expiry, "Session");
     // The composer is laid out whether or not anything is granted yet.
@@ -293,11 +289,9 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     assert_ne!(colors[0], colors[1]);
 }
 
-/// The top-bar clock must draw at the Bold (700) weight tier so it reads
-/// as the focal "glance value" on the dark chrome. Pins the explicit
-/// `draw_text_weighted(..., TextWeight::Bold)` swap in the Clock branch
-/// of `TopBarChrome::draw` against accidental reverts to `draw_text`
-/// (which defaults to Regular).
+/// The top-bar clock must draw at Bold (700) to read as the focal
+/// "glance value" — pins the explicit `draw_text_weighted` swap against
+/// a revert to `draw_text`, which defaults to Regular.
 #[test]
 fn topbar_chrome_clock_renders_at_bold_weight() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -324,14 +318,9 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     );
 }
 
-/// The top bar is opaque, and it takes its opacity from the one chrome
-/// constant rather than a number of its own — a tint without a blur
-/// (which vello has none of) is not glass but a contrast loss that
-/// varies with whatever the user has open behind it.
-///
-/// Pinned against the toolkit constant rather than a literal, which is
-/// the stronger guard: the bar and the popovers that hang off it are one
-/// material by construction, and neither can be retuned alone.
+/// The top bar is opaque, taking its opacity from the one chrome
+/// constant rather than a number of its own — a tint without blur (vello
+/// has none) is a contrast loss, not glass.
 #[test]
 fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -347,16 +336,10 @@ fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
     );
 }
 
-/// The GlobalSearch palette surface is opaque: a tint reads as chrome
-/// bleeding through long result rows, so the palette paints solid and
-/// leans on the scrim below it for the "page on top of a page" depth
-/// cue instead.
-///
-/// Same regression-guard contract as the topbar test above: pin the
-/// number the draw path uses, and pin it against
-/// `overlay_host::MODAL_SURFACE_ALPHA` too — the palette and the
-/// workspace-settings modal are documented as sharing one value, and
-/// nothing else makes them drift together.
+/// The GlobalSearch palette surface is opaque (a tint would read as
+/// chrome bleeding through long result rows), leaning on the scrim below
+/// for depth. Pinned against `overlay_host::MODAL_SURFACE_ALPHA`, since
+/// the palette and workspace-settings modal share one value.
 #[test]
 fn global_search_surface_alpha_is_opaque_and_matches_the_modal_tint() {
     use shell::shell::global_search::GlobalSearch;
@@ -374,10 +357,9 @@ fn global_search_surface_alpha_is_opaque_and_matches_the_modal_tint() {
     );
 }
 
-/// The top-bar overview button paints lucide `LayoutGrid` via the shared
-/// `ui::icons` module, not a hand-rolled quad. Routes the assertion
-/// through the `overview_glyph_icon()` accessor so a future revert
-/// flips this test to red without needing a pixel snapshot harness.
+/// The overview button paints lucide `LayoutGrid` via `ui::icons`, not a
+/// hand-rolled quad — routed through `overview_glyph_icon()` so a revert
+/// fails here without needing a pixel snapshot harness.
 #[test]
 fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -389,10 +371,8 @@ fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
     );
 }
 
-/// The center-band active dot must read as a focused indicator, not just
-/// a slightly tinted sibling — if the radii ever converge, the three-dot
-/// stack collapses back into three identical circles and the carousel
-/// loses its "where are we" affordance.
+/// The center-band active dot must read as a focused indicator, not a
+/// slightly tinted sibling — converged radii lose the "where are we" cue.
 #[test]
 fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -561,9 +541,7 @@ fn shell_root_starts_with_every_overlay_closed() {
     assert!(!shell.quick_settings_visible());
 }
 
-// ---------------------------------------------------------------------------
 // Shell-level global hotkeys + shell routing
-// ---------------------------------------------------------------------------
 
 #[test]
 fn cmd_k_opens_and_escape_closes_search() {
@@ -620,8 +598,8 @@ fn sidebar_wheel_event_routes_through_shell() {
     let strips_before = shell.active_strip_index();
     shell.simulate_sidebar_wheel(1);
     // Either the index advanced or the clamp held at the last strip — both
-    // valid. This only asserts the shell *routed* the wheel to the sidebar
-    // widget without panicking or mutating the search/overview flags.
+    // valid. This only asserts the shell routed the wheel to the sidebar
+    // widget without mutating the search/overview flags.
     let _ = strips_before;
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());
@@ -638,9 +616,7 @@ fn tray_gear_toggles_quick_settings_via_shell() {
     assert!(!shell.quick_settings_visible());
 }
 
-// ---------------------------------------------------------------------------
 // Tooltip wiring: topbar workspace-name button tooltip
-// ---------------------------------------------------------------------------
 
 #[test]
 fn topbar_ws_name_tooltip_reveals_after_delay() {
@@ -654,9 +630,7 @@ fn topbar_ws_name_tooltip_reveals_after_delay() {
     assert!(!tb.ws_name_tooltip_visible());
 }
 
-// ---------------------------------------------------------------------------
-// ContextMenu wiring: right-click on tile → default menu
-// ---------------------------------------------------------------------------
+// ContextMenu wiring: right-click on tile -> default menu
 
 #[test]
 fn right_click_on_tile_opens_default_context_menu() {
@@ -672,12 +646,9 @@ fn right_click_on_tile_opens_default_context_menu() {
     assert!(labels.iter().any(|l| l == "Move to New Group"));
 }
 
-// ---------------------------------------------------------------------------
-// The overview opens by naming the room you are in, and that name is the
-// largest thing on the panel — it answers the first question the surface
-// exists to answer. Pinned at ≥ 32 px so a later step down to
-// `scale.x3l`/`base` is caught here rather than in a screenshot review.
-// ---------------------------------------------------------------------------
+// The overview opens by naming the room you are in — the largest thing
+// on the panel. Pinned at >= 32px so a later step down to
+// `scale.x3l`/`base` is caught here, not in a screenshot review.
 #[test]
 fn overview_header_font_size_is_at_least_32px() {
     use shell::shell::state::WorkspaceTree;

@@ -1,21 +1,17 @@
 //! Peer pointers, from an app in a room to the compositor drawing it.
 //!
 //! Outbound: a [`RoomSubscription`] republishes each local app's
-//! surface-local pointer as *this session's* cursor in desktop
-//! coordinates — republished per session (not per connection) so one
-//! person stays one cursor across windows and app crossings.
-//! [`PeerPresence::publish_local_cursor`] also republishes the desktop
-//! pointer itself, level-triggered, so a room with nothing open yet
-//! still shows peers moving; [`should_publish_cursor`] throttles moves
-//! to [`MIN_PUBLISH_GAP`] and restates a still pointer every
+//! surface-local pointer as this session's cursor in desktop
+//! coordinates — per session, not per connection, so one person stays
+//! one cursor across windows. [`should_publish_cursor`] throttles to
+//! [`MIN_PUBLISH_GAP`] and restates a still pointer every
 //! [`CURSOR_KEEPALIVE`] for late joiners.
 //!
 //! Inbound: [`PeerPresence::pump`] folds arrivals through the same
-//! [`ui::presence::PresenceCtx::apply_remote_presence`] decode an app
-//! uses. A peer's *identity* (`peer@<handle>`) comes from the frame;
-//! its *name* is a governance fact from [`ShellNetwork::peer_labels`]
-//! — a frame's own `user` field is never trusted, since a peer
-//! announcing its own name could announce anybody's.
+//! decode an app uses. A peer's identity (`peer@<handle>`) comes from
+//! the frame; its name is a governance fact from
+//! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
+//! trusted, since a peer naming itself could name anybody.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,36 +24,21 @@ use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
 
 /// Bridges the session's collaboration broker and its peers for
-/// pointer presence. Held by the compositor for the life of the
-/// session.
+/// pointer presence. Held by the compositor for the life of the session.
 pub struct PeerPresence {
-    /// Where this session's pointer is, in the compositor's own scene
-    /// space. Written by the input path, read by the broker sink on the
-    /// reader thread that decoded a frame.
-    ///
-    /// `None` until the pointer has actually been somewhere — not the
-    /// same as `(0, 0)`, since publishing is level-triggered and a
-    /// session that never moves (an agent) would otherwise announce the
-    /// origin as a real position for every peer to paint. Always set
-    /// through [`Self::set_cursor_position`], not a bare pair.
+    /// This session's pointer in scene space. `None` until it has
+    /// actually been somewhere — not `(0, 0)`, since a session that
+    /// never moves would otherwise announce the origin as a real position.
     cursor: Arc<Mutex<Option<(f64, f64)>>>,
-    /// Inbound presence from other hosts, filled by
-    /// [`ShellNetwork::tick`].
+    /// Inbound presence from other hosts, filled by [`ShellNetwork::tick`].
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
-    /// Kept alive for the session, and re-pointed as rooms change.
     subscription: Arc<RoomSubscription>,
-    /// The rooms this session is in, mirrored from [`Self::set_rooms`].
-    /// The subscription owns its own copy for delivery; this one scopes
-    /// the bookkeeping below, so a room this session has left stops
-    /// being remembered as something it has spoken about.
+    /// The rooms this session is in, mirrored from [`Self::set_rooms`]
+    /// so a room this session has left stops being remembered below.
     rooms: Mutex<Vec<String>>,
-    /// What this session last put on the wire, per room: where the
-    /// pointer was and when it was said. Read by
-    /// [`should_publish_cursor`] to decide whether to say it again.
+    /// What this session last put on the wire, per room: position and
+    /// when. Read by [`should_publish_cursor`].
     last_published: Mutex<HashMap<String, ((f64, f64), Instant)>>,
-    /// Where the desktop pointer goes out. The app-driven republish
-    /// captures its own clone in the sink closure; this is the same
-    /// network, held so the frame loop can publish without one.
     net: Arc<ShellNetwork>,
 }
 
@@ -71,12 +52,9 @@ pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 /// stopped moving has never heard where they are.
 pub const CURSOR_KEEPALIVE: Duration = Duration::from_millis(1000);
 
-/// Should this session put its pointer on the wire again?
-///
-/// `last` is what it last published for this room and when. Pure so
-/// the decision can be asserted on directly: the difference between
-/// "throttled" and "never published at all" is invisible on screen,
-/// and it is exactly the difference this gate exists to get right.
+/// Should this session put its pointer on the wire again? `last` is
+/// what it last published for this room and when. Pure so the decision
+/// can be asserted on directly.
 pub fn should_publish_cursor(
     last: Option<((f64, f64), Instant)>,
     at: (f64, f64),
@@ -85,9 +63,7 @@ pub fn should_publish_cursor(
     keepalive: Duration,
 ) -> bool {
     let Some((was, when)) = last else {
-        // Never said anything about this room — say it, so an already
-        // listening peer sees this session arrive.
-        return true;
+        return true; // Never said anything about this room — say it.
     };
     let elapsed = now.saturating_duration_since(when);
     if was == at {
@@ -96,9 +72,8 @@ pub fn should_publish_cursor(
     elapsed >= min_gap
 }
 
-/// What this session should put on the wire for a room right now, if
-/// anything. `at` is `None` until the pointer has moved (see
-/// [`PeerPresence::cursor`]); `None` here means silence, not
+/// What to put on the wire for a room right now, if anything. `at` is
+/// `None` until the pointer has moved; `None` here means silence, not
 /// `Some((0.0, 0.0))`.
 fn cursor_to_publish(
     at: Option<(f64, f64)>,
@@ -124,8 +99,8 @@ impl PeerPresence {
         let subscription = broker.subscribe_rooms(
             rooms,
             Box::new(move |event, route| {
-                // Only a pointer says where someone is; carets and
-                // selections are the document's business, not the desktop's.
+                // Only a pointer says where someone is; carets/selections
+                // are the document's business, not the desktop's.
                 let CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Pointer { .. },
                     ..
@@ -133,9 +108,8 @@ impl PeerPresence {
                 else {
                     return;
                 };
-                // The room comes from the delivery route, not the app's own
-                // key — an app publishing under its own scope is still
-                // pointing inside this room, and only the route knows which.
+                // Room comes from the delivery route, not the app's own
+                // key — only the route knows which room this app is in.
                 if route.cluster_id.is_empty() {
                     return;
                 }
@@ -145,8 +119,7 @@ impl PeerPresence {
                 let Ok(key_str) = serde_json::to_string(&key) else {
                     return;
                 };
-                // No position to supply if this session's pointer has never
-                // moved; the origin is not a substitute for one.
+                // Nothing to say if the pointer has never moved.
                 let Some(point) = *sink_cursor
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -167,13 +140,12 @@ impl PeerPresence {
         }
     }
 
-    /// Re-point the subscription at the session's current rooms.
-    /// Called whenever the workspace set changes — a new workspace,
-    /// or one that just joined a peer's room by invite.
+    /// Re-point the subscription at the session's current rooms. Called
+    /// whenever the workspace set changes.
     pub fn set_rooms(&self, rooms: Vec<String>) {
         if let Ok(mut g) = self.rooms.lock() {
-            // Forget publishes to a room this session has left, so rejoining
-            // re-announces rather than staying silent behind a stale keepalive.
+            // Forget publishes to a left room, so rejoining re-announces
+            // rather than staying silent behind a stale keepalive.
             if let Ok(mut last) = self.last_published.lock() {
                 last.retain(|room, _| rooms.iter().any(|r| r == room));
             }
@@ -182,14 +154,10 @@ impl PeerPresence {
         self.subscription.set_rooms(rooms);
     }
 
-    /// Put this session's own pointer on the wire, in the room the user is
-    /// actually looking at. Returns whether anything went out.
-    ///
-    /// Level-triggered rather than hooked to motion, so one call in the
-    /// frame loop covers every input source (real seat, injected peer
-    /// input, test control) whether or not an app is running. Only the
-    /// room on screen — sending to every room this session is in would
-    /// paint a cursor for people not looking at it.
+    /// Put this session's own pointer on the wire, in the room the user
+    /// is looking at. Returns whether anything went out. Only the room
+    /// on screen, or every room this session is in would paint a cursor
+    /// for people not looking at it.
     pub fn publish_local_cursor(&self, room: &str) -> bool {
         self.publish_local_cursor_at(room, Instant::now())
     }
@@ -226,21 +194,15 @@ impl PeerPresence {
         true
     }
 
-    /// Record where this session's pointer is, in scene space. The `Some`
-    /// half of [`Self::set_cursor_position`]; the frame loop uses the other
-    /// half, since only it can say a pointer has never moved.
+    /// Record where this session's pointer is. The `Some` half of
+    /// [`Self::set_cursor_position`]; the frame loop uses the other half.
     pub fn set_cursor(&self, x: f64, y: f64) {
         self.set_cursor_position(Some((x, y)));
     }
 
     /// Record where this session's pointer is, or that it has never been
-    /// anywhere. What the frame loop calls; taking an `Option` matters
-    /// because whatever is here is announced on every pass, and a pointer
-    /// that has never moved must stay silent rather than publish the
-    /// origin as a real position.
-    ///
-    /// Only the pointer is suppressed — arrival, the roster, and a
-    /// document caret travel by other routes.
+    /// anywhere — an `Option` because a never-moved pointer must stay
+    /// silent rather than publish the origin as a real position.
     pub fn set_cursor_position(&self, at: Option<(f64, f64)>) {
         if let Ok(mut g) = self.cursor.lock() {
             *g = at;
@@ -248,9 +210,8 @@ impl PeerPresence {
     }
 
     /// Fold everything that arrived from other hosts into `presence`,
-    /// returning whether anything landed. Who is *in* the room is answered
-    /// separately by `refresh_roster`, level-triggered, since joining
-    /// without moving a pointer publishes nothing here.
+    /// returning whether anything landed. Who is *in* the room is
+    /// answered separately by `refresh_roster`.
     pub fn pump(&self, presence: &mut PresenceCtx) -> bool {
         let drained: Vec<_> = {
             let Ok(mut buf) = self.inbound.lock() else {
@@ -259,8 +220,6 @@ impl PeerPresence {
             std::mem::take(&mut *buf)
         };
         let net = Arc::clone(&self.net);
-        // The rooms this session is actually in — a frame naming any other
-        // room is not this session's to hold, see `fold_inbound`.
         let mine: Vec<String> = self
             .rooms
             .lock()
@@ -274,23 +233,18 @@ impl PeerPresence {
         )
     }
 
-    /// Write the active room's people into the tree, where the roster and
-    /// top bar read them.
-    ///
-    /// Separate from [`Self::pump`]: this answers "did who-is-here
-    /// change", not "did a peer move" — a peer named while sitting still
-    /// changes the former and not the latter. Level-triggered, so a stale
-    /// list cannot persist past the next frame. Returns whether the list
-    /// changed, which is a reason to repaint.
-    ///
-    /// The *active* workspace's room only — a session may be in many.
+    /// Write the active workspace's room's people into the tree, where
+    /// the roster and top bar read them. Separate from [`Self::pump`]:
+    /// answers "did who-is-here change", not "did a peer move" — a peer
+    /// named while sitting still changes the former, not the latter.
+    /// Returns whether the list changed, a reason to repaint.
     pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
         let local = self.net.local_peer_id_hash();
         let Ok(replica) = self.net.replica.lock() else {
             return false;
         };
-        // Read-guarded and written only on change: the writer lock would
-        // contend with the network thread on every frame otherwise.
+        // Written only on change — a lock every frame would contend
+        // with the network thread.
         let rows = {
             let tree = replica.tree.read();
             let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
@@ -300,8 +254,7 @@ impl PeerPresence {
                 return false;
             }
             let labels = tree.room_peer_labels(ws.room);
-            // Two ways to be present: a moving cursor, or CRDT
-            // participation — the signal that survives sitting still.
+            // Two ways to be present: moving cursor, or CRDT participation.
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
             let rows = room_roster(ws, &labels, &arrived, local);
@@ -344,12 +297,9 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
 pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
 /// Fold inbound presence into `presence`, returning whether anything
-/// landed. Split from [`PeerPresence::pump`] so it can be tested without a
-/// network.
-///
-/// `labels` is a parameter (rather than looked up here) for the same
-/// reason — production has exactly one implementation,
-/// [`ShellNetwork::peer_labels`].
+/// landed. Split from [`PeerPresence::pump`] so it can be tested without
+/// a network; `labels` is a parameter for the same reason (production
+/// wires [`ShellNetwork::peer_labels`]).
 pub fn fold_inbound(
     entries: Vec<crate::shell::network::InboundPresence>,
     presence: &mut PresenceCtx,
@@ -357,29 +307,21 @@ pub fn fold_inbound(
     member_of: &dyn Fn(&str) -> bool,
 ) -> bool {
     let mut any = false;
-    // Entries in one drain are nearly always the same room; resolving per
-    // entry would re-read the tree once per pointer sample.
+    // Entries in one drain are nearly always the same room.
     let mut resolved: Option<(String, PeerLabels)> = None;
     for entry in entries {
         let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
             continue;
         };
-        // Only rooms this session is in — access rule as much as tidiness:
-        // presence arrives from whoever is on the wire, and a peer often
-        // publishes under a room of its own that this session never joined.
+        // Only rooms this session is in — an access rule.
         if let PresenceKey::Workspace { id: room } = &key {
             if !member_of(room) {
                 continue;
             }
         }
-        // The sending *session*'s id, spelled from its handle — never
-        // `entry.user`, which is the session's own unverified claim about
-        // who it is.
+        // Spelled from the handle, never `entry.user`'s unverified claim.
         let user = format!("peer@{}", entry.peer);
 
-        // What the room calls them: a governance fact only the room
-        // document supplies. A peer nobody has named keeps the id above,
-        // which `PresenceCtx::display_name` falls back to.
         if let PresenceKey::Workspace { id: room } = &key {
             let known = match &resolved {
                 Some((seen, map)) if seen == room => map,
@@ -404,36 +346,20 @@ pub fn fold_inbound(
                 y: entry.point.1 as f32,
             },
         );
-        // Set here, not on loop entry: a `continue` above is a rejected
-        // frame, and reporting that as a landing would repaint on traffic
-        // that changed nothing.
-        any = true;
+        any = true; // Not on loop entry: a `continue` above is a rejected frame.
     }
     any
 }
 
-/// The people in `ws`'s room, as the roster lists them.
+/// The people in `ws`'s room. Two sources, neither sufficient alone:
+/// `labels` is the room document's answer (everyone its authority has
+/// named, including an invitee who never moved their mouse), `arrived`
+/// is who actually turned up (presence plus CRDT participants).
 ///
-/// Two sources, neither sufficient alone. `labels` is the room
-/// *document*'s answer — every peer its authority has named, including
-/// someone invited who has not touched their mouse yet (presence alone
-/// misses them, since a pointer that has never moved publishes nothing).
-/// `arrived` is who has actually turned up — presence plus CRDT
-/// participants — including a peer who redeemed a plain invite, which the
-/// document alone does not capture.
-///
-/// A named peer that has not arrived is marked [`Collaborator::invited`];
-/// treating naming as arrival would claim someone present on the strength
-/// of an invitation they may never have opened. Arrival is keyed off the
-/// transport-authenticated identity, not the peer's own claim, so a peer
-/// cannot promote its own row.
-///
-/// `local` is dropped — the roster is "who *else* is here". A host names
-/// itself when minting an invite ([`ShellNetwork::issue_invite`]) so
-/// guests read a name; without this the host would list itself as a peer.
-///
-/// The role comes from [`crate::shell::state::Workspace::role_of`], the
-/// same capability list replication that carries the names.
+/// A named peer that hasn't arrived is marked [`Collaborator::invited`],
+/// keyed off the transport-authenticated identity so a peer cannot
+/// promote its own row. `local` is dropped — the roster is who *else*
+/// is here.
 pub fn room_roster(
     ws: &crate::shell::state::Workspace,
     labels: &PeerLabels,
@@ -446,8 +372,7 @@ pub fn room_roster(
     handles
         .into_iter()
         .map(|handle| {
-            // Same spelling as the presence path, so a row's avatar and
-            // that person's cursor share one id and one colour.
+            // Same spelling as the presence path, so avatar and cursor share an id.
             let id = format!("peer@{handle}");
             let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
             let role = ws.role_of(&name);
@@ -473,8 +398,6 @@ mod tests {
 
     #[test]
     fn a_session_that_has_said_nothing_speaks() {
-        // Nothing has published, so the first pass must put the pointer on
-        // the wire, or a peer sees nothing until the mouse moves again.
         assert!(should_publish_cursor(
             None,
             (10.0, 10.0),
@@ -484,10 +407,6 @@ mod tests {
         ));
     }
 
-    /// A session whose pointer has never been anywhere says nothing.
-    /// Asserts both halves of the "nowhere yet" vs "at (0, 0)" distinction:
-    /// silence before the pointer has moved, and the origin published like
-    /// any other position once it actually lands there.
     #[test]
     fn a_pointer_that_has_never_moved_is_not_announced_at_the_origin() {
         let now = Instant::now();
@@ -498,8 +417,7 @@ mod tests {
             "a session whose pointer has never moved must not announce one"
         );
 
-        // The origin is not banned — a pointer actually moved there
-        // publishes like any other, or a peer parked in the corner vanishes.
+        // The origin is not banned once actually moved to.
         assert_eq!(
             cursor_to_publish(
                 Some((0.0, 0.0)),
@@ -566,9 +484,8 @@ mod tests {
         );
     }
 
-    /// A frame as it arrives off the wire. `user` is what the *sender*
-    /// claims to be called, and is deliberately never used as a label —
-    /// the tests below pass a wrong one on purpose.
+    /// A frame as it arrives off the wire. `user` is the sender's own
+    /// (untrusted) claimed name — tests below pass a wrong one on purpose.
     fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
         InboundPresence {
             peer,
@@ -580,19 +497,16 @@ mod tests {
         }
     }
 
-    /// No room has named anybody.
     fn unnamed(_room: &str) -> PeerLabels {
         PeerLabels::new()
     }
 
-    /// This session is in every room a frame might name. The default
-    /// for tests about naming and placement, which are not about
-    /// membership; the membership tests state their own.
+    /// This session is in every room a frame might name — default for
+    /// tests not about membership.
     fn any_room(_room: &str) -> bool {
         true
     }
 
-    /// The room's names, as its authority wrote them.
     fn named(pairs: &[(u64, &str)]) -> impl Fn(&str) -> PeerLabels + use<> {
         let map: PeerLabels = pairs.iter().map(|(h, n)| (*h, (*n).to_string())).collect();
         move |_room: &str| map.clone()
@@ -619,11 +533,9 @@ mod tests {
         assert_eq!(peers[0].1, (120.0, 240.0));
     }
 
-    /// One person is one pointer. A folded frame lands in two stores at
-    /// once — `pointers` (what the overlay paints) and `remote_cursors`
-    /// (what "follow that peer" reads) — and both being *painted* would
-    /// double it, since the toolkit threads this context into the
-    /// app-level overlay too (the shell is itself a `ui::App`).
+    /// A folded frame lands in two stores — `pointers` (overlay paint)
+    /// and `remote_cursors` (follow-that-peer) — and both being
+    /// *painted* would draw one person twice.
     #[test]
     fn a_desktop_pointer_is_painted_by_the_overlay_and_not_again_by_the_window() {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
@@ -653,7 +565,6 @@ mod tests {
             "the compositor paints this pointer; drawing it here too is the duplicate",
         );
 
-        // Declining to paint is not discarding — still followable.
         assert_eq!(
             presence.peer_pointer(&cursor.user_id),
             Some([120.0, 240.0]),
@@ -661,17 +572,12 @@ mod tests {
         );
     }
 
-    /// One person is one row, however many rooms they have pointed in.
-    /// Asserted over the whole store, not one room — a peer publishing
-    /// under a foreign room it once pointed in must not accumulate a
-    /// second, orphaned entry there.
     #[test]
     fn one_person_is_one_entry_across_every_room_in_the_store() {
         let mine = "3f2b1c00-0000-4000-8000-000000000001";
         let theirs = "3f2b1c00-0000-4000-8000-0000000000ff";
         let mut presence = PresenceCtx::default();
 
-        // The same peer, pointing in this room and in one of its own.
         fold_inbound(
             vec![
                 arrived("bob", 7, mine, (10.0, 20.0)),
@@ -700,8 +606,6 @@ mod tests {
         );
     }
 
-    /// A room this session is not in cannot be written into its presence
-    /// store at all — presence arrives from whoever is on the wire.
     #[test]
     fn a_room_this_session_is_not_in_is_refused() {
         let elsewhere = "3f2b1c00-0000-4000-8000-0000000000ff";
@@ -727,8 +631,6 @@ mod tests {
 
     #[test]
     fn a_peer_is_called_what_the_room_calls_it() {
-        // The label comes from the room document; the sender's own word for
-        // itself — "bob" below — is not consulted.
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
         fold_inbound(
@@ -864,9 +766,6 @@ mod tests {
         assert_eq!(peers[0].0, UserId("peer@7".into()));
     }
 
-    /// A folded frame files the sender under the room it names, spelled by
-    /// the handle the transport authenticated — deliberately not the
-    /// `"bob"` the frame announced, which is a claim and not evidence.
     #[test]
     fn a_folded_frame_files_the_sender_under_the_room_it_named() {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
@@ -890,8 +789,6 @@ mod tests {
         );
     }
 
-    /// A pointer scoped to a tab does not name a room, so it must not put
-    /// anybody on a room's roster.
     #[test]
     fn a_frame_that_names_no_room_yields_no_sighting() {
         let mut presence = PresenceCtx::default();
@@ -904,8 +801,6 @@ mod tests {
             ts: 0,
         };
         fold_inbound(vec![entry], &mut presence, &unnamed, &any_room);
-        // The property that matters: a frame naming no room must not file
-        // anybody *under* one, whatever the fold's `bool` result is.
         assert!(
             !presence
                 .pointers
@@ -941,12 +836,10 @@ mod tests {
 
 /// Two sessions, and a pointer that has to get from one to the other.
 ///
-/// Everything above this point is asserted against *one* session's store,
-/// with the room set and names handed in as closures — not enough on its
-/// own, since what a session publishes and what it accepts are decided in
-/// two different places and only agree by construction. This drives the
-/// whole path end to end: one session's real publisher, the wire message,
-/// the other session's real inbound queue and fold.
+/// Everything above this point is asserted against one session's store,
+/// with room set and names handed in as closures — not enough on its
+/// own, since what a session publishes and what it accepts agree only
+/// by construction. This drives the whole path end to end.
 #[cfg(test)]
 mod two_sessions {
     use super::*;
@@ -955,11 +848,10 @@ mod two_sessions {
     use crate::shell::network::shell_network_for_test;
     use crate::shell::state::{PeerOrigin, RoomId, WorkspaceTree};
 
-    /// The person who administers the room in these tests.
     const OWNER: &str = "quinten";
 
-    /// A real base58 peer id, minted from a keypair, so the parse the room
-    /// document does is the production one.
+    /// A real base58 peer id, minted from a keypair, so the parse is
+    /// the production one.
     fn peer_id(seed: u8) -> String {
         libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
             .expect("32 bytes is a keypair")
@@ -975,10 +867,8 @@ mod two_sessions {
         )
     }
 
-    /// The rooms a session is in, read off its tree the way the frame loop
-    /// reads them before calling [`PeerPresence::set_rooms`]. Derived
-    /// rather than passed so a divergence between tree and relay is
-    /// something this test can catch.
+    /// The rooms a session is in, read off its tree the way the frame
+    /// loop does before calling [`PeerPresence::set_rooms`].
     fn rooms_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<String> {
         tree.read()
             .workspaces
@@ -987,15 +877,12 @@ mod two_sessions {
             .collect()
     }
 
-    /// One session's collaboration broker, on a socket of its own.
     fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
         crate::shell::collab_broker::spawn(dir.join(name)).expect("a broker on a temp socket")
     }
 
-    /// A session standing in for the host: it governs a room, owns the
-    /// workspace in it, and has named everybody in it. Naming is the
-    /// host's act and only the host's — the guest below is handed the
-    /// names rather than writing its own.
+    /// A session standing in for the host: governs a room and has named
+    /// everybody in it.
     fn host_naming(people: &[(&str, &str)]) -> (WorkspaceTree, RoomId) {
         let mut tree = WorkspaceTree::default();
         let ws = tree.append_empty_workspace("Design review");
@@ -1010,10 +897,8 @@ mod two_sessions {
         (tree, room)
     }
 
-    /// A session that has joined `room`, holding what the host's
-    /// governance says about it. Joining surrenders governance, so names
-    /// reach it the way they do in production: replicated out of the
-    /// room's document.
+    /// A session that has joined `room`, with names replicated out of
+    /// the room's document the way production does it.
     fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let ws = tree.append_empty_workspace("Mine");
@@ -1051,20 +936,14 @@ mod two_sessions {
         }
     }
 
-    /// Two people in one room, nothing open, and each one's pointer
-    /// arrives on the other's screen under the name the room gave it.
-    ///
-    /// Asserted in both directions: a host and a guest are not symmetric
-    /// (the guest joined the host's room, so only the reverse direction
-    /// depends on joining also moving the guest's active workspace), and
-    /// testing only the easy direction is how a half-broken path stays
-    /// green.
+    /// Each session's pointer arrives on the other's screen under the
+    /// room's name for it. Asserted in both directions — host and guest
+    /// are not symmetric, and testing only the easy direction is how a
+    /// half-broken path stays green.
     #[test]
     fn a_pointer_crosses_between_two_sessions_both_ways() {
         let guest_peer = peer_id(9);
         let host_peer = peer_id(11);
-        // A named invite names both ends, so each screen can attribute the
-        // other's cursor to a person.
         let (mut host_tree, room) =
             host_naming(&[(&guest_peer, "Xaver"), (&host_peer, "Quinten")]);
 
@@ -1085,8 +964,6 @@ mod two_sessions {
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
 
-        // Attached knowing no rooms, then told — a relay whose room set
-        // never catches up folds nothing at all.
         let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
         let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
         host.set_rooms(rooms_of(&host_handle));
@@ -1096,7 +973,6 @@ mod two_sessions {
             id: room.to_string(),
         };
 
-        // -- the guest points, and the host has to paint him ---------
         guest.set_cursor(420.0, 300.0);
         assert!(
             guest.publish_local_cursor(&room.to_string()),
@@ -1125,7 +1001,6 @@ mod two_sessions {
             "the pill over it reads the name the room gave the peer",
         );
 
-        // -- and the host points, and the guest has to paint him -----
         host.set_cursor(880.0, 520.0);
         assert!(host.publish_local_cursor(&room.to_string()));
         over_the_wire(published(&mut host_cmds), &guest_net);
@@ -1147,10 +1022,8 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session that has not moved its pointer says nothing, and a
-    /// session that then moves it says something — over the real wire.
-    /// Both halves matter: the silent case alone is indistinguishable
-    /// from a publisher that has simply stopped working.
+    /// A session that has not moved its pointer says nothing, and one
+    /// that then moves it says something, over the real wire.
     #[test]
     fn a_session_is_silent_until_its_pointer_has_been_somewhere() {
         let guest_peer = peer_id(21);
@@ -1174,8 +1047,6 @@ mod two_sessions {
         host.set_rooms(rooms_of(&host_handle));
         guest.set_rooms(rooms_of(&guest_handle));
 
-        // Nothing has moved; the frame loop still calls this every pass and
-        // must put nothing on the wire.
         assert!(
             !guest.publish_local_cursor(&room.to_string()),
             "a pointer that has never been anywhere is not a pointer at the origin",
@@ -1191,7 +1062,6 @@ mod two_sessions {
         );
         assert!(on_host.pointers.is_empty());
 
-        // Now it moves, and the very next pass has to speak.
         guest.set_cursor(640.0, 610.0);
         assert!(guest.publish_local_cursor(&room.to_string()));
         over_the_wire(published(&mut guest_cmds), &host_net);
@@ -1209,12 +1079,9 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The frame loop's own call, fed from the real input state a session
-    /// that has never been pointed at holds. Where the previous test proves
-    /// the gate, this proves it is *reachable* — takes the position from
-    /// `ClientInput` exactly as `native.rs` does, rather than writing `None`
-    /// by hand, since a wrong value passed through there is exactly the bug
-    /// this guards against.
+    /// Where the previous test proves the gate, this proves it's
+    /// reachable — takes the position from `ClientInput` exactly as
+    /// `native.rs` does, rather than writing `None` by hand.
     #[test]
     fn the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved() {
         let guest_peer = peer_id(23);
@@ -1267,8 +1134,6 @@ mod two_sessions {
             "and no pill is drawn for a participant who never pointed at anything",
         );
 
-        // The rule is about pointers, not participation: once this
-        // session's pointer has been somewhere, it publishes.
         guest.set_cursor_position(Some((640.0, 610.0)));
         assert!(guest.publish_local_cursor(&room.to_string()));
         over_the_wire(published(&mut guest_cmds), &host_net);
@@ -1286,14 +1151,12 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A pointer addressed to a room this session is not in is refused,
-    /// asserted across two real sessions rather than against a closure.
+    /// Asserted across two real sessions rather than against a closure.
     #[test]
     fn a_pointer_from_a_room_this_session_is_not_in_is_refused() {
         let stranger_peer = peer_id(33);
         let (host_tree, _room) = host_naming(&[(&stranger_peer, "Nobody")]);
 
-        // A room of its own, which the host has never joined or heard of.
         let mut stranger_tree = WorkspaceTree::default();
         let stranger_ws = stranger_tree.append_empty_workspace("Elsewhere");
         let elsewhere = stranger_tree
@@ -1335,9 +1198,8 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Put the fixture's workspace on screen. `append_empty_workspace`
-    /// does not move `active`, but the roster is a statement about the
-    /// room the user is *looking at*, which a real session always has.
+    /// Put the fixture's workspace on screen — `append_empty_workspace`
+    /// doesn't move `active`, but the roster reads whichever room that is.
     fn looking_at_its_room(tree: &mut WorkspaceTree) {
         tree.active = tree
             .workspaces
@@ -1346,8 +1208,7 @@ mod two_sessions {
             .id;
     }
 
-    /// A session's own view of who is in the room it is looking at,
-    /// read the way the roster and the top bar read it.
+    /// A session's own view of who is in the room it is looking at.
     fn roster_of(
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) -> Vec<(String, Option<String>, bool)> {
@@ -1378,8 +1239,7 @@ mod two_sessions {
         (relay, net, cmds)
     }
 
-    /// `refresh_roster` must actually write `WorkspaceTree::collaborators`
-    /// once a peer arrives, since that is the only thing the roster reads.
+    /// `refresh_roster` must actually write `WorkspaceTree::collaborators`.
     #[test]
     fn a_peer_who_joined_is_in_the_roster() {
         let guest_peer = peer_id(21);
@@ -1402,8 +1262,6 @@ mod two_sessions {
             "before anyone arrives the room has nobody in it",
         );
 
-        // The guest arrives the only way it can: presence, on the room it
-        // joined.
         guest.set_cursor(420.0, 300.0);
         assert!(guest.publish_local_cursor(&room.to_string()));
         over_the_wire(published(&mut guest_cmds), &host_net);
@@ -1422,7 +1280,6 @@ mod two_sessions {
              somebody who is here rather than somebody who was asked",
         );
 
-        // Level-triggered: a second pass with nothing new reports no change.
         assert!(
             !host.refresh_roster(&on_host),
             "restating the same room's people is not a change",
@@ -1468,14 +1325,12 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A host names itself when it mints an invite, so its guests read a
-    /// name rather than a number — reading that back as a peer of its own
-    /// would put the host in its own list of other people.
+    /// A host names itself when it mints an invite; the roster must not
+    /// read that back as a peer of its own.
     #[test]
     fn the_room_does_not_list_the_session_reading_it() {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(42);
-        // Both ends named, as `issue_invite` leaves them.
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver"), (&host_peer, OWNER)]);
         let mut guest_tree = guest_joining(&mut host_tree, room);
         looking_at_its_room(&mut host_tree);
@@ -1507,9 +1362,7 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Somebody the room has named and who has not turned up reads as
-    /// invited, not as present. Nothing crosses a wire in this test — the
-    /// only fact this session has is the room document's naming.
+    /// Nothing crosses a wire here — only the room document's naming.
     #[test]
     fn a_named_peer_who_has_not_arrived_reads_as_invited() {
         let host_peer = peer_id(51);
@@ -1536,8 +1389,6 @@ mod two_sessions {
              and says that peer has not arrived",
         );
 
-        // The surfaces that claim people are *present* do not count them —
-        // an invitation nobody has redeemed is not a peer in the room.
         assert_eq!(
             crate::shell::state::active_workspace_peer_count(&guest_handle.read()),
             0,
@@ -1547,11 +1398,9 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An invitation becomes a participant, and the screen changes at the
-    /// moment it does — deliberately without a pointer, since joining is
-    /// not moving a mouse. What the host observes instead is the guest
-    /// asking this room's document for its changes, under the identity
-    /// the transport authenticated.
+    /// An invitation becomes a participant without a pointer — joining
+    /// isn't moving a mouse. The host observes the guest asking the
+    /// room's document for its changes, under its authenticated identity.
     #[test]
     fn arriving_turns_an_invitation_into_a_participant() {
         let guest_peer = peer_id(61);
@@ -1577,8 +1426,7 @@ mod two_sessions {
             "so the top bar still offers to invite the first person",
         );
 
-        // He redeems it: a request for this room's changes under his
-        // authenticated peer id, the same thing `accept_invite` sends.
+        // Redeems it: the same request `accept_invite` sends.
         {
             let mut replica = host_net.replica.lock().expect("the replica lock");
             replica.handle_from(
