@@ -44,7 +44,7 @@ fn nm_metered() -> Option<bool> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut saw_known = false;
     for line in text.lines() {
-        let val = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_ascii_lowercase();
+        let val = line.split_once(':').map_or("", |(_, v)| v).trim().to_ascii_lowercase();
         if val.starts_with("yes") {
             return Some(true);
         }

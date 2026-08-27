@@ -11,23 +11,13 @@
 //!   `music_search_tracks` for real search results and, crucially, `player`
 //!   to resolve a **directly-playable audio-only stream URL** for a track.
 //!
-//! Both worlds implement the same [`MusicBackend`] trait, so the rest of the
-//! app (the non-blocking [`crate::stream`] worker) is written once against the
-//! trait and the cargo feature picks the implementation at build time; the
-//! worker then picks live-or-offline at *runtime* (falling back to offline if
-//! live init or the network fails). This is the clean seam the brief asks for:
-//! rustypipe is real but gated, the offline sample is the default, and the
-//! PoToken concern is a module you can swap ([`potoken`]).
+//! Both worlds implement the same [`MusicBackend`] trait: the cargo feature
+//! picks the implementation at build time, and [`crate::stream`]'s worker
+//! picks live-or-offline at *runtime*, falling back to offline if live init
+//! or the network fails.
 //!
-//! ## The stream-resolution gotcha (PoToken / SABR)
-//!
-//! YouTube gates *some* clients' streams behind a BotGuard-minted PoToken. The
-//! trick rustypipe uses (and we rely on): the **iOS** and **TV** player clients
-//! return direct `googlevideo` URLs **without** a PoToken. rustypipe's default
-//! `player_client_order` with no BotGuard is `[Ios, Tv]`, so
-//! [`MusicBackend::resolve_audio`] gets a real, fetchable audio URL with zero
-//! extra runtime deps. The [`potoken`] seam stays in place so a future BotGuard
-//! provider can unlock the Desktop/Music clients if YouTube ever tightens this.
+//! PoToken minting (why the offline-audio path works with no BotGuard) is
+//! documented in [`potoken`].
 
 pub mod offline;
 pub mod potoken;

@@ -44,6 +44,11 @@ pub fn ring_dot(scene: &mut Scene, t: Affine, center: Point, r: f64, fill: Color
     scene.fill(Fill::NonZero, t, fill, None, &Circle::new(center, r));
 }
 
+// Every draw call below takes the same shape: scene + renderer + transform,
+// then style, then position — one argument per independent knob, called from
+// hundreds of sites in `app.rs`. Bundling them into a struct would just move
+// the same field list into every call-site literal.
+#[allow(clippy::too_many_arguments)]
 /// Left-top anchored text on a single line.
 pub fn text(
     scene: &mut Scene,
@@ -58,7 +63,7 @@ pub fn text(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
-/// Bold text variant.
+#[allow(clippy::too_many_arguments)]
 pub fn text_bold(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -72,6 +77,7 @@ pub fn text_bold(
     tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, TextWeight::Bold);
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Text whose right edge sits at `x_right`.
 pub fn text_right(
     scene: &mut Scene,
@@ -87,6 +93,7 @@ pub fn text_right(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x_right - w as f64, y)), None);
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Text centred horizontally within `[x0, x1]`.
 pub fn text_center(
     scene: &mut Scene,
@@ -104,6 +111,7 @@ pub fn text_center(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Vertically-centred left text within a row of height `h` starting at `y0`.
 pub fn text_vc(
     scene: &mut Scene,
@@ -123,7 +131,7 @@ pub fn text_vc(
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
 /// callers can lay out chips left-to-right. The pill is vertically centred on
 /// `cy` with a fixed height derived from `size`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -148,7 +156,7 @@ pub fn pill(
 
 /// Pill with a translucent fill derived from `accent` plus a matching
 /// stroke — the "tag" look used for retention classes.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
 pub fn tag_pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -185,6 +193,7 @@ pub fn bar(scene: &mut Scene, t: Affine, rect: Rect, frac: f64, fill: Color, tra
 
 /// Circular gauge: a faint full ring plus an arc sweeping `frac` of the way
 /// round from 12 o'clock, clockwise.
+#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
 pub fn ring(
     scene: &mut Scene,
     t: Affine,
@@ -195,7 +204,6 @@ pub fn ring(
     fill: Color,
     track: Color,
 ) {
-    // Track: full circle.
     scene.stroke(&Stroke::new(thickness), t, track, None, &Circle::new(center, radius));
     let frac = frac.clamp(0.0, 1.0);
     if frac > 0.001 {

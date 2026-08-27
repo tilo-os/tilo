@@ -1,41 +1,18 @@
 //! The capability model — `(subject × scope × verb)`.
 //!
-//! The static [`crate::role::role_permits`] table answers the coarse
-//! question "may a member of this *role* emit this op class?". That is
-//! the base layer and stays the authoritative wire decision. This
-//! module is the **richer layer stacked on top**: it lets a permission
-//! be expressed at finer granularity than "role → op-class", exactly as
-//! the coherence architecture (`docs/coherence-architecture.md` §2)
-//! describes:
+//! [`crate::role::role_permits`] answers the coarse "may this role emit this
+//! op class?" and stays the authoritative wire decision; this module lets a
+//! permission be expressed at finer granularity on top of it (see
+//! `docs/coherence-architecture.md` §2). [`role_caps`] must stay coherent
+//! with `role_permits` — checked by `caps_agree_with_role_table` in
+//! `tests/caps.rs`.
 //!
-//! > A permission is `(subject: role|user) × (scope: app | resource-type
-//! > | resource-instance | fs-path) × (verb: an exported action, or a
-//! > coarse cap read/write/invite/admin)`. Roles are named cap-bundles;
-//! > users get roles + individual overrides + per-resource shares.
+//! [`decide`] is fail-closed and deny-biased: no base authority + no
+//! matching grant denies; a `Denied` role can never be rescued by a grant;
+//! a matching `Restrict` removes authority even if a `Grant` would allow it.
 //!
-//! Concretely:
-//!
-//! - A **role** is a named cap-bundle: [`role_caps`] maps each
-//!   [`Role`] to the coarse [`Verb`]s it holds. This is coherent with
-//!   `role_permits` (see the `caps_agree_with_role_table` test in
-//!   `tests/caps.rs`): the role bundle grants exactly the op classes
-//!   the table permits.
-//! - An **override** ([`CapOverride`]) narrows or extends the base for a
-//!   specific `(subject, scope)`. A `Restrict` caps authority within a
-//!   scope below what the role would otherwise allow ("in the finance
-//!   app, even editors may only comment"); a `Grant` is a per-resource
-//!   *share* that extends one subject's authority on one scope ("share
-//!   this doc with Bob, comment-only") without changing their role.
-//!
-//! The decision function is [`decide`]. It is **fail-closed**: an op
-//! with no base authority and no matching grant is denied, and a
-//! `Denied` role can never be rescued by a grant (it is an explicit
-//! block, per the role table's contract). Deny-bias also applies to
-//! restrictions: a matching `Restrict` removes authority even if a
-//! `Grant` would otherwise allow.
-//!
-//! Nothing here does I/O or touches the network — same discipline as
-//! the rest of `collab-types`.
+//! Nothing here does I/O or touches the network — same discipline as the
+//! rest of `collab-types`.
 
 use serde::{Deserialize, Serialize};
 
@@ -90,21 +67,14 @@ impl Verb {
     }
 }
 
-/// A named principal — the string-keyed half of the subject space.
+/// A named principal — the string-keyed half of the subject space, for
+/// enforcement points with no signature to check (a wayland app-id, an
+/// agent name, a bearer token, a room).
 ///
-/// [`Subject::User`] names a person by signing key, which is the right
-/// answer whenever a signature is available. Most enforcement points in
-/// the OS have no signature to check: the portal knows a wayland
-/// app-id, an agent broker knows an agent name, an invite link carries
-/// a bearer token, and a room grant names a room. `Principal` is the
-/// one vocabulary for all of those, tagged by *kind* so the UI can
-/// never confuse "Bob, who I shared one file with" for "the Ebook app,
-/// which asked for a Documents path".
-///
-/// The kind tag is load-bearing, not decoration. A share list renders
-/// [`Principal::Person`] rows; a workspace roster renders room
-/// membership. They are the same machinery and must never be the same
-/// list — see [`Principal::is_person`].
+/// The kind tag is load-bearing, not decoration: a share list renders
+/// [`Principal::Person`] rows and a workspace roster renders room
+/// membership, and they must never become the same list — see
+/// [`Principal::is_person`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Principal {
@@ -152,7 +122,6 @@ impl Principal {
         matches!(self, Principal::Person(_))
     }
 
-    /// The bare id string, without the kind tag.
     pub fn id(&self) -> &str {
         match self {
             Principal::Person(s)
@@ -214,27 +183,22 @@ impl Subject {
         }
     }
 
-    /// Convenience constructor for an app subject.
     pub fn app(app_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::App(app_id.into()))
     }
 
-    /// Convenience constructor for a person subject.
     pub fn person(user_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::Person(user_id.into()))
     }
 
-    /// Convenience constructor for an agent subject.
     pub fn agent(agent_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::Agent(agent_id.into()))
     }
 
-    /// Convenience constructor for a bearer-token subject.
     pub fn token(token_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::Token(token_id.into()))
     }
 
-    /// Convenience constructor for a room subject.
     pub fn room(room_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::Room(room_id.into()))
     }
@@ -242,14 +206,11 @@ impl Subject {
 
 /// The thing asking to act.
 ///
-/// An actor presents *at most one* role (people in a room have one;
-/// apps, agents and bearer tokens have none), optionally a signing key,
-/// and a set of [`Principal`]s it can prove it is — its own person id,
-/// its app id, the rooms it is in, any bearer token it presented.
-///
-/// `role: None` is the fail-closed default and the correct value for
-/// every non-person subject: with no role there is no base authority,
-/// so such an actor can only ever act through an explicit capability.
+/// An actor presents *at most one* role (people in a room have one; apps,
+/// agents and bearer tokens have none) plus the [`Principal`]s it can prove
+/// it is. `role: None` is the fail-closed default: with no role there is no
+/// base authority, so such an actor can only ever act through an explicit
+/// capability.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Actor {
     /// The role this actor holds in the room, if it holds one.
@@ -622,20 +583,14 @@ pub enum Effect {
     Restrict,
 }
 
-/// **The capability.** `(subject × scope × verb)`, an expiry, and
-/// whether it grants or restricts.
+/// **The capability.** `(subject × scope × verb)`, an expiry, and whether
+/// it grants or restricts.
 ///
-/// This one record is the whole primitive. Room membership is a
-/// capability whose scope is [`Scope::Room`]; sharing a single file is
-/// a capability whose scope is [`Scope::FsPath`]; an app's portal grant
-/// is a capability whose subject is [`Principal::App`]. There is no
-/// second sharing system and no second vocabulary — anything that wants
-/// to express "X may do Y to Z until T" writes one of these.
-///
-/// A `Grant { verb: Comment }` says "this subject may (at least)
-/// comment within this scope". A `Restrict { verb: Comment }` says
-/// "this subject may do **no more than** comment within this scope" —
-/// any required verb not implied by `Comment` is removed.
+/// This one record is the whole primitive — room membership, a file share,
+/// and a portal grant are all just a `CapOverride` with a different scope
+/// or subject; there is no second sharing system. A `Restrict { verb }`
+/// caps authority at "no more than `verb`": any required verb `verb` does
+/// not imply is removed.
 ///
 /// The added fields all carry `#[serde(default)]` so capability records
 /// persisted before they existed still load: no id, no expiry (never
@@ -832,24 +787,16 @@ pub enum CapDecision {
 
 /// Decide whether an actor may perform `required` on a resource.
 ///
-/// Inputs:
-/// - `base_role_allows`: the coarse role-table answer
-///   ([`crate::role::role_permits`]) for this `(role, kind, op)`. Passed
-///   in rather than recomputed so this crate keeps a single source of
-///   truth for the base table.
-/// - `required`: the verb the op needs ([`verb_for_opclass`]).
-/// - `role` / `author`: the actor, for subject matching.
-/// - `ctx`: the op's resource context, for scope matching.
-/// - `overrides`: the channel's `(subject × scope × verb)` overrides.
+/// `base_role_allows` is the coarse role-table answer
+/// ([`crate::role::role_permits`]), passed in rather than recomputed so
+/// this crate keeps one source of truth for the base table.
 ///
-/// Semantics (fail-closed, deny-biased):
-/// - A `Denied` role is an explicit block: always [`CapDecision::DeniedByRole`].
-/// - `effective = (base_role_allows OR granted) AND NOT restricted`.
-///   Grants extend the base; a matching restriction removes authority
-///   regardless of grants.
-/// - If not allowed: [`CapDecision::DeniedByRole`] when neither the base
-///   nor a grant offered the verb (a pure role denial), otherwise
-///   [`CapDecision::DeniedByRestriction`].
+/// Fail-closed, deny-biased: a `Denied` role is always
+/// [`CapDecision::DeniedByRole`]. Otherwise `effective = (base_role_allows
+/// OR granted) AND NOT restricted` — a matching restriction removes
+/// authority regardless of grants. When not allowed:
+/// [`CapDecision::DeniedByRole`] if neither the base nor a grant offered
+/// the verb, else [`CapDecision::DeniedByRestriction`].
 pub fn decide(
     base_role_allows: bool,
     required: Verb,
@@ -879,19 +826,15 @@ pub fn decide(
 /// Decide whether `actor` may perform `required` on `resource` — the
 /// general form, and the one every non-wire enforcement point calls.
 ///
-/// Same fail-closed, deny-biased semantics as [`decide`], generalised
-/// on three axes:
-/// - the actor may be an app, agent or bearer token, not only a keyed
-///   person (see [`Actor`]);
-/// - the resource may be a path, device, host or action, not only a
-///   CRDT artifact (see [`ResourceRef`]);
-/// - capabilities expire. `now: Some(unix_seconds)` drops expired ones
-///   before deciding; `None` skips expiry evaluation entirely.
+/// Same fail-closed, deny-biased semantics as [`decide`], generalised to
+/// non-keyed actors ([`Actor`]) and non-artifact resources ([`ResourceRef`]).
+/// `now: Some(unix_seconds)` drops expired capabilities before deciding;
+/// `None` skips expiry evaluation entirely.
 ///
-/// An actor with `role: None` — every app, agent and token — has no
-/// base authority whatsoever, so it can act *only* through an explicit
-/// capability. That is the property that makes the portal prompt the
-/// only user-facing permission dialog in the system.
+/// An actor with `role: None` — every app, agent and token — has no base
+/// authority whatsoever, so it can act *only* through an explicit
+/// capability: the property that makes the portal prompt the only
+/// user-facing permission dialog in the system.
 pub fn decide_actor(
     base_role_allows: bool,
     required: Verb,

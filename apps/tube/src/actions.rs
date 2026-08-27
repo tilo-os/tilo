@@ -58,7 +58,6 @@ pub enum TubeAction {
     AddToQueue { video_id: String },
     /// Like a comment (addressed by its video + ordered index).
     LikeComment { video_id: String, index: usize },
-    /// Post a reply to a comment.
     ReplyToComment {
         video_id: String,
         index: usize,
@@ -189,7 +188,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 video_id: video_id.clone(),
             },
         )
-        .expect("encode like")
+        .expect("TubeAction always serializes")
         .with_description("Toggle the like on this video"),
     );
     root = root.with_action(
@@ -201,7 +200,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 video_id: video_id.clone(),
             },
         )
-        .expect("encode queue")
+        .expect("TubeAction always serializes")
         .with_description("Append to the shared watch queue"),
     );
 
@@ -223,7 +222,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                     index,
                 },
             )
-            .expect("encode comment like"),
+            .expect("TubeAction always serializes"),
         )
         .with_action(ActionSpec::prompted(
             "reply",
@@ -280,7 +279,7 @@ mod tests {
         r
     }
 
-    /// (b) Ctrl+K on tube lists the open video + its comment resources and their
+    /// Ctrl+K on tube lists the open video + its comment resources and their
     /// actions. Drives the real resource-collection hook (`Widget::resources`)
     /// and the real `ui::ActionPalette`.
     #[test]
@@ -330,9 +329,8 @@ mod tests {
             (Value::Object(ObjType::Map), id) => id,
             _ => return None,
         };
-        match doc.get(&sub, key).ok()?? {
-            (v, _) => v.to_bool(),
-        }
+        let (v, _) = doc.get(&sub, key).ok()??;
+        v.to_bool()
     }
 
     /// Select a palette row by a substring of its label, then activate it (the
@@ -357,7 +355,7 @@ mod tests {
             .expect("dispatch succeeded")
     }
 
-    /// (c) Executing the "Like video" action mutates the CRDT.
+    /// Executing the "Like video" action mutates the CRDT.
     #[test]
     fn executing_like_action_mutates_crdt() {
         let (app, vid, _) = watching();

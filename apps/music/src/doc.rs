@@ -74,10 +74,10 @@ fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i) {
-            if let ScalarValue::Str(s) = v.as_ref() {
-                out.push(s.to_string());
-            }
+        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i)
+            && let ScalarValue::Str(s) = v.as_ref()
+        {
+            out.push(s.to_string());
         }
     }
     out
@@ -295,10 +295,10 @@ fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
     let playlists = get_list(doc, &ROOT, "playlists")?;
     let n = doc.length(&playlists);
     for i in 0..n {
-        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
-            if get_str(doc, &pm, "id").as_deref() == Some(playlist_id) {
-                return Some(pm);
-            }
+        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i)
+            && get_str(doc, &pm, "id").as_deref() == Some(playlist_id)
+        {
+            return Some(pm);
         }
     }
     None
@@ -308,11 +308,11 @@ fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
 /// already present or the playlist is unknown.
 pub fn add_track_to_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str) {
     let Some(pm) = find_playlist_obj(doc, playlist_id) else { return };
-    if let Some(list) = get_list(doc, &pm, "tracks") {
-        if !list_strings(doc, &list).iter().any(|t| t == track_id) {
-            let len = doc.length(&list);
-            let _ = doc.insert(&list, len, track_id);
-        }
+    if let Some(list) = get_list(doc, &pm, "tracks")
+        && !list_strings(doc, &list).iter().any(|t| t == track_id)
+    {
+        let len = doc.length(&list);
+        let _ = doc.insert(&list, len, track_id);
     }
 }
 
@@ -354,11 +354,11 @@ pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
     let Some(playlists) = get_list(doc, &ROOT, "playlists") else { return };
     let n = doc.length(&playlists);
     for i in 0..n {
-        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
-            if get_str(doc, &pm, "id").as_deref() == Some(playlist_id) {
-                let _ = doc.delete(&playlists, i);
-                return;
-            }
+        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i)
+            && get_str(doc, &pm, "id").as_deref() == Some(playlist_id)
+        {
+            let _ = doc.delete(&playlists, i);
+            return;
         }
     }
 }
@@ -395,10 +395,11 @@ pub fn set_liked(doc: &mut AutoCommit, track_id: &str, liked: bool) {
     if liked && !present {
         let len = doc.length(&list);
         let _ = doc.insert(&list, len, track_id);
-    } else if !liked && present {
-        if let Some(pos) = ids.iter().position(|t| t == track_id) {
-            let _ = doc.delete(&list, pos);
-        }
+    } else if !liked
+        && present
+        && let Some(pos) = ids.iter().position(|t| t == track_id)
+    {
+        let _ = doc.delete(&list, pos);
     }
 }
 
@@ -582,7 +583,7 @@ pub fn load_playback(doc: &AutoCommit) -> Playback {
         playing: get_bool(doc, &m, "playing").unwrap_or(false),
         position_ms: get_i64(doc, &m, "position_ms").unwrap_or(0).max(0) as u64,
         shuffle: get_bool(doc, &m, "shuffle").unwrap_or(false),
-        repeat: RepeatMode::from_str(&get_str(doc, &m, "repeat").unwrap_or_default()),
+        repeat: RepeatMode::parse(&get_str(doc, &m, "repeat").unwrap_or_default()),
         volume: get_i64(doc, &m, "volume").unwrap_or(80).clamp(0, 100) as u8,
     }
 }

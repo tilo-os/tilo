@@ -116,26 +116,23 @@ mod tests {
 
     #[test]
     fn readable_on_bright_surface_is_black_not_white() {
-        // slate-200 (the old buggy nav-item highlight) is bright → black wins.
+        // slate-200 (a nav-item highlight candidate) is bright → black wins.
         let slate_200 = Color::from_rgb8(226, 232, 240);
         assert_eq!(readable_on(slate_200), Color::BLACK);
     }
 
     #[test]
     fn readable_on_dark_accent_fill_is_white() {
-        // indigo-700 (the selected-fill accent_hover step in the dark theme) is
-        // dark enough that white text wins decisively — this is the colour the
-        // selected chip/nav fill actually uses.
+        // indigo-700: the dark theme's actual selected chip/nav fill.
         let indigo_700 = Color::from_rgb8(67, 56, 202);
         assert_eq!(readable_on(indigo_700), Color::WHITE);
     }
 
     #[test]
     fn readable_on_picks_the_genuinely_higher_contrast_choice() {
-        // The original readability bug was an *assumption* that white always
-        // reads on the accent. For the mid-tone indigo-500 that is false:
-        // black (4.70:1) actually beats white (4.47:1). The seam must follow
-        // the maths, not the intuition — that's the whole point.
+        // Mid-tone indigo-500: black (4.70:1) narrowly beats white (4.47:1),
+        // so the seam must follow the maths, not an assumption that white
+        // always reads on an accent.
         let indigo_500 = Color::from_rgb8(99, 102, 241);
         let picked = readable_on(indigo_500);
         let other = if picked == Color::WHITE { Color::BLACK } else { Color::WHITE };
@@ -148,18 +145,17 @@ mod tests {
 
     #[test]
     fn regression_old_buggy_combos_fail_aa() {
-        // Characterise the readability bug this module fixes, so the seam
-        // can't silently regress back to it. All three were the *old*
-        // selected-state foreground/background pairs and all fall below the
-        // 4.5:1 body-text floor.
+        // Both were real selected-state foreground/background pairs and both
+        // fall below the 4.5:1 body-text floor — pins the bug this module
+        // fixes so the seam can't silently regress back to it.
         let indigo_500 = Color::from_rgb8(99, 102, 241); // accent_primary
         let slate_200 = Color::from_rgb8(226, 232, 240); // neutral.stops[8]
-        // old nav_item active: accent text/icon on a bright slate-200 chip.
+        // accent text/icon on a bright slate-200 chip (nav_item active).
         assert!(
             contrast_ratio(indigo_500, slate_200) < 4.5,
             "old nav-item combo should be below AA"
         );
-        // old status_pill on: accent text on an indigo-900 wash over slate-900.
+        // accent text on an indigo-900 wash over slate-900 (status_pill on).
         let wash = Color::from_rgba8(49, 46, 129, 102); // indigo-900 @ ~0.4
         let bg = composite_over(wash, Color::from_rgb8(15, 23, 42));
         assert!(
@@ -167,8 +163,8 @@ mod tests {
             "old status-pill combo should be below AA"
         );
 
-        // And prove the FIX clears AA: white on indigo-700 (the new on-pill bg)
-        // and the readable_on choice on the accent fill both pass.
+        // The fix clears AA: white on indigo-700 (the on-pill bg) and the
+        // readable_on choice on the accent fill both pass.
         let indigo_700 = Color::from_rgb8(67, 56, 202);
         assert!(contrast_ratio(Color::WHITE, indigo_700) >= 4.5);
         assert!(contrast_ratio(readable_on(indigo_500), indigo_500) >= 4.5);

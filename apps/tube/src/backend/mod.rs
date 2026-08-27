@@ -13,9 +13,8 @@
 //!
 //! Both worlds implement the same [`YtBackend`] trait, so the rest of the app
 //! (the fetch worker in [`crate::api`]) is written once against the trait and
-//! the build feature picks the implementation. This is the clean seam the
-//! research brief asks for: rustypipe is real but gated, the offline sample is
-//! the default, and PoToken is a module you can swap.
+//! the build feature picks the implementation: rustypipe is real but gated,
+//! the offline sample is the default, and PoToken is a module you can swap.
 //!
 //! ## What lives where
 //!

@@ -123,16 +123,11 @@ fn clicking_scrim_closes_palette() {
 }
 
 // ---------------------------------------------------------------------------
-// text-entry surfaces must be reachable (the headline defect)
+// text-entry surfaces must be reachable
 // ---------------------------------------------------------------------------
 
 #[test]
 fn top_bar_search_input_is_present_even_when_query_is_empty() {
-    // Regression: the search box used to hide its real TextInput behind a
-    // `!query.is_empty()` gate and show a static label, so with an empty query
-    // there was NO input in the tree to focus — free-text search was
-    // unreachable. The input must now always be laid out (placeholder-backed),
-    // so a user can click into it and type from a cold start.
     let h = Harness::new(
         TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64),
         VIEWPORT,
@@ -150,8 +145,6 @@ fn top_bar_search_input_is_present_even_when_query_is_empty() {
 
 #[test]
 fn command_palette_input_is_present_even_when_query_is_empty() {
-    // Same defect on the Ctrl+K palette: the input was gated on a non-empty
-    // query, so the freshly-opened (empty) palette had no field to type into.
     let app = TubeApp::new().with_palette_open_for_test("");
     let h = Harness::new(app, VIEWPORT);
     assert!(h.app.palette_open_for_test(), "palette starts open");
@@ -176,9 +169,9 @@ fn watch_app() -> TubeApp {
 
 #[test]
 fn share_button_copies_a_link_and_is_not_wired_to_like() {
-    // The Share pill was mis-wired to `Action::Like`. Clicking it must record a
-    // "link copied" notice (the visible confirmation of the real clipboard
-    // write) and must NOT like the video — proving the two are distinct.
+    // Clicking Share must record a "link copied" notice (the visible
+    // confirmation of the real clipboard write) and must NOT like the video —
+    // proving the two are distinct.
     let mut h = Harness::new(watch_app(), VIEWPORT);
     assert!(!h.app.model_for_test().is_liked(WATCH_ID), "not liked to start");
 
@@ -186,7 +179,7 @@ fn share_button_copies_a_link_and_is_not_wired_to_like() {
 
     assert!(
         !h.app.model_for_test().is_liked(WATCH_ID),
-        "Share must not like the video (the old mis-wire did)"
+        "Share must not like the video"
     );
     assert!(
         h.app
@@ -220,8 +213,6 @@ fn like_button_toggles_liked_state_through_a_real_click() {
 
 #[test]
 fn transport_settings_gear_navigates_to_settings() {
-    // The gear in the watch transport bar was a dead glyph. It must now open
-    // the Settings screen.
     let mut h = Harness::new(watch_app(), VIEWPORT);
     assert!(matches!(h.app.route_for_test(), Route::Watch(_)));
     h.click_id("watch_settings");
@@ -258,7 +249,7 @@ fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
         player.width(),
         player.height()
     );
-    // Height-driven: ~65% of the viewport height, not the old ~480px cap.
+    // Height-driven: ~65% of the viewport height, not a fixed pixel cap.
     assert!(
         player.height() > 0.55 * viewport_h && player.height() <= 0.66 * viewport_h + 2.0,
         "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
@@ -288,9 +279,9 @@ fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
 
 #[test]
 fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved() {
-    // The headline of the nav-stack adoption: from a results list, opening a
-    // video and pressing Back must land on the EXACT same search results, with
-    // the scroll position preserved — all through real clicks on real widgets.
+    // From a results list, opening a video and pressing Back must land on the
+    // EXACT same search results, with the scroll position preserved — all
+    // through real clicks on real widgets.
     let query = "rust";
     // Use several sample video ids so the results list is long enough to scroll.
     let sample = tube::sample::model();
@@ -455,9 +446,9 @@ fn hamburger_toggles_the_overlay_rail_through_a_real_click() {
 // Scroll-performance + responsive-grid + real-image regressions
 // ---------------------------------------------------------------------------
 
-/// REGRESSION (task 4): a real click on the top search field must move keyboard
-/// focus to the `search_input` TextInput. Drives the actual hit-test +
-/// event-routing path (`handle_event` → `focus_target`), the thing that broke.
+/// A real click on the top search field must move keyboard focus to the
+/// `search_input` TextInput — drives the actual hit-test + event-routing path
+/// (`handle_event` → `focus_target`).
 #[test]
 fn clicking_the_search_field_focuses_the_input() {
     let app = TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64);
@@ -480,8 +471,8 @@ fn clicking_the_search_field_focuses_the_input() {
     );
 }
 
-/// Task 2: the responsive grid fills each row edge-to-edge — no blank gutter on
-/// the right — and adds columns as the window widens. Driven at three widths.
+/// The responsive grid fills each row edge-to-edge — no blank gutter on the
+/// right — and adds columns as the window widens. Driven at three widths.
 #[test]
 fn home_grid_fills_the_row_with_no_right_gutter_across_widths() {
     let mut columns_per_width = Vec::new();
@@ -531,9 +522,10 @@ fn home_grid_fills_the_row_with_no_right_gutter_across_widths() {
     );
 }
 
-/// Task 3: a real creator avatar (fetched + decoded through the ImageStore) is
-/// painted on the Home cards — not the initials-only fallback. Drives the whole
-/// Home screen with a seeded store and asserts an IMAGE draw reaches the scene.
+/// A real creator avatar (fetched + decoded through the ImageStore) is
+/// painted on the Home cards — not the initials-only fallback. Drives the
+/// whole Home screen with a seeded store and asserts an IMAGE draw reaches
+/// the scene.
 #[test]
 fn home_channel_avatars_render_the_fetched_photo() {
     use std::sync::Arc;
@@ -594,11 +586,12 @@ fn home_channel_avatars_render_the_fetched_photo() {
     );
 }
 
-/// Issue #1 (majority): the yt-dlp/rustypipe channel-record mismatch. Most cards
-/// are uploaded by one creator whose *primary* channel record carries NO avatar,
-/// while a second record (a creator row, different id, same name) does. After
-/// `reconcile_channel_avatars` every card for that creator must resolve the real
-/// avatar — proving the reconciliation fixes the MAJORITY, not just one row.
+/// The yt-dlp/rustypipe channel-record mismatch: most cards are uploaded by
+/// one creator whose *primary* channel record carries NO avatar, while a
+/// second record (a creator row, different id, same name) does. After
+/// `reconcile_channel_avatars` every card for that creator must resolve the
+/// real avatar — proving the reconciliation fixes the MAJORITY, not just one
+/// row.
 #[test]
 fn reconciled_avatars_render_on_the_majority_of_home_cards() {
     use std::sync::Arc;
@@ -632,7 +625,6 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
     // which has NO avatar (the yt-dlp record). No thumbnails, so the only image a
     // card can paint is the avatar.
     let mut model = TubeModel::default();
-    model.route = Route::Home;
     for i in 0..12 {
         model.videos.push(Video {
             id: format!("v{i}"),
@@ -723,8 +715,8 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
 /// Home tree may still demand a layout re-measure. A widget that reports "dirty"
 /// forever — e.g. an avatar keyed off a draw-time cache while it's culled
 /// off-screen — forces the enclosing NavSplit to rebuild a cosmic-text
-/// FontSystem + re-solve the whole content pane on EVERY scroll frame (measured
-/// at ~26 ms/frame before the fix). This is the load-bearing invariant.
+/// FontSystem + re-solve the whole content pane on EVERY scroll frame, measured
+/// at ~26 ms/frame when this regresses.
 #[test]
 fn laid_out_home_does_not_demand_relayout_a_scroll_perf_guard() {
     // A large catalogue so most cards (and their avatars) are culled off-screen.

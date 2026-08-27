@@ -1,40 +1,31 @@
 //! Tube — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`. The root
-//!                       app is `online()`: it spawns the fetch worker and pulls
-//!                       real YouTube data (home/trending/search/…) via the
-//!                       `live` backend, degrading to the bundled sample when
-//!                       the network is unreachable.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
-//!                       Always offline/hermetic — no worker, no network.
-//!   * `--probe [Q]`  — construct the real backend, run a live YouTube search
-//!                       for `Q` (default "rust programming") + trending, print
-//!                       what came back, and exit. Proof that live fetch works;
-//!                       requires `--features live` to do anything real.
-//!   * `--probe-trending`
-//!                     — prove the Home/Trending feed: show YouTube's retired
-//!                       dedicated endpoint failing for real, then the composed
-//!                       real "popular" feed (view-count-sorted search).
-//!   * `--probe-play [ID]`
-//!                     — prove real playback: resolve a googlevideo H.264 stream,
-//!                       download + demux it to Annex-B, and decode one real frame
-//!                       through the openh264 decoder. Prints itag/mime/size and
-//!                       the decoded frame dimensions.
-//!   * `--probe-stream [ID] [SECONDS]`
-//!                     — prove CONTINUOUS (moving) playback: resolve the stream,
-//!                       page through its media fragments, and decode a *sequence*
-//!                       of real frames over `SECONDS` through one reused decoder.
-//!                       Prints per-frame index/time/checksum + achieved fps.
+//! - default: run the live winit event loop via `ui::App`. The root app is
+//!   `online()`: it spawns the fetch worker and pulls real YouTube data
+//!   (home/trending/search/…) via the `live` backend, degrading to the
+//!   bundled sample when the network is unreachable.
+//! - `--shots PATH`: render one offscreen frame to a PNG and exit (headless
+//!   screenshot; identical passes to the live app). Always offline/hermetic.
+//! - `--probe [Q]`: construct the real backend, run a live YouTube search for
+//!   `Q` (default "rust programming") + trending, print what came back, and
+//!   exit. Proof that live fetch works; requires `--features live`.
+//! - `--probe-trending`: prove the Home/Trending feed — YouTube's retired
+//!   dedicated endpoint failing for real, then the composed real "popular"
+//!   feed (view-count-sorted search).
+//! - `--probe-play [ID]`: prove real playback — resolve a googlevideo H.264
+//!   stream, download + demux it to Annex-B, and decode one real frame
+//!   through the openh264 decoder. Prints itag/mime/size + frame dimensions.
+//! - `--probe-stream [ID] [SECONDS]`: prove CONTINUOUS (moving) playback —
+//!   resolve the stream, page through its media fragments, and decode a
+//!   *sequence* of real frames over `SECONDS` through one reused decoder.
 //!
 //! Shots-only flags:
-//!   * `--viewport WxH` — render at WxH logical px instead of the default
-//!                         1280x800. A sub-`NAV_BREAKPOINT` width exercises the
-//!                         responsive overlay-flap layout.
-//!   * `--narrow`       — build the narrow variant (rail collapsed to an open
-//!                         overlay flap), so the still captures the summoned
-//!                         rail + scrim. Use together with a narrow `--viewport`.
+//! - `--viewport WxH`: render at WxH logical px instead of the default
+//!   1280x800. A sub-`NAV_BREAKPOINT` width exercises the responsive
+//!   overlay-flap layout.
+//! - `--narrow`: build the narrow variant (rail collapsed to an open overlay
+//!   flap), so the still captures the summoned rail + scrim.
 
 use std::collections::HashMap;
 
@@ -124,13 +115,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // main-thread breakdown, which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
         // `--watch` benches the watch page (full-bleed player + a long comment
-        // list) instead of the Home grid, so the reported numbers cover the
-        // screen the scroll-perf complaint was about.
+        // list) instead of the Home grid — the heaviest scroll scenario.
         let watch = args.iter().any(|a| a == "--watch");
         // `--loaded` (with `--watch`) loads a real decoded frame into the player
-        // and pauses it, reproducing the "paused-but-loaded watch page" the
-        // scroll-perf complaint is about — and drives `sync` each frame, so the
-        // per-frame engine cost is measured, not just layout + draw.
+        // and pauses it, reproducing a paused-but-loaded watch page — and drives
+        // `sync` each frame, so the per-frame engine cost is measured, not just
+        // layout + draw.
         let loaded = args.iter().any(|a| a == "--loaded");
         return run_bench_scroll(frames, watch, loaded);
     }
@@ -268,10 +258,8 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
                 media::MediaEvent::DurationKnown { ms } => {
                     println!("probe-engine: duration known = {ms} ms");
                 }
-                media::MediaEvent::Buffering { percent } => {
-                    if percent % 25 == 0 {
-                        println!("probe-engine: buffering {percent}%");
-                    }
+                media::MediaEvent::Buffering { percent } if percent % 25 == 0 => {
+                    println!("probe-engine: buffering {percent}%");
                 }
                 _ => {}
             }
@@ -565,16 +553,16 @@ fn run_probe_stream(
             if Instant::now() >= deadline {
                 break 'outer;
             }
-            if playback.feed(&au) {
-                if let Some((width, height, rgba)) = playback.latest_rgba() {
-                    decoded_here += 1;
-                    let idx = playback.frames_decoded();
-                    let t = start.elapsed().as_secs_f64();
-                    records.push((idx, t, width, height, checksum(&rgba)));
-                }
+            if playback.feed(&au)
+                && let Some((width, height, rgba)) = playback.latest_rgba()
+            {
+                decoded_here += 1;
+                let idx = playback.frames_decoded();
+                let t = start.elapsed().as_secs_f64();
+                records.push((idx, t, width, height, checksum(&rgba)));
             }
         }
-        if fragments_used <= 6 || fragments_used % 10 == 0 {
+        if fragments_used <= 6 || fragments_used.is_multiple_of(10) {
             let dur = plan
                 .durations
                 .get(fragments_used - 1)
@@ -820,7 +808,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             wmodel.upsert_video(video.clone());
             wmodel.data_source = DataSource { live: true, label: "live".into() };
             // Fetch the uploader's real avatar so the watch-page channel row shows
-            // a real photo (issue 1, watch surface), and prewarm it into a store.
+            // a real photo, and prewarm it into a store.
             let wstore = tube::images::image_store();
             if let Ok(BackendResult::Channel { channel, .. }) = backend.channel(&video.channel_id) {
                 wmodel.note_channel_avatar(&channel.id, &channel.avatar_url);
@@ -851,9 +839,8 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
     //
     // Use rustypipe's search: it returns videos (with real creator avatars),
     // playlists AND creator rows in one call — exactly the enrichment the live
-    // app folds into the yt-dlp results, so these stills prove real avatars
-    // (issue 1), the Video·Playlist·Creator filter (issue 3) and playlists
-    // (issue 4) end to end.
+    // app folds into the yt-dlp results, so these stills prove real avatars,
+    // the Video·Playlist·Creator filter and playlists end to end.
     let rp = tube::backend::live::RustyPipeBackend::new()
         .map_err(|e| format!("rustypipe backend: {e}"))?;
 
@@ -907,7 +894,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                     }
                 }
                 let mut ranked: Vec<(String, usize)> = freq.into_iter().collect();
-                ranked.sort_by(|a, b| b.1.cmp(&a.1));
+                ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
                 for (cid, _) in ranked.into_iter().take(5) {
                     if let Ok(BackendResult::Channel { channel, .. }) = backend.channel(&cid) {
                         smodel.adopt_channel_avatar(&channel.id, &channel.name, &channel.avatar_url);
@@ -964,7 +951,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
             println!("  wrote {}", search_png.display());
 
-            // ---- Home page (same catalogue on the Home route) — avatar proof #1 ----
+            // ---- Home page (same catalogue on the Home route) ----
             let mut hmodel = smodel.clone();
             hmodel.route = Route::Home;
             let home_app = tube::TubeApp::new()
@@ -975,10 +962,9 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             render_shot_to_png(Box::new(home_app) as Box<dyn Widget>, (1280, 860), &home_png)?;
             println!("  wrote {}", home_png.display());
 
-            // ---- Playlist page (issue 4) — try each search-result playlist
-            // until one resolves (some listed playlists are stale/empty). ----
-            // yt-dlp resolves playlists reliably (rustypipe's current parser does
-            // not); try each search-result playlist until one resolves.
+            // ---- Playlist page: yt-dlp resolves playlists reliably (rustypipe's
+            // current parser does not); try each search-result playlist until one
+            // resolves (some listed playlists are stale/empty). ----
             let resolved_pl = items.playlists.iter().find_map(|p| {
                 println!("live-shots[playlist]: fetching {} via yt-dlp…", p.id);
                 backend.playlist(&p.id).ok()
@@ -1308,10 +1294,10 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(c) = items.channels.iter().find(|c| !c.avatar_url.is_empty()) {
         probe_one("rustypipe creator-row avatar", &c.avatar_url);
     }
-    if let Some((cid, _)) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n) {
-        if let Ok(BackendResult::Channel { channel, .. }) = yt.channel(cid) {
-            probe_one("yt-dlp channel-page avatar", &channel.avatar_url);
-        }
+    if let Some((cid, _)) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n)
+        && let Ok(BackendResult::Channel { channel, .. }) = yt.channel(cid)
+    {
+        probe_one("yt-dlp channel-page avatar", &channel.avatar_url);
     }
     // A known-good thumbnail for comparison (these always paint on the cards).
     if let Some(v) = items.videos.iter().find(|v| !v.thumbnail_url.is_empty()) {
@@ -1661,9 +1647,9 @@ fn run_bench_scroll(frames: usize, watch: bool, loaded: bool) -> Result<(), Box<
         m
     };
 
-    // The watch page the scroll-perf complaint was about: a full-bleed player
-    // over a long comment list (the real content that makes the scroll tree
-    // deep). Grow the chosen video's comments to a realistic count.
+    // The heaviest scroll scenario: a full-bleed player over a long comment
+    // list (the real content that makes the scroll tree deep). Grow the
+    // chosen video's comments to a realistic count.
     let watch_model = || -> TubeModel {
         let mut m = tube::sample::model();
         let id = m

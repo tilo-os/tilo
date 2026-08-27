@@ -1,12 +1,11 @@
 //! Real image loading for video thumbnails, channel avatars and banners.
 //!
-//! Tube's cards/avatars/banners used to be procedural gradients only — there
-//! was no image pipeline at all. This wires the toolkit's [`ui::ImageStore`]
-//! (async fetch + decode + GPU-image cache, keyed by URL) to a blocking
-//! `reqwest` transport so the real i.ytimg.com / yt3.googleusercontent.com
-//! images yt-dlp reports are fetched, decoded and painted. Until a URL's image
-//! is ready — and always on the hermetic `--shots`/offline path — the caller
-//! shows the seed gradient / initials fallback.
+//! Wires the toolkit's [`ui::ImageStore`] (async fetch + decode + GPU-image
+//! cache, keyed by URL) to a blocking `reqwest` transport so the real
+//! i.ytimg.com / yt3.googleusercontent.com images yt-dlp reports are fetched,
+//! decoded and painted. Until a URL's image is ready — and always on the
+//! hermetic `--shots`/offline path — the caller shows the seed gradient /
+//! initials fallback.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +21,9 @@ pub fn image_fetcher() -> Fetcher {
         .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
         .timeout(Duration::from_secs(10))
         .build()
-        .expect("reqwest image client");
+        // Only a static user-agent + timeout are set (no proxy/TLS config that
+        // could fail to parse), so `build()` cannot return `Err` here.
+        .expect("reqwest client builder cannot fail with these fixed options");
     Arc::new(move |url: &str| {
         // Promote protocol-relative CDN URLs (`//yt3.ggpht.com/…`) to https so
         // the request has a scheme — some sources hand these back and reqwest
@@ -44,7 +45,6 @@ pub fn image_fetcher() -> Fetcher {
     })
 }
 
-/// Build an [`ImageStore`] backed by the real network fetcher.
 pub fn image_store() -> ImageStore {
     ImageStore::new(image_fetcher())
 }
@@ -70,11 +70,9 @@ impl<'a> Imgs<'a> {
         }
     }
 
-    /// An owned clone of the underlying store (an `Arc` bump) for a widget that
-    /// wants to resolve its own image **lazily**, in `sync`, rather than at build
-    /// time. Threading the store into the leaf lets a freshly-decoded image fold
-    /// straight into the widget on the next frame WITHOUT a whole-tree structural
-    /// rebuild — the rebuild-every-image-completion that made scrolling churn.
+    /// An owned clone (an `Arc` bump) for a widget that resolves its own image
+    /// lazily in `sync` rather than at build time: a freshly-decoded image
+    /// then folds into the widget next frame without a whole-tree rebuild.
     /// `None` on the hermetic offline / `--shots` path.
     pub fn store_handle(&self) -> Option<ImageStore> {
         self.0.cloned()
