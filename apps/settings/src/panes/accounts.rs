@@ -493,12 +493,11 @@ impl Widget for AccountsPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -527,22 +526,21 @@ impl Widget for AccountsPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

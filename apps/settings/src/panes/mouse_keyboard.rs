@@ -232,42 +232,41 @@ impl Widget for MouseKeyboardPane {
             self.needs_seed = false;
         }
 
-        if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY) {
-            if (v - self.last.pointer_speed).abs() > 0.001 {
-                self.last.pointer_speed = v;
-                Self::persist_input(|i| i.pointer_speed = v);
-            }
+        if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
+            && (v - self.last.pointer_speed).abs() > 0.001
+        {
+            self.last.pointer_speed = v;
+            Self::persist_input(|i| i.pointer_speed = v);
         }
-        if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY) {
-            if (v - self.last.key_repeat).abs() > 0.001 {
-                self.last.key_repeat = v;
-                Self::persist_input(|i| i.key_repeat = v);
-            }
+        if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY)
+            && (v - self.last.key_repeat).abs() > 0.001
+        {
+            self.last.key_repeat = v;
+            Self::persist_input(|i| i.key_repeat = v);
         }
-        if let Some(b) = read_bool(state, root, NATURAL_SCROLL_KEY) {
-            if b != self.last.natural_scroll {
-                self.last.natural_scroll = b;
-                Self::persist_input(|i| i.natural_scroll = b);
-            }
+        if let Some(b) = read_bool(state, root, NATURAL_SCROLL_KEY)
+            && b != self.last.natural_scroll
+        {
+            self.last.natural_scroll = b;
+            Self::persist_input(|i| i.natural_scroll = b);
         }
-        if let Some(b) = read_bool(state, root, TAP_CLICK_KEY) {
-            if b != self.last.tap_to_click {
-                self.last.tap_to_click = b;
-                Self::persist_input(|i| i.tap_to_click = b);
-            }
+        if let Some(b) = read_bool(state, root, TAP_CLICK_KEY)
+            && b != self.last.tap_to_click
+        {
+            self.last.tap_to_click = b;
+            Self::persist_input(|i| i.tap_to_click = b);
         }
         // Keyboard layout → apply via localectl AND persist the choice.
-        if let Some(label) = read_str(state, root, LAYOUT_KEY) {
-            if let Some(code) = layout_code(&label) {
-                if code != self.last.keyboard_layout.as_str() {
-                    self.last.keyboard_layout = code.to_string();
-                    if let Err(e) = self.layout_setter.set_layout(code) {
-                        warn!(target: "qos::settings", op = "set_layout", error = %e, "keyboard layout apply failed");
-                    }
-                    let owned = code.to_string();
-                    Self::persist_input(|i| i.keyboard_layout = owned);
-                }
+        if let Some(label) = read_str(state, root, LAYOUT_KEY)
+            && let Some(code) = layout_code(&label)
+            && code != self.last.keyboard_layout.as_str()
+        {
+            self.last.keyboard_layout = code.to_string();
+            if let Err(e) = self.layout_setter.set_layout(code) {
+                warn!(target: "qos::settings", op = "set_layout", error = %e, "keyboard layout apply failed");
             }
+            let owned = code.to_string();
+            Self::persist_input(|i| i.keyboard_layout = owned);
         }
 
         if let Some(c) = &mut self.composed {
@@ -306,12 +305,11 @@ impl Widget for MouseKeyboardPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -340,22 +338,21 @@ impl Widget for MouseKeyboardPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

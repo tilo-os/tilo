@@ -68,11 +68,12 @@ pub const DISPLAY_SCALES: &[(&str, f64)] = &[
 
 /// Map a scale factor to the closest offered label (defaults to "100%").
 fn scale_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "100%" rather
+    // than panic the pane.
     DISPLAY_SCALES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
         .map(|(label, _)| *label)
         .unwrap_or("100%")
 }
@@ -352,45 +353,41 @@ impl Widget for DisplayPane {
         }
 
         // Brightness → dispatcher, guarded so we don't shell out every frame.
-        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::F64(f) = s.as_ref() {
-                    let new = *f as f32;
-                    if (new - self.last_brightness).abs() > 0.001 {
-                        self.last_brightness = new;
-                        if let Err(e) =
-                            self.dispatcher.set_brightness((new.clamp(0.0, 1.0)) * 100.0)
-                        {
-                            warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
-                        }
-                    }
+        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::F64(f) = s.as_ref()
+        {
+            let new = *f as f32;
+            if (new - self.last_brightness).abs() > 0.001 {
+                self.last_brightness = new;
+                if let Err(e) = self.dispatcher.set_brightness((new.clamp(0.0, 1.0)) * 100.0) {
+                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                 }
             }
         }
 
         // Comfort preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY) {
-            if b != self.last_prefs.auto_brightness {
-                self.last_prefs.auto_brightness = b;
-                Self::persist_display(|d| d.auto_brightness = b);
-            }
+        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
+            && b != self.last_prefs.auto_brightness
+        {
+            self.last_prefs.auto_brightness = b;
+            Self::persist_display(|d| d.auto_brightness = b);
         }
-        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY) {
-            if b != self.last_prefs.night_light {
-                self.last_prefs.night_light = b;
-                Self::persist_display(|d| d.night_light = b);
-            }
+        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
+            && b != self.last_prefs.night_light
+        {
+            self.last_prefs.night_light = b;
+            Self::persist_display(|d| d.night_light = b);
         }
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
-        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY) {
-            if let Some(v) = scale_factor_of(&label) {
-                if (v - self.last_prefs.scale).abs() > f64::EPSILON {
-                    self.last_prefs.scale = v;
-                    Self::persist_display(|d| d.scale = v);
-                }
-            }
+        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+            && let Some(v) = scale_factor_of(&label)
+            && (v - self.last_prefs.scale).abs() > f64::EPSILON
+        {
+            self.last_prefs.scale = v;
+            Self::persist_display(|d| d.scale = v);
         }
 
         if let Some(c) = &mut self.composed {
@@ -429,12 +426,11 @@ impl Widget for DisplayPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -463,22 +459,21 @@ impl Widget for DisplayPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

@@ -160,17 +160,11 @@ impl MailAccount {
 
 /// The mail account list — Mail's `AccountStore` shape, persisted at
 /// [`MailStore::PATH`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
     #[serde(default)]
     pub active: usize,
-}
-
-impl Default for MailStore {
-    fn default() -> Self {
-        Self { accounts: Vec::new(), active: 0 }
-    }
 }
 
 impl MailStore {

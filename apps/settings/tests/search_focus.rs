@@ -159,16 +159,16 @@ impl Harness {
         if self.focused == new {
             return;
         }
-        if let Some(old) = self.focused {
-            if let Some(&w) = self.node_map.get(&old) {
-                unsafe { (*w).set_focus(false) };
-            }
+        if let Some(old) = self.focused
+            && let Some(&w) = self.node_map.get(&old)
+        {
+            unsafe { (*w).set_focus(false) };
         }
         self.focused = new;
-        if let Some(id) = new {
-            if let Some(&w) = self.node_map.get(&id) {
-                unsafe { (*w).set_focus(true) };
-            }
+        if let Some(id) = new
+            && let Some(&w) = self.node_map.get(&id)
+        {
+            unsafe { (*w).set_focus(true) };
         }
     }
 
@@ -242,14 +242,14 @@ impl Harness {
         // The old node ids are about to be invalidated (fresh taffy tree).
         self.focused = None;
         self.layout();
-        if let Some(idx) = prev_idx {
-            if let Some(&id) = self.focus_order.get(idx) {
-                self.set_focused(Some(id));
-                if let Some(s) = &prev_state {
-                    if let Some(&w) = self.node_map.get(&id) {
-                        unsafe { (*w).set_state(s) };
-                    }
-                }
+        if let Some(idx) = prev_idx
+            && let Some(&id) = self.focus_order.get(idx)
+        {
+            self.set_focused(Some(id));
+            if let Some(s) = &prev_state
+                && let Some(&w) = self.node_map.get(&id)
+            {
+                unsafe { (*w).set_state(s) };
             }
         }
     }

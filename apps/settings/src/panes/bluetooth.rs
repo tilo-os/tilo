@@ -80,7 +80,7 @@ impl Default for BluetoothPane {
 
 impl BluetoothPane {
     pub fn new() -> Self {
-        let lister: BtLister = Arc::new(|| os_actions::list_bt_devices());
+        let lister: BtLister = Arc::new(os_actions::list_bt_devices);
         let devices = lister().unwrap_or_default();
         let initial_bt = os_actions::get_bluetooth().unwrap_or(false);
         Self {
@@ -206,16 +206,14 @@ impl Widget for BluetoothPane {
             );
             self.needs_seed = false;
         }
-        if let Ok(Some((val, _))) = state.get(root, BT_ENABLED_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    if *b != self.last_bt_enabled {
-                        self.last_bt_enabled = *b;
-                        if let Err(e) = self.dispatcher.set_bluetooth(*b) {
-                            warn!(target: "qos::settings", op = "set_bluetooth", error = %e, "bluetooth pane dispatch failed");
-                        }
-                    }
-                }
+        if let Ok(Some((val, _))) = state.get(root, BT_ENABLED_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_bt_enabled
+        {
+            self.last_bt_enabled = *b;
+            if let Err(e) = self.dispatcher.set_bluetooth(*b) {
+                warn!(target: "qos::settings", op = "set_bluetooth", error = %e, "bluetooth pane dispatch failed");
             }
         }
         // Per-device Connect / Disconnect clicks. The button writes its
@@ -299,12 +297,11 @@ impl Widget for BluetoothPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -333,22 +330,21 @@ impl Widget for BluetoothPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

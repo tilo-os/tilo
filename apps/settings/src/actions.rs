@@ -215,8 +215,17 @@ fn float_prompt_spec(
         ExecutionLocus::ClientLocal,
         move |raw: &str| {
             // A blank / unparseable entry lands on the low end of the range
-            // rather than fabricating a surprising value.
-            let v = raw.trim().parse::<f64>().unwrap_or(lo).clamp(lo, hi);
+            // rather than fabricating a surprising value. `is_finite` also
+            // catches "nan" / "inf" — both parse successfully as f64 but
+            // cannot round-trip through `encode`'s JSON payload, which would
+            // otherwise turn a typo into a palette-wide panic.
+            let v = raw
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .unwrap_or(lo)
+                .clamp(lo, hi);
             encode(&set_float_action(key, v))
         },
     )

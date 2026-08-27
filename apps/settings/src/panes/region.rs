@@ -164,43 +164,39 @@ impl Widget for RegionPane {
 
         let mut changed = false;
 
-        if let Some(code) = Self::read_str(state, root, CURRENCY_KEY) {
-            if let Some(c) = Currency::from_code(&code) {
-                if c != self.settings.locale.currency {
-                    self.settings.locale.currency = c;
-                    changed = true;
-                }
-            }
+        if let Some(code) = Self::read_str(state, root, CURRENCY_KEY)
+            && let Some(c) = Currency::from_code(&code)
+            && c != self.settings.locale.currency
+        {
+            self.settings.locale.currency = c;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, DATE_KEY) {
-            if let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label) {
-                if *d != self.settings.locale.date_format {
-                    self.settings.locale.date_format = *d;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, DATE_KEY)
+            && let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
+            && *d != self.settings.locale.date_format
+        {
+            self.settings.locale.date_format = *d;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TIME_KEY) {
-            if let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label) {
-                if *t != self.settings.locale.time_format {
-                    self.settings.locale.time_format = *t;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, TIME_KEY)
+            && let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
+            && *t != self.settings.locale.time_format
+        {
+            self.settings.locale.time_format = *t;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, MEASUREMENT_KEY) {
-            if let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label) {
-                if *m != self.settings.locale.measurement {
-                    self.settings.locale.measurement = *m;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, MEASUREMENT_KEY)
+            && let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
+            && *m != self.settings.locale.measurement
+        {
+            self.settings.locale.measurement = *m;
+            changed = true;
         }
 
-        if changed {
-            if let Err(e) = self.settings.save() {
-                warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
-            }
+        if changed
+            && let Err(e) = self.settings.save()
+        {
+            warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
         }
 
         if let Some(c) = &mut self.composed {
@@ -239,12 +235,11 @@ impl Widget for RegionPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -273,15 +268,13 @@ impl Widget for RegionPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+            );
         }
     }
 
