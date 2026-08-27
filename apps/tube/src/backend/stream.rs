@@ -52,7 +52,9 @@ pub fn http_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .expect("reqwest client")
+        // Only a fixed timeout is set (no proxy/TLS config that could fail to
+        // parse), so `build()` cannot return `Err` here.
+        .expect("reqwest client builder cannot fail with these fixed options")
 }
 
 /// Append googlevideo's native `range=start-end` query parameter to a stream

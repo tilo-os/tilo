@@ -55,3 +55,4 @@ os/dev/composefs/stage/
 
 # Recorded demo output. Large binaries; regenerate with scripts/yc-demo.py --record.
 .claude/demo-artifacts/
+.claude/agent-scratch/

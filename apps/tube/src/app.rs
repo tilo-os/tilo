@@ -52,6 +52,9 @@ const NAV_BREAKPOINT: f64 = 760.0;
 /// little breathing room.
 pub const SCROLL_GUTTER: f32 = 14.0;
 
+/// A view's persisted `(x, y)` scroll offset, shared with its `Scrollable`.
+type ScrollCell = Rc<Cell<(f32, f32)>>;
+
 pub struct TubeApp {
     model: TubeModel,
     bus: ActionBus,
@@ -152,7 +155,7 @@ pub struct TubeApp {
     /// and a structural rebuild never snaps the scroll back to the top. Shared
     /// `Cell`s handed to each screen's `Scrollable` via `with_persisted_offset`.
     /// `RefCell` because it is populated from the `&self` shell builder.
-    scroll_cells: RefCell<HashMap<String, Rc<Cell<(f32, f32)>>>>,
+    scroll_cells: RefCell<HashMap<String, ScrollCell>>,
     /// Channels whose avatar/subscriber fetch is already in flight, so opening a
     /// watch page (or re-rendering) never re-requests the same channel.
     requested_channels: HashSet<String>,
@@ -500,8 +503,7 @@ impl TubeApp {
                 bus,
                 imgs,
                 id,
-                self.content_width(),
-                self.content_height(),
+                (self.content_width(), self.content_height()),
                 self.player.clone(),
             ),
             Route::Channel(id) => screens::channel(m, theme, bus, imgs, id),
@@ -625,7 +627,7 @@ impl TubeApp {
     /// The shared scroll-offset cell for a route's view (created on first use).
     /// Handing it to the view's `Scrollable` preserves the scroll across
     /// rebuilds and restores it when the view is returned to via Back.
-    fn scroll_cell_for(&self, route: &Route) -> Rc<Cell<(f32, f32)>> {
+    fn scroll_cell_for(&self, route: &Route) -> ScrollCell {
         let key = Self::view_key(route);
         self.scroll_cells
             .borrow_mut()
@@ -758,12 +760,26 @@ impl TubeApp {
         // the end (or an explicitly non-playing engine at the end) as finished.
         let known_dur = dur_ms > 0;
         let at_end = known_dur && pos_ms + 250 >= dur_ms;
-        if at_end {
-            if self.maybe_autoplay_next() {
-                changed = true;
-            }
+        if at_end && self.maybe_autoplay_next() {
+            changed = true;
         }
         changed
+    }
+
+    /// Apply one player-setting interaction drained from the shared player. The
+    /// resolution choice round-trips into the model's preferred quality; other
+    /// settings are ignored for now. This is the production drain path (called
+    /// from `sync`), factored out so it is directly testable.
+    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
+        use ui::widget::video_player::PlayerSettingEvent as E;
+        if let E::Chose { id, index } = ev
+            && id == "resolution"
+            && let Some(q) = QUALITIES.get(index)
+            && self.model.settings.preferred_quality != *q
+        {
+            self.model.settings.preferred_quality = q.to_string();
+            self.structure_dirty = true;
+        }
     }
 
     /// Load a resolved, directly-playable stream URL into the shared player
@@ -771,24 +787,6 @@ impl TubeApp {
     /// [`Update::StreamResolved`] and the transport tests take. A resolution for
     /// a video that is no longer the open watch page is dropped (returns `false`)
     /// so audio never bleeds across pages.
-    /// Apply one player-setting interaction drained from the shared player. The
-    /// resolution choice round-trips into the model's preferred quality; other
-    /// settings are ignored for now. This is the production drain path (called
-    /// from `sync`), factored out so it is directly testable.
-    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
-        use ui::widget::video_player::PlayerSettingEvent as E;
-        if let E::Chose { id, index } = ev {
-            if id == "resolution" {
-                if let Some(q) = QUALITIES.get(index) {
-                    if self.model.settings.preferred_quality != *q {
-                        self.model.settings.preferred_quality = q.to_string();
-                        self.structure_dirty = true;
-                    }
-                }
-            }
-        }
-    }
-
     fn load_resolved_stream(
         &mut self,
         video: String,
@@ -962,11 +960,11 @@ impl TubeApp {
             .related_display(&id)
             .first()
             .map(|v| v.id.clone());
-        if let Some(next) = next {
-            if next != id {
-                self.open_video(next);
-                return true;
-            }
+        if let Some(next) = next
+            && next != id
+        {
+            self.open_video(next);
+            return true;
         }
         false
     }
@@ -1110,15 +1108,15 @@ impl TubeApp {
     }
 
     fn read_search(&self, state: &AutoCommit, root: &ObjId) -> String {
-        if let Some(obj) = &self.search_obj {
-            if let Ok(t) = state.text(obj) {
-                return t;
-            }
+        if let Some(obj) = &self.search_obj
+            && let Ok(t) = state.text(obj)
+        {
+            return t;
         }
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, SEARCH_KEY) {
-            if let ScalarValue::Str(t) = s.as_ref() {
-                return t.to_string();
-            }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, SEARCH_KEY)
+            && let ScalarValue::Str(t) = s.as_ref()
+        {
+            return t.to_string();
         }
         String::new()
     }
@@ -1173,11 +1171,11 @@ impl TubeApp {
                         v.dearrow_thumb = thumbnail_url.is_some();
                         changed = true;
                     }
-                    if let Some(url) = thumbnail_url {
-                        if !url.is_empty() {
-                            self.model.dearrow_thumb_url.insert(video, url);
-                            changed = true;
-                        }
+                    if let Some(url) = thumbnail_url
+                        && !url.is_empty()
+                    {
+                        self.model.dearrow_thumb_url.insert(video, url);
+                        changed = true;
                     }
                 }
                 Update::Dislikes { video, count } => {
@@ -1411,10 +1409,10 @@ impl TubeApp {
 
     /// Read the live palette-query text out of its bound CRDT object.
     fn read_palette(&self, state: &AutoCommit) -> String {
-        if let Some(obj) = &self.palette_obj {
-            if let Ok(t) = state.text(obj) {
-                return t;
-            }
+        if let Some(obj) = &self.palette_obj
+            && let Ok(t) = state.text(obj)
+        {
+            return t;
         }
         String::new()
     }
@@ -1425,19 +1423,17 @@ impl TubeApp {
             return;
         }
         self.seeded = true;
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, STATE_KEY) {
-            if let ScalarValue::Str(json) = s.as_ref() {
-                if let Ok(m) = serde_json::from_str::<TubeModel>(json) {
-                    self.model = m;
-                    // Seed the nav stack so Back from a persisted deep route
-                    // (e.g. a restored watch page) returns to Home rather than
-                    // dead-ending.
-                    if self.model.route != Route::Home {
-                        self.nav.push(self.model.route.clone());
-                    }
-                    return;
-                }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, STATE_KEY)
+            && let ScalarValue::Str(json) = s.as_ref()
+            && let Ok(m) = serde_json::from_str::<TubeModel>(json)
+        {
+            self.model = m;
+            // Seed the nav stack so Back from a persisted deep route (e.g. a
+            // restored watch page) returns to Home rather than dead-ending.
+            if self.model.route != Route::Home {
+                self.nav.push(self.model.route.clone());
             }
+            return;
         }
         self.persist(state, root);
     }
@@ -1621,18 +1617,18 @@ impl Widget for TubeApp {
                 },
             ..
         } = event
+            && modifiers.state().control_key()
+            && c.eq_ignore_ascii_case("k")
         {
-            if modifiers.state().control_key() && c.eq_ignore_ascii_case("k") {
-                action::push(
-                    &self.bus,
-                    if self.model.palette_open {
-                        Action::ClosePalette
-                    } else {
-                        Action::OpenPalette
-                    },
-                );
-                *handled = true;
-            }
+            action::push(
+                &self.bus,
+                if self.model.palette_open {
+                    Action::ClosePalette
+                } else {
+                    Action::OpenPalette
+                },
+            );
+            *handled = true;
         }
 
         // Enter submits a search regardless of which field has focus.
@@ -1645,28 +1641,26 @@ impl Widget for TubeApp {
                 },
             ..
         } = event
+            && (!self.model.search_query.is_empty() || self.search_obj.is_some())
         {
-            if !self.model.search_query.is_empty() || self.search_obj.is_some() {
-                action::push(&self.bus, Action::SubmitSearch);
-            }
+            action::push(&self.bus, Action::SubmitSearch);
         }
 
         // Back-navigation via the keyboard: Alt+Left / the BrowserBack key pop the
         // nav stack (the Back button, Escape below and the edge-swipe do too).
         // Only when there is history and no overlay owns the key.
-        if !self.model.palette_open {
-            if let WindowEvent::KeyboardInput {
+        if !self.model.palette_open
+            && let WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } = event
-            {
-                let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
-                    || (modifiers.state().alt_key()
-                        && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
-                if is_back && self.nav.can_go_back() {
-                    action::push(&self.bus, Action::Back);
-                    *handled = true;
-                }
+        {
+            let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
+                || (modifiers.state().alt_key()
+                    && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
+            if is_back && self.nav.can_go_back() {
+                action::push(&self.bus, Action::Back);
+                *handled = true;
             }
         }
 
@@ -1677,10 +1671,10 @@ impl Widget for TubeApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer) {
-                    if self.nav.can_go_back() {
-                        action::push(&self.bus, Action::Back);
-                    }
+                if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
+                    && self.nav.can_go_back()
+                {
+                    action::push(&self.bus, Action::Back);
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -1750,15 +1744,14 @@ impl Widget for TubeApp {
         if self.pump() {
             dirty = true;
         }
-        // NOTE: image loads no longer force a structural rebuild. Thumbnails,
-        // avatars and banners resolve their decoded image *lazily* in their own
-        // `sync` (they hold an `ImageStore` handle + URL) and repaint via
-        // `needs_redraw` when it lands — so a photo finishing download costs a
-        // cheap redraw, not a whole-tree rebuild + layout re-solve on every one
-        // of ~160 completions (which is what made the grids churn while loading,
-        // and reset the scroll position each time). `needs_idle_sync` /
-        // `needs_animation_frame` keep frames flowing while images are pending so
-        // each `sync` gets its chance to fold the freshly-decoded image in.
+        // Image loads must not force a structural rebuild: thumbnails, avatars
+        // and banners resolve their decoded image *lazily* in their own `sync`
+        // (they hold an `ImageStore` handle + URL) and repaint via
+        // `needs_redraw` when it lands, so a photo finishing download costs a
+        // cheap redraw rather than a whole-tree rebuild + layout re-solve on
+        // every one of ~160 completions. `needs_idle_sync` / `needs_animation_frame`
+        // keep frames flowing while images are pending so each `sync` gets its
+        // chance to fold the freshly-decoded image in.
         if let Some(c) = &mut self.root_child {
             dirty |= c.take_structure_dirty();
         }
@@ -1901,9 +1894,8 @@ mod tests {
 
     #[test]
     fn player_fullscreen_toggle_reaches_the_root_via_the_shared_mechanism() {
-        // The fullscreen button was inert because `TubeApp` didn't forward the
-        // player's intent up to `ui::App` (which only polls the root). Prove the
-        // toggle now surfaces on the root, targeting the largest output.
+        // `TubeApp` must forward the player's fullscreen intent up to the root,
+        // since `ui::App` only polls the root widget.
         let (mut app, _) = fresh_synth();
         assert_eq!(Widget::fullscreen_intent(&app), None, "no opinion until the user acts");
         app.player.borrow_mut().toggle_fullscreen();
@@ -2168,7 +2160,7 @@ mod tests {
     #[test]
     fn rail_is_docked_wide_and_overlay_narrow() {
         assert!(!at_width(1280.0).nav_is_overlay(), "wide window docks the rail");
-        assert!(at_width(NAV_BREAKPOINT).nav_is_overlay() == false, "breakpoint is inclusive → docked");
+        assert!(!at_width(NAV_BREAKPOINT).nav_is_overlay(), "breakpoint is inclusive → docked");
         assert!(at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(), "below breakpoint overlays the rail");
     }
 
@@ -2253,7 +2245,7 @@ mod tests {
     fn submitting_a_search_enters_the_loading_state() {
         use automerge::transaction::Transactable;
         // A live search in flight shows a skeleton (search_loading) rather than a
-        // premature "No results" — the bug that shipped.
+        // premature "No results".
         let mut app = TubeApp::new();
         app.online = true; // online without spawning the image store's threads
         let mut doc = AutoCommit::new();
@@ -2305,21 +2297,17 @@ mod tests {
         );
     }
 
-    // --- issue 2: thumbnails/avatars fold in LAZILY, without a rebuild ---
-
     #[test]
     fn image_loads_do_not_force_a_structural_rebuild() {
-        // Thumbnails / avatars / banners now resolve their decoded image LAZILY
-        // in their own `sync` (they hold an `ImageStore` handle + URL) and
-        // repaint via `needs_redraw` when it lands. So an in-flight image load
-        // must NOT make the app report a structural rebuild — the per-completion
-        // whole-tree rebuild + layout re-solve (and scroll reset) that used to
-        // fire on every one of ~160 image completions and made the grids churn.
+        // Thumbnails / avatars / banners resolve their decoded image LAZILY in
+        // their own `sync` and repaint via `needs_redraw` when it lands, so an
+        // in-flight image load must NOT make the app report a structural
+        // rebuild (a whole-tree rebuild + layout re-solve on every one of
+        // ~160 image completions would make the grids churn).
         use std::sync::Arc;
         use std::time::Duration;
-        // A fetcher that blocks briefly so a load is deterministically in flight
-        // (pending ≥ 1) when we poll — the exact condition the old code turned
-        // into a rebuild.
+        // A fetcher that blocks briefly so a load is deterministically in
+        // flight (pending ≥ 1) when we poll.
         let store = ui::ImageStore::new(Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_millis(200));
             None
@@ -2337,8 +2325,6 @@ mod tests {
              fold in lazily via sync + redraw, not via a structural rebuild",
         );
     }
-
-    // --- issue 3: the stream loads on OPEN, not on first Play ---
 
     #[test]
     fn opening_a_watch_page_arms_stream_resolution_on_open() {
@@ -2359,8 +2345,6 @@ mod tests {
             "opening a watch page arms stream resolution (no Play click needed)"
         );
     }
-
-    // --- issue 5: a paused-but-loaded watch page lets the loop idle ---
 
     #[test]
     fn watch_animates_while_resolving_then_idles_once_paused_and_loaded() {
@@ -2394,7 +2378,7 @@ mod tests {
         assert!(!app.player.borrow().is_playing(), "precondition: paused");
         assert!(
             !app.needs_animation_frame(),
-            "a paused, loaded watch page lets the event loop idle (issue 5)"
+            "a paused, loaded watch page lets the event loop idle"
         );
     }
 }

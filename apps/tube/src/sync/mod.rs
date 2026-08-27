@@ -43,9 +43,9 @@ pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
 use crate::model::{Settings, VideoId};
 
 /// One direction of sync state: what we would send to / receive from a paired
-/// Grayjay peer. These map onto the Grayjay "packages" (see [`plan::packages`])
-/// but are expressed in Tube's own model so the transport is the only thing
-/// that needs to speak Grayjay's wire format.
+/// Grayjay peer. These map onto Grayjay's own sync "packages" but are
+/// expressed in Tube's own model so the transport is the only thing that
+/// needs to speak Grayjay's wire format.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SyncState {
     /// Channel ids the user is subscribed to (`SyncSubscriptionsPackage`).
@@ -94,8 +94,8 @@ pub type SyncResult<T> = Result<T, SyncError>;
 /// sockets, or the Grayjay wire format.
 ///
 /// Designed so the *expensive* network work (pairing, handshake, framing) is
-/// fully contained behind this trait — exactly the bounded surface the brief
-/// asks to leave gated/stubbed.
+/// fully contained behind this trait, which is what lets it stay gated/stubbed
+/// in the default build.
 pub trait SyncTransport: Send {
     fn name(&self) -> &str;
 

@@ -82,20 +82,15 @@ pub struct Playlist {
 /// Per-track offline/cache state. Models the "downloads / caching" layer:
 /// a track is either streamed on demand, actively downloading (with a
 /// progress fraction) or fully cached for offline playback.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum CacheState {
     /// Not cached — streamed live from the source.
+    #[default]
     Streamed,
     /// Download in flight; `0.0..=1.0`.
     Downloading(f32),
     /// Fully downloaded and available offline.
     Cached,
-}
-
-impl Default for CacheState {
-    fn default() -> Self {
-        CacheState::Streamed
-    }
 }
 
 /// Repeat mode for the play queue.
@@ -123,7 +118,7 @@ impl RepeatMode {
             RepeatMode::One => "one",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "all" => RepeatMode::All,
             "one" => RepeatMode::One,
@@ -225,7 +220,7 @@ impl Library {
     pub fn artist_albums(&self, artist: &str) -> Vec<&Album> {
         let mut v: Vec<&Album> =
             self.albums.values().filter(|a| a.artist_id == artist).collect();
-        v.sort_by(|a, b| b.year.cmp(&a.year));
+        v.sort_by_key(|a| std::cmp::Reverse(a.year));
         v
     }
 
@@ -262,7 +257,7 @@ impl Library {
     /// Most-played tracks, descending.
     pub fn top_tracks(&self, n: usize) -> Vec<&Track> {
         let mut v: Vec<&Track> = self.tracks.values().collect();
-        v.sort_by(|a, b| b.plays.cmp(&a.plays));
+        v.sort_by_key(|t| std::cmp::Reverse(t.plays));
         v.into_iter().take(n).collect()
     }
 

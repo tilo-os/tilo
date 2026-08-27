@@ -154,7 +154,7 @@ impl Widget for VideoSurface {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.player_h),
                 },
                 flex_shrink: 0.0,

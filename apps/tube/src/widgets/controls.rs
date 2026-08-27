@@ -423,8 +423,8 @@ impl Widget for Switch {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: length(46.0),
-                    height: length(26.0),
+                    width: length(46.0_f32),
+                    height: length(26.0_f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -502,11 +502,9 @@ impl Widget for Switch {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.hovered && !*handled {
-                    action::push(&self.bus, self.action.clone());
-                    *handled = true;
-                }
+            } if self.hovered && !*handled => {
+                action::push(&self.bus, self.action.clone());
+                *handled = true;
             }
             _ => {}
         }

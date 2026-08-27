@@ -2,22 +2,17 @@
 //!
 //! Nodes are keyed by a stable `NodeId` (not by path) and carry an explicit
 //! `parent` pointer, turning rename/move/delete into real *move operations*
-//! (the Kleppmann model). This eliminates the failure modes of a path-keyed
-//! flat map:
+//! (the Kleppmann model), which eliminates a path-keyed flat map's failure
+//! modes: `parent` is one Automerge register so no duplicate parents;
+//! delete moves a node to the `TRASH` sentinel, so a child created under a
+//! concurrently-deleted dir ends up consistently trashed, never a dangling
+//! orphan; and a concurrent cross-move that would cycle is deterministically
+//! broken by [`Namespace::resolve`] (lowest-id node in the cycle reverts to
+//! its `prev_parent` or `ROOT`) — a pure function of the converged document,
+//! so every peer computes the same repair and converges.
 //!
-//! - **No duplicate parents:** `parent` is one Automerge register → one value.
-//! - **No dangling orphans:** delete = move the node to the `TRASH` sentinel;
-//!   a child created under a concurrently-deleted dir simply ends up *under*
-//!   that dir which is under `TRASH` — consistently deleted on every peer,
-//!   never floating.
-//! - **No cycles:** concurrent "move X→Y" + "move Y→X" can leave a cycle after
-//!   the LWW merge; [`Namespace::resolve`] deterministically breaks it by
-//!   reverting the lowest-id node in the cycle to its `prev_parent` (or `ROOT`).
-//!   Because `resolve` is a pure function of the converged document, every peer
-//!   computes the same repair → convergence.
-//!
-//! Inode numbers are a LOCAL `NodeId`↔`u64` index; a rename keeps the node's id,
-//! so the inode is preserved for free.
+//! Inode numbers are a LOCAL `NodeId`↔`u64` index; a rename keeps the node's
+//! id, so the inode is preserved for free.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
@@ -742,14 +737,13 @@ impl Namespace {
 
     // ---- thumbnail metadata (a preview that projects ahead of content) -----
 
-    /// Attach the content hash of a generated thumbnail blob to `ino`.
-    ///
-    /// The thumbnail is a small content-addressed blob (in the same
-    /// [`crate::ContentStore`] as file content); recording its hash **on the
-    /// namespace node** means the pointer rides the namespace gossip and a peer
-    /// sees it *projected* — before it has fetched the file itself. The peer can
-    /// then hydrate the tiny thumbnail blob to show a preview ahead of the
-    /// (large) content. This is the FS-metadata form of a thumbnail.
+    /// Attach the content hash of a generated thumbnail blob to `ino`. The
+    /// thumbnail is a small content-addressed blob (in the same
+    /// [`crate::ContentStore`] as file content); recording its hash **on
+    /// the namespace node** means the pointer rides the namespace gossip
+    /// and a peer sees it *projected*, before it has fetched the file
+    /// itself, and can hydrate the tiny blob to show a preview ahead of
+    /// the large content.
     pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;

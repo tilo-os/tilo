@@ -189,7 +189,6 @@ fn idx(index: u32) -> String {
     format!("0x{index:08X}")
 }
 
-/// Does the index exist?
 pub fn exists(runner: &dyn Runner, index: u32) -> Result<bool> {
     let i = idx(index);
     let out = runner.run("tpm2_nvreadpublic", &argv![&i], None)?;

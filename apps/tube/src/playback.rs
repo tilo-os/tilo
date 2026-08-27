@@ -66,7 +66,6 @@ impl Playback {
         Decoder::with_api_config(OpenH264API::from_source(), config).ok()
     }
 
-    /// Convert a freshly decoded YUV picture into owned RGBA8.
     fn yuv_to_rgba(yuv: &DecodedYUV<'_>) -> Frame {
         let (w, h) = yuv.dimensions();
         let mut rgba = vec![0u8; w * h * 4];
@@ -74,8 +73,8 @@ impl Playback {
         (w as u32, h as u32, rgba)
     }
 
-    /// Feed one access unit of H.264 (Annex-B NAL units for a single frame).
-    /// Returns true when a new picture became available (and `latest` updated).
+    /// Feed one access unit: Annex-B NAL units for a single frame. Returns
+    /// true when a new picture became available (and `latest` updated).
     pub fn feed(&mut self, nalus: &[u8]) -> bool {
         if nalus.is_empty() {
             return false;
@@ -105,13 +104,13 @@ impl Playback {
     /// `latest` and is returned so the caller can emit it.
     pub fn flush(&mut self) -> Vec<Frame> {
         let mut out = Vec::new();
-        if let Some(decoder) = self.decoder.as_mut() {
-            if let Ok(frames) = decoder.flush_remaining() {
-                for yuv in frames {
-                    let frame = Self::yuv_to_rgba(&yuv);
-                    self.frames_decoded += 1;
-                    out.push(frame);
-                }
+        if let Some(decoder) = self.decoder.as_mut()
+            && let Ok(frames) = decoder.flush_remaining()
+        {
+            for yuv in frames {
+                let frame = Self::yuv_to_rgba(&yuv);
+                self.frames_decoded += 1;
+                out.push(frame);
             }
         }
         if let Some(last) = out.last() {
@@ -125,17 +124,14 @@ impl Playback {
         self.frames_decoded > 0
     }
 
-    /// Total frames decoded so far this session.
     pub fn frames_decoded(&self) -> u64 {
         self.frames_decoded
     }
 
-    /// Width/height of the most recently decoded picture, if any.
     pub fn frame_dimensions(&self) -> Option<(u32, u32)> {
         self.latest.as_ref().map(|(w, h, _)| (*w, *h))
     }
 
-    /// The most recently decoded picture as owned `(width, height, RGBA8)`.
     pub fn latest_rgba(&self) -> Option<Frame> {
         self.latest.clone()
     }

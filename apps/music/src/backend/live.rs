@@ -418,7 +418,7 @@ impl MusicBackend for RustyPipeBackend {
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         // Reliable base: rustypipe's direct iOS/TV googlevideo URL. It always
         // renders, but is PoToken/SABR-gated — it only serves the first ~1-minute
-        // segment (the "only a minute plays" bug).
+        // segment.
         let q = self.rp.query();
         let player = self
             .block(async { q.player(video_id).await })

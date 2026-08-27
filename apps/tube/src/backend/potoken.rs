@@ -2,8 +2,7 @@
 //!
 //! YouTube gates video *streams* (and increasingly the player response itself)
 //! behind a **PoToken** minted by its BotGuard challenge, and behind SABR
-//! streaming. The research brief calls this "the make-or-break gotcha" and asks
-//! for it to be a *swappable module* — so the rest of the live backend never
+//! streaming — a *swappable module* so the rest of the live backend never
 //! hard-codes how a token is obtained.
 //!
 //! This module is that seam. A [`PoTokenProvider`] mints tokens; the live

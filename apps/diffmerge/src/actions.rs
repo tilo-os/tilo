@@ -1,23 +1,15 @@
 //! Diff's exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
 //! The document-mutating surface of a merge is the *merge result*: the resolved
-//! output the user keeps tuning (which lives as an Automerge `Text`), plus the
-//! per-hunk resolution choices (a small map) so the take-ours/theirs/both state
-//! converges across peers. Every mutation of that surface is a
-//! [`DiffmergeAction`]: a small serializable value that deterministically
-//! mutates the CRDT. The exact same [`EncodedAction`] is what the on-panel
-//! affordances (the per-hunk chips) dispatch and what the Ctrl+K palette
-//! dispatches — one source of truth, one replay path.
+//! output (an Automerge `Text`) plus the per-hunk resolution choices (ours/
+//! theirs/both), converging across peers as [`DiffmergeAction`]s. The exact
+//! same [`EncodedAction`] is what the on-panel chips and Ctrl+K both dispatch —
+//! one source of truth, one replay path. The resource tree mirrors this: the
+//! merge owns its hunks, each exporting take-ours/theirs/both plus a prompted
+//! custom-text resolve; the root exports a "replace merged output" edit.
 //!
-//! The nested resource tree mirrors the merge: the merge owns its conflict/
-//! change hunks; each hunk exports take-ours / take-theirs / take-both, and a
-//! prompted "resolve with custom text". The merge root exports a "replace merged
-//! output" edit.
-//!
-//! Presentation and *external* data stay out of the document and never become an
-//! action: scroll, which pane is focused, the active hunk, sync-scroll and
-//! jump-to-next navigation are plain app code; loading the two/three input
-//! blobs and recomputing the diff are direct reads, not replayable.
+//! Everything else — scroll, focus, the active hunk, sync-scroll, loading the
+//! input blobs and recomputing the diff — is plain app code, never an action.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};

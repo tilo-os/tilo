@@ -22,7 +22,6 @@ pub fn payload_mount_for(package_id: &str) -> PathBuf {
 }
 
 /// In-sandbox mount root for the runtime (qos-runtime/<version>/).
-/// Returns `None` when the caller did not supply a runtime root.
 pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/qos-runtime").join(version)
 }
@@ -78,23 +77,16 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Explicit plan for exposing D-Bus into the sandbox.
+/// Explicit plan for exposing D-Bus into the sandbox. Constructed by
+/// the orchestrator (`run.rs`) and threaded through [`build_bwrap_argv`]
+/// so the argv-building layer stays pure.
 ///
-/// Constructed by the orchestrator (`run.rs`) and threaded through
-/// [`build_bwrap_argv`] so the argv-building layer stays pure. Two
-/// shapes:
-/// - *Proxy*: the launcher has spawned `xdg-dbus-proxy` upstream of
-///   the session bus with an explicit allowlist; `host_socket`
-///   points at the proxy's listener.
-/// - *Direct*: `xdg-dbus-proxy` is unavailable; `host_socket` points
-///   at the raw session bus socket (path only — abstract sockets
-///   don't bind-mount, which is exactly the case a proxy would
-///   handle).
-///
-/// From bwrap's point of view both shapes look identical: one
-/// `--ro-bind` triple and one `DBUS_SESSION_BUS_ADDRESS` setenv. The
-/// distinction is documented so consumers can log the fallback and
-/// audit tests can assert on it.
+/// *Proxy*: `xdg-dbus-proxy` spawned upstream with an explicit
+/// allowlist, `host_socket` pointing at its listener. *Direct*: the
+/// proxy is unavailable, `host_socket` is the raw session bus socket
+/// (path-only — abstract sockets can't bind-mount). Both shapes look
+/// identical to bwrap; `kind` is here so consumers can log the fallback
+/// and tests can assert on it.
 #[derive(Debug, Clone)]
 pub struct DBusBindPlan {
     /// Host-side path we bind into the sandbox.
@@ -267,36 +259,16 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
 /// [`tests::sandbox_binds_only_the_public_wayland_socket`].
 pub const PRIVILEGED_WAYLAND_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
 
-/// Env var naming the workspace an app was launched into.
-///
-/// Two consumers, and they must not be confused:
-///
-/// - `runtime_portal::is_qos_native()` only asks whether it is *set*
-///   ("am I running under a qOS session?"). Giving it a real value
-///   keeps that answer `true`.
-/// - `ui::collaboration` uses the value as the **collaboration
-///   cluster id** — the room a CRDT delta is addressed to. Two apps
-///   launched into the same workspace share a cluster and exchange
-///   deltas; apps in different workspaces are different rooms and
-///   never see each other's traffic.
-///
-/// The value the compositor sets is a UUID string (see
-/// `shell::shell::launcher`). Anything else is accepted and passed
-/// through — it just doesn't name a cluster, so the app falls back to
-/// its standalone-dev identity.
+/// Env var naming the workspace an app was launched into. Two
+/// consumers that must not be confused: `runtime_portal::is_qos_native()`
+/// only checks it's *set*; `ui::collaboration` uses the value itself as
+/// the **collaboration cluster id** — the room a CRDT delta is addressed
+/// to, so apps in the same workspace share a cluster and apps in
+/// different ones never see each other's traffic. The compositor sets a
+/// UUID string; anything else is accepted but names no cluster, so the
+/// app falls back to its standalone-dev identity.
 pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
 
-/// Splice the workspace id into an argv built by [`build_bwrap_argv`].
-///
-/// Same contract as [`push_wayland_bind`]: callers must splice this in
-/// *before* the trailing entrypoint token, because bwrap treats
-/// everything after it as the child's argv.
-///
-/// Deliberately a splice rather than a parameter on
-/// [`build_bwrap_argv`]: the workspace is a property of the *launch*
-/// (which room did the user open this app into), not of the package,
-/// so it arrives from `RunOptions` alongside the Wayland socket rather
-/// than from the manifest the way `QOS_PACKAGE_ID` does.
 /// Attach the scoped runtime protections from
 /// [`crate::hardening::RuntimeHardening`] to a sandbox.
 ///
@@ -343,34 +315,25 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
 const DRM_DIR: &str = "/dev/dri";
 
 /// Splice the compositor's GPU choice into an argv built by
-/// [`build_bwrap_argv`].
+/// [`build_bwrap_argv`]. Three things, all needed to land on the same
+/// GPU as the compositor:
 ///
-/// Three things happen here, and all three are needed for the app to
-/// land on the same GPU as the compositor:
+/// 1. **Only the chosen render node is visible** — a tmpfs over
+///    `/dev/dri` hides whatever the manifest's grant exposed, then the
+///    one node is bound back on top. Device enumeration is how Mesa's
+///    EGL picks a GPU, so this is the only way to stop a client opening
+///    one the compositor can't import buffers from; it's a strict
+///    narrowing of the manifest's grant, never a widening.
+/// 2. **The loader manifests are readable** — an app whose grant misses
+///    them gets variables pointing at nothing, which both loaders read
+///    as "no drivers at all".
+/// 3. **The variables are set explicitly**, not inherited: what the
+///    compositor resolved is a decision that belongs in the argv where
+///    it can be asserted on.
 ///
-/// 1. **Only the chosen render node is visible.** A tmpfs over
-///    `/dev/dri` hides whatever the manifest's `/dev/dri` grant exposed,
-///    and the one node is bound back on top. Device enumeration is how
-///    Mesa's EGL picks a GPU — there is no environment variable for it —
-///    so removing the other nodes is the only way to stop a client
-///    opening a GPU the compositor cannot import buffers from. It is
-///    also a strict narrowing of the manifest's grant, never a widening.
-/// 2. **The loader manifests are readable.** `__EGL_VENDOR_LIBRARY_FILENAMES`
-///    and `VK_DRIVER_FILES` name files; a manifest that grants
-///    `/usr/share/vulkan` as a directory usually covers them, but an app
-///    that grants neither would get variables pointing at nothing —
-///    which both loaders read as "no drivers at all".
-/// 3. **The variables are set.** Explicitly, rather than inherited from
-///    the launcher's environment: what the compositor resolved is a
-///    decision, and decisions belong in the argv where they can be
-///    asserted on.
-///
-/// Callers must splice this in *before* the trailing entrypoint token.
-/// `grants_drm` says whether the manifest gave this app the DRM device
-/// directory at all — an app with no GPU grant gets neither the tmpfs
-/// nor the node, because narrowing nothing is nothing and creating an
-/// empty `/dev/dri` would be a new (if useless) mount it never asked
-/// for.
+/// Callers must splice this in before the trailing entrypoint token.
+/// `grants_drm` says whether the manifest gave this app `/dev/dri` at
+/// all — with no grant, neither the tmpfs nor the node is added.
 pub fn push_gpu_selection(
     argv: &mut Vec<String>,
     selection: &crate::gpu::GpuSelection,
@@ -396,18 +359,14 @@ pub fn push_gpu_selection(
     }
 }
 
-/// Whether this launch exposes the DRM device directory at all.
-///
-/// The system profile puts `/dev/dri` in every sandbox, so this is
-/// normally `true` — but it still consults both sources rather than
-/// returning a constant, because [`push_gpu_selection`]'s narrowing has
-/// to land on something that was actually mounted, and a future profile
-/// that dropped the device would otherwise leave the narrowing creating
-/// an empty `/dev/dri` nobody asked for.
-///
+/// Whether this launch exposes the DRM device directory at all. The
+/// system profile puts `/dev/dri` in every sandbox (normally `true`),
+/// but this still consults both sources rather than returning a
+/// constant, because [`push_gpu_selection`]'s narrowing has to land on
+/// something actually mounted — a future profile that dropped the
+/// device would otherwise create an empty `/dev/dri` nobody asked for.
 /// A grant *of* `/dev/dri` and a grant of a node *inside* it both
-/// count: an app whose capability names only `/dev/dri/renderD128`
-/// still has its device view narrowed to the compositor's node.
+/// count.
 pub fn grants_drm(_manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
     let from_profile = crate::profile::SYSTEM_DEVICE_PATHS
         .iter()
@@ -436,38 +395,27 @@ pub const SANDBOX_IDENTITY_PATH: &str = "/run/qos/identity.json";
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs.
 ///
-/// `payload_root` is the host path containing the unpacked package;
-/// `runtime_root` is the (optional) host directory holding the
-/// qos-runtime tree, paired with the version string the manifest
-/// pins (today: hard-coded to "1" — `qos-pkg` will surface the real
-/// version on integration).
+/// `runtime_root` pairs the optional host qos-runtime directory with
+/// the version string the manifest pins (today hard-coded to "1").
 ///
-/// `service_binds` are the `(name, host_fd_number, child_fd_number)`
-/// tuples for opened service sockets. Each turns into a `bwrap --file`
-/// triple binding the open fd into the sandbox at a stable per-service
-/// path; the entrypoint binary picks them up via `QOS_SVC_<NAME>_FD`
-/// env vars (set separately on the `Command`).
+/// `service_binds` name the `QOS_SVC_<NAME>_FD` env vars pointing at
+/// already-connected service sockets; the fds themselves reach the
+/// child by inheritance, not through this argv (see
+/// `run::place_service_fds`).
 ///
-/// `dbus_bind` — when `Some`, wire the socket into the sandbox and
-/// set `DBUS_SESSION_BUS_ADDRESS`. `None` means the sandbox has no
-/// D-Bus access (the manifest didn't declare a `via-host` portal, or
-/// the caller decided even the direct-bind fallback was too much).
-/// The [`crate::dbus_proxy`] module builds the plan when the manifest
-/// asks for portals.
+/// `dbus_bind`, when `Some`, wires the socket in and sets
+/// `DBUS_SESSION_BUS_ADDRESS`; `None` means no D-Bus access at all.
 ///
-/// `identity_host_path` is the resolved host location of the user
-/// identity JSON (typically `<XDG_CONFIG_HOME>/qos/identity/primary.json`).
-/// When present, it is ro-bound into the sandbox at
-/// [`SANDBOX_IDENTITY_PATH`] and the `QOS_USER_IDENTITY` env var is
-/// set so `runtime-identity::load()` finds it. When absent, no bind
-/// and no env var — apps degrade to the "no identity" path unchanged.
+/// `identity_host_path`, when present, is ro-bound at
+/// [`SANDBOX_IDENTITY_PATH`] with `QOS_USER_IDENTITY` set so
+/// `runtime-identity::load()` finds it; absent means no bind and no
+/// env var.
 ///
-/// `capabilities` is what the *user* granted this app in the workspace
-/// it is being launched into (see [`crate::capabilities`]). It only ever
-/// adds binds; passing [`CapabilityPlan::empty`] renders exactly the
-/// sandbox the manifest alone describes, which is also what a launch
-/// with no capability file gets. That is the whole enforcement story for
-/// a revoked or never-granted permission: the mount is simply not there.
+/// `capabilities` is what the user granted this app in its workspace.
+/// It only ever adds binds — [`CapabilityPlan::empty`] renders exactly
+/// the sandbox the manifest alone describes, which is the whole
+/// enforcement story for a revoked or never-granted permission: the
+/// mount is simply not there.
 ///
 /// The returned argv ends with the entrypoint command and its args.
 pub fn build_bwrap_argv(
@@ -518,15 +466,12 @@ pub fn build_bwrap_argv_for_entry(
     // back — including the ones `run.rs` splices in after this returns.
     push_clean_environment(&mut argv);
 
-    // Namespace + lifetime defaults.
-    //
-    // The network namespace is shared ONLY for unrestricted access —
-    // the manifest asking for the host network with nothing narrowing
-    // it, or a grant that literally says `*`. Anything more specific
-    // keeps the empty namespace `--unshare-all` gave it and reaches the
-    // network through the egress gate instead, because `--share-net` is
-    // all-or-nothing and sharing it for a grant naming one host would
-    // be applying that grant as "everything".
+    // Namespace + lifetime defaults. The network namespace is shared
+    // ONLY for unrestricted access — the manifest asking for the host
+    // network with nothing narrowing it, or a grant that literally says
+    // `*`. Anything more specific keeps the empty namespace
+    // `--unshare-all` gave it and reaches the network through the
+    // egress gate instead, because `--share-net` is all-or-nothing.
     argv.push("--unshare-all".to_string());
     if egress_decision(manifest, capabilities).shares_host_network() {
         argv.push("--share-net".to_string());
@@ -549,11 +494,9 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("QOS_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
 
-    // The human-readable app name, from the manifest `[package].name`.
-    // The toolkit uses it for the window title (the string a titlebar /
-    // window-list shows) — the counterpart to the `QOS_PACKAGE_ID` the
-    // app_id is keyed on. Omitted when the manifest names no `name`; the
-    // toolkit then derives a title from the package id.
+    // The human-readable app name, from `[package].name` — used for the
+    // window title. Omitted when unset; the toolkit then derives a
+    // title from the package id.
     if let Some(name) = manifest
         .name
         .as_deref()
@@ -565,11 +508,10 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(name.to_string());
     }
 
-    // The app's window icon, from the manifest `[package].icon`. The
-    // manifest names it relative to the payload; the file lives inside
-    // the payload we just bound, so the value the app sees is the path
-    // under the in-sandbox payload mount. Omitted when the manifest
-    // ships no icon art; the toolkit then draws a generated default.
+    // The app's window icon, from `[package].icon` — resolved relative
+    // to the payload mount, since that's where the file actually lives
+    // inside the sandbox. Omitted when unset; the toolkit draws a
+    // generated default.
     if let Some(icon_rel) = manifest
         .icon
         .as_deref()
@@ -591,18 +533,17 @@ pub fn build_bwrap_argv_for_entry(
         &crate::hardening::for_package(&manifest.package_id),
     );
 
-    // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/
-    // and set LD_LIBRARY_PATH inside the sandbox so the entrypoint can
-    // find the shared libs the runtime ships.
+    // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/,
+    // with LD_LIBRARY_PATH set so the entrypoint finds the runtime's
+    // shared libs.
     //
-    // We also bind the loader + libc at their canonical absolute paths
-    // (`/lib64/ld-linux-x86-64.so.2`, `/lib64/libc.so.6`, …) because
-    // dynamically-linked ELFs hard-code their `INTERP` in the header
-    // and the kernel refuses to exec them if that path is unreachable
-    // — even with `LD_LIBRARY_PATH` set. The bundle already carries
-    // those files at `lib/lib64/…`, so we can just re-bind them.
-    // The launcher-shim itself is one such ELF, so this makes the
-    // shim exec work.
+    // We also re-bind the loader + libc at their canonical absolute
+    // paths (`/lib64/ld-linux-x86-64.so.2`, `/lib64/libc.so.6`, …)
+    // because dynamically-linked ELFs hard-code their `INTERP` in the
+    // header, and the kernel refuses to exec them if that path is
+    // unreachable even with `LD_LIBRARY_PATH` set. The bundle already
+    // carries those files, so this is just a re-bind — including for
+    // the launcher-shim itself, which is one such ELF.
     if let Some((rt_root, rt_version)) = runtime {
         let rt_mount = runtime_mount_for(rt_version);
         push_bind(&mut argv, "--ro-bind", rt_root, &rt_mount);
@@ -635,31 +576,27 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("/dev".to_string());
 
     // The system read profile. Fixed, identical for every package, and
-    // fed by no manifest field — see `crate::profile` for what may go in
-    // it and why. This is where the per-manifest `sandbox.fs.read` list
-    // used to be expanded and bound; a package now names nothing.
+    // fed by no manifest field — see `crate::profile` for what may go
+    // in it and why. A package names nothing here.
     crate::profile::push_system_profile(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
 
-    // User-granted capabilities. These come after the system profile so
-    // a path the user granted read-write wins over the same path the
-    // profile exposes read-only.
+    // User-granted capabilities, after the system profile so a
+    // read-write grant wins over the same path exposed read-only.
     //
     // `-try` variants throughout: a capability outlives the thing it
-    // names (a granted directory can be deleted, a webcam unplugged),
-    // and a stale grant must not turn into a launch failure. It never
-    // widens anything — bwrap simply skips a source that isn't there.
+    // names (a directory deleted, a webcam unplugged), so a stale grant
+    // must not fail the launch. It never widens anything — bwrap simply
+    // skips a source that isn't there.
     push_capability_binds(&mut argv, capabilities);
 
-    // XDG portals: if the caller supplied a bind plan (either the
-    // preferred `xdg-dbus-proxy` socket or a direct-bind fallback),
-    // wire it in. If NO plan is supplied, the bus is NOT exposed —
-    // apps that didn't declare a portal (or hosts without a proxy
-    // AND an abstract-namespace bus) can't reach the D-Bus attack
-    // surface at all. The choice of plan (proxy vs direct) is made
-    // by `run.rs`; this layer just materialises it.
+    // XDG portals: wire in the bind plan the caller supplied (proxy or
+    // direct-bind fallback). No plan means the bus is NOT exposed at
+    // all — apps that didn't declare a portal can't reach the D-Bus
+    // attack surface. The choice of plan is made by `run.rs`; this
+    // layer just materialises it.
     if let Some(bind) = dbus_bind {
         push_bind(&mut argv, "--ro-bind", &bind.host_socket, &bind.sandbox_path);
         argv.push("--setenv".to_string());
@@ -677,18 +614,15 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(mode.to_string());
     }
 
-    // User identity: ro-bind the caller-supplied host path into the
-    // sandbox and set QOS_USER_IDENTITY. The host path is a specific
-    // file — we deliberately do NOT bind `~/.config/qos/` wholesale
-    // so identities the user has for other purposes (secondary
+    // User identity: ro-bind the caller-supplied host path and set
+    // QOS_USER_IDENTITY. A specific file, not `~/.config/qos/`
+    // wholesale — identities the user has for other purposes (secondary
     // devices, staged records) stay off the app's view.
     //
     // A **read-only participant gets no identity at all.** That is what
     // makes "may not author" structural: without a signing key the app
     // cannot produce an authored change for anything downstream to
-    // reject, and "there is no identity here" is a state
-    // `runtime-identity` already handles. See
-    // [`crate::capabilities::Participation`].
+    // reject. See [`crate::capabilities::Participation`].
     if let Some(host_path) = identity_host_path.filter(|_| capabilities.participation.carries_identity())
     {
         argv.push("--ro-bind".to_string());
@@ -699,22 +633,19 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(SANDBOX_IDENTITY_PATH.to_string());
     }
 
-    // Service sockets reach the app as inherited descriptors, not as
-    // bwrap arguments. The launcher dup2s each connected socket onto
-    // its `child_fd` (and clears CLOEXEC) in `pre_exec` — see
-    // `run::place_service_fds` — and a descriptor left open across
-    // `exec` keeps its number through bwrap and through the
-    // `__sandbox-exec` re-exec, so the number published here in
+    // Service sockets reach the app as inherited descriptors, not bwrap
+    // arguments. The launcher dup2s each connected socket onto its
+    // `child_fd` in `pre_exec` (see `run::place_service_fds`), and a
+    // descriptor left open across `exec` keeps its number through bwrap
+    // and the `__sandbox-exec` re-exec, so the number published here in
     // `QOS_SVC_<NAME>_FD` is the number the app finds.
     //
     // There is deliberately **no bwrap flag** for this. `--file FD
     // DEST` is the one that looks right and is not: it *copies FD's
     // contents* into a regular file at DEST, so pointing it at a
     // connected socket makes bwrap block on a read for an EOF the
-    // broker never sends. The launch hangs before `exec`, an app that
-    // declares `collab` never starts at all, and the only symptom is
-    // an app that never appears. Nothing here may name a live socket
-    // to bwrap.
+    // broker never sends — the launch hangs before `exec`, and the only
+    // symptom is an app that never appears.
     for sb in service_binds {
         argv.push("--setenv".to_string());
         argv.push(svc_env_var(&sb.name));
@@ -745,13 +676,12 @@ pub fn egress_decision(
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
     );
-    // The operator escape hatch is applied *here*, not at the point the
-    // gate is started, because the namespace decision and the gate have
-    // to be made from the same answer. Turning the gate off downstream
-    // while this layer still reported `Filtered` would leave the app
-    // with an empty namespace and nothing to reach through it — offline
-    // rather than unfiltered, which is neither of the two behaviours
-    // anyone asked for.
+    // The operator escape hatch is applied *here*, not where the gate
+    // is started, because the namespace decision and the gate must come
+    // from the same answer — applying it downstream would leave the app
+    // with an empty namespace and nothing to reach through it: offline
+    // rather than unfiltered, neither of the two behaviours anyone
+    // asked for.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
         && std::env::var(crate::run::NET_GATE_ENV).is_ok_and(|v| v == "off")
     {
@@ -860,24 +790,18 @@ pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPl
     }
 }
 
-/// Tell the app where the **user's** home is, when a capability actually
-/// binds it.
+/// Tell the app where the **user's** home is, when a capability
+/// actually binds it. Inside the sandbox `HOME` is the app's own
+/// per-room, per-package directory (see `crate::appdir`), which is
+/// right for most apps but leaves one whose job *is* the user's files
+/// opening on an empty folder.
 ///
-/// Inside the sandbox `HOME` is the app's own directory — one per room,
-/// per package, with every `XDG_*` pointed inside it (see
-/// `crate::appdir`). That is right, and it has a consequence: an app
-/// asking the platform "where is home?" is answered with a directory
-/// that has nothing of the user's in it. For most apps that is the whole
-/// point. For one whose job *is* the user's files it means opening on an
-/// empty folder and reporting, accurately and uselessly, zero items.
-///
-/// So the real home is passed separately — and only when the capability
-/// plan has bound a path that contains it. Deriving it from the binds
-/// rather than from the manifest is what keeps it honest: the variable
-/// cannot name a directory the app is unable to read, because the same
-/// grant that sets it is the one that mounted it. An app that was
-/// granted nothing does not see the variable at all, and can tell that
-/// it has been given nothing rather than guessing.
+/// So the real home is passed separately, and only when the capability
+/// plan has bound a path that contains it — deriving it from the binds
+/// rather than the manifest keeps it honest, since the variable can
+/// never name a directory the app can't read. An app granted nothing
+/// sees no variable at all, and can tell it was given nothing rather
+/// than guessing.
 ///
 /// Returns the path exported, if any.
 pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
@@ -898,18 +822,13 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
     Some(home)
 }
 
-/// Pass on the session's workspace roots, narrowed to the ones this app's
-/// capability plan has actually bound.
-///
-/// The same contract as [`push_user_home`], and deliberately **not** on
-/// [`INHERITED_ENV`]: that list is for preferences naming no path, and
-/// `QOS_WORKSPACE_ROOTS` names paths. Deriving it from the binds instead means
-/// the variable can never name a directory the app cannot read, and an app
-/// granted none of them sees no variable rather than opening on a path that is
-/// not there and reporting an empty folder.
-///
-/// Order is preserved, because the first root is the one a file manager
-/// cold-starts into.
+/// Pass on the session's workspace roots, narrowed to the ones this
+/// app's capability plan has actually bound. Same contract as
+/// [`push_user_home`], and deliberately not on [`INHERITED_ENV`] — that
+/// list is for path-less preferences, and this names paths, so deriving
+/// it from the binds means the variable can never name a directory the
+/// app can't read. Order is preserved: the first root is the one a file
+/// manager cold-starts into.
 pub fn push_workspace_roots(
     argv: &mut Vec<String>,
     capabilities: &CapabilityPlan,
@@ -2152,26 +2071,11 @@ mod tests {
         );
     }
 
-    /// This test used to assert the opposite, and the assertion was
-    /// correct at the time: a grant naming a host produced `--share-net`
-    /// and the host itself appeared nowhere, because bwrap has no
-    /// per-host vocabulary and nothing else was reading the name. It
-    /// read:
-    ///
-    /// ```text
-    /// assert!(!argv.iter().any(|a| a.contains("github.com")),
-    ///     "the recorded allowlist reaches no enforcement mechanism — it is absent from the \
-    ///      argv that builds the sandbox: {argv:?}");
-    /// ```
-    ///
-    /// Both halves of that are now false, and this asserts the
-    /// replacement: a named host does **not** share the namespace, and
-    /// it does reach a mechanism. The mechanism is deliberately still
-    /// not an argv string — a hostname in a bwrap argument would mean
-    /// nothing to bwrap. It is the gate socket, which is what the empty
-    /// namespace leaves as the app's only way out, so the assertion
-    /// here is about the shape of the sandbox and
-    /// `tests/netgate_egress.rs` is about the packets that shape
+    /// A named host must not share the whole network, and the grant
+    /// must reach a real mechanism — not an argv string (bwrap has no
+    /// per-host vocabulary) but the gate socket the empty namespace
+    /// leaves as the app's only way out. This asserts the shape of the
+    /// sandbox; `tests/netgate_egress.rs` asserts the packets it
     /// permits.
     #[test]
     fn a_grant_naming_a_host_no_longer_shares_the_whole_network() {

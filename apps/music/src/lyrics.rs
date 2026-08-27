@@ -145,20 +145,18 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// available (`lyrics` or the `live` build), so `--features live,audio` fetches
 /// real lyrics for the playing track.
 ///
-/// Robustness (the reasons "Finding lyrics…" used to hang or miss a track that
-/// clearly has lyrics):
-///   * **normalisation** — YouTube titles/artists carry noise (`(Official Music
-///     Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
-///     metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
-///     querying, so `Californication (Official Music Video)` by
-///     `Red Hot Chili Peppers - Topic` actually resolves.
-///   * **retry + backoff + timeout** — a transient network blip or an LRCLIB
-///     rate-limit (429 / 5xx) is retried a couple of times with backoff behind
-///     an 8 s per-request timeout, instead of giving up on the first hiccup.
-///   * **cache** — a resolved result (hit *or* miss) is memoised by normalised
-///     identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
-///   * **fallback** — an exact `/api/get` miss (YouTube durations rarely match
-///     to the second) falls back to `/api/search`.
+/// - **normalisation** — YouTube titles/artists carry noise (`(Official Music
+///   Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
+///   metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
+///   querying, so `Californication (Official Music Video)` by
+///   `Red Hot Chili Peppers - Topic` actually resolves.
+/// - **retry + backoff + timeout** — a transient network blip or an LRCLIB
+///   rate-limit (429 / 5xx) is retried a couple of times with backoff behind
+///   an 8 s per-request timeout.
+/// - **cache** — a resolved result (hit *or* miss) is memoised by normalised
+///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
+/// - **fallback** — an exact `/api/get` miss (YouTube durations rarely match
+///   to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
@@ -253,15 +251,15 @@ fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> O
 /// Extract synced-then-plain lyrics from one LRCLIB JSON record.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
-    if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str()) {
-        if !synced.trim().is_empty() {
-            return Some(parse_lrc(synced));
-        }
+    if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str())
+        && !synced.trim().is_empty()
+    {
+        return Some(parse_lrc(synced));
     }
-    if let Some(p) = json.get("plainLyrics").and_then(|v| v.as_str()) {
-        if !p.trim().is_empty() {
-            return Some(plain(p));
-        }
+    if let Some(p) = json.get("plainLyrics").and_then(|v| v.as_str())
+        && !p.trim().is_empty()
+    {
+        return Some(plain(p));
     }
     None
 }
@@ -620,9 +618,9 @@ mod tests {
         assert_eq!(normalize_artist("  Midnight   Transit  "), "Midnight Transit");
     }
 
-    /// The Californication-by-RHCP case the user reported: a YouTube-flavoured
-    /// title + a `… - Topic` artist must produce a *well-formed, normalised*
-    /// LRCLIB query (the reason the exact `/api/get` lookup used to miss).
+    /// A YouTube-flavoured title + a `… - Topic` artist must produce a
+    /// well-formed, normalised LRCLIB query, not one that carries the raw
+    /// noise through and misses on `/api/get`.
     #[test]
     fn lrclib_query_normalizes_youtube_metadata() {
         let meta = TrackMeta {
