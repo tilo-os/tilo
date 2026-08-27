@@ -26,6 +26,11 @@ word-processor = { path = "../word-processor" }
 # window's business and nothing a headless participant reading messages
 # needs.
 chat = { path = "../chat", default-features = false }
+# The one app in the room whose subject is not a document at all, and the
+# reason an instruction can name two apps: a photograph edited here is a
+# thing to put somewhere else. Its own decode and its own render, so "the
+# cropped photograph" means what the app means by it.
+photos = { path = "../photos" }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model
