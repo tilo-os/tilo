@@ -52,9 +52,9 @@ fn seed_document_as(actor: &str) -> AutoCommit {
 
 /// The actor both documents in the multi-document test are built under.
 ///
-/// Not a contrivance: the demo's two documents came from instances that
-/// had settled on the same actor id, which is exactly why the second one
-/// would not merge into the first — divergent history under one name.
+/// Not a contrivance: two real documents came from instances that had
+/// settled on the same actor id, which is exactly why the second one would
+/// not merge into the first — divergent history under one name.
 /// `66696c65732d32` in the reported error is this string in hex.
 const COLLIDING_ACTOR: &str = "files-2";
 
@@ -78,8 +78,8 @@ fn seed_foreign() -> AutoCommit {
 }
 
 /// [`seed_document`] under the colliding actor, so that merging it into
-/// the foreign document fails the way it failed in the demo instead of
-/// quietly combining two unrelated pages.
+/// the foreign document fails for real instead of quietly combining two
+/// unrelated pages.
 fn seed_colliding_document() -> AutoCommit {
     seed_document_as(COLLIDING_ACTOR)
 }
@@ -212,11 +212,16 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         "three 2-column rows, in order"
     );
 
-    // Every change the agent made is attributed to it.
+    // Every change the agent made is attributed to it. Filtered rather than
+    // positionally skipped: `qdoc::model::init` adopts the schema from its
+    // own shared genesis, under a fixed well-known actor, ahead of the
+    // seed's own commit — both pre-date anything the agent did.
+    let genesis = qdoc::model::schema_genesis_actor_hex();
+    let seed = hex::encode("ada");
     let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
         .into_iter()
-        .skip(1) // the seed
         .map(|v| v.actor_hex)
+        .filter(|a| *a != genesis && *a != seed)
         .collect();
     assert_eq!(
         actors,
@@ -234,9 +239,9 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
 /// is therefore offered the file manager's state alongside the page it
 /// was invited to, and nothing in the frame says which is which.
 ///
-/// Taking the first one to arrive is what the agent used to do, and in
-/// the demo the file manager answered first: the agent adopted its
-/// state, put its caret in the file manager's window, and then died —
+/// Taking the first one to arrive is what the agent used to do, and when
+/// the file manager answered first the agent adopted its state, put its
+/// caret in the file manager's window, and then died —
 ///
 ///     Error: merge a peer snapshot
 ///     Caused by: duplicate seq 1 found for actor 66696c65732d32
@@ -310,8 +315,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     let mut replica = seed_colliding_document();
     std::thread::sleep(Duration::from_millis(100));
 
-    // The agent as the demo runs it: a room, and no record to tell the
-    // room's documents apart.
+    // A room, and no record to tell the room's documents apart.
     let cfg = Config {
         socket: Some(sock.clone()),
         app_id: APP.into(),
@@ -331,7 +335,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     });
 
     // The file manager answers first — which is the ordering that broke
-    // this — and the word processor a beat later.
+    // this — and the word processor shortly after.
     files_peer
         .set_read_timeout(Some(Duration::from_millis(200)))
         .unwrap();
@@ -374,7 +378,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
                 ..
             } if !answered => {
                 answered = true;
-                // A beat after the file manager, so the agent has already
+                // Shortly after the file manager, so the agent has already
                 // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
                 let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
@@ -383,16 +387,14 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
                 .unwrap();
                 write_frame(&mut wp_peer, &snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } => {
-                // The agent's edits. A delta from the file manager's
-                // document would not apply here, so ignore what does not.
-                if replica.load_incremental(&data).is_ok() {
-                    let b = blocks(&replica);
-                    if b.iter().any(|x| x.kind == "cell")
-                        && !b.iter().any(|x| x.text.starts_with("Scribe:"))
-                    {
-                        done = true;
-                    }
+            // The agent's edits. A delta from the file manager's document
+            // would not apply here, so ignore what does not.
+            CollabEvent::CRDTIncremental { data } if replica.load_incremental(&data).is_ok() => {
+                let b = blocks(&replica);
+                if b.iter().any(|x| x.kind == "cell")
+                    && !b.iter().any(|x| x.text.starts_with("Scribe:"))
+                {
+                    done = true;
                 }
             }
             _ => {}

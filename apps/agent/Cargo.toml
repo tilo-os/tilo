@@ -20,6 +20,12 @@ ui = { path = "../../ui" }
 # The word processor's exported actions: the agent edits with exactly the
 # ops the toolbar produces, never with its own idea of the document.
 word-processor = { path = "../word-processor" }
+# Where the agent is spoken to, and a second app of a deliberately different
+# shape: a conversation rather than a document. Default features off — the
+# live media engine (GStreamer, iroh, openh264, the screen portal) is a chat
+# window's business and nothing a headless participant reading messages
+# needs.
+chat = { path = "../chat", default-features = false }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model
