@@ -12,21 +12,16 @@
 //! `LibSeatSession` lives in `super::runtime::DrmRuntime` (hardware-only
 //! path).
 //!
-//! # Why the flag alone was not enough
+//! # Why a full sequence, not just the flag
 //!
-//! The flag used to be written and never read. A VT switch therefore left
-//! the compositor believing it still owned the CRTCs: it kept queuing page
-//! flips that the kernel rejected because master had moved, and switching
-//! back showed whatever the other session had left on screen. The same
-//! shape hits suspend — the panels come back powered but never
-//! re-modeset, so the screen stays dark.
-//!
-//! Both are fixed by the same sequence, which is why it lives in one
-//! ordered list rather than being open-coded twice: give up the hardware
-//! on the way out, take it back and re-establish *everything* on the way
-//! in. Nothing about a resumed device can be assumed to have survived —
-//! not the mode, not the framebuffer binding, not the cursor plane, not
-//! the panel's power state.
+//! VT switch and suspend hit the same failure shape: page flips queued
+//! against a device the kernel no longer grants master on, or panels that
+//! power back on without a re-modeset and stay dark. Both are fixed by
+//! the same ordered sequence rather than being open-coded twice: give up
+//! the hardware on the way out, take it back and re-establish
+//! *everything* on the way in. Nothing about a resumed device can be
+//! assumed to have survived — not the mode, not the framebuffer binding,
+//! not the cursor plane, not the panel's power state.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

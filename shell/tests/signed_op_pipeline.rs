@@ -1,11 +1,9 @@
-//! Phase 3 end-to-end: a `SignedOp` envelope flowing through the
-//! broker is validated against the per-artifact `ChannelState`. Valid
-//! envelopes fan out as `CollabEvent::SignedCRDTIncremental`; invalid
-//! envelopes are dropped and land in the audit log.
+//! A `SignedOp` envelope flowing through the broker is validated against
+//! the per-artifact `ChannelState`. Valid envelopes fan out as
+//! `CollabEvent::SignedCRDTIncremental`; invalid envelopes are dropped and
+//! land in the audit log.
 //!
-//! This is the headline test the spec's Phase 3 promises: "the
-//! protocol actually enforces who's allowed to edit". The two
-//! scenarios exercised here are
+//! Two scenarios:
 //!
 //! 1. A peer with a registered Editor attestation publishes an op →
 //!    the broker accepts and forwards it.
@@ -143,7 +141,6 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     }
     wait_for_announced(&handle, 3);
 
-    // Editor publishes a valid signed op.
     let valid_op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
     write_frame(
         &mut editor,
@@ -152,7 +149,6 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
         },
     );
 
-    // Observer should see it as a SignedCRDTIncremental.
     let event = read_event(&mut observer, Duration::from_millis(500));
     if event.is_none() {
         // Diagnostic: print the audit log to see why the valid op was dropped.
@@ -212,7 +208,6 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
         ),
     }
 
-    // Cleanup.
     drop(editor);
     drop(observer);
     drop(outsider);
@@ -280,7 +275,6 @@ fn replay_of_same_signed_op_is_dropped() {
         "observer received a replayed op — replay defence didn't fire: {stray:?}",
     );
 
-    // The audit log records exactly one rejection (the replay).
     let audit = handle.audit_for(artifact);
     let replays: Vec<_> = audit
         .iter()

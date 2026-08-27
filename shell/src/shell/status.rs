@@ -1,33 +1,17 @@
 //! Live system status for the top bar: battery, network, volume.
 //!
-//! The tray used to paint three lucide glyphs — Wi-Fi, Monitor, Battery —
-//! in dim text with nothing behind them. They were ornament: the same
-//! three shapes on a charging laptop, a dead one, and a desktop with the
-//! cable pulled out. This module is the state behind them.
-//!
-//! # Why a thread and not the frame loop
-//!
-//! Two of the three readings cost a subprocess (`nmcli`, `wpctl`), and
-//! the compositor's frame loop is the one place in the system that must
-//! never wait on one — a 200 ms `fork`/`exec` there is a dropped frame,
-//! and `nmcli` can take much longer than that. So the reads happen on a
-//! plain OS thread which owns a snapshot, and the frame loop only ever
-//! copies that snapshot, which is a mutex acquire.
-//!
-//! A plain thread rather than a task on the compositor's tokio runtime:
-//! the work is blocking `Command::output`, which would occupy that
-//! runtime's single worker and stall the notification service behind it.
-//!
-//! # Why the poller is opt-in
+//! Two of the three readings cost a subprocess (`nmcli`, `wpctl`), and the
+//! compositor's frame loop must never wait on one — a 200 ms `fork`/`exec`
+//! there is a dropped frame. So the reads happen on a plain OS thread
+//! (not a tokio task, which would stall the notification service behind
+//! the blocking `Command::output`) that owns a snapshot; the frame loop
+//! only ever copies it, a mutex acquire.
 //!
 //! [`StatusBridge::spawn`] is called from the compositor's real-session
-//! constructors only. A `--shots` render or a headless test must produce
-//! the same pixels on every machine, and a tray driven by the host's
-//! actual battery would make every golden image a function of whichever
-//! laptop rendered it. With no poller the readings stay `None`, and
-//! [`SystemStatus`] renders an absent reading as *nothing* rather than as
-//! a plausible-looking default — an indicator that invents a battery
-//! level is worse than no indicator.
+//! constructors only — a `--shots` render or headless test must produce
+//! the same pixels on every machine, so with no poller the readings stay
+//! `None` and [`SystemStatus`] renders an absent reading as *nothing*
+//! rather than a plausible-looking default.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -198,9 +182,7 @@ impl StatusBridge {
                 }
             });
         if let Err(e) = spawned {
-            // A machine that cannot spawn a thread has bigger problems,
-            // but the tray must degrade to "unknown" rather than to a
-            // process that refuses to start.
+            // Degrade to "unknown" rather than a process that refuses to start.
             tracing::warn!(target: "qos::status", error = %e, "status poller not started");
             self.polling.store(false, Ordering::SeqCst);
         }
@@ -210,11 +192,10 @@ impl StatusBridge {
 /// One full read of every source. Public so a diagnostic or a test can
 /// take a reading without owning a poller.
 pub fn read_once() -> SystemStatus {
-    // Battery is a file read, so it is always attempted and always cheap.
     let battery = Some(qos_power_mgmt::sysfs_battery_snapshot());
     // The two shell-outs are allowed to fail — a machine without
-    // NetworkManager or without PipeWire simply has no reading, and the
-    // indicator omits that glyph rather than claiming a state.
+    // NetworkManager or PipeWire has no reading, and the indicator omits
+    // that glyph rather than claiming a state.
     let link = os_actions::get_link_status().ok();
     let volume = os_actions::get_volume_state().ok();
     SystemStatus {

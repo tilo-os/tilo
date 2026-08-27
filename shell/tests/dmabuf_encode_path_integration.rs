@@ -81,7 +81,6 @@ fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
     let stride = (width * 4) as usize;
     let size = stride * height as usize;
     let mut buf = vec![0u8; size];
-    // BGRA layout — R=0xFF, G=0x00, B=0x00, A=0xFF for each pixel.
     for chunk in buf.chunks_exact_mut(4) {
         chunk[0] = 0x00; // B
         chunk[1] = 0x00; // G

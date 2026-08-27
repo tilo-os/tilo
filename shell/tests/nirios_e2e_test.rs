@@ -25,27 +25,23 @@ use ui::widget::Widget;
 fn root_builds_without_panic_for_bootstrap_tree() {
     let tree = WorkspaceTree::bootstrap_default();
     let _root = build_nirios_root(&tree);
-    // If the tree-walk diverged we'd have panicked by now; reaching here
-    // means every chrome widget constructed cleanly against the default
-    // Home workspace (Notes + Files + Terminal + Browser).
+    // Reaching here means every chrome widget constructed cleanly against
+    // the default Home workspace (Notes + Files + Terminal + Browser).
 }
 
 #[test]
 fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
-    // `bootstrap_default` (since 1c4cd284a, "a first boot starts empty
-    // instead of inventing a desktop") seeds one empty workspace with no
-    // groups; `bootstrap_demo` is the populated fixture kept for exactly
-    // this kind of test — one with a tab to act on.
+    // `bootstrap_default` seeds one empty workspace with no groups (a
+    // first boot starts empty); `bootstrap_demo` is the populated fixture
+    // kept for exactly this kind of test — one with a tab to act on.
     let tree = WorkspaceTree::bootstrap_demo();
     let ws = tree.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
     let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
-    // Every tab the desktop opens itself must resolve to a real app.
-    // `Stub` renders a card that says the app is coming soon, and a
-    // window the user never opened, showing an app that does not exist,
-    // is worse than not offering it — so nothing seeded here may be one.
+    // A window the user never opened, showing an app that doesn't exist,
+    // is worse than not offering it — so nothing seeded here may be a Stub.
     for tab in &group.tabs {
         match &tab.tile {
             TileContent::AppPlaceholder { .. } => {}
@@ -83,7 +79,6 @@ fn chrome_state_shared_across_sibling_widgets() {
     let a = chrome.clone();
     let b = chrome.clone();
 
-    // Writes through `a` are observable through `b`.
     a.borrow_mut().overlays.overview = true;
     assert!(b.borrow().overlays.overview);
 
@@ -126,9 +121,8 @@ fn quick_settings_state_defaults_and_mutates_through_chrome() {
         st.bump();
     }
     // `QuickSettingsState` no longer derives `Copy` — the WiFi/BT
-    // drill-in vectors made it un-Copyable in T9 — so we explicitly
-    // clone the value out from behind the `Ref` borrow before
-    // asserting against it.
+    // drill-in vectors made it un-Copyable — so we explicitly clone the
+    // value out from behind the `Ref` borrow before asserting against it.
     let qs = chrome.borrow().quick_settings.clone();
     assert!((qs.brightness - 0.25).abs() < 1e-5);
     assert!(qs.bluetooth);
@@ -268,7 +262,6 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
 
 #[test]
 fn sidebar_cards_read_per_workspace_collaborator_rosters() {
-    // Per-workspace presence is now wired (§3 "Per-strip label + avatars").
     // Each workspace's own `Workspace::collaborators` populates its card,
     // with a tree-level fallback only on the active card (and only when
     // the workspace itself is empty).
@@ -303,10 +296,6 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    // `bootstrap_default` starts every workspace with an empty roster,
-    // so the clear below is belt-and-braces: the contract under test is
-    // per-workspace emptiness, and it should hold whatever the tree
-    // happened to be built with.
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
     }
@@ -405,10 +394,8 @@ fn notes_app_roundtrips_through_crdt() {
 fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
     // The runtime demo workspace (what `cargo run -p quick-desktop` shows)
     // carries five tabs in a single group: Terminal, Files, Notes, Editor,
-    // Browser. The parity milestone's "basic editor / settings / notes /
-    // terminal / file browser" line item requires Editor to be present and
-    // hosted as a live AppWidget (not a Stub), so this test locks the tab
-    // set down against regressions that drop it.
+    // Browser. Editor must be present and hosted as a live AppWidget (not
+    // a Stub); this test locks the tab set down against regressions.
     use shell::shell::Shell;
     use shell::shell::tile::TileContent as RuntimeTile;
 
@@ -481,9 +468,6 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     use ui::permissions::UserId;
     use ui::presence::{PresenceCtx, PresenceKey};
 
-    // `bootstrap_default` seeds no groups (a first boot starts empty);
-    // `bootstrap_demo` is the populated fixture that gives this test two
-    // real tabs to attribute peers to.
     let mut tree = WorkspaceTree::bootstrap_demo();
     // Pick a real tab id from the bootstrap tree so we're exercising the
     // actual id formatting (not a synthetic constant).
@@ -574,19 +558,11 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
     );
 }
 
-/// An Editor tab with no peers in the workspace has no peer caret in it.
-///
-/// This used to assert the opposite. `seed_demo_editor_presence` put a
-/// caret and a selection for a peer called "alice" into the first Editor
-/// tab's body, so the peer-caret chrome had something to paint in
-/// single-process development — and the hosted compositor called it
-/// unconditionally at startup. What a person saw was a second cursor
-/// sitting in their own document, with a selection, belonging to nobody.
-///
-/// The seeder is gone, so the assertion is inverted: presence on the
-/// editor body comes from peers or it does not exist. The key is built the
-/// way `EditorApp` builds it — naming the tab's record as well as the body
-/// field — so this fails if anything starts publishing there again.
+/// An Editor tab with no peers in the workspace has no peer caret in it —
+/// presence on the editor body comes from peers or it does not exist. The
+/// key is built the way `EditorApp` builds it, naming the tab's record as
+/// well as the body field, so this fails if anything starts publishing
+/// there without a real peer behind it.
 #[test]
 fn an_editor_body_has_no_peer_caret_without_peers() {
     use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
@@ -695,15 +671,10 @@ fn shell_folder_drop_labels_the_tab_with_files_prefix() {
 
 #[test]
 fn chrome_file_drop_appends_tab_and_bumps_revision() {
-    // Production-path counterpart of `shell_file_drop_*`: exercise the
-    // `ChromeState::handle_file_drop` hook that `ShellOverlayHost`
-    // invokes when winit delivers `WindowEvent::DroppedFile`. The chrome
-    // state wraps the persisted tree (not the runtime tree) so this
-    // also verifies the persisted-tree `apply_workspace_drop_from_path`
-    // overload wires correctly.
-    // `bootstrap_default` seeds no groups (a first boot starts empty);
-    // this test drops onto an existing group, so it needs
-    // `bootstrap_demo`'s populated fixture instead.
+    // Production-path counterpart of `shell_file_drop_*`: exercises the
+    // `ChromeState::handle_file_drop` hook `ShellOverlayHost` invokes on
+    // `WindowEvent::DroppedFile`, and the persisted-tree
+    // `apply_workspace_drop_from_path` overload the chrome state uses.
     let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
@@ -732,10 +703,9 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 /// build_layout → compute → apply_layout → draw (populates the
 /// button rect) → CursorMoved + MouseInput::Pressed → assert.
 ///
-/// Reproduces the user-reported "overview button doesn't work" bug
-/// (ralph-loop iter, 2026-04-20): if the event dispatch path is
-/// intercepted before TopBarChrome sees the click, `overview` stays
-/// false.
+/// Reproduces the user-reported "overview button doesn't work" bug: if
+/// the event dispatch path is intercepted before TopBarChrome sees the
+/// click, `overview` stays false.
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;

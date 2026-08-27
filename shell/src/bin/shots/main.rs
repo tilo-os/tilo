@@ -1,28 +1,9 @@
-//! `shots` — four-mode driver for the nirios shell, plus a `check`
-//! subcommand for baseline image diffs.
+//! `shots` — four-mode driver for the nirios shell (`window`, `offscreen`,
+//! `headless`, `recording`), plus a `check` subcommand that captures and
+//! pixel-diffs against baseline PNGs. Full flag reference in `--help`.
 //!
-//! Modes:
-//!   - `window`    — real winit window + GPU swapchain. Optional
-//!                    `--scenario NAME` pre-rolls before going
-//!                    interactive.
-//!   - `offscreen` — wgpu offscreen renderer, no window. Captures one
-//!                    PNG per `Snapshot` action under `--out`.
-//!   - `headless`  — no GPU, no display. Dumps chrome state JSON per
-//!                    `Snapshot` action under `--out`.
-//!   - `recording` — wgpu offscreen + H.264 encoder. Writes a raw
-//!                    Annex-B NALU stream to `--out`.
-//!
-//! Subcommands:
-//!   - `shots check --baseline <dir>` — capture current outputs and
-//!     pixel-diff them against PNGs already in `<dir>`. Exit 1 on any
-//!     mismatch, 0 otherwise.
-//!
-//! Multi-resolution sweep (`--sweep`) and per-frame capture
-//! (`--per-frame N`) are documented in `--help`.
-//!
-//! Backwards-compat: invoked without `--mode` / `--scenario`, behaves
-//! like the original `shots` binary — renders the legacy scene set
-//! (`desktop`, `overview`, `palette`, …) to PNG via offscreen mode.
+//! Invoked without `--mode` / `--scenario`, behaves like the original
+//! `shots` binary — renders the legacy scene set to PNG via offscreen mode.
 
 mod diff;
 mod driver;
@@ -435,25 +416,17 @@ Examples:\n\
 }
 
 fn main() {
-    // Startup timing capture. Same env-var contract as `shell` — a
-    // process launched with `QOS_STARTUP_METRICS_PATH=/tmp/x.json` gets
-    // a JSON dump on exit; without it, every `mark` call is a single
-    // atomic-load no-op. `shots` is the harness that measures the win
-    // from the cold-start warmup, so instrumenting it is the only way
-    // to A/B the two paths without a real display.
+    // Same env-var contract as `shell`: QOS_STARTUP_METRICS_PATH=/tmp/x.json
+    // dumps JSON timings on exit; without it every `mark` is a no-op.
+    // `shots` is the harness that measures the cold-start warmup win.
     qos_startup_metrics::init();
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
-    // Kick off cosmic-text + Vello warmup on a background thread. See
-    // `ui::warmup::spawn_warmup` for what runs; the point of doing it
-    // this early is that the FontSystem build and the scratch Vello
-    // render both overlap with argv parsing / driver bring-up. Disabled
-    // with QOS_STARTUP_WARM=off.
-    // FontSystem-only warmup by default (~90 ms cold-start win vs no
-    // warmup, measured on the shots harness). Vello scratch-render
-    // opt-in via QOS_STARTUP_WARM_VELLO=1 — see the compositor's main
-    // for the rationale.
+    // cosmic-text + Vello warmup on a background thread, overlapping argv
+    // parsing / driver bring-up. FontSystem-only by default (~90 ms
+    // cold-start win, measured on this harness); Vello scratch-render
+    // opt-in via QOS_STARTUP_WARM_VELLO=1. Disabled with QOS_STARTUP_WARM=off.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
         .ok()
         .is_some_and(|v| {

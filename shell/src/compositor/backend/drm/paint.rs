@@ -1,21 +1,16 @@
 //! CPU-fallback vello → RGBA bridge for the DRM backend.
 //!
-//! ## Why CPU-fallback (Phase 5.2 v1)
+//! ## Why CPU-fallback
 //!
 //! Vello renders into a wgpu texture; smithay's DRM path drives GLES.
-//! The zero-copy path is `wgpu::Texture` → DMA-BUF fd → smithay
-//! `GlesRenderer::import_dmabuf` → `GlesTexture` → page-flip. That
-//! interop is doable on the Vulkan wgpu backend (`hal_texture` →
-//! `vulkan::Image` → external memory fd) but it's a multi-week build
-//! that adds Vulkan-only constraints. Phase 5.2's mandate is "ship the
-//! path; perf optimization is a follow-up": this module renders to an
-//! offscreen wgpu texture, copies bytes back to a CPU buffer, and
-//! exposes them as a tight-packed `&[u8]` so the DRM upload side can
-//! glTexImage2D / GBM-buffer-blit them.
-//!
-//! Loudly logs `"DRM paint: CPU fallback active"` on first call so the
-//! operator knows the slow path is engaged. Replace with the DMA-BUF
-//! interop path in a Phase 5.3 follow-up.
+//! Zero-copy would need `wgpu::Texture` → DMA-BUF fd →
+//! `GlesRenderer::import_dmabuf` → page-flip, which on the Vulkan wgpu
+//! backend needs `hal_texture` → `vulkan::Image` → external memory fd —
+//! a multi-week build with Vulkan-only constraints. This module instead
+//! renders to an offscreen wgpu texture, copies bytes back to a CPU
+//! buffer, and exposes them as tight-packed `&[u8]` for the DRM upload
+//! side to glTexImage2D / GBM-buffer-blit. Logs once per process so the
+//! slow path is visible to the operator.
 //!
 //! ## Row-pitch alignment
 //!
@@ -26,19 +21,9 @@
 //!
 //! ## Test strategy
 //!
-//! Unit tests run inside `#[cfg(test)]` and need a wgpu device, which
-//! requires `llvmpipe` (`vulkan_lvp`) inside the distrobox. The
-//! existing `tests/support/offscreen.rs` harness establishes that
-//! llvmpipe is available; the same prerequisite applies here. The
-//! tests check
-//!
-//! * rendering a non-empty scene yields at least one non-background
-//!   pixel,
-//! * rendering an empty scene yields a buffer of the base color,
-//! * resizing reallocates the readback buffer to the right size.
-//!
-//! No real DRM device is touched; the bridge is purely "vello + wgpu
-//! → CPU bytes".
+//! Tests need a wgpu device (`llvmpipe`/`vulkan_lvp` inside the
+//! distrobox, same prerequisite as `tests/support/offscreen.rs`). No
+//! real DRM device is touched — purely "vello + wgpu → CPU bytes".
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -415,22 +400,18 @@ impl VelloDrmBridge {
 /// (`[R, G, B, A]`, row stride `src_w * 4`) into an XRGB8888 destination
 /// (`[B, G, R, X]`, row stride `dst_pitch`).
 ///
-/// This is the per-output present primitive for the multi-monitor path
-/// (Track B3): the compositor renders one scene spanning the combined
-/// output geometry into `src_rgba` (via [`VelloDrmBridge::paint`]), then
-/// each output presents the sub-rect at its `Output.position` /
-/// `Output.size` into its own scanout dumb buffer. `(src_x, src_y)` is
-/// the sub-rect's top-left in the source (the output's global position);
-/// `out_w`×`out_h` is the output's size.
+/// The per-output present primitive for multi-monitor: the compositor
+/// renders one scene spanning the combined output geometry into
+/// `src_rgba` (via [`VelloDrmBridge::paint`]), then each output presents
+/// the sub-rect at its `Output.position` / `Output.size` into its own
+/// scanout dumb buffer. `(src_x, src_y)` is the sub-rect's top-left in
+/// the source; `out_w`×`out_h` is the output's size.
 ///
 /// Rows/cols outside the source bounds or the destination buffer are
-/// skipped, so a short `dst` or an output that overhangs the combined
-/// scene is clamped rather than panicking — matching the scanout's
-/// defensive contract. For a single output at the origin whose size
-/// equals the combined geometry this copies every pixel with the same
-/// `R,G,B → B,G,R,0xFF` swizzle as
-/// [`VelloDrmBridge::paint_into_xrgb8888`], so the single-output path is
-/// byte-for-byte unchanged.
+/// skipped, so a short `dst` or an overhanging output is clamped rather
+/// than panicking. For a single output at the origin whose size equals
+/// the combined geometry, this is byte-for-byte the same as
+/// [`VelloDrmBridge::paint_into_xrgb8888`].
 pub fn swizzle_subrect_rgba_to_xrgb8888(
     src_rgba: &[u8],
     src_w: usize,

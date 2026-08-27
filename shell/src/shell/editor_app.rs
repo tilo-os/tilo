@@ -4,20 +4,18 @@
 //! [`BODY_KEY`], the same narrow-splice edit path, the same caret
 //! arithmetic. What makes this one the *editor* is entirely in `draw` —
 //! discrete lines behind a left-edge line-number gutter and a token-level
-//! syntax sweep, mirroring the concept's `EditorApp.tsx` mock at
-//! `nirios-concept/src/components/apps/EditorApp.tsx`.
+//! syntax sweep.
 //!
-//! The concept uses the Catppuccin Mocha palette hard-coded into the mock.
-//! Per `CLAUDE.md`, shell widgets must read from the OS-controlled [`Theme`]
-//! rather than bake in a palette, so we map "gutter / body / keyword /
-//! string / accent" onto the existing theme tokens (neutral ramp + accent
-//! ramp + semantic colors). The visual cue that separates "Editor" from
-//! "Notes" is the gutter + per-line rendering, not a bespoke palette.
+//! Per `CLAUDE.md`, shell widgets must read colours from the
+//! OS-controlled [`Theme`] rather than bake in a palette, so "gutter /
+//! body / keyword / string / accent" map onto existing theme tokens
+//! (neutral ramp + accent ramp + semantic colors) rather than a bespoke
+//! one.
 //!
-//! Syntax coloring is intentionally minimal: a token-level sweep that tints
-//! string literals, numbers, and a fixed keyword set. Anything more
-//! ambitious (TS/TSX AST, multi-line strings, templating) is out of scope
-//! for the parity milestone — the mock itself only shows a frozen snippet.
+//! Syntax coloring is intentionally minimal: a token-level sweep that
+//! tints string literals, numbers, and a fixed keyword set. Anything
+//! more ambitious (TS/TSX AST, multi-line strings, templating) is out of
+//! scope.
 
 use std::collections::HashMap;
 
@@ -324,13 +322,12 @@ impl Widget for EditorApp {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // The editor paints no background of its own, so every neutral here
-        // is ink *on the window card*. Which way round that card runs is a
-        // property of the theme — light on the preserved concept palette,
-        // black under high contrast — so the tiers come from
-        // `Theme::on_card` rather than from ramp slots picked for one of
-        // them. Syntax colours stay on the accent / semantic ramps: those
-        // are chosen to read against either ground.
+        // The editor paints no background of its own, so every neutral
+        // here is ink *on the window card*. Which way round that card
+        // runs is a property of the theme, so the tiers come from
+        // `Theme::on_card` rather than ramp slots picked for one of them.
+        // Syntax colours stay on the accent / semantic ramps, chosen to
+        // read against either ground.
         let ink = theme.on_card();
         let body_color = ink.ink;
         let gutter_color = ink.ink_dim;

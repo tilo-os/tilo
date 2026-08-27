@@ -52,9 +52,7 @@ pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
 /// The body a tab's app wrote, read out of that tab's own document.
 ///
 /// The one place anything outside the widget tree looks up a tab's
-/// content — in-app search above all. Before per-tab documents this was
-/// a read of `<shared doc>/<key>`, which is why two Notes tabs showed
-/// each other's text: there was one body and two pills over it.
+/// content — in-app search above all.
 pub fn tab_body(store: &RecordStore, tab_id: u64, body_key: &str) -> Option<String> {
     store.read(&RecordId::for_tab(tab_id), |doc| {
         crate::shell::crdt_text::read_body(doc, &automerge::ROOT, body_key)
@@ -201,8 +199,8 @@ mod tests {
         }))
     }
 
-    /// The reported bug, in the terms it was reported in: every Notes tab
-    /// shared one body, so a word typed into one was found in the other.
+    /// Every Notes tab must own its body: a word typed into one must not
+    /// be found in the other.
     #[test]
     fn a_word_typed_into_one_notes_tab_is_not_found_in_the_other() {
         let store = RecordStore::in_memory();
@@ -294,15 +292,11 @@ mod tests {
 
     /// Undo in the tab that typed **first**.
     ///
-    /// The direction is the whole point, and it is not interchangeable
-    /// with the test above. Undoing in the tab that typed *last* passes
-    /// even against a single stack shared by every tab, because the entry
-    /// on top of that shared stack happens to be the right one — the
-    /// assertion holds for a reason that has nothing to do with the tab.
-    /// Undoing in the tab that typed first is the case that separates
-    /// them: on a shared stack the topmost entry is the *other* tab's, so
-    /// Ctrl+Z here reverts against a change graph this document has never
-    /// seen and tab A keeps its text.
+    /// The direction is the whole point: undoing the tab that typed
+    /// *last* would pass even against a single stack shared by every
+    /// tab, since the topmost entry happens to be the right one anyway.
+    /// Undoing the tab that typed first is the case that separates them —
+    /// on a shared stack the topmost entry would be the *other* tab's.
     #[test]
     fn undo_in_the_tab_that_typed_first_still_reverts_that_tab() {
         let store = RecordStore::in_memory();
@@ -385,10 +379,10 @@ mod tests {
     /// A frame is what puts a tab's document on disk.
     ///
     /// The store's writers are debounced and off-thread, so something has
-    /// to offer them the documents; nothing did, and a session that typed
-    /// for an hour wrote nothing. Asserted through the shell's own
-    /// per-frame `update` and read back from a *different* store, so it is
-    /// the file on disk being checked and not the live copy.
+    /// to offer them the documents each frame or a long session would type
+    /// and write nothing. Asserted through the shell's own per-frame
+    /// `update` and read back from a *different* store, so it is the file
+    /// on disk being checked and not the live copy.
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {

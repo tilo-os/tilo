@@ -1,22 +1,9 @@
-//! Native compositor mode — Phase 2 calloop event loop scaffolding.
+//! Native compositor mode: wires `--mode native` into a real smithay event
+//! loop over [`state::State`], with an auto-named listening socket
+//! (`wayland-1`, `wayland-2`, …) handed to `DisplayHandle::insert_client`.
 //!
-//! Phase 1 wired the `--mode native` dispatch with a stub. Phase 2 replaces
-//! that stub with a real smithay event loop that:
-//!
-//! 1. Creates a `wayland_server::Display` and a calloop `EventLoop` over our
-//!    [`state::State`].
-//! 2. Constructs the `State` (which advertises `wl_compositor`, `xdg_wm_base`,
-//!    `wl_shm`, `wl_seat` machinery, `wl_output` manager).
-//! 3. Binds an auto-named listening socket (`wayland-1`, `wayland-2`, …) and
-//!    inserts it into the loop so each accepted connection is handed back to
-//!    `DisplayHandle::insert_client`.
-//! 4. Runs forever — Phase 4 will tick rendering and dispatch from the loop's
-//!    per-iteration callback.
-//!
-//! What this *doesn't* do: open a TTY, talk to DRM/KMS, render anything, or
-//! forward input. Those are explicitly Phase 3+ work. The smoke test for
-//! Phase 2 is just "the binary prints a listening-socket line and stays up
-//! until killed".
+//! Doesn't open a TTY, talk to DRM/KMS, render anything, or forward input —
+//! those live elsewhere.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -30,23 +17,18 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
-/// Run `f` against the live chrome with a capability gate built from the
-/// active workspace.
+/// The gate is what makes the action API answer *for a caller* rather than
+/// in the abstract: a resource the workspace's capability model won't let
+/// this user act on is absent from enumeration and selection alike, so it
+/// can't be invoked by an address the caller was never given.
 ///
-/// The gate is what makes the action API answer *for a caller* rather
-/// than in the abstract: a resource the workspace's capability model
-/// will not let this user act on is absent from enumeration and from
-/// selection alike, so it cannot be invoked by an address the caller was
-/// never given.
+/// Failing to resolve a workspace is an error, not a fallback to "show
+/// everything" — a gate that opens when it can't find its policy isn't a
+/// gate.
 ///
-/// Failing to resolve a workspace is an error rather than a fallback to
-/// "show everything". A gate that opens when it cannot find its policy
-/// is not a gate.
-/// One action's declared parameters, as the wire carries them.
-///
-/// The descriptor is what a caller that cannot see the screen builds an
-/// invocation from, so it says the type and whether the value is
-/// required, not just the name.
+/// One action's declared parameters, as the wire carries them: a caller
+/// that can't see the screen builds an invocation from the type and
+/// required-ness, not just the name.
 fn params_json(
     params: &[crate::shell::search::action_api::ActionParam],
 ) -> Vec<serde_json::Value> {
@@ -110,14 +92,13 @@ use crate::compositor::test_control::{
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
 
-/// Env-var name for the Phase 7 CI test introspection hook. When set to a
-/// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
-/// on each frame tick as compact JSON. The test
-/// (`tests/compositor_test.rs`) polls that file to assert foreign-tab
-/// adoption + teardown without needing a public shell-state API.
+/// Env-var name for the CI test-introspection hook. When set, [`run`]
+/// serializes the shell `WorkspaceTree` to that path on each frame tick as
+/// compact JSON; `tests/compositor_test.rs` polls it to assert foreign-tab
+/// adoption + teardown without a public shell-state API.
 ///
-/// The hook is gated on the env var being set; without it the
-/// compositor never touches the filesystem from the frame loop.
+/// Gated on the env var being set — otherwise the compositor never touches
+/// the filesystem from the frame loop.
 const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 
 /// Env-var name for the real-input e2e control protocol. When set to a
@@ -128,24 +109,14 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// it were the person at the keyboard, including while the session is
 /// locked, so a shipped binary must not be able to open one. Reading the
 /// variable is gated on [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-///
-/// Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
 const TEST_CONTROL_ENV: &str = "QOS_TEST_CONTROL";
 
-/// D-3 fix: RAII guard that unlinks a unix-socket file when dropped.
+/// RAII guard that unlinks a unix-socket file when dropped.
 ///
-/// The compositor previously left its `QOS_TEST_CONTROL` socket file
-/// behind on clean exit (and on panic). Subsequent runs depended on the
-/// next-boot `remove_file` inside `bind_test_control_socket` to scrub
-/// the stale entry; that worked for `bind`, but the orphan file lingered
-/// in `XDG_RUNTIME_DIR` between sessions for any other consumer to see.
-///
-/// Wrapping the path in this struct ensures the file is removed both on
-/// normal teardown and on the panic-unwind path (without the explicit
-/// `std::process::exit(0)` at the end of `run` skipping over our
-/// cleanup, since `exit` does NOT run destructors). The compositor
-/// `run` function holds the guard for the entire socket lifetime and
-/// explicitly `drop`s it before the final `process::exit`.
+/// `process::exit` does not run destructors, so [`run`] holds this guard for
+/// the socket's whole lifetime and explicitly drops it before the final
+/// `process::exit` — otherwise the stale file lingers in `XDG_RUNTIME_DIR`
+/// for the next session to trip over.
 pub(crate) struct UnlinkOnDrop(pub(crate) PathBuf);
 
 impl Drop for UnlinkOnDrop {
@@ -163,7 +134,7 @@ impl Drop for UnlinkOnDrop {
 /// must never depend on the test surface).
 ///
 /// On success, returns the listener plus an `UnlinkOnDrop` guard that
-/// removes the socket file on teardown (D-3).
+/// removes the socket file on teardown.
 /// Resolve the path the test-control socket should be bound at, as a pure
 /// function of the gate and the raw variable.
 ///
@@ -341,11 +312,6 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         self.fb.widget_registry()
     }
 
-    /// Serialise the live persisted [`WorkspaceTree`] — same blob
-    /// the `NIRIOS_TEST_STATE_DUMP` env-var path writes on every
-    /// frame tick. The chrome's `tree` field is the authoritative
-    /// copy (the compositor's `State.workspace_tree` is the same
-    /// type and stays in sync via the shared `Chrome` cell).
     /// The peers the overlay would paint this frame, read from the
     /// same presence context `draw_real_peers` draws from and keyed
     /// the same way — by room.
@@ -367,13 +333,10 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     serde_json::json!({
                         "room": scope,
                         "user": user.0,
-                        // What the pill over this cursor actually
-                        // reads. The id above is the identity and is
-                        // never blank; the name is what the room calls
-                        // that identity, and the two differing is the
-                        // whole point — a harness that could only see
-                        // the id could not tell a peer the room has
-                        // named from one it has not.
+                        // The id is the identity and is never blank; the
+                        // name is what the room calls it, and a harness
+                        // that only saw the id couldn't tell a peer the
+                        // room has named from one it hasn't.
                         "name": presence.display_name(user),
                         "x": x,
                         "y": y,
@@ -381,21 +344,14 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 })
             })
             .collect();
-        // Who the collaborators panel is listing, from the function
-        // that paints it.
+        // A pointer is not a roster: "is somebody moving a mouse in this
+        // room" and "who is in it" are different questions, and a harness
+        // with only the first can't tell a peer the panel shows from one
+        // it doesn't.
         //
-        // A pointer is not a roster. The two answer different
-        // questions — "is somebody moving a mouse in this room" and
-        // "who is in it" — and a harness with only the first cannot
-        // tell a peer the panel is showing from one it is not. A demo
-        // did read `peers()["roster"]`, on every run it ever made, and
-        // got an empty list back because nothing emitted the key: the
-        // one assertion aimed at this surface was passing by never
-        // reaching it.
-        //
-        // Derived from `collaborator_roster_rows` rather than
-        // re-walked here, so what a harness reads and what a person
-        // sees cannot drift apart.
+        // Derived from `collaborator_roster_rows` rather than re-walked
+        // here, so what a harness reads and what a person sees cannot
+        // drift apart.
         let chrome = self.fb.chrome();
         let roster: Vec<serde_json::Value> =
             crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
@@ -761,12 +717,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "invite_name": chrome.peer_sync_invite_name,
                 "invite_for": chrome.peer_sync_invite_for,
             },
-            // Whether apps in this session can share edits at all, and
-            // why not when they cannot. Exposed because "collaboration
-            // is silently off" is precisely the state that used to be
-            // indistinguishable from "collaboration is on and idle" —
-            // a harness that cannot tell those apart cannot prove
-            // either one.
+            // Whether apps in this session can share edits at all, and why
+            // not when they can't — a harness that can't tell "off" from
+            // "on and idle" cannot prove either one.
             "collab": {
                 "available": chrome.collab_available(),
                 "unavailable_reason": chrome.collab_unavailable,
@@ -852,8 +805,8 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
 /// `ShellDriver` (`bin/shots/driver.rs`): modifier snapshot, the
 /// auxiliary `AutoCommit` doc widgets mutate, the root `ObjId`, and
 /// the focus cursor. The compositor doesn't drive any of these from
-/// real input today (input wiring is Phase 6), so this is a clean
-/// scratch context used only by the test-control surface.
+/// real input today, so this is a clean scratch context used only by
+/// the test-control surface.
 struct TestControlCtx {
     modifiers: Modifiers,
     doc: AutoCommit,
@@ -1121,10 +1074,7 @@ fn execute_planned_action(
             // of having a test surface.
             // A snapshot has to show what the screen shows, and during a
             // drag that includes the thing being carried — which the
-            // live present loop draws on top of the painted scene. A
-            // capture taken through this path used to miss it, so a
-            // drag photographed mid-gesture came out as two windows and
-            // no drag.
+            // live present loop draws on top of the painted scene.
             let drag = state.as_ref().and_then(|s| {
                 (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
                     let (cx, cy) = s.client_input.cursor();
@@ -1258,18 +1208,16 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 
 /// The snapshot renderer, cached for the lifetime of the process.
 ///
-/// **Deliberately never dropped.** This used to be a `thread_local!`,
-/// and that aborted the whole `shell --lib` binary — all ~1800 tests,
-/// not just the two that take snapshots. Dropping a wgpu resource calls
-/// into wgpu's own debug-assertions tracing, which under `debug_assertions`
-/// reads a thread-local of its own; TLS destructors run in reverse
-/// registration order, and this cache registered first (touched on the
-/// way in, before any wgpu call), so at thread exit wgpu's tracing TLS
-/// was torn down first and this one then dropped a `Renderer` against
-/// the corpse. A panic inside a TLS destructor is not a test failure —
-/// it is `abort_on_dtor_unwind`, i.e. SIGABRT, taking every other
-/// result in the binary down with it and leaving no `test result:`
-/// line at all.
+/// **Deliberately never dropped, and not a `thread_local!`.** Dropping a
+/// wgpu resource calls into wgpu's own debug-assertions tracing, which
+/// under `debug_assertions` reads a thread-local of its own. TLS
+/// destructors run in reverse registration order; a thread-local cache
+/// here registered first, so at thread exit wgpu's tracing TLS tore down
+/// first and this one then dropped a `Renderer` against the corpse. A
+/// panic inside a TLS destructor is not a test failure — it's
+/// `abort_on_dtor_unwind`, SIGABRT, taking every other result in the
+/// binary down with it (all ~1800 tests in `shell --lib`, not just the
+/// two that snapshot).
 ///
 /// A `static` has no destructor, so the renderer outlives every thread.
 /// The leak is the point: this is a process-lifetime cache whose GPU
@@ -1413,11 +1361,7 @@ fn write_snapshot_png(
 /// On EOF / connection error / write failure, marks the connection
 /// closed so the outer loop can drop it.
 ///
-/// Phase 2b — `click_at` and `click_named` execute their planned
-/// actions through `FrameBuilder::dispatch_event` (same wire as
-/// `ShellDriver::dispatch`). Chrome-mutating widgets (overview
-/// button, wheel-disc plus slot, …) react identically to real input.
-/// D-10 fix: cap on the per-line size for the test-control protocol.
+/// Cap on the per-line size for the test-control protocol.
 /// `BufRead::read_line` will buffer the entire line into the `String`
 /// regardless of size; a malicious or buggy client could feed an
 /// unbounded byte stream with no newline and drive the compositor
@@ -1426,7 +1370,7 @@ fn write_snapshot_png(
 /// under a kilobyte) and below any meaningful memory pressure.
 pub(crate) const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
 
-/// D-10: read up to one `\n`-terminated line from `reader`, capping at
+/// Read up to one `\n`-terminated line from `reader`, capping at
 /// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
 ///
 /// * `Ok(Some(line))` — a complete `\n`-terminated line was read; the
@@ -1618,7 +1562,7 @@ fn pump_test_control_conn(
     }
 }
 
-/// Track D2: turn a [`SessionTransition`] into a real backend effect.
+/// Turn a [`SessionTransition`] into a real backend effect.
 ///
 /// `Blanked` / `Woke` drive the backend's DPMS (no-op on winit /
 /// headless); `Locked` / `Unlocked` are pure state the paint path reads
@@ -1691,11 +1635,6 @@ fn power_notification_to_incoming(
     }
 }
 
-/// Track D2: is `event` the Super+L lock chord (on key *press*)?
-///
-/// The modifier mask comes from the loop's running `Modifiers` snapshot
-/// (the same one `dispatch_event` uses), not the key event, because
-/// winit reports modifiers via a separate `ModifiersChanged` event.
 /// The virtual terminal `Ctrl+Alt+F1..F12` asks for, or `None`.
 ///
 /// On a bare TTY the compositor holds the keyboard in a raw mode, so the
@@ -1765,13 +1704,6 @@ fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
     false
 }
 
-/// Track D2: is `event` the explicit unlock action (Enter or Escape on
-/// key *press*)?
-///
-/// This is the minimum "explicit unlock action" the D2 spec requires for
-/// this pass; wiring real PAM authentication behind it is a documented
-/// follow-up. Only key presses count so an auto-repeat release can't
-/// race the transition.
 /// Map a live winit key event to the lock screen's normalised [`LockKey`]
 /// while the session is locked. Non-press events and unhandled keys become
 /// [`LockKey::Ignored`] so they are still *swallowed* (never routed to apps
@@ -1803,13 +1735,6 @@ fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
     }
 }
 
-/// Entry point for the smithay-on-Wayland compositor.
-///
-/// Diverges (`-> !`) so the caller in `main` can use it next to
-/// [`super::hosted::run`] without juggling return types. Any unrecoverable
-/// error is `panic`-ed via `expect`; this is a top-level binary entry point,
-/// so an `unwrap`-style style is appropriate (and matches smithay's own
-/// examples).
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
@@ -2153,25 +2078,23 @@ fn start_portal_backend(
     Some(PortalBackend { runtime, server })
 }
 
+/// Entry point for the smithay-on-Wayland compositor.
+///
+/// Diverges (`-> !`) so the caller in `main` can use it next to
+/// [`super::hosted::run`] without juggling return types. Any unrecoverable
+/// error is `panic`-ed via `expect`; this is a top-level binary entry point,
+/// so an `unwrap`-style style is appropriate (and matches smithay's own
+/// examples).
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().expect("create calloop event loop");
 
-    // The `Display` owns the wayland-server protocol state. We hold it in a
-    // local so `dispatch_clients`/`flush_clients` can be called from the
-    // per-iteration tick once Phase 4 needs to wake clients up.
-    //
-    // For Phase 2 the loop only fires when the listening socket has a new
-    // connection, so the `Display` exists primarily to mint `DisplayHandle`s.
-    //
-    // Phase 7: the loop body must also call `display.dispatch_clients` +
-    // `display.flush_clients` each tick — without that, the per-iteration
-    // calloop dispatch never pulls bytes off accepted client sockets and
-    // the client side of `wl_display.get_registry` blocks forever.
-    // Mirrors smithay 0.7's `examples/minimal.rs` and `examples/seat.rs`
-    // loop bodies.
+    // The `Display` owns the wayland-server protocol state; held in a local
+    // so `dispatch_clients`/`flush_clients` can be called from the
+    // per-iteration tick. Mirrors smithay 0.7's `examples/minimal.rs` and
+    // `examples/seat.rs` loop bodies.
     let mut display: Display<State> = Display::new().expect("create wayland display");
     let display_handle = display.handle();
 
@@ -2183,17 +2106,15 @@ pub fn run() -> ! {
     // other process can see.
     crate::compositor::selection::install_host_clipboard(state.selection_store());
 
-    // Phase 3: construct the winit backend so the compositor has a host
-    // window to render into. Phase 4 routes per-frame scenes through
-    // `backend.submit_frame`. We `expect` here for the same reason the
-    // socket bind below does — a top-level `-> !` entry point treats any
-    // backend init failure as fatal (same posture as smithay's `anvil`).
+    // Construct the backend the compositor renders through. `expect` here
+    // for the same reason the socket bind below does — a top-level `-> !`
+    // entry point treats backend init failure as fatal (same posture as
+    // smithay's `anvil`).
     //
-    // Phase 5 Task 5.1: `--backend drm|winit` selects which `Backend`
-    // impl runs. `Drm` is currently a skeleton — it errors at
-    // construction with a "not yet implemented" message — but the
-    // dispatch is wired so the follow-up TTY work plugs in without
-    // touching this entry point.
+    // `--backend drm|winit` selects which `Backend` impl runs. `Drm` is
+    // currently a skeleton — it errors at construction with a "not yet
+    // implemented" message — but the dispatch is wired so the follow-up
+    // TTY work plugs in without touching this entry point.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = match backend_kind {
         BackendKind::Winit => {
@@ -2232,14 +2153,15 @@ pub fn run() -> ! {
         }
     };
 
-    // Phase 4: per-frame scene production lifted out of `bin/shots`.
-    // The compositor and the offscreen tooling share `FrameBuilder`,
-    // so the chrome rendered into the host window is byte-identical
-    // to the screenshots `cargo run --bin shots` produces.
-    // Size the scene to the bounding box spanning every output (Track
-    // B3): the compositor paints one scene across the combined geometry
-    // and each output presents its own sub-rect. For a single output this
-    // equals that output's size, so single-monitor layout is unchanged.
+    // Per-frame scene production, shared between the compositor and the
+    // offscreen tooling via `FrameBuilder` — the chrome rendered into the
+    // host window is byte-identical to what `cargo run --bin shots`
+    // produces.
+    //
+    // Size the scene to the bounding box spanning every output: the
+    // compositor paints one scene across the combined geometry and each
+    // output presents its own sub-rect. For a single output this equals
+    // that output's size, so single-monitor layout is unchanged.
     let initial_size = match combined_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
@@ -2247,12 +2169,8 @@ pub fn run() -> ! {
     let enable_peer_sync = crate::compositor::peer_sync_enabled_from_env_or_marker();
 
     // The desktop's own state, loaded from disk rather than bootstrapped
-    // fresh. Everything the room model rests on — a workspace's durable
-    // room identity, its owner, its capability list — is a fact about
-    // *this* machine that has to survive a restart, and until now this
-    // entry point had none of it: `FrameBuilder::new` handed the
-    // compositor `WorkspaceTree::bootstrap_demo()`, so every boot was
-    // a new desktop with unowned rooms and nothing was ever written back.
+    // fresh: a workspace's durable room identity, its owner, and its
+    // capability list all have to survive a restart.
     let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
@@ -2328,30 +2246,24 @@ pub fn run() -> ! {
     // broker is a listener plus a fanout table over `ShellNetwork` —
     // the libp2p handle built directly above — and the shell is where
     // the network stack, the identity and the permission decisions
-    // already live (`plan/collaboration.md` §1). Moving it out of
-    // process would mean re-exporting all three across an IPC boundary
-    // to reach the same decisions, and would put session ordering in
-    // the hands of a unit manager that does not know when this
-    // compositor has published its socket.
+    // already live. Moving it out of process would mean re-exporting
+    // all three across an IPC boundary to reach the same decisions, and
+    // would put session ordering in the hands of a unit manager that
+    // does not know when this compositor has published its socket.
     //
     // Held to the end of `run()` so the socket outlives every app and
     // is unlinked with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
 
-    // Read the session's own broker for pointer presence, and relay it
-    // to the room's other hosts.
-    //
-    // The compositor hosts the broker but was not otherwise a reader of
-    // it, so the pointer every app publishes reached the other apps in
-    // the room and stopped there — the overlay that draws peers over
-    // these windows never saw one. Subscribing by room is what makes a
-    // cursor that crosses from one app to another a single peer moving:
-    // presence is room-scoped, so both apps reach the same subscription.
+    // Read the session's own broker for pointer presence, and relay it to
+    // the room's other hosts. Subscribing by room is what makes a cursor
+    // that crosses from one app to another a single peer moving: presence
+    // is room-scoped, so both apps reach the same subscription.
     //
     // Both halves are needed, so this is only stood up when both exist.
-    // Without peer sync there is nobody to relay to or hear from, and
-    // the overlay correctly paints nothing.
+    // Without peer sync there is nobody to relay to or hear from, and the
+    // overlay correctly paints nothing.
     if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
         let rooms = {
             let chrome = frame_builder.chrome_handle();
@@ -2451,54 +2363,38 @@ pub fn run() -> ! {
         }
     }
 
-    // Phase 7 test introspection: when `NIRIOS_TEST_STATE_DUMP` is set, the
-    // compositor serializes its `WorkspaceTree` to that path on every frame
-    // tick. The integration test in `tests/compositor_test.rs` reads this
-    // file to assert foreign-tab adoption + reaping. Production runs never
-    // set the env var, so the dump is a true zero-cost noop there.
+    // When `NIRIOS_TEST_STATE_DUMP` is set, the compositor serializes its
+    // `WorkspaceTree` to that path on every frame tick; the integration
+    // test in `tests/compositor_test.rs` reads it to assert foreign-tab
+    // adoption + reaping. Zero-cost in production, which never sets it.
     let test_dump_path = test_state_dump_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_STATE_DUMP_ENV),
     );
 
-    // Real-input e2e Phase 1b: opt-in unix socket that accepts
-    // newline-delimited JSON commands (see `compositor::test_control`).
-    // Bound to whatever path `QOS_TEST_CONTROL` points at; unset
-    // means the socket is never created (zero-cost in production).
-    // Each loop tick polls the listener for new connections and drains
-    // pending bytes from existing ones.
+    // Opt-in unix socket that accepts newline-delimited JSON commands (see
+    // `compositor::test_control`). Bound to whatever path `QOS_TEST_CONTROL`
+    // points at; unset means the socket is never created (zero-cost in
+    // production). Each loop tick polls the listener for new connections
+    // and drains pending bytes from existing ones.
     let (test_control_listener, _test_control_unlink) = match bind_test_control_socket() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
-    // Phase 2b: per-process scratch context for executing PlannedActions
-    // off the test-control socket. The compositor doesn't (yet) route
-    // real winit input to the host, so this is the only place a
-    // `Modifiers` snapshot / `AutoCommit` doc / focus cursor lives in
-    // the live binary. Production runs never set the env var that
-    // enables the socket, so this is zero-cost in shipped builds.
+    // Per-process scratch context for executing PlannedActions off the
+    // test-control socket. The compositor doesn't (yet) route real winit
+    // input to the host, so this is the only place a `Modifiers` snapshot /
+    // `AutoCommit` doc / focus cursor lives in the live binary. Zero-cost
+    // in shipped builds, which never set the env var that enables the
+    // socket.
     let mut test_control_ctx = TestControlCtx::new();
 
-    // Phase 4 tick body. Each iteration:
-    //
-    //   1. Drain backend events (resize, close, redraw, focus). A
-    //      `CloseRequested` flips a flag we read after the closure to
-    //      tell the calloop loop to stop.
-    //   2. Run a layout pass on the frame builder.
-    //   3. Paint the scene.
-    //   4. Submit the scene to the backend's primary output.
-    //   5. (Test-only) dump shell state if `NIRIOS_TEST_STATE_DUMP` is set.
-    //
-    // `submit_frame` is currently a no-op (vello + smithay glow interop
-    // is the next follow-up); the host window therefore stays blank.
-    // The scene is still produced every frame so smoke tests can
-    // confirm the layout pipeline runs without a GPU surface.
-    // Track D2: idle / DPMS-blank / session-lock state machine. Pure
-    // logic (see `compositor::idle`); the loop below turns its
-    // transitions into `backend.set_dpms` calls and lock-overlay paints.
-    // Config comes from `QOS_IDLE_BLANK_SECS` / `QOS_IDLE_LOCK_SECS`
-    // (defaults: blank after 5 min, no auto-lock).
+    // Idle / DPMS-blank / session-lock state machine. Pure logic (see
+    // `compositor::idle`); the loop below turns its transitions into
+    // `backend.set_dpms` calls and lock-overlay paints. Config comes from
+    // `QOS_IDLE_BLANK_SECS` / `QOS_IDLE_LOCK_SECS` (defaults: blank after 5
+    // min, no auto-lock).
     // Power policy from the shared Settings store (`settings.json`); drives
     // the idle-suspend timeout, the lid / power-key actions, and the battery
     // thresholds. Read once at session start, the same way the display scale
@@ -2531,15 +2427,14 @@ pub fn run() -> ! {
     // loop uses to reach it (request a suspend).
     let power_bridge = qos_power_mgmt::PowerBridge::new();
 
-    // Track D1: the `org.freedesktop.Notifications` D-Bus service. The
-    // compositor owns the notification daemon so sandboxed apps' toasts
-    // render as OS-drawn chrome. The bridge is the `Send + Sync` mailbox
-    // between the async zbus service (driven by a dedicated tokio
-    // runtime) and the synchronous chrome pump in this loop. Failure to
-    // reach the session bus (none present / another daemon owns the
-    // name) is downgraded to a warning — the compositor must keep
-    // running, and shell-internal notifications still work without the
-    // external service.
+    // The `org.freedesktop.Notifications` D-Bus service. The compositor
+    // owns the notification daemon so sandboxed apps' toasts render as
+    // OS-drawn chrome. The bridge is the `Send + Sync` mailbox between the
+    // async zbus service (driven by a dedicated tokio runtime) and the
+    // synchronous chrome pump in this loop. Failure to reach the session
+    // bus (none present / another daemon owns the name) is downgraded to a
+    // warning — the compositor must keep running, and shell-internal
+    // notifications still work without the external service.
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
     // Held for the lifetime of `run` so the runtime's worker threads keep
@@ -2621,12 +2516,10 @@ pub fn run() -> ! {
 
     let mut close_requested = false;
 
-    // Presentation cadence. The loop used to park a hard-coded 16 ms
-    // *after* each tick's work, so the real period was `work + 16 ms`
-    // (measured: 21.9 ms, i.e. 45.6 Hz) and no display's actual rate ever
-    // entered into it. `FrameClock` replaces both halves: the interval
-    // comes from the backend's display, and the park is the remainder of
-    // the interval rather than a fresh one. See `compositor::pacing`.
+    // Presentation cadence via `FrameClock` (see `compositor::pacing`): the
+    // interval comes from the backend's display, and each tick parks for
+    // the remainder of the interval — a fixed post-tick sleep instead
+    // measures 21.9 ms/45.6 Hz regardless of the display's actual rate.
     // `QOS_REFRESH_HZ` overrides the display's rate. Diagnostic only —
     // it is what makes "does the loop hold a 144 Hz cadence" measurable
     // on a machine with no 144 Hz panel attached.
@@ -2704,10 +2597,10 @@ pub fn run() -> ! {
     // changed them in rather than the next one.
     let mut settings_watch =
         crate::compositor::backend::drm::input_config::SettingsWatch::new();
-    // Redraw gating. The loop used to `paint()` + `submit_frame()` on
-    // every tick regardless of whether anything changed, pinning a CPU
-    // core at 100% (and driving needless GPU work) even on a completely
-    // static desktop. We now repaint only when there's a reason to:
+    // Redraw gating: painting and submitting every tick regardless of
+    // whether anything changed would pin a CPU core at 100% (and drive
+    // needless GPU work) even on a completely static desktop, so repaint
+    // only happens when there's a reason to:
     //   - a backend event arrived (input / resize / focus / redraw),
     //   - the widget tree has an animation in flight,
     //   - the chrome revision bumped (a state mutation: overlay toggle,
@@ -2806,8 +2699,8 @@ pub fn run() -> ! {
                     // the event off the backend. The first painted frame
                     // after this closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
-                    // Track D2: any input is activity — reset the idle
-                    // timer and wake the display if it was blanked.
+                    // Any input is activity — reset the idle timer and
+                    // wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
@@ -3033,7 +2926,7 @@ pub fn run() -> ! {
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
 
-        // Track D2: advance the idle timers and apply any timeout-driven
+        // Advance the idle timers and apply any timeout-driven
         // transitions (blank, auto-lock, suspend) for this tick.
         for t in session.tick(Instant::now()) {
             if t == SessionTransition::Suspend {
@@ -3143,10 +3036,10 @@ pub fn run() -> ! {
         }
         prev_locked = session.is_locked();
 
-        // Track D1: pump the D-Bus notification bridge into the live
-        // toast stack and mirror the lock state into the chrome so the
-        // stack can suppress content while locked. Cheap no-ops when no
-        // bridge is installed / state is unchanged.
+        // Pump the D-Bus notification bridge into the live toast stack and
+        // mirror the lock state into the chrome so the stack can suppress
+        // content while locked. Cheap no-ops when no bridge is installed /
+        // state is unchanged.
         frame_builder.with_chrome(|st| {
             st.set_session_locked(session.is_locked());
             st.pump_dbus_notifications();
@@ -3157,7 +3050,7 @@ pub fn run() -> ! {
         // scene, so the promoted group takes over the whole output and a later
         // exit restores the exact prior tiling. The overlay host guards against
         // a group id it doesn't host — the live client tree and the rendered
-        // tree are not yet unified (Phase 4), so an unknown id is a safe no-op
+        // tree are not yet unified, so an unknown id is a safe no-op
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
 
@@ -3531,14 +3424,13 @@ pub fn run() -> ! {
             }
         }
 
-        // Real-input e2e Phase 1b: accept any new test-control
-        // connections, then drain pending bytes from each open one
-        // (each call may complete zero or more commands, parses
-        // them via `test_control::parse_command`, and writes JSON
-        // responses back). Closed connections (EOF or error) get
-        // collected at the bottom of the loop. The listener stays
-        // non-blocking so the frame-pacing loop never stalls on
-        // test traffic.
+        // Accept any new test-control connections, then drain pending
+        // bytes from each open one (each call may complete zero or more
+        // commands, parses them via `test_control::parse_command`, and
+        // writes JSON responses back). Closed connections (EOF or error)
+        // get collected at the bottom of the loop. The listener stays
+        // non-blocking so the frame-pacing loop never stalls on test
+        // traffic.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
@@ -3579,12 +3471,12 @@ pub fn run() -> ! {
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done - t_paint_done);
 
-        // Phase 7 fix: drain wayland client traffic + push pending
-        // protocol updates back out. `dispatch_clients` advances each
-        // client's request queue (registry, get_compositor, get_xdg_surface,
-        // commit, …) and routes them through the `*Handler` impls.
-        // `flush_clients` pumps server-originated events (configure, …)
-        // back out to clients. Mirrors smithay 0.7's `examples/minimal.rs`.
+        // Drain wayland client traffic and push pending protocol updates
+        // back out. `dispatch_clients` advances each client's request queue
+        // (registry, get_compositor, get_xdg_surface, commit, …) and routes
+        // them through the `*Handler` impls. `flush_clients` pumps
+        // server-originated events (configure, …) back out to clients.
+        // Mirrors smithay 0.7's `examples/minimal.rs`.
         if let Err(err) = display.dispatch_clients(&mut state) {
             eprintln!("nirios compositor: dispatch_clients error: {err}");
             break;
@@ -3638,10 +3530,10 @@ pub fn run() -> ! {
         }
         let _ = &state.display_handle;
 
-        // Phase 7 test introspection: serialize the live `WorkspaceTree`
-        // to the requested path. We write to a tempfile-in-the-same-dir
-        // and rename to make readers see a consistent snapshot (the test
-        // polls the file concurrently with the frame loop writing it).
+        // Serialize the live `WorkspaceTree` to the requested path. Written
+        // to a tempfile-in-the-same-dir and renamed so readers see a
+        // consistent snapshot (the test polls the file concurrently with
+        // the frame loop writing it).
         if let Some(path) = test_dump_path.as_ref() {
             if let Ok(json) = serde_json::to_vec(&state.workspace_tree) {
                 if let Err(e) =
@@ -3668,10 +3560,10 @@ pub fn run() -> ! {
     // do that today, but keep an explicit exit so the function's `!` return
     // type is honoured. `display` is dropped here, severing its clients.
     drop(display);
-    // D-3: explicitly drop the test-control socket guard so its
-    // `Drop` impl unlinks the socket file before we hand control to
-    // `process::exit` (which skips destructors). On the panic path
-    // the unwind already runs `Drop` so we get cleanup either way.
+    // Explicitly drop the test-control socket guard so its `Drop` impl
+    // unlinks the socket file before we hand control to `process::exit`
+    // (which skips destructors). On the panic path the unwind already runs
+    // `Drop` so we get cleanup either way.
     drop(_test_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the
     // drain thread and unlinks both sockets, and `process::exit`
@@ -3683,7 +3575,7 @@ pub fn run() -> ! {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 2b unit coverage for the test-control execution path.
+    //! Unit coverage for the test-control execution path.
     //!
     //! The integration test (`tests/control_socket_test.rs`) needs a
     //! Wayland display and is `#[ignore]` by default; these unit tests
@@ -3694,20 +3586,13 @@ mod tests {
 
     /// The compositor binds the socket the launcher dials.
     ///
-    /// This is the check that was missing when the two sides drifted:
-    /// the broker bound whatever `QUICK_COLLAB_SOCK` happened to name
-    /// while the launcher resolved `$XDG_RUNTIME_DIR/qos/services/
-    /// collab.sock`, and because every manifest asks for `collab` as
-    /// `optional`, the mismatch surfaced as a log line and an app that
-    /// quietly never collaborated.
-    ///
-    /// So assert across both production paths rather than on either
-    /// one's idea of the path: bind with the compositor's own spawn
-    /// function, then resolve with the launcher's own resolver, and
-    /// require it to come back with an open descriptor. Declaring the
-    /// requirement `required@1` here is what makes a divergence an
-    /// error instead of the skip an optional service is entitled to —
-    /// a test that cannot observe its subject must fail.
+    /// Assert across both production paths rather than on either one's
+    /// idea of the path: bind with the compositor's own spawn function,
+    /// then resolve with the launcher's own resolver, and require it to
+    /// come back with an open descriptor. Declaring the requirement
+    /// `required@1` here is what makes a divergence an error instead of
+    /// the skip an optional service is entitled to — a test that cannot
+    /// observe its subject must fail.
     #[test]
     #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
@@ -3926,11 +3811,9 @@ mod tests {
     }
 
     /// The full click sequence (`CursorMoved` + button-down + button-up)
-    /// dispatches all three events without panicking. This is the
-    /// minimum bar: Phase 2a returns these three actions for a
-    /// `click_at` command; Phase 2b's contract is that all three reach
-    /// `ShellOverlayHost::handle_event` and the host doesn't crash on
-    /// any of them.
+    /// dispatches all three events without panicking: `click_at` returns
+    /// these three actions, and the contract is that all three reach
+    /// `ShellOverlayHost::handle_event` without crashing the host.
     #[test]
     fn full_click_sequence_dispatches_without_panic() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -3967,12 +3850,9 @@ mod tests {
         let _ = fb.paint();
         // Find the wheel disc rect by its opt-in `test_id`, then search
         // it for the affordance rather than re-deriving where `draw`
-        // puts it. Sweeping only the footprint's vertical centre-line
-        // was enough while the plus slot sat on that line; it is not a
-        // property of the design, and the sweep silently stopped
-        // crossing the affordance when the slot became the tail row of
-        // the rail column. Scanning the whole footprint asserts the
-        // same thing about a layout the test does not have to know.
+        // puts it. Scanning the whole footprint (not just one line)
+        // asserts the same thing about a layout the test does not have
+        // to know.
         let registry = fb.widget_registry();
         let wheel_rect = registry
             .get("wheel_disc")
@@ -4021,7 +3901,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Phase 3 — drag / key / type / modifiers executor coverage
+    // drag / key / type / modifiers executor coverage
     // ===================================================================
 
     /// `SetModifiers` action mutates `ctx.modifiers` directly. The
@@ -4070,7 +3950,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Phase 4 — snapshot executor coverage
+    // snapshot executor coverage
     // ===================================================================
 
     /// Sanity: `Snapshot` action against a fresh FrameBuilder writes a
@@ -4126,12 +4006,8 @@ mod tests {
         );
     }
 
-    /// The snapshot renderer must outlive the thread that built it.
-    ///
-    /// It used to live in a `thread_local!`, so its wgpu resources were
-    /// dropped from a TLS destructor at thread exit — which aborts the
-    /// process rather than failing a test, taking every other result in
-    /// the binary with it (see [`SNAPSHOT_RENDERER`] for the mechanism).
+    /// The snapshot renderer must outlive the thread that built it — see
+    /// [`SNAPSHOT_RENDERER`] for why a per-thread cache aborts the process.
     /// An abort cannot be observed from inside the binary it kills, so
     /// this asserts the property that prevents it: a snapshot taken on
     /// a thread that then *exits* must leave its renderer behind, so
@@ -4209,7 +4085,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Phase 5 — state_dump
+    // state_dump
     // ===================================================================
 
     /// `FrameBuilderControlState::chrome_state_json` returns an object
@@ -4370,11 +4246,9 @@ mod tests {
         );
     }
 
-    /// D-3 contract: dropping an `UnlinkOnDrop` removes the file at
-    /// its path. The compositor's `run` holds a guard around the
-    /// test-control socket file so it gets unlinked on clean exit
-    /// + panic-unwind. Previously the socket lingered until the next
-    /// boot's `bind_test_control_socket` scrubbed it.
+    /// Dropping an `UnlinkOnDrop` removes the file at its path. The
+    /// compositor's `run` holds a guard around the test-control socket
+    /// file so it gets unlinked on clean exit + panic-unwind.
     #[test]
     fn unlink_on_drop_removes_socket_file_on_drop() {
         let tmpdir = tempfile::tempdir().expect("tempdir");
@@ -4393,18 +4267,12 @@ mod tests {
         );
     }
 
-    /// D-10 contract: `read_bounded_line` caps a malicious / buggy
-    /// client's input at `TEST_CONTROL_MAX_LINE_BYTES`. The previous
-    /// implementation called `BufRead::read_line` with no limit, so a
-    /// 100k-byte newline-less stream would buffer in full and could
-    /// drive the compositor toward OOM.
-    ///
-    /// We construct an in-memory reader of 100k bytes with no
-    /// newline and assert the bounded reader returns `TooLarge`
-    /// rather than allocating unbounded. The caller (`pump_…`) closes
-    /// the connection on this error; that contract is exercised
-    /// transitively by the existing test_control integration tests
-    /// — here we focus on the new helper's bound.
+    /// `read_bounded_line` caps a malicious / buggy client's input at
+    /// `TEST_CONTROL_MAX_LINE_BYTES`: constructs a 100k-byte newline-less
+    /// stream and asserts the bounded reader returns `TooLarge` rather
+    /// than allocating unbounded. The caller (`pump_…`) closes the
+    /// connection on this error, exercised transitively by the existing
+    /// test_control integration tests.
     #[test]
     fn pump_drops_oversized_lines() {
         use std::io::BufReader;
@@ -4435,7 +4303,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Track D2 — session lock chord / unlock detection
+    // session lock chord / unlock detection
     // ===================================================================
 
     fn mods_with_super(on: bool) -> Modifiers {

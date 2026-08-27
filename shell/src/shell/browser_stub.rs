@@ -1,4 +1,4 @@
-//! Browser stub `AppWidget` — plan 3 Task 14.
+//! Browser stub `AppWidget`.
 //!
 //! The native Servo-backed browser is out of scope for the nirios shell
 //! milestone, so the Browser tile is hosted by this minimal stub. It
@@ -7,8 +7,7 @@
 //! can be driven and unit-tested without spawning real processes.
 //!
 //! Visual rendering is intentionally minimal: a card with a "Browser coming
-//! soon" headline. The drawing path is exercised by the apps integration
-//! test in Task 16; the unit tests in `tests/browser_stub.rs` cover the
+//! soon" headline. The unit tests in `tests/browser_stub.rs` cover the
 //! metadata and runner wiring.
 
 use ui::ColorCompat;

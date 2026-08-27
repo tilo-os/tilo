@@ -4,10 +4,6 @@
 //! never need: namespace manipulation, ptrace, raw sockets, mount /
 //! chroot and friends. The compiled BPF blob is cached on disk so each
 //! workspace pays compilation only once per cold start.
-//!
-//! Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`.
-//! Phase 3+ will swap in fd-passing of the cached blob to `bwrap
-//! --seccomp <fd>`; here we only produce and persist the bytes.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -105,7 +101,6 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // rule vector, which seccompiler treats as "match any args for
     // this syscall" — i.e. blanket-deny.
     //
-    // Phase 2 v1 simplification (matches plan §Phase 2 step 1):
     //   * `clone3` is fully blocked here. A more nuanced filter that
     //     allowed `clone3` without namespace flags belongs to a later
     //     phase once we actually need glibc threads inside the sandbox

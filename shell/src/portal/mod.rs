@@ -1,7 +1,4 @@
-//! `xdg-desktop-portal` backend over zbus — Sandbox Phase 4.3.
-//!
-//! Spec: `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`
-//! (Task 4.3, lines 335-353).
+//! `xdg-desktop-portal` backend over zbus.
 //!
 //! ## What this module does
 //!
@@ -56,11 +53,10 @@ pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
 
-// Re-export the backend types so integration tests can construct them
-// directly and register them on a custom `ConnectionBuilder`. The
-// production entry point ([`serve`]) does the same wire-up under the
-// hood; tests need it inline so the server- and client-side
-// handshake can join concurrently (see `tests/portal_test.rs`).
+// Re-exported so integration tests can construct the backend types
+// directly and register them on a custom `ConnectionBuilder`, letting the
+// server- and client-side handshake join concurrently (see
+// `tests/portal_test.rs`).
 pub use camera::AccessBackend;
 pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
 pub use file_chooser::FileChooserBackend;
@@ -96,9 +92,9 @@ use crate::shell::state::{
 /// Identity of the sandboxed app that issued a portal request.
 ///
 /// In production this is filled in by the connection-acceptance path
-/// from the bridge tag (Phase 3) + the per-workspace PID→app map. In
-/// tests, callers construct a `PortalCaller` directly so the round-trip
-/// is fully deterministic without spinning up a real bwrap'd app.
+/// from the bridge tag + the per-workspace PID→app map. In tests, callers
+/// construct a `PortalCaller` directly so the round-trip is fully
+/// deterministic without spinning up a real bwrap'd app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortalCaller {
     /// Workspace the caller was spawned into.
@@ -157,14 +153,10 @@ impl CapabilityKind {
 /// Handle the portal hands to its interface impls so they can consult /
 /// mutate the workspace's `grants` map.
 ///
-/// Holds a [`WorkspaceTreeHandle`] — the same `Arc<parking_lot::RwLock<_>>`
-/// the shell chrome and the peer-sync replica clone from (C-3). Portal
-/// `insert` writes land on the shared tree, so the shell's Permissions
-/// tab observes them immediately and peer-sync's next `export_changes_since`
-/// ships them to other peers.
-///
-/// Cloneable so each interface impl can hold its own clone without
-/// locking-strategy concerns. The handle is just an `Arc` bump.
+/// Holds the same [`WorkspaceTreeHandle`] `Arc<parking_lot::RwLock<_>>` the
+/// shell chrome and the peer-sync replica clone from, so a portal `insert`
+/// is immediately visible in the Permissions tab and shipped by the next
+/// peer-sync tick. Cloneable — the handle is just an `Arc` bump.
 #[derive(Clone)]
 pub struct GrantStoreHandle {
     tree: WorkspaceTreeHandle,
@@ -252,10 +244,8 @@ impl GrantStoreHandle {
             return false;
         };
         let ids = ws.grant_app(&caller.app_id, &capability);
-        // Mirror into the automerge doc so peer-sync ships the grant on
-        // the next tick, and so a restart reloads it. Tolerant of the
-        // doc not being seeded yet (e.g. a brand-new workspace not yet
-        // flushed through `seed_doc_from_cache`).
+        // Mirror into the automerge doc so peer-sync ships it and a
+        // restart reloads it; tolerant of the doc not being seeded yet.
         let written: Vec<CapOverride> = ws
             .capabilities
             .iter()
@@ -453,43 +443,32 @@ impl PromptQueueHandle {
 pub struct PortalContext {
     pub grants: GrantStoreHandle,
     pub prompts: PromptQueueHandle,
-    /// Map from a D-Bus connection's peer-credentials (unique-name) to a
-    /// `PortalCaller`. v1 keeps this as a simple in-memory map keyed by
-    /// the connection's UniqueName — production fills it in when the
+    /// D-Bus unique-name → `PortalCaller`. Production fills it in when the
     /// per-workspace bridge spawns an app; tests poke entries directly.
     pub caller_map: CallerMap,
-    /// File-picker spawn handle. The FileChooser backend calls
-    /// [`FilePickerSpawner::spawn`] on `Allow` to surface a real dialog;
-    /// tests pass a [`MockFilePickerSpawner`] that returns canned paths
-    /// without rendering anything. Defaults to a
-    /// [`NullFilePickerSpawner`] in [`PortalContext::null_spawners`] so
-    /// existing tests that don't care about the dialog keep their
-    /// fast-path behaviour (the null spawner cancels every request,
-    /// which surfaces as `response=1`).
+    /// The FileChooser backend calls [`FilePickerSpawner::spawn`] on
+    /// `Allow`; tests pass a [`MockFilePickerSpawner`] with canned paths.
+    /// Defaults to [`NullFilePickerSpawner`] in
+    /// [`PortalContext::null_spawners`], which cancels every request
+    /// (`response=1`).
     pub file_picker: FilePickerSpawnerHandle,
-    /// ScreenCast Pipewire stream provisioner. The ScreenCast backend
-    /// calls [`ScreenCastStreamProvisioner::provision_stream`] on
-    /// `Start` Allow to create a Pipewire node and return its id +
-    /// props. Production wires the real Pipewire connection; tests use
-    /// [`MockScreenCastProvisioner`] which returns a synthetic node id
-    /// without touching the system Pipewire daemon.
+    /// The ScreenCast backend calls
+    /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow;
+    /// tests use [`MockScreenCastProvisioner`] instead of the system
+    /// Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
-    /// RemoteDesktop seat-injection sink. The RemoteDesktop backend hands
-    /// each granted `Notify*` action here; production wires a
-    /// [`ChannelInjector`] the compositor loop drains into the seat, and
-    /// `--portal-server-only` mode (no live seat) uses the null handle.
+    /// The RemoteDesktop backend hands each granted `Notify*` action here;
+    /// production wires a [`ChannelInjector`] the compositor loop drains
+    /// into the seat, and `--portal-server-only` mode uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
-    /// How a picked path is made reachable by the app that asked for
-    /// it. See [`doc_store`] for why recording the grant is not enough
-    /// on its own for an app that is already running.
+    /// How a picked path is made reachable by the app that asked for it.
+    /// See [`doc_store`] for why recording the grant alone is not enough
+    /// for an app that is already running.
     pub documents: DocumentStoreHandle,
-    /// Print submission sink. The Print backend hands each consented
-    /// job here; production runs `lp`, tests inject a
-    /// [`RecordingSpooler`] and assert on what actually arrived.
-    ///
-    /// This is the only component in the print path that touches CUPS,
-    /// and it lives on *this* side of the sandbox — which is the whole
-    /// point of the interface.
+    /// The Print backend hands each consented job here; production runs
+    /// `lp`, tests inject a [`RecordingSpooler`]. The only component in
+    /// the print path that touches CUPS, and it lives on *this* side of
+    /// the sandbox — the whole point of the interface.
     pub print_spooler: PrintSpoolerHandle,
 }
 
@@ -515,33 +494,23 @@ impl PortalContext {
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
             documents: DocumentStoreHandle::host_paths(),
-            // The real spooler, not a null one. Unlike the picker and
-            // the provisioner it needs no chrome, no GPU and no live
-            // seat — it is a process invocation — so there is nothing
-            // for a headless context to be missing. On a machine with
-            // no CUPS it reports no destinations and refuses
-            // submissions, which is the honest answer rather than a
-            // fabricated printer.
+            // The real spooler, not a null one: it's a process invocation,
+            // nothing a headless context is missing. No CUPS means it
+            // honestly reports no destinations rather than fabricating one.
             print_spooler: PrintSpoolerHandle::cups(),
         }
     }
 }
 
-/// In-memory lookup from a D-Bus unique-name → `PortalCaller`. Wrapped
-/// behind an `Arc<Mutex<…>>` so it's cheap to clone across interface
-/// impls + the connection-acceptance path can push entries from a
-/// different thread than the D-Bus reader. Production-time entries are
-/// added by the per-workspace bridge accept path; tests poke entries
-/// directly.
+/// In-memory D-Bus unique-name → `PortalCaller` lookup. `Arc<Mutex<…>>` so
+/// it's cheap to clone across interface impls and the connection-acceptance
+/// path can push entries from a different thread than the D-Bus reader.
 #[derive(Clone, Default)]
 pub struct CallerMap {
     inner: Arc<Mutex<HashMap<String, PortalCaller>>>,
-    /// Test-only forced override. When `Some`, every `lookup` call
-    /// returns this caller regardless of the key — useful in
-    /// integration tests where the underlying transport (p2p socket
-    /// pair) doesn't surface a unique-name on the request header.
-    /// Production never sets this; the bridge accept path always
-    /// keys by the real D-Bus unique-name.
+    /// Test-only forced override: every `lookup` returns this caller
+    /// regardless of key, for transports (p2p socket pairs) that don't
+    /// surface a unique-name on the request header.
     forced: Arc<Mutex<Option<PortalCaller>>>,
 }
 
@@ -566,11 +535,8 @@ impl CallerMap {
         m.get(dbus_unique_name).cloned()
     }
 
-    /// Test-only knob: every subsequent `lookup` call (regardless of
-    /// key, even when the sender is `None`) returns `caller`. Mirrors
-    /// the bridge-tag override the production path will eventually
-    /// use; tests reach for this when the p2p transport doesn't
-    /// surface a unique-name on the message header.
+    /// Test-only knob: every subsequent `lookup` returns `caller`
+    /// regardless of key, for transports that never surface one.
     pub fn force_caller_for_tests(&self, caller: PortalCaller) {
         if let Ok(mut f) = self.forced.lock() {
             *f = Some(caller);
@@ -591,11 +557,10 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        // 1. Fast path — `Always`-scoped grant already present.
+        // Fast path — `Always`-scoped grant already present.
         if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        // 2. Slow path — enqueue + await user choice.
         let rx = ctx.prompts.enqueue(caller.clone(), cap_template.clone());
         match rx.await {
             Ok(outcome) => {
@@ -608,9 +573,8 @@ pub mod flow {
                 }
                 outcome
             }
-            // Channel closed without a reply == treat as deny. Defensive
-            // posture: if the prompt pump shut down mid-flight we'd
-            // rather deny than hang the caller forever.
+            // A dead channel means the prompt pump shut down mid-flight —
+            // deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -632,13 +596,9 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
-/// The document store this session should use.
-///
-/// One place to make the choice, so the compositor and any future
-/// caller cannot disagree about which mechanism is live. Today that is
-/// the host-path store; see [`doc_store`] for what it does and does not
-/// reach, and for the design of the FUSE-backed store that replaces it
-/// for confined callers.
+/// The document store this session should use — one place to make the
+/// choice, so the compositor and any future caller cannot disagree. See
+/// [`doc_store`] for what the host-path store does and does not reach.
 pub fn documents_for_session() -> DocumentStoreHandle {
     DocumentStoreHandle::host_paths()
 }
@@ -703,15 +663,10 @@ pub async fn serve(
         .at(OBJECT_PATH, pr)
         .await?;
 
-    // `request_name` only makes sense on a real bus — p2p test
-    // connections have no broker, and failing there would mean every
-    // hermetic test needed one. So the result is *recorded* rather than
-    // swallowed: `ServerHandle::owns_name` is what the caller checks.
-    //
-    // This used to be a `tracing::debug!` and nothing else, which is the
-    // worst shape available: on a real bus, losing the name to another
-    // claimant left a portal that answered nothing, logged at a level
-    // nobody runs, and looked exactly like a portal that was working.
+    // `request_name` only makes sense on a real bus — p2p test connections
+    // have no broker. So the result is *recorded* rather than swallowed:
+    // `ServerHandle::owns_name` is what the caller checks, rather than a
+    // portal that lost the name silently answering nobody.
     let owns_name = match connection.request_name(BUS_NAME).await {
         Ok(_) => true,
         Err(e) => {
@@ -741,10 +696,8 @@ impl ServerHandle {
     /// Did this connection actually acquire [`BUS_NAME`]?
     ///
     /// `false` means the object server is up but nothing on the session
-    /// bus can route to it — either there is no broker (a p2p test
-    /// connection) or another process already holds the name. On a real
-    /// session the second case is the one that matters: the portal is
-    /// running and answering nobody.
+    /// bus can route to it — no broker (a p2p test connection), or on a
+    /// real session, another process already holding the name.
     pub fn owns_name(&self) -> bool {
         self.owns_name
     }
@@ -844,22 +797,16 @@ mod tests {
         );
     }
 
-    /// C-3 Phase C integration test.
-    ///
     /// A grant inserted via the portal's [`GrantStoreHandle`] must be
     /// immediately visible to the shell chrome (the WS-Settings
     /// "Permissions" tab reads from `ChromeState`'s shared
-    /// `WorkspaceTreeHandle`). Before this refactor each subsystem held
-    /// an independent `WorkspaceTree` clone and the grant never reached
-    /// the shell — closes the first observable consequence in
-    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
+    /// `WorkspaceTreeHandle`) rather than sitting in an independent
+    /// `WorkspaceTree` clone that never reaches the shell.
     #[test]
     fn grant_inserted_via_portal_is_visible_in_ws_settings() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTreeHandleExt;
 
-        // Build the shared handle once and seed a workspace so the
-        // portal has somewhere to land grants.
         let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
         let ws_id = WorkspaceId(1);
         {
@@ -868,12 +815,10 @@ mod tests {
             tree.workspaces.push(empty_ws(1));
         }
 
-        // Wire portal + chrome to the *same* handle.
         let portal = GrantStoreHandle::new(handle.clone());
         let chrome = ChromeState::new_with_handle(handle.clone());
 
-        // Portal-side insert: simulate an `Allow → Session` outcome
-        // landing on the camera capability for `camera-app`.
+        // Simulate an `Allow → Session` outcome for `camera-app`.
         let caller = PortalCaller::new(ws_id, "camera-app");
         let cap = Capability::Camera {
             scope: GRANT_SESSION,
@@ -883,10 +828,8 @@ mod tests {
             "portal insert must succeed on a workspace that exists",
         );
 
-        // Shell-side read: walking the chrome's tree must surface the
-        // grant under `camera-app`. This is the production code path
-        // the Permissions tab uses (see
-        // `shell::workspace_settings::permissions_pane_rows`).
+        // The production code path the Permissions tab uses, see
+        // `shell::workspace_settings::permissions_pane_rows`.
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().expect("active workspace exists");
@@ -924,10 +867,8 @@ mod tests {
 
     #[test]
     fn flow_resolve_fast_path_always_grant_skips_prompt() {
-        // Build a store with an Always-scoped Camera grant and a
-        // Channel-mode prompt queue. The "Channel" mode would buffer
-        // any enqueued request — by asserting the queue stays empty,
-        // we prove the fast-path bypassed it.
+        // Channel mode would buffer any enqueued request, so an empty
+        // queue at the end proves the fast path bypassed it.
         let mut ws = empty_ws(21);
         ws.grant_app(
             "app",

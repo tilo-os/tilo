@@ -1,29 +1,13 @@
 //! Hardware-touching glue for the DRM backend.
 //!
-//! This module is the bridge between the testable, pure helpers in
-//! [`super::devices`] / [`super::session`] / [`super::outputs`] and the
-//! real smithay APIs (libseat, udev, libinput, drm). Everything here
-//! requires a free TTY and a seat the user owns, so we cannot exercise
-//! it from `cargo test` on a desktop running Gnome.
-//!
-//! Compile-time gating: the smithay features (`backend_drm`,
-//! `backend_libinput`, `backend_udev`, `backend_session_libseat`,
-//! `renderer_gl`) are unconditional in our `Cargo.toml`, so this module
-//! always builds. Construction (`DrmRuntime::new`) is what fails
-//! cleanly when there's no seat — the dev machine's failure path is a
-//! clean `Err`, not a panic.
-//!
-//! # What lives here and what does not
-//!
-//! Only the calls that need hardware: opening the seat, probing
-//! connectors, modesetting, ioctls on a libinput device. Every decision
-//! those calls carry out is made in a pure module beside this one —
-//! [`super::hotplug`] for what a udev edge implies, [`super::session`]
-//! for the pause/resume sequence, [`super::scale`] for a panel's factor,
-//! [`super::input_config`] for a device's configuration,
-//! [`super::gestures`] for who owns a gesture. None of those can be
-//! exercised on a machine that is already running a compositor, so
-//! keeping them out of here is what makes them testable at all.
+//! Only the calls that need a real seat and hardware live here — opening
+//! the seat, probing connectors, modesetting, ioctls on a libinput device.
+//! Every decision those calls carry out is made in a pure sibling module
+//! instead ([`super::hotplug`], [`super::session`], [`super::scale`],
+//! [`super::input_config`], [`super::gestures`]), which is what keeps them
+//! testable: none of this module runs under `cargo test` on a desktop
+//! compositor session. Construction (`DrmRuntime::new`) fails cleanly with
+//! `Err` rather than panicking when there is no seat.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,10 +21,9 @@ use smithay::backend::input::{
     TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
-// xkb keymap/state for keyboard handling — smithay re-exports `xkbcommon`
-// here, so we don't add a new dependency. `XkbConfig::default()` reads
-// the `XKB_DEFAULT_*` env vars; we mirror that by compiling a keymap with
-// empty rule names (see `KeyboardXkb::new`).
+// xkb comes from smithay's re-export, so it needs no new dependency; we
+// mirror `XkbConfig::default()`'s `XKB_DEFAULT_*` handling by compiling
+// with empty rule names (see `KeyboardXkb::new`).
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::udev::{UdevBackend, all_gpus};
@@ -604,7 +587,7 @@ pub struct DrmRuntime {
     /// `NoDevices` in that case, but keeping the field is convenient
     /// for follow-ups).
     pub primary_gpu: Option<PathBuf>,
-    /// Live scanouts — one per connected output (Track B3). Empty if
+    /// Live scanouts — one per connected output. Empty if
     /// modeset failed for every connector (e.g. not DRM master / nothing
     /// connected) — the compositor still runs headless in that case
     /// rather than crashing. Ordered by `OutputId`; `scanouts[0]` is the
@@ -641,9 +624,9 @@ impl DrmRuntime {
     /// (not a panic) on any failure — the binary entry point matches
     /// the existing skeleton's contract: `eprintln!` + `exit(1)`.
     pub fn new() -> Result<Self, DrmBackendError> {
-        // 1. Session via libseat. `new()` blocks until the seat hands
-        //    us an `Enable` event, so by the time it returns we either
-        //    own the seat or we've already failed.
+        // `LibSeatSession::new()` blocks until the seat hands us an
+        // `Enable` event, so by the time it returns we either own the
+        // seat or we've already failed.
         let (session, session_notifier) = LibSeatSession::new().map_err(|e| {
             DrmBackendError::Seat(super::seat_diag::diagnose_live(format!("{e:?}")))
         })?;
@@ -652,9 +635,8 @@ impl DrmRuntime {
 
         let session_state = SessionState::new_active();
 
-        // 2. udev enumeration. Even before inserting the source, ask
-        //    udev for the current device set so we can refuse early if
-        //    nothing is plugged in.
+        // Ask udev for the current device set before inserting the source,
+        // so we can refuse early if nothing is plugged in.
         let udev =
             UdevBackend::new(&seat_name).map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
         let raw_gpus: Vec<PathBuf> =
@@ -670,15 +652,14 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // 2.2. Bring up scanout(s) on the primary GPU FIRST, keeping the
-        //      card fd open as DRM master. `open_all_scanouts` opens the
-        //      card ONCE and modesets EVERY connected connector — each on
-        //      its own crtc, sharing a dup of the one fd (Track B3
-        //      multi-monitor). libseat refuses a second `open` of the same
-        //      node, so the primary must NOT also be opened by the
-        //      connector-enumeration pass below — we exclude it when
-        //      scanout owns it. A total modeset failure is non-fatal: log
-        //      and run headless (the wayland socket is still served).
+        // Bring up scanout(s) on the primary GPU first, keeping the card fd
+        // open as DRM master. `open_all_scanouts` opens the card once and
+        // modesets every connected connector, each on its own crtc, sharing
+        // a dup of the one fd. libseat refuses a second `open` of the same
+        // node, so the primary must not also be opened by the
+        // connector-enumeration pass below — we exclude it when scanout
+        // owns it. A total modeset failure is non-fatal: log and run
+        // headless (the wayland socket is still served).
         let (card, scanout_builds) = match primary_gpu.as_ref() {
             Some(path) => {
                 let mut scanout_session = session.clone();
@@ -697,15 +678,13 @@ impl DrmRuntime {
         };
         let have_scanouts = !scanout_builds.is_empty();
 
-        // 2.5. Connector enumeration on the GPUs scanout does NOT own
-        //      (the primary is held open above). Driving connectors on
-        //      *secondary* GPUs needs a second card fd + cross-GPU buffer
-        //      handling and is a documented follow-up, so this pass is
-        //      diagnostic-only for now (it logs what's attached). Failures
-        //      here are logged and skipped rather than aborting the boot.
-        //
-        //      `LibSeatSession` is cheap to clone (internal `Arc`), so
-        //      we hand a borrow to the enumeration helper.
+        // Connector enumeration on the GPUs scanout does not own (the
+        // primary is held open above). Driving connectors on secondary
+        // GPUs needs a second card fd plus cross-GPU buffer handling, so
+        // this pass is diagnostic-only for now (it logs what's attached).
+        // Failures here are logged and skipped rather than aborting the
+        // boot. `LibSeatSession` is cheap to clone (internal `Arc`), so we
+        // hand a borrow to the enumeration helper.
         let enum_gpus: Vec<PathBuf> = if have_scanouts {
             kms_gpus
                 .iter()
@@ -722,9 +701,9 @@ impl DrmRuntime {
             "DRM backend: enumerated DRM connectors on secondary GPUs (diagnostic; not yet driven)"
         );
 
-        // 3. libinput. The session-interface adapter routes
-        //    `open`/`close` calls through libseat so libinput inherits
-        //    the privileged FDs without root.
+        // The session-interface adapter routes libinput's `open`/`close`
+        // calls through libseat so it inherits the privileged FDs without
+        // root.
         let mut libinput_ctx =
             Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
         libinput_ctx
@@ -732,11 +711,9 @@ impl DrmRuntime {
             .map_err(|e| DrmBackendError::Libinput(format!("{e:?}")))?;
         let libinput_backend = LibinputInputBackend::new(libinput_ctx);
 
-        // 4. calloop. The session notifier, udev backend, and
-        //    libinput backend each register as event sources. The
-        //    page-flip / DRM-device sources will be attached when
-        //    individual `cardN` devices are opened in a follow-up
-        //    commit; here we wire the seat/input substrate.
+        // The session notifier, udev backend, and libinput backend each
+        // register as event sources; page-flip / DRM-device sources attach
+        // once individual `cardN` devices are opened.
         let event_loop: EventLoop<'static, DrmDispatchState> =
             EventLoop::try_new().map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
         let handle: LoopHandle<'static, DrmDispatchState> = event_loop.handle();
@@ -768,12 +745,12 @@ impl DrmRuntime {
             })
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
 
-        // udev events. Every one of the three is the same question — what
+        // Every one of the three udev events is the same question — what
         // is connected now? — so all three re-enumerate and reconcile; the
         // hotplug plan is what decides whether that implies any work.
         // `Changed` is the one a monitor plugged into a live card raises,
-        // so treating it as a no-op (as this used to) is precisely why
-        // plugging in a display did nothing.
+        // so treating it as a no-op means plugging in a display does
+        // nothing.
         handle
             .insert_source(udev, move |event, _, state: &mut DrmDispatchState| {
                 use smithay::backend::udev::UdevEvent;
@@ -1461,7 +1438,7 @@ fn keyboard_input_event(logical_key: Key, text: Option<SmolStr>, pressed: bool) 
 /// **Side-effect**: temporarily holds DRM master on each opened
 /// device. The fds are dropped at the end of this function, so master
 /// is released before we hand control back to the caller for the
-/// page-flip wiring. Phase 5.3 will keep the fds alive and reuse them.
+/// page-flip wiring.
 pub fn enumerate_connectors<S>(session: &mut S, kms_gpus: &[PathBuf]) -> Vec<ConnectorInfo>
 where
     S: smithay::backend::session::Session,
@@ -1623,8 +1600,7 @@ mod tests {
     #[test]
     fn push_appends_event() {
         let mut s = DrmDispatchState::default();
-        // `BackendEvent::Input` now carries the actual `WindowEvent`
-        // (changed when hosted-mode click routing landed); synthesise
+        // `BackendEvent::Input` carries the actual `WindowEvent`; synthesise
         // a minimal CursorMoved so the variant constructs.
         let fake = winit::event::WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -1736,7 +1712,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Keyboard: xkb keycode → winit key translation (Track B2)
+    // Keyboard: xkb keycode → winit key translation
     // ===================================================================
 
     /// Pure mapping: named special keys and printable characters resolve
@@ -1885,8 +1861,7 @@ mod tests {
 
     #[test]
     fn side_by_side_layout_single_output_at_origin() {
-        // The single-output case must place the one output at (0, 0) —
-        // byte-identical to pre-B3.
+        // The single-output case must place the one output at (0, 0).
         let positions = side_by_side_layout(&[(1920, 1080)]);
         assert_eq!(positions, vec![(0, 0)]);
     }

@@ -1,13 +1,9 @@
 //! Workspace permission state round-trips through the one model the
-//! enforcement points read.
-//!
-//! This file used to round-trip `Role` / `RolePermissions` /
-//! `WorkspaceFile` — a vocabulary no decision anywhere consulted. Those
-//! types are gone; what a member may do is the verb on their membership
-//! capability, and what an app may touch is a capability scoped to a
-//! path or a device. The assertions below keep the same shape as before
-//! (write it, read it back, check the value) against the model that
-//! actually decides.
+//! enforcement points read: what a member may do is the verb on their
+//! membership capability, and what an app may touch is a capability
+//! scoped to a path or a device. The assertions below write a
+//! capability, read it back, and check the value against the model
+//! that actually decides.
 
 use shell::shell::state::{
     CapOverride, CapRole, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId,

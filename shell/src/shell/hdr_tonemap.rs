@@ -26,11 +26,9 @@
 //!    `HdrTonemapConfig::source_peak_nits`).
 //! 6. **BT.709 OETF (approx sRGB)** → 8-bit sRGB per channel.
 //!
-//! The Hable curve is what Uncharted 2 shipped and what Filmic Blender
-//! iterates on; 12 lines, produces a decent perceptual match with
-//! good highlight rolloff. BT.2390 is the alternative for broadcast
-//! HDR — either would work; Hable's simpler math wins for a
-//! compositor codepath that runs per-frame per-viewport.
+//! Hable's curve is the choice here over BT.2390 (the broadcast-HDR
+//! alternative) because its simpler math wins in a codepath that runs
+//! per-frame per-viewport.
 
 use crate::collab::colorimetry::{ColorRange, Colorimetry, TransferCharacteristics};
 use crate::collab::hdr_metadata::Hdr10Metadata;
@@ -126,15 +124,12 @@ pub fn tonemap_p010_to_rgba8(
             let u_raw = uv[uv_pair_idx];
             let v_raw = uv[uv_pair_idx + 1];
 
-            // Unpack P010: samples live in top 10 bits.
             let y_norm = unpack_p010_sample(y_raw, is_limited, true);
             let u_norm = unpack_p010_sample(u_raw, is_limited, false);
             let v_norm = unpack_p010_sample(v_raw, is_limited, false);
 
-            // BT.2020 non-constant luminance → R'G'B'.
             let (r_prime, g_prime, b_prime) = bt2020_ycbcr_to_rgb(y_norm, u_norm, v_norm);
 
-            // PQ EOTF → linear cd/m².
             let (r_lin, g_lin, b_lin) =
                 if colorimetry.transfer == TransferCharacteristics::SmpteSt2084 {
                     (pq_eotf(r_prime), pq_eotf(g_prime), pq_eotf(b_prime))
@@ -143,20 +138,18 @@ pub fn tonemap_p010_to_rgba8(
                     // ITU-R BT.2100 system function.
                     (hlg_eotf(r_prime), hlg_eotf(g_prime), hlg_eotf(b_prime))
                 } else {
-                    // Non-HDR transfer — treat as already linear-ish
-                    // BT.709 gamma. This branch shouldn't fire for HEVC
-                    // Main10 in practice; keeps the function defensive.
+                    // Non-HDR transfer: shouldn't fire for HEVC Main10 in
+                    // practice, but treat as already linear-ish BT.709
+                    // gamma rather than panic.
                     (r_prime, g_prime, b_prime)
                 };
 
-            // BT.2020 → BT.709 gamut mapping (matrix, clip negatives).
             let (r709, g709, b709) = if is_hdr {
                 bt2020_to_bt709(r_lin, g_lin, b_lin)
             } else {
                 (r_lin, g_lin, b_lin)
             };
 
-            // Hable tone-map — compresses to target SDR peak.
             let scale = if cfg.source_peak_nits > 0.0 {
                 1.0 / cfg.source_peak_nits
             } else {
@@ -166,7 +159,6 @@ pub fn tonemap_p010_to_rgba8(
             let g_norm = hable(g709 * scale);
             let b_norm = hable(b709 * scale);
 
-            // Linear → sRGB (BT.709 OETF).
             let r8 = to_srgb_u8(r_norm);
             let g8 = to_srgb_u8(g_norm);
             let b8 = to_srgb_u8(b_norm);
@@ -191,7 +183,6 @@ pub fn tonemap_p010_to_rgba8(
 /// - Full range: linearly scaled to `[0, 1]` (luma) / `[-0.5, 0.5]`
 ///   (chroma).
 fn unpack_p010_sample(raw: u16, limited: bool, is_luma: bool) -> f32 {
-    // Samples live in the top 10 bits of the u16.
     let code = (raw >> 6) as f32;
     if is_luma {
         if limited {
@@ -313,11 +304,8 @@ mod tests {
     /// the output is close to the expected mid-gray.
     #[test]
     fn mid_gray_pq_maps_to_reasonable_sdr_gray() {
-        // Roughly 300 cd/m² PQ code value is code 638 for a full-frame
-        // gray. Compute it: `perceptual_to_electrical(300 / 10000)`.
-        // For simplicity, pass a raw PQ code value that produces
-        // roughly 100 nits after PQ→linear, so it should land near
-        // mid-gray in SDR after Hable.
+        // A mid-code PQ value lands well below mid-luminance (PQ is
+        // perceptual), so this should land near mid-gray after Hable.
         let width = 4;
         let height = 4;
         // Y ~ mid-code, U/V neutral.
@@ -348,7 +336,6 @@ mod tests {
             cfg,
         );
         assert_eq!(rgba.len() as u32, width * height * 4);
-        // Alpha channel should be full.
         for (i, chunk) in rgba.chunks_exact(4).enumerate() {
             assert_eq!(chunk[3], 0xFF, "pixel {i} has non-full alpha");
         }

@@ -5,33 +5,21 @@
 //! list — what the user's configured registries offer that is not here
 //! — and the path that turns one of those into a running app.
 //!
-//! ## Nothing here does HTTP
-//!
-//! Both halves shell out to `qos-catalogue`, exactly as launching
-//! shells out to `qos-launcher`. Listing means a network round-trip
-//! and installing additionally means signature verification and
-//! archive extraction; none of that belongs inside the compositor
-//! process, and keeping it out means a hostile registry response
-//! cannot reach the code that owns every window on the machine.
-//!
-//! ## Never on the frame thread
+//! Both listing and installing shell out to `qos-catalogue` (as launching
+//! shells out to `qos-launcher`): network round-trips, signature
+//! verification and archive extraction don't belong inside the
+//! compositor process, so a hostile registry response cannot reach the
+//! code that owns every window on the machine.
 //!
 //! [`available_apps`] answers from an in-memory cache and returns
-//! immediately, even when the cache is empty or stale — the palette
-//! calls it on every keystroke. A stale cache schedules a refresh on a
-//! worker thread and answers with what it has. An empty catalogue is a
-//! normal, correct answer: a machine with no registries configured
-//! genuinely knows about no other software.
+//! immediately even when stale or empty — the palette calls it on every
+//! keystroke and must never block on a network; a stale cache schedules
+//! a refresh on a worker thread instead.
 //!
-//! ## Opening, not installing
-//!
-//! [`install_and_launch`] is the whole of what activating an
-//! uninstalled app does: fetch it, then start it through the *same*
-//! [`crate::shell::launcher::launch`] every installed app goes
-//! through. There is no separate "installed app" launch path, so an
-//! app opened this way is sandboxed, roomed and placed identically to
-//! one that was already here — the install is a step on the way to
-//! opening, not a different kind of event.
+//! [`install_and_launch`] fetches, then starts through the *same*
+//! [`crate::shell::launcher::launch`] every installed app goes through —
+//! no separate "installed app" launch path, so an app opened this way is
+//! sandboxed, roomed and placed identically to one that was already here.
 
 use std::path::PathBuf;
 use std::sync::Mutex;

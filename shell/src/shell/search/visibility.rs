@@ -155,7 +155,6 @@ pub struct CapabilityVisibility<'a> {
 }
 
 impl<'a> CapabilityVisibility<'a> {
-    /// Gate against `workspace` on behalf of the person `actor`.
     pub fn new(workspace: &'a Workspace, actor: Actor) -> Self {
         Self { workspace, actor }
     }

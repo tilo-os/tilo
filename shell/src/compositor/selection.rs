@@ -1,12 +1,6 @@
 //! Clipboard, primary selection and drag-and-drop for the session compositor.
 //!
-//! Before this module the session compositor advertised no selection protocol
-//! at all, so nothing could be copied between two processes: `arboard` failed
-//! to construct and every `ui` app silently fell back to a process-global
-//! buffer that looked like a working clipboard from inside one process and was
-//! a no-op across two.
-//!
-//! Four protocols are advertised here:
+//! Four protocols are advertised:
 //!
 //! | protocol | who may bind | what it is for |
 //! |---|---|---|
@@ -15,57 +9,28 @@
 //! | `zwlr_data_control_manager_v1` | privileged clients only | clipboard managers |
 //! | `ext_data_control_manager_v1` | privileged clients only | ditto, the successor |
 //!
-//! ## Why data-control is gated and the other two are not
+//! `wl_data_device` and the primary-selection device are focus-gated by the
+//! protocol itself — smithay only delivers a selection to the client holding
+//! keyboard focus — so exposing them to every client adds no capability a
+//! sandboxed app couldn't already get by asking the user to click on it.
 //!
-//! `wl_data_device` and the primary-selection device are **focus-gated by the
-//! protocol itself**: smithay only accepts `set_selection` from a client whose
-//! surface currently holds keyboard focus, and it only delivers a selection
-//! *offer* to the focused client. A background app therefore cannot read what
-//! the user copied and cannot overwrite it. The gate is the user's own
-//! attention, which is the same gate every desktop has used for thirty years,
-//! so exposing these two to sandboxed apps adds no capability an app could not
-//! already get by asking the user to click on it.
+//! The data-control pair is different: a bound client receives every
+//! selection on every seat, unconditionally, and may overwrite it. Shipped
+//! apps put live TOTP codes, Wi-Fi passwords and recovery mnemonics on the
+//! clipboard as normal UI, so an unrestricted data-control client would
+//! harvest all of it invisibly to the per-workspace sandbox — the
+//! exfiltration rides the Wayland socket the app is legitimately given.
+//! [`ClientState::privileged`] is set only for connections on the
+//! compositor's privileged socket, which `crates/packaging/launcher/src/sandbox.rs`
+//! never bind-mounts into a sandbox — enforced by the filesystem namespace,
+//! not an honour system.
 //!
-//! `zwlr_data_control_manager_v1` and `ext_data_control_manager_v1` are a
-//! different thing entirely. They exist for clipboard *managers*: a bound
-//! client receives every selection on every seat, as it happens, with no focus
-//! requirement and no user interaction — and may also overwrite it. In this
-//! codebase that is not a theoretical risk. The shipped apps put live TOTP
-//! codes, scanned Wi-Fi passwords and identity recovery mnemonics on the
-//! clipboard as a normal part of their UI. A sandboxed app holding a
-//! data-control device would harvest all of it in the background, and the
-//! per-workspace sandbox — the security boundary of this system — would not
-//! see a thing, because the exfiltration rides the Wayland socket the app is
-//! legitimately given.
-//!
-//! So data-control is bound to a *privilege* rather than to a client's good
-//! behaviour. [`ClientState::privileged`] is set only for connections accepted
-//! on the compositor's privileged socket (see
-//! [`crate::compositor::native`]), whose path is never bind-mounted into a
-//! sandbox — `crates/packaging/launcher/src/sandbox.rs` binds exactly one
-//! socket, the public one. A sandboxed app cannot reach the privileged socket
-//! even if it knows the path, so the filter is backed by the filesystem
-//! namespace and not by an honour system.
-//!
-//! ## Why the compositor mirrors the selection
-//!
-//! The chrome (top bar, overlays, the workspace-name editor) and the two
-//! in-process apps (`terminal`, `file-explorer`) run *inside* the compositor
-//! process. They are not Wayland clients, so they have no data device to read
-//! from, and they cannot block waiting for one either: reading a client-owned
-//! selection means asking that client to write into a pipe, and the client can
-//! only answer once the compositor flushes — which it cannot do while blocked.
-//!
-//! The compositor therefore keeps a [`SelectionStore`]: whenever a client takes
-//! ownership of the clipboard or the primary selection, the compositor pulls
-//! the text out of it once, asynchronously, into memory. In-process paste then
-//! reads that mirror synchronously. This is exactly what a clipboard manager
-//! does, and it also gives the session the behaviour users expect anyway —
-//! the clipboard survives the app that filled it.
-//!
-//! Copy in the other direction is symmetrical: chrome writes into the store,
-//! the store raises a publish flag, and the next compositor tick turns it into
-//! a compositor-owned selection so focused clients receive a real offer.
+//! Chrome and the in-process apps (`terminal`, `file-explorer`) are not
+//! Wayland clients and cannot block waiting for one, so the compositor keeps
+//! a [`SelectionStore`] mirror: it pulls a client's selection out once,
+//! asynchronously, and in-process paste reads the mirror synchronously. Copy
+//! in the other direction is symmetrical — chrome writes into the store and
+//! the next tick turns it into a real Wayland selection.
 
 use std::fs::File;
 use std::io::Read;
@@ -914,16 +879,12 @@ impl ExtDataControlHandler for State {
 /// Ask a client's drag source for the name of what it is carrying.
 ///
 /// The compositor holds the offer, not the file, so the only way to a
-/// name is to accept one of the source's own advertised mime types.
-/// `text/uri-list` is the one that carries names and nothing else — a
-/// few hundred bytes — so this asks for that rather than the payload,
-/// and never for a content type, which could be a large image.
-///
-/// It is the same request the eventual receiver makes, on a pipe of the
-/// compositor's own; a source may be asked for its data any number of
-/// times, so this does not consume or disturb the drop. The read happens
-/// on a thread because the client cannot answer until it next dispatches,
-/// which will not happen while this loop is blocked waiting for it.
+/// name is to accept one of the source's advertised mime types.
+/// `text/uri-list` carries names and nothing else, so this asks for
+/// that rather than a payload type that could be a large image. A
+/// source may be asked for its data any number of times without
+/// disturbing the drop; the read happens on a thread since the client
+/// can't answer while this loop is blocked waiting for it.
 fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,

@@ -1,21 +1,18 @@
 //! What the compositor actually puts on the wire.
 //!
-//! A client does not care which `*State::new` calls a constructor made;
-//! it cares which globals arrive in the registry. So this connects a
-//! **real** `wayland-client` to a **real** `wayland-server` display
-//! driven by the compositor's own `State`, and reads the registry the
-//! way GTK, Qt or SDL would.
+//! A client doesn't care which `*State::new` calls a constructor made; it
+//! cares which globals arrive in the registry. So this connects a **real**
+//! `wayland-client` to a **real** `wayland-server` display driven by the
+//! compositor's own `State`, and reads the registry the way GTK, Qt or SDL would.
 //!
-//! The regression it exists to catch is specific and was live: qOS's
-//! own toolkit never asks for `wl_data_device_manager`, so nothing
-//! in-tree noticed it was missing — and GTK refuses to use a Wayland
-//! display at all without it. Every GTK application on the machine,
-//! which is most Flatpaks, connected, was refused, and fell back to an
-//! X11 display that does not exist. Nothing in the compositor logged an
-//! error; the app looked broken.
+//! The regression this catches was live: qOS's own toolkit never asks for
+//! `wl_data_device_manager`, so nothing in-tree noticed it was missing —
+//! and GTK refuses a Wayland display without it. Every GTK application,
+//! most Flatpaks included, silently fell back to a nonexistent X11
+//! display; nothing in the compositor logged an error.
 //!
-//! A check that could not observe the wire could not have caught that,
-//! which is the whole reason this test talks to a socket.
+//! A check that couldn't observe the wire couldn't have caught that,
+//! which is why this test talks to a socket.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -71,13 +68,10 @@ fn advertised_globals() -> Vec<String> {
     let mut seen = Seen::default();
     let sink = seen.0.clone();
 
-    // One blocking round to get the registry burst, then non-blocking
-    // drains for anything that trails it.
-    //
-    // Deliberately *one* blocking dispatch: the globals all arrive in
-    // response to `get_registry`, and once they have there is nothing
-    // further for the server to send — a second blocking read would
-    // wait forever rather than finish the test.
+    // One blocking round for the registry burst, then non-blocking drains
+    // for anything that trails it. Deliberately *one* blocking dispatch:
+    // once the globals arrive there's nothing further for the server to
+    // send, so a second blocking read would wait forever.
     let _ = queue.flush();
     display.dispatch_clients(&mut state).expect("server dispatch");
     display.flush_clients().expect("flush");
@@ -95,24 +89,20 @@ fn advertised_globals() -> Vec<String> {
     out
 }
 
-/// The globals a toolkit needs that the compositor advertises from
-/// construction.
+/// Globals a toolkit needs that the compositor advertises from construction.
 ///
 /// `wl_compositor`, `wl_shm` and `wl_data_device_manager` are the three
 /// GTK's `gdk_wayland_display_open` checks together before it will use a
-/// Wayland display at all; miss one and it warns "the Wayland
-/// compositor does not provide one or more of the required interfaces"
-/// and falls back to X11. The rest are what a client needs to actually
-/// get a window on screen and drive it.
+/// Wayland display at all; miss one and it warns and falls back to X11.
+/// The rest are what a client needs to get a window on screen and drive it.
 ///
-/// **`wl_output` is deliberately not here.** It is not a global the
+/// **`wl_output` is deliberately not here.** It isn't a global the
 /// compositor constructs — one is created per attached monitor by the
 /// backend, so a `State` with no backend has none, and asserting on it
-/// would fail for a reason that has nothing to do with what this test
-/// is about. What *is* constructed is the xdg-output manager, checked
-/// separately below. Covering `wl_output` needs a harness that attaches
-/// an output; this one does not have one, and says so rather than
-/// implying the coverage.
+/// would fail for a reason unrelated to this test. The xdg-output manager
+/// (what *is* constructed) is checked separately below; covering
+/// `wl_output` needs a harness that attaches an output, which this one
+/// doesn't have.
 const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "wl_compositor",
     "wl_shm",

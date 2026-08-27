@@ -1,22 +1,16 @@
 //! Creating windows and tabs from the chrome.
 //!
-//! Until this module existed, a tab could only come into being two ways:
-//! a bootstrapped one already sitting in the tree, or a foreign Wayland
-//! client mapping a toplevel. There was no affordance — no button, no
-//! chord, no palette row — that made one. Closing your last terminal left
-//! searching for the app again as the only way back to a shell.
+//! `WorkspaceTree::bootstrap_default` supplies no windows on first boot —
+//! a window nobody opened is a window nobody opened — so these primitives
+//! are not a convenience on top of a pre-populated desktop: on a fresh
+//! machine they are the only way a first window exists at all, and they
+//! have to work from empty.
 //!
-//! `WorkspaceTree::bootstrap_default` no longer supplies the first kind:
-//! a first boot has no windows, because a window nobody opened is a
-//! window nobody opened. So these primitives are not a convenience on top
-//! of a pre-populated desktop — on a fresh machine they are the only way
-//! a first window exists at all, and they have to work from empty.
-//!
-//! These are the primitives behind the three surfaces that now can: the
-//! "+" chip on a group's tab strip, the `Super`-chords, and the palette's
-//! action rows. They all funnel here so "new terminal" means the same
-//! thing however it was asked for, and so placement stays a single
-//! decision made by [`crate::shell::placement`].
+//! These are the primitives behind the "+" chip on a group's tab strip,
+//! the `Super`-chords, and the palette's action rows. They all funnel
+//! here so "new terminal" means the same thing however it was asked for,
+//! and so placement stays a single decision made by
+//! [`crate::shell::placement`].
 
 use crate::compositor::tab_binding::{self, Placement};
 use crate::shell::chrome_state::ChromeState;

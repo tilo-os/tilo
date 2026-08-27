@@ -3,10 +3,6 @@
 //! `UiTile::App` widgets (rather than falling through to `UiTile::Stub`) when
 //! the shell builds its root widget tree.
 //!
-//! Before Plan 3's terminal/files-online task, both kinds produced plain stub
-//! cards because `to_ui_tile` only mapped the `Notes` / `Editor` placeholders
-//! to live `AppWidget`s. This regression test pins the new wiring.
-//!
 //! The assertion uses `resolve_tile_shape_for_test` — a test-only probe that
 //! returns the discriminator string (`"App"` vs `"Stub"`) without exposing the
 //! full `UiTile` type (which carries a `Box<dyn AppWidget>`) on the public
@@ -69,12 +65,10 @@ fn terminal_placeholder_resolves_to_live_app_tile() {
         label: "Terminal".into(),
     };
     // PTY spawn can legitimately fail in some CI sandboxes; accept either
-    // "App" (happy path) or "Stub" (documented fallback per spec §9a). The
-    // key regression we guard against is a silent fall-through to Stub with
-    // the *original* placeholder label: if spawn fails the fallback now
-    // carries a `"Terminal: <err>"` prefix, so at minimum the code path is
-    // exercised. Integration tests that need deterministic PTY availability
-    // live in `apps_integration.rs`.
+    // "App" (happy path) or "Stub" (documented fallback). The regression
+    // guarded against is a silent fall-through to Stub with the
+    // *original* placeholder label — on spawn failure the fallback now
+    // carries a `"Terminal: <err>"` prefix.
     let shape = resolve_tile_shape_for_test(&tile);
     assert!(
         shape == "App" || shape == "Stub",
@@ -97,9 +91,8 @@ fn file_explorer_placeholder_resolves_to_live_app_tile() {
 
 #[test]
 fn build_nirios_root_accepts_terminal_and_files_placeholders() {
-    // Smoke: the full root-build path must not panic when the persisted tree
-    // carries Terminal / FileExplorer placeholders — they should now resolve
-    // into live app tiles rather than falling through to Stub silently.
+    // Smoke: the full root-build path must not panic when the persisted
+    // tree carries Terminal/FileExplorer placeholders.
     let term_tree = tree_with_single_placeholder(AppKind::Terminal, "Terminal");
     let _ = build_nirios_root(&term_tree);
     let files_tree = tree_with_single_placeholder(AppKind::FileExplorer, "Files");

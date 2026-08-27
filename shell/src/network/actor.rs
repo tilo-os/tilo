@@ -1,4 +1,4 @@
-//! Network actor — Phase 2 Task 2.2.
+//! Network actor.
 //!
 //! Owns a [`Swarm<NiriosBehaviour>`](libp2p::Swarm) and runs it as a tokio
 //! task. The shell drives the actor over an `mpsc::Sender<NetCmd>`; per-
@@ -83,7 +83,6 @@ pub struct Actor {
     listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
 }
 
-/// Build the workspace's gossipsub topic identifier.
 fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
     gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
 }
@@ -416,12 +415,9 @@ mod tests {
     async fn two_actors_exchange_publish_via_loopback() {
         const WS: WorkspaceId = 42;
 
-        // 1. Build two swarms.
         let mut swarm_a = build_swarm();
         let mut swarm_b = build_swarm();
 
-        // 2. Start each listening on an ephemeral loopback port and capture
-        //    the resulting concrete multiaddr.
         swarm_a
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
             .unwrap();
@@ -445,7 +441,6 @@ mod tests {
             .await
             .expect("peer A listen addr");
 
-        // 3. Spawn actors.
         let (cmd_a, _h_a) = Actor::spawn(swarm_a);
         let (cmd_b, _h_b) = Actor::spawn(swarm_b);
 
@@ -467,11 +462,10 @@ mod tests {
             .await
             .unwrap();
 
-        // 4. Dial B from A.
         cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
 
-        // 5. Wait for the gossipsub mesh to form. Peer B emits PeerJoined
-        //    once A subscribes to the topic over the established connection.
+        // Peer B emits PeerJoined once A subscribes to the topic over the
+        // established connection.
         let _peer_joined = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
@@ -488,7 +482,6 @@ mod tests {
         // Briefly let the mesh stabilise before publishing.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // 6. Publish a SyncReq from A.
         let payload = NeighbourMsg::SyncReq {
             since: vec![1, 2, 3],
             room: "6b3f9a10-0000-4000-8000-00000000000a".to_string(),
@@ -501,10 +494,10 @@ mod tests {
             .await
             .unwrap();
 
-        // 7. B should observe the message. Phase 6's reconnect-sync
-        // path also broadcasts an empty `SyncReq { since: vec![] }` on
-        // PeerJoined, so the loop keeps draining until it sees the
-        // payload this test actually published (`since: [1, 2, 3]`).
+        // The reconnect-sync path also broadcasts an empty
+        // `SyncReq { since: vec![] }` on PeerJoined, so the loop keeps
+        // draining until it sees the payload this test actually published
+        // (`since: [1, 2, 3]`).
         let received = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
@@ -512,9 +505,6 @@ mod tests {
                         if msg == payload {
                             return Some((ws, msg));
                         }
-                        // Skip transport-layer SyncReqs from the
-                        // reconnect-sync path; keep waiting for the
-                        // test's payload.
                         continue;
                     }
                     Some(_) => continue,

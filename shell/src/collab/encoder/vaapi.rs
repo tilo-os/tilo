@@ -18,11 +18,10 @@
 //!    `av_hwframe_transfer_data` upload, then `send_frame` +
 //!    `receive_packet` drain.
 //!
-//! `FrameInput::DmabufFd` isn't wired end-to-end yet: the CPU-upload
-//! path lands first because it works on every VA-API driver; the
-//! zero-copy DMABUF path requires the compositor commit hook to
-//! extract fourcc/modifier/plane strides from the wl_buffer, which
-//! is a broader change tracked at the SurfaceTracker call site.
+//! `FrameInput::DmabufFd` isn't wired end-to-end yet: the CPU-upload path
+//! works on every VA-API driver, while the zero-copy DMABUF path needs the
+//! compositor commit hook to extract fourcc/modifier/plane strides from
+//! the wl_buffer.
 
 use super::{
     Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, FrameStats, ProbeOutcome,
@@ -75,33 +74,22 @@ struct AVContentLightMetadata {
 
 static FFMPEG_INIT: Once = Once::new();
 
-/// Run `ffmpeg::init` at most once per process. libavcodec initialises
-/// its codec registry lazily, but calling `avcodec_register_all` twice
-/// is harmless — the once-guard keeps the logging tidy.
+/// Run `ffmpeg::init` at most once per process — harmless to call twice,
+/// the once-guard just keeps the logging tidy.
 fn ensure_ffmpeg_init() {
     FFMPEG_INIT.call_once(|| {
-        // Best-effort: initialisation only fails on OOM, and returning
-        // silently lets the subsequent probe report the specific
-        // "codec not found" error.
+        // Best-effort: failing silently here lets the subsequent probe
+        // report the specific "codec not found" error instead.
         let _ = ffmpeg::init();
     });
 }
 
-/// Probe VA-API availability on this host.
-///
-/// The probe is:
-/// 1. Ensure libavcodec is initialised.
-/// 2. Look up `h264_vaapi` in the codec registry. Missing = libavcodec
-///    wasn't built with VA-API support; nothing else to try.
-/// 3. Attempt a real end-to-end open: build the hardware device, the
-///    frames pool, and open the h264_vaapi encoder at a small
-///    resolution. That's the only honest test — some hardware
-///    (AMD Phoenix iGPU on Fedora's mesa driver ships JPEG + AV1
-///    encode but no H.264) has a working render node but the driver
-///    refuses `avcodec_open2(h264_vaapi)`. A cheap
-///    `av_hwdevice_ctx_create`-only probe would report those hosts
-///    as available and let `SharedFlatpakSession` construct + start
-///    encoding, only to fail at the first frame.
+/// Probe VA-API availability on this host by attempting a real
+/// end-to-end open (device + frames pool + `avcodec_open2`) rather than
+/// stopping at `av_hwdevice_ctx_create` — some hardware (AMD Phoenix
+/// iGPU on Fedora's mesa driver) has a working render node but the
+/// driver refuses to open `h264_vaapi`, and a cheap probe would report
+/// it available only to fail on the first real frame.
 pub fn probe(codec: Codec) -> ProbeOutcome {
     ensure_ffmpeg_init();
     let encoder_name = match codec.libav_encoder_name(EncoderKind::VaApi) {
@@ -115,8 +103,6 @@ pub fn probe(codec: Codec) -> ProbeOutcome {
             };
         }
     };
-    // Codec-side check: if libavcodec wasn't built with this VA-API
-    // codec, there's no point iterating render nodes.
     if find_encoder(encoder_name).is_none() {
         return ProbeOutcome {
             kind: EncoderKind::VaApi,
@@ -134,9 +120,7 @@ pub fn probe(codec: Codec) -> ProbeOutcome {
             reason: "no /dev/dri/renderD* nodes present on this host".to_string(),
         };
     }
-    // Full-open smoke test. Bigger frame for HEVC because some drivers
-    // reject sub-QCIF for 10-bit. Even a JPEG-only driver will fail at
-    // avcodec_open2 for either codec.
+    // Bigger frame for HEVC: some drivers reject sub-QCIF for 10-bit.
     let (w, h) = match codec {
         Codec::H264 => (64u32, 64u32),
         Codec::HevcMain10 => (320u32, 240u32),
@@ -222,12 +206,10 @@ fn find_encoder(name: &str) -> Option<*const ffi::AVCodec> {
 /// contexts, the swscale RGBA→(NV12|P010) converter, and preallocated
 /// CPU + hardware frames used per encode call.
 pub struct VaApiBackend {
-    /// Configured width in pixels.
     width: u32,
-    /// Configured height in pixels.
     height: u32,
-    /// Which codec this instance is driving. Chosen at `new`; drives
-    /// the sw-format + libav encoder name + HDR SEI insertion path.
+    /// Chosen at `new`; drives the sw-format + libav encoder name + HDR
+    /// SEI insertion path.
     codec: Codec,
     /// HDR10 static metadata to attach to every keyframe via libavutil
     /// side-data. `None` on SDR pipelines.
@@ -236,13 +218,11 @@ pub struct VaApiBackend {
     frames_encoded: u64,
     /// Monotonic PTS counter (in `time_base` units, which is 1/fps).
     pts: i64,
-    /// libavcodec encoder (owns its AVCodecContext).
     encoder: ffmpeg::codec::encoder::video::Encoder,
-    /// Reference to the hardware frames pool used by `hw_frame`. Kept
-    /// alive alongside the encoder so `hw_frame_get_buffer` can pull
-    /// from it every tick.
+    /// The hardware frames pool. Kept alive alongside the encoder so
+    /// `hw_frame_get_buffer` can pull from it every tick.
     hw_frames_ctx: *mut ffi::AVBufferRef,
-    /// Reference to the hardware device context that backs `hw_frames_ctx`.
+    /// The hardware device context that backs `hw_frames_ctx`.
     hw_device_ctx: *mut ffi::AVBufferRef,
     /// Preallocated CPU-side sw_frame — NV12 for H.264, P010 for HEVC
     /// Main10 — used as the CPU→VA transfer source.
@@ -274,9 +254,7 @@ impl VaApiBackend {
                 detail: format!("zero-sized frame ({}x{})", init.width, init.height),
             });
         }
-        // Both NV12 and P010 need even dimensions for chroma planes
-        // — reject odd sizes with a specific config error rather than
-        // producing garbage output.
+        // Both NV12 and P010 need even dimensions for chroma planes.
         if init.width % 2 != 0 || init.height % 2 != 0 {
             return Err(EncoderError::ConfigFailed {
                 kind: EncoderKind::VaApi,
@@ -288,7 +266,6 @@ impl VaApiBackend {
         }
         ensure_ffmpeg_init();
 
-        // 1. Locate the libav encoder matching the requested codec.
         let encoder_name = init
             .codec
             .libav_encoder_name(EncoderKind::VaApi)
@@ -305,11 +282,8 @@ impl VaApiBackend {
         // dropped, never mutated behind our back.
         let codec_ff = unsafe { ffmpeg::Codec::wrap(codec_ptr) };
 
-        // 2. Open the VAAPI hardware device on the first available render node.
         let (render_node, hw_device_ctx) = open_hw_device()?;
 
-        // 3. Build the frames pool. `hw_pix_fmt = VAAPI`, `sw_pix_fmt`
-        // picks NV12 (8-bit H.264) or P010 (10-bit HEVC).
         let sw_pix_fmt = sw_format_for_codec(init.codec);
         let hw_frames_ctx = build_hw_frames_ctx(hw_device_ctx, init.width, init.height, sw_pix_fmt)
             .map_err(|detail| EncoderError::ConfigFailed {
@@ -317,13 +291,12 @@ impl VaApiBackend {
                 detail,
             })?;
 
-        // 4. Configure the encoder context: pix_fmt = VAAPI, hw_frames_ctx set.
         let mut ctx = ffmpeg::codec::Context::new_with_codec(codec_ff);
         let time_base = ffmpeg::Rational::new(1, init.fps.max(1) as i32);
-        // Assign hw_frames_ctx before opening. The encoder AVs a ref;
-        // we still own our reference too. Also stamp colorimetry onto
-        // the AVCodecContext so the encoder's SPS VUI / VPS carries
-        // the right primaries + transfer + matrix + range.
+        // Assign hw_frames_ctx before opening — the encoder refs it, we
+        // still own our own reference too. Also stamp colorimetry so the
+        // encoder's SPS VUI / VPS carries the right primaries + transfer +
+        // matrix + range.
         //
         // SAFETY: `ctx` is a fresh AVCodecContext; `hw_frames_ctx`
         // is a non-null buffer ref we own. `av_buffer_ref` adds an
@@ -356,10 +329,8 @@ impl VaApiBackend {
             .max(1)
             .saturating_mul(init.keyframe_interval_secs.max(1));
         video_enc.set_gop(kf);
-        // Low-latency: no B-frames.
-        video_enc.set_max_b_frames(0);
+        video_enc.set_max_b_frames(0); // low-latency: no B-frames
 
-        // Codec-specific encoder private options.
         let mut opts = ffmpeg::Dictionary::new();
         match init.codec {
             Codec::H264 => {
@@ -369,13 +340,10 @@ impl VaApiBackend {
                 opts.set("rc_mode", "CBR");
             }
             Codec::HevcMain10 => {
-                // Main10 is the 10-bit HEVC profile that carries HDR10.
                 opts.set("profile", "main10");
                 opts.set("rc_mode", "CBR");
-                // Low-power path for iGPUs that expose it. If the
-                // driver rejects it, the encoder-open below tries
-                // again without the option. Unknown keys are silently
-                // ignored by drivers that don't understand them.
+                // Low-power path for iGPUs that expose it; the open below
+                // retries without it if the driver rejects the option.
                 opts.set("low_power", "1");
             }
         }
@@ -383,9 +351,9 @@ impl VaApiBackend {
             Ok(enc) => enc,
             Err(first_err) if matches!(init.codec, Codec::HevcMain10) => {
                 // Some drivers (older i965, some Mesa versions) reject
-                // low_power=1 for HEVC. Retry without the option.
-                // Reconstruct the encoder context from scratch —
-                // ffmpeg-next's video_enc is consumed on open.
+                // low_power=1 for HEVC — retry without it. Reconstruct
+                // from scratch since ffmpeg-next's video_enc is consumed
+                // on open.
                 let mut ctx2 = ffmpeg::codec::Context::new_with_codec(codec_ff);
                 unsafe {
                     let cp = ctx2.as_mut_ptr();
@@ -430,7 +398,6 @@ impl VaApiBackend {
             }
         };
 
-        // 5. Pre-allocate the CPU-side sw_frame + swscale context.
         // NV12 for 8-bit H.264, P010LE for 10-bit HEVC.
         let sw_pixel = match init.codec {
             Codec::H264 => ffmpeg::format::Pixel::NV12,
@@ -494,12 +461,8 @@ impl VaApiBackend {
                 ),
             });
         }
-        // Build a scratch RGBA source frame that references `rgba` in
-        // place. The Video::new + data_mut path would double-allocate
-        // — we can skip that by using a source frame with linesize
-        // pointing at the caller's slice. Easiest is to build the
-        // frame + memcpy once; the cost is width*height*4 bytes per
-        // encode, dominated by the swscale conversion time.
+        // One memcpy into a scratch RGBA frame; the cost (width*height*4
+        // bytes) is dominated by the swscale conversion time anyway.
         let mut src =
             ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, self.width, self.height);
         let src_stride = src.stride(0);
@@ -527,10 +490,8 @@ impl VaApiBackend {
     /// available packets. Returns the total bytes appended to `out`
     /// and whether libavcodec flagged the packet as a keyframe.
     fn encode_swframe(&mut self, out: &mut Vec<u8>) -> Result<(usize, bool), EncoderError> {
-        // Allocate a fresh hw frame each tick — the encoder holds a
-        // ref internally until it's done. The AVFrame is refcounted
-        // so this is cheap: the underlying VA surface comes from the
-        // frames pool (`hw_frames_ctx`).
+        // Allocate a fresh hw frame each tick — refcounted, so cheap; the
+        // underlying VA surface comes from the frames pool.
         //
         // SAFETY: `av_frame_alloc` returns null on OOM; we handle
         // that. `av_hwframe_get_buffer` binds the frame to the pool.
@@ -541,7 +502,6 @@ impl VaApiBackend {
                 detail: "av_frame_alloc returned null".to_string(),
             });
         }
-        // On any error below, free the frame before returning.
         let hw_rc = unsafe { ffi::av_hwframe_get_buffer(self.hw_frames_ctx, hw_frame, 0) };
         if hw_rc < 0 {
             unsafe {
@@ -553,7 +513,6 @@ impl VaApiBackend {
                 detail: format!("av_hwframe_get_buffer: {hw_rc}"),
             });
         }
-        // Upload NV12 → VAAPI surface.
         let trc = unsafe { ffi::av_hwframe_transfer_data(hw_frame, self.sw_frame.as_ptr(), 0) };
         if trc < 0 {
             unsafe {
@@ -565,19 +524,16 @@ impl VaApiBackend {
                 detail: format!("av_hwframe_transfer_data: {trc}"),
             });
         }
-        // Set PTS on the hw frame. libavcodec propagates it into the
-        // output AVPacket so the receiver's timestamps match the
-        // capture cadence.
+        // libavcodec propagates pts into the output AVPacket so the
+        // receiver's timestamps match the capture cadence.
         unsafe {
             (*hw_frame).pts = self.pts;
         }
         self.pts += 1;
 
-        // HDR10 SEI insertion: attach the SMPTE ST 2086 + CTA-861.3
-        // side data before send_frame. Attaching every frame is
-        // spec-legal (SEI overhead is a few bytes) and guarantees a
-        // late-joining viewer picks up the metadata on their first IDR
-        // — which under GOP=1 is every frame anyway.
+        // Attaching HDR10 SEI to every frame is spec-legal (a few bytes of
+        // overhead) and guarantees a late-joining viewer picks it up on
+        // their first IDR — every frame, under GOP=1.
         if let Some(hdr) = self.hdr {
             // SAFETY: `hw_frame` is a live AVFrame we own.
             unsafe { attach_hdr10_side_data(hw_frame, &hdr) }.map_err(|detail| {
@@ -588,8 +544,8 @@ impl VaApiBackend {
             })?;
         }
 
-        // Wrap and send. `Frame::wrap` takes ownership; when we drop
-        // the wrapper, the underlying AVFrame is freed.
+        // `Frame::wrap` takes ownership; dropping the wrapper frees the
+        // underlying AVFrame.
         let send_frame = unsafe { ffmpeg::Frame::wrap(hw_frame) };
         self.encoder
             .send_frame(&send_frame)
@@ -598,9 +554,8 @@ impl VaApiBackend {
                 detail: format!("send_frame: {e}"),
             })?;
 
-        // Drain every available packet — VA-API is typically 1-in,
-        // 1-out at this GOP config but a burst can arrive after the
-        // very first frame (SPS/PPS + IDR).
+        // Typically 1-in, 1-out at this GOP config, but a burst can arrive
+        // after the very first frame (SPS/PPS + IDR).
         let mut total = 0usize;
         let mut saw_keyframe = false;
         loop {
@@ -635,21 +590,13 @@ impl VaApiBackend {
         &self.render_node
     }
 
-    /// Zero-copy DMABUF encode. Builds a `DRM_PRIME` source frame with
-    /// an `AVDRMFrameDescriptor`, maps it onto a fresh VAAPI hardware
-    /// frame via `av_hwframe_map(AV_HWFRAME_MAP_DIRECT)`, sends it to
-    /// the encoder, and drains the output packet queue.
+    /// Zero-copy DMABUF encode: builds a `DRM_PRIME` source frame, maps it
+    /// onto a VAAPI hardware frame via `av_hwframe_map(AV_HWFRAME_MAP_DIRECT)`,
+    /// sends it to the encoder, and drains the packet queue.
     ///
-    /// # Errors
-    ///
-    /// - `EncoderError::EncodeFailed { detail: "dmabuf-direct not \
-    ///   supported by this VA-API driver, use FrameInput::Rgba" }` \
-    ///   when `av_hwframe_map` returns a negative errno. The caller \
-    ///   (compositor commit hook) is expected to catch this specific \
-    ///   detail and fall back to the SHM readback path.
-    /// - `EncoderError::EncodeFailed` on any allocation / send / \
-    ///   receive failure. These are typically un-recoverable — the \
-    ///   caller should tear down the session.
+    /// When `av_hwframe_map` fails, the error detail string is
+    /// `"dmabuf-direct not supported..."` — kept stable because the
+    /// compositor commit hook matches on it to fall back to SHM readback.
     #[allow(clippy::too_many_arguments)]
     fn encode_dmabuf(
         &mut self,
@@ -661,9 +608,8 @@ impl VaApiBackend {
         drm_modifier: u64,
         out: &mut Vec<u8>,
     ) -> Result<(usize, bool), EncoderError> {
-        // Reject implausibly-shaped inputs early. Per libavutil the
-        // maximum plane count for a DRM_PRIME frame is `AV_DRM_MAX_PLANES`,
-        // defined as 4. Anything above that is a caller-side bug.
+        // libavutil's max plane count for a DRM_PRIME frame is
+        // `AV_DRM_MAX_PLANES` = 4; anything above is a caller-side bug.
         if num_planes == 0 || num_planes as usize > 4 {
             return Err(EncoderError::EncodeFailed {
                 kind: EncoderKind::VaApi,
@@ -671,22 +617,11 @@ impl VaApiBackend {
             });
         }
 
-        // Build the AVDRMFrameDescriptor on the stack. Its lifetime
-        // only needs to cover the `av_hwframe_map` call — the mapping
-        // consumes the source frame's data and the destination frame
-        // keeps its own reference into the pool afterwards.
-        //
-        // The `av_hwframe_map` API bindings on ffmpeg-next 8 expose
-        // the raw `ffi::av_hwframe_map(dst, src, flags)`; the DRM
-        // descriptor types (`AVDRMFrameDescriptor`, `AVDRMObjectDescriptor`,
-        // `AVDRMLayerDescriptor`, `AVDRMPlaneDescriptor`) come from
-        // `libavutil/hwcontext_drm.h` — bindgen picks them up when
-        // the header is present at build time.
-        //
-        // We treat all planes as sharing a single DRM object (fd) —
-        // the common case for a wgpu-composited buffer. Multi-object
-        // multi-plane buffers (rare, e.g. some tiled formats with
-        // separate storage per plane) would need one object per fd.
+        // The descriptor's lifetime only needs to cover the
+        // `av_hwframe_map` call. We treat all planes as sharing a single
+        // DRM object (fd) — the common case for a wgpu-composited buffer;
+        // multi-object multi-plane buffers (rare tiled formats) would
+        // need one object per fd.
         //
         // SAFETY: `AVDRMFrameDescriptor` is a POD C struct; `MaybeUninit`
         // + zero-fill gives us a valid all-zero baseline. Every field
@@ -719,9 +654,8 @@ impl VaApiBackend {
         // SAFETY: fully written above.
         let desc = unsafe { desc_mu.assume_init() };
 
-        // Allocate the DRM_PRIME source frame; it doesn't own memory
-        // — its `data[0]` is a raw pointer to our stack-local desc.
-        // The pointer must be valid until `av_hwframe_map` returns.
+        // `data[0]` is a raw pointer to our stack-local desc, valid until
+        // `av_hwframe_map` returns.
         //
         // SAFETY: `av_frame_alloc` returns null on OOM.
         let src_frame = unsafe { ffi::av_frame_alloc() };
@@ -731,12 +665,10 @@ impl VaApiBackend {
                 detail: "av_frame_alloc (src) returned null".to_string(),
             });
         }
-        // On any error below, free src_frame.
         let src_guard = FrameGuard(src_frame);
 
-        // Configure the source frame as an unattached DRM_PRIME view.
-        // No `hw_frames_ctx` — `av_hwframe_map` handles the format
-        // conversion directly. `data[0]` points at our AVDRMFrameDescriptor.
+        // No `hw_frames_ctx` on the source — `av_hwframe_map` handles the
+        // format conversion directly.
         //
         // SAFETY: we own `src_frame`; the field writes touch primitive
         // fields on an initialised AVFrame.
@@ -747,8 +679,6 @@ impl VaApiBackend {
             (*src_frame).data[0] = &desc as *const _ as *mut u8;
         }
 
-        // Allocate the destination VAAPI hw_frame from our pool.
-        //
         // SAFETY: `hw_frames_ctx` is a valid ref we own; `av_frame_alloc`
         // returns null on OOM.
         let hw_frame = unsafe { ffi::av_frame_alloc() };
@@ -767,19 +697,13 @@ impl VaApiBackend {
                 detail: format!("av_hwframe_get_buffer (dmabuf-direct): {get_rc}"),
             });
         }
-        // Map the DRM_PRIME source into the VAAPI destination.
-        // `AV_HWFRAME_MAP_DIRECT` = 1 << 3 (from
-        // `libavutil/hwcontext.h`); the const is exposed via bindgen
-        // as `ffi::AV_HWFRAME_MAP_DIRECT`.
-        //
         // SAFETY: both frames are valid; the flag is a documented
         // libavutil constant.
         let map_rc =
             unsafe { ffi::av_hwframe_map(hw_frame, src_frame, ffi::AV_HWFRAME_MAP_DIRECT as i32) };
         if map_rc < 0 {
-            // This is the specific error the compositor commit hook
-            // catches to fall back to SHM. Keep the exact string
-            // stable — call sites match on it.
+            // Keep the exact string stable — the compositor commit hook
+            // matches on it to fall back to SHM.
             return Err(EncoderError::EncodeFailed {
                 kind: EncoderKind::VaApi,
                 detail: format!(
@@ -789,20 +713,15 @@ impl VaApiBackend {
             });
         }
 
-        // Stamp PTS on the mapped frame. Encoder propagates it into
-        // the AVPacket so downstream timestamps line up with our
-        // capture cadence.
-        //
         // SAFETY: hw_frame is valid.
         unsafe {
             (*hw_frame).pts = self.pts;
         }
         self.pts += 1;
 
-        // HDR10 SEI insertion on the DMABUF path too. Side data is
-        // per-frame libavutil metadata; attaching it to the mapped
-        // hw_frame before send_frame carries it through into the
-        // bitstream SEI even though the pixel data lives on the GPU.
+        // HDR10 SEI on the DMABUF path too — attaching to the mapped
+        // hw_frame carries it into the bitstream SEI even though the
+        // pixel data lives on the GPU.
         if let Some(hdr) = self.hdr {
             // SAFETY: `hw_frame` is a live AVFrame we own via hw_guard.
             unsafe { attach_hdr10_side_data(hw_frame, &hdr) }.map_err(|detail| {
@@ -813,15 +732,10 @@ impl VaApiBackend {
             })?;
         }
 
-        // Wrap + hand to the encoder. We can't move ownership through
-        // ffmpeg-next's `Frame::wrap` for hw_frame because it would
-        // race with `hw_guard`'s drop — so we send from the raw
-        // pointer via a scratch wrapper, then let hw_guard release
-        // its ref after send_frame returns.
-        //
-        // `send_frame` refs the underlying AVFrame, so it's safe for
-        // us to drop `hw_guard` right after. The wrapper simply
-        // borrows without taking ownership.
+        // `Frame::wrap` takes ownership of its pointer, which would race
+        // `hw_guard`'s drop if given the guarded pointer directly — so we
+        // clone a fresh ref for the wrapper and let `hw_guard` release its
+        // own ref once `send_frame` (which refs internally) returns.
         //
         // SAFETY: `Frame::wrap` documents that the pointer becomes
         // owned by the wrapper. We take that literally: pass a fresh
@@ -835,8 +749,8 @@ impl VaApiBackend {
                 detail: "av_frame_clone (hw) returned null".to_string(),
             });
         }
-        // `Frame::wrap` takes ownership — dropping the wrapper frees
-        // the cloned frame. hw_guard still owns the original hw_frame.
+        // Dropping the wrapper frees the cloned frame; hw_guard still owns
+        // the original hw_frame.
         let send_frame = unsafe { ffmpeg::Frame::wrap(cloned) };
         self.encoder
             .send_frame(&send_frame)
@@ -844,7 +758,7 @@ impl VaApiBackend {
                 kind: EncoderKind::VaApi,
                 detail: format!("send_frame (dmabuf): {e}"),
             })?;
-        // Drain packets. Same loop as the RGBA/NV12 path.
+        // Same drain loop as the RGBA/NV12 path.
         let mut total = 0usize;
         let mut saw_keyframe = false;
         loop {
@@ -899,11 +813,9 @@ impl Drop for FrameGuard {
 
 impl Drop for VaApiBackend {
     fn drop(&mut self) {
-        // Order matters — the encoder holds references to
-        // `hw_frames_ctx`, which holds a reference to `hw_device_ctx`.
-        // Dropping `encoder` first via its Drop impl releases the
-        // codec context; the buffer refs we own separately release
-        // the pool + device.
+        // Order matters: the encoder holds references to `hw_frames_ctx`,
+        // which holds a reference to `hw_device_ctx`. `encoder`'s own Drop
+        // runs first and releases the codec context.
         //
         // SAFETY: the pointers were obtained via `av_buffer_ref` /
         // `av_hwframe_ctx_alloc` / `av_hwdevice_ctx_create`. Each
@@ -945,10 +857,8 @@ impl Encoder for VaApiBackend {
                 self.upload_rgba(bytes)?;
             }
             FrameInput::Nv12 { y, uv } => {
-                // Direct NV12 path — only valid on H.264 pipelines.
-                // HEVC Main10 needs a 10-bit input; the caller must
-                // upload via RGBA (converted to P010 by swscale) or
-                // DMABUF.
+                // Only valid on H.264: HEVC Main10 needs a 10-bit input,
+                // via RGBA (converted to P010 by swscale) or DMABUF.
                 if self.codec != Codec::H264 {
                     return Err(EncoderError::EncodeFailed {
                         kind: EncoderKind::VaApi,
@@ -1003,16 +913,9 @@ impl Encoder for VaApiBackend {
                 width,
                 height,
             } => {
-                // Zero-copy DMABUF import. We build an
-                // `AV_PIX_FMT_DRM_PRIME` source frame whose `data[0]`
-                // points at an `AVDRMFrameDescriptor`, then map it
-                // onto a hardware frame from our VAAPI pool via
-                // `av_hwframe_map(AV_HWFRAME_MAP_DIRECT)`. On drivers
-                // that can't do the mapping (some AMD SoCs, some
-                // older Intel iGPUs) libavutil returns a negative
-                // errno and we fall through to
-                // `EncoderError::EncodeFailed` so the compositor
-                // side falls back to the SHM readback + RGBA path.
+                // See `encode_dmabuf` for the mapping; drivers that can't
+                // do it (some AMD SoCs, older Intel iGPUs) fail here and
+                // the compositor falls back to SHM readback + RGBA.
                 if width != self.width || height != self.height {
                     return Err(EncoderError::EncodeFailed {
                         kind: EncoderKind::VaApi,
@@ -1044,9 +947,8 @@ impl Encoder for VaApiBackend {
         let (bytes, saw_keyframe) = self.encode_swframe(out)?;
         let elapsed = start.elapsed();
         // libavcodec doesn't always tag the very first IDR as `is_key`
-        // on the first pump (SPS/PPS ships as its own packet). Report
-        // frame 0 as keyframe on the outside so PeerSurfaceMetrics'
-        // counter matches the wire-level truth.
+        // (SPS/PPS ships as its own packet); report frame 0 as keyframe
+        // regardless so PeerSurfaceMetrics' counter matches the wire.
         let keyframe = saw_keyframe || self.frames_encoded == 0;
         self.frames_encoded = self.frames_encoded.saturating_add(1);
         Ok(FrameStats {
@@ -1181,15 +1083,13 @@ fn build_hw_frames_ctx(
     if ctx.is_null() {
         return Err("av_hwframe_ctx_alloc returned null".to_string());
     }
-    // Configure via the frame ctx's data pointer.
     unsafe {
         let frames_data = (*ctx).data as *mut ffi::AVHWFramesContext;
         (*frames_data).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
         (*frames_data).sw_format = sw_format;
         (*frames_data).width = w as i32;
         (*frames_data).height = h as i32;
-        // Pool size: 16 is a common default; more is wasted VRAM,
-        // less risks encoder stalls at high FPS.
+        // 16: more wastes VRAM, less risks encoder stalls at high FPS.
         (*frames_data).initial_pool_size = 16;
     }
     let init_rc = unsafe { ffi::av_hwframe_ctx_init(ctx) };
@@ -1213,7 +1113,7 @@ unsafe fn attach_hdr10_side_data(
     frame: *mut ffi::AVFrame,
     hdr: &Hdr10Metadata,
 ) -> Result<(), String> {
-    // 1. Mastering-display colour volume — SMPTE ST 2086.
+    // Mastering-display colour volume — SMPTE ST 2086.
     let m = &hdr.mastering;
     // SAFETY: `av_frame_new_side_data` allocates a side-data slot of
     // the given size and returns a pointer to a fresh AVFrameSideData
@@ -1288,10 +1188,8 @@ unsafe fn attach_hdr10_side_data(
         (*out).has_luminance = 1;
     }
 
-    // 2. Content-light-level — CTA-861.3. Skip when both fields are 0
-    // (libavcodec still emits it, but downstream tone-mappers treat
-    // (0, 0) as an inconsistency signal on some vendors — better to
-    // just omit).
+    // Content-light-level — CTA-861.3. Skip when both fields are 0: some
+    // downstream tone-mappers treat (0, 0) as an inconsistency signal.
     let l = &hdr.light;
     if l.max_content_light_level != 0 || l.max_frame_average_light_level != 0 {
         // SAFETY: same shape as above, different type.

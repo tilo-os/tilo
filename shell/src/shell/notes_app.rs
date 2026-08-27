@@ -1,25 +1,19 @@
 //! Notes — a minimal CRDT-backed plaintext editor hosted as an `AppWidget`.
 //!
 //! The whole body lives in a single Automerge `Text` object under the tile's
-//! root at [`BODY_KEY`]. Edits go through [`CrdtTextBody`] so they merge cleanly
-//! with peer edits via the existing `CollabRequest::Apply` path. The widget
-//! therefore gets "fully collaborative by default" for free — no per-app
-//! presence wiring beyond what every widget already does.
+//! root at [`BODY_KEY`], edited through [`CrdtTextBody`] so edits merge with
+//! peers via the existing `CollabRequest::Apply` path — collaborative for
+//! free, no per-app presence wiring.
 //!
-//! Selection + clipboard model mirrors `ui::widget::TextInput`:
+//! Selection + clipboard model mirrors `ui::widget::TextInput`: click drops
+//! the caret, drag extends a selection, double/triple-click selects word or
+//! line, Shift+arrow/Home/End/Ctrl+A extend or set it, and Ctrl+C/X/V route
+//! through the shared [`ui::text_selection`] clipboard helpers.
 //!
-//! * Click drops the caret; drag extends a selection.
-//! * Double-click → word; triple-click → line.
-//! * Shift+arrow / Shift+Home / Shift+End / Ctrl+A extends or sets selection.
-//! * Backspace / Delete with a selection replace the range.
-//! * Ctrl+C / Ctrl+X / Ctrl+V route through the shared
-//!   [`ui::text_selection`] clipboard helpers.
-//!
-//! Rendering uses the `TextRenderer`'s built-in soft-wrap (cosmic-text) so
-//! long paragraphs wrap inside the tile; hard newlines (`\n`) are preserved.
-//! The caret and the selection highlight are positioned by splitting at
-//! `\n`-delimited logical lines and measuring prefix widths — approximate
-//! across wrap boundaries but matches the cursor's row/column model.
+//! The `TextRenderer`'s soft-wrap (cosmic-text) wraps long paragraphs; caret
+//! and selection highlight are positioned by splitting at `\n` and measuring
+//! prefix widths — approximate across wrap boundaries but close enough to
+//! the cursor's row/column model.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -124,9 +118,6 @@ impl NotesApp {
         self.selection.anchor = self.body.clamp(self.selection.anchor);
     }
 
-    /// Delete the current selection from both `self.body.text` and the CRDT,
-    /// then collapse the selection to the deletion point. No-op if the
-    /// selection is collapsed.
     fn delete_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.selection.is_collapsed() {
             return;
@@ -136,7 +127,6 @@ impl NotesApp {
         self.selection.move_to(caret);
     }
 
-    /// Insert `s` at the caret, replacing the current selection if any.
     /// Used by every typing path (printable chars, Enter, Tab, paste).
     fn insert_str(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
         // A collapsed selection makes this an insert; an open one makes it
@@ -146,8 +136,8 @@ impl NotesApp {
         self.selection.move_to(caret);
     }
 
-    /// Original single-char backspace path (used when the selection is
-    /// collapsed). Selection-aware paths route through `delete_selection`.
+    /// Single-char backspace path for a collapsed selection; selection-aware
+    /// paths route through `delete_selection`.
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let cur = self.selection.cursor;
         if cur == 0 {
@@ -168,7 +158,6 @@ impl NotesApp {
         self.body.splice(state, root, cur..next, "");
     }
 
-    /// All currently-selected text (or `None` if collapsed).
     fn selected_str(&self) -> Option<&str> {
         if self.selection.is_collapsed() {
             None
@@ -233,28 +222,18 @@ impl Widget for NotesApp {
         let wrap_w = (self.rect.width() - PADDING * 2.0).max(40.0) as f32;
         self.wrap_width = wrap_w;
 
-        // The body starts at the padding: there is no header row. The app's
-        // name is the frame's to state — it is already on the tab pill the
-        // shell draws above this tile — so a title here would be the app
-        // putting a second title bar inside the window, and a standing hint
-        // in the corner is the same thing one size down: chrome the app does
-        // not own, annotating a surface that explains itself. The zero-state
-        // below carries the "you can write here" invitation as an actual
-        // control instead.
+        // No header row: the app name already lives on the tab pill the
+        // shell draws above this tile, and a corner hint here would be the
+        // app drawing chrome it doesn't own. The zero-state below carries
+        // the "you can write here" invitation as an actual control instead.
         let body_top = content_y;
         self.body_origin = Point::new(content_x, body_top);
 
         if self.body.text.is_empty() && !self.focused {
-            // A blank note is a *designed* state, not an absence of one. The
-            // shared `EmptyState` owns that treatment for the whole fleet —
-            // hero icon in a tinted disc, a title, the dim explanation, and
-            // an accent call-to-action — so the note reads as composed
-            // rather than as a line of grey text stranded at the top of a
-            // large empty card. `paint` is its immediate-mode entry point,
-            // for canvas apps like this one that render straight to a Scene.
-            //
-            // Nothing is invented to fill the space: the note really is
-            // empty, and stays empty until the user types.
+            // A blank note is a *designed* state via the shared `EmptyState`
+            // (hero icon, title, dim explanation, accent CTA) rather than a
+            // stray line of placeholder text. Nothing is invented to fill
+            // the space — the note stays empty until the user types.
             self.empty_action_rect = EmptyState::paint(
                 scene,
                 transform,
@@ -273,15 +252,12 @@ impl Widget for NotesApp {
         // Once there is text (or focus), the note is its own affordance.
         self.empty_action_rect = Rect::ZERO;
 
-        // Selection highlight (behind the text). Walk each logical line
-        // and clip the selection range to it; paint one rect per line.
+        // Selection highlight (behind the text).
         if !self.selection.is_collapsed() {
             let sel_lo = self.selection.min();
             let sel_hi = self.selection.max();
             let mut line_start = 0usize;
             let mut row = 0usize;
-            // Iterate logical lines (split on '\n'). For each, compute
-            // the byte range and intersect with selection.
             let chunks = self.body.text.split('\n');
             for line_text in chunks {
                 let line_end = line_start + line_text.len();
@@ -301,10 +277,8 @@ impl Widget for NotesApp {
                     );
                     scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
                 } else if sel_lo <= line_end && sel_hi > line_end {
-                    // The selection spans the trailing newline of this
-                    // logical line — paint a small "newline glyph"
-                    // indicator past the line content to convey the
-                    // selected line break.
+                    // Selection spans this line's trailing newline — paint a
+                    // small indicator past the line content for it.
                     let (full_w, _) = tr.measure(line_text, TEXT_SIZE, Some(wrap_w));
                     let y0 = body_top + row as f64 * LINE_HEIGHT as f64;
                     let rect = Rect::new(
@@ -315,12 +289,11 @@ impl Widget for NotesApp {
                     );
                     scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
                 }
-                line_start = line_end + 1; // +1 for the consumed \n
+                line_start = line_end + 1;
                 row += 1;
             }
         }
 
-        // Body text with soft wrap.
         tr.draw_text(
             scene,
             &self.body.text,
@@ -331,11 +304,10 @@ impl Widget for NotesApp {
         );
 
         if self.focused {
-            // Caret: count newlines before cursor to pick a row, then measure
-            // the width of the last visual line's prefix for the column. This
-            // deliberately treats each `\n`-separated logical line as a
-            // single wrap-unit so the caret stays close-enough to the glyph
-            // position without a glyph-by-glyph layout round-trip.
+            // Count newlines before cursor to pick a row, then measure the
+            // last visual line's prefix width for the column — treats each
+            // logical line as a single wrap-unit rather than a glyph-by-glyph
+            // layout round-trip.
             let cur = self.selection.cursor;
             let prefix = &self.body.text[..cur];
             let nl_count = prefix.matches('\n').count();
@@ -377,20 +349,12 @@ impl Widget for NotesApp {
                 }
 
                 if self.is_dragging {
-                    // Hit-test needs a TextRenderer; the event path
-                    // doesn't have one. We approximate by deferring to
-                    // a simpler line-then-best-char model: count rows
-                    // by y, find byte offset by a prefix sweep using
-                    // pixel-per-char heuristic. The real test is the
-                    // draw pass which sees the renderer; here we use a
-                    // tight loop over chars assuming a monospace-ish
-                    // advance. This is acceptable because:
-                    //   1. The selection re-snaps to true glyph bounds
-                    //      on the next draw via `body_origin`.
-                    //   2. The user perceives the cursor as following
-                    //      their mouse — the row is always right, and
-                    //      column drift settles to the glyph grid on
-                    //      mouse-up via re-hit-test below.
+                    // Hit-test needs a TextRenderer, which the event path
+                    // doesn't have; approximate via a per-character advance
+                    // heuristic. Acceptable because the selection re-snaps
+                    // to true glyph bounds on the next draw, and the row is
+                    // always right even while the column drifts — it
+                    // settles to the glyph grid on mouse-up.
                     let new_pos = self.approximate_hit(p);
                     if new_pos != self.selection.cursor {
                         self.selection.extend_to(new_pos);
@@ -468,7 +432,7 @@ impl Widget for NotesApp {
                 let shift = mods.shift_key();
                 let ctrl = mods.control_key() || mods.super_key();
 
-                // Ctrl combos: clipboard + select-all. Everything else
+                // Ctrl combos: clipboard + select-all; everything else
                 // falls through to the local key handler.
                 if ctrl {
                     if let Key::Character(c) = logical_key {
@@ -501,8 +465,8 @@ impl Widget for NotesApp {
                             "v" => {
                                 if let Some(paste) = clipboard_paste() {
                                     if !paste.is_empty() {
-                                        // Notes preserves \n — only strip
-                                        // truly-control chars other than \n/\t.
+                                        // Notes preserves \n — strip only
+                                        // other control chars.
                                         let cleaned: String = paste
                                             .chars()
                                             .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
@@ -556,8 +520,7 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         if !shift && !self.selection.is_collapsed() {
-                            // Plain arrow with a selection collapses to the
-                            // left edge — matches every native editor.
+                            // Matches every native editor.
                             self.selection.move_to(self.selection.min());
                         } else {
                             let mut p = self.selection.cursor;
@@ -598,7 +561,6 @@ impl Widget for NotesApp {
                         let cur = self.selection.cursor;
                         let line_start = self.body.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let col = cur - line_start;
-                        // Previous line (or stay if at row 0).
                         let new_pos = if line_start == 0 {
                             0
                         } else {
@@ -606,7 +568,7 @@ impl Widget for NotesApp {
                                 .rfind('\n')
                                 .map(|i| i + 1)
                                 .unwrap_or(0);
-                            let prev_line_end = line_start - 1; // The \n we just crossed.
+                            let prev_line_end = line_start - 1;
                             let prev_line_len = prev_line_end - prev_nl;
                             let want_col = col.min(prev_line_len);
                             let mut p = prev_nl + want_col;
@@ -769,12 +731,11 @@ impl Widget for NotesApp {
 }
 
 impl NotesApp {
-    /// Coarse hit-test used inside `handle_event` (which has no
-    /// `TextRenderer` available). Picks the row by `\n`-delimited line
-    /// and the column by walking characters with a per-character advance
-    /// approximation. The result is good enough for "drag selects
-    /// roughly the right text" UX; the visual selection rect is drawn
-    /// against true glyph metrics in `draw`.
+    /// Coarse hit-test used inside `handle_event`, which has no
+    /// `TextRenderer` available — approximates with a per-character
+    /// advance. Good enough for "drag selects roughly the right text";
+    /// the visual selection rect is drawn against true glyph metrics in
+    /// `draw`.
     fn approximate_hit(&self, point: Point) -> usize {
         if self.body.text.is_empty() {
             return 0;
@@ -857,12 +818,6 @@ mod tests {
     }
 
     /// A blank note shows the shared zero-state, centred in the tile.
-    ///
-    /// It used to be a single line of dim placeholder text at the top-left
-    /// of the card with an unbounded expanse of nothing under it, plus a
-    /// loose "Click to edit" annotation in the far corner. The invitation is
-    /// now `EmptyState`'s call-to-action — a real control — and the stack it
-    /// belongs to is centred rather than stranded against the top edge.
     #[test]
     fn a_blank_note_paints_the_shared_zero_state_centred() {
         let mut app = NotesApp::new();
@@ -948,9 +903,7 @@ mod tests {
         assert_eq!(app.cursor_shape(tile.center()), None);
     }
 
-    /// The body starts at the tile padding. The old header row reserved a
-    /// line for a corner hint that no longer exists, which left the first
-    /// line of every note floating below an unexplained gap.
+    /// The body starts at the tile padding — no header row is reserved.
     #[test]
     fn body_text_starts_at_the_padding_with_no_header_gap() {
         let (mut doc, tile_root) = bind();
@@ -1007,16 +960,13 @@ mod tests {
     #[test]
     fn shift_right_extends_selection() {
         let mut app = NotesApp::with_seed("hello");
-        // Start collapsed at 0.
         app.selection = Selection::collapsed(0);
-        // Step 1: extend by one char.
         let p = app.selection.cursor + 1;
         app.selection.extend_to(p);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 1);
         assert_eq!(&app.body.text[app.selection.range()], "h");
 
-        // Step 2: extend by another two chars (cumulative).
         app.selection.extend_to(3);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 3);
@@ -1037,7 +987,6 @@ mod tests {
     #[test]
     fn ctrl_a_selects_all() {
         let mut app = NotesApp::with_seed("alpha\nbeta\ngamma");
-        // Simulate Ctrl+A.
         app.selection.anchor = 0;
         app.selection.cursor = app.body.text.len();
         assert!(!app.selection.is_collapsed());
@@ -1055,8 +1004,6 @@ mod tests {
         app.sync(&mut doc, &tile);
         app.selection.anchor = 6;
         app.selection.cursor = 11;
-        // delete_selection is the path the Backspace arm takes when a
-        // selection is live.
         app.delete_selection(&mut doc, &tile);
         assert_eq!(app.body.text, "hello ");
         assert!(app.selection.is_collapsed());
@@ -1118,11 +1065,8 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn ctrl_c_then_ctrl_v_round_trips_through_arboard() {
-        // Sanity-check via the ui-side helpers: write a sentinel and
-        // try to read it back. If `clipboard_paste` returns None the
-        // host has no usable arboard backend (CI without a display,
-        // Wayland session without data-control, etc.) — treat as skip
-        // rather than spurious failure.
+        // Write a sentinel and read it back; None means no usable arboard
+        // backend (CI without a display, etc.) — treat as skip.
         clipboard_copy("__qos_clip_probe__");
         if clipboard_paste().as_deref() != Some("__qos_clip_probe__") {
             eprintln!("clipboard backend unavailable; skipping round-trip test");
@@ -1133,22 +1077,16 @@ mod tests {
         app.sync(&mut doc, &tile);
         app.selection.anchor = 6;
         app.selection.cursor = 11;
-        // Ctrl+C path.
         let copied = app
             .selected_str()
             .map(|s| s.to_string())
             .unwrap_or_default();
         clipboard_copy(&copied);
-        // Collapse and move to end.
         app.selection = Selection::collapsed(app.body.text.len());
-        // Ctrl+V path.
         let pasted = clipboard_paste();
         if let Some(p) = pasted {
             app.insert_str(&mut doc, &tile, &p);
             assert!(app.body.text.ends_with("world"));
         }
-        // (No hard assertion when clipboard returns None — that just
-        // means the test runner couldn't reach the system clipboard,
-        // which we treat as a skip rather than a failure.)
     }
 }

@@ -1,35 +1,26 @@
-//! The headline integration test: the full Phase 2 + 3 + 6 + 7 + 8
-//! stack composes into one working end-to-end flow.
-//!
-//! The scenario this exercises matches what the spec promises:
+//! The headline integration test: the whole collaboration stack
+//! composes into one working end-to-end flow.
 //!
 //! 1. Two devices (Alice's laptop + Alice's phone) hold one
-//!    threshold-shared identity via FROST (Phase 8 — the secret half
-//!    is split across the two devices; the public half is a single
-//!    Ed25519 key).
-//! 2. Channel owner Olga has authorised Alice as an Editor on a
-//!    Note artifact (Phase 2 attestation, registered in the
-//!    channel's role table).
-//! 3. Alice's laptop encrypts an op's payload via the channel's
-//!    MLS group (Phase 7), then her laptop + phone collaboratively
-//!    sign the envelope across the ciphertext (Phase 8 +
-//!    Phase 3 — outer signature covers the ciphertext, the broker
-//!    validates the envelope without ever touching the cleartext).
-//! 4. The envelope crosses the broker (Phase 3 wire enforcement) and
-//!    reaches a second connected peer, Bob, who has also joined the
-//!    MLS group.
-//! 5. Bob's app receives `CollabEvent::SignedCRDTIncremental`,
-//!    decrypts the payload via Bob's mirror of the MLS group, and
-//!    surfaces the cleartext.
-//! 6. Olga publishes a Compaction op (Phase 6), signed by her
-//!    (Owner-only role permit). Older ops are evicted from the
-//!    broker's in-memory log.
-//! 7. A `FetchScrollback` request for the compacted prefix returns
-//!    an empty batch with `exhausted = true` — the compaction is
+//!    threshold-shared identity via FROST — the secret half is split
+//!    across the two devices, the public half is a single Ed25519 key.
+//! 2. Channel owner Olga authorises Alice as an Editor on a Note
+//!    artifact, registered in the channel's role table.
+//! 3. Alice's laptop encrypts an op's payload via the channel's MLS
+//!    group, then her laptop + phone collaboratively sign the envelope
+//!    across the ciphertext — the outer signature covers the
+//!    ciphertext, so the broker validates the envelope without ever
+//!    touching the cleartext.
+//! 4. The envelope crosses the broker and reaches a second connected
+//!    peer, Bob, who has also joined the MLS group.
+//! 5. Bob's app receives `CollabEvent::SignedCRDTIncremental`, decrypts
+//!    the payload via Bob's mirror of the MLS group, and surfaces the
+//!    cleartext.
+//! 6. Olga publishes a Compaction op, signed by her (Owner-only role
+//!    permit). Older ops are evicted from the broker's in-memory log.
+//! 7. A `FetchScrollback` request for the compacted prefix returns an
+//!    empty batch with `exhausted = true` — the compaction is
 //!    effective.
-//!
-//! If this test passes, every numbered Phase in the spec is
-//! observably real: foundations compose into a working system.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -365,12 +356,12 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     };
     let payload = encode_compaction_payload(&checkpoint).expect("encode compaction payload");
 
-    // Per the agent's Phase 6 convention (see
-    // `tests/scrollback_pipeline.rs::compaction_evicts_log_then_scrollback_returns_exhausted`),
-    // the compaction op's seq must be greater than the
-    // checkpoint's `up_to_seq` so the compaction-op itself doesn't
-    // fall inside the prefix being evicted. Per-author seq only needs
-    // to be monotonic — we can skip numbers freely.
+    // The compaction op's seq must be greater than the checkpoint's
+    // `up_to_seq` so the compaction op itself doesn't fall inside the
+    // prefix being evicted (see
+    // `tests/scrollback_pipeline.rs::compaction_evicts_log_then_scrollback_returns_exhausted`).
+    // Per-author seq only needs to be monotonic — we can skip numbers
+    // freely.
     let mut olga_op = SignedOp::new_unsigned(
         payload,
         artifact,

@@ -16,9 +16,9 @@
 //! **first** configure a real client receives carries the tab's real
 //! size, and nothing carrying no size precedes it.
 //!
-//! Deliberately talks to a socket. The defect lived entirely in what went
-//! on the wire and when; a check that could not observe the wire could
-//! not have caught it, and did not.
+//! Deliberately talks to a socket: the defect lives entirely in what
+//! goes on the wire and when, and a check that cannot observe the wire
+//! cannot catch it.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -242,9 +242,8 @@ fn open_a_window(h: &mut Harness) -> Configures {
     h.pump();
 
     // Toolkits negotiate decorations in the same round trip in which they
-    // create the toplevel, and that negotiation used to be what put the
-    // sizeless configure on the wire. Drive it, so this test covers that
-    // route too rather than only the one it was named for.
+    // create the toplevel — drive it, so this test covers that route too
+    // rather than only the one it was named for.
     let decoration = manager.get_toplevel_decoration(&toplevel, &qh, ());
     decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
     h.pump();

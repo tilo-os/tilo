@@ -6,17 +6,13 @@
 //! id (`ws.*`, `file.*`, `app.*`, `settings.*`) so context switching just
 //! installs a `set_filter` closure that keeps the matching prefixes plus
 //! `settings.*`, which is always reachable.
-//!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — line 210
-//! (GlobalSearch: command palette + context-aware filters).
 
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 /// Alpha the shell overlay host tints the GlobalSearch palette surface
-/// with. Bumped from the concept's 0.70 to fully opaque after the
-/// 2026-07-09 legibility complaint — see
-/// [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`] for the full
-/// rationale. Kept in sync with that constant.
+/// with. Kept in sync with
+/// [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`] — see that
+/// constant for the full rationale.
 pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 
 /// Which slice of the command catalog the palette is focusing on.
@@ -47,7 +43,7 @@ impl GlobalSearch {
     }
 
     /// Seed the default system command set. Idempotent-safe to call once at
-    /// construction; see spec §9 for the canonical v1 list.
+    /// construction.
     pub fn seed_default_commands(&mut self) {
         let defaults: &[(&str, &str)] = &[
             ("ws.create", "Create Workspace"),
