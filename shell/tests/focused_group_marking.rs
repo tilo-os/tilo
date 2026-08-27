@@ -1,30 +1,19 @@
-//! The active-group pointer has to be visible, and it has to be visible
-//! in exactly one place.
+//! The active-group pointer has to be visible, and in exactly one place.
 //!
-//! `WorkspaceTree` has always persisted `active_strip` per workspace and
-//! `active_group` per strip. That pair decides where a new window lands,
-//! what a scoped search narrows to, and which tab takes the next
-//! keystroke — but nothing on screen was derived from it. In a strip of
+//! `WorkspaceTree` persists `active_strip` per workspace and `active_group`
+//! per strip — deciding where a new window lands, what a scoped search
+//! narrows to, and which tab takes the next keystroke. In a strip of
 //! non-overlapping windows there is no z-order to read focus from, so
-//! three side-by-side windows looked identical while only one of them
-//! would receive what the user typed.
-//!
-//! `ShellOverlayHost::mark_focused_group` closes that gap, and it runs
-//! from `Widget::update` — the real per-frame path, which is what these
-//! tests drive. What they pin:
+//! `ShellOverlayHost::mark_focused_group` derives it, running from
+//! `Widget::update` — the real per-frame path these tests drive:
 //!
 //!   1. The group the tree names is the group that reports focus.
-//!   2. Exactly one group across every strip reports it, so a second
-//!      lit window can never appear.
+//!   2. Exactly one group across every strip reports it.
 //!   3. Moving the pointer moves the light, including across strips —
 //!      focus is a pure function of the tree, never a latch.
 //!   4. A strip whose pointer was never seeded still lights a window.
-//!      "No window is lit" is the state the signal exists to abolish, so
-//!      an unset pointer must not be able to reproduce it.
-//!   5. A workspace holding a single window lights nothing. With nothing
-//!      to tell apart the marker is decoration, and a permanently lit
-//!      edge around the only thing on screen is what makes chrome feel
-//!      arbitrary.
+//!   5. A workspace with a single window lights nothing — with nothing to
+//!      tell apart, the marker would be decoration.
 
 use std::collections::HashMap;
 
@@ -36,9 +25,9 @@ use shell::shell::state::{
 };
 use ui::widget::Widget;
 
-/// Strip A holds two groups, strip B one. Two groups in one strip is
-/// what makes "only the active sibling lights" checkable; a second strip
-/// is what makes "focus follows the active *strip*" checkable.
+/// Strip A holds two groups, strip B one: two in one strip makes "only the
+/// active sibling lights" checkable, the second strip makes "focus follows
+/// the active *strip*" checkable.
 const G_A1: GroupId = 1001;
 const G_A2: GroupId = 1002;
 const G_B1: GroupId = 2001;
@@ -96,8 +85,8 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
     (t, s_a, s_b)
 }
 
-/// Drive one production frame: `Widget::update` is where the host runs
-/// its per-frame reconcilers, `mark_focused_group` among them.
+/// Drive one production frame — `Widget::update` runs the host's per-frame
+/// reconcilers, `mark_focused_group` among them.
 fn tick(host: &mut ShellOverlayHost) {
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
@@ -177,9 +166,9 @@ fn moving_the_pointer_to_another_strip_moves_the_light() {
 #[test]
 fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
     let (mut t, s_a, s_b) = tree();
-    // A workspace can reach a frame with no active_group recorded for a
-    // strip: a fresh boot, or a strip the user has never clicked into.
-    // Resolution has to fall back rather than leave the strip dark.
+    // A workspace can reach a frame with no active_group for a strip (fresh
+    // boot, or a strip never clicked into); resolution must fall back rather
+    // than leave the strip dark.
     t.active_group.remove(&s_a);
     let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
     tick(&mut host);
@@ -215,8 +204,7 @@ fn a_workspace_with_one_window_lights_nothing() {
 #[test]
 fn a_second_window_anywhere_in_the_workspace_turns_the_marker_on() {
     // One group per strip, two strips: nothing to disambiguate *within* a
-    // strip, but plenty to disambiguate across the workspace — which is
-    // the case a per-strip count would get wrong.
+    // strip, plenty across the workspace — the case a per-strip count gets wrong.
     let (mut t, s_a, s_b) = tree();
     {
         let ws = &mut t.workspaces[0];

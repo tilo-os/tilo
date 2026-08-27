@@ -66,12 +66,10 @@ fn remote_cursor_overlay_filters_to_active_tile() {
     assert_eq!(drawn[0].user_id, "in");
 }
 
-/// A pointer the compositor overlay paints is not painted a second time
-/// by a widget inside the tree, however well it fits the tile.
-///
-/// This overlay is not currently mounted, which is exactly why the rule
-/// is asserted: mounting it is a one-line change, and the store it
-/// reads is the one a peer used to come out of twice.
+/// A pointer the compositor overlay paints must not be painted a second
+/// time by a widget inside the tree. Not currently mounted — asserted
+/// anyway since mounting it is a one-line change, and the store it reads
+/// is the one a peer used to come out of twice.
 #[test]
 fn a_desktop_pointer_is_not_redrawn_inside_the_tile() {
     let mut ctx = PresenceCtx::default();

@@ -1,24 +1,13 @@
 //! The size a window opens at.
 //!
-//! An `xdg_toplevel.configure` carrying width 0, height 0 is not a
-//! formality — in xdg-shell it means "pick your own size". A client told
-//! that picks one, commits a buffer at it, and draws a complete frame at
-//! it. So a compositor that tiles its windows and sends that event has
-//! already lost: whatever the strip decides afterwards arrives as a
-//! *correction*, one frame too late, and every application on the machine
-//! opens visibly undersized inside a correctly-sized frame before
-//! snapping into place.
-//!
-//! The size is a fact about the strip, and the strip does not know it
-//! until it has laid the tab out — which is after the toplevel is
-//! created, not before. So the opening configure is sent from the pass
-//! that runs after layout, and this test reads the wire to prove it: the
-//! **first** configure a real client receives carries the tab's real
-//! size, and nothing carrying no size precedes it.
-//!
-//! Deliberately talks to a socket: the defect lives entirely in what
-//! goes on the wire and when, and a check that cannot observe the wire
-//! cannot catch it.
+//! An `xdg_toplevel.configure` carrying 0x0 means "pick your own size" —
+//! a client that gets one draws a complete frame at whatever it picked,
+//! so the strip's real size arrives as a *correction* one frame too late
+//! and every app opens visibly undersized before snapping. The strip
+//! doesn't know a tab's size until after layout, which is after the
+//! toplevel is created, so the opening configure is sent from the pass
+//! that runs after layout. Reads a real socket, since the defect lives
+//! entirely in what goes on the wire and when.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -104,8 +93,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // The event under test. A real toolkit reads exactly this to
-        // decide how big to render, and treats 0x0 as "my choice".
+        // The event under test: a real toolkit reads exactly this to decide how
+        // big to render, and treats 0x0 as "my choice".
         if let xdg_toplevel::Event::Configure { width, height, .. } = event {
             state
                 .configures
@@ -121,9 +110,8 @@ delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Client: ignore zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1);
 
-/// The compositor on one end of a socket pair and a client on the other,
-/// pumped by hand so the test never blocks on a message that is not
-/// coming.
+/// Compositor and client on a socket pair, pumped by hand so the test
+/// never blocks on a message that is not coming.
 struct Harness {
     display: Display<shell::compositor::state::State>,
     state: shell::compositor::state::State,
@@ -195,9 +183,8 @@ impl Harness {
         ))
     }
 
-    /// Publish a tab rect for every known toplevel, the way
-    /// `ForeignSurfaceWidget::apply_layout` does once the strip has laid
-    /// the tab out.
+    /// The way `ForeignSurfaceWidget::apply_layout` publishes once the strip
+    /// has laid the tab out.
     fn lay_tabs_out(&mut self, tile: Rect) {
         for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
             let id = shell::compositor::state::surface_id(toplevel.wl_surface());
@@ -205,16 +192,15 @@ impl Harness {
         }
     }
 
-    /// The configure pass the run loop runs after every layout.
+    /// The pass the run loop runs after every layout.
     fn flush_configures(&mut self) {
         shell::compositor::foreign::flush_configures(&mut self.state);
         self.pump();
     }
 }
 
-/// Bring a client up to the point a toolkit reaches before it draws:
-/// bound, surface created, toplevel created, decorations negotiated.
-/// Everything but the buffer, which is what it needs the configure for.
+/// Bring a client to the point a toolkit reaches before it draws —
+/// everything but the buffer, which is what it needs the configure for.
 fn open_a_window(h: &mut Harness) -> Configures {
     let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
     h.pump();
@@ -241,9 +227,8 @@ fn open_a_window(h: &mut Harness) -> Configures {
     toplevel.set_app_id("org.qos.test.opening-size".into());
     h.pump();
 
-    // Toolkits negotiate decorations in the same round trip in which they
-    // create the toplevel — drive it, so this test covers that route too
-    // rather than only the one it was named for.
+    // Toolkits negotiate decorations in the same round trip that creates the
+    // toplevel, so drive it here and cover that route too.
     let decoration = manager.get_toplevel_decoration(&toplevel, &qh, ());
     decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
     h.pump();
@@ -254,16 +239,11 @@ fn open_a_window(h: &mut Harness) -> Configures {
     configures
 }
 
-/// The headline. A client's **first** configure states the size of the
-/// tab it is opening into — so the first frame it ever draws is already
-/// the right size, and there is no second, corrected one.
 #[test]
 fn the_first_configure_a_client_receives_carries_its_tab_size() {
     let mut h = Harness::new();
     let configures = open_a_window(&mut h);
 
-    // One shell frame: the strip lays the new tab out, then the
-    // compositor tells the client about it.
     h.lay_tabs_out(Rect::new(0.0, 0.0, 940.0, 712.0));
     h.flush_configures();
 
@@ -290,19 +270,15 @@ fn the_first_configure_a_client_receives_carries_its_tab_size() {
     );
 }
 
-/// The mechanism, stated as an invariant: nothing is put on the wire
-/// while the answer would have to be "you choose".
-///
-/// Asserts both halves so it cannot pass by the client having been
-/// disconnected or the harness having failed to talk at all — silence
-/// before the layout only means something if the layout breaks it.
+/// Asserts both halves, so it can't pass by the client being
+/// disconnected or the harness failing to talk at all.
 #[test]
 fn nothing_is_configured_before_the_strip_has_laid_the_tab_out() {
     let mut h = Harness::new();
     let configures = open_a_window(&mut h);
 
-    // A frame's worth of pumping with no tab rect published: the strip
-    // has not laid this window out, so there is no size to send.
+    // No tab rect published, so the strip has not laid this window out and
+    // there is no size to send.
     h.flush_configures();
     let before = configures.lock().expect("configures").clone();
     assert!(
@@ -323,10 +299,8 @@ fn nothing_is_configured_before_the_strip_has_laid_the_tab_out() {
     );
 }
 
-/// And the wait is bounded. A tab that is never laid out — collapsed
-/// under a maximized sibling, or in a workspace that is not on screen —
-/// must not leave its client unable to map for ever. A window nobody can
-/// see is worse than a window that opened at an approximate size.
+/// A tab that's never laid out (collapsed under a maximized sibling, or
+/// off-screen) must not leave its client unable to map forever.
 #[test]
 fn a_toplevel_whose_tab_is_never_laid_out_is_configured_anyway() {
     let mut h = Harness::new();

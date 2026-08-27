@@ -1,22 +1,13 @@
-//! End-to-end: an app asks the portal for a file, a human clicks
-//! through the dialog, and the app reads the bytes. Nothing here is
-//! mocked past the point where mocking would hide the bug this exists
-//! to prevent:
+//! End-to-end: an app asks the portal for a file, a human clicks through
+//! the dialog, and the app reads the bytes. Nothing is mocked past the
+//! point where mocking would hide the bug this exists to prevent — D-Bus
+//! (`FileChooserBackend` over a socket-pair), the queue
+//! (`FilePickerQueue`), the pump (`ShellOverlayHost::pump_file_picker`),
+//! the widget (clicks hit-test the rect `ui::widget::FilePicker` computed)
+//! and the files are all the production article.
 //!
-//! - **D-Bus is real**: `FileChooserBackend` is driven through a zbus
-//!   `Proxy` over a socket-pair, the same wire an app's call travels.
-//! - **The queue is real**: `FilePickerQueue` is the production
-//!   `FilePickerSpawner`, not a mock.
-//! - **The pump is real**: `ShellOverlayHost::pump_file_picker` is the
-//!   method the compositor calls every frame.
-//! - **The widget is real**: the test clicks `ui::widget::FilePicker`
-//!   by hit-testing the rect the widget itself computed.
-//! - **The files are real**: bytes are written to a temp dir and read
-//!   back through the path the app was handed.
-//!
-//! The one thing that is *not* a real frame loop is the driving: the
-//! D-Bus method parks on a oneshot, so the test spawns the call and
-//! then turns the pump by hand, exactly as the compositor's tick would.
+//! Not a real frame loop: the D-Bus call parks on a oneshot, so the test
+//! spawns it and turns the pump by hand, as the compositor's tick would.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,9 +29,6 @@ const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 const WS: u64 = 1;
 const APP: &str = "org.example.editor";
 
-// ---------------------------------------------------------------------
-// scaffolding
-// ---------------------------------------------------------------------
 
 fn synth_device() -> winit::event::DeviceId {
     // SAFETY: `DeviceId` is opaque; the same pattern the other shell
@@ -65,8 +53,6 @@ fn left_press() -> winit::event::WindowEvent {
 
 /// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
 /// `pub(crate)`), so zero-init and overwrite the fields the shell reads.
-/// Same workaround as `tests/document_open_e2e.rs::key_press_event` and
-/// `bin/shots/driver.rs::key_press_event`.
 fn key_press(ch: char) -> winit::event::WindowEvent {
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
     // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
@@ -87,9 +73,8 @@ fn key_press(ch: char) -> winit::event::WindowEvent {
     }
 }
 
-/// Send one event into the live dialog through the host's own
-/// `handle_event` — the modal intercept the compositor installs, not the
-/// widget in isolation.
+/// Goes through the host's own `handle_event` — the modal intercept the
+/// compositor installs, not the widget in isolation.
 fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
     use ui::Widget;
     let mut tree = taffy::TaffyTree::<()>::new();
@@ -111,13 +96,11 @@ fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
     );
 }
 
-/// Click at a point: move the cursor there, then press.
 fn click_at(host: &mut ShellOverlayHost, p: vello::kurbo::Point) {
     dispatch(host, &cursor_at(p));
     dispatch(host, &left_press());
 }
 
-/// A host wired to the portal queues, over a workspace the local user owns.
 fn host_with_portal(
     prompts: PromptQueueHandle,
     pickers: FilePickerQueue,
@@ -142,11 +125,9 @@ fn host_with_portal(
 const VIEW_W: f32 = 1280.0;
 const VIEW_H: f32 = 800.0;
 
-/// Run the real layout pass so the host has a viewport rect — the same
-/// `build_layout` → `compute_layout` → `apply_layout` sequence
-/// `ui::App` runs each frame. The dialog's position is derived from
-/// that rect, so a test that skipped it would be clicking into a
-/// zero-sized world.
+/// The same layout sequence `ui::App` runs each frame. The dialog's
+/// position derives from the host's viewport rect, so skipping this would
+/// click into a zero-sized world.
 fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
     use ui::Widget;
     let theme = ui::theme::Theme::default();
@@ -165,13 +146,9 @@ fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
     host.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
 }
 
-/// A scratch directory the picker is actually allowed to browse.
-///
-/// `PickerScope::for_user` roots the dialog at the user's own
-/// directories and refuses to navigate outside them. That gating is the
-/// thing under test, not an obstacle to route around — a test working
-/// in `/tmp` would be driving a dialog that correctly shows nothing. So
-/// the scratch directory goes where a real pick happens.
+/// `PickerScope::for_user` roots the dialog at the user's own directories
+/// and refuses to navigate outside them — that gating is the thing under
+/// test, so the scratch directory goes where a real pick happens.
 fn user_dir() -> tempfile::TempDir {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -184,7 +161,6 @@ fn user_dir() -> tempfile::TempDir {
     tempfile::TempDir::new_in(&home).expect("scratch dir under HOME")
 }
 
-/// Register the FileChooser backend on a p2p pair and hand back a proxy.
 async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'static>) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
     let server_builder = Builder::unix_stream(server_sock)
@@ -194,10 +170,9 @@ async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .serve_at(OBJECT_PATH, portal::FileChooserBackend::new(ctx))
         .expect("serve_at");
     let client_builder = Builder::unix_stream(client_sock).p2p();
-    // Both sides of a p2p handshake have to be driven at once. Awaiting
-    // the server's `build()` first parks it waiting for a client that
-    // this function has not created yet, and the test hangs before it
-    // has tested anything.
+    // Both sides of a p2p handshake must be driven at once — awaiting the
+    // server's `build()` first parks it waiting for a client this function
+    // hasn't created yet, hanging the test.
     let (server, client) =
         futures_util::try_join!(server_builder.build(), client_builder.build())
             .expect("p2p connection pair");
@@ -219,8 +194,8 @@ fn context(
     ws: WorkspaceId,
 ) -> PortalContext {
     let caller_map = CallerMap::new();
-    // The p2p transport surfaces no unique name, so pin the caller the
-    // way the bridge accept path would in production.
+    // The p2p transport surfaces no unique name, so pin the caller the way
+    // the bridge accept path would in production.
     caller_map.force_caller_for_tests(PortalCaller::new(ws, APP));
     PortalContext {
         grants,
@@ -236,7 +211,6 @@ fn context(
     }
 }
 
-/// Turn the compositor's per-frame pump until `f` is satisfied.
 async fn pump_until(
     host: &mut ShellOverlayHost,
     what: &str,
@@ -252,12 +226,9 @@ async fn pump_until(
     panic!("timed out waiting for {what}");
 }
 
-/// Await a spawned portal call while still turning the pump.
-///
-/// The pump is what answers the call, so awaiting one without running
-/// the other is a deadlock. Every wait on a portal response goes
-/// through here so a test can never accidentally stop the compositor
-/// and then wonder why the app never heard back.
+/// Await a spawned portal call while still turning the pump — the pump is
+/// what answers the call, so awaiting one without running the other
+/// deadlocks.
 async fn await_response(
     host: &mut ShellOverlayHost,
     what: &str,
@@ -273,8 +244,6 @@ async fn await_response(
     panic!("the portal call for {what} never answered — the caller is hung");
 }
 
-/// The rect the host paints the dialog into, so a click lands where the
-/// user would see the control.
 fn picker_rect() -> vello::kurbo::Rect {
     shell::shell::overlay_host::file_picker_rect(vello::kurbo::Rect::new(
         0.0, 0.0, 1280.0, 800.0,
@@ -290,11 +259,7 @@ fn path_of_uri(uri: &str) -> PathBuf {
     PathBuf::from(uri.strip_prefix("file://").expect("file:// uri"))
 }
 
-// ---------------------------------------------------------------------
-// the tests
-// ---------------------------------------------------------------------
 
-/// Open: the app asks, the user clicks a file, the app reads the bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     const BYTES: &str = "the bytes the app must be able to read\n";
@@ -327,14 +292,12 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
             .expect("OpenFile")
     });
 
-    // The compositor notices the request and puts a dialog on screen.
     pump_until(&mut host, "the dialog to appear", |h| {
         h.file_picker().is_some()
     })
     .await;
 
-    // Point it at the directory we seeded, the way a user browsing
-    // there would leave it, then click the row for `report.txt`.
+    // Point it at the seeded directory, the way a user browsing there would.
     let rect = picker_rect();
     {
         let picker = host.file_picker_mut().expect("dialog");
@@ -351,9 +314,8 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
             .expect("report.txt must be listed");
         picker.entry_rect(idx).expect("row must be laid out")
     };
-    // Two clicks on the row: select, then activate. This is the widget's
-    // own hit-test path — the coordinate comes from the rect the widget
-    // computed, so a layout regression breaks this test.
+    // Two clicks on the row: select, then activate — through the widget's own
+    // hit-test path, so a layout regression breaks this test.
     click_at(&mut host, row.center());
     click_at(&mut host, row.center());
 
@@ -372,7 +334,6 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     let uris = uris_of(&results);
     assert_eq!(uris.len(), 1, "OpenFile returns exactly one uri: {uris:?}");
 
-    // The whole point: the app can read what it was handed.
     let handed = path_of_uri(&uris[0]);
     let read_back = std::fs::read_to_string(&handed)
         .unwrap_or_else(|e| panic!("the app cannot read {}: {e}", handed.display()));
@@ -403,8 +364,6 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     );
 }
 
-/// Save: the app asks for a destination in a directory it had no grant
-/// for, the user names a new file, and the app's write lands on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     const BYTES: &str = "saved from the app\n";
@@ -486,7 +445,6 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     let handed = path_of_uri(&uris_of(&results)[0]);
     assert_eq!(handed, fresh.join("notes.md"));
 
-    // The app writes.
     std::fs::write(&handed, BYTES)
         .unwrap_or_else(|e| panic!("the app cannot write {}: {e}", handed.display()));
     assert_eq!(
@@ -518,8 +476,6 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     );
 }
 
-/// Cancel releases the caller rather than leaving a request that never
-/// comes back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
@@ -567,9 +523,8 @@ async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
     assert!(results.is_empty());
 }
 
-/// A request that arrives while a dialog is already up is answered
-/// rather than queued behind it. Two modals for two apps, with no way to
-/// tell which is which, is worse than a cancel the app can retry.
+/// Two modals for two apps, with no way to tell which is which, is worse
+/// than a cancel the app can retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);

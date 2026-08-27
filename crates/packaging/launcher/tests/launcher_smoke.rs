@@ -1,12 +1,10 @@
 //! Launcher smoke tests.
 //!
 //! These tests invoke the *library* surface of `qos-launcher` (so we
-//! don't need to first build the binary) against ad-hoc fixtures.
-//! Each test that actually spawns bwrap is `#[ignore]`d by default
-//! because:
-//! - bwrap may not be installed everywhere.
-//! - bwrap typically needs `CAP_SYS_ADMIN` or unprivileged user
-//!   namespaces — distrobox usually has those, plain CI may not.
+//! don't need to first build the binary) against ad-hoc fixtures. Each
+//! test that actually spawns bwrap is `#[ignore]`d by default — bwrap
+//! may not be installed everywhere, and typically needs `CAP_SYS_ADMIN`
+//! or unprivileged user namespaces, which plain CI may not have.
 //!
 //! Run the live-bwrap ones explicitly:
 //!
@@ -14,8 +12,8 @@
 //! cargo test -p qos-launcher -- --ignored
 //! ```
 //!
-//! The non-ignored tests cover all the manifest-handling and service-
-//! resolution semantics without touching bwrap at all.
+//! The non-ignored tests cover manifest-handling and service-resolution
+//! semantics without touching bwrap at all.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,18 +25,16 @@ use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 
 /// The runtime-bundle lookup tests all mutate `HOME` / `XDG_DATA_HOME`
-/// to a per-test tempdir. Since env vars are process-global, run those
-/// tests serially — otherwise concurrent tempdir paths bleed across
-/// each other and `default_bundle_path()` may resolve to the wrong
-/// tempdir.
+/// to a per-test tempdir; since env vars are process-global, run those
+/// tests serially or concurrent tempdir paths bleed across each other.
 static RUNTIME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-// ---------------------------------------------------------------- helpers
+// helpers
 
-/// rustc-compile the in-tree `hello` fixture into `out_dir/bin/hello`.
-/// We do this rather than `cargo build` because the fixture lives
-/// outside the workspace and we want a single-shot build that doesn't
-/// dirty the workspace target dir.
+/// rustc-compile the in-tree `hello` fixture into `out_dir/bin/hello`
+/// rather than `cargo build`, since the fixture lives outside the
+/// workspace and this wants a single-shot build that doesn't dirty the
+/// workspace target dir.
 fn build_hello(out_dir: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/hello/src/main.rs");
@@ -56,12 +52,8 @@ fn build_hello(out_dir: &Path) -> PathBuf {
     bin
 }
 
-// `with_glibc_binds` used to live here. It pushed `/usr/lib`,
-// `/usr/lib64`, `/lib` and `/lib64` into the fixture's
-// `sandbox.fs.read` so the dynamically-linked binary could find its
-// loader inside the sandbox. Those four paths are in the launcher's
-// system read profile now — every app gets them, none of them declares
-// them — so the helper has nothing left to do.
+// `with_glibc_binds` is gone: those loader paths are in the launcher's
+// system read profile now, so every app gets them without declaring.
 
 fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> MinimalManifest {
     let _ = payload_root;
@@ -104,7 +96,7 @@ fn bwrap_path() -> Option<PathBuf> {
     }
 }
 
-// ---------------------------------------------------------------- tests
+// tests
 
 #[test]
 fn manifest_malformed_fails_before_exec() {
@@ -141,10 +133,9 @@ fn required_service_missing_fails() {
 
 #[test]
 fn no_services_flag_skips_required_resolution() {
-    // Same manifest, but --no-services: required failure becomes a
-    // skip + warn. We can't actually exec without bwrap, so we just
-    // assert the resolution step succeeds; the spawn step is exercised
-    // by the live tests.
+    // Same manifest, but --no-services: required failure becomes a skip +
+    // warn. Can't exec without bwrap, so this just asserts the resolution
+    // step succeeds; the spawn step is exercised by the live tests.
     let _dir = tempfile::tempdir().unwrap();
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
@@ -246,24 +237,17 @@ fn optional_service_missing_warns_and_runs() {
     assert!(status.success(), "optional missing should still run");
 }
 
-// `read_only_fs_enforced` used to live here. It declared `/usr` as a
-// manifest read path, launched the hello fixture, and asserted the run
-// succeeded — its own comment admitted "the fixture is too simple for
-// that". A test that proves a read-only mount by observing that a
-// program which never writes exits zero proves nothing, and it is the
-// exact shape of test this change is meant to stop trusting.
-//
-// It is replaced, not deleted: `tests/room_confinement.rs` starts the
-// real thing under bwrap and has it try the reads and writes, so the
-// assertion is on a syscall's answer rather than on an argv or an exit
-// code that was never at risk.
+// Superseded by `tests/room_confinement.rs`, which starts the real
+// thing under bwrap and has it try the reads/writes — the assertion is
+// on a syscall's answer, not an argv or an exit code that was never at
+// risk.
 
 #[test]
 fn manifest_declared_runtime_missing_bundle_fails() {
     let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    // Manifest points at a runtime whose bundle doesn't exist anywhere
-    // on the search path. Without --allow-missing-runtime we expect a
-    // RuntimeBundleMissing error naming the paths we looked at.
+    // Manifest points at a runtime whose bundle doesn't exist anywhere on
+    // the search path: expect a RuntimeBundleMissing error naming the
+    // paths looked at.
     let dir = tempfile::tempdir().unwrap();
     let user_home = tempfile::tempdir().unwrap();
     unsafe {
@@ -347,12 +331,10 @@ fn install_signed_bundle(
     (dest, identity)
 }
 
-/// When an app manifest declares a runtime bundle, the launcher's
-/// argv should:
-///   * bind the bundle at /usr/lib/qos-runtime/<v>/
-///   * set LD_LIBRARY_PATH to <mount>/lib
-///   * NOT include the --minimal-libs loader binds even if the flag
-///     is on
+/// When an app manifest declares a runtime bundle, the launcher's argv
+/// should: bind the bundle at /usr/lib/qos-runtime/<v>/, set
+/// LD_LIBRARY_PATH to <mount>/lib, and NOT include the --minimal-libs
+/// loader binds even if the flag is on.
 #[test]
 fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
@@ -418,9 +400,8 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     );
 
     // And when both minimal-libs and a resolvable runtime bundle are
-    // requested, resolve_runtime picks the bundle. We can't easily
-    // read argv from `run_with` without spawning bwrap, so instead
-    // exercise resolve_runtime directly.
+    // requested, resolve_runtime picks the bundle — exercised directly
+    // since argv isn't readable from `run_with` without spawning bwrap.
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
@@ -441,14 +422,11 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     assert!(resolved.is_none());
 }
 
-/// A {libstd, libruntime} runtime bundle mounts so that a thin
+/// A {libstd, libruntime} runtime bundle mounts so a thin
 /// (`-C prefer-dynamic`) app resolves its shared SDK + std libraries
-/// from the bundle. Proves the full contract at the launcher boundary:
-///   * the shared `.so`s the app links live at the TOP of `<bundle>/lib`
-///     (built there via `runtime-bundle --include`), and
-///   * the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
-///     finds them by soname inside the sandbox.
-/// Signature integrity is enforced along the way (the bundle is signed).
+/// from the bundle: the shared `.so`s live at the TOP of `<bundle>/lib`
+/// and the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
+/// finds them by soname. Signature integrity is enforced along the way.
 #[test]
 fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
@@ -461,11 +439,9 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         std::env::set_var("HOME", user_home.path());
     }
 
-    // Build a signed bundle that folds in stand-ins for the two shared
-    // objects a thin app links: the Rust std dylib + the qOS runtime
-    // dylib. This exercises the same `extra_libs` path the real bake
-    // uses (`runtime-bundle --include libstd-*.so --include
-    // libruntime_dylib.so`).
+    // Build a signed bundle folding in stand-ins for the two shared
+    // objects a thin app links (Rust std + qOS runtime dylib), exercising
+    // the same `extra_libs` path the real bake uses.
     let version = "thin-smoke-1";
     let host = tempfile::tempdir().unwrap();
     for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
@@ -564,15 +540,12 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     );
 }
 
-/// End-to-end: a manifest with `[sandbox.portals] notifications = "via-host"`
-/// AND a working `xdg-dbus-proxy` (mocked) results in the launcher spawning
-/// the proxy, generating argv that binds the *proxy* socket (not the raw
-/// bus), and reaping the proxy when the launch tears down.
-///
-/// We can't observe argv from `run_with` directly (it feeds it to bwrap
-/// as a private detail), so we drive `resolve_dbus_bind` via the same
-/// entry path — spawning the mocked proxy — and assert on the resulting
-/// plan + guard.
+/// End-to-end: a manifest with `[sandbox.portals] notifications =
+/// "via-host"` and a working `xdg-dbus-proxy` (mocked) results in the
+/// launcher spawning the proxy, binding the *proxy* socket (not the
+/// raw bus), and reaping the proxy on teardown. argv isn't observable
+/// from `run_with` directly, so this drives `resolve_dbus_bind` via the
+/// same entry path and asserts on the resulting plan + guard.
 #[test]
 fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
     use launcher::dbus_proxy::PROXY_BIN_ENV;
@@ -616,11 +589,9 @@ wait $!
         .portals
         .insert("notifications".to_string(), launcher::manifest::PortalPolicy::ViaHost);
 
-    // Drive the proxy path via the launcher's public helper.
-    // In-test uid is fictitious (1234) so we can't mkdir the
-    // canonical /run/user/1234/... path; use the tempdir for the
-    // socket instead. Real launches always use the invoking user's
-    // uid where `/run/user/<uid>` is writable.
+    // Drive the proxy path via the launcher's public helper. In-test uid
+    // is fictitious (1234), so use a tempdir socket instead of the
+    // canonical /run/user/1234/... path a real launch would use.
     let sock = tmp.path().join("proxy.sock");
     let bin = launcher::dbus_proxy::find_proxy_binary()
         .expect("PROXY_BIN_ENV was set above");
@@ -680,9 +651,8 @@ wait $!
 }
 
 /// Fallback path: when `xdg-dbus-proxy` is unavailable, the launcher
-/// still exposes the raw bus (path only). The build_bwrap_argv output
-/// should carry the raw bus bind with `DBusBindKind::Direct` as
-/// documented — surface it via the plan we hand `build_bwrap_argv`.
+/// still exposes the raw bus (path only), with `DBusBindKind::Direct`
+/// as documented.
 #[test]
 fn dbus_direct_bind_used_when_proxy_missing() {
     use launcher::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
@@ -742,9 +712,8 @@ fs = "optional@2"
     assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
 }
 
-/// Manifest declares a runtime; a bundle at that version exists but is
-/// unsigned. Default policy refuses to launch. --allow-unsigned-runtime
-/// makes the resolve succeed.
+/// A runtime bundle that exists but is unsigned is refused by default;
+/// --allow-unsigned-runtime makes the resolve succeed.
 #[test]
 fn unsigned_bundle_is_refused_unless_opted_in() {
     let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -783,10 +752,9 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
     assert_eq!(v, "sig-refuse-1");
 }
 
-/// The launcher's trusted-publisher file pins which signing keys are
-/// acceptable for runtime bundles at mount time. A missing file means
-/// "any signed publisher works"; a file with matching key accepts; a
-/// file with only a different key refuses.
+/// The trusted-publisher file pins which signing keys are acceptable
+/// for runtime bundles at mount time: missing means any signed
+/// publisher works; a matching key accepts; a mismatched key refuses.
 #[test]
 fn trusted_publisher_file_gates_mount() {
     let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -848,9 +816,8 @@ fn trusted_publisher_file_gates_mount() {
     .unwrap();
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("multi-entry list accepts");
 
-    // 4. No trust file: any signed publisher works (verify the env
-    //    override applied above is what's being tested — the default
-    //    file at /etc is not readable in these tests).
+    // 4. No trust file: any signed publisher works (verifies the env
+    //    override above, since the default /etc file isn't readable here).
     unsafe {
         std::env::remove_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
     }
@@ -907,11 +874,11 @@ fn signed_bundle_publisher_pin_enforced() {
 }
 
 
-// ------------------------------------------------- workspace capabilities
+// workspace capabilities
 
 /// A capability file on disk becomes a bind in the argv, through the
-/// exact pair `run_with` uses: `resolve_capabilities` reads and
-/// evaluates the file, `build_bwrap_argv` renders the result.
+/// exact pair `run_with` uses: `resolve_capabilities` reads it,
+/// `build_bwrap_argv` renders the result.
 #[test]
 fn a_capability_file_on_disk_becomes_a_bind_in_the_argv() {
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
@@ -964,9 +931,9 @@ fn a_capability_file_on_disk_becomes_a_bind_in_the_argv() {
     );
 }
 
-/// Deny by default at the file boundary: a capability file the launcher
-/// cannot parse grants nothing, and a launch without one grants nothing.
-/// Neither is a launch failure — both are just the manifest's sandbox.
+/// Deny by default at the file boundary: an unparseable capability file
+/// grants nothing, same as no file at all — neither is a launch
+/// failure, both are just the manifest's sandbox.
 #[test]
 fn an_unparseable_or_absent_capability_file_grants_nothing() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,11 +1,10 @@
-//! Visual harness for expand-to-fullscreen + its floating pill decoration.
+//! Visual harness for expand-to-fullscreen + its floating pill decoration:
+//! renders the real chrome (the same `FrameBuilder` the live compositor
+//! paints with) before and after clicking a tab's Expand chip and writes
+//! PNGs, so the result can be looked at rather than inferred.
 //!
-//! Renders the real chrome (same `FrameBuilder` the live compositor paints
-//! with) before and after clicking a tab's Expand chip, and writes PNGs so the
-//! result can actually be looked at rather than inferred from assertions.
-//!
-//! `#[ignore]` by default — it needs a GPU adapter and is a review tool, not a
-//! gate. Run it with an output directory:
+//! `#[ignore]` by default — needs a GPU adapter, and is a review tool, not
+//! a gate. Run with an output directory:
 //!
 //! ```text
 //! QOS_SHOT_DIR=/tmp/shots cargo test -p shell --test expand_fullscreen_visual \
@@ -83,12 +82,10 @@ fn render_expand_to_fullscreen() {
     let mut r = OffscreenRenderer::new(W, H);
     let mut d = Driver::new();
 
-    // --- before: normal tiled desktop -------------------------------------
     fb.relayout();
     let scene = fb.paint();
     r.render_png(&scene, Color::BLACK, dir.join("01-tiled.png"));
 
-    // Which strip are we driving? Take the active one from the tree.
     let strip_id = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
@@ -98,8 +95,7 @@ fn render_expand_to_fullscreen() {
             .expect("one strip")
     };
 
-    // Hover the active tab's pill: the per-tab chips only lay out hit rects
-    // once the pointer is over the pill.
+    // Per-tab chips only lay out hit rects once the pointer is over the pill.
     let pill_center = {
         let g = fb
             .host_mut()
@@ -123,7 +119,6 @@ fn render_expand_to_fullscreen() {
     let scene = fb.paint();
     r.render_png(&scene, Color::BLACK, dir.join("02-pill-hovered.png"));
 
-    // --- click Expand ------------------------------------------------------
     d.cursor(&mut fb, chip);
     d.click(&mut fb);
     fb.host_mut().tick_pending_maximize_harvest_for_tests();
@@ -134,7 +129,7 @@ fn render_expand_to_fullscreen() {
         .map(|g| g.maximized)
         .unwrap_or(false);
     println!("after Expand click: maximized={maximized}");
-    // Put the cursor in the top reveal band so the floating pill is showing.
+    // Cursor in the top reveal band, so the floating pill is showing.
     d.cursor(&mut fb, Point::new(200.0, 20.0));
     fb.relayout();
     let scene = fb.paint();
@@ -144,7 +139,7 @@ fn render_expand_to_fullscreen() {
         dir.join("03-fullscreen-chrome-shown.png"),
     );
 
-    // --- cursor away from the top: the floating pill must auto-hide --------
+    // Cursor away from the top: the floating pill must auto-hide.
     d.cursor(&mut fb, Point::new(800.0, 600.0));
     fb.relayout();
     let scene = fb.paint();

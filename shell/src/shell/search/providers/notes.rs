@@ -1,10 +1,6 @@
-//! Notes provider — walks every Notes-kind tab and matches the query against
-//! tab title + Automerge body text; Enter focuses the tab. Runs
-//! synchronously against `chrome.tree()`, since notes live in the same
-//! Automerge doc the palette callback already holds.
-//!
-//! Walk, scoring and body read are shared with the Editor (see
-//! [`super::text_app`]).
+//! Notes provider — walks every Notes-kind tab and matches the query
+//! against tab title + Automerge body text; Enter focuses the tab. Walk,
+//! scoring and body read are shared with the Editor (see [`super::text_app`]).
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::notes_app::BODY_KEY;
@@ -103,9 +99,7 @@ mod tests {
         Arc::new(RwLock::new(tree))
     }
 
-    /// Seed the body the way the *app* does — a real [`NotesApp`] whose
-    /// `sync` writes into the tab's own record. A hand-rolled seed can write
-    /// somewhere the provider never reads, making the test prove nothing.
+    /// Seed via a real [`NotesApp`], so the write lands where the provider reads.
     fn seed_note_body(chrome: &ChromeState, tab_id: u64, body: &str) {
         let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
         let store = chrome.records();
@@ -133,7 +127,6 @@ mod tests {
         });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "Grocery list");
-        // Prefix on title (110) — the body-only match would score 40.
         assert_eq!(out[0].score, 110);
     }
 
@@ -162,8 +155,7 @@ mod tests {
         );
     }
 
-    /// `nir` matches nothing else about the tab, isolating a body-only
-    /// match. Notes open empty, so the body is written here, not assumed.
+    /// `nir` matches nothing else about the tab, isolating a body-only match.
     #[test]
     fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
         let handle = tree_with_note_tab(7, "Notes");
@@ -196,9 +188,6 @@ mod tests {
             snippet.contains("nirios"),
             "the row must show the matching line: {snippet:?}"
         );
-        // One line of prose, not the body's own line breaks: the seed has
-        // a paragraph break right after the match, and two spaces in the
-        // middle of a palette row read as a typo.
         assert!(
             !snippet.contains("  ") && !snippet.contains('\n'),
             "the snippet must collapse the body's line structure: {snippet:?}"

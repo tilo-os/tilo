@@ -1,22 +1,13 @@
-//! The canonical on-disk home for a qOS app's Automerge document.
+//! Canonical on-disk home for a qOS app's Automerge document: one file per
+//! package at `$XDG_DATA_HOME/<package-id>/state.automerge`, atomic writes,
+//! a debounced background writer. The path derives only from
+//! `QOS_PACKAGE_ID`, validated so an app can't address another app's
+//! storage or the shared workspace FUSE root.
 //!
-//! One store per installed package: one file format (raw Automerge, so any
-//! peer or tool can merge against it), atomic writes, and a debounced
-//! background writer. Path is `$XDG_DATA_HOME/<package-id>/state.automerge`,
-//! derived only from `QOS_PACKAGE_ID`: an app cannot name its own storage
-//! path or another app's — [`DocStore::open_for`] rejects any id that is
-//! absolute, contains a separator, or contains `..`. Deliberately not routed
-//! through `cli::resolve_workspace_path`: that resolves against the shared
-//! workspace FUSE root, which app state must never appear in.
-//!
-//! [`Autosave`] appends `doc.save_after(persisted_heads)` rather than a full
-//! `doc.save()` on every edit, so write volume stays linear rather than
-//! quadratic in document size.
-//!
-//! The store round-trips the document's own bytes rather than rebuilding a
-//! fresh `AutoCommit` from an app's model, so a saved file stays mergeable
-//! with a peer that diverged before the save. It keeps the actor id in a
-//! sidecar so a restart continues the same change sequence; [`DocStore::open`]
+//! [`Autosave`] appends `save_after(persisted_heads)` (linear write volume,
+//! not quadratic) and round-trips the document's own bytes rather than a
+//! rebuilt `AutoCommit`, so saves stay mergeable with a diverged peer. The
+//! actor id lives in a sidecar for restart continuity; [`DocStore::open`]
 //! takes an exclusive `flock` so two live instances never share one.
 
 use std::fs::{self, File, OpenOptions};
@@ -30,54 +21,37 @@ use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROO
 mod autosave;
 pub use autosave::{Autosave, DEFAULT_DEBOUNCE};
 
-/// Name of the Automerge document inside the package's state directory.
 pub const DOCUMENT_FILE: &str = "state.automerge";
-/// Name of the actor-identity sidecar.
 pub const ACTOR_FILE: &str = "actor";
-/// Name of the single-writer lock file.
 pub const LOCK_FILE: &str = "writer.lock";
-/// Directory, inside a package's state directory, holding one subdirectory per
-/// record. See [`DocStore::open_record`].
+/// Subdirectory holding one directory per record. See [`DocStore::open_record`].
 pub const RECORDS_DIR: &str = "records";
-/// Directory, inside a package's state directory, holding one subdirectory per
-/// **room** — the index of which records that room holds. See
-/// [`DocStore::open_room`].
+/// Subdirectory holding one directory per **room** — the index of records
+/// that room holds. See [`DocStore::open_room`].
 pub const ROOMS_DIR: &str = "rooms";
 
-/// Root-map key carrying the document's layout version.
-///
-/// Namespaced so it cannot collide with an app's own key. Every document this
-/// crate creates gets it; a document from before it existed does not, and is read
-/// as [`SCHEMA_VERSION`] — the key was added alongside the check, not alongside a
-/// format change, so treating its absence as "unknown" would condemn every
-/// existing user's documents on the upgrade that introduced it.
+/// Root-map key for the document's layout version. A document from before
+/// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
+/// upgrade that added the check doesn't strand every existing document.
 pub const SCHEMA_VERSION_KEY: &str = "qos:schema_version";
 
-/// The document layout this build writes and understands.
-///
-/// Bump it when a change makes a document **unreadable to an older build in a
-/// way that loses meaning**. Adding a key does not qualify: an older build
-/// ignores it, and Automerge merges it back untouched.
-///
-/// It exists for one direction. Newer reading older is what a CRDT is for. Older
-/// reading newer is the case with no safe default answer, and the answer here
-/// used to be to start empty and then overwrite — the two together turning a
-/// version skew into data loss. See [`DocStore::load`].
+/// The document layout this build writes and understands. Bump only when a
+/// change makes a document unreadable to an older build in a way that loses
+/// meaning — adding a key does not qualify, since an older build just
+/// ignores it. Older-reading-newer has no safe default; this crate used to
+/// start empty and overwrite, turning version skew into data loss. See
+/// [`DocStore::load`].
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    /// The package id could not be turned into a directory name.
     #[error("invalid package id {0:?}: {1}")]
     PackageId(String, &'static str),
-    /// The record key could not be turned into a directory name. Distinct from
-    /// [`StoreError::PackageId`] so the message names which of the two inputs
-    /// was wrong — they arrive from different places (the launcher vs. the
-    /// app's own record identity).
+    /// The record key could not be turned into a directory name (distinct from
+    /// [`StoreError::PackageId`] so the message names which input was wrong).
     #[error("invalid record key {0:?}: {1}")]
     RecordKey(String, &'static str),
-    /// A filesystem operation failed. The path is in the message.
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -91,14 +65,9 @@ pub enum StoreError {
         #[source]
         source: automerge::AutomergeError,
     },
-    /// The document was written by a newer build than this one.
-    ///
-    /// Its own error rather than a variant of [`StoreError::Automerge`],
-    /// because the two want opposite things from whoever sees them: an
-    /// unloadable document may be damage, while this one means the data is
-    /// intact and *this build* is the wrong one to open it with. Saying
-    /// "unreadable" for a document that plainly states its layout would throw
-    /// away the only actionable part of the failure.
+    /// The document was written by a newer build than this one. Kept separate
+    /// from [`StoreError::Automerge`] because the data is intact and only this
+    /// build is wrong for it — saying "unreadable" would lose that distinction.
     #[error(
         "{path} has layout {found}, and this build understands {understood}. \
          It was written by a newer version of this app; nothing has been \
@@ -118,14 +87,10 @@ fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     }
 }
 
-/// The layout version a document declares.
-///
-/// A document with no such key is [`SCHEMA_VERSION`] — see
-/// [`SCHEMA_VERSION_KEY`] for why absence is not "unknown". A key that is
-/// present but not an integer is treated the same way: this crate is the only
-/// thing that writes it, so a non-integer there is somebody else's key of the
-/// same name, and refusing to open a user's documents over it would be a worse
-/// answer than ignoring it.
+/// The layout version a document declares. Absent, or present but not an
+/// integer, both read as [`SCHEMA_VERSION`] (see [`SCHEMA_VERSION_KEY`]) —
+/// this crate is the only writer of the key, so a non-integer is someone
+/// else's key of the same name, not corruption.
 pub fn schema_version_of(doc: &AutoCommit) -> u32 {
     match doc.get(ROOT, SCHEMA_VERSION_KEY) {
         Ok(Some((v, _))) => v
@@ -137,32 +102,24 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
     }
 }
 
-/// Write the current layout version into a document's root map.
 fn stamp_schema_version(doc: &mut AutoCommit) {
     if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION)) {
         tracing::warn!(error = %e, "could not stamp the document's schema version");
     }
 }
 
-/// Stamp the version if the document does not already carry one.
-///
-/// Called on the write paths so that a document created before versioning
-/// existed gains its version the first time it is saved, rather than staying
-/// unlabelled for ever and being read as version 1 by builds that will one day
-/// be wrong about that.
+/// Stamp the version only if the document doesn't already carry one, so a
+/// pre-versioning document gets it on first save rather than staying unlabelled.
 fn ensure_schema_version(doc: &mut AutoCommit) {
     if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
         stamp_schema_version(doc);
     }
 }
 
-/// Validate a package id as a single directory name.
-///
-/// This is the containment boundary. `QOS_PACKAGE_ID` normally arrives from
-/// the launcher, but an app runs in its own process and can set its own
-/// environment, so the value is treated as untrusted input: anything that
-/// could address a directory other than the app's own is rejected rather
-/// than sanitised.
+/// Validate a package id as a single directory name — the containment
+/// boundary. `QOS_PACKAGE_ID` is treated as untrusted (an app can set its
+/// own environment), so anything that could escape its own directory is
+/// rejected rather than sanitised.
 fn validate_package_id(id: &str) -> Result<(), StoreError> {
     if id.is_empty() {
         return Err(StoreError::PackageId(id.to_string(), "must not be empty"));
@@ -194,14 +151,11 @@ fn validate_package_id(id: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Validate a record key as a single directory name.
-///
-/// Same boundary as [`validate_package_id`], and it matters more here: a
-/// record's identity can be a *file path*, so the key derived from it is the
-/// one place where `..` could turn a document identity into a traversal.
-/// Rejected rather than sanitised — a key we would have to rewrite is a key the
-/// caller derived wrongly, and silently redirecting it would make two records
-/// share one file.
+/// Validate a record key as a single directory name — same boundary as
+/// [`validate_package_id`], but stricter matters here since a record's
+/// identity can be a file path where `..` could enable traversal. Rejected
+/// rather than sanitised, since silently rewriting a bad key could make two
+/// records share one file.
 fn validate_record_key(key: &str) -> Result<(), StoreError> {
     if key.is_empty() {
         return Err(StoreError::RecordKey(
@@ -230,29 +184,21 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The persistent store for one package's Automerge document.
-///
-/// Construct it with [`DocStore::open`] (which reads `QOS_PACKAGE_ID`) and
-/// either drive it by hand ([`DocStore::load_or_new`] + [`DocStore::save`])
-/// or hand it to [`DocStore::autosave`] for debounced background writes.
+/// The persistent store for one package's Automerge document. Construct
+/// with [`DocStore::open`], then drive by hand ([`DocStore::load_or_new`] +
+/// [`DocStore::save`]) or hand to [`DocStore::autosave`] for debounced writes.
 pub struct DocStore {
     package_id: String,
     dir: PathBuf,
     document: PathBuf,
     actor: ActorId,
-    /// Held for as long as the store lives; dropping the file releases the
-    /// `flock`. `None` when another instance already owns the lock.
+    /// Held for as long as the store lives; `None` when another instance already owns the lock.
     lock: Option<File>,
-    /// Heads the file on disk is known to contain. Empty until the first
-    /// load or save.
+    /// Heads the file on disk is known to contain; empty until the first load or save.
     persisted: Vec<ChangeHash>,
     /// Why [`DocStore::load_or_new`] handed back an empty document instead of
-    /// the one on disk.
-    ///
-    /// Set only for a refusal this store must not write over. Everything that
-    /// builds a writer on top of a store checks it: an [`Autosave`] over a
-    /// refused store is switched off, because starting empty and then saving is
-    /// what turns a version skew into data loss.
+    /// the one on disk — set only for a refusal that must not be written over;
+    /// e.g. [`Autosave`] switches itself off when this is set.
     refusal: Option<Refusal>,
 }
 
@@ -264,25 +210,15 @@ struct Refusal {
 }
 
 impl DocStore {
-    /// Open the store belonging to the running package.
-    ///
-    /// The package id comes from `QOS_PACKAGE_ID` (via [`cli::package_id`]),
-    /// which the launcher sets on every sandboxed launch. There is no
-    /// argument by design: an app does not get to choose where its state
-    /// lives.
+    /// Open the store belonging to the running package, via `QOS_PACKAGE_ID` —
+    /// no argument by design, since an app doesn't choose where its state lives.
     pub fn open() -> Result<Self, StoreError> {
         Self::open_for(&cli::package_id())
     }
 
-    /// Open the store, falling back to `manifest_id` (the app's own
-    /// `[package] id` from `qos-app.toml`) when the launcher has not set
-    /// `QOS_PACKAGE_ID`.
-    ///
-    /// The env var always wins, so this can't be used to escape the
-    /// launcher's decision — it only answers for a run with no launcher at
-    /// all (dev binary, test harness). Without it every such run would land
-    /// in the shared `qos-standalone` directory and every app would scribble
-    /// over one document.
+    /// Open the store, falling back to `manifest_id` when `QOS_PACKAGE_ID` is
+    /// unset. The env var always wins; the fallback only covers launcher-less
+    /// runs (dev binary, tests) that would otherwise share one directory.
     pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
         let id = std::env::var("QOS_PACKAGE_ID")
             .ok()
@@ -291,31 +227,21 @@ impl DocStore {
         Self::open_for(&id)
     }
 
-    /// Open the store for an explicit package id.
-    ///
-    /// For tests and for migration tools that legitimately need to address a
-    /// specific package. Rejects any id that is not a single, non-traversing
-    /// directory name.
+    /// Open the store for an explicit package id — for tests and migration
+    /// tools; rejects any id that is not a single, non-traversing directory name.
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         let dir = cli::standalone_state_dir(package_id);
         Self::open_in(package_id, dir)
     }
 
-    /// Open the store for **one record** of a package.
-    ///
-    /// A record is the unit of collaboration: one document, one identity, one
-    /// change graph. An Automerge change graph can't be served in part — a
-    /// change names its dependencies by hash, so a filtered stream leaves the
-    /// receiver holding changes whose parents never arrive — so sharing one
-    /// document and not another means *separate files*.
-    ///
-    /// `record_key` (from `ui::record::RecordId::storage_key`) is validated
-    /// exactly as strictly as a package id, since a record's identity can
-    /// itself be a path. Lands in
-    /// `<package dir>/records/<record_key>/state.automerge`, beside — not
-    /// inside — the package's own `state.automerge`, which stays the room
-    /// index.
+    /// Open the store for **one record** of a package. A record is the unit of
+    /// collaboration: one document, one identity, one change graph — Automerge
+    /// changes name dependencies by hash, so a change graph can't be served in
+    /// part, meaning separate files per record. `record_key` is validated as
+    /// strictly as a package id. Lands in
+    /// `<package dir>/records/<record_key>/state.automerge`, beside the
+    /// package's own `state.automerge`.
     pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(record_key)?;
@@ -326,13 +252,9 @@ impl DocStore {
     }
 
     /// Open the index of **one room** — the list of which records that room
-    /// holds.
-    ///
-    /// Deliberately not a record itself: a record is a thing the user made,
-    /// an index is the room's statement about which of those it reaches.
-    /// Sibling directories, not one, so a room id can never resolve to a
-    /// record's document and merge the two. `room_key` is validated exactly
-    /// as strictly as a record key, for the same reason. Lands in
+    /// holds. A sibling directory, not the record itself, so a room id can
+    /// never resolve to a record's document and merge the two. `room_key` is
+    /// validated as strictly as a record key. Lands in
     /// `<package dir>/rooms/<room_key>/state.automerge`.
     pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
@@ -344,8 +266,7 @@ impl DocStore {
     }
 
     fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
-        // Must come up with persistence enabled even on a pre-existing dir or
-        // an older layout's stale file at this path; see `ensure_state_dir`.
+        // Recovers a pre-existing dir or an older layout's stale file; see `ensure_state_dir`.
         ensure_state_dir(&dir)?;
 
         let lock = acquire_writer_lock(&dir.join(LOCK_FILE));
@@ -370,7 +291,6 @@ impl DocStore {
         })
     }
 
-    /// The package id this store belongs to.
     pub fn package_id(&self) -> &str {
         &self.package_id
     }
@@ -380,7 +300,6 @@ impl DocStore {
         &self.dir
     }
 
-    /// The document file itself.
     pub fn document_path(&self) -> &Path {
         &self.document
     }
@@ -390,19 +309,16 @@ impl DocStore {
         &self.actor
     }
 
-    /// Whether this process won the single-writer lock. A `false` here means
-    /// another instance is live; writes still succeed (last writer wins, and
-    /// Automerge merges the two histories on the next load) but the actor id
-    /// is a fresh one rather than the sidecar's.
+    /// Whether this process won the single-writer lock. `false` means another
+    /// instance is live: writes still succeed (last writer wins, merged on next
+    /// load) but the actor id is fresh rather than the sidecar's.
     pub fn is_exclusive_writer(&self) -> bool {
         self.lock.is_some()
     }
 
-    /// Load the persisted document, or `Ok(None)` on a first launch.
-    ///
-    /// A trailing partially-written change chunk (a crash during an append)
-    /// is dropped rather than failing the load, so the user loses the last
-    /// unflushed edit instead of the whole document.
+    /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
+    /// partially-written chunk (crash during append) is dropped rather than
+    /// failing the load, losing only the last unflushed edit.
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         let bytes = match fs::read(&self.document) {
             Ok(b) => b,
@@ -425,10 +341,8 @@ impl DocStore {
             path: self.document.clone(),
             source,
         })?;
-        // Before anything reads a value out of it. A newer layout may use a key
-        // this build reads with a different meaning, and the writer above this
-        // one saves the whole document back — so "load it and see" is
-        // "overwrite it and see".
+        // Check before reading any value: a newer layout may reuse a key with a
+        // different meaning, and the writer above saves the whole document back.
         let found = schema_version_of(&doc);
         if found > SCHEMA_VERSION {
             return Err(StoreError::NewerSchema {
@@ -442,17 +356,12 @@ impl DocStore {
         Ok(Some(doc))
     }
 
-    /// Load the persisted document, falling back to an empty one.
-    ///
-    /// An unreadable file is logged and treated as empty rather than
-    /// crashing the app on launch — the same policy the calendar and chat
-    /// stores already had.
-    ///
-    /// A document from a **newer** layout is different in kind and is handled
-    /// differently: the store records the refusal ([`DocStore::refusal`]), and
-    /// every writer built on it switches itself off. Starting empty is
-    /// survivable; starting empty and then saving over the file is the data
-    /// loss this exists to prevent.
+    /// Load the persisted document, falling back to an empty one. An unreadable
+    /// file is logged and treated as empty rather than crashing on launch. A
+    /// document from a **newer** layout is different: the refusal is recorded
+    /// ([`DocStore::refusal`]) and every writer built on this store switches
+    /// itself off, since starting empty and then saving over the file would be
+    /// data loss rather than a survivable empty session.
     pub fn load_or_new(&mut self) -> AutoCommit {
         match self.load() {
             Ok(Some(doc)) => doc,
@@ -466,9 +375,8 @@ impl DocStore {
                 };
                 let message = e.to_string();
                 let doc = self.new_document();
-                // After new_document, which clears it: the refusal describes the
-                // file, not the document just made, and it has to outlive the
-                // call for the write paths below to see it.
+                // After new_document, which clears it: the refusal describes the file, not
+                // the fresh document, and must outlive this call for the write paths below.
                 self.refusal = Some(Refusal { found, message });
                 doc
             }
@@ -479,21 +387,15 @@ impl DocStore {
         }
     }
 
-    /// Why this store handed back an empty document, when it did.
-    ///
-    /// `Some` means the document on disk must not be written over. Anything
-    /// that builds a writer over this store has to consult it.
+    /// Why this store handed back an empty document, when it did — `Some` means
+    /// the on-disk document must not be written over.
     pub fn refusal(&self) -> Option<&str> {
         self.refusal.as_ref().map(|r| r.message.as_str())
     }
 
     /// An empty document already carrying this store's actor id, stamped with
-    /// the current layout version.
-    ///
-    /// The stamp goes on at creation rather than at the first save, so a
-    /// document that is created and never edited still says what it is — and so
-    /// the version cannot be forgotten by a code path that writes without going
-    /// through here.
+    /// the current layout version at creation (not first save) so the version
+    /// is never missing from a document written outside this path.
     pub fn new_document(&mut self) -> AutoCommit {
         self.persisted = Vec::new();
         self.refusal = None;
@@ -502,14 +404,11 @@ impl DocStore {
         doc
     }
 
-    /// Rewrite the whole document atomically: temp file, `fsync`, rename.
-    ///
-    /// A crash at any point leaves either the previous complete file or the
-    /// new complete file, never a half-written one.
-    /// Refuses outright when [`DocStore::refusal`] is set: the document in
-    /// memory is an empty stand-in for one this build declined to open, and
-    /// writing it out is the difference between "the app came up empty" and
-    /// "the app deleted your work".
+    /// Rewrite the whole document atomically: temp file, `fsync`, rename — a
+    /// crash at any point leaves either the previous or the new file complete,
+    /// never half-written. Refuses when [`DocStore::refusal`] is set, since the
+    /// in-memory document is an empty stand-in and writing it out would delete
+    /// the user's actual data.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc);
@@ -519,8 +418,8 @@ impl DocStore {
         Ok(())
     }
 
-    /// The guard both write paths share. Returns the original refusal, so a
-    /// caller that logs the error says why rather than "write failed".
+    /// The guard both write paths share; returns the original refusal so a
+    /// caller can log why, not just "write failed".
     fn refuse_to_write(&self) -> Result<(), StoreError> {
         match &self.refusal {
             None => Ok(()),
@@ -532,13 +431,9 @@ impl DocStore {
         }
     }
 
-    /// Append only the changes `doc` has that the file does not.
-    ///
-    /// Returns the number of bytes appended — `0` when the document has not
-    /// moved since the last save, which is the common idle case.
-    /// Refuses for the same reason [`DocStore::save`] does — appending an empty
-    /// stand-in document's changes onto a file this build declined to read is
-    /// still writing over it.
+    /// Append only the changes `doc` has that the file does not. Returns bytes
+    /// appended (`0` when idle). Refuses for the same data-loss reason as
+    /// [`DocStore::save`].
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc);
@@ -546,9 +441,8 @@ impl DocStore {
         if heads == self.persisted {
             return Ok(0);
         }
-        // No base file yet: an append of raw change chunks with no document
-        // chunk in front is still loadable, but a full save compresses far
-        // better, so seed the file properly.
+        // No base file yet: seed a full save (compresses far better than raw change
+        // chunks with no document chunk in front).
         if !self.document.exists() {
             self.save(doc)?;
             return Ok(0);
@@ -563,12 +457,10 @@ impl DocStore {
         Ok(delta.len())
     }
 
-    /// Adopt a document an older release of this app wrote somewhere else.
-    ///
-    /// Merges `legacy` into the store's document rather than replacing it,
-    /// so running a migration twice, or migrating on top of state written
-    /// since, cannot lose data. Returns `true` when something was imported.
-    /// The legacy file is left alone; removing it is the caller's call.
+    /// Adopt a document an older release wrote elsewhere, merging into the
+    /// store's document (not replacing) so a repeated or later migration can't
+    /// lose data. Returns `true` if anything was imported; leaves the legacy
+    /// file alone.
     pub fn migrate_from(&mut self, legacy: &Path) -> Result<bool, StoreError> {
         let bytes = match fs::read(legacy) {
             Ok(b) if !b.is_empty() => b,
@@ -605,10 +497,9 @@ impl DocStore {
         Autosave::spawn(self, debounce)
     }
 
-    /// Extend the document file with raw change chunks. The caller is
-    /// responsible for those chunks being ones the file does not already
-    /// contain; [`DocStore::append`] and [`Autosave`] both derive them from
-    /// `save_after`.
+    /// Extend the document file with raw change chunks; caller must ensure the
+    /// chunks aren't already in the file (both [`DocStore::append`] and
+    /// [`Autosave`] derive them from `save_after`).
     pub(crate) fn append_bytes(&self, delta: &[u8]) -> Result<(), StoreError> {
         if delta.is_empty() {
             return Ok(());
@@ -633,24 +524,16 @@ impl DocStore {
     }
 }
 
-/// Make `dir` an existing, writable directory, recovering from a state path a
-/// previous app layout left as a *file* where this layout wants a directory.
-///
-/// `create_dir_all` fails `EEXIST` on a path that already exists as a
-/// non-directory, and [`open`](crate::persist::open) swallows that into a
-/// disabled, in-memory session — so an app that ever ran under the old
-/// layout would lose persistence on *every* launch, not just the first.
-/// Recover rather than fail: a zero-byte leftover is removed; a non-empty
-/// file might be an old-format document, so it is moved aside to a
-/// `<dir>.stale` sibling — never deleted — and, best effort, seeded as the
-/// new `state.automerge` so it migrates in and loads.
-///
-/// A real filesystem failure (unwritable parent, a rename that can't
-/// complete) still surfaces as an error — persistence is disabled only when
-/// the disk genuinely can't hold it, and a user's bytes are never deleted.
+/// Make `dir` an existing, writable directory, recovering from a state path
+/// a previous layout left as a *file*. `create_dir_all` fails EEXIST there,
+/// which the caller swallows into a disabled in-memory session — so without
+/// recovery, an app that ever ran the old layout would lose persistence on
+/// every launch. A zero-byte leftover is removed; a non-empty one (possibly
+/// an old-format document) is moved aside to `<dir>.stale` — never deleted —
+/// and best-effort seeded as the new document so it migrates in. A genuine
+/// filesystem failure still surfaces as an error.
 fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
     match fs::metadata(dir) {
-        // Already a directory (or a symlink to one): nothing to do.
         Ok(meta) if meta.is_dir() => return Ok(()),
         // Exists, but not as a directory — the old-layout leftover.
         Ok(meta) => {
@@ -673,14 +556,12 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
                 fs::create_dir_all(dir).map_err(|e| {
                     io_err(format!("creating state directory {}", dir.display()), e)
                 })?;
-                // Best effort: a genuine old-format document migrates in and
-                // loads on the next `load`; anything else leaves the store
-                // empty while the bytes stay safe at `<dir>.stale`.
+                // Best effort: a genuine old-format document migrates in on the next load;
+                // anything else leaves the store empty while the bytes stay safe at `<dir>.stale`.
                 let _ = fs::copy(&aside, dir.join(DOCUMENT_FILE));
                 return Ok(());
             }
         }
-        // First run: nothing there yet.
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         // A real failure inspecting the path (e.g. a non-directory parent).
         Err(e) => {
@@ -691,9 +572,8 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
         .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))
 }
 
-/// A sibling path `<dir>.stale`, then `<dir>.stale.1`, `<dir>.stale.2`, … —
-/// the first that does not yet exist, so preserving one leftover never
-/// clobbers another that an earlier recovery already set aside.
+/// A sibling path `<dir>.stale`, `.stale.1`, `.stale.2`, … — the first that
+/// doesn't exist yet, so preserving one leftover never clobbers another.
 fn stale_sibling(dir: &Path) -> PathBuf {
     // Append rather than replace the extension: package ids contain dots
     // (`dev.qos.maps`), so `with_extension` would eat the last id segment.
@@ -711,8 +591,7 @@ fn stale_sibling(dir: &Path) -> PathBuf {
 }
 
 /// Take an exclusive, non-blocking `flock` on `path`. `None` when another
-/// process already holds it (or the lock file cannot be created at all, in
-/// which case we conservatively behave as the non-exclusive writer).
+/// process holds it, or (conservatively) when the lock file can't even be created.
 fn acquire_writer_lock(path: &Path) -> Option<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -804,9 +683,8 @@ mod tests {
         unsafe { std::env::remove_var("QOS_PACKAGE_ID") };
     }
 
-    /// The containment boundary: an app that lies about its own package id
-    /// must not be able to address another app's directory or escape the
-    /// data root at all.
+    /// The containment boundary: an app that lies about its own package id must
+    /// not be able to address another app's directory or escape the data root.
     #[test]
     #[serial_test::serial]
     fn package_id_cannot_escape_the_data_root() {
@@ -844,7 +722,7 @@ mod tests {
         let notes = doc.put_object(&ROOT, "notes", ObjType::Text).unwrap();
         doc.splice_text(&notes, 0, 0, "call me ishmael").unwrap();
         store.save(&mut doc).unwrap();
-        drop((store, doc)); // the process exits here
+        drop((store, doc));
 
         let mut reopened = DocStore::open_for("dev.qos.roundtrip").unwrap();
         let loaded = reopened.load().unwrap().expect("document is on disk");
@@ -853,42 +731,37 @@ mod tests {
         assert_eq!(loaded.text(&notes).unwrap(), "call me ishmael");
     }
 
-    /// The anti-`contacts` test. `apps/contacts` used to save by replaying
-    /// its model into a brand-new `AutoCommit`, which produced a file whose
-    /// ops shared no history with any peer — a merge would duplicate every
-    /// record instead of converging. A document that goes through this store
-    /// must still merge cleanly with a replica that diverged *before* the
-    /// save.
+    /// The anti-`contacts` test: `apps/contacts` used to save by replaying its
+    /// model into a brand-new `AutoCommit`, producing a file with no shared
+    /// history with any peer, so merges duplicated records instead of
+    /// converging. A document through this store must still merge cleanly with
+    /// a replica that diverged before the save.
     #[test]
     #[serial_test::serial]
     fn round_trip_merges_with_a_replica_that_diverged_before_the_save() {
         let _tmp = scratch_home();
         let mut store = DocStore::open_for("dev.qos.merge").unwrap();
 
-        // Shared ancestor.
         let mut doc = store.new_document();
         let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
         doc.put(&list, "ada", ScalarValue::Str("Ada Lovelace".into()))
             .unwrap();
         let original_actor = doc.get_actor().clone();
 
-        // A peer forks here and edits independently.
         let mut peer = doc.fork().with_actor(ActorId::random());
         let peer_list = peer.get(&ROOT, "contacts").unwrap().unwrap().1;
         peer.put(&peer_list, "grace", ScalarValue::Str("Grace Hopper".into()))
             .unwrap();
 
-        // Meanwhile the app edits and saves.
         doc.put(&list, "alan", ScalarValue::Str("Alan Turing".into()))
             .unwrap();
         store.save(&mut doc).unwrap();
-        drop((store, doc)); // the process exits here
+        drop((store, doc));
 
         let mut reopened = DocStore::open_for("dev.qos.merge").unwrap();
         let mut restored = reopened.load().unwrap().expect("saved document");
 
-        // Actor identity survives the restart: the store keeps writing as
-        // the same automerge actor rather than forking a new one per launch.
+        // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
         assert_eq!(
             restored.get_actor(),
             &original_actor,
@@ -912,9 +785,9 @@ mod tests {
             Some("Grace Hopper"),
             "the peer's concurrent edit merges in"
         );
-        // A rebuilt-from-scratch document would have made `contacts` a
-        // *different* object on each side, so the merge would leave two
-        // conflicting values at the key. Exactly one is the proof it didn't.
+        // A rebuilt-from-scratch document would have made `contacts` a different
+        // object on each side, so the merge would leave two conflicting values.
+        // Exactly one is the proof it didn't.
         assert_eq!(
             restored.get_all(&ROOT, "contacts").unwrap().len(),
             1,
@@ -943,7 +816,6 @@ mod tests {
             "append must extend the file, not rewrite it"
         );
 
-        // Idle: no further bytes.
         assert_eq!(store.append(&mut doc).unwrap(), 0);
         drop((store, doc));
 
@@ -953,7 +825,7 @@ mod tests {
         assert_eq!(loaded.text(&body).unwrap(), "hello world");
     }
 
-    /// A crash during an append leaves a truncated trailing chunk. Everything
+    /// A crash during an append leaves a truncated trailing chunk; everything
     /// written before it must still load.
     #[test]
     #[serial_test::serial]
@@ -986,9 +858,9 @@ mod tests {
         );
     }
 
-    /// A full save is a temp-file rename, so an interrupted one cannot be
-    /// observed: the previous document is intact and the partial bytes are
-    /// parked in a `.tmp` sibling that `load` never looks at.
+    /// A full save is a temp-file rename, so an interrupted one can't be
+    /// observed: the previous document is intact, and the partial bytes sit in
+    /// a `.tmp` sibling `load` never looks at.
     #[test]
     #[serial_test::serial]
     fn an_interrupted_full_save_leaves_the_previous_document_intact() {
@@ -998,8 +870,7 @@ mod tests {
         doc.put(&ROOT, "v", ScalarValue::Str("first".into())).unwrap();
         store.save(&mut doc).unwrap();
 
-        // The write half of an interrupted save: temp file exists, rename
-        // never happened.
+        // The write half of an interrupted save: temp file exists, rename never happened.
         let tmp_path = store.document_path().with_extension("automerge.tmp");
         fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
         drop((store, doc));
@@ -1069,9 +940,8 @@ mod tests {
     }
 
     /// Every document this crate creates says which layout it is, from the
-    /// moment it exists. Without the stamp the check below has nothing to
-    /// read, and a document created and never edited would be indistinguishable
-    /// from one written before versioning.
+    /// moment it exists, so a document created and never edited is still
+    /// distinguishable from one written before versioning.
     #[test]
     #[serial_test::serial]
     fn a_new_document_carries_the_schema_version() {
@@ -1092,9 +962,8 @@ mod tests {
     }
 
     /// A document from before versioning existed opens, and gains its version
-    /// the next time it is written. Reading its absence as "unknown" would
-    /// refuse every existing user's documents on the upgrade that introduced
-    /// the check — the exact loss the check exists to prevent, caused by it.
+    /// on next write. Reading absence as "unknown" would refuse every existing
+    /// user's documents on the very upgrade meant to prevent that loss.
     #[test]
     #[serial_test::serial]
     fn a_document_written_before_versioning_opens_and_is_stamped_on_save() {
@@ -1131,9 +1000,8 @@ mod tests {
     }
 
     /// The one this exists for: an older build meets a document a newer one
-    /// wrote. It must refuse, keep the bytes, and refuse to write over them —
-    /// the last of which is what turns a survivable empty session into data
-    /// loss when it is missing.
+    /// wrote. It must refuse and keep the bytes — writing over them is what
+    /// turns a survivable empty session into data loss.
     #[test]
     #[serial_test::serial]
     fn a_newer_document_is_refused_and_never_written_over() {
@@ -1176,8 +1044,7 @@ mod tests {
             "the reason must name the layout found, got: {reason}"
         );
 
-        // And every write path refuses, so the bytes survive an app that
-        // carries on regardless.
+        // And every write path refuses, so the bytes survive an app that carries on regardless.
         doc.put(&ROOT, "scribble", ScalarValue::Str("no".into())).unwrap();
         assert!(
             matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
@@ -1196,10 +1063,9 @@ mod tests {
     }
 
     /// If the directory create were not idempotent, the second open would fail
-    /// `EEXIST`, `ui::persist::open` would swallow that into an in-memory
-    /// fallback, and every app would silently lose its state after the first
-    /// launch. Fresh-XDG CI never sees it since the directory starts absent
-    /// there, so this test pre-creates it before the *first* open too.
+    /// EEXIST and swallow into an in-memory fallback, silently losing state
+    /// after the first launch. Pre-creates the directory before the *first*
+    /// open too, since fresh-XDG CI never sees an existing one otherwise.
     #[test]
     #[serial_test::serial]
     fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
@@ -1248,8 +1114,8 @@ mod tests {
     }
 
     /// An older layout's zero-byte file at the directory's path used to fail
-    /// `create_dir_all` with EEXIST on every launch. Opening must recover —
-    /// remove the leftover, create the directory, come up ENABLED.
+    /// `create_dir_all` with EEXIST on every launch; opening must recover and
+    /// come up enabled.
     #[test]
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
@@ -1285,9 +1151,8 @@ mod tests {
     }
 
     /// A *non-empty* file at the state path might be an old-format document, so
-    /// recovery must not delete it: it is moved aside to a `.stale` sibling and,
-    /// when it is a real document, migrated into the new store so its contents
-    /// survive — and persistence still comes up enabled either way.
+    /// recovery must not delete it: moved aside to a `.stale` sibling and, if a
+    /// real document, migrated in — persistence comes up enabled either way.
     #[test]
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it() {
@@ -1325,9 +1190,7 @@ mod tests {
     }
 
     /// A state directory that genuinely cannot be created must still surface as
-    /// an error — the idempotent create must not paper over a real filesystem
-    /// failure. Making an already-existing directory succeed is only correct if
-    /// a create that *cannot* succeed still fails loudly.
+    /// an error — idempotent create must not paper over a real filesystem failure.
     #[test]
     #[serial_test::serial]
     fn an_uncreatable_state_dir_is_still_an_error() {

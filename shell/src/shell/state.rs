@@ -8,9 +8,7 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role as CapRole;
 
-/// Monotonic workspace identifier. Wrapped as a newtype so call-sites can
-/// mint fresh ids via `WorkspaceId::new()`; integer literals still flow in
-/// ergonomically through `From<u64>`.
+/// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -28,22 +26,11 @@ impl WorkspaceId {
     }
 }
 
-/// Durable, globally-unique identity of a workspace **as a
-/// collaboration room**. [`WorkspaceId`] is only a local counter — two
-/// machines' "workspace 7" are unrelated, so the room cannot be derived
-/// from it.
-///
-/// Minted once, as a random v4 uuid: identity must agree between
-/// machines that have never met and have no channel to negotiate over,
-/// and every mint-time derivation (local counter, hostname, wall clock)
-/// is either not unique or needs the coordination being avoided. The
-/// value is therefore *carried* rather than recomputed — see
-/// [`Workspace::room`] and the invite token.
-///
-/// [`Self::nil`] is the unminted sentinel: what a workspace from a
-/// pre-room state file loads as, until
-/// [`WorkspaceTree::adopt_roomless_workspaces`] assigns a real one at
-/// boot. Addresses nobody — see [`Workspace::collab_cluster_id`].
+/// Durable, globally-unique identity of a workspace as a collaboration
+/// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
+/// random v4 uuid and carried rather than recomputed, so machines that
+/// have never met still agree on it. [`Self::nil`] is the unminted
+/// sentinel a pre-room state file loads as.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -51,8 +38,7 @@ impl WorkspaceId {
 pub struct RoomId(uuid::Uuid);
 
 impl RoomId {
-    /// Mint a fresh room identity. Called exactly once per workspace,
-    /// at creation; every later reference carries the minted value.
+    /// Mint a fresh room identity, once per workspace at creation.
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
@@ -73,10 +59,8 @@ impl RoomId {
         self.0
     }
 
-    /// Parse a room id off the wire (an invite token, the automerge
-    /// doc, `QOS_WORKSPACE_ID`). `None` on anything that is not a
-    /// uuid, so a malformed value cannot become a room nobody else is
-    /// in.
+    /// Parse a room id off the wire (invite token, automerge doc,
+    /// `QOS_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
     pub fn parse(s: &str) -> Option<Self> {
         uuid::Uuid::parse_str(s).ok().map(Self)
     }
@@ -95,18 +79,11 @@ impl From<uuid::Uuid> for RoomId {
 }
 
 /// Whoever a message arrived from, named as the transport authenticated
-/// it — not as the message claims. The only thing about a payload's
-/// author a receiver knows that the author didn't write, so the only
-/// thing an authority decision may rest on. Over libp2p it's the remote
-/// `PeerId` (bound to the connection by the noise handshake, to the
-/// publish by gossipsub's signature); over the in-process [`Hub`] it's
-/// the subscriber id.
-///
-/// Namespaced (`p2p:` / `hub:`) so the two can't collide, and the peer id
-/// is carried whole rather than hashed to a `u64`: equality decisions
-/// must not turn on a digest an attacker can grind against.
-///
-/// [`Hub`]: crate::network::hub::Hub
+/// it — not as the message claims. The only thing about a sender the
+/// receiver did not take on faith, so the only thing an authority
+/// decision may rest on. Namespaced (`p2p:` / `hub:`) and carried whole
+/// rather than hashed: equality must not turn on a digest an attacker
+/// can grind against.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PeerOrigin(String);
@@ -118,16 +95,13 @@ impl PeerOrigin {
     }
 
     /// A remote libp2p peer named as an invite token names it — base58
-    /// text that has already been through
-    /// [`crate::network::invite::validate_invite_token`], so the string
-    /// is one the owner's own signature covered.
+    /// text already validated by
+    /// [`crate::network::invite::validate_invite_token`].
     pub fn peer_base58(base58: &str) -> Self {
         Self(format!("p2p:{base58}"))
     }
 
-    /// An in-process [`Hub`] subscriber.
-    ///
-    /// [`Hub`]: crate::network::hub::Hub
+    /// An in-process `crate::network::hub::Hub` subscriber.
     pub fn hub(id: u64) -> Self {
         Self(format!("hub:{id}"))
     }
@@ -143,19 +117,9 @@ impl PeerOrigin {
     }
 
     /// The handle presence frames identify this origin's peer by, or
-    /// `None` when the origin is not a remote libp2p peer at all.
-    ///
-    /// Bridges the two ways a session learns somebody is in a room:
-    /// presence arrives keyed by
-    /// [`crate::network::behaviour::peer_liveness_handle`], room
-    /// replication by the transport-authenticated identity (this).
-    /// Reducing both to the same handle is what lets one peer be one row
-    /// regardless of route.
-    ///
-    /// One-way and never used for authority — a handle is a digest, and
-    /// (per [`Self::peer`]) an equality decision must not turn on one; a
-    /// collision here only merges a display row, not a permission. A hub
-    /// subscriber or local replay has no peer id and gets `None`.
+    /// `None` when this isn't a remote libp2p peer — bridges presence and
+    /// room replication onto the same row per peer. One-way only, never
+    /// for authority: a collision merges a display row, not a permission.
     pub fn liveness_handle(&self) -> Option<u64> {
         let base58 = self.0.strip_prefix("p2p:")?;
         let peer = base58.parse::<libp2p::PeerId>().ok()?;
@@ -169,28 +133,18 @@ impl std::fmt::Display for PeerOrigin {
     }
 }
 
-/// Who may write a room's **governance** — its owner and its capability
-/// list — as this machine knows it.
-///
-/// Automerge merges a map key by last-writer-wins and has no per-key
-/// ACL, so if both ends of a room project their own cache into the shared
-/// document the room's owner is decided by which actor id sorts higher.
-/// That is not a governance model; it is a coin toss a guest can enter.
-/// This is the record that decides it instead, and every value in it is
-/// established by something the sender could not forge.
+/// Who may write a room's governance — its owner and capability list —
+/// as this machine knows it. Automerge merges a map key
+/// last-writer-wins with no per-key ACL, so without this record
+/// governance would be decided by which actor id sorts higher.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomAuthority {
-    /// This machine. The room was minted here, so its cache *is* the
-    /// governance and no peer may replace it.
+    /// This machine minted the room, so its cache is the governance.
     Local,
-    /// A named peer — the owner an invite token named, cross-checked
-    /// against that token's signature. Governance is taken from that
-    /// peer and from nobody else.
+    /// A named peer, cross-checked against the invite token's signature.
     Peer(PeerOrigin),
-    /// A room this machine joined without an invite naming who
-    /// administers it. Nothing establishes an authority yet, so the
-    /// first peer to supply governance becomes it (and is pinned, so the
-    /// second peer cannot).
+    /// Joined without an invite naming an administrator: the first peer
+    /// to supply governance becomes it, and is pinned.
     Unpinned,
 }
 
@@ -206,9 +160,7 @@ impl From<WorkspaceId> for u64 {
     }
 }
 
-/// Monotonic strip identifier. Mirrors [`WorkspaceId`] so callers can mint
-/// fresh ids via `StripId::new()` without threading a counter through; literal
-/// integers still flow in through `From<u64>` for tests and persistence.
+/// Monotonic strip identifier, newtype-wrapped like [`WorkspaceId`].
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -242,9 +194,8 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
-/// Lightweight snapshot of the currently focused tab. Cloned out of the
-/// [`WorkspaceTree`] read guard so callers can drop the guard before
-/// looking at the values — see [`crate::shell::chrome_state::ChromeState::active_tab_id`].
+/// Snapshot of the focused tab, cloned out of the [`WorkspaceTree`] read
+/// guard so callers can drop the guard before using the values.
 #[derive(Clone, Debug)]
 pub struct TabRef {
     pub id: TabId,
@@ -253,28 +204,20 @@ pub struct TabRef {
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
-/// Process-wide monotonic counter shared by [`WorkspaceId::new`],
-/// [`StripId::new`], and ad-hoc `next_id()` consumers (group / tab /
-/// file ids). Hoisted out of `next_id()` so
-/// [`WorkspaceTree::seed_next_id_from_self`] can advance it past the
-/// highest persisted id at load time — otherwise a fresh process
-/// restarts at `1` and collides with the lowest-id entry already loaded.
-///
-/// Only the **low 48 bits** of each minted id come from this counter;
-/// the high 16 bits carry [`NEXT_ID_PEER_SALT`] so two peers running in
-/// parallel can never mint the same id — without it both peers' counters
-/// tick `1, 2, 3, …` and `apply_changes` folds two distinct workspaces
-/// with id `2` into one row (strips collide, names overwrite, grants
-/// merge).
+/// Process-wide monotonic counter behind [`WorkspaceId::new`],
+/// [`StripId::new`] and `next_id()`.
+/// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
+/// persisted id at load, or a fresh process restarts at `1` and collides
+/// with an already-loaded entry. Only the low 48 bits come from here; the
+/// high 16 carry [`NEXT_ID_PEER_SALT`] so two peers minting in parallel
+/// never collide — otherwise `apply_changes` folds two distinct
+/// workspaces with the same id into one.
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Process-wide peer salt occupying the high 16 bits of every id minted
-/// by [`next_id`]. Default `0` keeps tests and pre-peer-sync boots on the
-/// familiar `0x0001, 0x0002, …` sequence; the hosted entry point
-/// overwrites it at startup with a hash of the local libp2p public key
-/// ([`crate::network::behaviour::peer_salt_from_keypair`]). `AtomicU16`
-/// with `Relaxed` ordering since it's written once at boot and nothing
-/// else piggy-backs on its visibility.
+/// High-16-bit peer salt for every id [`next_id`] mints. Default `0`
+/// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
+/// it at startup with a hash of the local libp2p key. `Relaxed`: written
+/// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
 /// Mask that selects the low-48-bit counter portion of a salted id.
@@ -320,17 +263,11 @@ impl AppKind {
         }
     }
 
-    /// Canonical, stable app-id for this app kind — the key into the
-    /// per-workspace capability [`Workspace::grants`] map. Distinct from
-    /// [`Self::as_str`], the human-facing display label. An app-id is
-    /// what a Wayland client advertises via `xdg_toplevel::set_app_id`;
-    /// adopted foreign clients carry their real one (`org.gimp.GIMP`, …)
-    /// straight into the grants map ([`TileContent::Foreign`]), while
-    /// built-in apps never call `set_app_id` so the compositor assigns
-    /// them a canonical id under its own reverse-DNS prefix — keeping
-    /// every grant key in one namespace. An [`AppKind::Other`] label that
-    /// already looks like reverse-DNS (contains a dot) is trusted
-    /// verbatim; a bare label gets namespaced.
+    /// The key into the per-workspace [`Workspace::grants`] map — distinct
+    /// from [`Self::as_str`]'s display label. Foreign clients carry their
+    /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in;
+    /// built-ins get namespaced under the compositor's reverse-DNS prefix
+    /// so every grant key lives in one namespace.
     pub fn app_id(&self) -> AppId {
         match self {
             AppKind::Terminal => format!("{APP_ID_PREFIX}.Terminal"),
@@ -343,29 +280,20 @@ impl AppKind {
     }
 }
 
-/// Reverse-DNS prefix the compositor stamps on the app-ids of its
-/// in-process built-in apps. Matches the name it already identifies
-/// itself by (the `org.freedesktop.impl.portal.desktop.nirios` portal
-/// backend, the `nirios` window title).
+/// Reverse-DNS prefix the compositor stamps on built-in apps' ids,
+/// matching its own portal backend name
+/// (`org.freedesktop.impl.portal.desktop.nirios`).
 pub const APP_ID_PREFIX: &str = "org.nirios";
 
-/// Reference width the pre-fraction pixel model (300..=1200 px) was
-/// scaled against, used only to migrate persisted `Custom(pixels)`
-/// values: reading a legacy pixel count as a fraction of 1200 preserves
-/// the *proportion* the user was looking at, so a persisted `Custom(600)`
-/// becomes half the strip rather than "whichever tier is now Normal".
+/// Reference width the legacy pixel model was scaled against, so a
+/// migrated `Custom(600)` preserves the *proportion* the user saw rather
+/// than snapping to whichever tier is now "Normal".
 const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
 
-/// Persisted width of a [`WindowGroup`], as a fraction of the usable
-/// width of the strip it sits in. Kept separate from
-/// [`ui::widget::WindowWidth`] because this is the serde/CRDT shape and
-/// that is the layout shape.
-///
-/// Fractions rather than pixels because a strip is as wide as the
-/// display: a stored pixel count meant a different screen share on every
-/// monitor, couldn't survive a restart onto a different one, and — with
-/// the old 1200 px ceiling — capped the widest window at 31% of a 4K
-/// panel.
+/// Persisted width of a [`WindowGroup`], as a fraction of the strip's
+/// usable width — a stored pixel count would mean a different screen
+/// share on every monitor. Kept separate from [`ui::widget::WindowWidth`]
+/// (serde/CRDT shape vs. layout shape).
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum WindowWidth {
     Narrow,
@@ -420,10 +348,8 @@ impl WindowWidth {
 }
 
 impl<'de> Deserialize<'de> for WindowWidth {
-    /// Accepts both the current shape and the pixel shape written before
-    /// widths became fractions, so an existing `~/.local/state` workspace
-    /// still loads. A legacy `{"Custom": 600}` migrates to the fraction of
-    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`] it represented.
+    /// Accepts both the current shape and the legacy pixel shape, so an
+    /// existing `~/.local/state` workspace still loads.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         enum Raw {
@@ -461,50 +387,27 @@ pub enum TileContent {
         label: String,
     },
     /// Foreign Wayland client adopted by the compositor. `surface_id` is
-    /// the wayland-server `wl_surface` numeric protocol id; the
-    /// compositor's state.rs maps it back to a smithay `WlSurface` for
-    /// rendering. The chrome-side render falls through to a Stub
-    /// placeholder until the frame loop blits the real buffer.
+    /// the `wl_surface` protocol id the compositor maps back to a smithay
+    /// `WlSurface`; renders as a Stub until the frame loop blits it.
     Foreign {
         app_id: String,
         surface_id: u64,
     },
-    /// A window a peer has open in this room, named by the app that
-    /// draws it, before this machine has an instance of that app bound
-    /// to the tab. What a [`TileContent::Foreign`] becomes when it
-    /// arrives from someone else: a peer's `surface_id` only resolves on
-    /// *their* compositor, so it's dropped and only the app id (the part
-    /// that means the same thing on both machines) is kept.
-    ///
-    /// A waypoint, not a destination: `shell::peer_windows` starts a
-    /// local instance where the room permits it and binds it into this
-    /// tab ([`crate::compositor::tab_binding::Placement::IntoTab`]),
-    /// after which the tile is a `Foreign` like any other. Never
-    /// projected into a room document — a `PeerWindow` is by
-    /// construction somebody else's, and the projection writes only
-    /// tabs this machine owns.
+    /// A window a peer has open, before this machine has bound a local
+    /// instance to the tab. The peer's `surface_id` only resolves on
+    /// their compositor so it is dropped, keeping only the app id. A
+    /// waypoint: `shell::peer_windows` binds a local instance and the
+    /// tile becomes `Foreign`. Never projected into a room document,
+    /// since a `PeerWindow` is by construction somebody else's.
     PeerWindow {
-        /// The wayland app-id the peer's window announces — for a qOS
-        /// package, its package id.
+        /// The wayland app-id the peer's window announces.
         app_id: String,
-        /// What to call it on screen. The peer's own tab title, which
-        /// they resolved through their installed-app names, so it reads
-        /// "Word Processor" rather than "dev.qos.word-processor"
-        /// wherever they had the app installed.
+        /// The peer's own resolved tab title.
         label: String,
-        /// What this machine is doing about it, in the words the user
-        /// reads on the card — "Opening here…", or the reason there will
-        /// be no window.
-        ///
-        /// Empty means nobody has looked yet, and that is also how
-        /// `shell::peer_windows` knows which tabs it still owes an
-        /// answer: writing the note *is* the record of the decision, so a
-        /// refusal is stated once and a launch is started once.
-        ///
-        /// A sentence rather than a code because there is exactly one
-        /// place it is produced (`shell::peer_windows::examine`) and
-        /// exactly one place it is read (the card), and a code would only
-        /// add a second table to keep in step with the first.
+        /// What this machine is doing about it, for the card. Empty means
+        /// nobody has looked yet; writing the note is how
+        /// `shell::peer_windows` records that the decision was made, so a
+        /// refusal or launch only ever starts once.
         #[serde(default)]
         note: String,
     },
@@ -523,12 +426,9 @@ pub struct WindowGroup {
     pub tabs: Vec<Tab>,
     pub active_tab: TabId,
     pub width: WindowWidth,
-    /// Whether the user has toggled this group into "maximized" mode.
-    /// Mirrors `WindowGroup::maximized` on the widget
-    /// (`ui/src/widget/window_group.rs`) — stored here so it survives a
-    /// restart and replicates across collaborators. `#[serde(default)]`
-    /// so JSON written before this field existed still loads, booting
-    /// un-maximized.
+    /// Mirrors the widget's maximized flag, stored so it survives a
+    /// restart and replicates. `#[serde(default)]` so pre-existing JSON
+    /// still loads, un-maximized.
     #[serde(default)]
     pub maximized: bool,
 }
@@ -541,8 +441,6 @@ pub struct Strip {
 }
 
 impl Strip {
-    /// Build an empty strip with the given id and name. Window groups start
-    /// empty; callers (the compositor or persistence layer) populate them.
     pub fn new(id: StripId, name: impl Into<String>) -> Self {
         Self {
             id,
@@ -552,29 +450,22 @@ impl Strip {
     }
 }
 
-/// One tab as a room's replication document carries it.
-///
-/// Deliberately not a [`Tab`]: what crosses is the tab's identity, its
-/// position and what is in it. There is no field here for anything a
-/// person's own session decided.
+/// One tab as a room's replication document carries it. Deliberately not
+/// a [`Tab`]: no field here for anything a person's own session decided.
 #[derive(Clone, Debug)]
 struct ReplicatedTab {
     id: TabId,
     order: u64,
     title: String,
-    /// `None` when the entry carries no tile, or one this build cannot
-    /// parse. Hydrated as a stub rather than dropped — a window that
-    /// exists in the room should still show up as a window here.
+    /// `None` when unparseable — hydrated as a stub rather than dropped,
+    /// since a window in the room should still show up as one here.
     tile: Option<TileContent>,
 }
 
 /// One window group as a room's replication document carries it.
-///
-/// `width` and `maximized` are optional because a peer may create the
-/// entry as a container for a tab of its own without owning the group.
-/// `None` means "its owner has not said", not "reset to the default".
-///
-/// **There is no `active_tab`.** That is the point — see
+/// `width`/`maximized` are `Option` because a peer may create the entry
+/// just to hold its own tab without owning the group — `None` means
+/// "owner hasn't said", not "default". **No `active_tab`** — see
 /// [`WorkspaceTree::project_owned_contents`].
 #[derive(Clone, Debug)]
 struct ReplicatedGroup {
@@ -594,12 +485,11 @@ struct ReplicatedStrip {
     groups: Vec<ReplicatedGroup>,
 }
 
-/// Write `value` at `key` only when the document does not already say it.
-///
-/// Every projection compares before it writes, so a document accumulates
-/// a change per real change rather than one per export. Without that each
-/// sync round would manufacture ops out of state nobody touched, and two
-/// peers exporting to each other would never fall quiet.
+/// Write `value` at `key` only when the document does not already say
+/// it, so a document accumulates a change per real change rather than
+/// one per export — otherwise each sync round manufactures ops out of
+/// untouched state and two peers exporting to each other never fall
+/// quiet.
 fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
     use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
     let current = match doc.get(obj, key).ok().flatten() {
@@ -648,58 +538,34 @@ fn put_bool_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, 
 pub struct Collaborator {
     pub id: String,
     pub name: String,
-    /// Tab id the collaborator is currently focused on, if any. Drives
-    /// per-tab presence dots (`TabBar` reads `PresenceKey::Tab{ hex(id) }`
-    /// from `PresenceCtx`; the shell seeds that mapping from this field).
-    /// `None` means "not attributed to a specific tab" — e.g. the peer is
-    /// in the workspace chrome but hasn't focused content yet. Optional
-    /// via `#[serde(default)]` so pre-existing persisted workspaces (with
-    /// no `active_tab` column) still load.
+    /// Tab id the collaborator is focused on, driving per-tab presence
+    /// dots. `None` means present in the workspace but not on content.
     #[serde(default)]
     pub active_tab: Option<u64>,
-    /// Optional hex string (`#rrggbb` or `#rrggbbaa`) overriding the
-    /// palette that [`ui::presence::user_color`] would pick for
-    /// this peer. Mirrors `nirios-concept/src/data.ts`'s per-peer
-    /// `cursorColor`. `None` falls through to the palette — the common
-    /// case for the four canonical ids (`me`/`alice`/`bob`/`charlie`).
+    /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
+    /// [`ui::presence::user_color`] would otherwise pick.
     #[serde(default)]
     pub cursor_color: Option<String>,
-    /// Optional avatar URL or initials fragment. Concept feature parity
-    /// only — the runtime renders initials today, so this is stored but
-    /// not yet wired to a bitmap loader.
+    /// Optional avatar URL or initials fragment; not yet wired to a
+    /// bitmap loader (the runtime renders initials today).
     #[serde(default)]
     pub avatar: Option<String>,
-    /// Display-only role chip for the top bar and the roster dropdown.
-    /// Authority comes from [`Workspace::role_of`], which reads the
-    /// member's membership capability — never from this field.
+    /// Display-only role chip. Authority comes from
+    /// [`Workspace::role_of`], never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
-    /// True for somebody the room has *named* but who has not taken part
-    /// in it yet — invited, not arrived. Distinct facts: the room's
-    /// authority writes an invitee's name at token-mint time (a real
-    /// membership statement), but that's not evidence anybody came. A
-    /// roster that conflated the two would claim someone was present on
-    /// an invitation they may never have opened. Set only by
-    /// [`crate::shell::peer_presence::PeerPresence::refresh_roster`];
-    /// `false` (the default) means an ordinary participant.
+    /// Named by the room but has not taken part yet.
     #[serde(default)]
     pub invited: bool,
-    /// The session this person is here through — the publishing peer's
-    /// libp2p handle ([`crate::network::behaviour::peer_liveness_handle`]).
-    /// What makes leaving expressible: a departure arrives as a peer id,
-    /// not a name, and by then the roster row has usually been renamed
-    /// from that handle to the person at it — without this field the row
-    /// couldn't be found again to remove. `None` for a row that came from
-    /// a persisted roster or test fixture rather than a live session.
+    /// The publishing peer's libp2p handle, so a departure (which names
+    /// only a peer id) finds this row again after it has been renamed
+    /// from the handle to the person. `None` for a persisted row.
     #[serde(default)]
     pub session: Option<u64>,
 }
 
 impl Collaborator {
-    /// Build a collaborator with no tab attribution — the common case for
-    /// "peer entered the workspace but hasn't focused content yet". A
-    /// constructor rather than a struct literal so adding a field later
-    /// doesn't force a codebase-wide literal sweep.
+    /// Build a collaborator with no tab attribution.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -713,16 +579,13 @@ impl Collaborator {
         }
     }
 
-    /// Record the live session this person is here through, so a
-    /// departure that names only that session can find their row.
+    /// Record the live session this person is here through.
     pub fn with_session(mut self, peer: u64) -> Self {
         self.session = Some(peer);
         self
     }
 
-    /// Same as [`Collaborator::new`] but also attributes the peer to a
-    /// specific tab, turning on the low-alpha presence dot beneath that
-    /// tab's pill.
+    /// Like [`Collaborator::new`] but attributed to a specific tab.
     pub fn with_active_tab(id: impl Into<String>, name: impl Into<String>, tab: u64) -> Self {
         let mut c = Self::new(id, name);
         c.active_tab = Some(tab);
@@ -730,8 +593,6 @@ impl Collaborator {
     }
 
     /// Attach an explicit `#rrggbb` / `#rrggbbaa` override for this peer.
-    /// Takes precedence over the palette lookup when the top-bar /
-    /// sidebar / tab dots read a colour.
     pub fn with_cursor_color(mut self, hex: impl Into<String>) -> Self {
         self.cursor_color = Some(hex.into());
         self
@@ -749,8 +610,7 @@ impl Collaborator {
         self
     }
 
-    /// Mark this collaborator as invited rather than arrived — see
-    /// [`Self::invited`].
+    /// Mark this collaborator as invited rather than arrived.
     pub fn as_invited(mut self) -> Self {
         self.invited = true;
         self
@@ -769,12 +629,9 @@ pub enum FsMode {
     ReadWrite,
 }
 
-/// How long a capability grant lives.
-///
-/// This is [`collab_types::caps::Expiry`] under the name the prompt UI
-/// already uses. It is an alias, not a parallel enum: the compositor's
-/// "Just once / Until I log out / Always" buttons are
-/// `AfterUse` / `EndOfSession` / `Never`, and the same three values
+/// How long a capability grant lives — [`collab_types::caps::Expiry`]
+/// under the prompt UI's name. "Just once / Until I log out / Always"
+/// are `AfterUse` / `EndOfSession` / `Never`, and the same three values
 /// travel to the filesystem, the launcher sandbox and every peer.
 pub type GrantScope = Expiry;
 
@@ -786,10 +643,8 @@ pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
 pub const GRANT_ALWAYS: Expiry = Expiry::Never;
 
 /// Per-app capability grant stored on a [`Workspace`]. Each variant maps
-/// to its own enforcement layer (Bubblewrap allowlist for filesystem,
-/// Pipewire ACL for camera/mic, nftables for network); this models the
-/// data so the prompt widget and portal backend can read/write it in the
-/// CRDT.
+/// to its own enforcement layer: Bubblewrap allowlist for filesystem,
+/// Pipewire ACL for camera/mic, nftables for network.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Capability {
     /// Read or read-write access to a specific filesystem path.
@@ -804,37 +659,27 @@ pub enum Capability {
     Microphone { scope: GrantScope },
     /// Screen capture via portal `ScreenCast`.
     Screencast { scope: GrantScope },
-    /// Remote control of the seat (pointer + keyboard injection) via portal
-    /// `RemoteDesktop`. Distinct from [`Capability::Screencast`] because
-    /// remote *control* is strictly more invasive than screen *viewing* —
-    /// the consent prompt and the Permissions tab must disclose it
-    /// separately so a user can grant "let them watch" without also
-    /// granting "let them type".
+    /// Remote control of the seat (pointer + keyboard injection) via
+    /// portal `RemoteDesktop`. Separate from [`Capability::Screencast`]
+    /// because it is strictly more invasive: "let them watch" and "let
+    /// them type" stay separate grants.
     RemoteDesktop { scope: GrantScope },
-    /// Submit a document to a printer via portal `Print`.
+    /// Submit a document to a printer via portal `Print`. Its own
+    /// variant because CUPS enumerates destinations and manages other
+    /// users' jobs, so "may print" and "may reach the print system" are
+    /// not the same permission.
     ///
-    /// Deliberately its own variant rather than a filesystem or device
-    /// grant reused. CUPS is an IPP daemon that enumerates
-    /// destinations and manages other users' jobs, so "may print" and
-    /// "may reach the print system" are not the same permission, and
-    /// folding printing into an existing variant would mean a grant
-    /// the user gave for something else silently authorised it.
-    ///
-    /// Note what granting this does **not** do: there is no arm for it
-    /// in `SandboxProfile::apply_grants`, so no bind mount is added and
-    /// `/run/cups/cups.sock` never appears inside the sandbox no
-    /// matter how broadly the capability is granted. The app hands the
-    /// compositor a file descriptor; the compositor talks to CUPS.
+    /// **Not yet enforced:** `SandboxProfile::apply_grants` has no arm
+    /// for it, so `/run/cups/cups.sock` never appears inside the sandbox
+    /// however broadly this is granted.
     Print { scope: GrantScope },
-    /// Outbound network access. `hosts: None` = "any host"; `hosts:
-    /// Some(allowlist)` = "only these hosts".
+    /// Outbound network access. `hosts: None` = any host; `Some(list)` =
+    /// only those.
     ///
     /// **Enforcement gap:** only the per-workspace network namespace
-    /// isolation (`unshare(CLONE_NEWNET)` / bwrap's `--unshare-net`) is
-    /// wired up — any `Always`-scoped grant lifts the default-deny. The
-    /// `hosts` allowlist is recorded by the data model but **not
-    /// enforced**: there is no per-namespace nftables rule generation
-    /// yet, so `Some([...])` and `None` currently behave identically.
+    /// isolation is wired up. The `hosts` allowlist is recorded but not
+    /// enforced — no per-namespace nftables rules yet, so `Some([...])`
+    /// and `None` behave identically.
     Network {
         hosts: Option<Vec<String>>,
         scope: GrantScope,
@@ -844,80 +689,35 @@ pub enum Capability {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room.
-    ///
-    /// [`Self::id`] indexes the local tree and is meaningless off this
-    /// machine; `room` is the value two hosts must agree on for their
-    /// apps to exchange anything. Minted once at creation, written to
-    /// the state file with the rest of the workspace, mirrored into the
-    /// automerge doc so it replicates, and carried in the invite a peer
-    /// accepts.
-    ///
-    /// `#[serde(default)]` yields [`RoomId::nil`] for state files
-    /// written before rooms existed;
-    /// [`WorkspaceTree::adopt_roomless_workspaces`] mints a real one at
-    /// boot and flushes it, so the sentinel survives exactly one load.
+    /// Durable identity of this workspace as a collaboration room — the
+    /// value two hosts must agree on, unlike the local-only [`Self::id`].
+    /// `#[serde(default)]` yields [`RoomId::nil`] for pre-room state
+    /// files until `adopt_roomless_workspaces` mints a real one at boot.
     #[serde(default)]
     pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
-    /// Who is in this workspace *right now* — rendered by the top-bar
-    /// avatar stack, wheel-disc presence dots and collaborators overlay.
-    /// Every row is asserted present by a verified invite or a presence
-    /// frame from another host.
-    ///
-    /// Not durable membership (that's [`Workspace::owner`] /
-    /// [`Workspace::capabilities`], which do persist) — sessions don't
-    /// outlive the process, and nothing here would ever remove a stale
-    /// row read back off disk ([`WorkspaceTree::retire_session`] only
-    /// fires on a transport departure, which never arrives for a session
-    /// this process never saw). Hence `skip_deserializing` rather than
-    /// `skip`: reading is the direction that can fabricate a person and
-    /// is closed, but the same derived `Serialize` still feeds the
-    /// control socket's state dump
-    /// (`FrameBuilderControlState::workspace_tree_json`) that a test
-    /// harness reads to observe presence.
+    /// Who is in this workspace *right now*, asserted present by a
+    /// verified invite or presence frame — not durable membership, which
+    /// is [`Workspace::owner`] / [`Workspace::capabilities`].
+    /// `skip_deserializing` rather than `skip`: reading is the direction
+    /// that can fabricate a stale person, but `Serialize` still feeds the
+    /// control socket's state dump.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
-    /// Who owns this room.
-    ///
-    /// Ownership is the root of trust and the answer to the
-    /// bootstrapping question every capability system has: someone must
-    /// be able to issue the first capability. The owner is the one
-    /// principal whose authority is not itself a capability; everything
-    /// else in [`Self::capabilities`] descends from them.
-    ///
-    /// `None` means "no owner recorded" — a workspace restored from a
-    /// state file written before ownership existed. Such a workspace is
-    /// adopted by the local user on first load
-    /// ([`WorkspaceTree::adopt_ownerless_workspaces`]) rather than being
-    /// treated as owned by everybody.
+    /// Who owns this room — the one principal whose authority is not
+    /// itself a capability. `None` means a pre-ownership state file,
+    /// adopted by the local user on first load.
     #[serde(default)]
     pub owner: Option<UserId>,
-    /// **Every** permission in this room, as capabilities.
-    ///
-    /// One list, one vocabulary. Room membership lives here (scope
-    /// [`Scope::Room`]); a file shared with one person lives here
-    /// (scope [`Scope::FsPath`]); an app's portal grant lives here
-    /// (subject [`Principal::App`]). There is deliberately no second
-    /// list for "shares" and no per-app map — those were the shapes
-    /// that let the two ideas drift apart.
-    ///
-    /// `#[serde(default)]` so state files written before this field
-    /// existed still load; they come back with no capabilities, which
-    /// is the safe direction.
+    /// **Every** permission in this room, as capabilities — one list, one
+    /// vocabulary (room membership, file shares, portal grants), so it
+    /// can't drift the way a second per-app map would.
     #[serde(default)]
     pub capabilities: Vec<CapOverride>,
-    /// Surfaces from this workspace being streamed to one or more peers.
-    /// Keys are the wayland `wl_surface` protocol ids the compositor
-    /// passes through `TileContent::Foreign`; values are the set of
-    /// libp2p [`PeerId`]s (hashed to `u64`, see
-    /// [`crate::network::protocol::PeerId`]) the share targets —
-    /// `HashSet` so multi-recipient streaming works: `share_surface`
-    /// inserts, `unshare_surface` clears.
-    ///
-    /// `#[serde(default)]` so persisted state files written before this
-    /// field existed still load.
+    /// Surfaces from this workspace being streamed to peers. Keys are
+    /// wayland `wl_surface` ids; values are the target libp2p peers
+    /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: HashMap<u64, std::collections::HashSet<u64>>,
 }
@@ -927,33 +727,23 @@ pub struct Workspace {
 /// the local user's account name.
 pub type UserId = String;
 
-/// What a role is called on screen, beside the name that holds it.
-///
-/// Lower-case because it is a tag next to a name — the same shape the
-/// roster's `agent` tag has — and not a sentence. One mapping, shared
-/// by every surface that shows a role, so the chip beside a person and
-/// the chip beside an agent cannot come to spell the same authority two
-/// different ways.
+/// What a role is called on screen. One mapping shared by every surface
+/// that shows a role, so it can't be spelled two different ways.
 pub fn role_label(role: CapRole) -> &'static str {
     match role {
         CapRole::Owner => "owner",
         CapRole::Editor => "editor",
         CapRole::Commenter => "commenter",
         CapRole::Viewer => "viewer",
-        // Not "no role". A blocked member is still in the room's
-        // directory — that is the whole point of the state, and a row
-        // that said nothing would read as an ordinary participant.
+        // Not "no role" — a blocked member is still in the room's
+        // directory, and a row that said nothing would read as ordinary.
         CapRole::Denied => "blocked",
     }
 }
 
-/// The id of the person sitting at this machine.
-///
-/// Derived from the device identity when one is provisioned, so a
-/// capability granted to this user is the same subject a peer sees, and
-/// falls back to the OS account name otherwise. Deliberately stable
-/// across restarts: an owner whose id changed every boot would lose
-/// their own workspaces.
+/// The id of the person sitting at this machine. Derived from the device
+/// identity when provisioned, falling back to the OS account name —
+/// stable across restarts, or an owner would lose their own workspaces.
 pub fn local_user_id() -> UserId {
     if let Ok(v) = std::env::var("QOS_USER_ID")
         && !v.is_empty()
@@ -975,26 +765,17 @@ pub fn local_user_id() -> UserId {
 }
 
 /// The name a session goes by before it says who is sitting at it.
-///
-/// Derived from the session's libp2p peer handle, so the same session is
-/// the same string on every host that hears it — which is what lets a
-/// roster row created by an accepted invite and a presence frame from
-/// that same session be recognised as one peer rather than two.
-///
-/// Must match the fallback label
-/// [`crate::shell::peer_presence::fold_inbound`] gives an unnamed
-/// publisher; a peer whose cursor said `p00…2a` and whose avatar said
-/// something else would be two people on screen.
+/// Derived from the libp2p peer handle, so it must match the fallback
+/// label [`crate::shell::peer_presence::fold_inbound`] gives an
+/// unnamed publisher, or one peer shows up as two.
 pub fn session_handle(peer: u64) -> String {
     format!("p{peer:016x}")
 }
 
-/// Seconds since the Unix epoch, for capability expiry.
-///
-/// A clock that has not been set yet reads as 0, which makes every
-/// `AtUnix` capability look live. That is the safe direction for a
-/// *grant* and the unsafe one for a *restriction*, so restrictions
-/// should be written without an expiry.
+/// Seconds since the Unix epoch, for capability expiry. An unset clock
+/// reads as 0, making every `AtUnix` capability look live — safe for a
+/// *grant*, unsafe for a *restriction*, so write restrictions without
+/// an expiry.
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1003,14 +784,10 @@ pub fn now_unix() -> u64 {
 }
 
 impl Capability {
-    /// The `(scope, verb)` this request descriptor asks for.
-    ///
-    /// [`Capability`] is what an app *asks* for — a path, a device, a
-    /// set of hosts. It is not a storage vocabulary: granting one
-    /// writes [`CapOverride`]s, and this is the translation. A network
-    /// request names one scope per host, so an allowlist of three hosts
-    /// becomes three capabilities and dropping one of them is a
-    /// meaningful, expressible act.
+    /// The `(scope, verb)` this request descriptor asks for —
+    /// [`Capability`] is what an app *asks* for, granting one writes
+    /// [`CapOverride`]s. A host allowlist becomes one capability per
+    /// host, so dropping one is a meaningful act.
     pub fn requested_scopes(&self) -> Vec<(Scope, Verb)> {
         match self {
             Capability::Filesystem { path, mode, .. } => {
@@ -1028,23 +805,20 @@ impl Capability {
                 vec![(Scope::Device("screencast".into()), Verb::Read)]
             }
             // Remote desktop is screencast plus input injection, so it
-            // asks for the write verb on its own device scope rather than
-            // borrowing screencast's — revoking one must not revoke the
-            // other.
+            // gets its own write-verb device scope — revoking one must
+            // not revoke the other.
             Capability::RemoteDesktop { .. } => {
                 vec![(Scope::Device("remote-desktop".into()), Verb::Write)]
             }
-            // Printing is an *output* action — it produces a physical
-            // artifact somewhere the user may not be standing — so it
-            // asks for the write verb, not the read one a device probe
-            // would use.
+            // Printing is an *output* action, producing a physical
+            // artifact, so it asks for the write verb, not the read
+            // one a device probe would use.
             Capability::Print { .. } => vec![(Scope::Device("printer".into()), Verb::Write)],
             Capability::Network { hosts, .. } => match hosts {
-                // An allowlist means exactly those hosts. `None` is the
-                // explicit "any host" request and is the only thing
-                // that produces a wildcard scope — recording an
-                // allowlist and then behaving as if it said `None` is
-                // the bug this shape exists to prevent.
+                // An allowlist means exactly those hosts; `None` is the
+                // only thing that produces a wildcard scope — behaving
+                // as if an allowlist said `None` is the bug this shape
+                // prevents.
                 Some(list) => list
                     .iter()
                     .map(|h| (Scope::NetHost(h.clone()), Verb::Write))
@@ -1054,7 +828,6 @@ impl Capability {
         }
     }
 
-    /// The lifetime the requester asked for.
     pub fn requested_expiry(&self) -> Expiry {
         match self {
             Capability::Filesystem { scope, .. }
@@ -1085,11 +858,10 @@ impl Capability {
             Scope::Device(d) if d == "camera" => Some(Capability::Camera { scope }),
             Scope::Device(d) if d == "microphone" => Some(Capability::Microphone { scope }),
             Scope::Device(d) if d == "screencast" => Some(Capability::Screencast { scope }),
-            // Without this arm a stored print grant would not read back
-            // as one, so `GrantStoreHandle::lookup` would never see it
-            // and an `Always` grant would re-prompt on every job — the
-            // permission would look granted in the Permissions tab and
-            // behave as if it were not.
+            // Without this arm a stored print grant wouldn't read back
+            // as one: `GrantStoreHandle::lookup` would miss it and an
+            // `Always` grant would re-prompt every job despite looking
+            // granted in the Permissions tab.
             Scope::Device(d) if d == "printer" => Some(Capability::Print { scope }),
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
@@ -1105,12 +877,9 @@ impl Capability {
 }
 
 impl Workspace {
-    // ---------------------------------------------------------------
-    // App grants — the portal's view of the one capability list.
-    //
-    // These are not a second store. They read and write
-    // `self.capabilities`, filtered to subjects that are apps.
-    // ---------------------------------------------------------------
+    // App grants — the portal's view of the one capability list. Not a
+    // second store: they read/write `self.capabilities`, filtered to
+    // subjects that are apps.
 
     /// Record an app's grant. Returns the ids of the capabilities
     /// written (one per requested scope).
@@ -1126,7 +895,6 @@ impl Workspace {
             .collect()
     }
 
-    /// Every capability whose subject is the app `app_id`.
     pub fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
         let want = Subject::app(app_id);
         let now = Some(now_unix());
@@ -1137,13 +905,8 @@ impl Workspace {
     }
 
     /// A **snapshot** of app grants in the portal's `Capability` shape.
-    ///
-    /// Rebuilt from [`Self::capabilities`] on every call and returned by
-    /// value: there is no cached copy to fall out of sync, and equally
-    /// nothing to write to. Mutating the returned map edits a temporary
-    /// and stores nothing — three tests seeded themselves that way and
-    /// silently asserted against an empty workspace, so the name says
-    /// "snapshot" to make that obvious at the call site. To grant, use
+    /// Rebuilt from [`Self::capabilities`] on every call — mutating the
+    /// returned map edits a temporary and stores nothing. To grant, use
     /// [`Self::grant_app`] or [`Self::grant_as`].
     pub fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
         let now = Some(now_unix());
@@ -1192,17 +955,11 @@ impl Workspace {
             .collect()
     }
 
-    // ---------------------------------------------------------------
-    // The capability store. Every permission question in the
-    // compositor bottoms out in `decide` / `allows` below; nothing
-    // else is authorised to answer one.
-    // ---------------------------------------------------------------
+    // The capability store — every permission question bottoms out in
+    // `decide` / `allows` below.
 
     /// Decide whether `actor` may apply `verb` to `resource` in this
-    /// room, at the current wall-clock time.
-    ///
-    /// Fail-closed: this is `collab_types::decide_capability`, which
-    /// denies unless something explicitly permits.
+    /// room. Fail-closed: denies unless something explicitly permits.
     pub fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
         decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
     }
@@ -1213,28 +970,16 @@ impl Workspace {
         self.decide(actor, resource, verb) == CapDecision::Allow
     }
 
-    /// Record a capability. Returns the capability's id, minting one if
-    /// the caller did not supply it so the grant can always be revoked
-    /// by name later.
-    ///
-    /// Authority to *make* a grant is checked by the caller
-    /// ([`Self::grant_as`]), not here — this is the storage primitive.
+    /// Record a capability, minting an id if the caller didn't supply
+    /// one. Authority to *make* the grant is checked by the caller
+    /// ([`Self::grant_as`]), not here.
     pub fn grant_capability(&mut self, mut cap: CapOverride) -> String {
         if cap.id.is_empty() {
             cap.id = format!("cap-{}", next_id());
         }
-        // A re-grant of the same (subject, scope, effect, verb) merges
-        // rather than stacks, so revoking once is enough.
-        //
-        // Merging keeps the **longer-lived** expiry. A grant is
-        // monotonic: granting something for this session when it is
-        // already granted permanently must not quietly demote it to the
-        // session. That is not a hypothetical — an app that holds
-        // "Always" for the camera and then makes a fresh request would
-        // have had its permanent grant replaced by the one-shot the
-        // prompt defaults to, and the user would never be told. Reducing
-        // authority is what revoke and `Effect::Restrict` are for, and
-        // both are explicit acts.
+        // Merges rather than stacks a re-grant of the same (subject,
+        // scope, effect, verb), keeping the longer-lived expiry — a
+        // grant is monotonic; reducing authority is revoke's job.
         if let Some(slot) = self.capabilities.iter_mut().find(|c| {
             c.subject == cap.subject
                 && c.scope == cap.scope
@@ -1259,12 +1004,9 @@ impl Workspace {
     }
 
     /// Grant a capability **on behalf of** `grantor`, enforcing that
-    /// the grantor actually holds authority to delegate it.
-    ///
-    /// This is the check that makes ownership mean something: a peer
-    /// who is not the owner and holds no `Admin` over the scope cannot
-    /// widen anyone's access, including their own. Returns `None` when
-    /// the grantor lacks that authority and nothing was recorded.
+    /// the grantor actually holds authority to delegate it — a peer
+    /// without `Admin` cannot widen anyone's access, including their
+    /// own. `None` when the grantor lacks that authority.
     pub fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
         if !self.may_administer(grantor) {
             return None;
@@ -1302,16 +1044,11 @@ impl Workspace {
         removed
     }
 
-    // ---------------------------------------------------------------
     // Ownership and membership.
-    // ---------------------------------------------------------------
 
-    /// Is `user` the owner of this room?
-    ///
-    /// True for the recorded owner, and for anyone the owner has given
-    /// `Admin` over the room — a delegated co-owner. Everyone else is
-    /// false, including when no owner is recorded at all: an ownerless
-    /// workspace has no administrators, rather than only administrators.
+    /// Is `user` the owner, or a delegated co-owner (`Admin` over the
+    /// room)? An ownerless workspace has no administrators, not
+    /// everyone-is-an-administrator.
     pub fn may_administer(&self, user: &UserId) -> bool {
         if self.owner.as_deref() == Some(user.as_str()) {
             return true;
@@ -1324,11 +1061,8 @@ impl Workspace {
     }
 
     /// Install `user` as owner, and record the membership capability
-    /// that makes them an `Admin` of the room.
-    ///
-    /// Both halves matter: `owner` is the root of trust that survives
-    /// an empty capability list, and the capability is what replicates
-    /// to peers and what the decision function actually reads.
+    /// that makes them `Admin` — `owner` survives an empty capability
+    /// list, and the capability is what replicates and what `decide` reads.
     pub fn set_owner(&mut self, user: impl Into<UserId>) {
         let user = user.into();
         self.owner = Some(user.clone());
@@ -1342,23 +1076,10 @@ impl Workspace {
         );
     }
 
-    /// Give up administration of this workspace, because it has joined a
-    /// room it did not mint.
-    ///
-    /// The bootstrap half of write authority on a room document. A guest
-    /// legitimately receives the room's owner and capability list on its
-    /// first sync, so a receiver cannot simply refuse every incoming
-    /// governance change — but joining is the act that surrenders
-    /// whatever governance the local workspace had, so a machine either
-    /// *learns* governance it didn't have or is being asked to have it
-    /// *overwritten*; those are never the same act, which is what lets
-    /// "refuse an overwrite" not also refuse the join. Concretely: the
-    /// recorded owner goes, and so does every capability that made a
-    /// person an administrator here — otherwise [`Self::may_administer`]
-    /// would still answer yes and the joiner would keep granting in a
-    /// room it does not own.
-    ///
-    /// Returns whether anything was given up.
+    /// Give up administration because this workspace joined a room it
+    /// did not mint — drops both the recorded owner and every admin
+    /// capability, or [`Self::may_administer`] would still answer yes
+    /// for a room this machine doesn't own.
     pub fn surrender_governance(&mut self) -> bool {
         let had_owner = self.owner.take().is_some();
         let room = self.id.raw().to_string();
@@ -1371,13 +1092,9 @@ impl Workspace {
         had_owner || !dropped.is_empty()
     }
 
-    /// The role `user` holds in this room, derived from their
-    /// membership capability.
-    ///
-    /// A role is not stored separately — it *is* the verb on the
-    /// membership capability, which is what keeps "being in a room" and
-    /// "being allowed to do something" from drifting apart. `None`
-    /// means "not a member", which is different from `Viewer`.
+    /// The role `user` holds. Not stored separately — it *is* the verb
+    /// on their membership capability, so "in the room" and "allowed
+    /// to do something" can't drift apart. `None` means not a member.
     pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
         if self.owner.as_deref() == Some(user.as_str()) {
             return Some(CapRole::Owner);
@@ -1428,13 +1145,9 @@ impl Workspace {
         Actor::person(self.role_of(user), user.clone()).in_room(self.id.raw().to_string())
     }
 
-    /// Build the [`Actor`] for an app running in this room.
-    ///
-    /// The app carries the room as a principal so room-wide capabilities
-    /// reach it, but **no role** — so it has no base authority and can
-    /// only act through a capability granted to it by name. That is
-    /// precisely the property that makes the portal prompt the one
-    /// user-facing permission dialog.
+    /// Build the [`Actor`] for an app running in this room. Carries the
+    /// room as principal but **no role** — an app has no base authority,
+    /// only what's granted to it by name.
     pub fn actor_for_app(&self, app_id: &str) -> Actor {
         Actor::app(app_id).in_room(self.id.raw().to_string())
     }
@@ -1445,13 +1158,9 @@ impl Workspace {
         Actor::agent(agent_id).in_room(self.id.raw().to_string())
     }
 
-    /// The room roster: the people who are *members*.
-    ///
-    /// Deliberately built from room-scoped capabilities only. Someone
-    /// who holds a capability on one file and nothing else is **not**
-    /// here — presenting them as a collaborator is the exact confusion
-    /// the model exists to prevent. See [`Self::shares_of`] for where
-    /// they do appear.
+    /// The room roster: the people who are *members*. Built from
+    /// room-scoped capabilities only — someone with a capability on one
+    /// file and nothing else is **not** here. See [`Self::shares_of`].
     pub fn roster(&self) -> Vec<(UserId, CapRole)> {
         let room = self.id.raw().to_string();
         let now = Some(now_unix());
@@ -1481,13 +1190,8 @@ impl Workspace {
             .collect()
     }
 
-    /// The role an *agent* holds in this room.
-    ///
-    /// Same derivation as [`Self::role_of`] — the role is the verb on
-    /// the membership capability — with the owner short-circuit
-    /// deliberately absent: an agent is never the owner of a room. It
-    /// holds exactly what somebody granted it, which is what makes
-    /// revoking that capability the whole of taking it back out.
+    /// The role an *agent* holds — same derivation as [`Self::role_of`]
+    /// minus the owner short-circuit, since an agent is never the owner.
     pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
         let room = self.id.raw().to_string();
         let now = Some(now_unix());
@@ -1528,19 +1232,9 @@ impl Workspace {
         })
     }
 
-    /// The agents that hold membership in this room.
-    ///
-    /// The counterpart to [`Self::roster`], and deliberately a *second*
-    /// list rather than more rows in the first. Both are room
-    /// membership and both are built the same way, but an agent is not
-    /// a person: presenting the two in one undifferentiated list is
-    /// exactly how a caller ends up telling a user that somebody is in
-    /// their room when nobody is. Anything rendering these must say
-    /// which list a row came from.
-    ///
-    /// An agent appears here only while it holds a live room-scoped
-    /// `Grant`, so an entry is evidence that a grant happened and
-    /// revoking the capability removes it.
+    /// The agents that hold membership in this room — a *second* list
+    /// from [`Self::roster`], since an agent is not a person and
+    /// rendering them undifferentiated would misrepresent who's present.
     pub fn agent_members(&self) -> Vec<(String, CapRole)> {
         let room = self.id.raw().to_string();
         let now = Some(now_unix());
@@ -1565,14 +1259,9 @@ impl Workspace {
             .collect()
     }
 
-    /// The share list for one resource: the people who hold a
-    /// capability naming *this* resource specifically.
-    ///
-    /// Room-scoped capabilities are excluded — those are membership and
-    /// belong in [`Self::roster`]. The two lists are disjoint by
-    /// construction, which is how the UI is stopped from ever
-    /// presenting "I shared one file with Bob" as "Bob is a
-    /// collaborator".
+    /// The share list for one resource. Room-scoped capabilities are
+    /// excluded (those belong in [`Self::roster`]) so the UI can never
+    /// present "shared one file with Bob" as "Bob is a collaborator".
     pub fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
         let now = Some(now_unix());
         self.capabilities
@@ -1587,16 +1276,11 @@ impl Workspace {
             .collect()
     }
 
-    /// Build an empty workspace with the given id and name. The workspace
-    /// starts with no strips, collaborators, or capabilities — those are
-    /// populated by the compositor or the persistence layer.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
             id,
-            // A workspace that exists is a room that exists. Minting
-            // here rather than lazily on first use is what makes the
-            // identity a property of the workspace instead of a
-            // property of whoever asked for it first.
+            // A workspace that exists is a room that exists: minted
+            // here rather than lazily.
             room: RoomId::new(),
             name: name.into(),
             strips: Vec::new(),
@@ -1607,45 +1291,22 @@ impl Workspace {
         }
     }
 
-    /// A workspace with `id`, `name`, and a freshly-minted room, and
-    /// every other field empty.
-    ///
-    /// The builder the fixtures want. Hand-written `Workspace { … }`
-    /// literals break on every field this struct gains; going through
-    /// here means a fixture only names what it cares about — and, for
-    /// the room specifically, means a fixture never accidentally sits
-    /// in the nil room alongside every other fixture in the suite.
+    /// What fixtures want instead of a hand-written `Workspace { … }`
+    /// literal (which breaks on every new field); each fixture also gets
+    /// its own room rather than sharing the nil one.
     pub fn test_default(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self::new(id, name)
     }
 
-    /// This workspace's collaboration cluster id.
-    ///
-    /// A workspace *is* the collaboration room: apps opened into it
-    /// exchange CRDT deltas with each other and with the peers invited
-    /// to it, and apps in another workspace are a different room. The
-    /// wire speaks `Uuid` for that room, and this is the value it
-    /// carries — [`Self::room`], not a function of the local
-    /// [`Self::id`]. That is the whole point: a value two machines can
-    /// both hold, rather than one each derives from a counter that
-    /// means something different on each of them.
-    ///
-    /// A workspace whose room has not been minted yet returns the nil
-    /// uuid. `crate::shell::collab_broker::CrdtRoute::delivers_to`
-    /// refuses to deliver anything to or from it, so the window
-    /// between loading a pre-rooms state file and
-    /// [`WorkspaceTree::adopt_roomless_workspaces`] running cannot
-    /// become one giant room shared by every unminted workspace on
-    /// every machine.
+    /// This workspace's collaboration cluster id — [`Self::room`], not
+    /// the local [`Self::id`]. Unminted returns the nil uuid, which
+    /// `CrdtRoute::delivers_to` refuses to deliver to.
     pub fn collab_cluster_id(&self) -> uuid::Uuid {
         self.room.as_uuid()
     }
 
-    /// Mark `surface_id` as being streamed to `peer_id`. Additive: two
-    /// calls in sequence record both peers in the per-surface set. The
-    /// compositor's commit handler consults this map (indirectly, via
-    /// [`Workspace::is_surface_shared`]) to decide whether to stage the
-    /// buffer for the streaming task.
+    /// Mark `surface_id` as being streamed to `peer_id`. Additive — two
+    /// calls record both peers in the per-surface set.
     pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
         self.shared_surfaces
             .entry(surface_id)
@@ -1653,19 +1314,16 @@ impl Workspace {
             .insert(peer_id);
     }
 
-    /// Drop the share entry for `surface_id`. No-op if the surface is
-    /// not shared. Returns the set of peers the surface was shared
-    /// with so callers can fire `StopShare` events for each without a
-    /// second lookup.
+    /// Drop the share entry for `surface_id` (no-op if unshared).
+    /// Returns the peers it was shared with, so callers can fire
+    /// `StopShare` for each without a second lookup.
     pub fn unshare_surface(&mut self, surface_id: u64) -> Option<std::collections::HashSet<u64>> {
         self.shared_surfaces.remove(&surface_id)
     }
 
-    /// Stop streaming `surface_id` to one specific peer, leaving any
-    /// other peers' shares intact. Returns `true` if a share was
-    /// removed; `false` if the (surface, peer) pair wasn't shared.
-    /// When the last peer is removed the surface key itself is also
-    /// dropped so [`Self::is_surface_shared`] reports `false` again.
+    /// Stop streaming `surface_id` to one peer, leaving others intact.
+    /// Drops the surface key entirely once the last peer is removed, so
+    /// [`Self::is_surface_shared`] reports `false` again.
     pub fn unshare_surface_from_peer(&mut self, surface_id: u64, peer_id: u64) -> bool {
         let removed = match self.shared_surfaces.get_mut(&surface_id) {
             Some(peers) => peers.remove(&peer_id),
@@ -1695,20 +1353,9 @@ impl Workspace {
 }
 
 impl Default for Workspace {
-    /// Empty workspace with a zero id, an empty name, and a freshly
-    /// minted room. Useful for `..Default::default()` in struct-update
-    /// syntax (mirrors what [`WorkspaceTree`] does for itself) so
-    /// adding new fields like `grants` doesn't force a codebase-wide
-    /// literal sweep.
-    ///
-    /// The room is minted rather than left at [`RoomId::nil`] on
-    /// purpose: a workspace that exists is a room that exists, and two
-    /// workspaces built this way must not silently turn out to be the
-    /// same room. The nil sentinel is reachable only through
-    /// deserialisation of a state file written before rooms existed —
-    /// `#[serde(default)]` on the field, not this impl — which is
-    /// exactly the case
-    /// [`WorkspaceTree::adopt_roomless_workspaces`] repairs.
+    /// Room is minted, not left at [`RoomId::nil`] — two workspaces
+    /// built this way must not silently become the same room. Nil is
+    /// reachable only via deserializing a pre-rooms state file.
     fn default() -> Self {
         Self {
             id: WorkspaceId::default(),
@@ -1723,25 +1370,16 @@ impl Default for Workspace {
     }
 }
 
-/// The shape of `state.json` this build writes and understands.
-///
-/// Bump it when a change makes a file **unreadable to an older build in a way
-/// that loses meaning** — a field removed, a field's meaning changed, an id space
-/// renumbered. Adding a `#[serde(default)]` field does not qualify: an older
-/// build ignores it, which is degradation, not loss.
-///
-/// The number exists for one direction only. Newer reading older is handled by
-/// serde defaults and always has been. Older reading newer is the case with no
-/// safe default answer, and until this existed the answer was to hand the person
-/// a freshly bootstrapped demo tree — see [`crate::shell::persist::load_or_default`].
+/// The shape of `state.json` this build writes and understands. Bump
+/// only when a change makes a file unreadable to an older build in a way
+/// that loses meaning (field removed/repurposed, id space renumbered) —
+/// a new `#[serde(default)]` field does not qualify. Guards the one
+/// direction with no safe default: older reading newer.
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 
-/// What a file with no `schema_version` key is.
-///
-/// Every state file written before the key existed describes version 1: the key
-/// was added alongside the check, not alongside a format change. Defaulting to 0
-/// and treating that as "unknown" would condemn every existing user's session on
-/// the upgrade that introduced the check.
+/// A file with no `schema_version` key is version 1 — the key was added
+/// alongside the check, not a format change, and defaulting to "unknown"
+/// would strand every existing session on upgrade.
 fn state_schema_version_of_a_file_without_one() -> u32 {
     1
 }
@@ -1749,128 +1387,56 @@ fn state_schema_version_of_a_file_without_one() -> u32 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
     /// Which version of this struct's on-disk shape the file describes.
-    ///
-    /// Always written as [`STATE_SCHEMA_VERSION`]; read back to decide whether
-    /// this build is allowed to touch the file at all.
+    /// Read back to decide whether this build may touch the file at all.
     #[serde(default = "state_schema_version_of_a_file_without_one")]
     pub schema_version: u32,
-    /// Counts the rounds in which a peer's changes landed in this
-    /// tree. Bumped by [`Self::apply_room_changes`], read through
-    /// [`Self::room_epoch`]. `#[serde(skip)]`: it is a within-session
-    /// "has anything arrived since you last looked", so a value
-    /// restored from disk would be meaningless and, worse, could match
-    /// a live reader's cached one and suppress the first resync.
+    /// Counts rounds in which a peer's changes landed. `#[serde(skip)]`
+    /// — a restored value could match a live reader's cache and
+    /// suppress the first resync.
     #[serde(skip)]
     pub room_epoch: u64,
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
     pub active: WorkspaceId,
     pub active_strip: HashMap<WorkspaceId, StripId>,
-    /// Per-strip "active group" pointer — the [`GroupId`] inside each strip
-    /// that currently owns focus / keyboard input / presence broadcasts.
-    /// Parallels [`Self::active_strip`] (per-workspace) but at one level
-    /// deeper: each strip carries its own active group independently so
-    /// switching strips doesn't drag focus back to a stale group.
-    ///
-    /// Optional per strip — `None`/missing means "no explicit selection;
-    /// resolvers should fall back to the first non-closing group" (see
-    /// [`Self::resolve_active_group`]).
-    ///
-    /// `#[serde(default)]` so persisted state files written before this
-    /// field existed still load — they boot with an empty map and the
-    /// shell seeds entries lazily on first focus.
+    /// Per-strip "active group" pointer, one level deeper than
+    /// [`Self::active_strip`]. Missing means "fall back to the first
+    /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
-    /// Tree-level roster, used as a fallback by the chrome when the
-    /// active workspace has nobody of its own.
-    ///
-    /// `#[serde(skip)]` for the same reason as
-    /// [`Workspace::collaborators`]: it is painted by the same surfaces,
-    /// through the same fallback, so reloading it would put the same
-    /// people who are not there on the same bar.
+    /// Tree-level roster, fallback for chrome when the active workspace
+    /// has nobody of its own. `#[serde(skip)]` — reloading it would show
+    /// people who are not there.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
-    /// Automerge backing doc for peer-sync. Lazily seeded — empty until
-    /// a peer feeds changes via [`Self::apply_changes`] or a test
-    /// directly mutates this field. The cache (other fields) is the
-    /// source of truth for reads; the doc is the source of truth for
-    /// peer change export.
-    ///
-    /// `#[serde(skip)]` so existing JSON persistence ignores it; the doc
-    /// rebuilds empty on load and gets populated as peer-sync runs.
-    ///
-    /// Public so struct-literal sites in integration tests can use
-    /// `..Default::default()` against a non-exhaustive struct, and so
-    /// tests can poke values directly into the doc to synthesise
-    /// change-blobs. Real consumers must use [`Self::current_heads`],
-    /// [`Self::export_changes_since`], and [`Self::apply_changes`] —
-    /// touching `doc` directly bypasses the cache rebuild and is only
-    /// safe for peer-sync internals or tests.
+    /// Automerge backing doc for peer-sync. The cache (other fields) is
+    /// the source of truth for reads; this doc for peer change export.
+    /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
+    /// can synthesize change-blobs, but real consumers must go through
+    /// [`Self::current_heads`] / [`Self::export_changes_since`] /
+    /// [`Self::apply_changes`]: direct access bypasses the cache rebuild.
     #[serde(skip, default = "AutoCommit::new")]
     pub doc: AutoCommit,
-    /// One replication document per room this machine is in.
-    ///
-    /// [`Self::doc`] describes **every** workspace on this machine, so it
-    /// is not something a peer may be handed: a guest invited to one room
-    /// would learn every other room's name, id, owner and capability set.
-    /// These are what crosses the wire instead — each holds exactly one
-    /// room's own state, so the boundary is the document itself, not a
-    /// filter over one: what a peer isn't entitled to is not in the
-    /// document it is sent.
-    ///
-    /// Maintained by [`Self::sync_room_doc`], which projects the cached
-    /// [`Workspace`] with that room into it, writing only what actually
-    /// differs. `#[serde(skip)]` for the same reason as [`Self::doc`] —
+    /// One replication document per room — [`Self::doc`] describes
+    /// **every** workspace, so handing it to a peer would leak every
+    /// other room's state. Maintained by [`Self::sync_room_doc`];
     /// re-projected from the cache after a restart.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
-    /// Who may write each room's governance — see [`RoomAuthority`].
-    ///
-    /// A room absent from this map is one this machine minted, and so one
-    /// this machine governs: [`Self::room_authority`] reads a missing
-    /// entry as [`RoomAuthority::Local`]. Joining a room
-    /// ([`Self::set_room`]) writes [`RoomAuthority::Unpinned`], and
-    /// accepting an invite pins the owner the token named.
-    ///
-    /// Persisted, unlike [`Self::room_docs`]: the room documents can be
-    /// re-projected from the cache after a restart, but who governs a
-    /// room cannot be — the invite that established it is long gone, and
-    /// a machine that forgot would be back to taking governance from
-    /// whoever answered first.
+    /// Who may write each room's governance — see [`RoomAuthority`]. A
+    /// room absent from this map is one this machine minted and governs.
+    /// Persisted, unlike [`Self::room_docs`] — can't be re-derived.
     #[serde(default)]
     pub room_authority: HashMap<RoomId, RoomAuthority>,
-    /// What each peer in a room is **called**, as libp2p `PeerId`
-    /// (base58) → display name.
-    ///
-    /// A peer id says a machine is here, not who is here, and the only
-    /// non-spoofable source for that name is the person who invited them
-    /// (a peer announcing its own name could announce any name). So this
-    /// is written by the **inviter**, keyed by the peer id they invited,
-    /// and replicates as part of the room's governance — refused by
-    /// [`Self::apply_room_changes`] from anyone but the room's authority.
-    /// The peer id stays the identity; this is only a label on it (see
-    /// [`Self::room_peer_labels`]).
-    ///
-    /// Persisted for the same reason [`Self::room_authority`] is: the
-    /// invite is long gone by the next boot, and a host that forgot
-    /// would show the people it invited as numbers again.
+    /// What each peer is **called**, as libp2p `PeerId` (base58) →
+    /// display name. Written only by the inviter (non-spoofable);
+    /// [`Self::apply_room_changes`] refuses it from anyone else.
     #[serde(default)]
     pub room_peer_names: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
-    /// Which records each room this machine is in holds, as record id →
-    /// record kind. The shell's mirror of the room indexes, kept here so
-    /// the replication path can project it.
-    ///
-    /// A room's index is the compositor's own document
-    /// ([`crate::shell::room_records::RoomRecords`]), and it lives behind
-    /// an `Rc<RefCell<_>>` on the overlay host — which the peer-sync path,
-    /// holding the tree across an `Arc<RwLock<_>>`, cannot reach. So the
-    /// index is not moved here; it is *mirrored* here as plain data,
-    /// pushed in by [`Self::set_room_records`] whenever it changes. The
-    /// tree stays `Send`, and the index stays where it belongs.
-    ///
-    /// Not persisted: the durable copy is the index's own store, and a
-    /// second copy of it in the state file would be a second answer to
-    /// the same question.
+    /// Mirror of each room's record index (record id → kind), pushed by
+    /// [`Self::set_room_records`] — a plain-data copy since the real
+    /// index lives behind an `Rc<RefCell<_>>` peer-sync's
+    /// `Arc<RwLock<_>>` can't reach. Not persisted.
     #[serde(skip, default)]
     pub room_records_held: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
     /// References that arrived from a peer and have not been folded into
@@ -1878,53 +1444,26 @@ pub struct WorkspaceTree {
     /// [`Self::take_inbound_room_records`].
     #[serde(skip, default)]
     pub room_records_inbound: Vec<(RoomId, String, String)>,
-    /// For a room this machine **joined**, the [`NEXT_ID`] counter value
-    /// at the moment it joined. Windows minted before that are not
-    /// projected into the room.
-    ///
-    /// Joining a room means entering someone else's workspace, not
-    /// pouring your own into it. Without this line, accepting an invite
-    /// would publish every window the invitee already had open — the host
-    /// asked one person in and watched a stranger's desktop arrive with
-    /// them. A host has no floor, because what is already in the host's
-    /// workspace is exactly what the invitee was invited to see.
-    ///
-    /// A counter value rather than a timestamp: ids are what is being
-    /// filtered, [`NEXT_ID`] is monotonic within a peer, and the counter
-    /// is re-seeded above every id already minted here — so the line
-    /// survives a restart without a clock.
+    /// For a joined room, the [`NEXT_ID`] value at the moment of
+    /// joining — windows minted before that aren't projected in, or
+    /// accepting an invite would publish every window already open. A
+    /// counter, not a timestamp, so the line survives a restart.
     #[serde(default)]
     pub room_share_floor: HashMap<RoomId, u64>,
-    /// This tree's own peer salt, overriding the process-wide one.
-    ///
-    /// The salt is process-global because [`next_id`] is, and in a real
-    /// session that is right — one machine, one id space. It is wrong for
-    /// anything that holds **two** trees at once: two peers simulated in
-    /// one process share the static, so whichever set it last decides
-    /// what both of them think they own, and a test that sets it leaks
-    /// that into every test running beside it.
-    ///
-    /// So replication reads the salt through [`Self::local_salt`], which
-    /// prefers this. Production never sets it (the entry points set the
-    /// static, because the id *minting* has to see it too), and the
-    /// foreseen per-tree refactor noted on [`Self::set_peer_salt`] is
-    /// this field.
+    /// This tree's own peer salt, overriding the process-wide one — the
+    /// static is wrong when one process holds **two** trees (e.g. two
+    /// simulated peers). [`Self::local_salt`] prefers this field;
+    /// production never sets it.
     #[serde(skip, default)]
     pub peer_salt_override: Option<u16>,
-    /// Where to write this tree when a capability changes.
-    ///
-    /// `None` disables the write, which is what tests and the offscreen
-    /// renderer want. The compositor sets it at boot, and that is what
-    /// makes an `Always` grant actually survive a restart: before this,
-    /// nothing in the compositor called `save_tree_to` at all, so
-    /// `Always` behaved exactly like `EndOfSession`.
+    /// Where to write this tree when a capability changes. `None`
+    /// disables it (tests, offscreen renderer). Set at boot by the
+    /// compositor — what makes an `Always` grant survive a restart.
     #[serde(skip)]
     pub persist_path: Option<std::path::PathBuf>,
     /// Where to export the capability list the FUSE mount enforces.
-    ///
-    /// `None` disables the export. The compositor sets it at boot to the
-    /// same path it passes to `qos-fs --acl`, so the filesystem and the
-    /// compositor decide from one list rather than two.
+    /// `None` disables the export; set at boot to the same path passed
+    /// to `qos-fs --acl`, so both sides decide from one list.
     #[serde(skip)]
     pub fs_acl_path: Option<std::path::PathBuf>,
 }
@@ -1953,41 +1492,17 @@ impl Default for WorkspaceTree {
     }
 }
 
-/// Shared handle to a single [`WorkspaceTree`] instance.
-///
-/// Closes C-3 (`docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`):
-/// the compositor (`ChromeState`), the portal (`GrantStoreHandle`), and
-/// peer-sync (`WorkspaceTreeReplica`) all hold a clone of this handle so
-/// every mutation lands on the same underlying tree. Previously each
-/// subsystem owned an independent `WorkspaceTree` clone — three trees,
-/// three identities, diverging on the first write.
-///
-/// `parking_lot::RwLock` is chosen over `std::sync::Mutex` because the
-/// shell repaints at ~60 Hz reading the tree on every layout pass; many
-/// readers (paint + grant lookup + peer-sync export) outnumber the
-/// occasional writer (chrome mutations + portal `Allow` / peer-sync
-/// `apply_changes`). Uncontended `parking_lot` read locks are ~10 ns —
-/// imperceptible at frame-rate.
-///
-/// Use [`WorkspaceTree::shared`] to wrap an owned tree, or
-/// [`WorkspaceTreeHandleExt::test_default`] for a fresh handle with a
-/// default tree.
+/// Shared handle to a single [`WorkspaceTree`], cloned by the
+/// compositor, portal and peer-sync so every mutation lands on the same
+/// tree. `parking_lot::RwLock` rather than a `Mutex`: readers vastly
+/// outnumber writers at ~60 Hz repaint, and an uncontended read lock is
+/// ~10 ns.
 pub type WorkspaceTreeHandle = std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>;
 
-/// Extension trait providing constructors on the [`WorkspaceTreeHandle`]
-/// type alias. Rust doesn't let us add inherent methods to a type alias,
-/// so the constructors live as associated functions on this trait.
-///
-/// Imported as `use WorkspaceTreeHandleExt as _;` at use-sites; the
-/// trait is in the same module as `WorkspaceTreeHandle` so the natural
-/// import (`use crate::shell::state::WorkspaceTreeHandle;`) already
-/// brings the trait into scope when its name is.
+/// Constructors for [`WorkspaceTreeHandle`] — Rust won't let us add
+/// inherent methods to a type alias, so they live on this trait instead.
 pub trait WorkspaceTreeHandleExt: Sized {
-    /// Build a handle pre-wrapped around a default (empty) tree. Used by
-    /// tests that don't care about the initial workspace set — and by
-    /// the C-3 integration tests in particular, which build a handle,
-    /// hand a clone to each subsystem, then mutate one and assert
-    /// the others observe it.
+    /// A handle wrapped around a default (empty) tree.
     fn test_default() -> Self;
 }
 
@@ -2000,45 +1515,29 @@ impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
 impl WorkspaceTree {
     /// Wrap this tree in a [`WorkspaceTreeHandle`]. Consumes the tree
     /// (there should only ever be one instance) and returns the shared
-    /// handle every subsystem clones from. Mirrors the C-3 RFC's
-    /// "Threading the handle" section.
+    /// handle every subsystem clones from.
     pub fn shared(self) -> WorkspaceTreeHandle {
         std::sync::Arc::new(parking_lot::RwLock::new(self))
     }
 }
 
 impl WorkspaceTree {
-    /// Set the process-wide peer salt that [`next_id`] stamps into the
-    /// high 16 bits of every freshly-allocated id (C-1). Called once
-    /// from the hosted entry point after the libp2p keypair is loaded —
-    /// see [`crate::network::behaviour::peer_salt_from_keypair`].
-    ///
-    /// Default salt is `0`, which keeps every test that asserts on
-    /// `WorkspaceId(1)` / `StripId(2)` style literals working without
-    /// touching anything. Two peers minting ids under distinct salts
-    /// can never collide.
-    ///
-    /// Takes `&mut self` even though the salt is process-global so the
-    /// API surface invites the caller to set it on a tree they own — a
-    /// future per-tree-salt refactor (e.g. for in-process e2e tests that
-    /// simulate two peers) is a one-line change without breaking
-    /// callers.
+    /// Set the process-wide peer salt [`next_id`] stamps into the high
+    /// 16 bits of every freshly-allocated id. Default `0` keeps
+    /// `WorkspaceId(1)`-style test literals working; two peers under
+    /// distinct salts can never collide. Takes `&mut self` even though
+    /// the salt is process-global, so a per-tree-salt refactor stays a
+    /// one-line change.
     pub fn set_peer_salt(&mut self, salt: u16) {
         Self::set_process_peer_salt(salt);
     }
 
-    /// [`Self::set_peer_salt`] without a tree to call it on.
-    ///
-    /// The salt is process-global, and the entry points have to set it
-    /// **before** the tree is loaded: on a first boot
-    /// [`Self::bootstrap_default`] mints a workspace, a strip, a group
-    /// and its tabs, and ids minted before the salt exists land in the
-    /// shared 0-salt range — identical on every machine that ever first
-    /// booted. Those ids are what the room document keys a window group
-    /// by, so two such peers in one room would write to the same key and
-    /// fold two distinct windows into one. Re-seeding the counter after
-    /// the fact does not repair them: it governs the ids minted next, not
-    /// the ones already in the tree.
+    /// [`Self::set_peer_salt`] without a tree to call it on. Must run
+    /// **before** the tree is loaded: ids minted before the salt exists
+    /// land in the shared 0-salt range, identical on every first boot,
+    /// and the room document keys a window group by id — so two such
+    /// peers fold two distinct windows into one. Re-seeding the counter
+    /// afterward does not repair already-minted ids.
     pub fn set_process_peer_salt(salt: u16) {
         NEXT_ID_PEER_SALT.store(salt, AtomicOrdering::Relaxed);
     }
@@ -2049,43 +1548,26 @@ impl WorkspaceTree {
         NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed)
     }
 
-    /// The salt replication treats as this tree's own — the id range whose
-    /// entries this tree may write and sweep.
-    ///
-    /// [`Self::peer_salt_override`] first, the process-wide salt
-    /// otherwise.
+    /// The salt replication treats as this tree's own — the id range
+    /// this tree may write and sweep. [`Self::peer_salt_override`]
+    /// first, the process-wide salt otherwise.
     pub fn local_salt(&self) -> u16 {
         self.peer_salt_override
             .unwrap_or_else(|| NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
     }
 
-    /// Give **this tree** a salt without touching the process-wide one.
-    ///
-    /// For anything holding two trees at once: two peers in one process
-    /// cannot share one static and still disagree about which entries are
-    /// whose. Ids handed to such a tree have to carry the matching salt in
-    /// their high bits, which a caller minting them itself controls —
-    /// [`next_id`] cannot, since it reads the static.
+    /// Give this tree a salt without touching the process-wide one, for
+    /// holding two trees at once. The caller must mint matching ids
+    /// itself; [`next_id`] reads the static.
     pub fn set_salt_override(&mut self, salt: u16) {
         self.peer_salt_override = Some(salt);
     }
 
-    /// Walk every id in the tree (workspace, strip, group, tab) and
-    /// advance the process-wide [`NEXT_ID`] counter past the maximum
-    /// **counter** stamped by the local peer salt. Idempotent. Needed
-    /// because the counter starts at `1` on every fresh process, so on a
-    /// restart where persisted state already uses ids `[1, 50]` the next
-    /// [`WorkspaceId::new`] would collide with `1` and the cache rebuild
-    /// would fold two distinct entries into one.
-    ///
-    /// Only ids whose high 16 bits match the local salt count toward the
-    /// seed — ids minted by a remote peer live in a disjoint range and
-    /// must NOT advance our counter, or we'd skip our own legitimate
-    /// `next_id` slots for no reason. The 0-salt case (tests,
-    /// pre-peer-sync) walks every id.
-    ///
-    /// Call this from [`persist::load_or_default`] (and any other load
-    /// path) after deserialising so subsequent allocations are fresh.
+    /// Walk every id and advance [`NEXT_ID`] past the highest counter
+    /// stamped by the local peer salt — idempotent, called after
+    /// deserializing. The counter restarts at `1` each process, so
+    /// without this it collides with persisted ids. Only local-salt ids
+    /// count; a remote peer's must not advance our counter.
     pub fn seed_next_id_from_self(&self) {
         let local_salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed);
         let mut max_counter: u64 = 0;
@@ -2112,57 +1594,28 @@ impl WorkspaceTree {
         NEXT_ID.fetch_max(max_counter.saturating_add(1), AtomicOrdering::Relaxed);
     }
 
-    /// Close the room document's open transaction, recording when it
-    /// happened.
-    ///
-    /// `AutoCommit` closes a transaction implicitly on the next read and
-    /// leaves the change's advisory timestamp at zero. Automerge stores that
-    /// field verbatim, so a room whose changes all went through the implicit
-    /// path has a change graph that reads as 1 January 1970 from end to end —
-    /// every entry in an activity view lands on the same day, and any
-    /// date-range filter over it either matches everything or nothing. Ending
-    /// each `doc_*` mirror here is what makes a room's history datable.
-    ///
-    /// It also gives each mirrored mutation its own change rather than letting
-    /// an arbitrary run of them coalesce into whatever the next reader
-    /// happened to flush, which is what makes one row mean one thing that
-    /// happened.
-    ///
-    /// Cheap to call when nothing is pending — automerge returns without
-    /// writing a change — so the compositor also calls it once a frame to
-    /// catch the mirrors whose success paths are too branchy to end here.
+    /// Close the room document's open transaction, stamping when it
+    /// happened — otherwise `AutoCommit`'s implicit close leaves the
+    /// advisory timestamp at zero and no activity view can date-filter
+    /// the change graph. Also keeps each mirrored mutation its own
+    /// change rather than letting a run coalesce. Cheap when nothing is
+    /// pending, so the compositor also calls it once a frame.
     pub fn commit_room_change(&mut self) {
         let _ = qdoc::history::commit_stamped(&mut self.doc);
     }
 
-    /// Snapshot of the current automerge change-graph heads. Peer-sync
-    /// uses this as the baseline when computing what to send to a
-    /// remote replica.
-    ///
-    /// Takes `&mut self` because automerge `0.7`'s `AutoCommit` flushes
-    /// any pending transaction before returning heads — that's an
-    /// internal mutation. Callers in peer-sync hold a `&mut` handle on
-    /// the tree anyway.
+    /// Snapshot of the current automerge change-graph heads, the
+    /// baseline peer-sync computes what to send against. Takes `&mut
+    /// self` because `AutoCommit` flushes any pending transaction
+    /// before returning heads.
     pub fn current_heads(&mut self) -> Vec<ChangeHash> {
         self.doc.get_heads()
     }
 
     /// Export every change applied since `since` as opaque change-blobs.
-    ///
-    /// **Not a peer-facing export.** [`Self::doc`] holds every workspace
-    /// on this machine, so its change graph carries every room's name,
-    /// room id, owner and capability set; handing it to a peer invited to
-    /// one room hands them a directory of all the others. Peers are served
-    /// by [`Self::export_room_changes_since`], which reads a document that
-    /// only ever contained the one room.
-    ///
-    /// What remains for this: forking the local document (the history
-    /// pane's restore path, the screenshot driver's synthetic second
-    /// author) and the tests that pin the automerge foundation.
-    ///
-    /// Takes `&mut self` for the same reason as
-    /// [`Self::current_heads`] — the underlying `AutoCommit::get_changes`
-    /// commits any pending transaction first.
+    /// **Not a peer-facing export**: [`Self::doc`] holds every workspace
+    /// on this machine, so serving it would leak every other room. Peers
+    /// get [`Self::export_room_changes_since`], scoped to one room.
     pub fn export_changes_since(&mut self, since: &[ChangeHash]) -> Vec<Vec<u8>> {
         self.doc
             .get_changes(since)
@@ -2171,13 +1624,9 @@ impl WorkspaceTree {
             .collect()
     }
 
-    /// Bring the public cache fields back in line with the room document
-    /// after a *local* rewrite of it.
-    ///
-    /// [`Self::apply_changes`] already does this for changes arriving from a
-    /// peer. A restore-from-history writes into the same document without
-    /// going through that path, so it needs the same reconciliation — without
-    /// it the tree would still be showing the pre-restore state it cached.
+    /// Bring the cache back in line with the room document after a
+    /// *local* rewrite (a history restore doesn't go through
+    /// [`Self::apply_changes`], which does this for peer changes).
     pub fn resync_cache_from_doc(&mut self) {
         self.rebuild_cache_from_doc();
     }
@@ -2196,34 +1645,15 @@ impl WorkspaceTree {
         Ok(())
     }
 
-    // =================================================================
-    // Per-room replication
-    //
-    // Inviting someone to a workspace grants them that room. It does not
-    // grant them a directory of every other room on the host — their
-    // names, their room ids, their owners, and above all their capability
-    // sets, which say which app holds which grant over paths the guest
-    // has no access to.
-    //
-    // The tree document cannot express that boundary. It is one automerge
-    // document holding every workspace, and an automerge change graph
-    // cannot be safely served in part: changes form a hash chain, so a
-    // subset with another room's changes removed leaves the remaining
-    // changes with dependencies the receiver will never see, and automerge
-    // parks them unapplied forever. A filter over the tree document is
-    // therefore not a smaller version of this fix; it is a fix that does
-    // not work, whichever way the attribution is computed.
-    //
-    // So the replication unit is a document per room, projected from the
-    // cache. A peer receives a document that only ever contained the room
-    // it asked for, which is what makes the guarantee checkable by reading
-    // the code rather than by trusting a predicate.
-    // =================================================================
+    // Per-room replication: an invite must not hand over a directory of
+    // every other room, and `doc`'s change graph cannot be served in
+    // part (changes form a hash chain, so filtering leaves dependencies
+    // the receiver never sees and automerge parks them unapplied
+    // forever). So the replication unit is a document per room,
+    // projected from the cache.
 
     /// Every room this machine is in, deduplicated, in workspace order.
-    ///
-    /// A workspace whose room is still the unminted sentinel is not in a
-    /// room and is skipped — there is nothing for a peer to address.
+    /// A workspace whose room is still the unminted sentinel is skipped.
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut seen = std::collections::HashSet::new();
         self.workspaces
@@ -2233,15 +1663,10 @@ impl WorkspaceTree {
             .collect()
     }
 
-    /// Who may write `room`'s governance — its owner and its capability
-    /// list.
-    ///
-    /// A room with no recorded authority is one this machine minted, and a
-    /// machine governs the rooms it minted: that is the only reading under
-    /// which a fresh workspace is administrable by the person who made it
-    /// without anyone having to say so. Joining someone else's room
-    /// ([`Self::set_room`]) records [`RoomAuthority::Unpinned`], and
-    /// accepting an invite pins the owner the token named
+    /// Who may write `room`'s governance. No recorded authority means
+    /// this machine minted the room and governs it; joining another's
+    /// room ([`Self::set_room`]) records [`RoomAuthority::Unpinned`],
+    /// pinned to the named owner on invite accept
     /// ([`Self::pin_room_authority`]).
     pub fn room_authority(&self, room: RoomId) -> RoomAuthority {
         self.room_authority
@@ -2256,34 +1681,18 @@ impl WorkspaceTree {
     }
 
     /// Name the peer `peer_id` (base58 libp2p `PeerId`) `name` in
-    /// `room`, as `actor`.
-    ///
-    /// The act that turns "a machine is here" into "a person is here".
-    /// It is deliberately the **inviter's** act and not the invitee's:
-    /// a peer that told the room its own name could tell it any name,
-    /// and that name renders next to a caret inside a document whose
-    /// access this room's capabilities gate. So the name is a label the
-    /// room's administrator attaches to a peer id, replicated as part
-    /// of the room's governance, and the peer id remains the identity.
-    ///
-    /// Refused unless this machine governs `room` and `actor` may
-    /// administer it -- the same two conditions a capability grant
-    /// needs, because this is the same kind of statement. Returns
-    /// whether the name was recorded.
-    ///
-    /// An empty `name` un-names the peer, which is how a wrong label is
-    /// taken back: the key is dropped from the room document and the
-    /// peer falls back to being shown as its id.
+    /// `room`, as `actor`. Deliberately the **inviter's** act, not the
+    /// invitee's — a peer naming itself could claim any name. Refused
+    /// unless `actor` may administer `room`. An empty `name` un-names
+    /// the peer.
     pub fn name_peer(&mut self, room: RoomId, actor: &UserId, peer_id: &str, name: &str) -> bool {
         let peer_id = peer_id.trim();
         if room.is_nil() || peer_id.is_empty() {
             return false;
         }
-        // A peer id this machine cannot parse is not a peer id. Storing
-        // it would put a key in the room document that no presence
-        // frame can ever match, which reads later as "the name did not
-        // replicate" rather than "the name was never addressed to
-        // anyone".
+        // Storing an unparseable peer id would leave a key no presence
+        // frame can ever match — reads later as "didn't replicate"
+        // rather than "was never addressed to anyone".
         if peer_id.parse::<libp2p::PeerId>().is_err() {
             return false;
         }
@@ -2314,34 +1723,17 @@ impl WorkspaceTree {
     }
 
     /// The names `room` carries, keyed by the peer **handle** the
-    /// presence path speaks in rather than by base58 peer id.
-    ///
-    /// Presence frames identify their sender by
-    /// [`crate::network::behaviour::peer_liveness_handle`] -- a digest
-    /// of the peer id, not the peer id itself -- so a lookup from a
-    /// caret back to a name has to cross that gap. It is crossed here,
-    /// by hashing the names the room document holds, so the document
-    /// keeps storing the real identity: a room that recorded only the
-    /// digest would have no way to check a name against the peer it
-    /// belongs to, and a digest is not something to build an identity
-    /// on.
-    ///
-    /// A peer with no entry is simply absent, which is what leaves it
-    /// labelled with its own handle rather than with somebody's name.
+    /// presence path speaks in
+    /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
+    /// id — the document stores real identity, this bridges the gap. A
+    /// peer with no entry is labelled with its handle.
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
-        // Room documents are not persisted -- they are re-projected from
-        // the cache -- so a machine that has just restarted holds none
-        // until something asks it to export. On a machine that governs
-        // the room, the cache is what the document is projected *from*,
-        // so reading it is reading the same authority rather than a
-        // weaker one, and it means a host does not show the people it
-        // invited as numbers for the first few seconds after a restart.
-        //
-        // A guest gets no such fallback. What it knows about the room is
-        // what replicated, and a guest with a name in its cache and none
-        // in the document would be one that had written a name it was
-        // not entitled to write.
+        // Room documents aren't persisted, so a just-restarted machine
+        // holds none until something exports. On a machine that governs
+        // the room, falling back to the cache avoids showing invitees
+        // as numbers for the first few seconds; a guest gets no such
+        // fallback.
         let named = if self.governs_room(room) {
             self.room_peer_names.get(&room).cloned().unwrap_or_default()
         } else {
@@ -2360,20 +1752,10 @@ impl WorkspaceTree {
     }
 
     /// Record that `room`'s governance is written by `peer` and nobody
-    /// else.
-    ///
-    /// The value comes from a validated invite token: the room id and the
-    /// owner's peer id are both inside the ed25519 signature
-    /// ([`crate::network::invite::canonical_payload`]), so a peer cannot
-    /// name itself the authority over a room it was not the owner of — it
-    /// would need the owner's key to mint the token that says so. That is
-    /// what makes this checkable by the receiver rather than asserted by
-    /// the sender.
-    ///
-    /// Refuses to overwrite an authority already pinned to a different
-    /// peer: a second invite is not a transfer of the room, and treating
-    /// it as one would make "send the guest another invite" a way to
-    /// re-point them at an attacker.
+    /// else. The value comes from a validated invite token (room id and
+    /// owner peer id both inside the ed25519 signature), so a peer
+    /// can't name itself authority. Refuses to overwrite an authority
+    /// already pinned to a different peer.
     pub fn pin_room_authority(&mut self, room: RoomId, peer: PeerOrigin) -> bool {
         if room.is_nil() {
             return false;
@@ -2397,16 +1779,9 @@ impl WorkspaceTree {
     }
 
     /// Put `who` on the roster of the workspace that addresses `room`.
-    /// Everything the roster reaches has to be someone really there, so
-    /// only two callers may add to it: an accepted invite
-    /// ([`crate::network::invite::accept_invite_into`]) and a presence
-    /// frame from another host ([`crate::shell::peer_presence`]).
-    ///
-    /// Idempotent, an **upsert** not a push — re-admitting an id already
-    /// present refreshes what the newcomer knows and keeps what it
-    /// doesn't (a later frame with no explicit colour must not erase an
-    /// existing one). Returns whether the roster changed, so a caller in
-    /// the frame loop can treat "someone arrived" as a repaint reason.
+    /// An **upsert**, not a push — a later frame with no explicit
+    /// colour must not erase an existing one. Returns whether the
+    /// roster changed.
     pub fn admit_collaborator_in_room(&mut self, room: RoomId, who: Collaborator) -> bool {
         if room.is_nil() {
             return false;
@@ -2426,12 +1801,9 @@ impl WorkspaceTree {
         Self::admit_into(&mut ws.collaborators, who)
     }
 
-    /// Take `who` off the roster of the workspace addressing `room`.
-    ///
-    /// The other direction has to exist for the roster to mean anything.
-    /// A list that only ever grows says "five people are here" of a room
-    /// four of them left, which is the same class of untruth as seeding
-    /// it with people who never arrived.
+    /// Take `who` off the roster. Needed for the roster to mean
+    /// anything — a list that only ever grows lies just as much as one
+    /// seeded with people who never arrived.
     pub fn retire_collaborator_in_room(&mut self, room: RoomId, id: &str) -> bool {
         if room.is_nil() {
             return false;
@@ -2445,17 +1817,10 @@ impl WorkspaceTree {
     }
 
     /// Learn that the session `peer` is in `room` and that `user` is the
-    /// person sitting at it.
-    ///
-    /// A session announces itself before it can say who is at it: an
-    /// accepted invite establishes the far end cryptographically (its
-    /// libp2p key signed the token) and gives no name at all, while the
-    /// name arrives later, on the first presence frame the session
-    /// publishes. Both describe the same peer, so this replaces the
-    /// session-handle row rather than adding a second avatar beside it.
-    ///
-    /// A publisher that names nobody stays under its handle — an
-    /// unlabelled peer is honest, an invented name is not.
+    /// person sitting at it. A session announces itself (via the
+    /// accepted invite) before it can say who is at it, so this
+    /// replaces the session-handle row when the name arrives rather
+    /// than adding a second avatar. Unnamed stays under its handle.
     pub fn note_peer_present(&mut self, room: RoomId, peer: u64, user: &str) -> bool {
         if room.is_nil() {
             return false;
@@ -2490,16 +1855,8 @@ impl WorkspaceTree {
     }
 
     /// Take every person who was here through `peer`'s session off every
-    /// roster.
-    ///
-    /// A session going quiet is the one departure signal the transport
-    /// produces on its own, and it names a peer rather than a person —
-    /// which is why [`Collaborator::session`] is kept. Sweeping every
-    /// workspace rather than one is deliberate: a session can be in
-    /// several of this machine's rooms at once, and it left all of them.
-    ///
-    /// Returns whether any roster changed, so the caller can treat a
-    /// departure as a reason to repaint and otherwise do nothing.
+    /// roster. Sweeps every workspace, not one: a session can be in
+    /// several rooms at once, and it left all of them.
     pub fn retire_session(&mut self, peer: u64) -> bool {
         let mut changed = false;
         for ws in &mut self.workspaces {
@@ -2527,13 +1884,9 @@ impl WorkspaceTree {
                 existing.role_id = who.role_id;
                 changed = true;
             }
-            // Which live session this person is here through. A row can
-            // reach the roster without one — read back off disk, or from
-            // a fixture — and such a row is invisible to
-            // `retire_session`, so it would stay on the bar through every
-            // departure the transport ever reports. The arriving row is
-            // the one that knows, so it wins, on the same rule as the
-            // fields above.
+            // A row without a session (read off disk, or a fixture) is
+            // invisible to `retire_session`; the arriving row is the one
+            // that knows, so it wins.
             if who.session.is_some() && existing.session != who.session {
                 existing.session = who.session;
                 changed = true;
@@ -2545,9 +1898,7 @@ impl WorkspaceTree {
     }
 
     /// The cached workspace that addresses `room`, if this machine is in
-    /// it. First match wins: two local workspaces sharing a room would be
-    /// one room the machine joined twice, and the sync path has to pick
-    /// one to be authoritative rather than alternate between them.
+    /// it. First match wins, in case of a room joined twice locally.
     fn workspace_in_room(&self, room: RoomId) -> Option<&Workspace> {
         if room.is_nil() {
             return None;
@@ -2556,29 +1907,15 @@ impl WorkspaceTree {
     }
 
     /// Project the cached state of `room`'s workspace into that room's
-    /// replication document, writing only what differs.
+    /// replication document, writing only what differs; no-op when this
+    /// machine is not in `room`.
     ///
-    /// Narrow on purpose: room identity, name, owner and capabilities —
-    /// who the room is and who may do what in it. Contents (strips,
-    /// groups, tabs — also read back by [`Self::rebuild_cache_from_doc`])
-    /// are excluded: replicating layout has its own hard questions (two
-    /// machines' window geometry isn't one thing, and ids are minted per
-    /// peer) that this does not attempt.
-    ///
-    /// Everything projected is a map key rather than a list element, so a
-    /// room document can be re-projected under a fresh actor after a
-    /// restart and still merge into a peer's copy by last-writer-wins
-    /// instead of duplicating entries.
-    ///
-    /// Values are compared before being written so an export never
-    /// manufactures a change. A revoked capability is deleted from the
-    /// map (not left behind), which is what lets the revocation reach a
-    /// peer that already holds the grant — but since the room document
-    /// isn't persisted, that deletion is lost across a restart with the
-    /// lineage that carried it, so a revoke that never reached a peer
-    /// before the host restarted must be re-issued.
-    ///
-    /// No-op when this machine is not in `room`.
+    /// Every value is a map key, not a list element, so a re-projection
+    /// under a fresh actor after a restart merges last-writer-wins
+    /// instead of duplicating. A revoked capability is deleted from the
+    /// map so the revocation reaches a peer already holding the grant —
+    /// but the room document is not persisted, so that deletion has to
+    /// be re-issued after a restart.
     pub fn sync_room_doc(&mut self, room: RoomId) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -2596,23 +1933,16 @@ impl WorkspaceTree {
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
-        // Governance is projected only by the machine that holds it. A
-        // guest has nothing to say about who owns the room it joined, and
-        // a guest that said it anyway would be putting a competing claim
-        // on the wire for last-writer-wins to arbitrate — which is the
-        // race this authority model exists to remove. This is not the
-        // control (a peer that does not run this code will project
-        // whatever it likes; that is refused on the receiving side, in
-        // `apply_room_changes`); it is what keeps the honest path from
-        // producing a payload the receiving side then has to refuse.
+        // Governance is projected only by the machine that holds it —
+        // a guest claiming ownership would put a competing claim on
+        // the wire that `apply_room_changes` would only refuse anyway.
         let governs = self.governs_room(room);
 
         let doc = self.room_docs.entry(room).or_insert_with(AutoCommit::new);
 
-        // Identity first: a document that did not say which room it was
-        // could be applied to the wrong one by a receiver that trusted the
-        // envelope. The receiver checks this field against the room it
-        // asked for.
+        // Identity first: the receiver checks this field against the
+        // room it asked for, so an unlabelled document could be applied
+        // to the wrong one.
         let current_room = match doc.get(&ROOT, "room").ok().flatten() {
             Some((Value::Scalar(s), _)) => match s.as_ref() {
                 ScalarValue::Str(v) => Some(v.to_string()),
@@ -2646,20 +1976,14 @@ impl WorkspaceTree {
             Some(o) if governs && current_owner.as_deref() != Some(o.as_str()) => {
                 let _ = doc.put(&ROOT, "owner", o.clone());
             }
-            // An owner is never unset in a room this machine governs —
-            // `adopt_ownerless_workspaces` only ever fills the field in —
-            // so there is no deletion case here.
+            // Never unset in a governed room — `adopt_ownerless_workspaces`
+            // only ever fills the field in.
             _ => {}
         }
 
-        // Which records the room holds, projected by **every** member —
-        // governance below is one-sided on purpose, this is not. A room
-        // a guest cannot bring a record into is not a shared room.
+        // Projected by **every** member, unlike governance below: a room
+        // a guest can't bring a record — or a window — into isn't shared.
         Self::project_room_records(doc, &held);
-
-        // And the room's windows. A workspace carries its own windows, so
-        // two people in one workspace have the same windows open —
-        // projected by every member for the same reason the records are.
         Self::project_owned_contents(doc, &strips, local_salt, share_floor);
 
         if !governs {
@@ -2700,34 +2024,19 @@ impl WorkspaceTree {
         }
         Self::project_peer_names(doc, &peer_names);
         let _ = qdoc::history::commit_stamped(doc);
-        // Nothing reads a room document through patches — every value
-        // above is read back with `doc.get` — so the patch log is pure
-        // overhead, and worse than overhead: it records this machine's
-        // actor list, and `PatchLog::migrate_actors` panics inside
-        // `apply_changes` when a peer's actor cannot be spliced into it
-        // in sort order. A guest merging its host's room document died
-        // on that. Drop the log at every point one could accumulate.
+        // Nothing reads this doc through patches, so the log is pure
+        // overhead — worse, `PatchLog::migrate_actors` panics when a
+        // peer's actor can't be spliced into it in sort order.
         doc.reset_diff_cursor();
     }
 
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
 
-    /// Project "who the peers in this room are" into the room document,
-    /// as `PeerId` (base58) -> display name.
-    ///
-    /// Called only from the governing branch of [`Self::sync_room_doc`],
-    /// beside the capability list and for the same reason: a name shown
-    /// next to a caret is a claim about who is editing, and a claim a
-    /// peer makes about itself is worth nothing. One writer -- the
-    /// room's authority -- so there is nothing for last-writer-wins to
-    /// arbitrate and no way for a guest to rename itself or anybody
-    /// else.
-    ///
-    /// A name removed from the cache is deleted from the map rather than
-    /// left behind, so un-naming a peer reaches the peers that already
-    /// hold the name -- the same rule the capability sweep follows, and
-    /// for the same reason.
+    /// Project "who the peers in this room are", as `PeerId` (base58)
+    /// -> display name. Called only from the governing branch of
+    /// [`Self::sync_room_doc`] — one writer, so no guest can rename
+    /// itself or anybody else.
     fn project_peer_names(
         doc: &mut AutoCommit,
         names: &std::collections::BTreeMap<String, String>,
@@ -2737,9 +2046,8 @@ impl WorkspaceTree {
         let peers_id = match doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
             Some((_, id)) => id,
             None => {
-                // Nothing to say and nothing said before: do not mint an
-                // empty map, so a room nobody has named anyone in
-                // produces no change at all.
+                // Don't mint an empty map — a room nobody has named
+                // anyone in produces no change at all.
                 if names.is_empty() {
                     return;
                 }
@@ -2771,14 +2079,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// Every name the room document carries, as `PeerId` (base58) ->
-    /// display name.
-    ///
-    /// Read from the **document**, not from [`Self::room_peer_names`],
-    /// so a guest and the host answer this the same way: the host
-    /// projects its cache into the document and reads it back out, and
-    /// the guest reads what replicated. One source, and it is the
-    /// authenticated one.
+    /// Every name the room document carries. Read from the **document**,
+    /// not [`Self::room_peer_names`], so a guest and the host answer this
+    /// the same way — one source, and it's the authenticated one.
     pub fn room_peer_names_in_doc(
         &self,
         room: RoomId,
@@ -2819,41 +2122,18 @@ impl WorkspaceTree {
         u64::from_str_radix(key, 16).ok()
     }
 
-    /// Project the strips, window groups and tabs this machine **owns**
-    /// into the room document's `contents` map.
+    /// Project the strips, window groups and tabs this machine owns into
+    /// the room document's `contents` map. The `active_*` pointers are
+    /// excluded — projecting them would drag a colleague off the page
+    /// they were on whenever somebody else changed tabs.
     ///
-    /// Contents (which windows exist, their grouping, order, width,
-    /// maximized state) are room state and replicate. [`WindowGroup::active_tab`],
-    /// [`Self::active`], [`Self::active_strip`] and [`Self::active_group`] are
-    /// deliberately excluded even though they live in the same structs —
-    /// projecting them would drag a colleague off the page they were on
-    /// every time somebody else changed tabs.
-    ///
-    /// Every entry is written **only** by the peer whose salt its id
-    /// carries ([`peer_salt_of`]). Automerge merges a map key by
-    /// last-writer-wins with no per-key ACL, so two peers projecting one
-    /// entry from their own caches would be a coin toss over values
-    /// neither changed. With a single writer there is nothing to
-    /// arbitrate: a peer's entries are read here and never written, and
-    /// [`Self::apply_room_changes`] refuses a batch that breaks the rule.
-    /// Disjoint salts also mean two people opening a window at once make
-    /// two map keys, not one contested key.
-    ///
-    /// Each entry carries the index it sits at in its parent; readers
-    /// sort by `(order, id)` so peers appending at once (equal `order`)
-    /// still agree, via the id tiebreak.
-    ///
-    /// The sweep at each level deletes only entries this machine owns —
-    /// deleting a peer's entry for being merely absent from our cache
-    /// would race the case where a peer's window opened a moment ago and
-    /// simply hasn't reached our cache yet.
-    ///
-    /// A machine whose salt is `0` has no id space of its own (every
-    /// unsalted peer mints `1, 2, 3, …`, so "entries I own" has no
-    /// answer and two such peers collide on every id) — contents are
-    /// neither projected nor merged in that mode, mirroring peer-sync's
-    /// own precondition that the device key producing the salt must be
-    /// readable.
+    /// Every entry is written only by the peer whose salt its id carries
+    /// ([`peer_salt_of`]) — a single-writer rule
+    /// [`Self::apply_room_changes`] enforces, so last-writer-wins has
+    /// nothing to arbitrate. Entries carry their index; readers sort by
+    /// `(order, id)` so peers appending at once still agree, and the
+    /// sweep at each level deletes only entries this machine owns. Salt
+    /// `0` has no id space, so nothing is projected or merged there.
     fn project_owned_contents(
         doc: &mut AutoCommit,
         strips: &[Strip],
@@ -2866,8 +2146,8 @@ impl WorkspaceTree {
         if local_salt == 0 {
             return;
         }
-        // "Mine to publish": minted by this peer, and — in a room this
-        // machine joined rather than minted — minted since it joined.
+        // "Mine to publish": minted by this peer, and since it joined
+        // (not before) if this is a room it joined rather than minted.
         let mine = |id: u64| -> bool {
             peer_salt_of(id) == local_salt
                 && share_floor.is_none_or(|floor| counter_of(id) >= floor)
@@ -2886,15 +2166,14 @@ impl WorkspaceTree {
 
         let mut live_strips: HashSet<String> = HashSet::new();
         for (si, strip) in strips.iter().enumerate() {
-            // A strip with nothing in it holds no state, and an empty row
-            // arriving on someone else's desktop is noise rather than
-            // news. Left out here, and swept below if it used to be here.
+            // An empty strip holds no state; an empty row arriving on
+            // someone else's desktop is noise, not news.
             if strip.window_groups.is_empty() {
                 continue;
             }
             let owns_strip = mine(strip.id.raw());
-            // A peer's strip is still walked: a window *we* opened into it
-            // is ours to publish even though the row around it is not.
+            // A peer's strip is still walked: a window we opened into it
+            // is ours to publish even though the row isn't.
             let has_owned = strip
                 .window_groups
                 .iter()
@@ -3035,13 +2314,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// Read a room document's `contents` back into plain values.
-    ///
-    /// Every level is sorted by `(order, id)` so two peers lay one
-    /// document out the same way. An entry with no `order` — one a peer
-    /// created as a container for a tab of its own but does not itself
-    /// own — sorts last rather than first, so it cannot displace entries
-    /// whose owner did state a position.
+    /// Read a room document's `contents` back into plain values. Every
+    /// level sorts by `(order, id)`; an entry with no `order` sorts
+    /// last so it can't displace one whose owner did state a position.
     fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
@@ -3143,15 +2418,9 @@ impl WorkspaceTree {
     }
 
     /// Every value in `doc`'s `contents` that this machine owns, as a
-    /// comparable digest.
-    ///
-    /// [`Self::apply_room_changes`] takes this before and after a peer's
-    /// batch: a peer may add to the room, but the entries this machine
-    /// minted are this machine's to write, and a batch that rewrites one
-    /// is refused whole. Without it "one writer per entry" would be a
-    /// convention the honest path keeps and a peer could simply decline
-    /// to — closing someone else's window, or resizing it, by projecting
-    /// a cache that says so.
+    /// comparable digest. [`Self::apply_room_changes`] diffs this
+    /// before/after a peer's batch and refuses it whole if any owned
+    /// entry changed — enforcing "one writer per entry".
     fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(u64, String)> {
         let Some(doc) = doc else {
             return Vec::new();
@@ -3188,26 +2457,18 @@ impl WorkspaceTree {
         out
     }
 
-    /// Fold the room document's `contents` into the cached workspace that
-    /// addresses `room`.
+    /// Fold the room document's `contents` into the cached workspace
+    /// addressing `room`, reporting whether anything changed. Entries
+    /// this machine owns are never overwritten or dropped — the document
+    /// is downstream of the cache, so reading one back could only revert
+    /// an unprojected local change; a peer's entries are taken from the
+    /// document and dropped when absent.
     ///
-    /// Entries this machine owns (id carries our salt) are never
-    /// overwritten or dropped — the document is downstream of our cache,
-    /// so reading a value back out could only revert an unprojected local
-    /// change. A peer's entries are taken from the document (the peer is
-    /// their only writer) and dropped when no longer present (the peer's
-    /// own sweep removed them). Symmetric with
-    /// [`Self::project_owned_contents`] and race-free in both directions.
-    ///
-    /// [`WindowGroup::active_tab`] is never read from the document: an
-    /// existing group keeps whichever tab this person was looking at and
-    /// is repointed only when that tab has genuinely gone; a group
-    /// arriving from a peer opens on its first tab, decided locally, not
-    /// carried from whoever opened it. Strips that vanish take their
-    /// [`Self::active_strip`]/[`Self::active_group`] entries with them so
-    /// resolvers fall back instead of pointing at nothing.
-    ///
-    /// Returns whether anything changed.
+    /// `active_tab` is never read from the document: it stays put unless
+    /// genuinely gone, and a group arriving from a peer opens on its
+    /// first tab. Vanishing strips take their `active_strip`/
+    /// `active_group` with them so resolvers fall back rather than point
+    /// at nothing.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
         let local_salt = self.local_salt();
         if local_salt == 0 {
@@ -3245,31 +2506,16 @@ impl WorkspaceTree {
             .collect();
 
         // **Which strip a peer's windows land in is this machine's
-        // business.** The room replicates contents — that a window is
-        // open, and what is in it — and a strip id is not contents, it
-        // is where this desktop decided to put things.
-        //
-        // Taking the peer's strip id literally minted a second strip
-        // here, and strips stack: their window appeared *below* ours on
-        // a desktop that scrolls horizontally and has no vertical
-        // arrangement to mean anything. Groups scroll along a strip, so
-        // that is where somebody else's window belongs — beside yours,
-        // one scroll away, exactly like a window you opened yourself.
-        //
-        // Their groups are merged into the strip we are using, so they
-        // keep their own ids: `merge_strip` matches by group id, and the
-        // ids are already disjoint per peer. Nothing about the group
-        // — its width, its tabs, whose it is — is changed by moving it.
+        // business** — taking a peer's strip id literally would mint a
+        // second strip that stacks below ours; instead their groups
+        // merge into the strip we're using, keeping their own ids.
         let foreign: Vec<u64> = by_strip.keys().copied().filter(|id| !is_local(*id)).collect();
         let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
         for sid in foreign {
             let rep = by_strip.remove(&sid).expect("key just listed");
             peer_groups.extend(rep.groups);
         }
-        // Nowhere of ours to put them: this workspace has no strip this
-        // machine owns, so one is made. Same outcome the old code
-        // reached, minus the stacking — it is a first strip rather than
-        // a second one.
+        // No strip of ours to put them in, so one is made.
         if !peer_groups.is_empty() && host_strip.is_none() {
             ws.strips.push(Strip::new(StripId::from(next_id()), "Main"));
             changed = true;
@@ -3289,15 +2535,11 @@ impl WorkspaceTree {
             let published = by_strip.remove(&sid);
             if published.is_none() && adopting.is_none() {
                 if is_local(sid) {
-                    // Ours, and simply not published (new, empty, or
-                    // below the share floor). The document has no say
-                    // over it.
+                    // Ours and simply not published; the document has
+                    // no say over it.
                     out.push((i as u64, sid, strip));
                 } else {
-                    // Neither ours nor in the room any more. Peers'
-                    // strips no longer become strips here at all, so
-                    // this is one left over from when they did — its
-                    // windows have since been merged into ours.
+                    // A foreign strip no longer being merged in — drop it.
                     changed = true;
                 }
                 continue;
@@ -3308,10 +2550,8 @@ impl WorkspaceTree {
                 name: None,
                 groups: Vec::new(),
             });
-            // Ours keeps the position our cache has it in. Taking it
-            // back from the document would undo a local reorder until
-            // the next projection re-stated it, which reads as the
-            // layout twitching.
+            // Ours keeps our cache's position — taking it from the
+            // document would undo a local reorder until re-projected.
             let order = if is_local(sid) { i as u64 } else { rep.order };
             if let Some(extra) = adopting {
                 rep.groups.extend(extra);
@@ -3332,11 +2572,8 @@ impl WorkspaceTree {
             .filter(|s| !live.contains(s))
             .collect();
 
-        // A pointer into something that is gone. Removed rather than
-        // repointed: the resolvers already fall back to the first strip /
-        // first group when there is no explicit selection, and picking a
-        // replacement here would be this code deciding where somebody
-        // should be looking.
+        // Removed rather than repointed: resolvers already fall back to
+        // the first strip/group with no explicit selection.
         if self
             .active_strip
             .get(&ws_id)
@@ -3397,10 +2634,9 @@ impl WorkspaceTree {
         is_local: &dyn Fn(u64) -> bool,
         changed: &mut bool,
     ) -> WindowGroup {
-        // Geometry belongs to the window, so it travels — but only from
-        // the peer that owns the group. For one of ours the document is
-        // an echo of what we last projected, and taking it back would
-        // revert a resize we have not published yet.
+        // Geometry travels only from the peer that owns the group — for
+        // one of ours the document is an echo of what we last projected,
+        // and taking it back would revert an unpublished resize.
         if !is_local(local.id) {
             if let Some(width) = rep.width
                 && local.width.permille() != width.permille()
@@ -3453,10 +2689,8 @@ impl WorkspaceTree {
         out.sort_by_key(|(order, id, _)| (*order, *id));
         local.tabs = out.into_iter().map(|(_, _, t)| t).collect();
 
-        // `active_tab` is **not** taken from `rep` — the document does not
-        // carry one. Whoever is at this desk stays on the tab they were
-        // on; it moves only when that tab is genuinely gone, and then to
-        // something that exists rather than to a dangling id.
+        // `active_tab` is not taken from `rep` — the document doesn't
+        // carry one. Moves only when the tab is genuinely gone.
         if !local.tabs.iter().any(|t| t.id == local.active_tab)
             && let Some(first) = local.tabs.first()
         {
@@ -3474,11 +2708,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// A window group that arrived from a peer.
-    ///
-    /// Its `active_tab` is chosen **here**: this person starts on the
-    /// group's first tab. That is a local decision about a local view,
-    /// not something the peer that opened the window gets to make.
+    /// A window group that arrived from a peer. Its `active_tab` is
+    /// chosen **here** — a local decision about a local view, not the
+    /// opening peer's to make.
     fn hydrate_group(rep: ReplicatedGroup) -> WindowGroup {
         let tabs: Vec<Tab> = rep.tabs.into_iter().map(Self::hydrate_tab).collect();
         let active_tab = tabs.first().map(|t| t.id).unwrap_or_default();
@@ -3507,24 +2739,12 @@ impl WorkspaceTree {
         }
     }
 
-    /// Make a peer's tile mean something on this machine.
-    ///
-    /// [`TileContent::Foreign`] names a `wl_surface` protocol id, which is
-    /// this compositor's handle on a client *it* is hosting. A peer's
-    /// number resolves here to nothing at best and to somebody else's
-    /// window at worst, so the surface is dropped and what survives is the
-    /// app id, as a [`TileContent::PeerWindow`] — which is what
-    /// `shell::peer_windows` then starts a local instance of, so the tab
-    /// ends up hosting a real window of the same app on the same room.
-    ///
-    /// `current` is what this tab holds here *now*, and it is why this
-    /// takes an argument at all. Once a local instance has been bound into
-    /// the tab the tile is a `Foreign` naming this machine's own surface,
-    /// and the peer keeps re-projecting their `Foreign` naming theirs. A
-    /// merge that overwrote ours with theirs on every round would take the
-    /// window away again a fraction of a second after it appeared, forever.
-    /// So a local binding for the same app wins over the remote tile: the
-    /// remote one carries no information we do not already have.
+    /// Make a peer's tile mean something on this machine: a
+    /// [`TileContent::Foreign`] `wl_surface` id only resolves on the
+    /// compositor hosting that client, so the surface is dropped and the
+    /// app id survives as [`TileContent::PeerWindow`]. `current` is
+    /// preferred once a local instance is bound, or the peer's
+    /// re-projection would take the window away again every round.
     fn localise_tile(
         tile: TileContent,
         current: Option<&TileContent>,
@@ -3532,9 +2752,8 @@ impl WorkspaceTree {
     ) -> TileContent {
         match tile {
             TileContent::Foreign { app_id, .. } => {
-                // Already resolved here — either to our own instance of
-                // the same app, or to the same waypoint. Either way the
-                // remote tile has nothing to add.
+                // Already resolved here, to our own instance or the same
+                // waypoint — the remote tile has nothing to add.
                 match current {
                     Some(TileContent::Foreign { app_id: local, .. })
                     | Some(TileContent::PeerWindow { app_id: local, .. })
@@ -3559,35 +2778,19 @@ impl WorkspaceTree {
         }
     }
 
-    /// Key the room document stores a room's record index under.
-    ///
-    /// The entries mirror [`ui::record::room`]'s own shape — a map keyed
-    /// by record id whose value carries the record's `kind` — because it
-    /// is the same fact in the same shape, just in the document that
-    /// crosses the wire rather than the one on this machine's disk.
+    /// Key the room document stores a room's record index under, mirroring
+    /// [`ui::record::room`]'s shape (id -> `kind`) in the document that
+    /// crosses the wire.
     const ROOM_RECORDS_KEY: &'static str = "records";
 
     /// Project a room's record index into that room's replication
-    /// document.
+    /// document. A room holds a *reference* (id and type), never the
+    /// record itself — documents travel per-record over the broker.
     ///
-    /// A room holds a *reference* (the record's id and type), never the
-    /// record itself — the documents travel per-record over the broker's
-    /// `(app_id, cluster_id, record_id)` channels regardless of this
-    /// index. That split is what keeps a person's own view (which tab,
-    /// which scroll offset, which window) out of the room: the room only
-    /// learns *that* a document is in it.
-    ///
-    /// Every entry is a map key, like the capabilities beside it, so a
-    /// room document can be re-projected under a fresh actor after a
-    /// restart and still merge by last-writer-wins instead of
-    /// duplicating — two people bringing the same record in at once
-    /// converge on one entry, different records converge on both.
-    ///
-    /// Additive only: a key this machine does not hold is left alone
-    /// rather than swept, because sweeping would race a peer's record
-    /// that simply hasn't reached our index yet. Cost: an un-reference
-    /// does not yet propagate — that needs removal to be an explicit
-    /// tombstone rather than an absence inferred from a cache.
+    /// Additive only: a key this machine doesn't hold is left alone,
+    /// not swept, since sweeping would race a peer's record that hasn't
+    /// reached our index yet. Cost: an un-reference doesn't propagate
+    /// until removal becomes an explicit tombstone.
     fn project_room_records(
         doc: &mut AutoCommit,
         held: &std::collections::BTreeMap<String, String>,
@@ -3618,10 +2821,8 @@ impl WorkspaceTree {
                     }
                 },
             };
-            // Compared before it is written, like every other value in
-            // this document: a re-projection of unchanged state must not
-            // manufacture a change, or two peers exporting to each other
-            // would never reach the point of having nothing to say.
+            // Compared before writing, like every other value here — a
+            // re-projection of unchanged state must not manufacture one.
             let current = match doc.get(&entry, "kind").ok().flatten() {
                 Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
                     automerge::ScalarValue::Str(k) => Some(k.to_string()),
@@ -3661,11 +2862,8 @@ impl WorkspaceTree {
         out
     }
 
-    /// Tell the tree which records `room`'s index holds.
-    ///
-    /// Called by the shell whenever the index changes. Returns whether
-    /// this was news, so the caller can skip the work of asking again
-    /// when nothing moved.
+    /// Tell the tree which records `room`'s index holds. Returns whether
+    /// this was news, so the caller can skip re-asking when nothing moved.
     pub fn set_room_records(
         &mut self,
         room: RoomId,
@@ -3681,30 +2879,15 @@ impl WorkspaceTree {
     }
 
     /// Take the references peers have added since this was last called.
-    ///
-    /// Drained rather than read so a slow frame cannot apply the same
-    /// arrival twice; [`crate::shell::room_records::RoomRecords::reference`]
-    /// is idempotent anyway, but a queue that only grows is a leak.
+    /// Drained rather than read so a queue that only grows isn't a leak.
     pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
         std::mem::take(&mut self.room_records_inbound)
     }
 
-    /// The governance a room document records: the room's owner, and its
-    /// capability list keyed by capability id — every authority question
-    /// in the compositor reads one of these two
-    /// ([`Workspace::may_administer`] the owner, [`Workspace::decide`]
-    /// and (via [`WorkspaceTree::export_fs_capabilities`]) the
-    /// filesystem the capabilities), so a peer able to write either
-    /// controls the room's whole security policy.
-    ///
-    /// The room's **name** is deliberately not governed: no decision
-    /// reads it, and letting members agree on it collaboratively means a
-    /// guest correcting a typo isn't an escalation (a guest renaming it
-    /// misleadingly is a spoofing nuisance, not a privilege). The room's
-    /// **id** is governed by a stricter, separate rule: a payload
-    /// declaring a different room is refused outright rather than
-    /// compared, since a re-labelled document could apply to the wrong
-    /// room entirely.
+    /// The governance a room document records: owner and capability
+    /// list — a peer able to write either controls the whole security
+    /// policy. The room's **name** is deliberately not governed. The
+    /// **id** is stricter still: a mismatched payload is refused outright.
     fn governance_of(
         doc: Option<&AutoCommit>,
     ) -> (
@@ -3738,13 +2921,9 @@ impl WorkspaceTree {
                 }
             }
         }
-        // Who the room says its peers are, folded in beside the
-        // capability list because it is the same kind of claim: a
-        // statement the room's authority makes about somebody else.
-        // Left out of this comparison it would be the one governance
-        // key a guest could write, and the label over a caret editing a
-        // shared document is exactly the thing an impostor would want
-        // to choose.
+        // Peer names fold in beside the capability list, the same kind
+        // of claim — left out, it'd be the one governance key a guest
+        // could write, and an impostor's first target.
         let mut peers = std::collections::BTreeMap::new();
         if let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
             let keys: Vec<String> = doc.keys(&peers_id).collect();
@@ -3760,10 +2939,8 @@ impl WorkspaceTree {
     }
 
     /// Current heads of `room`'s replication document — the baseline a
-    /// peer sends so the answer carries only what it is missing.
-    ///
-    /// Empty for a room this machine is not in, which reads on the wire as
-    /// "send me everything you have for it" and is answered with nothing.
+    /// peer sends so the answer carries only what it's missing. Empty
+    /// for a room this machine is not in.
     pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
         match self.room_docs.get_mut(&room) {
             Some(doc) => doc.get_heads(),
@@ -3771,15 +2948,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// Changes to `room` since `since`, as opaque blobs to ship to a peer
-    /// in that room.
-    ///
-    /// `None` when this machine has no workspace in `room` — there is
-    /// nothing to send and nothing is said about whether the room exists
-    /// elsewhere. `Some(vec![])` when the caller is already current.
-    ///
-    /// The room's document is brought up to date from the cache first, so
-    /// a caller need not remember to flush before exporting.
+    /// Changes to `room` since `since`, as opaque blobs to ship to a
+    /// peer. `None` when this machine has no workspace in `room`; the
+    /// document is brought up to date from the cache first.
     pub fn export_room_changes_since(
         &mut self,
         room: RoomId,
@@ -3796,31 +2967,21 @@ impl WorkspaceTree {
         )
     }
 
-    /// Merge a peer's changes to `room` and fold the result into the
-    /// cached workspace that addresses it.
+    /// Merge a peer's changes to `room` into the cached workspace, and
+    /// report whether it changed.
     ///
-    /// Refuses, before anything is stored: a room this machine is not in
-    /// (never held, not merged-then-ignored); a payload whose own `room`
-    /// field disagrees with the envelope; and a payload that would change
-    /// the room's **governance** (owner or capability list) unless `from`
-    /// is entitled to write it ([`Self::room_authority`]). Automerge has
-    /// no per-key ACL — it merges a map key by last-writer-wins — so
-    /// without that last check a guest projecting its own cache would be
-    /// entering a coin toss for its host's room's ownership rather than
-    /// proposing a change to it; `grant_as`/`revoke_as` gate the local
-    /// path, this is the same authority on the replication path.
+    /// Refuses, before anything is stored: a room this machine isn't in;
+    /// a payload whose `room` disagrees with the envelope; and a payload
+    /// changing the room's governance unless `from` is entitled to write
+    /// it ([`Self::room_authority`]) — automerge has no per-key ACL, so
+    /// otherwise a guest's cache wins a coin toss over its host's
+    /// ownership.
     ///
-    /// Refusal is of the **whole batch**: partially merging would advance
-    /// this machine's heads past ops it rejected (making the sender's next
-    /// export skip them, unrecoverably) and would still leave the refused
-    /// ops in the change graph that gets exported wholesale to the next
-    /// peer — relaying a claim this machine itself rejected. A peer that
-    /// keeps sending a change it isn't entitled to keeps being refused
-    /// every sync interval since heads never converge; this also correctly
-    /// blocks an honest peer's stale lineage from resurrecting a
-    /// capability that was revoked while it was away.
-    ///
-    /// Returns whether the local workspace changed.
+    /// Refusal is of the **whole batch**: a partial merge would advance
+    /// local heads past rejected ops (the sender's next export then skips
+    /// them, unrecoverably) while leaving those ops in the graph exported
+    /// onward. This also blocks a stale lineage from resurrecting a
+    /// capability revoked while that peer was away.
     pub fn apply_room_changes(
         &mut self,
         room: RoomId,
@@ -3838,9 +2999,7 @@ impl WorkspaceTree {
             .collect();
         let parsed = parsed?;
 
-        // Applied to a copy first: the identity check below decides
-        // whether this payload is allowed to become part of the room's
-        // document at all, and a check that runs after the merge has
+        // Applied to a copy first: a check that runs after the merge has
         // already happened is not a check.
         let mut candidate = self
             .room_docs
@@ -3870,12 +3029,9 @@ impl WorkspaceTree {
             return Ok(false);
         }
 
-        // --- Write authority on the room's governance. -----------------
-        //
-        // What the batch would make the room's owner and capability list,
-        // against what they are now. Values, not op ids: a peer echoing
-        // the governance it learned from us re-states it under its own
-        // actor, and re-stating a value is not changing it.
+        // Write authority on the room's governance. Compared by value,
+        // not op id: a peer echoing governance it learned from us
+        // re-states it under its own actor, which is not a change.
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(&candidate));
         if before != after {
@@ -3905,10 +3061,9 @@ impl WorkspaceTree {
                     return Ok(false);
                 }
                 RoomAuthority::Peer(_) => {}
-                // A room joined without an invite naming who administers
-                // it. Nothing establishes an authority, so the first peer
-                // to supply governance becomes it — and is pinned, so the
-                // second peer to try is refused above.
+                // Joined without an invite naming an administrator —
+                // the first peer to supply governance becomes it, and
+                // is pinned so the second is refused above.
                 RoomAuthority::Unpinned => {
                     tracing::info!(
                         target: "shell::state",
@@ -3924,40 +3079,17 @@ impl WorkspaceTree {
             }
         }
 
-        // --- Write authority over this machine's own windows. ----------
-        //
-        // A peer may add windows to the room; the entries this machine
-        // minted are this machine's to write. Automerge has no per-key
-        // ACL, so without this the "one writer per entry" rule that makes
-        // the projection converge would be a convention the honest path
-        // keeps and a peer could simply decline to — closing someone
-        // else's window, or resizing it, by projecting a cache that says
-        // so.
-        //
-        // Refused whole, for the same two reasons the governance check
-        // above refuses whole: a partial merge advances our heads past
-        // changes we did not accept, and the refused ops would stay in a
-        // graph that is exported wholesale to the next peer.
+        // Write authority over this machine's own windows: entries this
+        // machine minted are this machine's to write — same
+        // "refuse the whole batch" reasoning as the governance check above.
         let local_salt = self.local_salt();
         let before = Self::owned_contents_digest(self.room_docs.get(&room), local_salt);
         let after = Self::owned_contents_digest(Some(&candidate), local_salt);
         // Compared over the **intersection**: an entry of ours the batch
-        // changes the value of is a rewrite and is refused; one it merely
-        // carries that we do not have yet is not.
-        //
-        // The difference matters after a restart. Room documents are not
-        // persisted — they are re-projected from the cache — so a machine
-        // comes back with an empty one, and the first thing a guest sends
-        // is that machine's own history back to it. Comparing whole sets
-        // would read every one of those entries as an unauthorised
-        // addition and refuse the batch, for good: the heads never
-        // converge, so the same batch arrives and is refused again every
-        // interval.
-        //
-        // Nothing is lost by allowing it. This machine's next projection
-        // writes its own entries from its cache and sweeps any our-salt
-        // key the cache does not have, so an entry a peer invented under
-        // our salt survives exactly until we next export.
+        // changes is refused; one it merely carries that we don't have
+        // yet is not. Matters after a restart — room documents aren't
+        // persisted, so comparing whole sets would refuse a guest's own
+        // history back forever. Our next projection sweeps any gap.
         let changed_ours: Vec<&(u64, String)> = {
             let before_by_id: std::collections::BTreeMap<u64, &String> =
                 before.iter().map(|(id, v)| (*id, v)).collect();
@@ -4005,18 +3137,9 @@ impl WorkspaceTree {
             }
         }
 
-        // Which records the room now says it holds, against what this
-        // machine had already put in it. The difference is what a peer
-        // brought here, and it is queued for the shell to fold into the
-        // room's own index — the tree cannot reach that index itself
-        // (see `room_records_held`), so the arrival is recorded as data
-        // and applied by the side that owns it.
-        //
-        // Not gated on the room's governance authority: bringing a
-        // record into a room is not an act of governance, and a room
-        // only its owner may add to is not a shared room. What gates it
-        // is membership, which was decided above — a payload for a room
-        // this machine is not in never reached here.
+        // The difference from what's already held is what a peer
+        // brought — queued for the shell to fold in, since the tree
+        // can't reach the room's own index.
         let arrived = Self::room_records_of(&candidate);
         let already = self.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
@@ -4031,10 +3154,8 @@ impl WorkspaceTree {
 
         self.room_docs.insert(room, candidate);
 
-        // The room's windows, folded into this machine's own copy of the
-        // workspace — which is what makes a window a peer opened actually
-        // appear here. View state is preserved through it; see
-        // `merge_room_contents`.
+        // Folds the room's windows into this machine's copy, preserving
+        // view state; see `merge_room_contents`.
         let contents_changed = self.merge_room_contents(room);
 
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
@@ -4053,10 +3174,9 @@ impl WorkspaceTree {
             ws.owner = Some(owner);
             changed = true;
         }
-        // Capabilities are replaced rather than merged: a capability the
-        // peer revoked is simply absent from their document, and carrying
-        // the local list over would let a revoked grant survive on every
-        // machine that already had it.
+        // Replaced rather than merged: a revoked capability is simply
+        // absent from the peer's document, so carrying the local list
+        // over would let it survive.
         let mut sorted = caps;
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
         let mut current = ws.capabilities.clone();
@@ -4068,67 +3188,39 @@ impl WorkspaceTree {
 
         let changed = changed || contents_changed;
         if changed {
-            // The merged room state is now the cache's; mirror it into the
-            // tree document so the room's own activity view records what
-            // arrived, and to disk so it survives a restart.
+            // Mirror the merged state into the tree document and to disk.
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
         let landed = changed || records_changed;
         if landed {
-            // Leave a mark the frame loop can see.
-            //
-            // A peer's window is in the tree at this point and reads
-            // back correctly, which is not the same as being on
-            // screen: the shell only splices its widget tree when the
-            // chrome revision moves, and nothing here can move it —
-            // this runs on the network thread, and the chrome is the
-            // frame thread's. Every sibling ingest bumps the revision
-            // from the frame loop after the fact; room contents had no
-            // equivalent, so a replicated window sat in the tree with
-            // no widget ever built for it. Counting arrivals here is
-            // what the frame loop compares against to know to bump.
+            // A peer's window is in the tree now but not on screen yet —
+            // this runs on the network thread, and only the frame
+            // thread splices the widget tree, on chrome revision bumps.
             self.room_epoch = self.room_epoch.wrapping_add(1);
         }
         Ok(landed)
     }
 
     /// How many times a peer's changes have landed in this tree.
-    ///
-    /// Monotonic per session and not persisted: it means "something
-    /// arrived since you last looked", which is only a question about
-    /// a running session. Read by the frame loop, which bumps the
-    /// chrome revision when it moves so the widget tree resyncs.
+    /// Monotonic per session, not persisted — read by the frame loop,
+    /// which bumps the chrome revision when it moves.
     pub fn room_epoch(&self) -> u64 {
         self.room_epoch
     }
 
-    /// Seed the automerge doc from the cache. Idempotent: a second call
-    /// with the same cache state ends up writing the same values back
-    /// (truncates the `workspaces` list and re-fills it). Called from
-    /// [`Self::bootstrap_default`] after the cache is populated; tests
-    /// that build literal trees should also call this if they need
-    /// doc-side changes flowing out via [`Self::export_changes_since`].
-    ///
-    /// Units B + C mirror these shapes:
-    /// - `active: ScalarValue::Uint` at `ROOT` (unit B),
-    /// - `workspaces: List<Map>` at `ROOT`, each entry
-    ///   `{ id: Uint, name: String, strips: List<Map> }` (unit B + C),
-    /// - each strip entry: `{ id: Uint, window_groups: List<Map> }` (unit C),
-    /// - each window-group entry:
-    ///   `{ id: Uint, maximized: Bool, width_permille: Uint }` (unit C).
-    ///
-    /// Tabs, `active_strip`, `active_group`, and collaborators stay
-    /// cache-only — unit D wires those.
+    /// Seed the automerge doc from the cache. Idempotent (truncates
+    /// `workspaces` and re-fills it). Tests building literal trees
+    /// should call this to flow doc-side changes out via
+    /// [`Self::export_changes_since`]. `active_strip`/`active_group`
+    /// stay cache-only.
     pub fn seed_doc_from_cache(&mut self) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-        // active
         let _ = self
             .doc
             .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
-        // workspaces — create the list if missing, then truncate +
-        // re-fill from the cache. Simplest unit-B approach; future
-        // units get diff-aware so concurrent appends don't clobber.
+        // Truncate + re-fill from the cache; not diff-aware, so
+        // concurrent appends can clobber.
         let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
             Some((_, id)) => id,
             None => self
@@ -4147,15 +3239,10 @@ impl WorkspaceTree {
                 .expect("insert workspace map");
             let _ = self.doc.put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
             let _ = self.doc.put(&entry, "name", ws.name.clone());
-            // The room identity travels with the workspace. A peer that
-            // hydrates a workspace out of this doc must land in *our*
-            // room, not mint one of its own — the local `id` above is
-            // meaningless to it, and a workspace it cannot address is a
-            // workspace it cannot collaborate in.
+            // Room identity travels with the workspace: a peer hydrating
+            // from this doc must land in *our* room, not mint its own —
+            // the local `id` above is meaningless to it.
             let _ = self.doc.put(&entry, "room", ws.room.to_string());
-            // Ownership + capabilities travel with the workspace, so a
-            // peer that hydrates from this doc learns who may do what
-            // at the same moment it learns the room exists.
             if let Some(owner) = &ws.owner {
                 let _ = self.doc.put(&entry, "owner", owner.clone());
             }
@@ -4204,9 +3291,7 @@ impl WorkspaceTree {
                         "width_permille",
                         ScalarValue::Uint(group.width.permille() as u64),
                     );
-                    // Tabs as a List of Maps with the tab's identifying
-                    // scalars plus a `tile_json` blob carrying the
-                    // `TileContent` enum — a pragmatic JSON-blob shim
+                    // `tile_json` is a JSON-blob shim for `TileContent`
                     // rather than a full per-variant CRDT structure.
                     let tabs_id = self
                         .doc
@@ -4232,35 +3317,22 @@ impl WorkspaceTree {
     }
 
     /// Walk the automerge doc and refresh the public cache fields.
-    ///
-    /// Unit B mirrors `active` + the top-level `workspaces` list shape
-    /// (id + name). Strips, window-groups, tabs, `active_strip`,
-    /// `active_group`, and collaborators stay whatever the cache had —
-    /// a peer that never observes structural ops just sees the
-    /// workspace-list shape change. Units C/D extend this to nested
-    /// state.
-    ///
-    /// To preserve strips that the cache built locally (e.g. tests that
-    /// construct a literal tree, then receive a doc update from a
-    /// peer), each rebuilt workspace tries to inherit `strips` and
-    /// `collaborators` from the
-    /// existing cache entry that shares its id. A workspace that
-    /// arrived purely from the doc starts with empty nested vecs.
+    /// `active_strip`/`active_group`/collaborators stay whatever the
+    /// cache had. Each rebuilt workspace inherits `strips` from the
+    /// existing cache entry sharing its id; one from the doc alone
+    /// starts empty.
     fn rebuild_cache_from_doc(&mut self) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        // active
         if let Some((Value::Scalar(s), _)) = self.doc.get(&ROOT, "active").ok().flatten() {
             if let ScalarValue::Uint(raw) = s.as_ref() {
                 self.active = WorkspaceId::from(*raw);
             }
         }
-        // workspaces — rebuild while preserving any existing nested
-        // state by id-match.
+        // Rebuild while preserving any existing nested state by id-match.
         if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
             let len = self.doc.length(&workspaces_id);
             let mut new_workspaces: Vec<Workspace> = Vec::with_capacity(len);
             for i in 0..len {
-                // Each entry is a Map; pull id + name out of it.
                 let entry_id = match self.doc.get(&workspaces_id, i).ok().flatten() {
                     Some((_, id)) => id,
                     None => continue,
@@ -4280,14 +3352,8 @@ impl WorkspaceTree {
                     _ => String::new(),
                 };
                 let ws_id = WorkspaceId::from(id_raw);
-                // The room identity replicates too. A peer that shipped
-                // us this workspace named the room it collaborates in;
-                // adopting it is the difference between hydrating a
-                // workspace we can talk in and hydrating a
-                // same-looking one we cannot. Absent or unparseable
-                // (a doc written before rooms existed) leaves whatever
-                // the cache already had, which for a locally-created
-                // workspace is its own minted id.
+                // Room identity replicates too; absent or unparseable
+                // (a pre-rooms doc) leaves whatever the cache already had.
                 let replicated_room = match self.doc.get(&entry_id, "room").ok().flatten() {
                     Some((Value::Scalar(s), _)) => match s.as_ref() {
                         ScalarValue::Str(v) => RoomId::parse(v.as_str()),
@@ -4296,22 +3362,13 @@ impl WorkspaceTree {
                     _ => None,
                 }
                 .filter(|r| !r.is_nil());
-                // Capabilities and ownership replicate through the doc,
-                // so they are rebuilt from it here rather than being
-                // carried over from the local cache. This is the half
-                // that makes a *revocation* take effect: a capability a
-                // peer deleted is simply absent from the doc, so it is
-                // absent from the cache after this rebuild. Carrying the
-                // cached list over instead would let a revoked
-                // capability survive indefinitely on every peer that
-                // already had it.
+                // Capabilities/ownership rebuild from the doc, not carried
+                // from the cache — this is the half that makes a
+                // *revocation* take effect.
                 let replicated = self.doc_read_capabilities(&entry_id);
                 let mut ws = if let Some(existing_idx) =
                     self.workspaces.iter().position(|w| w.id == ws_id)
                 {
-                    // Take the existing cached workspace by swap-remove
-                    // semantics — but keep ordering intact by drain
-                    // -> reinsert. Simplest: remove and rename.
                     let mut existing = self.workspaces.remove(existing_idx);
                     existing.name = name;
                     existing
@@ -4332,18 +3389,9 @@ impl WorkspaceTree {
             self.workspaces = new_workspaces;
         }
 
-        // Reconstruct nested per-window-group `maximized` +
-        // `width_permille` from the doc. Walks each workspace's
-        // `strips` list, then each strip's `window_groups` list, and
-        // for every group entry tries to find the cached counterpart
-        // by id. If the cache has the group, the doc values overwrite
-        // the cache. If the cache lacks the strip or group entirely
-        // (e.g. peer B started from `default()` and is hydrating from
-        // a peer A snapshot), a fresh `Strip` / `WindowGroup` is
-        // synthesized so the receiver's tree gains the structure.
-        //
-        // The synthesized groups carry no tabs — unit C only mirrors
-        // maximized/width. Tab content propagation is unit D.
+        // Reconstruct per-window-group `maximized`, `width_permille` and
+        // `tabs`, matching each strip/group by id; a missing cache entry
+        // gets a fresh `Strip`/`WindowGroup` synthesized.
         if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
             let ws_len = self.doc.length(&workspaces_id);
             for ws_idx in 0..ws_len {
@@ -4403,12 +3451,10 @@ impl WorkspaceTree {
                             },
                             _ => false,
                         };
-                        // Peers publish a *fraction* of their strip, so the
-                        // width means the same share of this replica's own
-                        // display rather than importing the sender's pixel
-                        // count. `width_pixels` is the shape a pre-fraction
-                        // peer (or an older doc) carries; migrate it rather
-                        // than dropping the group's width on the floor.
+                        // Peers publish a *fraction*, so width means the
+                        // same share of this replica's own display, not
+                        // the sender's pixel count. `width_pixels` is the
+                        // pre-fraction shape — migrate rather than drop it.
                         let width = match self
                             .doc
                             .get(&group_entry, "width_permille")
@@ -4435,8 +3481,6 @@ impl WorkspaceTree {
                             }
                         });
 
-                        // Patch into the cached tree, synthesizing
-                        // missing structure as needed.
                         let ws = match self.workspaces.iter_mut().find(|w| w.id == ws_id) {
                             Some(w) => w,
                             None => continue,
@@ -4448,11 +3492,8 @@ impl WorkspaceTree {
                             ws.strips.push(Strip::new(strip_id, "Main"));
                             ws.strips.last_mut().expect("strip just pushed")
                         };
-                        // Read the tabs list (if present) so we can
-                        // rebuild the group's `tabs` vec. Tabs missing
-                        // from the doc fall back to whatever the cache
-                        // already had; new ids get freshly synthesized
-                        // entries with the doc-side title + tile blob.
+                        // Tabs missing from the doc fall back to the
+                        // cache; new ids get synthesized entries.
                         let mut doc_tabs: Vec<(u64, String, Vec<u8>)> = Vec::new();
                         if let Some((_, tabs_id)) =
                             self.doc.get(&group_entry, "tabs").ok().flatten()
@@ -4492,12 +3533,9 @@ impl WorkspaceTree {
 
                         if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                             g.maximized = maximized;
-                            // The doc carries the fraction, not the tier:
-                            // mapping a fraction back onto Narrow/Normal/
-                            // Wide would silently coerce a peer's manual
-                            // resize to whichever preset happened to be
-                            // closest. `Fraction` always; it clamps into
-                            // the legal per-mille range on the way in.
+                            // Always `Fraction`: mapping back onto
+                            // Narrow/Normal/Wide would silently coerce a
+                            // peer's manual resize to the closest preset.
                             if let Some(w) = width {
                                 g.width = w;
                             }
@@ -4537,8 +3575,7 @@ impl WorkspaceTree {
                                 g.tabs = new_tabs;
                             }
                         } else {
-                            // Synthesize a placeholder group — it
-                            // carries tabs from the doc when present.
+                            // A placeholder group, carrying doc tabs.
                             let synthesized_tabs: Vec<Tab> = doc_tabs
                                 .iter()
                                 .map(|(tid, title, blob)| {
@@ -4577,15 +3614,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// Walk the doc to the [`WindowGroup`] map for `group_id`. Returns
-    /// the `ObjId` of the group entry alongside the indices
-    /// `(ws_idx, strip_idx, group_idx)` so callers can mutate by id
-    /// once they have a handle. Returns `None` if the group isn't yet
-    /// in the doc — usually because [`Self::seed_doc_from_cache`]
-    /// hasn't run for this group (e.g. a literal-construction test or
-    /// a brand-new group that the harvester saw before the seed pass).
-    /// Callers tolerate the doc being behind by skipping the doc-side
-    /// write — the cache write already happened.
+    /// Walk the doc to the [`WindowGroup`] map for `group_id`. `None`
+    /// if not yet seeded ([`Self::seed_doc_from_cache`]) — callers
+    /// tolerate this by skipping the doc-side write.
     fn locate_group(&self, group_id: u64) -> Option<(automerge::ObjId, usize, usize, usize)> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let (_, workspaces_id) = self.doc.get(&ROOT, "workspaces").ok().flatten()?;
@@ -4621,11 +3652,8 @@ impl WorkspaceTree {
         None
     }
 
-    /// Mirror a `WindowGroup.maximized` flip into the doc. Called by
-    /// the overlay-host harvester after the cache write so peer-sync
-    /// observes the change. No-op if the group isn't yet seeded into
-    /// the doc — see [`Self::locate_group`] for the tolerance
-    /// rationale.
+    /// Mirror a `WindowGroup.maximized` flip into the doc so peer-sync
+    /// observes it. No-op if not yet seeded — see [`Self::locate_group`].
     pub fn doc_set_maximized(&mut self, group_id: u64, new_value: bool) {
         use automerge::{ScalarValue, transaction::Transactable};
         if let Some((entry, _, _, _)) = self.locate_group(group_id) {
@@ -4635,13 +3663,9 @@ impl WorkspaceTree {
         }
     }
 
-    /// Mirror a `WindowGroup.width` resize into the doc as a fraction of
-    /// the strip. Stored as `width_permille: Uint` rather than a pixel
-    /// count precisely because peers do not share a display: a fraction
-    /// reproduces the same share of the receiver's own screen, where a
-    /// pixel count would reproduce the sender's monitor. Peers don't need
-    /// the preset (`Narrow`/`Normal`/`Wide`) round-tripped — they receive
-    /// the fraction and clamp it on the cache side. Same null-tolerance as
+    /// Mirror a `WindowGroup.width` resize into the doc as a fraction
+    /// — a pixel count would reproduce the sender's monitor instead of
+    /// the receiver's own share. Same null-tolerance as
     /// [`Self::doc_set_maximized`].
     pub fn doc_set_width(&mut self, group_id: u64, new_permille: u16) {
         use automerge::{ScalarValue, transaction::Transactable};
@@ -4654,9 +3678,8 @@ impl WorkspaceTree {
         }
     }
 
-    /// Walk the doc to the workspace map for `workspace_id` and return
-    /// its `ObjId`. None on miss — used by the grant mirror helpers
-    /// below, same null-tolerance as [`Self::locate_group`].
+    /// Walk the doc to the workspace map for `workspace_id`. Same
+    /// null-tolerance as [`Self::locate_group`].
     fn locate_workspace(&self, workspace_id: WorkspaceId) -> Option<automerge::ObjId> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let (_, workspaces_id) = self.doc.get(&ROOT, "workspaces").ok().flatten()?;
@@ -4674,14 +3697,10 @@ impl WorkspaceTree {
         None
     }
 
-    /// Write the tree to [`Self::persist_path`], if one is set.
-    ///
-    /// Called on every capability mutation. Persistence is deliberately
-    /// synchronous and eager rather than batched on shutdown: a
-    /// compositor that is killed rather than asked to exit must not
-    /// forget which permissions the user granted, and the alternative —
-    /// silently losing an `Always` grant on a crash — is the failure
-    /// mode we are fixing.
+    /// Write the tree to [`Self::persist_path`], if one is set. Called on
+    /// every capability mutation, synchronous and eager rather than
+    /// batched on shutdown — a compositor that's killed must not forget
+    /// which permissions the user granted.
     pub fn flush_to_disk(&self) {
         if let Some(path) = &self.persist_path
             && let Err(e) = crate::shell::persist::save_tree_to(self, path)
@@ -4691,28 +3710,17 @@ impl WorkspaceTree {
         self.export_fs_capabilities();
     }
 
-    /// Write the capability list the filesystem enforces.
+    /// Write the capability list the filesystem enforces. The FUSE mount
+    /// is a separate process reading a JSON array from the path its
+    /// `--acl` names, written atomically so it never reads a half-written
+    /// list and concludes the user has no permissions. All workspaces
+    /// export together since `/var/workspace` is one mount, so two
+    /// workspaces granting the same path to different subjects union.
     ///
-    /// The FUSE mount is a separate process and cannot read `self`; it
-    /// reads a JSON array from the path its `--acl` flag names, written
-    /// atomically via temp file + rename so it never reads a half-written
-    /// list and concludes the user has no permissions.
-    ///
-    /// All workspaces export together since `/var/workspace` is one mount
-    /// for the whole session — path scopes are absolute so disjoint
-    /// subtrees stay disjoint, but two workspaces granting the *same*
-    /// path to different subjects union (a known limitation of one mount
-    /// rather than one per room).
-    ///
-    /// Two open gaps, recorded rather than left to be discovered: (1)
-    /// `qos-fs` reads this file once at mount (`fs::main::resolve_acl`);
-    /// a grant/revoke after that needs a remount to reach it — only
-    /// expiry is evaluated live. (2)
-    /// `os/usr/lib/systemd/system/fs.service` doesn't pass `--acl`, so
-    /// the shipped OS image's mount runs unenforced; fixing that needs
-    /// unit ordering resolved first, since the unit starts before any
-    /// session exists and `resolve_acl` correctly refuses to mount
-    /// against a missing file.
+    /// Two open gaps: `qos-fs` reads this file once at mount, so a
+    /// grant/revoke after that needs a remount (only expiry is live); and
+    /// `fs.service` doesn't pass `--acl`, so the shipped image's mount
+    /// runs unenforced.
     pub fn export_fs_capabilities(&self) {
         let Some(path) = &self.fs_acl_path else {
             return;
@@ -4731,23 +3739,14 @@ impl WorkspaceTree {
         }
     }
 
-    /// Give every workspace that has no recorded owner to `user`.
-    ///
-    /// State files written before ownership existed have `owner: None`.
-    /// Treating unowned as "owned by anyone" would leave every grant
-    /// decision wide open, so adopting them for the local user at load
-    /// is the only answer that is both usable and closed: it names a
-    /// specific owner, the person sitting at the machine.
+    /// Give every workspace with no recorded owner to `user`, returning
+    /// the ids adopted. Treating unowned as "owned by anyone" would leave
+    /// every grant decision wide open, so this is the closed answer.
     ///
     /// A workspace in a room this machine does not govern is **not**
-    /// adopted, however ownerless it looks — it's ownerless precisely
-    /// because it joined someone else's room and gave its governance up;
-    /// adopting it would hand the room back to this machine on the next
-    /// boot, and a guest who restarts before the room's owner replies
-    /// would spend that window administering a room it was only invited
-    /// to.
-    ///
-    /// Returns the ids adopted, so the caller can mirror them.
+    /// adopted however ownerless it looks — it gave its governance up by
+    /// joining someone else's room, and adopting would hand that room
+    /// back to this machine on the next boot.
     pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
         let governed_elsewhere: Vec<RoomId> = self
             .room_authority
@@ -4781,17 +3780,10 @@ impl WorkspaceTree {
     }
 
     /// Mint a durable [`RoomId`] for every workspace that has none, and
-    /// write it down.
-    ///
-    /// State files written before rooms existed deserialise with
-    /// [`RoomId::nil`], which addresses nobody. Minting one *without*
-    /// persisting it would be worse than leaving it nil: the next boot
-    /// would mint a different one and the workspace's room would change
-    /// every restart. So mint and flush are one operation; the caller
-    /// must have set [`Self::persist_path`] first.
-    ///
-    /// Returns the ids that were minted for; an empty vec means every
-    /// workspace already had a room.
+    /// write it down — minting without persisting would be worse than
+    /// leaving it nil, since the next boot would mint a different one.
+    /// The caller must have set [`Self::persist_path`] first. Returns
+    /// the ids minted for.
     pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for ws in &mut self.workspaces {
@@ -4815,12 +3807,8 @@ impl WorkspaceTree {
         adopted
     }
 
-    /// The durable room identity of `workspace_id`, if the tree has
-    /// that workspace.
-    ///
-    /// The lookup the launch path needs: callers hold a
-    /// [`WorkspaceId`] (the local handle) and have to turn it into the
-    /// value the wire speaks.
+    /// The durable room identity of `workspace_id`. What the launch path
+    /// needs to turn a local handle into the value the wire speaks.
     pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
         self.workspaces
             .iter()
@@ -4828,27 +3816,12 @@ impl WorkspaceTree {
             .map(|w| w.room)
     }
 
-    /// Point `workspace_id` at `room`, mirroring the change to peers
-    /// and to disk.
-    ///
-    /// This is how an invitee stops being in their own room and starts
-    /// being in the inviter's: accepting an invite replaces the local
-    /// workspace's freshly-minted identity with the one the token
-    /// carried. Both ends then address the same cluster, which is the
-    /// only way any delta crosses between them.
-    ///
-    /// Refuses a nil `room` — "join the unminted room" is never a
-    /// meaningful request, and honouring it would drop a workspace out
-    /// of collaboration silently. Returns whether the tree changed.
-    ///
-    /// This is also where a workspace stops governing itself. The room
-    /// being joined already has an administrator and it is not the joiner,
-    /// so the joined workspace surrenders its own
-    /// ([`Workspace::surrender_governance`]) and the room is recorded as
-    /// governed elsewhere. Without that a guest would hold two answers to
-    /// "who administers this room" — its own and the one arriving over the
-    /// wire — and the merge would be picking between them instead of
-    /// learning the second.
+    /// Point `workspace_id` at `room`, mirroring the change to peers and
+    /// disk — how an invitee stops being in their own room and starts
+    /// being in the inviter's. Refuses a nil `room`. Also where a
+    /// workspace stops governing itself
+    /// ([`Workspace::surrender_governance`]), since the joined room
+    /// already has an administrator.
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() {
             return false;
@@ -4873,17 +3846,15 @@ impl WorkspaceTree {
             self.room_authority
                 .entry(room)
                 .or_insert(RoomAuthority::Unpinned);
-            // Every window this machine already had open stays this
-            // machine's. See [`Self::room_share_floor`]: joining is
-            // entering someone else's workspace, not merging yours into
-            // it. Recorded on the joining path only.
+            // See `Self::room_share_floor`: joining is entering someone
+            // else's workspace, not merging yours into it.
             self.room_share_floor
                 .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         }
         self.doc_set_room(workspace_id, room);
         if surrendered {
-            // The owner and the admin capability went; the tree document
-            // has to say so too, or the next cache rebuild reads the old
+            // The owner and admin capability went; the tree document has
+            // to say so too, or the next cache rebuild reads the old
             // owner back out of it.
             self.seed_doc_from_cache();
         }
@@ -4891,17 +3862,10 @@ impl WorkspaceTree {
         true
     }
 
-    /// Mirror a workspace's room into the automerge doc.
-    ///
-    /// Stored as a string rather than 16 bytes because that is what
-    /// every other consumer of the value speaks (`QOS_WORKSPACE_ID`,
-    /// the invite token, `CrdtRoute::cluster_id`), and a doc field
-    /// that needs re-encoding at every read is a field that will
-    /// eventually be re-encoded wrongly.
-    ///
-    /// Null-tolerant like the other `doc_*` mirrors: a doc that has
-    /// not been seeded is left alone and the cache stays authoritative
-    /// until the next seed.
+    /// Mirror a workspace's room into the automerge doc, as a string —
+    /// what every other consumer of the value speaks
+    /// (`QOS_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
+    /// Null-tolerant like the other `doc_*` mirrors.
     pub fn doc_set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) {
         use automerge::transaction::Transactable;
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
@@ -4912,26 +3876,18 @@ impl WorkspaceTree {
     }
 
     /// Grant a capability in `workspace_id` on behalf of `grantor`,
-    /// mirroring it to peers and to disk.
+    /// mirroring it to peers and disk — the single production entry
+    /// point for handing out authority. `None` when the grantor lacked
+    /// authority to delegate it.
     ///
-    /// The single production entry point for handing out authority.
-    /// Returns the new capability's id, or `None` when the grantor
-    /// lacked the authority to delegate it — the check that makes
-    /// ownership mean something.
+    /// Refuses outright in a room whose governance is written elsewhere,
+    /// whatever the local cache says: a grant nobody else can see is a
+    /// local escalation, honoured by this sandbox until the room's
+    /// authority next syncs it away.
     ///
-    /// Refuses outright in a room whose governance is written elsewhere
-    /// ([`Self::room_authority`]), whatever the local cache says about who
-    /// owns it. Otherwise a machine could hold a grant its own sandbox
-    /// honours while the room it belongs to has never heard of it: nothing
-    /// would carry it (a machine that does not govern a room projects no
-    /// governance into it) and the next sync from the room's authority
-    /// would drop it. A grant nobody but the grantor can see is not a
-    /// grant, it is a local escalation.
-    ///
-    /// Deliberately not symmetric with [`Self::revoke_in_workspace`],
-    /// which stays open: widening your own access in someone else's room is
-    /// the thing to refuse, and narrowing it — the Revoke button, the kill
-    /// switch — has to work locally whoever governs the room.
+    /// Not symmetric with [`Self::revoke_in_workspace`], which stays
+    /// open — narrowing your own access has to work locally whoever
+    /// governs the room.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
@@ -4956,12 +3912,10 @@ impl WorkspaceTree {
         Some(id)
     }
 
-    /// Revoke a capability in `workspace_id` on behalf of `revoker`,
-    /// mirroring the removal to peers and to disk.
-    ///
-    /// The mirror is the point. A revoke that only touched the local
-    /// cache left every peer still holding the capability and let a
-    /// restart bring it back.
+    /// Revoke a capability in `workspace_id`, mirroring the removal to
+    /// peers and disk — a revoke that only touched the local cache left
+    /// every peer still holding the capability and let a restart bring
+    /// it back.
     pub fn revoke_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
@@ -4980,17 +3934,10 @@ impl WorkspaceTree {
     }
 
     /// Mirror a capability grant into the automerge doc so peer-sync
-    /// ships it on the next tick and a restart reloads it.
-    ///
-    /// Capabilities live at `workspaces[i]/capabilities` as a **map
-    /// keyed by capability id**, not a list. That choice is what makes
-    /// revocation replicate: deleting a map key is a well-defined
-    /// concurrent operation that merges, whereas deleting list index 3
-    /// on two peers at once removes two different capabilities.
-    ///
-    /// Null-tolerant: a doc that has not been seeded yet is left alone
-    /// rather than panicking, and the cache remains authoritative until
-    /// the next seed.
+    /// ships it and a restart reloads it. Capabilities live as a **map
+    /// keyed by capability id**, not a list — deleting a map key
+    /// merges concurrently, while deleting list index 3 on two peers
+    /// removes two different capabilities.
     pub fn doc_insert_capability(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
         use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
@@ -5036,11 +3983,8 @@ impl WorkspaceTree {
     }
 
     /// Read a workspace's capabilities and owner back out of the doc.
-    ///
-    /// Called by [`Self::rebuild_cache_from_doc`] after applying peer
-    /// changes. Capabilities absent from the doc are absent from the
-    /// cache — that is what makes a peer's revocation take effect
-    /// locally rather than merely being recorded somewhere.
+    /// Capabilities absent from the doc are absent from the cache — what
+    /// makes a peer's revocation take effect locally.
     fn doc_read_capabilities(
         &self,
         ws_entry: &automerge::ObjId,
@@ -5066,11 +4010,9 @@ impl WorkspaceTree {
         Some((owner, caps))
     }
 
-    /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Returns
-    /// the parent group entry, the tabs list, the tab entry, and the
-    /// tab's index in the list. Strip id disambiguates if a tab id ever
-    /// collided across strips. None on miss for the same reasons as
-    /// [`Self::locate_group`].
+    /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Strip id
+    /// disambiguates if a tab id ever collided across strips. `None` for
+    /// the same reasons as [`Self::locate_group`].
     fn locate_tab(
         &self,
         strip_id: StripId,
@@ -5128,12 +4070,10 @@ impl WorkspaceTree {
         None
     }
 
-    /// Mirror a `move_tab_across_strips` mutation into the doc. v1
-    /// captures the tab's identifying scalars from the source, deletes
-    /// it from the source list, and appends a fresh map (with the same
-    /// scalars) to the destination strip's first window-group's `tabs`
-    /// list. Returns `false` and is a no-op if the source tab or
-    /// destination strip aren't seeded into the doc.
+    /// Mirror a `move_tab_across_strips` mutation into the doc: captures
+    /// the tab's scalars from the source, deletes it there, and appends a
+    /// fresh map to the destination strip's first window-group's `tabs`.
+    /// No-op if the source tab or destination strip aren't seeded.
     pub fn doc_move_tab_across_strips(
         &mut self,
         src_strip: StripId,
@@ -5141,7 +4081,6 @@ impl WorkspaceTree {
         tab_id: u64,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        // Capture source.
         let Some((_, src_tabs, src_tab_entry, src_idx)) = self.locate_tab(src_strip, tab_id) else {
             return false;
         };
@@ -5160,10 +4099,8 @@ impl WorkspaceTree {
             _ => Vec::new(),
         };
 
-        // Delete from source.
         let _ = self.doc.delete(&src_tabs, src_idx);
 
-        // Locate destination strip and its first window-group's tabs list.
         let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
             return false;
         };
@@ -5222,17 +4159,9 @@ impl WorkspaceTree {
     }
 
     /// Mirror a [`Self::reorder_group_within_strip`] cache move into the
-    /// automerge doc: delete the group's existing entry from the strip's
-    /// `window_groups` list and re-insert a fresh map carrying the group's
-    /// full content (id, `maximized`, `width_permille`, and its `tabs`) at
-    /// `new_index`. Rebuilt from the passed-in cache [`WindowGroup`] rather
-    /// than read back out of the doc, so it can't drift from what the cache
-    /// just committed.
-    ///
-    /// Tolerant of an unseeded doc: if the strip / group isn't present it
-    /// no-ops (the cache write already happened; a later
-    /// [`Self::seed_doc_from_cache`] picks up the new order). Same shape
-    /// as [`Self::doc_move_tab_across_strips`].
+    /// doc: delete the entry, re-insert a fresh map at `new_index`,
+    /// rebuilt from the cache [`WindowGroup`] (not read back out of the
+    /// doc, so it can't drift). No-op on an unseeded doc.
     pub fn doc_reorder_group_within_strip(
         &mut self,
         strip_id: StripId,
@@ -5240,7 +4169,6 @@ impl WorkspaceTree {
         new_index: usize,
     ) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        // Locate the strip's window_groups list.
         let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
             return;
         };
@@ -5270,7 +4198,6 @@ impl WorkspaceTree {
                 else {
                     return;
                 };
-                // Find the group's current doc index by id.
                 let glen = self.doc.length(&groups_id);
                 let mut cur: Option<usize> = None;
                 for gi in 0..glen {
@@ -5323,9 +4250,8 @@ impl WorkspaceTree {
     }
 
     /// Mirror an `apply_drop`-style insert: append a tab map to the
-    /// active workspace's first strip's first window-group's `tabs`
-    /// list. v1 hardcodes "first/first" because that's what
-    /// `apply_drop` itself targets when no specific group is named.
+    /// active workspace's first strip's first window-group's `tabs`,
+    /// matching where `apply_drop` targets when no group is named.
     /// No-op if the doc isn't seeded for the active workspace.
     pub fn doc_append_tab_to_first_group_of_active_workspace(
         &mut self,
@@ -5391,16 +4317,9 @@ impl WorkspaceTree {
     }
 
     /// Cursor-targeted counterpart of
-    /// [`Self::doc_append_tab_to_first_group_of_active_workspace`]: mirror
-    /// a tab append into the automerge doc under the active workspace's
-    /// group whose `id` matches `group_id`, scanning every strip. Used by
-    /// the file-drop router so a drop onto a non-first group replicates to
-    /// peers on the same object path the cache append wrote to.
-    ///
-    /// Returns `true` if the group was found and the tab written, `false`
-    /// otherwise (doc not seeded, active workspace absent, or no group
-    /// with that id) — the caller treats a `false` return as "cache-only
-    /// mirror; peer-sync will backfill on the next full snapshot".
+    /// [`Self::doc_append_tab_to_first_group_of_active_workspace`], for
+    /// a drop onto a non-first group: scans every strip for `group_id`.
+    /// `false` means cache-only; peer-sync backfills on the next snapshot.
     pub fn doc_append_tab_to_group_of_active_workspace(
         &mut self,
         group_id: u64,
@@ -5477,22 +4396,13 @@ impl WorkspaceTree {
         false
     }
 
-    /// A first-boot tree: one empty workspace, and nothing in it.
+    /// A first-boot tree: one empty workspace, nothing in it. What a
+    /// machine with no `state.json` gets — no collaborators, window
+    /// groups, or documents, since each would be a claim about someone
+    /// who hasn't used the system yet. The workspace itself isn't
+    /// fabrication: the compositor needs one to render into.
     ///
-    /// This is what a machine with no `state.json` gets, so everything it
-    /// contains is a claim about a person who has not used the system yet.
-    /// It therefore contains no collaborators, no window groups and no
-    /// documents — a roster entry here would put a person who does not
-    /// exist into the user's workspace document and paint their avatar in
-    /// the top bar, and a seeded tab would be a window they never opened.
-    ///
-    /// The workspace itself is not fabrication: the tree needs an active
-    /// workspace for the compositor to render into and for the wheel disc
-    /// to have a spoke, and the disc's "+" adds more. Empty room, real
-    /// walls.
-    ///
-    /// For a populated tree — demo scenarios, screenshots, and the tests
-    /// that need tabs to act on — use [`Self::bootstrap_demo`].
+    /// For a populated tree, use [`Self::bootstrap_demo`].
     pub fn bootstrap_default() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
@@ -5526,12 +4436,8 @@ impl WorkspaceTree {
     }
 
     /// A populated tree for demos, `--shots` scenarios and tests.
-    ///
-    /// Everything in here is invented — three workspaces, a four-tab
-    /// window group, and named collaborators with fixed cursor hues — so
-    /// it must never be reachable from a normal boot. Production goes
-    /// through [`Self::bootstrap_default`]; this exists so a scenario can
-    /// act on a tab without building the tree by hand first.
+    /// Everything is invented, so it must never be reachable from a
+    /// normal boot; production goes through [`Self::bootstrap_default`].
     pub fn bootstrap_demo() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
@@ -5540,11 +4446,9 @@ impl WorkspaceTree {
         let tab_files = next_id();
         let tab_terminal = next_id();
         let tab_word = next_id();
-        // The first (Home) workspace opens the four apps the shell hosts
-        // in-process — Notes, Files, Terminal and the word processor — at
-        // `WindowWidth::Wide` so the rendered card fills more
-        // than half the viewport on a 1600 px-wide first-run desktop —
-        // matches `WindowFrame.tsx`'s "fill the container" behaviour.
+        // Home opens the four in-process apps at `WindowWidth::Wide` so
+        // the card fills more than half the viewport on a 1600 px-wide
+        // first-run desktop — matches `WindowFrame.tsx`'s behaviour.
         let home = Workspace {
             id: ws_id,
             room: RoomId::new(),
@@ -5593,17 +4497,10 @@ impl WorkspaceTree {
                     maximized: false,
                 }],
             }],
-            // Home is the active workspace in the demo tree, and it
-            // carries one invented peer so the top-bar avatar stack has
-            // something to paint. `TopBarChrome::sync_from_tree` prefers
-            // the active workspace's roster (with a tree-level fallback),
-            // so without this the right cluster would be empty until the
-            // demo navigates to Research. The local user ("me") is
-            // deliberately not seeded here so `draw_ws_settings`
-            // synthesizes its "You" tile from the fallback path — keeping
-            // the General-tab fill count stable for the Roles-tab
-            // parity-spec contract. Hex matches
-            // `nirios-concept/src/data.ts`'s `cursorColor`.
+            // One invented peer so the top-bar avatar stack has something
+            // to paint. "me" is deliberately not seeded so
+            // `draw_ws_settings` synthesizes its "You" tile from the
+            // fallback path. Hex matches `nirios-concept/src/data.ts`.
             collaborators: vec![
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
@@ -5627,11 +4524,8 @@ impl WorkspaceTree {
             ..Default::default()
         };
 
-        // Research and Design add empty strips so the overview overlay
-        // has a 3-card grid to lay out. Research also carries two invented
-        // collaborators so the top-bar avatar stack + per-tab presence dots
-        // have something to render — the canonical hex colours mirror
-        // `nirios-concept/src/data.ts`'s `cursorColor`.
+        // Research and Design add empty strips for the overview's 3-card
+        // grid; Research also gets two invented collaborators to render.
         let research_id = tree.append_empty_workspace("Research");
         if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == research_id) {
             ws.collaborators.push(
@@ -5647,16 +4541,9 @@ impl WorkspaceTree {
         }
         tree.append_empty_workspace("Design");
 
-        // Home stays active — `append_empty_workspace` doesn't change
-        // `tree.active`, so the demo lands on the populated workspace
-        // rather than an empty one.
-        //
-        // Seed the automerge backing doc from the now-populated cache
-        // so peer-sync exports (`current_heads`, `export_changes_since`)
-        // reflect the demo state. `append_empty_workspace` already
-        // mirrors each appended workspace into the doc; this call
-        // additionally writes the initial Home workspace + the active
-        // pointer that the cache literal seeded directly.
+        // Home stays active — `append_empty_workspace` doesn't touch
+        // `tree.active`. This seeds the doc with the initial Home
+        // workspace + active pointer the cache literal set directly.
         tree.seed_doc_from_cache();
         tree
     }
@@ -5686,12 +4573,8 @@ impl WorkspaceTree {
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);
 
-        // Mirror the append into the doc-side `workspaces: List<Map>`
-        // so peer-sync sees the new workspace as a discrete change.
-        // Creates the list lazily — `bootstrap_default` calls
-        // `seed_doc_from_cache` after construction, but tests / future
-        // call sites may invoke this on a tree that hasn't been seeded
-        // yet.
+        // Mirror the append into the doc so peer-sync sees a discrete
+        // change. Creates the list lazily, for trees not yet seeded.
         let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
             Some((_, id)) => id,
             None => self
@@ -5706,10 +4589,9 @@ impl WorkspaceTree {
             .expect("insert workspace map");
         let _ = self.doc.put(&entry, "id", ScalarValue::Uint(ws_id.raw()));
         let _ = self.doc.put(&entry, "name", name.to_string());
-        // The room goes into the doc with the workspace, not after it:
-        // a peer that receives this change has to learn the identity in
-        // the same change that tells it the workspace exists, or it
-        // hydrates a workspace it cannot address.
+        // Room goes in with the workspace, not after: a peer must learn
+        // the identity in the same change that tells it the workspace
+        // exists, or it hydrates one it can't address.
         let _ = self.doc.put(&entry, "room", room.to_string());
         ws_id
     }
@@ -5766,50 +4648,30 @@ impl WorkspaceTree {
         true
     }
 
-    // -----------------------------------------------------------------
-    // Active-group pointer
-    // -----------------------------------------------------------------
-    //
-    // The shell picks one [`GroupId`] per [`StripId`] as the "active"
-    // group — the receiver of focus, keyboard input, and presence
-    // broadcasts. The pointer lives here (in the persisted state tree)
-    // so multiple chrome surfaces can read it without threading a
-    // separate handle through, and so it survives reload.
-    //
-    // The interesting case is the close fade: when the user closes the
-    // last tab of the active group, the widget tree latches a 180 ms
-    // alpha+scale shrink before pruning (see `WindowGroup::start_closing`
-    // in `quick-ui`). Without intervention the active-group pointer
-    // continues to resolve to the closing group for the duration of the
-    // animation, sending focus and keyboard input to a fading corpse.
-    // [`Self::nudge_active_group_off_closing`] is the reconciler that
-    // advances the pointer to the next surviving sibling at fade-start
-    // time; the shell is expected to call it from its per-tick loop with
-    // the set of group ids whose widgets currently report
-    // `is_closing()`.
+    // Active-group pointer: one [`GroupId`] per [`StripId`], the
+    // receiver of focus/keyboard/presence. Closing the active group's
+    // last tab latches a 180 ms shrink before pruning, so
+    // [`Self::nudge_active_group_off_closing`] advances the pointer to
+    // the next surviving sibling at fade-start rather than letting it
+    // resolve to the fading group for that whole window.
 
-    /// Look up the currently-active [`GroupId`] for the given strip, or
-    /// `None` if no entry has been seeded. Callers that want a default
-    /// (the leftmost group, say) compose this with their own fallback.
+    /// The currently-active [`GroupId`] for `strip_id`, or `None` if
+    /// unseeded — callers compose this with their own fallback.
     pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
         self.active_group.get(&strip_id).copied()
     }
 
-    /// Mark `group_id` as the active group of `strip_id`. The id is not
-    /// validated against the strip's actual `window_groups` membership —
-    /// callers that care can check first; the shell's reconciler is
+    /// Mark `group_id` as the active group of `strip_id`. Not validated
+    /// against the strip's actual membership — the shell's reconciler is
     /// expected to be the sole writer.
     pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
         self.active_group.insert(strip_id, group_id);
     }
 
-    /// Resolve the active group on `strip_id`, *as observed under the
-    /// given `is_closing` predicate*. If the recorded active group is
-    /// reported closing, this returns the next non-closing sibling to
-    /// the right; if there isn't one, it falls back to the previous
-    /// non-closing sibling. Pure read — does not mutate the map.
-    /// Returns `None` if the strip has no surviving (i.e. non-closing)
-    /// groups at all, or if the strip itself doesn't exist.
+    /// Resolve the active group on `strip_id` under `is_closing`: if
+    /// closing, returns the next non-closing sibling right, falling
+    /// back left. Pure read; `None` if no group survives, or the strip
+    /// doesn't exist.
     pub fn resolve_active_group(
         &self,
         strip_id: StripId,
@@ -5859,20 +4721,15 @@ impl WorkspaceTree {
         }
     }
 
-    /// Mirror a cross-strip tab drag-drop into the persisted tree.
+    /// Mirror a cross-strip tab drag-drop into the persisted tree. The
+    /// widget side only mutates the widget tree — without this writeback
+    /// the tab would pop back to its source strip on the next restart.
+    /// Removes the `Tab` from the source (pruning any group left empty),
+    /// appends a fresh single-tab `WindowGroup` to the destination.
     ///
-    /// The widget side (`GroupRow::accept_cross_strip_drop`) only mutates
-    /// the widget tree — without this writeback the tab would pop back
-    /// to its source strip on the next restart. Removes the matching
-    /// `Tab` from the source's groups (pruning any group left empty),
-    /// then appends a brand-new single-tab `WindowGroup` to the
-    /// destination strip, matching `accept_cross_strip_drop`'s "splice
-    /// into a new group" semantics.
-    ///
-    /// Forgiving: returns `false` if `tab_id` isn't found on the source
-    /// strip or either strip id doesn't resolve; `true` on success.
-    /// Searches every workspace since a cross-strip drop could in
-    /// principle land outside the active one.
+    /// Forgiving: `false` if `tab_id` or either strip id doesn't resolve.
+    /// Searches every workspace since a drop could land outside the
+    /// active one.
     pub fn move_tab_across_strips(
         &mut self,
         src_strip_id: StripId,
@@ -5880,22 +4737,12 @@ impl WorkspaceTree {
         tab_id: TabId,
     ) -> bool {
         if src_strip_id == dest_strip_id {
-            // Return-to-source path on the widget side is a re-splice into
-            // a new group on the same strip. The persisted tree's
-            // structure stays the same: the tab is still on this strip,
-            // just (potentially) in a different group. We don't try to
-            // mirror the widget's "now in a brand new group at gap_idx"
-            // shape because the tree's group ids are widget-side ids and
-            // we'd need to invent one. Skipping the write is safe because
-            // the tab is still attributed to this strip — a shell restart
-            // simply rebuilds the widget tree from the unchanged persisted
-            // groups, which is the same outcome as a "drop in same strip
-            // creates new group" interaction restoring after restart.
+            // Return-to-source re-splices into a new group on the same
+            // strip; the tab is still attributed to this strip, so
+            // skipping the write is safe — a restart rebuilds it anyway.
             return false;
         }
-        // First, remove the tab from the source strip. We have to scan
-        // every workspace's strips because the StripId is workspace-
-        // agnostic by design.
+        // Scan every workspace's strips: StripId is workspace-agnostic.
         let mut moved_tab: Option<Tab> = None;
         let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
         'outer: for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
@@ -5929,9 +4776,6 @@ impl WorkspaceTree {
                 .window_groups
                 .remove(group_idx);
         }
-        // Then append to the destination strip as a brand-new group with
-        // the moved tab as its sole member, mirroring the widget side's
-        // `accept_cross_strip_drop`.
         let new_group_id = next_id();
         let active_tab = moved.id;
         let new_group = WindowGroup {
@@ -5945,39 +4789,23 @@ impl WorkspaceTree {
             for strip in ws.strips.iter_mut() {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
-                    // Mirror the cache mutation into the doc: the widget
-                    // side has already accepted the drop, so this keeps
-                    // peer-sync coherent.
                     self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
                     return true;
                 }
             }
         }
-        // Destination strip not found — we already mutated the source.
-        // Returning `false` here would lose the tab, so re-attach it to
-        // the source strip's first group as a recovery (rare edge case;
-        // dest strip vanished between drag start and harvest tick).
+        // Destination not found after the source was already mutated —
+        // the tab is lost. Rare (strip vanished between drag start and
+        // harvest tick).
         false
     }
 
-    /// Reorder the window group `group_id` within `strip_id` so it lands
-    /// at `new_index` in the strip's `window_groups` vector. Neighbours
-    /// shift to fill the vacated slot — the whole group (all its tabs,
-    /// its width, its maximized flag) moves as a unit, unlike
-    /// [`Self::move_tab_across_strips`] which relocates a single tab.
-    ///
-    /// `new_index` is clamped to `[0, window_groups.len() - 1]` (the
-    /// index space *after* the group is lifted out), so a caller can pass
-    /// a raw gap index without worrying about the off-by-one that a
-    /// removal introduces. Returns `true` when the order actually changed;
-    /// `false` when the strip / group wasn't found or the group was
-    /// already at the requested slot (so callers can skip a redundant
-    /// doc write / revision bump).
-    ///
-    /// Mirrors the reorder into the automerge doc via
-    /// [`Self::doc_reorder_group_within_strip`] so peer-sync ships the new
-    /// order on the next tick — same cache-then-doc shape as
-    /// [`Self::move_tab_across_strips`].
+    /// Reorder the window group `group_id` within `strip_id`; the whole
+    /// group moves as a unit, unlike [`Self::move_tab_across_strips`].
+    /// `new_index` is clamped to the post-removal index space, so a
+    /// caller may pass a raw gap index. `true` only when the order
+    /// actually changed. Mirrors into the doc afterwards, the same
+    /// cache-then-doc shape as `move_tab_across_strips`.
     pub fn reorder_group_within_strip(
         &mut self,
         strip_id: StripId,
@@ -6009,22 +4837,17 @@ impl WorkspaceTree {
         }
         let moved = groups.remove(cur_idx);
         groups.insert(dest, moved.clone());
-        // Mirror into the doc from the cache copy we just placed, so the
-        // doc's group entry carries the group's full content (tabs +
-        // width + maximized) at the new slot. Tolerant of an unseeded
-        // doc — see [`Self::locate_group`].
+        // Mirror from the cache copy we just placed, so the doc entry
+        // carries the group's full content at the new slot. Tolerant
+        // of an unseeded doc — see [`Self::locate_group`].
         self.doc_reorder_group_within_strip(strip_id, &moved, dest);
         true
     }
 
-    /// Move the tab at `from` to index `to` inside `group_id`'s tab list.
-    ///
-    /// This is the persisted half of an intra-group tab drag: the widget tree
-    /// reorders its own pills + hosts immediately, and the shell mirrors the
-    /// new order here so it survives a restart and reaches peers. Both indices
-    /// are in the group's own tab-index space; `to` is clamped to the last
-    /// slot. Returns `true` only when the order actually changed, so callers
-    /// can skip a redundant revision bump.
+    /// Move the tab at `from` to index `to` inside `group_id`'s tab
+    /// list — the persisted half of an intra-group tab drag, mirroring
+    /// what the widget tree already reordered. `to` is clamped to the
+    /// last slot; `true` only when the order actually changed.
     pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
         // Locate the group in the cache (ids are workspace-agnostic).
         let mut located: Option<(usize, usize, usize)> = None;
@@ -6056,14 +4879,10 @@ impl WorkspaceTree {
         true
     }
 
-    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order.
-    ///
-    /// Used by [`Self::reorder_tab_within_group`]. Rewriting the whole list
-    /// (rather than splicing one entry) keeps this in step with
-    /// [`Self::doc_reorder_group_within_strip`], which also re-emits a
-    /// group's tabs wholesale after a move. No-op when the doc isn't seeded
-    /// for this group yet — the cache write already happened, and the next
-    /// [`Self::seed_doc_from_cache`] carries the order over.
+    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order
+    /// — rewrites the whole list to stay in step with
+    /// [`Self::doc_reorder_group_within_strip`]. No-op on an unseeded
+    /// doc.
     fn doc_rewrite_group_tabs(&mut self, group_id: u64, tabs: &[Tab]) {
         use automerge::{ObjType, ScalarValue, transaction::Transactable};
         let Some((group_entry, _, _, _)) = self.locate_group(group_id) else {
@@ -6085,18 +4904,11 @@ impl WorkspaceTree {
         }
     }
 
-    /// Reconcile the active-group pointer against the set of currently-
-    /// closing groups in `strip_id`. If the recorded active group is in
-    /// `closing_ids`, advance the pointer to the next non-closing
-    /// sibling using the same right-then-left search as
-    /// [`Self::resolve_active_group`]. Returns the group id the pointer
-    /// landed on, or `None` if every group in the strip is closing
-    /// (in which case the entry is removed from the map — "no active
-    /// group" is the explicit chosen behaviour for an emptying strip,
-    /// not a clamp to a closing-group corpse).
-    ///
-    /// Idempotent: a no-op when the recorded pointer is not in the
-    /// closing set, or when `strip_id` has no recorded pointer at all.
+    /// Reconcile the active-group pointer against `closing_ids`: if the
+    /// recorded group is closing, advance to the next non-closing
+    /// sibling. `None` when every group is closing — the entry is
+    /// removed, since an emptying strip has no active group rather than
+    /// one clamped to a corpse. Idempotent.
     pub fn nudge_active_group_off_closing(
         &mut self,
         strip_id: StripId,
@@ -6113,10 +4925,9 @@ impl WorkspaceTree {
                 Some(next)
             }
             None => {
-                // No surviving sibling — the whole strip is fading
-                // away. Drop the entry rather than leave a dangling
-                // pointer; the shell can re-seed when fresh groups
-                // land in the strip.
+                // Whole strip is fading; drop the entry rather than
+                // leave a dangling pointer. The shell re-seeds when
+                // fresh groups land.
                 self.active_group.remove(&strip_id);
                 None
             }
@@ -6124,24 +4935,13 @@ impl WorkspaceTree {
     }
 }
 
-/// What colour each person on `roster` is drawn in.
-///
-/// One function because there is one answer: both cursor and avatar must
-/// use [`ui::presence::assign_peer_colors`], which settles the whole room
-/// at once so two people whose ids hash onto the same palette entry don't
-/// end up the same colour. Colouring one side via the unsettled
-/// [`ui::presence::user_color`] hash directly would let a person's cursor
-/// and avatar disagree, reading as two participants.
-///
-/// An explicit [`Collaborator::cursor_color`] is a decision a person made
-/// and outranks anything computed — the same precedence
-/// `OverlayHost::visible_peers` applies — so those colours are held back
-/// from the assignment rather than competing with it.
-///
-/// The local user is included in the set the room settles over even
-/// though never in the avatar stack, so every host sees the same
-/// membership (the others, plus itself) and computes the same
-/// assignment.
+/// What colour each person on `roster` is drawn in. One function so
+/// cursor and avatar cannot disagree and read as two participants: both
+/// go through [`ui::presence::assign_peer_colors`], which settles the
+/// whole room at once. An explicit [`Collaborator::cursor_color`]
+/// outranks anything computed and is held back from the assignment; the
+/// local user is included in the settled set (never the avatar stack) so
+/// every host computes the same one.
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
     for c in roster {
@@ -6164,18 +4964,9 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     assigned
 }
 
-/// Shared peer-count helper for the active workspace.
-///
-/// Counts collaborators on the active workspace excluding the local user
-/// (`id == "me"`); falls back to the tree-level roster (also `me`-filtered)
-/// when the active workspace has no peers of its own. This matches the
-/// precedence already applied by `TopBarChrome::sync_from_tree` and lets
-/// `SidebarWheelChrome::sync_from_tree` reuse the same arithmetic for the
-/// active card so the two chromes never disagree (audit `B-10`).
-///
-/// Note: callers that need per-workspace counts for *non-active* workspaces
-/// must keep their own filtered count — the fallback only fires for the
-/// active workspace.
+/// Peer count for the active workspace, excluding the local user,
+/// falling back to the tree-level roster when it has none of its own —
+/// matches `TopBarChrome::sync_from_tree`'s precedence.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // Somebody named but not yet arrived is not counted. This drives the
     // avatar cluster's `+N` chip and the wheel disc's presence dot, and
@@ -6195,25 +4986,13 @@ pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
 #[cfg(test)]
 mod bootstrap_tests {
     //! Coverage for the two bootstrap trees, which exist for opposite
-    //! reasons and must not drift into each other.
+    //! reasons and must not drift into each other: `bootstrap_default` is
+    //! pinned empty (no invented collaborators, workspaces, or windows —
+    //! see [`WorkspaceTree::bootstrap_default`]), `bootstrap_demo` is the
+    //! populated fixture for `--shots` and tests needing a tab to act on.
     //!
-    //! [`WorkspaceTree::bootstrap_default`] is what the compositor boots
-    //! into on a machine with no `state.json`, so everything in it is a
-    //! statement about a person who has not used this machine yet. It is
-    //! therefore empty, and the tests below pin it that way: no invented
-    //! collaborators, no invented workspaces, no windows nobody opened.
-    //! The one workspace it does contain is structure, not content — the
-    //! tree needs an active workspace to render into and the wheel disc
-    //! needs a spoke, and the disc's "+" is how a second one appears.
-    //!
-    //! [`WorkspaceTree::bootstrap_demo`] is the populated fixture for
-    //! `--shots` scenarios and for tests that need a tab to act on. Its
-    //! contents are invented, which is exactly why it is a separate
-    //! constructor that no boot path reaches.
-    //!
-    //! Updates to the demo fixture are intentional fixture changes — when
-    //! those tests are re-pinned the e2e goldens may also need re-seeding
-    //! (see `tests/e2e_shell_flows.rs`).
+    //! Re-pinning the demo fixture may also need re-seeding the e2e
+    //! goldens (see `tests/e2e_shell_flows.rs`).
 
     use super::*;
 
@@ -6296,19 +5075,17 @@ mod bootstrap_tests {
              Design) so the overview has meaningful content; got {}",
             tree.workspaces.len()
         );
-        // At least one workspace should have collaborators so the top-bar
-        // avatar stack has something to render. This is the fixture whose
-        // whole purpose is to be populated — `bootstrap_default`, the one
-        // a real boot reaches, is pinned empty by the tests above.
+        // This fixture's whole purpose is to be populated —
+        // `bootstrap_default`, what a real boot reaches, is pinned empty.
         assert!(
             tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
             "at least one demo workspace should carry >=1 collaborator"
         );
     }
 
-    /// The same person arriving twice is one avatar. Presence republishes
-    /// at ~30 Hz, so an admission that pushed rather than upserted would
-    /// grow the stack by thirty entries a second.
+    /// The same person arriving twice is one avatar — presence
+    /// republishes at ~30 Hz, so a push instead of an upsert would grow
+    /// the stack by thirty entries a second.
     #[test]
     fn admitting_the_same_person_twice_is_one_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6319,10 +5096,9 @@ mod bootstrap_tests {
         assert_eq!(active_workspace_peer_count(&tree), 1);
     }
 
-    /// A room is addressed by its durable identity, not by this
-    /// machine's local handle for it: the presence frames that build the
-    /// roster carry the room, and every peer numbers its workspaces
-    /// differently.
+    /// A room is addressed by its durable identity, not this machine's
+    /// local handle for it: presence frames carry the room, and every
+    /// peer numbers its workspaces differently.
     #[test]
     fn a_peer_is_admitted_to_the_workspace_that_addresses_the_room() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6337,8 +5113,7 @@ mod bootstrap_tests {
 
     /// A session announces itself before it can say who is at it: the
     /// invite establishes the far end, the first presence frame names
-    /// the person. Both describe one peer, so the named row replaces the
-    /// handle row instead of doubling the stack.
+    /// the person — one peer, so the named row replaces the handle row.
     #[test]
     fn a_named_presence_frame_replaces_the_session_handle_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6361,9 +5136,8 @@ mod bootstrap_tests {
         assert_eq!(tree.active_workspace().unwrap().collaborators.len(), 1);
     }
 
-    /// A publisher that names nobody keeps its handle. Inventing a name
-    /// for an unnamed session is the same class of fabrication as
-    /// seeding the roster.
+    /// A publisher that names nobody keeps its handle — inventing a
+    /// name is the same fabrication as seeding the roster.
     #[test]
     fn an_unnamed_session_stays_under_its_handle() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6399,14 +5173,9 @@ mod bootstrap_tests {
         );
     }
 
-    /// A session that goes quiet takes its person off the roster, by
-    /// whichever name they had acquired by then.
-    ///
-    /// The departure names a peer, never a person — so a row that had
-    /// already been renamed from the session handle to "alice" has to
-    /// still be findable. That is what [`Collaborator::session`] is for,
-    /// and it is why a departure arriving after the rename is the case
-    /// worth pinning.
+    /// A session that goes quiet takes its person off the roster by
+    /// whichever name they'd acquired — a departure names a peer, never
+    /// a person, which is what [`Collaborator::session`] bridges.
     #[test]
     fn a_session_going_quiet_takes_its_person_off_the_roster() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6431,16 +5200,12 @@ mod bootstrap_tests {
         );
     }
 
-    /// A departure reaches every room that session was in. One session
-    /// can be in several of this machine's rooms at once, and it left
-    /// all of them.
+    /// A departure reaches every room that session was in — one session
+    /// can be in several rooms at once, and it left all of them.
     #[test]
     fn a_departure_sweeps_every_room_the_session_was_in() {
-        // Two rooms, because one cannot tell a sweep from a hit — and
-        // both empty, because the assertion below is that *nobody* is
-        // left, which the populated fixture's seeded people would
-        // satisfy or fail for reasons that have nothing to do with a
-        // departure. A first boot is one room, so the second is added.
+        // Two rooms, since one can't tell a sweep from a hit; both empty
+        // so the "nobody left" assertion isn't confused by seeded people.
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.append_empty_workspace("Second");
         let rooms: Vec<RoomId> = tree.workspaces.iter().map(|w| w.room).collect();
@@ -6460,20 +5225,9 @@ mod bootstrap_tests {
         }
     }
 
-    /// A person already on the roster who then publishes presence has to
-    /// become retirable, not merely renamed.
-    ///
-    /// Every roster row that arrives without a session is a row no
-    /// departure can name: `retire_session` matches on
-    /// [`Collaborator::session`], so a row holding `None` survives every
-    /// departure the transport will ever report. That is reachable
-    /// without any exotic sequence — a roster read back off disk has
-    /// `None` on every row, because `session` describes a live
-    /// connection and cannot be persisted meaningfully.
-    ///
-    /// So the upsert has to learn the session the same way it learns a
-    /// name: the arriving row knows it, the existing row does not, and
-    /// what the newcomer knows wins.
+    /// A person already on the roster who then publishes presence must
+    /// become retirable, not merely renamed — a session-less row (read
+    /// back off disk) has `None`, which `retire_session` can't match.
     #[test]
     fn a_presence_frame_teaches_an_existing_row_which_session_it_is() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -6511,9 +5265,8 @@ mod bootstrap_tests {
         );
     }
 
-    /// Roster avatars and peer cursors have to be the same colour for
-    /// the same person. They are drawn by different code in different
-    /// files; this pins them to one answer.
+    /// Roster avatars and peer cursors must be the same colour for the
+    /// same person — drawn by different code in different files.
     #[test]
     fn roster_colours_match_what_the_room_settles_for_cursors() {
         let roster = vec![
@@ -6547,9 +5300,8 @@ mod bootstrap_tests {
         );
     }
 
-    /// An explicit roster colour is a decision someone made, and it
-    /// outranks the assignment — and is held back from it, so nobody
-    /// else is computed onto it.
+    /// An explicit roster colour outranks the assignment, and is held
+    /// back from it, so nobody else is computed onto it.
     #[test]
     fn an_explicit_roster_colour_wins_and_is_not_reused() {
         let pink = (0xec, 0x48, 0x99);
@@ -6605,9 +5357,8 @@ mod bootstrap_tests {
             .first()
             .expect("at least one group");
         // Widths are fractions of the strip, so "wide enough" is a share
-        // of the display rather than a pixel count — which is the whole
-        // point: the old `Custom(w) => w >= 900` could not be satisfied at
-        // all on a 4K panel, where 900 px is under a quarter of the screen.
+        // of the display rather than a pixel count that means a different
+        // share on every monitor.
         let share = first_group.width.permille();
         assert!(
             share >= ui::widget::WIDTH_NORMAL_PERMILLE,
@@ -6621,14 +5372,9 @@ mod bootstrap_tests {
 
 #[cfg(test)]
 mod automerge_foundation_tests {
-    //! Foundation tests for unit A of the WorkspaceTree → automerge
-    //! migration. These exercise the new `current_heads`,
-    //! `export_changes_since`, `apply_changes` API surface against a
-    //! manually-poked doc — no mutator wires through to the doc yet, so
-    //! the tests synthesise changes by writing directly into
-    //! `tree.doc`. Subsequent units (B–D) replace the manual writes
-    //! with real mutator calls (`set_active`, `append_empty_workspace`,
-    //! `harvest_pending_*`, etc.).
+    //! Tests for the WorkspaceTree ↔ automerge sync surface:
+    //! `current_heads`, `export_changes_since`, `apply_changes`, and the
+    //! mutators (`append_empty_workspace`, …) that write through them.
 
     use super::*;
     use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
@@ -6643,8 +5389,8 @@ mod automerge_foundation_tests {
     #[test]
     fn apply_changes_round_trips_a_manual_doc_mutation() {
         let mut tree_a = WorkspaceTree::default();
-        // Directly poke a value into the doc — unit A doesn't have any
-        // mutators wired through, so we synthesise a change manually.
+        // Synthesise a change by writing directly into the doc rather
+        // than through a mutator.
         tree_a
             .doc
             .put(&ROOT, "demo", ScalarValue::Uint(42))
@@ -6677,17 +5423,10 @@ mod automerge_foundation_tests {
 
     #[test]
     fn appending_a_workspace_propagates_via_apply_changes() {
-        // Unit-B convergence: peer A appends a workspace, ships the
-        // resulting change-blobs to a fresh peer B, and B's cache
-        // reflects the append after apply_changes.
-        //
-        // Tree B starts from `default()` rather than `bootstrap_default`
-        // so its empty doc cleanly absorbs A's full change-graph without
+        // Tree B starts from `default()`, not `bootstrap_default`, so
+        // its empty doc cleanly absorbs A's full change-graph without
         // both peers concurrently creating the `workspaces` list at
-        // ROOT. Two peers running `bootstrap_default` independently is
-        // explicitly out of scope for unit B — that's the
-        // concurrent-appends test in unit-C/D where structural ops
-        // need diff-aware seeding.
+        // ROOT — seeding isn't diff-aware.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let initial_count = tree_a.workspaces.len();
 
@@ -6718,8 +5457,7 @@ mod automerge_foundation_tests {
     /// A peer that hydrates a workspace out of another peer's doc must
     /// end up in *that peer's* room. Minting a local one instead would
     /// leave it holding a workspace it can see but cannot collaborate
-    /// in — the same room-of-one failure the invite path exists to
-    /// prevent, arriving by the other route.
+    /// in.
     #[test]
     fn a_workspaces_room_propagates_via_apply_changes() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
@@ -6754,9 +5492,8 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// `set_room` is the mutation an accepted invite performs. It has to
-    /// reach the doc as well as the cache, or the invitee's peers learn
-    /// about a room change that never replicates.
+    /// `set_room` is what an accepted invite performs — must reach the
+    /// doc as well as the cache, or the change never replicates.
     #[test]
     fn set_room_propagates_via_apply_changes() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
@@ -6776,21 +5513,6 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// A guest that has projected its own room document must survive
-    /// merging the host's.
-    ///
-    /// This is a crash, not a wrong answer. Both sides project their
-    /// cache into the room document before a sync round, which is what
-    /// gives each an `AutoCommit` carrying a patch log over its own
-    /// actor. Applying the other side's changes then runs
-    /// `PatchLog::migrate_actors`, which returns `PatchLogMismatch` when
-    /// the incoming actor cannot be spliced into that list in sort
-    /// order — and automerge unwraps it. The guest compositor died on
-    /// its host's first delta.
-    ///
-    /// The actors are random, so the failure depended on which of the
-    /// two sorted first; the loop runs enough rounds that a regression
-    /// cannot pass by being lucky.
     /// Two trees in one room, so a record-index claim can be read back
     /// from the side that did not make it.
     fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
@@ -6806,18 +5528,10 @@ mod automerge_foundation_tests {
         (host, guest, room)
     }
 
-    /// A window somebody else in the room opened lands *beside* yours,
-    /// not underneath it.
-    ///
-    /// Groups scroll horizontally within a strip; strips stack. So a
-    /// peer's window becoming a strip of its own is not a cosmetic
-    /// difference — it puts two windows one above the other on a
-    /// desktop whose whole spatial model is a horizontal scroll, which
-    /// is a thing this window manager does not do.
-    ///
-    /// The room replicates *contents*. Which strip holds them is this
-    /// machine's layout and nobody else's, so a peer's strip id is not
-    /// a strip this machine has to mint.
+    /// A window somebody else opened lands *beside* yours, not
+    /// underneath — groups scroll horizontally within a strip, so a
+    /// peer's window becoming its own strip would stack vertically
+    /// on a desktop that doesn't do that.
     #[test]
     fn a_peers_window_lands_beside_yours_and_not_below_it() {
         const HOST: u16 = 0x2222;
@@ -6898,13 +5612,9 @@ mod automerge_foundation_tests {
         std::collections::BTreeMap::from([(one.0.to_string(), one.1.to_string())])
     }
 
-    /// An id in `salt`'s range, minted without touching the process-wide
-    /// counter.
-    ///
-    /// Two peers in one test need two disjoint id spaces, and `next_id()`
-    /// reads a process-global salt — so a test that set it would decide
-    /// what every test running beside it thought it owned. Spelling the
-    /// id out keeps the whole thing local to this function.
+    /// An id in `salt`'s range, without touching the process-wide
+    /// counter — `next_id()` reads a global salt a test can't flip
+    /// without affecting every test beside it.
     fn salted(salt: u16, counter: u64) -> u64 {
         ((salt as u64) << PEER_ID_SALT_SHIFT) | counter
     }
@@ -6925,9 +5635,9 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// And the other way. A room only its owner may add to is not a
-    /// shared room — the projection is deliberately not gated on
-    /// governance the way the owner and capability list are.
+    /// And the other way: a room only its owner may add to isn't a
+    /// shared room — the projection isn't gated on governance the
+    /// way owner/capabilities are.
     #[test]
     fn a_guest_can_put_a_record_in_the_room_too() {
         let (mut host, mut guest, room) = two_in_a_room();
@@ -6946,9 +5656,8 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// Two people bringing something at the same moment. Keyed by record
-    /// id rather than appended to a list, so the merge is a union and
-    /// neither reference is the loser of a coin toss.
+    /// Two people bringing something at the same moment — keyed by
+    /// record id rather than a list, so the merge is a union.
     #[test]
     fn two_members_referencing_at_once_both_survive() {
         let (mut host, mut guest, room) = two_in_a_room();
@@ -6995,9 +5704,8 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// A record already known here is not re-announced as an arrival.
-    /// Without this the shell would be handed the same reference every
-    /// sync round, forever.
+    /// A record already known here isn't re-announced as an arrival —
+    /// otherwise the shell gets handed the same reference every round.
     #[test]
     fn a_reference_already_held_here_is_not_an_arrival() {
         let (mut host, mut guest, room) = two_in_a_room();
@@ -7015,11 +5723,10 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// **The view does not follow, the state does.**
-    ///
-    /// The room document is the thing that crosses, so the guarantee is
-    /// checkable by looking at what is in it: which records the room
-    /// holds, and nothing about where anybody is standing.
+    /// **The view does not follow, the state does.** The room document
+    /// is what crosses, so the guarantee is checkable by looking at
+    /// what's in it: which records the room holds, nothing about who's
+    /// standing where.
     #[test]
     fn the_room_document_carries_no_view_state() {
         use automerge::{ROOT, ReadDoc};
@@ -7050,13 +5757,10 @@ mod automerge_foundation_tests {
         }
     }
 
-    /// A window one member opens appears for the other — **and the other
-    /// stays on the tab they were reading.**
-    ///
-    /// The two halves of the user's rule in one test, because either one
-    /// alone is easy to satisfy wrongly: a projection that carried the
-    /// whole struct would pass the first and fail the second, and one
-    /// that carried nothing would pass the second and fail the first.
+    /// A window one member opens appears for the other — **and the
+    /// other stays on the tab they were reading.** Both halves in one
+    /// test: projecting the whole struct passes one and fails the
+    /// other; projecting nothing does the reverse.
     #[test]
     fn a_window_the_host_opens_appears_for_the_guest_without_moving_them() {
         const HOST: u16 = 0xAAAA;
@@ -7257,14 +5961,9 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// The other half of the same rule, one level down: the room's
-    /// windows **are** in the document, and not one of them carries the
-    /// tab its owner was looking at.
-    ///
-    /// `active_tab` is the dangerous one — it lives inside
-    /// [`WindowGroup`], the struct whose other fields all replicate — so
-    /// it is asserted against the document's own keys rather than
-    /// inferred from behaviour.
+    /// The other half of the same rule: the room's windows **are** in
+    /// the document, but `active_tab` is asserted against the
+    /// document's own keys rather than inferred from behaviour.
     #[test]
     fn the_rooms_windows_replicate_but_not_the_tab_you_are_on() {
         use automerge::{ROOT, ReadDoc};
@@ -7328,6 +6027,11 @@ mod automerge_foundation_tests {
         );
     }
 
+    /// A guest that has projected its own room document must survive
+    /// merging the host's — this is a crash, not a wrong answer: both
+    /// sides project before syncing, and applying the other's changes
+    /// runs `PatchLog::migrate_actors`, which panics if the incoming
+    /// actor can't be spliced into the actor list in sort order.
     #[test]
     fn a_guest_merges_its_hosts_room_after_projecting_its_own() {
         for _ in 0..24 {
@@ -7386,23 +6090,10 @@ mod automerge_foundation_tests {
         }
     }
 
-    // =================================================================
-    // Write authority on a room's governance.
-    //
-    // A room document carries the room's owner and its capability list.
-    // Those are the two values every authority question in the compositor
-    // bottoms out in — `may_administer` reads the first, `decide` reads
-    // the second, and the FUSE mount enforces an export of the second.
-    // Automerge merges a map key by last-writer-wins and has no per-key
-    // ACL, so a peer that projects its own cache into the shared document
-    // is not proposing a change to the room's governance, it is entering
-    // a coin toss for it. These pin that a peer's governance is taken
-    // only from the peer entitled to write it.
-    //
-    // Every assertion reads the **receiver's** own state after the merge —
-    // its cached workspace and its own copy of the room document — never
-    // the payload or the sender's intent.
-    // =================================================================
+    // Write authority on a room's governance: automerge has no per-key
+    // ACL, so a peer projecting its own cache isn't proposing a change,
+    // it's entering a coin toss for it — these pin that governance
+    // comes only from the entitled peer.
 
     /// The room's real administrator, as the receiver knows it.
     const ROOM_OWNER: &str = "alice-administers-the-room";
@@ -7413,11 +6104,9 @@ mod automerge_foundation_tests {
     const ROGUE_GRANT_PATH: &str = "/etc/shadow";
 
     /// A host in a room it minted, owning it, with one grant of its own.
-    ///
-    /// The room is minted by `append_empty_workspace` — the production
-    /// path a user's "new workspace" takes — rather than by `set_room`,
-    /// because minting a room and joining someone else's are different
-    /// acts and the difference is the whole subject here.
+    /// Minted via `append_empty_workspace`, not `set_room` — minting
+    /// and joining are different acts, and the difference is the
+    /// whole subject here.
     fn host_owning_a_room() -> (WorkspaceTree, WorkspaceId, RoomId) {
         let mut host = WorkspaceTree::default();
         let ws = host.append_empty_workspace("Design review");
@@ -7438,22 +6127,16 @@ mod automerge_foundation_tests {
     }
 
     /// The bytes a guest puts on the wire when it does not honour the
-    /// join: it is in `room`, but its own state still says it governs the
-    /// room, so its projection carries its own owner and its own grants.
-    ///
-    /// This is the payload the reported attack produces. It is built by
-    /// driving the guest's real projection and export path
-    /// (`sync_room_doc` / `export_room_changes_since`) rather than by
-    /// hand, so the receiver is answering a message a peer running this
-    /// code can actually emit.
+    /// join: in `room`, but its own state still says it governs, so its
+    /// projection carries its own owner and grants. Built by driving
+    /// the guest's real projection/export path, not by hand.
     fn governance_claim_from(user: &str, room: RoomId) -> Vec<Vec<u8>> {
         let mut guest = WorkspaceTree::default();
         let guest_ws = guest.append_empty_workspace("Mine");
         assert!(guest.set_room(guest_ws, room), "the guest joins the room");
-        // A peer whose own state says it administers the room. Nothing
-        // stops a peer from believing that — it is *its* machine — which
-        // is exactly why the receiver cannot take the sender's word for
-        // who governs the room.
+        // Nothing stops a peer from believing it administers a room —
+        // it's *its* machine — which is why the receiver can't take the
+        // sender's word for who governs it.
         guest.room_authority.insert(room, RoomAuthority::Local);
         {
             let ws = guest
@@ -7482,8 +6165,7 @@ mod automerge_foundation_tests {
     }
 
     /// The owner and capability ids the receiver's own **room document**
-    /// records — not its cache, so a fold that quietly diverged from the
-    /// replicated document cannot hide behind it.
+    /// records — not its cache, so a divergent fold can't hide behind it.
     fn governance_in_room_doc(tree: &mut WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let Some(doc) = tree.room_docs.get(&room) else {
@@ -7504,10 +6186,8 @@ mod automerge_foundation_tests {
         (owner, caps)
     }
 
-    /// A real base58 peer id, derived the way a running session's is —
-    /// from a keypair — so the tests below exercise the same parse the
-    /// production path does rather than a string that merely looks like
-    /// a peer id.
+    /// A real base58 peer id, derived from a keypair like a running
+    /// session's, so the tests exercise the same parse production does.
     fn peer_id(seed: u8) -> String {
         libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
             .expect("32 bytes is a keypair")
@@ -7547,13 +6227,9 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// A host that has just restarted still knows who it invited.
-    ///
-    /// Room documents are not persisted, so a fresh process holds none
-    /// until a peer asks it to export one — and the first thing that
-    /// arrives from a peer is presence, which is precisely when the name
-    /// is needed. The name itself *is* persisted, so the answer exists;
-    /// this is about it being reachable before the first sync round.
+    /// A host that has just restarted still knows who it invited — room
+    /// documents aren't persisted, but the name itself *is*, so it's
+    /// reachable before the first sync round.
     #[test]
     fn a_host_that_restarted_still_knows_who_it_invited() {
         let (mut host, _ws, room) = host_owning_a_room();
@@ -7571,9 +6247,8 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// And a guest gets no such shortcut. What it knows about the room is
-    /// what replicated; a name in a guest's cache with none in the
-    /// document is a name that guest was not entitled to write.
+    /// A guest gets no such shortcut — what it knows is what replicated;
+    /// a name in its cache with none in the document was never entitled.
     #[test]
     fn a_guest_reads_names_only_out_of_the_replicated_document() {
         let (mut host, mut guest, room) = two_in_a_room();
@@ -7597,9 +6272,8 @@ mod automerge_foundation_tests {
         assert_eq!(labels.get(&handle_of(&bob)).map(String::as_str), Some("bob"));
     }
 
-    /// A peer nobody named is left as the id it arrived under. Not
-    /// blank, and not a person who does not exist: an unnamed caret is
-    /// honest, an invented name is not.
+    /// A peer nobody named is left as the id it arrived under — an
+    /// unnamed caret is honest, an invented name is not.
     #[test]
     fn a_peer_the_room_has_not_named_gets_no_label_at_all() {
         let (mut host, _ws, room) = host_owning_a_room();
@@ -7664,9 +6338,8 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// The whole reason the name lives in governance. A guest that could
-    /// write this map could put any name it liked over any caret in the
-    /// room, including over a document the room's capabilities gate.
+    /// The whole reason the name lives in governance — a guest able to
+    /// write this map could put any name over any caret in the room.
     #[test]
     fn a_guest_cannot_name_a_peer_in_the_room_it_joined() {
         let (mut host, _ws, room) = host_owning_a_room();
@@ -7731,10 +6404,9 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// A key that is not a peer id names nobody. Storing one would put a
-    /// row in the room document that no presence frame can ever match,
-    /// which reads later as a name that failed to replicate rather than
-    /// as a name that was never addressed to anyone.
+    /// A key that isn't a peer id names nobody — storing one would put
+    /// a row no presence frame can ever match, reading later as a name
+    /// that failed to replicate rather than one never addressed to anyone.
     #[test]
     fn a_name_has_to_be_attached_to_a_real_peer_id() {
         let (mut host, _ws, room) = host_owning_a_room();
@@ -7743,17 +6415,11 @@ mod automerge_foundation_tests {
         assert!(host.room_peer_names_in_doc(room).is_empty());
     }
 
-    /// The reported hole. A guest projects its own cache into a room it
-    /// was invited to; the room's owner and capability list on the
-    /// **host** must be exactly what the host granted.
-    ///
-    /// Two orderings, because whether the host had already projected its
-    /// own document decides whether the guest's write lands unopposed or
-    /// races the host's: with no projection the guest's owner is the only
-    /// one in the merged document, and with one the winner is whichever
-    /// actor id sorts higher. Actor ids are random, so each ordering runs
-    /// 32 rounds — a hole that survives by being lucky in one round does
-    /// not survive 32.
+    /// A guest projects its own cache into a room it was invited to; the
+    /// owner and capability list on the **host** must stay exactly what
+    /// the host granted. Two orderings, since whether the host had
+    /// already projected decides whether the guest's write races on
+    /// actor-id sort order — 32 rounds so a hole can't get lucky once.
     #[test]
     fn a_guest_cannot_rewrite_the_governance_of_the_room_it_joined() {
         for host_projected_first in [false, true] {
@@ -7820,13 +6486,9 @@ mod automerge_foundation_tests {
         }
     }
 
-    /// The same forgery between two guests. Neither administers the room,
-    /// so "am I the administrator?" is not the question the receiver can
-    /// answer — it has to know *which* peer the room's governance comes
-    /// from, and refuse the rest.
-    ///
-    /// The receiver here has learned the room legitimately first, so this
-    /// is an overwrite rather than a bootstrap.
+    /// The same forgery between two guests — neither administers the
+    /// room, so the receiver must know *which* peer governance comes
+    /// from and refuse the rest.
     #[test]
     fn one_guest_cannot_rewrite_the_governance_another_guest_learned() {
         for round in 0..32 {
@@ -7895,10 +6557,9 @@ mod automerge_foundation_tests {
         }
     }
 
-    /// The other half: a guest joining a room **must** learn its owner and
-    /// its capabilities from the peer that admitted it. Refusing every
-    /// incoming governance change would close the hole and collaboration
-    /// with it, so this is the assertion that keeps the fix honest.
+    /// The other half: a guest joining a room **must** learn its owner
+    /// and capabilities from the peer that admitted it — refusing every
+    /// change would close collaboration along with the hole.
     #[test]
     fn a_guest_learns_the_governance_of_the_room_that_invited_it() {
         let (mut host, _host_ws, room) = host_owning_a_room();
@@ -7939,15 +6600,10 @@ mod automerge_foundation_tests {
         );
     }
 
-    /// The local grant path has to agree with the replication path.
-    ///
-    /// If a machine could grant in a room it does not administer, the grant
-    /// would be honoured by its own sandbox while the room had never heard
-    /// of it: a machine that does not govern a room projects no governance,
-    /// so nothing carries the grant, and the next sync from the room's
-    /// authority drops it. That is a local escalation dressed as a grant,
-    /// and a stale cache — a state file written before the room was
-    /// joined — is what would otherwise leave it reachable.
+    /// The local grant path has to agree with the replication path: a
+    /// grant in a room this machine doesn't administer would be
+    /// honoured by its own sandbox while the room never heard of it —
+    /// a local escalation dressed as a grant.
     #[test]
     fn a_machine_cannot_grant_in_a_room_it_does_not_administer() {
         let (_host, _host_ws, room) = host_owning_a_room();
@@ -8041,11 +6697,8 @@ mod automerge_foundation_tests {
 
     #[test]
     fn set_active_propagates_via_apply_changes() {
-        // Unit-B convergence: peer A flips the active pointer; a fresh
-        // peer B observes the new active id after apply_changes. Tree
-        // B uses `default()` for the same reason as the append test:
-        // two `bootstrap_default` calls would race on the doc-side
-        // workspaces list.
+        // Tree B uses `default()`, same reason as the append test: two
+        // `bootstrap_default` calls would race on the workspaces list.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target = tree_a
             .workspaces
@@ -8067,16 +6720,7 @@ mod automerge_foundation_tests {
 
     #[test]
     fn maximize_toggle_propagates_via_apply_changes() {
-        // Unit-C convergence: peer A flips a window-group's
-        // `maximized` flag through the doc, ships the resulting
-        // change-blobs to a fresh peer B, and B's cache reflects the
-        // flip after `apply_changes` (driven by
-        // `rebuild_cache_from_doc`'s nested-state pass).
-        //
-        // Tree B starts from `default()` for the same reason as the
-        // unit-B tests: two `bootstrap_default` calls would race on
-        // the doc-side workspaces list. Default-receiver pattern keeps
-        // the convergence assertion clean.
+        // Tree B starts from `default()`, same reason as the append test.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         assert!(
@@ -8113,13 +6757,8 @@ mod automerge_foundation_tests {
 
     #[test]
     fn width_change_propagates_via_apply_changes() {
-        // Peer A drags a resize handle; the harvester writes
-        // `WindowWidth::Fraction(p)` to the cache and mirrors
-        // `width_permille: Uint(p)` to the doc; peer B observes the same
-        // *share* after `apply_changes`.
-        //
-        // A share rather than a pixel count is the point: B's monitor is
-        // not A's, so replicating pixels would reproduce A's screen on B's.
+        // A share, not a pixel count: B's monitor isn't A's, so
+        // replicating pixels would reproduce A's screen on B's.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         let new_share: u16 = 600;
@@ -8155,15 +6794,9 @@ mod automerge_foundation_tests {
 
     #[test]
     fn moving_a_tab_across_strips_propagates_via_apply_changes() {
-        // Unit-D convergence: peer A moves a tab from one strip to
-        // another. After `move_tab_across_strips` mirrors the move
-        // into the doc, peer B sees the tab in the destination strip
-        // after `apply_changes`.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        // bootstrap_default has one strip in the Home workspace. Add a
-        // second strip with one empty group so the move has somewhere
-        // to land. Mirror through the seed so the doc carries the new
-        // strip too.
+        // Add a second strip with an empty group so the move has
+        // somewhere to land; re-seed so the doc carries it too.
         let dst_strip_id = StripId::new();
         let dst_group_id = next_id();
         tree_a.workspaces[0].strips.push(Strip {
@@ -8267,10 +6900,8 @@ mod collaborator_tests {
 
     #[test]
     fn legacy_json_without_concept_fields_still_deserializes() {
-        // Workspaces persisted before the struct grew concept fields omit
-        // `cursor_color`, `avatar`, and `role_id`. The `#[serde(default)]`
-        // on each field keeps those payloads loadable, so upgrading doesn't
-        // wipe saved state.
+        // Workspaces persisted before the struct grew concept fields
+        // omit them; `#[serde(default)]` keeps those payloads loadable.
         let legacy = r#"{"id":"alice","name":"Alice","active_tab":null}"#;
         let c: Collaborator = serde_json::from_str(legacy).unwrap();
         assert_eq!(c.id, "alice");
@@ -8279,11 +6910,8 @@ mod collaborator_tests {
         assert_eq!(c.cursor_color, None);
         assert_eq!(c.avatar, None);
         assert_eq!(c.role_id, None);
-        // Present, not invited. A collaborator persisted before the
-        // distinction existed says nothing about whether its peer had
-        // arrived, and the invited state draws as an empty seat — so
-        // defaulting the other way would redraw every already-saved
-        // participant as somebody who never turned up.
+        // Present, not invited — defaulting the other way would redraw
+        // every already-saved participant as someone who never showed.
         assert!(!c.invited);
     }
 
@@ -8302,32 +6930,16 @@ mod collaborator_tests {
 #[cfg(test)]
 mod active_group_tests {
     //! Coverage for the active-group pointer + close-fade reconciler.
-    //!
-    //! The shell layer keeps a per-strip "active group" pointer so
-    //! focus / keyboard input / presence broadcasts have a single
-    //! authoritative target. When the user closes the last tab of the
-    //! active group the widget tree latches a 180 ms fade before
-    //! pruning; the reconciler here advances the pointer to a
-    //! surviving sibling at fade-start so input doesn't dwell on a
-    //! corpse for the duration of the animation.
-    //!
-    //! Tests build a minimal `WorkspaceTree` via the same field
-    //! literals already used elsewhere in the file, then drive the
-    //! reconciler with the closing-group set the shell would harvest
-    //! from the widget tree (`g.id` filtered by `g.is_closing()`).
-    //! Calling the reconciler directly (rather than spinning up a
-    //! whole widget tree) keeps the test focused on the data-layer
-    //! contract — coupling the data layer to live widgets would
-    //! reintroduce the GPU dependency that quick-shell's other unit
-    //! tests deliberately avoid.
+    //! Tests drive it directly with a hand-built tree and the
+    //! closing-group set the shell would harvest from widgets, keeping
+    //! the data-layer contract free of the GPU dependency live widgets
+    //! would add.
 
     use super::*;
 
     /// Build a single-workspace, single-strip tree carrying `n` empty
-    /// window groups with monotonic ids `1..=n`. Groups have no tabs;
-    /// the tests only exercise the active-group pointer logic, not
-    /// rendering. Returns the strip id alongside the tree so callers
-    /// can drive the reconciler without re-walking the structure.
+    /// window groups with monotonic ids `1..=n`. Returns the strip id
+    /// alongside the tree so callers can drive the reconciler directly.
     fn tree_with_n_groups(n: u64) -> (WorkspaceTree, StripId, Vec<GroupId>) {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
@@ -8371,10 +6983,9 @@ mod active_group_tests {
 
     #[test]
     fn active_group_advances_when_active_group_starts_closing() {
-        // Two groups [A, B] with A active. When A starts closing the
-        // pointer must immediately advance to B — the surviving
-        // right-hand sibling — so focus / keyboard / presence stop
-        // targeting the fading-away group.
+        // Two groups [A, B] with A active. When A starts closing, the
+        // pointer must immediately advance to B so focus / keyboard /
+        // presence stop targeting the fading-away group.
         let (mut tree, strip_id, ids) = tree_with_n_groups(2);
         let (a, b) = (ids[0], ids[1]);
         tree.set_active_group(strip_id, a);
@@ -8392,12 +7003,8 @@ mod active_group_tests {
 
     #[test]
     fn active_group_advances_to_previous_when_last_group_starts_closing() {
-        // Two groups [A, B] with B active (i.e. B is the rightmost
-        // group and is the one closing). With no surviving sibling
-        // to the right, the reconciler falls back to A on the left.
-        // The chosen behaviour: prefer right-hand survivor first,
-        // then walk left. Documented here so the next reader doesn't
-        // assume a clamp-to-index-0 semantic.
+        // B (rightmost) is closing with no survivor to its right, so
+        // the reconciler falls back to A on the left.
         let (mut tree, strip_id, ids) = tree_with_n_groups(2);
         let (a, b) = (ids[0], ids[1]);
         tree.set_active_group(strip_id, b);
@@ -8410,11 +7017,9 @@ mod active_group_tests {
 
     #[test]
     fn active_group_doesnt_advance_when_non_active_group_closes() {
-        // Two groups [A, B] with A active. B closes — the pointer
-        // must stay on A. Idempotency: a stray reconcile pass when
-        // the active group itself isn't in the closing set is a
-        // no-op so the shell can call it freely from a per-tick
-        // loop.
+        // B closes while A is active — a stray reconcile pass on a
+        // group not itself closing is a no-op, so the shell can call
+        // it freely from a per-tick loop.
         let (mut tree, strip_id, ids) = tree_with_n_groups(2);
         let (a, b) = (ids[0], ids[1]);
         tree.set_active_group(strip_id, a);
@@ -8427,13 +7032,9 @@ mod active_group_tests {
 
     #[test]
     fn active_group_clears_when_every_group_is_closing() {
-        // Pathological case: every group in the strip is closing
-        // (e.g. the user nuked them in quick succession). The
-        // pointer can't land anywhere, so the entry is dropped —
-        // documented behaviour, not a clamp to a closing-group id.
-        // The shell's "no active group" state is the absence of an
-        // entry in `active_group`, which `active_group_for` already
-        // returns as `None`.
+        // Every group in the strip is closing — the pointer can't land
+        // anywhere, so the entry is dropped rather than clamped to a
+        // closing-group id.
         let (mut tree, strip_id, ids) = tree_with_n_groups(2);
         let (a, b) = (ids[0], ids[1]);
         tree.set_active_group(strip_id, a);
@@ -8447,9 +7048,8 @@ mod active_group_tests {
     #[test]
     fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
         // No call to `set_active_group` first. The reconciler must
-        // return `None` and not insert a phantom entry — otherwise a
-        // shell that never seeded the pointer would see one
-        // suddenly appear after the first close.
+        // return `None` and not insert a phantom entry after the
+        // first close.
         let (mut tree, strip_id, ids) = tree_with_n_groups(2);
         let (a, _b) = (ids[0], ids[1]);
         let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
@@ -8459,10 +7059,9 @@ mod active_group_tests {
 
     #[test]
     fn resolve_active_group_returns_recorded_when_not_closing() {
-        // Pure read path: with the recorded pointer not in the
-        // closing set, `resolve_active_group` must return it
-        // unchanged. Different from `nudge_*` in that it doesn't
-        // mutate the map.
+        // Pure read path: with the recorded pointer not in the closing
+        // set, `resolve_active_group` returns it unchanged and, unlike
+        // `nudge_*`, doesn't mutate the map.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
         let (a, b, c) = (ids[0], ids[1], ids[2]);
         tree.set_active_group(strip_id, b);
@@ -8474,10 +7073,9 @@ mod active_group_tests {
 
     #[test]
     fn resolve_active_group_walks_right_then_left() {
-        // Three groups [A, B, C] with B active and B closing. The
+        // Three groups [A, B, C] with B active and closing. The
         // reconciler must prefer C (right) over A (left) so focus
-        // moves "forward" through the strip rather than ping-ponging
-        // back to the start.
+        // moves "forward" rather than ping-ponging back to the start.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
         let (_a, b, c) = (ids[0], ids[1], ids[2]);
         tree.set_active_group(strip_id, b);
@@ -8489,12 +7087,7 @@ mod active_group_tests {
 
     #[test]
     fn legacy_json_without_active_group_field_still_deserializes() {
-        // Persisted trees written before this field existed must
-        // continue to load — `#[serde(default)]` keeps the upgrade
-        // path lossless. We write a minimal JSON payload omitting
-        // `active_group` and assert the field defaults to an empty
-        // map, mirroring the parallel test for `Collaborator`'s
-        // concept fields.
+        // `#[serde(default)]` keeps the upgrade path lossless.
         let legacy = r#"{
             "workspaces": [],
             "active": 0,
@@ -8525,8 +7118,8 @@ mod active_group_tests {
     #[test]
     fn legacy_json_without_maximized_field_defaults_to_false() {
         // `#[serde(default)]` covers persisted trees written before the
-        // `maximized` field existed (audit task #105). Stripped-down
-        // window-group payload omitting the field must load.
+        // `maximized` field existed. Stripped-down window-group payload
+        // omitting the field must load.
         let legacy = r#"{
             "id": 1,
             "tabs": [],
@@ -8549,11 +7142,8 @@ mod active_group_tests {
             .collect()
     }
 
-    /// Dragging a tab to a new slot inside its own window group must persist
-    /// into the tree (and be mirrored into the doc), or the reorder is
-    /// in-memory only and resets on the next shell restart — the same class of
-    /// gap that `pending_maximize_change` / `pending_width_change` exist to
-    /// close for maximize and width.
+    /// Dragging a tab to a new slot must persist into the tree and
+    /// mirror into the doc, or the reorder resets on the next restart.
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn reorder_tab_within_group_persists_and_mirrors_into_the_doc() {
@@ -8690,7 +7280,7 @@ mod active_group_tests {
 mod active_workspace_peer_count_tests {
     //! Coverage for [`active_workspace_peer_count`] — the shared helper
     //! that keeps the top-bar avatar stack and the wheel-disc active-card
-    //! collaborator-dot count in lock-step (audit `B-10`).
+    //! collaborator-dot count in lock-step.
 
     use super::*;
     use crate::shell::sidebar_wheel_chrome::SidebarWheelChrome;
@@ -8797,8 +7387,7 @@ mod capability_tests {
     #[test]
     fn app_kind_app_id_is_a_reverse_dns_id_not_the_display_label() {
         // The grant key must be a real app-id, in the same namespace as
-        // an adopted foreign client's `set_app_id` value — never the
-        // human-facing display label that `as_str()` returns.
+        // an adopted client's `set_app_id` — never the display label.
         assert_eq!(AppKind::FileExplorer.app_id(), "org.nirios.Files");
         assert_eq!(AppKind::Terminal.app_id(), "org.nirios.Terminal");
         assert_eq!(AppKind::Browser.app_id(), "org.nirios.Browser");
@@ -8826,9 +7415,8 @@ mod capability_tests {
 
     #[test]
     fn app_kind_app_id_trusts_reverse_dns_other_labels_verbatim() {
-        // An `Other` value that is already a reverse-DNS app-id (a real
-        // adopted client re-parked as `Other`) is used as-is, not
-        // double-prefixed.
+        // An `Other` value already in reverse-DNS form is used as-is,
+        // not double-prefixed.
         assert_eq!(
             AppKind::Other("org.gimp.GIMP".into()).app_id(),
             "org.gimp.GIMP"
@@ -8837,10 +7425,7 @@ mod capability_tests {
 
     #[test]
     fn grants_round_trip_via_serde_json() {
-        // Build a workspace with two grants for one app and round-trip
-        // through serde_json. Re-serialising the deserialised value
-        // must yield the same JSON shape — pinning the on-disk schema
-        // for portal-side consumers.
+        // Pins the on-disk schema for portal-side consumers.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.grant_app(
             "org.gnome.gedit",
@@ -8907,10 +7492,7 @@ mod capability_tests {
 
     #[test]
     fn legacy_workspace_without_grants_field_deserialises() {
-        // Persisted workspaces written before the `grants` field
-        // existed must continue to load — `#[serde(default)]` keeps
-        // the upgrade path lossless. Mirrors the parallel test for
-        // `WindowGroup::maximized` (audit task #105).
+        // `#[serde(default)]` keeps the upgrade path lossless.
         let legacy = r#"{
             "id": 1,
             "name": "Old",
@@ -8927,9 +7509,7 @@ mod capability_tests {
     #[test]
     fn all_capability_variants_round_trip_through_serde() {
         // Pin the wire shape of every variant so a downstream change
-        // (e.g. renaming a field on `Camera` or flipping `hosts` from
-        // `Option<Vec<_>>` to a sentinel) breaks loudly here rather
-        // than silently in the portal backend.
+        // breaks loudly here rather than silently in the portal backend.
         let caps = vec![
             Capability::Filesystem {
                 path: PathBuf::from("/tmp/ws"),
@@ -8955,9 +7535,8 @@ mod capability_tests {
 
     #[test]
     fn empty_workspace_has_empty_shared_surfaces_map() {
-        // Parallel guarantee to `grants` — both `Workspace::default()`
-        // and `Workspace::new(...)` seed an empty `shared_surfaces` map
-        // so reads don't have to special-case `None`.
+        // Parallel guarantee to `grants` — both constructors seed an
+        // empty map so reads don't special-case `None`.
         let ws = Workspace::default();
         assert!(ws.shared_surfaces.is_empty());
         let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
@@ -8966,10 +7545,6 @@ mod capability_tests {
 
     #[test]
     fn share_surface_records_peer_target() {
-        // `share_surface` is the entry point the compositor's share-UI
-        // calls once the user picks a peer for a foreign tab. The map
-        // values are `HashSet<u64>` so a surface can be shared with
-        // multiple peers.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         assert!(!ws.is_surface_shared(7));
         ws.share_surface(7, 42);
@@ -9017,9 +7592,9 @@ mod capability_tests {
 
     #[test]
     fn unshare_surface_returns_prior_peers_and_clears_entry() {
-        // Returning the prior peer set matters because the actor needs
-        // to fire one `StopShare` event scoped to each peer — looking
-        // them up again after the removal would be racy.
+        // Returning the prior peer set matters: the actor fires one
+        // `StopShare` per peer, and looking them up after removal
+        // would be racy.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.share_surface(7, 42);
         ws.share_surface(7, 99);
@@ -9053,9 +7628,8 @@ mod capability_tests {
 
     #[test]
     fn legacy_workspace_without_shared_surfaces_field_deserialises() {
-        // Persisted workspaces written before this field existed lack
-        // `shared_surfaces`; `#[serde(default)]` keeps the upgrade path
-        // lossless, mirroring the same guarantee for `grants`.
+        // Persisted workspaces before this field existed lack it;
+        // `#[serde(default)]` keeps the upgrade path lossless.
         let legacy = r#"{
             "id": 1,
             "name": "Old",
@@ -9070,21 +7644,13 @@ mod capability_tests {
 
 #[cfg(test)]
 mod next_id_seed_tests {
-    //! After loading a persisted tree whose ids climb past the static
-    //! counter, [`WorkspaceTree::seed_next_id_from_self`]
-    //! must advance the counter so subsequent [`WorkspaceId::new`]
-    //! allocations don't collide with persisted entries.
-    //!
-    //! The counter is process-wide so this test must observe a value
-    //! `>= max+1` rather than asserting an exact `max+1` (other tests
-    //! in the same binary may have already pushed it further).
+    //! [`WorkspaceTree::seed_next_id_from_self`] must advance the
+    //! counter past a loaded tree's highest id. The counter is
+    //! process-wide, so tests observe `>= max+1`, not an exact value.
     use super::*;
 
-    /// Restore the process-wide peer salt to `0` at scope-exit so a
-    /// test that flips the salt doesn't leak the new value into other
-    /// tests sharing the same binary (`cargo test` runs them in the
-    /// same process). RAII: storing the previous salt in a struct + a
-    /// `Drop` impl makes the restore unconditional even on panic.
+    /// Restores the process-wide peer salt at scope-exit, unconditionally
+    /// (RAII), so a test that flips it doesn't leak into others.
     struct SaltGuard(u16);
     impl SaltGuard {
         fn new() -> Self {
@@ -9101,12 +7667,7 @@ mod next_id_seed_tests {
     #[serial_test::serial(next_id_statics)]
     fn next_id_seeds_above_max_used_id_on_load() {
         let _guard = SaltGuard::new();
-        // The default tree path runs with salt=0 (back-compat); the
-        // existing assertion still holds in that range.
         NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
-        // Build a tree whose ids include a deliberately-high value
-        // (50). A fresh process counter starts at 1; without seeding,
-        // the next allocation would be `2` and collide with id 1.
         let mut tree = WorkspaceTree::default();
         tree.workspaces
             .push(Workspace::new(WorkspaceId::from(1), "First"));
@@ -9127,10 +7688,8 @@ mod next_id_seed_tests {
         );
     }
 
-    /// C-1: a salt of `0` (the default) reproduces the exact id shape
-    /// every existing test asserts on. Without this, the C-1 patch
-    /// would silently break every fixture that expects `WorkspaceId(1)`
-    /// to round-trip through serde.
+    /// A salt of `0` reproduces the exact id shape every fixture that
+    /// expects `WorkspaceId(1)` to round-trip depends on.
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn peer_salt_zero_default_keeps_old_ids() {
@@ -9150,9 +7709,8 @@ mod next_id_seed_tests {
         assert_eq!(counter_of(id), 1);
     }
 
-    /// C-1: after `set_peer_salt(0xABCD)` the top 16 bits of every
-    /// freshly-minted id must equal `0xABCD`. Sanity check on the
-    /// bit-packing.
+    /// After `set_peer_salt(0xABCD)`, the top 16 bits of every minted
+    /// id must equal `0xABCD` — sanity check on the bit-packing.
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn peer_salt_high_bits_are_the_salt() {
@@ -9177,29 +7735,16 @@ mod next_id_seed_tests {
         assert_eq!(counter_of(id), 1);
     }
 
-    /// C-1 (the headline scenario from
-    /// `docs/superpowers/audits/2026-05-22-nirios-fresh-bugs.md`):
-    /// two peers run independent `next_id` counters in parallel. With
-    /// distinct peer salts, their ids live in disjoint high-bit ranges
-    /// so CRDT sync surfaces both workspaces side-by-side instead of
-    /// folding them into a single row.
-    ///
-    /// To isolate the salt's contribution from an unrelated bug (two
-    /// peers concurrently `put_object`'ing the `workspaces` list at
-    /// ROOT — separately tracked, not in C-1's scope), we share a
-    /// common base doc between the two peers before each appends. Then
-    /// the only thing left to differ between the two `append` calls is
-    /// the id their respective `next_id` counter mints.
+    /// Two peers run independent `next_id` counters in parallel; with
+    /// distinct salts, their ids live in disjoint ranges so CRDT sync
+    /// surfaces both workspaces instead of folding them into one row.
+    /// They share a base doc before appending, so only the minted id
+    /// differs between the two `append` calls.
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn two_peers_with_independent_next_id_collide_under_sync() {
         let _guard = SaltGuard::new();
 
-        // Establish a shared base doc: peer A creates the workspaces
-        // list, peer B applies that change. After this, both peers
-        // share the same `workspaces` list object id at ROOT —
-        // subsequent appends become concurrent edits to the *same*
-        // list, not concurrent creates of separate lists.
         NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
         NEXT_ID.store(1, AtomicOrdering::Relaxed);
         let mut tree_a = WorkspaceTree::default();
@@ -9242,9 +7787,9 @@ mod next_id_seed_tests {
         tree_a.apply_changes(&changes_b).expect("apply B→A");
 
         // Both peers must observe BOTH workspaces — no collision-fold.
-        // Pre-patch, the shared id `1` would cause `rebuild_cache_from_doc`
-        // to merge the two distinct rows into one (strips collide,
-        // names overwrite, grants merge per the audit).
+        // A shared id would cause `rebuild_cache_from_doc` to merge the
+        // two distinct rows into one (strips collide, names overwrite,
+        // grants merge).
         for (label, tree) in [("A", &tree_a), ("B", &tree_b)] {
             let has_a = tree.workspaces.iter().any(|w| w.id == id_a);
             let has_b = tree.workspaces.iter().any(|w| w.id == id_b);
@@ -9260,11 +7805,9 @@ mod next_id_seed_tests {
         }
     }
 
-    /// C-1 follow-up on `seed_next_id_from_self`: the counter advances
-    /// based ONLY on ids minted under the local salt. Ids minted by a
-    /// remote peer (different salt) live in a disjoint range and must
-    /// not drag the local counter forward — that would burn legitimate
-    /// local slots for no reason.
+    /// `seed_next_id_from_self`: the counter advances based ONLY on ids
+    /// minted under the local salt — a remote peer's ids live in a
+    /// disjoint range and must not drag it forward.
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn seed_next_id_from_self_respects_peer_salt() {
@@ -9298,13 +7841,9 @@ mod next_id_seed_tests {
     }
 }
 
-/// An agent is admitted to a room the same way anybody is — by the room
-/// recording a capability naming it — and that capability is the only
-/// thing that puts it in the room.
-///
-/// These assert on the production readers, because the failure worth
-/// catching is not "the vector has an element": it is a roster that
-/// shows somebody who was never admitted, or hides somebody who was.
+/// An agent is admitted to a room the same way anybody is — by a
+/// capability naming it. Asserts on the production readers, because the
+/// failure worth catching is a roster showing or hiding the wrong people.
 #[cfg(test)]
 mod agent_membership {
     use super::*;
@@ -9488,14 +8027,10 @@ mod peer_window_merge_tests {
         }
     }
 
-    /// The binding survives the peer's next projection.
-    ///
-    /// Once this machine has started its own instance and bound it into
-    /// the tab, the tile names *our* surface while the peer keeps
-    /// re-projecting theirs. A merge that took theirs each round would
-    /// take the window away again a fraction of a second after it
-    /// appeared, on every sync interval, forever — which is the shape a
-    /// naive "the document wins" merge produces.
+    /// The binding survives the peer's next projection: once bound, the
+    /// tile names *our* surface while the peer keeps re-projecting
+    /// theirs, so a naive "the document wins" merge would take the
+    /// window away again every sync interval, forever.
     #[test]
     fn a_local_instance_is_not_clobbered_by_the_peers_own_surface() {
         let local = group_with(Tab {

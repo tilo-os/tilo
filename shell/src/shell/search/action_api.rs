@@ -1,31 +1,15 @@
 //! Headless action API — a programmatic, render-free facade over the
-//! [`SearchRegistry`].
+//! [`SearchRegistry`], for an automation client that drives the same
+//! [`crate::shell::search::SearchProvider`]s the palette does, with no
+//! window and no scene: [`ActionCatalog::enumerate`] (no callback exposed,
+//! so surveying can't accidentally do anything), [`ActionCatalog::select`]
+//! (resolve a [`ResourceRef`] to the live result), and
+//! [`SelectedAction::invoke`] (run the provider's side-effect).
 //!
-//! The Ctrl+K palette renders results as rows and fires a callback on
-//! Enter. This module is the other consumer of the same
-//! [`crate::shell::search::SearchProvider`]s — an automation client (an
-//! LLM navigator, an integration test, a script) that drives them with
-//! **no window and no scene**, via three explicit steps:
-//!
-//! 1. [`ActionCatalog::enumerate`] — what can I do, given the focused
-//!    app? No callback is exposed, so surveying never accidentally *does*
-//!    anything.
-//! 2. [`ActionCatalog::select`] — resolve a [`ResourceRef`] back to the
-//!    live result, or `None` if it isn't in this snapshot or the caller
-//!    isn't allowed to see it.
-//! 3. [`SelectedAction::invoke`] — run the provider's side-effect; the
-//!    same callback the palette would fire on Enter.
-//!
-//! [`ActionCatalog::build`] takes an [`ActionVisibility`] gate, applied at
-//! build time so a hidden resource is invisible to *both* `enumerate` and
-//! `select` — you cannot invoke what you were never shown. Full role/
-//! capability enforcement lives in the permission subsystem; this is the
-//! seam a restricted navigator plugs into.
-//!
-//! An action may declare typed [`ActionParam`]s; [`ActionArgs::bind`]
-//! checks supplied arguments against them before anything runs, so a
-//! caller that cannot see the screen knows what to pass without
-//! guessing, and a bad call is a refusal rather than a partial mutation.
+//! [`ActionCatalog::build`] takes an [`ActionVisibility`] gate, so a hidden
+//! resource is invisible to both `enumerate` and `select`. Typed
+//! [`ActionParam`]s are checked by [`ActionArgs::bind`] before anything
+//! runs, so a bad call is a refusal rather than a partial mutation.
 
 use std::collections::BTreeMap;
 
@@ -35,8 +19,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
 use super::{ResourceKind, SearchRegistry, SearchResult};
 
-/// The type of one action parameter. Deliberately small: these are
-/// values a caller with no screen can produce from a descriptor alone.
+/// The type of one action parameter — deliberately small.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamType {
     Text,
@@ -61,8 +44,7 @@ pub struct ActionParam {
     pub name: &'static str,
     pub ty: ParamType,
     /// Whether an invocation must supply it. An optional parameter's
-    /// default belongs to the action, and is stated in `description` —
-    /// the catalogue does not invent one.
+    /// default belongs to the action and is stated in `description`.
     pub required: bool,
     pub description: &'static str,
 }
@@ -106,9 +88,6 @@ impl ArgValue {
 }
 
 /// Why a set of arguments does not satisfy an action's parameters.
-///
-/// Each variant names the parameter, because a caller that cannot see
-/// the screen has nothing else to correct against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArgError {
     Missing {
@@ -150,17 +129,14 @@ impl std::fmt::Display for ArgError {
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionError {
-    /// The arguments did not satisfy the declared parameters. Nothing
-    /// ran; the document is untouched.
+    /// The arguments did not satisfy the declared parameters; nothing ran.
     Arguments(ArgError),
-    /// The address and the arguments were both good, but the action
-    /// could not do its job — there was nothing to act on.
+    /// Address and arguments were both good, but there was nothing to act on.
     Refused(String),
 }
 
 impl ActionError {
-    /// Stable machine-readable code, so a caller can tell "I addressed
-    /// this wrongly" from "there was nothing here to do".
+    /// Lets a caller tell "I addressed this wrongly" from "nothing here to do".
     pub fn code(&self) -> &'static str {
         match self {
             ActionError::Arguments(_) => "invalid_arguments",
@@ -178,14 +154,9 @@ impl std::fmt::Display for ActionError {
     }
 }
 
-/// Arguments for one invocation, already checked against the action's
-/// declared parameters.
-///
-/// There is no way to build one except through [`ActionArgs::bind`] or
-/// [`ActionArgs::none`], so an action's body never has to re-validate:
-/// if it holds an `ActionArgs`, every required parameter is present and
-/// every value has the declared type. That is what keeps a bad call
-/// from becoming a half-applied edit.
+/// Arguments for one invocation, already checked. Buildable only through
+/// [`ActionArgs::bind`]/[`ActionArgs::none`], so holding one means every
+/// required parameter is present and typed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActionArgs {
     values: BTreeMap<String, ArgValue>,
@@ -197,11 +168,9 @@ impl ActionArgs {
         Self::default()
     }
 
-    /// Check `supplied` against `params` and bind it.
-    ///
-    /// Fails on the first problem rather than accumulating: the caller
-    /// has to fix them one at a time anyway, and a partial bind must
-    /// never reach an action.
+    /// Check `supplied` against `params` and bind it. Fails on the first
+    /// problem rather than accumulating — a partial bind must never reach
+    /// an action.
     pub fn bind(
         params: &[ActionParam],
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -209,10 +178,8 @@ impl ActionArgs {
         let mut values: BTreeMap<String, ArgValue> = BTreeMap::new();
         for (name, value) in supplied {
             let Some(param) = params.iter().find(|p| p.name == name) else {
-                // An unknown argument is refused rather than dropped. A
-                // silently ignored argument is the failure mode this
-                // whole surface exists to remove: the caller believes it
-                // asked for something it did not get.
+                // Refused rather than silently dropped, or the caller
+                // believes it asked for something it did not get.
                 return Err(ArgError::Unknown { name });
             };
             if value.ty() != param.ty {
@@ -265,19 +232,14 @@ impl ActionArgs {
 }
 
 /// Stable, typed address of one exported action or resource: the
-/// `(provider, id)` pair every [`SearchResult`] already carries.
-///
-/// Unlike a rendered palette row (which is positional and vanishes when
-/// the query changes), a `ResourceRef` is durable — it keeps addressing
-/// the same thing for as long as the owning provider keeps emitting that
-/// id. This is what makes the API navigable by something that can't see
-/// the screen.
+/// `(provider, id)` pair every [`SearchResult`] already carries. Unlike a
+/// rendered palette row (positional, vanishes when the query changes), it
+/// keeps addressing the same thing for as long as the provider emits that id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceRef {
     /// The [`SearchProvider::id`](super::SearchProvider::id) that owns it.
     pub provider: String,
-    /// The provider-local stable id (`settings.open`, a note's object id,
-    /// an absolute file path, …).
+    /// The provider-local stable id (`settings.open`, a note's object id, …).
     pub id: String,
 }
 
@@ -290,47 +252,26 @@ impl ResourceRef {
     }
 }
 
-/// A typed, render-free descriptor of one thing the focused app (or the
-/// shell chrome) exports.
-///
-/// Deliberately carries **no** invoke callback — enumeration answers
-/// "what is available", and invoking is a separate, explicit step routed
-/// through [`ActionCatalog::select`]. That keeps a read-only survey
-/// (which an LLM navigator does constantly) free of any risk of
-/// triggering a side-effect.
+/// A typed, render-free descriptor of one exported thing. Carries **no**
+/// invoke callback — invoking is a separate step through
+/// [`ActionCatalog::select`], so a survey is side-effect free.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: ResourceRef,
     pub kind: ResourceKind,
     pub title: String,
     pub subtitle: Option<String>,
-    /// Provider-supplied rank within its kind. Higher sorts first; the
-    /// catalog preserves the registry's merge order so a caller that
-    /// just wants "the best match" can take the first entry of a kind.
+    /// Provider-supplied rank within its kind, higher first.
     pub score: i32,
-    /// What an invocation of this action must carry. Empty for the
-    /// nullary majority.
-    ///
-    /// Part of the descriptor rather than something a caller discovers
-    /// by trying: enumeration is the only thing a caller that cannot see
-    /// the screen has to work from, so an action whose parameters were
-    /// not advertised would be un-invokable except by guesswork. It
-    /// stays inert data — a parameter list is not a handle, so this adds
-    /// nothing fireable to an enumeration result.
+    /// What an invocation must carry, empty for the nullary majority.
     pub params: Vec<ActionParam>,
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
-///
-/// This is intentionally minimal — it does not know about roles or ops.
-/// The permission subsystem ([`ui::permissions`]) owns the real policy;
-/// a caller wires that in by implementing this trait (or passing a
-/// closure) that consults a `PermissionContext`. Leaving the seam here
-/// means the headless API is permission-aware by construction even
-/// before full enforcement lands.
+/// The permission subsystem ([`ui::permissions`]) owns the real policy; a
+/// caller wires it in against a `PermissionContext`.
 pub trait ActionVisibility {
-    /// Return `true` if the caller is allowed to see (and therefore
-    /// select + invoke) the resource of `kind` addressed by `resource`.
+    /// `true` if the caller may see (and so select + invoke) this resource.
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool;
 }
 
@@ -345,9 +286,8 @@ where
     }
 }
 
-/// The permissive default — every resource is visible. Use this when the
-/// caller is trusted (local single-user, or a test) and the permission
-/// layer isn't gating enumeration yet.
+/// The permissive default — every resource is visible. Use when the caller
+/// is trusted (local single-user, or a test).
 pub struct AllVisible;
 
 impl ActionVisibility for AllVisible {
@@ -356,33 +296,20 @@ impl ActionVisibility for AllVisible {
     }
 }
 
-/// A headless snapshot of the actions exported for one query.
-///
-/// Holds the live [`SearchResult`]s (which own the invoke callbacks) so
-/// that `enumerate`, `select`, and `invoke` all operate over the exact
-/// same enumeration the caller inspected — no re-query race between
-/// "what can I do" and "do it".
+/// A headless snapshot of the actions exported for one query — `enumerate`,
+/// `select`, and `invoke` all operate over the same live results.
 pub struct ActionCatalog {
     /// All results the registry returned, in merge order.
     results: Vec<SearchResult>,
-    /// Indices into `results` that passed the visibility gate. Every
-    /// public accessor works through this so a denied resource is
-    /// uniformly absent from enumeration *and* selection.
+    /// Indices into `results` that passed the visibility gate; every public
+    /// accessor works through this.
     visible: Vec<usize>,
 }
 
 impl ActionCatalog {
-    /// Build a catalog by fanning `query` out to `registry` under
-    /// `scope`, then applying `visibility`.
-    ///
-    /// This is the same [`SearchRegistry::query`] the palette calls — the
-    /// action path and the presentation path share one substrate. Pass
-    /// `SearchScope::ActiveApp` with the focused tab's provider id
-    /// (`active_provider_id`) to enumerate only what the *focused app*
-    /// exports; pass `SearchScope::All` / `None` to survey everything.
-    ///
-    /// An empty `query` returns every provider's default set (score 0),
-    /// so a caller can list the full surface without guessing a needle.
+    /// Fan `query` out to `registry` under `scope`, then apply `visibility`.
+    /// An empty `query` returns every provider's default set (score 0), so
+    /// a caller can list the full surface without guessing a needle.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         registry: &SearchRegistry,
@@ -394,8 +321,7 @@ impl ActionCatalog {
         doc_root: &ObjId,
         visibility: &dyn ActionVisibility,
     ) -> Self {
-        // Empty `wanted_kinds` ⇒ "any kind"; the action API never filters
-        // by chip, it surveys the whole exported surface.
+        // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
         let results = registry.query(query, scope, active_provider_id, &[], chrome, doc, doc_root);
         let visible = results
             .iter()
@@ -430,9 +356,8 @@ impl ActionCatalog {
         self.visible.len()
     }
 
-    /// Whether the caller can see nothing (empty query with no providers,
-    /// or everything gated out). Empty stays empty — the API never
-    /// fabricates a placeholder row.
+    /// Whether the caller can see nothing. Empty stays empty — the API
+    /// never fabricates a placeholder row.
     pub fn is_empty(&self) -> bool {
         self.visible.is_empty()
     }
@@ -442,9 +367,8 @@ impl ActionCatalog {
         self.select(resource).is_some()
     }
 
-    /// Resolve a [`ResourceRef`] back to the live action so it can be
-    /// invoked. `None` when the id isn't in this snapshot *or* the
-    /// visibility gate hid it — you cannot select what you can't see.
+    /// Resolve a [`ResourceRef`] to the live action. `None` when the id
+    /// isn't in this snapshot or the visibility gate hid it.
     pub fn select(&self, resource: &ResourceRef) -> Option<SelectedAction<'_>> {
         self.visible
             .iter()
@@ -454,10 +378,8 @@ impl ActionCatalog {
     }
 }
 
-/// A resolved action, ready to invoke. A distinct type so "I picked X"
-/// and "run X" are separate, auditable steps — a caller can inspect
-/// [`SelectedAction::kind`] / [`SelectedAction::title`] before committing
-/// to the side-effect.
+/// A resolved action, ready to invoke — a distinct type so "I picked X" and
+/// "run X" are separate, auditable steps.
 pub struct SelectedAction<'a> {
     result: &'a SearchResult,
 }
@@ -483,18 +405,8 @@ impl SelectedAction<'_> {
         &self.result.params
     }
 
-    /// Invoke the action headlessly: run the provider's side-effect
-    /// against the live CRDT (`doc`) and `chrome`.
-    ///
-    /// This is the same callback the palette fires on Enter — the whole
-    /// contract of the action API is that it reaches this side-effect
-    /// **without** ever constructing a scene, a window, or a widget
-    /// tree. Whatever the provider mutates (a chrome overlay flag, a
-    /// CRDT splice, a tab activation) is observable immediately.
-    ///
-    /// `args` is bound against the declared parameters **before**
-    /// anything runs, so a call that does not satisfy them is refused
-    /// with the document untouched rather than half-applied.
+    /// Run the provider's side-effect, the same callback the palette fires
+    /// on Enter. A failed bind is refused with the document untouched.
     pub fn invoke(
         &self,
         doc: &mut AutoCommit,
@@ -507,13 +419,8 @@ impl SelectedAction<'_> {
         (self.result.on_open)(doc, root, chrome, &bound)
     }
 
-    /// Invoke an action that declares no parameters.
-    ///
-    /// Sugar over [`Self::invoke`] with an empty argument set, kept
-    /// because most of the surface is nullary and spelling that out at
-    /// every call site would bury the one case that is not. An action
-    /// that *does* require a parameter still refuses here — this is a
-    /// shorter way to pass nothing, not a way to skip the check.
+    /// Sugar over [`Self::invoke`] with an empty argument set — a shorter
+    /// way to pass nothing, not a way to skip the check.
     pub fn invoke_nullary(
         &self,
         doc: &mut AutoCommit,
@@ -545,8 +452,7 @@ mod tests {
     }
 
     /// The headline covenant: enumerate → select by id → invoke, entirely
-    /// headless (no GPU, no scene, no widget), and the invocation mutates
-    /// real chrome state through the production `ActionsProvider` path.
+    /// headless, mutating real chrome state through the production path.
     #[test]
     fn enumerate_select_invoke_mutates_state_with_no_rendering() {
         let reg = registry_with_actions();
@@ -554,7 +460,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
-        // 1. ENUMERATE — survey what the shell exports. No side-effect.
+        // ENUMERATE — survey what the shell exports. No side-effect.
         let catalog = ActionCatalog::build(
             &reg,
             "settings",
@@ -578,33 +484,30 @@ mod tests {
         assert_eq!(listed.kind, ResourceKind::Action, "descriptors are typed");
         assert_eq!(listed.title, "Open workspace settings");
 
-        // 2. SELECT — resolve the id to a live, invokable handle.
+        // SELECT — resolve the id to a live, invokable handle.
         let selected = catalog
             .select(&target)
             .expect("a listed resource is addressable by its ResourceRef");
         assert_eq!(selected.kind(), &ResourceKind::Action);
         assert_eq!(selected.resource(), target);
 
-        // Precondition: the overlay the action toggles is off.
         assert!(
             !chrome.borrow().overlays.ws_settings,
             "workspace-settings overlay starts closed"
         );
 
-        // 3. INVOKE — run the side-effect. No scene is ever constructed.
+        // INVOKE — run the side-effect. No scene is ever constructed.
         selected
             .invoke_nullary(&mut doc, &root, &chrome)
             .expect("a nullary action invoked with no arguments must run");
 
-        // The production provider's callback flipped real chrome state.
         assert!(
             chrome.borrow().overlays.ws_settings,
             "invoking the exported action mutated chrome state, entirely headless"
         );
     }
 
-    /// The permission seam gates enumeration *and* selection uniformly —
-    /// a hidden resource can neither be listed nor invoked.
+    /// The permission seam gates enumeration and selection uniformly.
     #[test]
     fn visibility_gate_hides_resources_from_enumerate_and_select() {
         let mut reg = registry_with_actions();
@@ -641,8 +544,7 @@ mod tests {
         );
     }
 
-    /// `ActiveApp` scope narrows the survey to the focused app's provider,
-    /// so an LLM navigator "enumerates what the focused app exports".
+    /// `ActiveApp` scope narrows the survey to the focused app's provider.
     #[test]
     fn active_app_scope_narrows_to_the_focused_provider() {
         let mut reg = registry_with_actions();
@@ -712,10 +614,8 @@ mod tests {
         );
     }
 
-    /// An argument the action never declared is refused rather than
-    /// dropped. A dropped argument answers `ok` to a caller that asked
-    /// for something it did not get — which, for a caller that cannot
-    /// see the screen, is indistinguishable from success.
+    /// A dropped argument would answer `ok` to a caller that asked for
+    /// something it did not get.
     #[test]
     fn an_undeclared_argument_is_refused() {
         assert_eq!(
@@ -745,10 +645,8 @@ mod tests {
         );
     }
 
-    /// A parameterised action refuses an empty invocation *before*
-    /// running, so a bad call cannot leave a half-applied edit behind.
-    /// Asserted through `SelectedAction::invoke`, which is the path the
-    /// socket takes, rather than against `bind` alone.
+    /// Refuses an empty invocation *before* running, so a bad call cannot
+    /// leave a half-applied edit. Asserted through `invoke`, not `bind` alone.
     #[test]
     fn invoking_without_required_arguments_never_reaches_the_action() {
         use std::cell::Cell;
@@ -775,8 +673,7 @@ mod tests {
             &AllVisible,
         );
 
-        // Enumeration advertises the parameter, which is the only way a
-        // caller that cannot see the screen learns to pass it.
+        // Enumeration is the only way a headless caller learns to pass it.
         let listed = catalog.enumerate();
         let entry = listed
             .iter()
@@ -847,9 +744,8 @@ mod tests {
         }
     }
 
-    /// Every existing action declares no parameters, so the nullary call
-    /// stays exactly what it was. This is the compatibility claim: the
-    /// parameter machinery must not make a caller pass anything new.
+    /// The parameter machinery must not make an existing nullary caller
+    /// pass anything new.
     #[test]
     fn a_nullary_action_still_invokes_with_no_arguments() {
         let reg = registry_with_actions();

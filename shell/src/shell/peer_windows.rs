@@ -2,24 +2,20 @@
 //!
 //! This OS replicates *documents*, not screens: a room carries state and
 //! every member runs their own app against it. So a
-//! [`TileContent::PeerWindow`] tab arriving in the room document is not a
-//! request to show a remote window — it is news that the room has one
-//! open, and the honest local answer is to open one too.
+//! [`TileContent::PeerWindow`] tab arriving in the room document is news
+//! that the room has one open, and the honest local answer is to open
+//! one too.
 //!
-//! The tab carries only the app id and the peer's own name for it
-//! (`WorkspaceTree::project_owned_contents` writes a tab's *existence*,
-//! never who has it open); the app's own state travels separately, per
-//! record, over the collaboration broker's channels. Starting a local
+//! The tab carries only the app id and the peer's name for it; app state
+//! travels separately, over the broker's channels. Starting a local
 //! instance answers to the capability model like any launch: [`admits`]
-//! checks the room's **owner** for `Write` on `ResourceRef::App(id)`, and
-//! the launch goes through [`crate::shell::launcher`] with the room's own
-//! grants — no wider sandbox than a launch from the palette gets.
+//! checks the room's **owner** for `Write` on `ResourceRef::App(id)`,
+//! and the launch goes through [`crate::shell::launcher`] with the
+//! room's own grants.
 //!
-//! The launch binds into the existing tab ([`Placement::IntoTab`]) rather
-//! than minting a new one beside it, and cannot echo back into the room
-//! (the projection writes only tabs this machine owns). `PeerWindow::note`
-//! both labels the card and records that a decision was made, so a
-//! refusal or a launch is not re-run on every sync round.
+//! The launch binds into the existing tab ([`Placement::IntoTab`]).
+//! `PeerWindow::note` both labels the card and records that a decision
+//! was made, so a refusal or a launch is not re-run on every sync round.
 
 use crate::compositor::tab_binding::Placement;
 use crate::shell::launcher;
@@ -41,15 +37,11 @@ struct Pending {
 
 /// Examine every peer window this machine has not yet answered for, and
 /// start a local instance of each one it may. Returns whether anything
-/// was decided, so the caller can repaint only when a card's text changed
-/// or a window is on its way.
+/// was decided, so the caller can repaint only when needed.
 ///
 /// At most one launch per app id per call: the launcher correlates a
-/// launch with the window it produces by app id and keeps one note per
-/// package, so two in flight at once would have the second note displace
-/// the first. Tabs left unexamined keep their empty note and are picked
-/// up on the next call — which is why the caller re-runs while
-/// [`any_pending`] holds rather than once per sync round.
+/// launch with its window by app id, so two in flight would have the
+/// second displace the first.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let todo = pending(tree);
     if todo.is_empty() {
@@ -108,24 +100,16 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     out
 }
 
-/// Start a local instance of `item`'s app in `ws`'s room, bound to
-/// `item`'s tab.
-///
-/// `Err` carries the sentence to put on the card — what is actually the
-/// case, never a promise. An app that is not here is not "coming soon";
-/// it is not installed, and saying so is the difference between a user who
-/// knows what to do next and one who waits.
+/// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
+/// carries the sentence to put on the card — what is actually the case,
+/// never a promise ("not installed", not "coming soon").
 fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
     admits(ws, &item.app_id)?;
-    // Whatever a launch from the palette does around the launch has to
-    // happen here too — the file manager's home grant is the one that
-    // bites: without it the window opens on its own sandbox directory and
-    // finds only dotfiles. After `admits`, so nothing is granted for a
-    // launch the room has just refused.
+    // After `admits`, so nothing is granted for a launch the room refused.
     crate::shell::search::providers::applications::grant_file_manager_home(
         tree,
         ws_id,
@@ -134,13 +118,8 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
-    // The note goes down before the launch: the app can announce its
-    // toplevel the moment it starts, and a note written afterwards would
-    // be a race the window can win.
+    // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
-    // The room's capabilities are published first, exactly as a launch
-    // from the palette does — so this instance runs with the room's
-    // grants and no others.
     match launcher::launch_in_workspace(&item.app_id, ws) {
         Ok(_) => Ok(()),
         Err(err) => {
@@ -158,10 +137,8 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     }
 }
 
-/// Whether `ws`'s room authorises starting `app_id` here.
-///
-/// See the module docs for why this is asked of the room's owner and with
-/// this verb. `Err` carries the sentence for the card.
+/// Whether `ws`'s room authorises starting `app_id` here. See the module
+/// docs for why this is asked of the room's owner and with this verb.
 fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
     let Some(owner) = ws.owner.clone() else {
         return Err("This room has not said who governs it".to_string());
@@ -196,23 +173,15 @@ fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
     false
 }
 
-/// Where this machine already has the room's copy of `app_id` on screen in
-/// `ws`, if it does. Returns the coordinates
-/// [`crate::shell::chrome_state::ChromeState::focus_tab`] wants.
+/// Where this machine already has the room's copy of `app_id` on screen
+/// in `ws`, if it does. Without this, opening an app that already has a
+/// peer-started instance gets a second process, and propagates into the
+/// room so every member's [`examine`] starts one too.
 ///
-/// Without this, a person who already has a peer-started instance of an
-/// app open (via [`examine`]) and then opens the same app themselves from
-/// the palette gets a second process and a second group showing the same
-/// document — and because the new tab is one this machine owns, it
-/// projects into the room and every other member's [`examine`] starts an
-/// instance of it too, one apiece. A launch that finds this returns to
-/// the existing window instead.
-///
-/// Only counts a tab this machine does *not* own — two windows the user
-/// opened themselves (e.g. two terminals) are two windows they asked for,
-/// not this collapse. A tab still showing a card counts too, as long as
-/// it has been answered for (`note` non-empty): the instance is starting,
-/// and a launch during that window would race it into the same pair.
+/// Only counts a tab this machine does *not* own — two terminals the
+/// user opened themselves are two windows they asked for. A tab still
+/// showing a card counts too, as long as it's been answered for (`note`
+/// non-empty).
 pub fn opened_for_the_room(
     ws: &Workspace,
     app_id: &str,
@@ -258,12 +227,10 @@ mod tests {
 
     const FILES: &str = "dev.qos.file-explorer";
 
-    /// A workspace holding one peer window, nobody has answered for yet.
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
         tree_with_peer_window_for(ws, APP)
     }
 
-    /// [`tree_with_peer_window`] for a named app.
     fn tree_with_peer_window_for(ws: Workspace, app: &str) -> (WorkspaceTree, u64) {
         let mut ws = ws;
         let tab = Tab {
@@ -295,9 +262,8 @@ mod tests {
         (tree, tab_id)
     }
 
-    /// An id carrying a salt that is not this process's, so tabs built
-    /// with it look like a peer's the way replication decides it —
-    /// `peer_salt_of(id) != local_salt`.
+    /// An id carrying a salt that isn't this process's, so tabs built
+    /// with it look like a peer's.
     fn peer_id() -> u64 {
         const SOMEBODY_ELSE: u64 = 0xBEEF;
         (SOMEBODY_ELSE << crate::shell::state::PEER_ID_SALT_SHIFT) | (next_id() & 0xFFFF)
@@ -311,15 +277,6 @@ mod tests {
         )
     }
 
-    /// A file manager started because a peer had one open can see the
-    /// user's home, exactly as one opened from the palette can.
-    ///
-    /// Every app is given one directory of its own and nothing else it was
-    /// not granted; without this grant the file manager opens on a folder
-    /// holding nothing but its own dotfiles and accurately reports it as
-    /// empty. Asserted through `examine` — the path a peer's window
-    /// actually takes — and against `Workspace::allows`, the same call the
-    /// sandbox's own capability resolution bottoms out in.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
@@ -342,8 +299,6 @@ mod tests {
         );
     }
 
-    /// The grant is for the file manager and nothing else. It names one
-    /// package id rather than a rule any package could satisfy.
     #[test]
     #[serial_test::serial(process_env)]
     fn opening_another_app_for_the_room_grants_it_no_home() {
@@ -358,7 +313,6 @@ mod tests {
         );
     }
 
-    /// Nothing is granted for a launch the room has just refused.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_refused_file_manager_is_granted_nothing() {
@@ -375,8 +329,6 @@ mod tests {
         );
     }
 
-    /// The window a peer's tab is already hosting here is found, so a
-    /// launch can return to it instead of starting a second copy.
     #[test]
     fn a_window_this_machine_opened_for_the_room_is_found() {
         let mut ws = room_owned_by("ada");
@@ -413,9 +365,6 @@ mod tests {
         );
     }
 
-    /// Two windows of one app that the user opened *themselves* are two
-    /// windows they asked for. Only this machine's own second copy for
-    /// one room is collapsed, so the tab has to be a peer's.
     #[test]
     fn a_window_this_person_opened_is_not_one_to_return_to() {
         let mut ws = room_owned_by("ada");
@@ -447,8 +396,6 @@ mod tests {
         );
     }
 
-    /// A card nobody has answered for yet is not a window. Nothing is
-    /// running behind it, so a launch has to proceed.
     #[test]
     fn an_unanswered_card_is_not_a_window_to_return_to() {
         let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
@@ -458,20 +405,15 @@ mod tests {
         );
     }
 
-    /// The ordinary case: a room whose owner has arrived with the rest of
-    /// its governance authorises its apps, so a peer's window is one this
-    /// machine may open for itself.
     #[test]
     fn a_room_with_an_owner_admits_its_apps() {
         let ws = room_owned_by("ada");
         assert_eq!(admits(&ws, APP), Ok(()));
     }
 
-    /// Fail-closed on the thing that actually gates: with nobody recorded
-    /// as governing the room there is no principal whose authority the
-    /// launch could descend from, so nothing starts. This is the state a
-    /// room is in before its governance has replicated, which is exactly
-    /// when a machine must not be starting processes on a peer's say-so.
+    /// Fail-closed: this is the state a room is in before its governance
+    /// has replicated, exactly when a machine must not start processes
+    /// on a peer's say-so.
     #[test]
     fn a_room_with_no_owner_admits_nothing() {
         let mut ws = room_owned_by("ada");
@@ -483,11 +425,9 @@ mod tests {
         );
     }
 
-    /// A restriction in the room's own capability list stops the app being
-    /// started here — the property that makes this go *through* the
-    /// capability model rather than around it. Asserted against
-    /// `Workspace::decide`, which is the same call every other enforcement
-    /// point in the compositor bottoms out in.
+    /// Goes *through* the capability model rather than around it —
+    /// asserted against `Workspace::decide`, the same call every other
+    /// enforcement point bottoms out in.
     #[test]
     fn a_restriction_on_the_app_stops_it_opening_here() {
         let mut ws = room_owned_by("ada");
@@ -509,9 +449,6 @@ mod tests {
         assert_eq!(admits(&ws, "dev.qos.terminal"), Ok(()));
     }
 
-    /// The pending scan finds an unanswered peer window and stops finding
-    /// it once a note is on it. This is what stops a refusal being
-    /// re-stated, or a launch re-started, on every sync round.
     #[test]
     fn a_note_is_what_marks_a_window_answered() {
         let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
@@ -523,9 +460,6 @@ mod tests {
         );
     }
 
-    /// A room this machine cannot open the app for keeps the tab and puts
-    /// the reason on it — the whole point of the note being a sentence.
-    /// Nothing here says "coming soon" about an app that is simply absent.
     #[test]
     fn a_refusal_lands_on_the_tab_as_the_reason() {
         let mut ws = room_owned_by("ada");

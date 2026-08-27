@@ -1,32 +1,31 @@
-//! **The door**: how a participant that is not the app enumerates what the app
-//! has open, and performs one of the operations it exports.
+//! **The door**: how a participant that is not the app enumerates what
+//! it has open and performs one of its exported operations.
 //!
 //! [`Resource`] trees already describe an app's surface and
-//! [`dispatch`](crate::executor::dispatch) already performs one operation on it;
-//! the missing step was naming a thing from outside the process that built it,
-//! without which collaboration, agency and scripting are per-app features again.
+//! [`dispatch`](crate::executor::dispatch) already performs one
+//! operation on it; the missing step was naming a thing from outside the
+//! process that built it — without which collaboration, agency and
+//! scripting stay per-app features.
 //!
-//! [`survey`] and [`invoke`] stay separate so enumeration can never cause an
-//! effect: a descriptor carries no callback, token or handle, so read-only is
-//! the shape of the returned type rather than a promise in a comment.
+//! [`survey`] and [`invoke`] stay separate so enumeration can never
+//! cause an effect: a descriptor carries no callback, token or handle,
+//! so read-only is the shape of the type, not a promise in a comment.
 //!
 //! Authority stays with the host, which resolves the caller against the
-//! workspace's capability model before an address is offered: an operation the
-//! caller may not perform is *absent* from the survey, never a flag to ignore.
-//! `docs/action-model-recipe.md` has what an app must implement to be reachable.
+//! workspace's capability model before offering an address: an
+//! operation the caller may not perform is *absent* from the survey,
+//! never a flag to ignore.
 
 use crate::action::{EncodedAction, ExecutionLocus};
 use crate::executor::{ActionTransport, Dispatched, dispatch_by};
 use crate::registry::ActionRegistry;
 use crate::resource::{ActionInput, ActionSpec, Collects, KEY_SEP, Resource};
 
-/// The stable address of one exported operation: which resource, and which of
-/// that resource's actions.
-///
-/// Both halves are the app's own ids — no screen position, no index into a
-/// rendered list — so the same address keeps naming the same operation across
-/// window layouts, themes and resolutions, and a caller with no display can work
-/// entirely from ids and labels.
+/// The stable address of one exported operation: which resource, which
+/// action. Both halves are the app's own ids — no screen position, no
+/// list index — so the same address names the same operation across
+/// layouts, themes, resolutions, and a caller with no display can work
+/// from ids and labels alone.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActionAddress {
     pub resource: String,
@@ -59,11 +58,9 @@ impl ActionAddress {
     }
 }
 
-/// What an invocation of one action must carry.
-///
-/// Advertised on the descriptor rather than discovered by trying, because
-/// enumeration is the only thing a caller that cannot see the screen has to work
-/// from: an argument nobody described could only be guessed.
+/// What an invocation of one action must carry, advertised on the
+/// descriptor rather than discovered by trying — enumeration is the only
+/// thing a caller that can't see the screen has to work from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputSpec {
     /// Takes nothing. The majority.
@@ -100,11 +97,8 @@ impl InputSpec {
         matches!(self, InputSpec::Text { .. })
     }
 
-    /// Whether the text it wants is the address of content rather than words.
-    ///
-    /// The question a caller has to answer before it can supply an argument at
-    /// all: words can be quoted out of the request, a content hash cannot — it
-    /// has to have been produced by something.
+    /// Whether the text it wants is the address of content rather than
+    /// words — words can be quoted out of the request, a content hash cannot.
     pub fn wants_content(&self) -> bool {
         matches!(
             self,
@@ -116,11 +110,10 @@ impl InputSpec {
     }
 }
 
-/// One exported operation, as inert data.
-///
-/// Everything a caller needs to decide whether to perform it, and nothing that
-/// could perform it: an [`ActionSpec`]'s closure never appears here and never
-/// crosses a boundary — only the address does.
+/// One exported operation, as inert data: everything a caller needs to
+/// decide whether to perform it, nothing that could perform it — an
+/// [`ActionSpec`]'s closure never appears here or crosses a boundary,
+/// only the address does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionDescriptor {
     pub address: ActionAddress,
@@ -136,31 +129,29 @@ pub struct ActionDescriptor {
     pub input: InputSpec,
 }
 
-/// Why an address could not be performed.
-///
-/// `Unknown` deliberately covers both "no such address" and "not offered to
-/// you", so a caller cannot map what it may not reach by probing for a different
-/// error.
+/// Why an address could not be performed. `Unknown` deliberately covers
+/// both "no such address" and "not offered to you", so a caller can't
+/// map what it may not reach by probing for a different error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DoorError {
     /// Nothing in the tree carries this address.
     Unknown(ActionAddress),
     /// The action takes text and none was supplied.
     MissingArgument(ActionAddress),
-    /// The action takes nothing and an argument was supplied. Refused rather
-    /// than dropped — a silently ignored argument leaves the caller believing it
-    /// asked for something it did not get.
+    /// The action takes nothing and an argument was supplied. Refused, not
+    /// dropped — a silently ignored argument leaves the caller believing it
+    /// asked for something it didn't get.
     UnexpectedArgument(ActionAddress),
     /// The app never registered a decoder for the action's type, so the door
-    /// cannot prove what it would run. Fail-closed: a refusal, not a best-effort
-    /// apply.
+    /// can't prove what it would run. Fail-closed: a refusal, not a
+    /// best-effort apply.
     UnregisteredType(String),
     /// The action ran and failed.
     Failed(String),
 }
 
 impl DoorError {
-    /// Stable machine-readable code, so a caller can tell "I addressed this
+    /// Stable machine-readable code, distinguishing "I addressed this
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &'static str {
         match self {
@@ -195,12 +186,9 @@ impl std::fmt::Display for DoorError {
 }
 
 /// Walk a resource forest and describe every operation it exports.
-///
-/// Depth-first, parents before their children — the order
-/// [`flatten`](crate::resource::flatten) already establishes, so a caller sees
-/// the document before its sections and the folder before its files. Borrows the
-/// tree and returns owned data: nothing it hands back can act on what it
-/// described.
+/// Depth-first, parents before children, matching
+/// [`flatten`](crate::resource::flatten)'s order. Borrows the tree,
+/// returns owned data — nothing handed back can act on what it described.
 pub fn survey(resources: &[Resource]) -> Vec<ActionDescriptor> {
     let mut out = Vec::new();
     for r in resources {
@@ -240,13 +228,11 @@ pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option
     resources.iter().find_map(|r| walk(r, address))
 }
 
-/// Turn an address plus its argument into the replayable action it names.
-///
-/// Split out from [`invoke`] so a host can build the encoded action, inspect or
-/// route it, and dispatch it itself — and so the argument rules are checked in
-/// exactly one place. Binding happens *before* anything runs, so a call that
-/// does not fit is a refusal with the document untouched, never a half-applied
-/// edit.
+/// Turn an address plus its argument into the replayable action it
+/// names. Split out from [`invoke`] so a host can build/inspect/route
+/// the encoded action itself, and so argument rules are checked in one
+/// place. Binding happens *before* anything runs, so a bad call is a
+/// refusal with the document untouched, never a half-applied edit.
 pub fn encode(
     resources: &[Resource],
     address: &ActionAddress,
@@ -262,19 +248,17 @@ pub fn encode(
 }
 
 /// Perform the operation `address` names, attributed to `actor`.
+/// Resolve, bind, decode through the app's own registry, then
+/// [`dispatch_by`] honouring the action's locus. `actor` is the caller's
+/// Automerge actor bytes, so the room's history names who asked.
 ///
-/// Resolve, bind, decode through the app's own registry, then [`dispatch_by`]
-/// honouring the action's locus. `actor` is the caller's Automerge actor bytes,
-/// so the room's history names who asked.
-///
-/// `resources` must be a tree built *now*, not the one an earlier [`survey`]
-/// walked: a resource tree is per-frame presentation, so re-resolving is what
-/// makes an address that has since stopped naming anything a refusal rather than
-/// an edit to whatever took its place.
-///
-/// Decoding through `registry` rather than trusting the tree is what makes this
-/// fail-closed: an action whose type the app never registered cannot run, and
-/// the decoder that reconstructs it here is the one a replaying peer would use.
+/// `resources` must be a tree built *now*, not the one an earlier
+/// [`survey`] walked — re-resolving turns an address that has since
+/// stopped naming anything into a refusal rather than an edit to
+/// whatever took its place. Decoding through `registry` (rather than
+/// trusting the tree) makes this fail-closed: an unregistered action
+/// type can't run, and the decoder used here is the one a replaying peer
+/// would use too.
 pub fn invoke(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -382,9 +366,8 @@ mod tests {
     }
 
     /// A descriptor carries no live handle: two trees whose actions *do
-    /// different things* survey to equal descriptors, so nothing in a descriptor
-    /// reaches the closure or encoded action that would perform the operation.
-    /// Only the address does, and only against a tree handed in again.
+    /// different things* survey to equal descriptors — only the address
+    /// reaches the closure, and only against a tree handed in again.
     #[test]
     fn a_descriptor_carries_nothing_that_could_act() {
         let honest = open();
@@ -448,10 +431,9 @@ mod tests {
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
     }
 
-    /// Argument rules are checked before anything runs, in both directions: a
-    /// declared argument that is missing, and one supplied to an action that
-    /// declared none. Neither is quietly tolerated — a dropped argument leaves
-    /// the caller believing it asked for something it did not get.
+    /// Argument rules are checked both directions: a missing declared
+    /// argument, and one supplied where none was declared. Neither is
+    /// quietly tolerated.
     #[test]
     fn an_argument_that_does_not_match_the_declaration_is_refused() {
         let tree = open();
@@ -551,9 +533,8 @@ mod tests {
     }
 
     /// A change made through the door commits under the *caller's* actor, so
-    /// history names who asked rather than the app or the action's own id — and
-    /// because the actor rides on the envelope, a peer still replays to the
-    /// identical document.
+    /// history names who asked rather than the app — and since the actor
+    /// rides the envelope, a peer still replays to the identical document.
     #[test]
     fn a_change_through_the_door_is_attributed_to_the_caller() {
         let mut doc = AutoCommit::new();

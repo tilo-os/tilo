@@ -1,7 +1,5 @@
 //! Clipboard, primary selection and drag-and-drop for the session compositor.
 //!
-//! Four protocols are advertised:
-//!
 //! | protocol | who may bind | what it is for |
 //! |---|---|---|
 //! | `wl_data_device_manager` | every client | Ctrl+C / Ctrl+V and drag-and-drop |
@@ -9,28 +7,16 @@
 //! | `zwlr_data_control_manager_v1` | privileged clients only | clipboard managers |
 //! | `ext_data_control_manager_v1` | privileged clients only | ditto, the successor |
 //!
-//! `wl_data_device` and the primary-selection device are focus-gated by the
-//! protocol itself — smithay only delivers a selection to the client holding
-//! keyboard focus — so exposing them to every client adds no capability a
-//! sandboxed app couldn't already get by asking the user to click on it.
+//! `wl_data_device` is focus-gated by the protocol itself, so every client may
+//! bind it safely. The data-control pair sees every selection unconditionally
+//! (clipboard managers), which would let a sandboxed app harvest TOTP codes,
+//! Wi-Fi passwords etc. off the clipboard — so it's restricted to
+//! [`ClientState::privileged`] connections, which the sandbox never gets.
 //!
-//! The data-control pair is different: a bound client receives every
-//! selection on every seat, unconditionally, and may overwrite it. Shipped
-//! apps put live TOTP codes, Wi-Fi passwords and recovery mnemonics on the
-//! clipboard as normal UI, so an unrestricted data-control client would
-//! harvest all of it invisibly to the per-workspace sandbox — the
-//! exfiltration rides the Wayland socket the app is legitimately given.
-//! [`ClientState::privileged`] is set only for connections on the
-//! compositor's privileged socket, which `crates/packaging/launcher/src/sandbox.rs`
-//! never bind-mounts into a sandbox — enforced by the filesystem namespace,
-//! not an honour system.
-//!
-//! Chrome and the in-process apps (`terminal`, `file-explorer`) are not
-//! Wayland clients and cannot block waiting for one, so the compositor keeps
-//! a [`SelectionStore`] mirror: it pulls a client's selection out once,
-//! asynchronously, and in-process paste reads the mirror synchronously. Copy
-//! in the other direction is symmetrical — chrome writes into the store and
-//! the next tick turns it into a real Wayland selection.
+//! Chrome and in-process apps aren't Wayland clients and can't block on one,
+//! so a [`SelectionStore`] mirrors selections: pulled from a client
+//! asynchronously, read in-process synchronously; writes publish to Wayland
+//! on the next tick.
 
 use std::fs::File;
 use std::io::Read;
@@ -58,14 +44,11 @@ use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTa
 
 use crate::compositor::state::{ClientState, State};
 
-/// The mime type every text selection in qOS is offered as, and the only one
-/// the compositor's own mirror understands. `text/plain` and the bare
-/// `UTF8_STRING` / `STRING` aliases are offered alongside it for clients that
-/// only match on those (notably X11-heritage toolkits through Xwayland).
+/// Mime type the mirror understands; `text/plain`/`UTF8_STRING`/`STRING`
+/// aliases are also offered for X11-heritage clients via Xwayland.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
-/// Mime types a compositor-owned text selection advertises, most specific
-/// first — the order a client sees them in its `wl_data_offer.offer` stream.
+/// Mime types a compositor-owned selection advertises, most-specific first.
 pub fn text_mime_types() -> Vec<String> {
     [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"]
         .into_iter()
@@ -73,22 +56,18 @@ pub fn text_mime_types() -> Vec<String> {
         .collect()
 }
 
-/// Upper bound on a mirrored selection, so a hostile or broken client cannot
-/// make the compositor buffer unbounded data by claiming the clipboard and
-/// then writing forever. 8 MiB is far past any realistic text selection and
-/// still small enough to be irrelevant against the compositor's own working
-/// set. A source that exceeds it is dropped rather than truncated — half a
-/// paste is worse than none.
+/// Cap on a mirrored selection: bounds what a hostile or broken client can
+/// make the compositor buffer. A source exceeding it is dropped, not
+/// truncated — half a paste is worse than none.
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 
-/// Bytes a fresh pipe accepts before a write would block. Linux's default is
-/// 64 KiB; the conservative figure below keeps the "this cannot block" claim
-/// true even if a header or a smaller default is in play.
+/// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
+/// kept conservative so the "cannot block" assumption holds even under a
+/// smaller default.
 const PIPE_BUFFER_BYTES: usize = 32 * 1024;
 
-/// Which of the two selections a value refers to. Mirrors smithay's
-/// [`SelectionTarget`] but is `serde`-friendly and usable from the test
-/// control socket and the `ui` bridge without pulling smithay into them.
+/// Which of the two selections a value refers to; serde-friendly mirror of
+/// smithay's [`SelectionTarget`], usable from the test-control socket and `ui`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     /// The Ctrl+C / Ctrl+V clipboard.
@@ -134,14 +113,9 @@ struct Slot {
     clear_pending: bool,
 }
 
-/// The compositor's clipboard mirror, shared between the Wayland dispatch and
-/// the in-process chrome.
-///
-/// Held behind an `Arc<Mutex<_>>` because `ui`'s clipboard hook is a
-/// process-global that any widget may call from the UI thread, while the
-/// Wayland side writes it from the compositor's calloop dispatch. Both live on
-/// the same thread today; the mutex costs nothing measurable on a
-/// once-per-copy path and removes the thread-affinity assumption entirely.
+/// The compositor's clipboard mirror, shared between Wayland dispatch and
+/// in-process chrome. `Arc<Mutex<_>>` because `ui`'s clipboard hook runs on
+/// the UI thread while Wayland writes it from calloop dispatch.
 #[derive(Debug, Default)]
 pub struct SelectionStore {
     clipboard: Slot,
@@ -167,20 +141,15 @@ impl SelectionStore {
 /// Shared handle to the compositor's selection mirror.
 pub type SharedSelection = Arc<Mutex<SelectionStore>>;
 
-/// Read the current text of `target` from the mirror.
-///
-/// This is the in-process paste path. It never blocks on a client and never
-/// touches the Wayland connection, so it is safe to call from a widget's
-/// `handle_event` while the compositor's dispatch is on the stack.
+/// Read `target`'s current text from the mirror. Never blocks on a client or
+/// touches Wayland, so safe to call from a widget's `handle_event`.
 pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
     store.lock().ok()?.slot(target).text.clone()
 }
 
-/// Write `text` to `target` from in-process chrome and mark it for publishing.
-///
-/// Takes effect for other processes on the next compositor tick, when
-/// [`State::pump_selection`] converts it into a compositor-owned Wayland
-/// selection. In-process readers see it immediately.
+/// Write `text` to `target` from chrome and mark it for publishing; visible
+/// in-process immediately, becomes a Wayland selection on the next tick via
+/// [`State::pump_selection`].
 pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) {
     let Ok(mut store) = store.lock() else {
         return;
@@ -204,11 +173,9 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
     slot.clear_pending = true;
 }
 
-/// Record a selection the compositor pulled out of a *client*.
-///
-/// Clears `compositor_owned` — from here on `receive` requests are answered by
-/// the owning client, not by the mirror. The mirror keeps the text only so
-/// in-process chrome can paste it synchronously.
+/// Record a selection pulled from a *client*; clears `compositor_owned` so
+/// `receive` goes to the client, while the mirror keeps the text for
+/// synchronous in-process paste.
 fn record_client_text(store: &SharedSelection, target: Target, text: Option<String>) {
     let Ok(mut store) = store.lock() else {
         return;
@@ -221,8 +188,7 @@ fn record_client_text(store: &SharedSelection, target: Target, text: Option<Stri
     slot.clear_pending = false;
 }
 
-/// Whether the compositor currently owns `target`, i.e. whether a `receive`
-/// on it must be answered out of the mirror.
+/// Whether the compositor currently owns `target` (i.e. answers `receive` from the mirror).
 fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
     store
         .lock()
@@ -230,13 +196,10 @@ fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
         .unwrap_or(false)
 }
 
-/// A selection ownership change the compositor has seen but not yet mirrored.
-///
-/// smithay raises [`SelectionHandler::new_selection`] *before* it installs the
-/// new source on the seat, so the pull cannot happen inline — asking for the
-/// selection at that moment would hand back the previous owner's data. The
-/// request is parked here and drained by [`State::pump_selection`] on the next
-/// tick, by which point the seat holds the new source.
+/// A selection change seen but not yet mirrored. smithay raises
+/// [`SelectionHandler::new_selection`] *before* installing the new source, so
+/// pulling inline would read the previous owner's data; parked here and
+/// drained by [`State::pump_selection`] once the seat holds the new source.
 #[derive(Debug, Clone)]
 pub struct PendingMirrorPull {
     /// Which selection changed hands.
@@ -267,36 +230,24 @@ pub struct SelectionState {
     /// the drag. See [`ClientDndGrabHandler::started`] for why it is kept but
     /// not composited.
     pub dnd_icon: Option<WlSurface>,
-    /// A drag the compositor itself started — a file carried out of the
-    /// hosted file manager and over a client's window. `Some` from the
-    /// moment the server-side grab starts until the client finishes with
-    /// the offer or the drag is cancelled. See [`ChromeDrag`].
+    /// A drag the compositor itself started — a file dragged out of the hosted
+    /// file manager, across a client window. `Some` from grab start to
+    /// finish/cancel. See [`ChromeDrag`].
     pub chrome_drag: Option<ChromeDrag>,
-    /// Whether a client-initiated drag-and-drop is in flight.
-    ///
-    /// Read by the pointer router: while a button is held the compositor
-    /// normally pins pointer focus to the surface that owns the implicit
-    /// grab, so a client cannot lose its own drag by sliding off its window.
-    /// A drag-and-drop is the one case where that is exactly wrong — the
-    /// whole point is to travel to a *different* surface, and pinning focus
-    /// to the source means the drop target never receives
-    /// `wl_data_device.enter` and nothing can ever be dropped anywhere.
+    /// Whether a client-initiated drag is in flight. The pointer router normally
+    /// pins focus to the surface holding the implicit grab while a button is
+    /// held, but a drag must travel to a *different* surface — pinning here
+    /// would mean drop targets never get `wl_data_device.enter`.
     pub dnd_active: bool,
     /// What the drag in flight is carrying, as something a person can
     /// read. See [`crate::compositor::drag_feedback`].
     pub dnd_label: DragLabel,
 }
 
-/// The name the compositor paints beside the pointer during a drag.
-///
-/// Shared and interior-mutable because it is answered in two stages. A
-/// drag has to be drawn from the frame it starts on, and at that moment
-/// all the compositor holds is the offer — a list of mime types — so the
-/// first answer is the kind of thing being carried. The *name* lives in
-/// the `text/uri-list` the source is offering, which arrives through a
-/// pipe and therefore on another thread, a few milliseconds later. When
-/// it lands it replaces the kind, and the next frame says `photo.png`
-/// instead of `Image`.
+/// Name painted beside the pointer during a drag, answered in two stages:
+/// the first frame only has the offer's mime-type list (kind of thing), the
+/// real name arrives later via a threaded read of `text/uri-list` and
+/// replaces it — "Image" becomes `photo.png`.
 #[derive(Clone, Default)]
 pub struct DragLabel(Arc<Mutex<Option<String>>>);
 
@@ -320,12 +271,9 @@ impl std::fmt::Debug for SelectionState {
 }
 
 impl SelectionState {
-    /// Advertise all four globals on `display`.
-    ///
-    /// The data-control pair is created with a filter that admits only
-    /// privileged clients; see the module docs for why. `PrimarySelectionState`
-    /// is handed to the wlr data-control global so a privileged manager can
-    /// also see the primary selection.
+    /// Advertise all four globals on `display`. Data-control is filtered to
+    /// privileged clients only (see module docs); `PrimarySelectionState` is
+    /// handed to the wlr data-control global too.
     pub fn new(display: &DisplayHandle) -> Self {
         let data_device_state = DataDeviceState::new::<State>(display);
         let primary_selection_state = PrimarySelectionState::new::<State>(display);
@@ -355,14 +303,10 @@ impl SelectionState {
     }
 }
 
-/// What a compositor-initiated drag carries.
-///
-/// Files is a widget inside the compositor, not a Wayland client, so a row
-/// dragged out of it has no `wl_data_source`. The compositor is the source
-/// instead: it offers the paths as `text/uri-list`, and — for a single file
-/// whose type it knows — the file's own bytes under their mime type. The
-/// bytes matter more than the paths: a sandboxed app cannot read a host
-/// path, but it can always read what is written into the pipe it asked for.
+/// What a compositor-initiated drag carries. Files (a widget, not a Wayland
+/// client) has no `wl_data_source`, so the compositor is the source: paths
+/// as `text/uri-list`, plus — for a single known-type file — the bytes
+/// themselves, since a sandboxed app can read a pipe but not a host path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChromeDrag {
     pub paths: Vec<std::path::PathBuf>,
@@ -384,8 +328,7 @@ impl ChromeDrag {
     }
 
     /// The `text/uri-list` body: one `file://` URI per line, CRLF-terminated
-    /// as the RFC 2483 shape requires, with the bytes a path cannot carry
-    /// verbatim percent-encoded.
+    /// per RFC 2483, percent-encoded.
     pub fn uri_list(&self) -> String {
         let mut out = String::new();
         for p in &self.paths {
@@ -439,9 +382,8 @@ fn percent_encode_path(path: &str) -> String {
     out
 }
 
-/// Write `bytes` into `fd` without stalling the compositor: small payloads
-/// fit the pipe buffer and go now; anything larger drains on a thread at
-/// the receiver's pace, and the thread closing the fd is the receiver's EOF.
+/// Write `bytes` into `fd` without stalling: small payloads fit the pipe
+/// buffer and go now; larger ones drain on a thread, whose exit closes `fd` as EOF.
 fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
     use std::io::Write;
     let mut file = File::from(fd);
@@ -458,13 +400,9 @@ fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
     });
 }
 
-/// The data-control filter: may this client see the clipboard-manager globals?
-///
-/// Only connections accepted on the privileged socket qualify. Everything on
-/// the public socket — which is the only socket a sandbox can reach — is
-/// refused, so the global is simply absent from its registry and `arboard`,
-/// `wl-paste` and friends running inside a sandbox fall through to the
-/// focus-gated `wl_data_device` path instead of getting a silent firehose.
+/// Data-control filter: only connections on the privileged socket qualify —
+/// the sandbox-reachable public socket never sees this global, so sandboxed
+/// clipboard tools fall back to focus-gated `wl_data_device` instead of a silent firehose.
 fn is_privileged(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
@@ -472,9 +410,9 @@ fn is_privileged(client: &Client) -> bool {
         .unwrap_or(false)
 }
 
-/// Flip `fd` into non-blocking mode. Returns `false` if the kernel refused,
-/// in which case the caller must not register it with the event loop — a
-/// blocking fd on a level-triggered source would stall the whole compositor.
+/// Flip `fd` non-blocking. Returns `false` if the kernel refused, in which
+/// case the caller must not register it — a blocking fd on a level-triggered
+/// source would stall the whole compositor.
 fn set_nonblocking(fd: &OwnedFd) -> bool {
     use std::os::unix::io::AsRawFd;
     // SAFETY: `fd` is a live descriptor owned by the caller for the duration
@@ -503,35 +441,30 @@ fn selection_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
 }
 
-/// Spawn an async read of `fd` into the mirror slot for `target`.
-///
-/// Registered as a level-triggered calloop source rather than read inline:
-/// the client on the other end of this pipe only writes once the compositor
-/// flushes the `send` event to it, so a blocking read here would deadlock the
-/// compositor against the very client it is waiting on.
+/// Spawn an async read of `fd` into the mirror slot for `target`, as a
+/// level-triggered calloop source rather than inline — the client only
+/// writes once the compositor flushes `send`, so a blocking read here would
+/// deadlock against it.
 fn read_into_mirror(
     loop_handle: &LoopHandle<'static, State>,
     store: SharedSelection,
     target: Target,
     fd: OwnedFd,
 ) {
-    // Non-blocking, so a level-triggered wakeup that turns out to have no
-    // bytes ready cannot stall the loop.
+    // Non-blocking: a level-triggered wakeup with no bytes ready won't stall the loop.
     if !set_nonblocking(&fd) {
         tracing::warn!(target: "shell::selection", "could not set selection pipe non-blocking");
         return;
     }
-    // `File` owns the fd for the lifetime of the source; calloop hands the
-    // stored value back to the callback on every wakeup, so the read side
-    // stays alive until we return `PostAction::Remove`.
+    // `File` owns the fd for the source's lifetime; calloop hands it back each
+    // wakeup until we return `PostAction::Remove`.
     let file = File::from(fd);
     let source = Generic::new(file, Interest::READ, Mode::Level);
     let mut buf: Vec<u8> = Vec::new();
     let mut overflowed = false;
     let registered = loop_handle.insert_source(source, move |_, file, _state| {
         let mut chunk = [0u8; 8192];
-        // `&File` is the `Read` impl; calloop hands back a wrapper that only
-        // derefs shared, which is all a read needs.
+        // `&File` impls `Read`; calloop's wrapper only derefs shared, which is all a read needs.
         let mut reader: &File = &*file;
         loop {
             match reader.read(&mut chunk) {
@@ -548,12 +481,9 @@ fn read_into_mirror(
                         match String::from_utf8(std::mem::take(&mut buf)) {
                             Ok(text) => record_client_text(&store, target, Some(text)),
                             Err(_) => {
-                                // The owner advertised a UTF-8 text mime and
-                                // then sent something else. Mirroring bytes we
-                                // cannot render would put mojibake in every
-                                // in-process paste, so record "nothing" and
-                                // leave the client as the authority for
-                                // clients that can negotiate another type.
+                                // Owner advertised UTF-8 text then sent something else; mirroring bytes we
+                                // can't render would put mojibake in every paste, so record "nothing" and
+                                // leave the client as authority.
                                 tracing::warn!(
                                     target: "shell::selection",
                                     "selection source sent non-UTF-8 bytes for a text mime type"
@@ -595,13 +525,9 @@ impl State {
         Arc::clone(&self.selection.store)
     }
 
-    /// Point the selection devices at `client`, so it receives clipboard and
-    /// primary offers and is allowed to set them.
-    ///
-    /// Called from the same place as keyboard focus: smithay gates
-    /// `set_selection` on keyboard focus, so a selection focus that lagged
-    /// behind the keyboard would let a client be typed into while it was
-    /// refused the clipboard.
+    /// Point selection devices at `client`. Called alongside keyboard-focus
+    /// changes — smithay gates `set_selection` on keyboard focus, so lagging
+    /// selection focus behind it would let a client type while denied the clipboard.
     pub fn set_selection_focus(&mut self, client: Option<Client>) {
         let same = match (&self.selection.focused_client, &client) {
             (Some(a), Some(b)) => a.id() == b.id(),
@@ -617,11 +543,8 @@ impl State {
         self.selection.focused_client = client;
     }
 
-    /// Per-tick selection work: publish anything chrome copied, and pull
-    /// anything a client copied into the mirror.
-    ///
-    /// Cheap and allocation-free when nothing changed, which is every tick
-    /// except the one right after a copy.
+    /// Per-tick selection work: publish chrome's pending copy, pull any
+    /// client-owned change into the mirror. Allocation-free when nothing changed.
     pub fn pump_selection(&mut self) {
         self.publish_chrome_selection();
         self.drain_pending_pulls();
@@ -677,9 +600,8 @@ impl State {
                 record_client_text(&self.selection.store, pull.target, None);
                 continue;
             };
-            // Pick the most specific text type the owner actually offers; a
-            // source that offers no text at all (an image drag, say) leaves
-            // the mirror empty rather than guessing.
+            // Pick the most specific text type offered; a non-text source (e.g. an
+            // image drag) leaves the mirror empty rather than guessing.
             let Some(mime) = text_mime_types().into_iter().find(|m| mimes.contains(m)) else {
                 record_client_text(&self.selection.store, pull.target, None);
                 continue;
@@ -691,9 +613,8 @@ impl State {
                     continue;
                 }
             };
-            // The two `request_*` helpers return distinct per-protocol error
-            // enums; only the message matters here, so both collapse to a
-            // string at the call site.
+            // The two `request_*` helpers return distinct per-protocol error enums;
+            // only the message matters here, so both collapse to a string.
             let requested = match pull.target {
                 Target::Clipboard => request_data_device_client_selection(&self.seat, mime, write_fd)
                     .map_err(|e| e.to_string()),
@@ -708,9 +629,8 @@ impl State {
                     read_fd,
                 ),
                 Err(e) => {
-                    // `ServerSideSelection` is the normal outcome when the
-                    // compositor itself is the owner — the mirror already holds
-                    // the text, so there is nothing to pull.
+                    // `ServerSideSelection` is normal when the compositor itself is the
+                    // owner — the mirror already holds the text, nothing to pull.
                     tracing::debug!(target: "shell::selection", error = %e, "no client selection to mirror");
                 }
             }
@@ -725,22 +645,17 @@ impl State {
         use std::io::Write;
         let text = mirror_text(&self.selection.store, target).unwrap_or_default();
         let mut file = File::from(fd);
-        // Anything that fits in the pipe buffer is written here and now: the
-        // kernel takes it whether or not the client has started reading, so
-        // there is nothing to block on, and a clipboard is almost always a
-        // line or two of text.
+        // Fits the pipe buffer: the kernel takes it regardless of whether the
+        // client has started reading, and a clipboard is almost always this small.
         if text.len() <= PIPE_BUFFER_BYTES {
             if let Err(e) = file.write_all(text.as_bytes()) {
                 tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
             }
             return;
         }
-        // A larger payload has to go to a thread. Written inline it would
-        // block the compositor against the requesting client's read — and
-        // that client cannot read while the compositor is stalled, because it
-        // is waiting on the compositor to flush. Off-thread the write drains
-        // at whatever rate the client reads. The thread ends at `write_all`
-        // and the fd closes with it, which is what signals EOF to the reader.
+        // Larger payloads go to a thread — inline would block the compositor
+        // against the requesting client's read, which can't proceed while the
+        // compositor is stalled waiting to flush. The thread's exit at `write_all` closes the fd as EOF.
         std::thread::spawn(move || {
             if let Err(e) = file.write_all(text.as_bytes()) {
                 tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
@@ -749,25 +664,13 @@ impl State {
     }
 }
 
-// -----------------------------------------------------------------------------
-// The in-process bridge
-// -----------------------------------------------------------------------------
 
-/// The clipboard the compositor's own widgets use.
-///
-/// `terminal`, `file-explorer`, the notes and editor apps and every piece of
-/// chrome are linked into the compositor binary and call `ui`'s
-/// `clipboard_copy` / `clipboard_paste` like any other widget. They are not
-/// Wayland clients, so there is no data device for them to use — and they
-/// cannot block on one either, since a client can only answer a selection
-/// request once the compositor flushes, which it cannot do while blocked
-/// inside a widget's event handler.
-///
-/// Reads therefore come straight out of the mirror, which is always current
-/// because the compositor pulls every client-owned selection into it as the
-/// selection changes hands. Writes go into the mirror and raise a publish
-/// flag; [`State::pump_selection`] turns that into a compositor-owned Wayland
-/// selection on the next tick, so a focused client sees a real offer.
+/// The clipboard `ui`'s in-process widgets use — they're linked into the
+/// compositor binary, not Wayland clients, and can't block on one (a client
+/// only answers once the compositor flushes, which can't happen mid-handler).
+/// Reads come from the mirror (always current); writes go into the mirror
+/// and raise a publish flag that [`State::pump_selection`] turns into a
+/// real Wayland selection next tick.
 struct HostClipboard {
     store: SharedSelection,
 }
@@ -787,9 +690,8 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
     }
 }
 
-/// Map `ui`'s target enum onto this module's. They are deliberately separate
-/// types: `ui` must not depend on smithay, and the compositor must not depend
-/// on `ui`'s enum shape for its protocol handling.
+/// Maps `ui`'s target enum onto this module's — kept separate so `ui`
+/// doesn't depend on smithay.
 fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
     match target {
         ui::clipboard::ClipboardTarget::Clipboard => Target::Clipboard,
@@ -797,25 +699,17 @@ fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
     }
 }
 
-/// Point `ui`'s clipboard at the compositor's selection mirror, for every
-/// widget hosted inside this process.
-///
-/// Called once during compositor startup. Without it the hosted widgets fall
-/// back to `ui`'s in-process buffer, which round-trips within the compositor
-/// and is invisible to every client — the exact failure this module exists to
-/// remove.
+/// Point `ui`'s clipboard at the compositor's mirror, for hosted widgets.
+/// Called once at startup; without it hosted widgets fall back to `ui`'s
+/// in-process buffer, invisible to every client.
 pub fn install_host_clipboard(store: SharedSelection) {
     ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
 }
 
-// -----------------------------------------------------------------------------
-// smithay handler impls
-// -----------------------------------------------------------------------------
 
 impl SelectionHandler for State {
-    /// The compositor's own selections carry no per-selection data — the text
-    /// lives in [`SelectionStore`], keyed by target, because in-process chrome
-    /// has to read it without a seat in hand.
+    /// Compositor selections carry no per-selection data — text lives in
+    /// [`SelectionStore`], keyed by target, so in-process chrome can read it without a seat.
     type SelectionUserData = ();
 
     fn new_selection(
@@ -825,8 +719,8 @@ impl SelectionHandler for State {
         _seat: Seat<Self>,
     ) {
         let target = Target::from(ty);
-        // Park the pull. Doing it inline would read the *previous* owner:
-        // smithay calls this hook before it installs the new source.
+        // Park the pull — inline would read the *previous* owner, since smithay
+        // calls this before installing the new source.
         self.selection.pending_pulls.push(PendingMirrorPull {
             target,
             mime_types: source.map(|s| s.mime_types()),
@@ -843,9 +737,8 @@ impl SelectionHandler for State {
     ) {
         let target = Target::from(ty);
         if !compositor_owns(&self.selection.store, target) {
-            // smithay only routes here for compositor-owned selections, so a
-            // mismatch means the mirror and the seat disagree. Answering with
-            // stale chrome content would be worse than answering with nothing.
+            // Only routes here for compositor-owned selections; a mismatch means the
+            // mirror and seat disagree — answer with nothing rather than stale content.
             return;
         }
         self.serve_selection(target, &mime_type, fd);
@@ -876,15 +769,10 @@ impl ExtDataControlHandler for State {
     }
 }
 
-/// Ask a client's drag source for the name of what it is carrying.
-///
-/// The compositor holds the offer, not the file, so the only way to a
-/// name is to accept one of the source's advertised mime types.
-/// `text/uri-list` carries names and nothing else, so this asks for
-/// that rather than a payload type that could be a large image. A
-/// source may be asked for its data any number of times without
-/// disturbing the drop; the read happens on a thread since the client
-/// can't answer while this loop is blocked waiting for it.
+/// Ask a client's drag source for the name of what it's carrying, via
+/// `text/uri-list` (the only mime that carries a name without risking a
+/// large payload). May be asked any number of times without disturbing the
+/// drop; reads happen on a thread since the client can't answer while this loop blocks.
 fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,
@@ -894,9 +782,8 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
         }
     };
     source.send(URI_LIST_MIME.to_string(), writer.as_fd());
-    // Our copy of the write end has to go, or the read below never sees
-    // end-of-file: the client's copy closing is not enough while this
-    // process still holds one.
+    // Our copy of the write end must close too, or the read below never sees
+    // EOF — the client's copy closing alone isn't enough.
     drop(writer);
     let _ = std::thread::Builder::new()
         .name("qos-drag-name".into())
@@ -904,9 +791,8 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
             use std::io::Read;
             let mut reader = reader;
             let mut body = Vec::new();
-            // Bounded: a URI list naming what a person just picked up is
-            // small, and a source that streams forever must not pin a
-            // thread for the life of the session.
+            // Bounded: a URI list is small, and a source that streams forever must not
+            // pin a thread for the session's life.
             if reader
                 .by_ref()
                 .take(64 * 1024)
@@ -923,11 +809,8 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
 
 impl ClientDndGrabHandler for State {
     fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
-        // What the drag is carrying, for the picture the compositor
-        // draws while it crosses the desktop. Only the offer is
-        // available here — the payload belongs to the source and is not
-        // read until a receiver asks for it — so this is the kind of
-        // thing rather than its name.
+        // Only the offer (mime list) is available here, not the payload — so this
+        // reports the kind of thing being carried, not its name yet.
         let mimes = source
             .as_ref()
             .and_then(|s| {
@@ -940,20 +823,17 @@ impl ClientDndGrabHandler for State {
         self.selection
             .dnd_label
             .set(Some(crate::compositor::drag_feedback::label_for_mimes(&mimes)));
-        // …and then ask for the name, which is in the URI list the source
-        // is already offering. It costs one pipe and a few hundred bytes,
-        // and it is what turns "Image" into "photo.png" on screen.
+        // Then ask for the name from the URI list the source is already offering —
+        // turns "Image" into "photo.png" on screen.
         if let Some(source) = source.as_ref() {
             if mimes.iter().any(|m| m == URI_LIST_MIME) {
                 request_dragged_name(source, self.selection.dnd_label.clone());
             }
         }
-        // The drag icon is a client surface with the `dnd_icon` role. qOS does
-        // not composite it: the compositor draws its own cursor and its own
-        // drag feedback, and a client-supplied icon surface would be painted
-        // outside the strip layout the whole spatial model depends on.
-        // Recording it keeps the role assignment honest for the client, which
-        // is what the protocol requires.
+        // The drag icon is a client surface with the `dnd_icon` role, but qOS
+        // doesn't composite it — the compositor draws its own drag feedback, and a
+        // client icon would sit outside the strip layout. Recording it just keeps
+        // the role assignment honest per protocol.
         tracing::debug!(
             target: "shell::selection",
             has_icon = icon.is_some(),
@@ -976,12 +856,10 @@ impl ClientDndGrabHandler for State {
     }
 }
 
-/// Server-initiated drag-and-drop — a drag whose *source* is compositor chrome.
-///
-/// The one such drag is a file carried out of the hosted file manager and
-/// over a client's window (`client_input::pump_chrome_drag` starts the grab,
-/// [`ChromeDrag`] is what it carries). A tab dragged between groups never
-/// comes here: that is moved inside the compositor's own widget tree.
+/// Server-initiated drag-and-drop — source is compositor chrome, e.g. a file
+/// dragged out of the hosted file manager onto a client window (started via
+/// `client_input::pump_chrome_drag`, carried as [`ChromeDrag`]). A tab drag
+/// between groups never comes here.
 impl ServerDndGrabHandler for State {
     fn accept(&mut self, mime_type: Option<String>, _seat: Seat<Self>) {
         tracing::debug!(target: "shell::selection", ?mime_type, "client accepted a chrome drag mime");
@@ -1035,9 +913,8 @@ mod tests {
         Arc::new(Mutex::new(SelectionStore::default()))
     }
 
-    /// Chrome writing the clipboard must be readable in-process immediately —
-    /// the paste path cannot wait for a compositor tick — and must leave a
-    /// publish flag behind so the tick turns it into a real Wayland selection.
+    /// Chrome's clipboard write must be readable in-process immediately (paste
+    /// can't wait for a tick) and leave a publish flag for the real Wayland selection.
     #[test]
     fn chrome_copy_is_readable_immediately_and_queues_a_publish() {
         let s = store();
@@ -1068,8 +945,7 @@ mod tests {
         assert!(!s.lock().unwrap().clipboard.publish_pending);
     }
 
-    /// Primary and clipboard are independent buffers. Middle-click paste must
-    /// not return what Ctrl+C put down, which is the bug users notice first.
+    /// Primary and clipboard are independent; middle-click must not return what Ctrl+C put down.
     #[test]
     fn primary_and_clipboard_do_not_alias() {
         let s = store();
@@ -1095,9 +971,8 @@ mod tests {
         assert!(s.lock().unwrap().clipboard.clear_pending);
     }
 
-    /// The offered mime list must lead with the specific UTF-8 type, because
-    /// the first type a client can match is the one it asks for, and a client
-    /// that gets `STRING` back has to guess the encoding.
+    /// Offered mimes must lead with the specific UTF-8 type — the first match
+    /// wins, and a client stuck with `STRING` has to guess the encoding.
     #[test]
     fn text_mimes_lead_with_utf8() {
         let mimes = text_mime_types();

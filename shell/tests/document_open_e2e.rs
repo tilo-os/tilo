@@ -1,14 +1,12 @@
 //! Opening a document from search, end to end: Super+K, the document's
-//! name, Enter — through a real `ShellOverlayHost`, real layout, real winit
-//! key events, the real search fan-out, `doc_open` routing and
+//! name, Enter — through a real `ShellOverlayHost`, real layout, real
+//! winit key events, the real search fan-out, `doc_open` routing and
 //! `qos-launcher` invocation, asserting on the command actually executed.
 //!
-//! Two process-wide env vars make that assertable without a session (which
-//! is why this is its own test binary): `HOME` points at a temporary tree
-//! the Files provider indexes, and `QOS_LAUNCHER_BIN` — the launcher's own
-//! documented seam — points at a script that records its argv, so the log
-//! holds what the production launch path ran rather than a value returned
-//! by anything under test.
+//! Two process-wide env vars make this assertable without a session:
+//! `HOME` points at a temp tree the Files provider indexes, and
+//! `QOS_LAUNCHER_BIN` (the launcher's documented seam) points at a script
+//! that records its argv.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -135,9 +133,8 @@ impl Session {
 }
 
 /// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
-/// `pub(crate)`), so zero-init and overwrite the fields the shell reads.
-/// Same workaround as `tests/e2e_shell_flows.rs::escape_event` and
-/// `bin/shots/driver.rs::key_press_event`.
+/// `pub(crate)`), so zero-init and overwrite the fields the shell reads —
+/// as `e2e_shell_flows.rs::escape_event` does.
 fn key_press_event(key: Key) -> WindowEvent {
     // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
     // pattern (`Option` → `None`, the enums' first variants, `bool` →
@@ -190,7 +187,6 @@ fn install(dir: &Path, package_id: &str, name: &str, exts: &[&str]) {
     std::fs::write(&registry, existing).unwrap();
 }
 
-/// A stand-in `qos-launcher` recording the argv it is invoked with.
 fn install_recording_launcher(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let log = dir.join("launched.log");
@@ -220,8 +216,6 @@ fn launched_commands(log: &Path, want: usize) -> Vec<String> {
     );
 }
 
-/// Super+K, type the document's name, Enter — and the word processor
-/// comes up with that document.
 #[test]
 #[serial_test::serial(process_env)]
 fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
@@ -235,10 +229,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
     install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
-    // A decoy claiming nothing and sorting first by display name, so a
-    // routing that ignored the extension would pick it. Without a second
-    // package installed, "resolve the
-    // owner" and "take whatever is installed" are indistinguishable.
+    // A decoy claiming nothing and sorting first by display name: without a
+    // second package, "resolve the owner" and "take whatever's installed"
+    // look the same.
     install(&apps, "dev.qos.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
@@ -274,11 +267,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         "Super+K must open the palette; without it there is no row to activate"
     );
 
-    // The Files provider walks `$HOME` on a background thread, so re-type
-    // the last character until the walk commits and the document is on
-    // offer — the palette re-runs the
-    // fan-out on every keystroke, so this exercises the production
-    // refresh rather than reaching into the index.
+    // The Files provider walks $HOME on a background thread, so re-type the
+    // last character until the walk commits — exercising the production
+    // per-keystroke refresh rather than reaching into the index.
     session.type_str(&mut host, &layout, "quarterly-repor");
     let mut rows = Vec::new();
     for _ in 0..200 {
@@ -322,7 +313,6 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         Key::Named(NamedKey::Enter),
     );
 
-    // What the compositor actually ran.
     let commands = launched_commands(&log, 1);
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     let cmd = &commands[0];
@@ -335,8 +325,8 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         "and it had to be told which document: {cmd}"
     );
 
-    // And the workspace holds a read grant for exactly that file, so the
-    // app can read it inside its sandbox.
+    // And the workspace holds a read grant for exactly that file, so the app
+    // can read it inside its sandbox.
     {
         use shell::shell::state::{Effect, Scope, Subject};
         let st = chrome.borrow();
@@ -363,9 +353,6 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     launcher::invalidate_app_cache();
 }
 
-/// Dropping a document onto a window group opens it in the app that owns
-/// the type, in the group the pointer was over — through the real
-/// `WindowEvent::DroppedFile` entry point.
 #[test]
 #[serial_test::serial(process_env)]
 fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
@@ -373,8 +360,8 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
     install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
-    // See the palette test: the decoy is what makes "the app that owns
-    // .odt" a different claim from "whatever is installed".
+    // The decoy is what makes "the app that owns .odt" a different claim
+    // from "whatever is installed".
     install(&apps, "dev.qos.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
@@ -405,8 +392,8 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         t.workspaces[0].strips[0].window_groups[0].tabs.len()
     };
 
-    // Put the pointer over the group, the way winit's coordinate-less
-    // `DroppedFile` requires, then drop.
+    // winit's `DroppedFile` carries no coordinate, so put the pointer over
+    // the group first.
     let over = host
         .group_at_for_tests(strip_id, 0)
         .and_then(|g| g.tab_rects().first().copied())
@@ -437,8 +424,8 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         commands[0]
     );
 
-    // And no placeholder tab named after the file: the document's window
-    // is the tab, and it arrives when the app does.
+    // And no placeholder tab named after the file: the document's window is
+    // the tab, and it arrives when the app does.
     let st = chrome.borrow();
     let t = st.tree();
     let group = &t.workspaces[0].strips[0].window_groups[0];

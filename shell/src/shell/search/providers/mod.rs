@@ -1,9 +1,4 @@
-//! Built-in [`SearchProvider`] implementations.
-//!
-//! Each submodule owns one provider. New providers slot in by
-//! implementing the trait and being registered in
-//! [`crate::shell::search::SearchRegistry`] at shell startup — the
-//! palette picks them up automatically via `registered_kinds`.
+//! Built-in [`SearchProvider`] implementations, one per submodule.
 //!
 //! [`SearchProvider`]: crate::shell::search::SearchProvider
 
