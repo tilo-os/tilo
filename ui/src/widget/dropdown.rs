@@ -1,37 +1,24 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
 //!
-//! Closed it reads like a button: the current selection plus a chevron.
-//! Open it reveals a scrollable list of options that composites *on top
-//! of* following content via the App's top-layer [`Widget::draw_overlay`]
-//! pass — it is a real overlay, not an inline expander that shoves
-//! siblings down.
+//! Closed it reads like a button: the current selection plus a chevron. Open
+//! it reveals a scrollable list that composites *on top of* following content
+//! via the App's top-layer [`Widget::draw_overlay`] pass — a real overlay,
+//! not an inline expander that shoves siblings down.
 //!
-//! ## Selection model (toolkit convention)
+//! Like [`crate::widget::TextInput`], the chosen value lives in the CRDT, not
+//! on the widget: the constructor takes a `value_path`, and selection splices
+//! the chosen string into the Automerge `Text` object there (creating it if
+//! absent) so a host reading that path sees the change with no extra wiring.
+//! `sync` mirrors it back; a scalar string at the path is also accepted.
 //!
-//! Like [`crate::widget::TextInput`], the chosen value lives in the CRDT,
-//! not on the widget. The constructor takes a `value_path`; on selection
-//! the widget splices the chosen string into the Automerge `Text` object
-//! at that path (creating it if absent), so a host that reads the path —
-//! e.g. the installer reading `installer.timezone` — sees the change with
-//! no extra wiring. `sync` pulls the current value back out so the closed
-//! control always mirrors the document. A scalar string at the path is
-//! also accepted on read for flexibility.
-//!
-//! ## Input
-//!
-//! * **Mouse** — click the control to open; click an item to select +
-//!   close; click outside to dismiss; wheel scrolls the open list.
-//! * **Keyboard** (while focused) — Enter / Space / Down open when
-//!   closed; Up / Down move the highlight; Enter / Space select + close;
-//!   Esc dismisses without changing; printable characters drive an
-//!   incremental, case-insensitive substring **filter** (Backspace edits
-//!   it). The filter makes hundreds-of-entries lists (time zones,
-//!   keyboard layouts) usable without endless scrolling.
+//! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
+//! highlight; Enter/Space select + close; Esc dismisses; printable characters
+//! drive an incremental, case-insensitive substring filter (Backspace edits
+//! it) so hundred-entry lists stay usable without endless scrolling.
 //!
 //! While open the widget reports [`Widget::wants_pointer_capture`] so its
-//! container routes *all* events to it exclusively — that is how the
-//! out-of-layout list becomes hit-testable and how click-outside
-//! dismissal works.
+//! container routes all events to it exclusively — how the out-of-layout
+//! list becomes hit-testable and click-outside dismissal works.
 
 use std::collections::HashMap;
 
@@ -55,19 +42,12 @@ use crate::widget::Widget;
 
 /// Height of the closed control (matches `TextInput` / `SegChoice`).
 const CONTROL_HEIGHT: f64 = 40.0;
-/// Per-item row height in the open list.
 const ITEM_HEIGHT: f64 = 32.0;
-/// Maximum height of the open list before it scrolls.
 const MAX_LIST_HEIGHT: f64 = 240.0;
-/// Vertical gap between the control and the open list.
 const LIST_GAP: f64 = 4.0;
-/// Horizontal text padding inside the control / rows.
 const PAD_X: f64 = 10.0;
-/// Reserved width on the right of the control for the chevron.
 const CHEVRON_W: f64 = 30.0;
-/// Label font size.
 const FONT: f32 = 15.0;
-/// Pixels scrolled per wheel notch in the open list.
 const LINE_PX: f32 = 60.0;
 
 pub struct Dropdown {
@@ -83,12 +63,11 @@ pub struct Dropdown {
     highlight: usize,
     /// Incremental substring filter; empty shows every option.
     filter: String,
-    /// Vertical scroll offset (px) of the open list.
     scroll: f32,
 
     /// One-shot: align `highlight` to the selected option on the next
-    /// `sync`. Set by the `open()` builder (used for headless shots),
-    /// where `selected` isn't known until `sync` reads the document.
+    /// `sync`. Set by the `open()` builder, where `selected` isn't known
+    /// until `sync` reads the document.
     align_highlight_on_sync: bool,
 
     rect: Rect,
@@ -96,9 +75,8 @@ pub struct Dropdown {
     is_hovered: bool,
     last_cursor: Point,
 
-    /// When `false` the dropdown is disabled: skipped by focus, rejects
-    /// input (won't open, no selection, no hover feedback) and renders
-    /// dimmed. Default `true`.
+    /// When `false`: skipped by focus, rejects input, renders dimmed.
+    /// Default `true`.
     enabled: bool,
 }
 
@@ -137,8 +115,7 @@ impl Dropdown {
         self
     }
 
-    /// Set the enabled state at build time. A disabled dropdown is skipped
-    /// by focus, won't open, rejects input and renders dimmed. Default `true`.
+    /// Set the enabled state at build time; see the `enabled` field.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -179,11 +156,9 @@ impl Dropdown {
     }
 
     /// Place the dropdown at an absolute rect without going through taffy —
-    /// the counterpart to [`TextInput::apply_layout_external`] for an app
-    /// that hand-positions a shared control over its own painted chrome. The
-    /// open list still paints in the overlay pass, so only the closed
-    /// control's box is caller-driven. Focus / a11y / CRDT-bound selection
-    /// are unaffected.
+    /// the counterpart to [`TextInput::apply_layout_external`]. The open
+    /// list still paints in the overlay pass, so only the closed control's
+    /// box is caller-driven; focus / a11y / CRDT-bound selection are unaffected.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
     }
@@ -329,9 +304,8 @@ impl Widget for Dropdown {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The open list is intentionally NOT a taffy child: it paints in
-        // the overlay pass so it doesn't reserve layout space (and the
-        // widget-tree-mirrors-taffy invariant holds whether open or not).
+        // The open list is intentionally NOT a taffy child: it paints in the
+        // overlay pass, so it doesn't reserve layout space.
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -364,7 +338,6 @@ impl Widget for Dropdown {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // --- Closed control (always painted, in the normal pass) ---
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
@@ -385,7 +358,6 @@ impl Widget for Dropdown {
         };
         scene.stroke(&Stroke::new(bw), transform, bc, None, &shape);
 
-        // Label: the selected value, or a dimmed placeholder.
         let (label, color) = if self.selected.is_empty() {
             (self.placeholder.as_str(), theme.text_dim)
         } else {
@@ -406,7 +378,6 @@ impl Widget for Dropdown {
             scene.pop_layer();
         }
 
-        // Chevron (down when closed, up when open).
         let cx = self.rect.x1 - 18.0;
         let cy = self.rect.center().y;
         let mut chev = BezPath::new();
@@ -443,7 +414,6 @@ impl Widget for Dropdown {
         let list = self.list_rect(filtered.len());
         let shape = RoundedRect::from_rect(list, theme.tokens.radii.md as f64);
 
-        // Surface + border.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -697,11 +667,8 @@ impl Widget for Dropdown {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // ComboBox: the accessible name + value is the current selection;
-        // when nothing is chosen yet we fall back to the placeholder so an
-        // AT still announces what the control is for. `selected` /
-        // `placeholder` are runtime strings (host-provided option text), not
-        // FTL keys, so no `i18n!` wrap. `expanded` mirrors the `open` field.
+        // Falls back to the placeholder when nothing is chosen. `selected`/
+        // `placeholder` are runtime strings, not FTL keys, so no `i18n!` wrap.
         let name = if !self.selected.is_empty() {
             Some(self.selected.clone())
         } else if !self.placeholder.is_empty() {
@@ -727,8 +694,7 @@ impl Widget for Dropdown {
         Some(node)
     }
 
-    /// While open the dropdown grabs every event so its out-of-layout
-    /// list is hit-testable and click-outside dismissal works.
+    /// While open, grabs every event — see module docs.
     fn wants_pointer_capture(&self) -> bool {
         self.open
     }
@@ -756,9 +722,8 @@ mod tests {
         (doc, root)
     }
 
-    /// Synthesise a `Pressed` `KeyboardInput` (mirrors the zero-init
-    /// workaround used across the ui/shell test suites — winit keeps
-    /// `KeyEvent`'s extra field `pub(crate)`).
+    /// Synthesise a `Pressed` `KeyboardInput` (winit keeps `KeyEvent`'s
+    /// extra field `pub(crate)`, so a struct literal isn't possible).
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
@@ -918,8 +883,7 @@ mod tests {
 
     #[test]
     fn commit_creates_text_object_when_absent() {
-        // No `tz` key seeded: commit must create the Text object so the
-        // host's Text-reading path keeps working.
+        // No `tz` key seeded: commit must create the Text object.
         let mut dd = Dropdown::new(opts(), "tz");
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -932,10 +896,9 @@ mod tests {
 
     #[test]
     fn repeated_selection_splices_the_diff_not_the_whole_value() {
-        // Long option labels (paths, timezone names, font families) are common.
-        // Committing one by deleting the old value and reinserting the new one
+        // Committing by deleting the old value and reinserting the new one
         // leaves a tombstone per character per selection, so a settings pane
-        // that is toggled back and forth bloats its document without bound.
+        // toggled back and forth bloats its document without bound.
         let long: Vec<String> = (0..4)
             .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
             .collect();

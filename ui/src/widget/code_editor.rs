@@ -1,22 +1,16 @@
-//! `CodeEditor` — the shared multi-line code-editing widget.
+//! The shared multi-line code-editing widget: a retained [`Widget`] that
+//! puts real code editing — caret, selection (shift/drag, word-wise),
+//! clipboard, undo/redo, IME, and a multiline a11y node — on the *same*
+//! [`TextInput`](crate::widget::TextInput) core every other text field
+//! uses. On top of that it adds a **gutter** with line numbers and a
+//! current-line highlight, **syntax highlighting** through a pluggable
+//! [`Highlighter`] (the widget owns rendering/caret/selection, the app
+//! owns the language tokenizer, and every colour comes from the OS
+//! [`Theme`]), and **soft-tab / indent** handling.
 //!
-//! A retained [`Widget`] that puts real code editing — caret, selection
-//! (shift/drag, word-wise), clipboard (Ctrl+C/V/X), undo/redo, IME, and a
-//! multiline a11y node — on the *same* [`TextInput`](crate::widget::TextInput)
-//! caret / `text_selection` / clipboard core every other text field uses. On
-//! top of that shared core it adds the three things a code surface needs and a
-//! plain field does not:
-//!
-//! * a **gutter** with line numbers and a current-line highlight,
-//! * **syntax highlighting** through a pluggable [`Highlighter`] — the widget
-//!   owns rendering/caret/selection, the app owns the language tokenizer — with
-//!   token→theme-color mapping so every colour comes from the OS [`Theme`], and
-//! * **soft-tab / indent** handling (Tab inserts spaces, Shift+Tab outdents).
-//!
-//! Apps stop each re-deriving a code editor: `code_editor`, `typst_editor`, and
-//! `db_client`'s SQL editor all previously forked caret/selection/gutter/
-//! highlight code. They supply only a language [`Highlighter`]; the editor is
-//! shared.
+//! `code_editor`, `typst_editor`, and `db_client`'s SQL editor previously
+//! each forked their own caret/selection/gutter/highlight code; now they
+//! supply only a language [`Highlighter`] and share this editor.
 //!
 //! ```no_run
 //! use ui::widget::code_editor::{CodeEditor, Language};
@@ -41,64 +35,49 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TextInput, Widget};
 
-/// The syntactic category a run of source falls into. The editor never hard
-/// -codes a colour for these — [`token_color`] resolves each to a concrete
-/// [`Color`] from the OS [`Theme`], so syntax tracks the active theme in light
-/// and dark.
+/// The syntactic category a run of source falls into. The editor never
+/// hard-codes a colour for these — [`token_color`] resolves each to a
+/// concrete [`Color`] from the OS [`Theme`], so syntax tracks the active
+/// theme in light and dark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenKind {
-    /// Language keyword (`fn`, `let`, `SELECT`, …).
     Keyword,
     /// Type name (`String`, `u32`, a capitalised identifier).
     Type,
-    /// A called / defined function or macro name.
     Function,
-    /// Numeric literal.
     Number,
-    /// String literal.
     StringLit,
-    /// Character / byte literal.
     CharLit,
-    /// Comment (line or block).
     Comment,
-    /// Operator glyphs (`+`, `=>`, `::`).
     Operator,
-    /// Punctuation / delimiters.
     Punctuation,
-    /// Attribute / annotation (`#[derive(..)]`).
+    /// `#[derive(..)]`.
     Attribute,
-    /// Preprocessor / directive (`#include`, `#!`).
+    /// `#include`, `#!`.
     Preprocessor,
     /// Named constant / literal keyword (`true`, `null`, `None`).
     Constant,
-    /// Plain identifier / variable.
     Variable,
     /// Markup heading (Typst `=`, Markdown `#`).
     Heading,
-    /// Emphasised (italic) markup run.
     Emphasis,
-    /// Strong (bold) markup run.
     Strong,
     /// Raw / inline-code / fenced markup run.
     Raw,
-    /// Inline / block maths.
     Math,
     /// Uncategorised body text (renders in the default text colour).
     Text,
 }
 
-/// A coloured run within one logical line: a byte `range` (into that line) and
-/// its [`TokenKind`].
+/// A coloured run within one logical line: a byte `range` (into that line)
+/// and its [`TokenKind`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
-    /// Byte range within the *line* the span was produced for.
     pub range: Range<usize>,
-    /// The category to colour this run as.
     pub kind: TokenKind,
 }
 
 impl Span {
-    /// Construct a span over `range` with `kind`.
     pub fn new(range: Range<usize>, kind: TokenKind) -> Self {
         Self { range, kind }
     }
@@ -115,14 +94,12 @@ pub type HlState = u64;
 /// line begins with.
 #[derive(Clone, Debug, Default)]
 pub struct LineSpans {
-    /// Coloured runs on this line, ordered by start, non-overlapping.
     pub spans: Vec<Span>,
-    /// Carry the following line should start from.
     pub carry: HlState,
 }
 
 impl LineSpans {
-    /// A line with the given spans and no carry (line-local highlighter).
+    /// No carry — for a line-local highlighter.
     pub fn line_local(spans: Vec<Span>) -> Self {
         Self { spans, carry: 0 }
     }
@@ -134,21 +111,17 @@ impl LineSpans {
 /// their language (Rust for `code_editor`, Typst for `typst_editor`, SQL for
 /// `db_client`) and hand it to [`CodeEditor::with_highlighter`].
 pub trait Highlighter {
-    /// Tokenize a single logical `line` (never contains `\n`). `carry` is the
-    /// [`HlState`] the previous line left (`0` for the first line); the returned
-    /// [`LineSpans::carry`] is what the following line begins with. Byte ranges
-    /// in the returned spans are relative to `line`.
+    /// `line` never contains `\n`. `carry` is the [`HlState`] the previous
+    /// line left (`0` for the first line); the returned [`LineSpans::carry`]
+    /// is what the following line begins with. Byte ranges in the returned
+    /// spans are relative to `line`.
     fn spans(&self, line: &str, carry: HlState) -> LineSpans;
 }
 
-/// Resolve a [`TokenKind`] to a concrete [`Color`] from the OS [`Theme`].
-///
-/// Colours are drawn from the theme's semantic (success/warning/info/danger),
-/// accent-ramp, and text tokens — all of which the theme redefines for light,
-/// dark, and each preset — so syntax re-colours automatically with the active
-/// theme and never hard-codes an RGB. (The terminal ANSI ramp is deliberately
-/// *not* used: it is shared across light and dark.) This mirrors the palette
-/// `typst_editor` shipped, generalised with distinct keyword / type slots.
+/// Colours are drawn from the theme's semantic/accent-ramp/text tokens —
+/// all redefined per theme — so syntax re-colours with the active theme
+/// and never hard-codes an RGB. The terminal ANSI ramp is deliberately
+/// *not* used: it is shared across light and dark.
 pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
     let c = &theme.tokens.colors;
     // Accent ramp indices, named for legibility (the ramp is a monochromatic
@@ -184,19 +157,14 @@ pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
 /// [`CodeEditor::with_highlighter`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
-    /// No highlighting (plain text).
     PlainText,
-    /// Rust.
     Rust,
-    /// Typst markup.
     Typst,
-    /// SQL.
     Sql,
 }
 
 impl Language {
-    /// The built-in [`Highlighter`] for this language, or `None` for
-    /// [`Language::PlainText`].
+    /// `None` for [`Language::PlainText`].
     pub fn highlighter(self) -> Option<Box<dyn Highlighter>> {
         match self {
             Language::PlainText => None,
@@ -207,33 +175,28 @@ impl Language {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The widget.
-// ---------------------------------------------------------------------------
-
-/// A shared multi-line code editor. Wraps the multiline [`TextInput`] core and
-/// enables its gutter + syntax-highlight path, so all caret / selection /
-/// clipboard / undo / IME / a11y behaviour is the one shared implementation.
+/// Wraps the multiline [`TextInput`] core and enables its gutter +
+/// syntax-highlight path, so all caret/selection/clipboard/undo/IME/a11y
+/// behaviour is the one shared implementation.
 pub struct CodeEditor {
     inner: TextInput,
 }
 
 impl CodeEditor {
-    /// A CRDT-bound editor at `path` (mirrors [`TextInput::new`]). Bind the
-    /// backing Automerge `Text` object with [`CodeEditor::bind_text`].
+    /// CRDT-bound at `path` (mirrors [`TextInput::new`]). Bind the backing
+    /// Automerge `Text` object with [`CodeEditor::bind_text`].
     pub fn new(path: Vec<PathSegment>) -> Self {
         Self { inner: Self::configure(TextInput::new(path)) }
     }
 
-    /// A local (non-CRDT) editor that owns its own string — read it with
-    /// [`CodeEditor::value`], observe edits with [`CodeEditor::take_dirty`].
+    /// Non-CRDT, owns its own string — read with [`CodeEditor::value`],
+    /// observe edits with [`CodeEditor::take_dirty`].
     pub fn local() -> Self {
         Self { inner: Self::configure(TextInput::local()) }
     }
 
-    /// Shared setup applied to whichever base `TextInput` is used: multiline
-    /// body, monospace face, plain chrome (no form-field box), a line-number
-    /// gutter, current-line highlight, and 4-space soft tabs by default.
+    /// Multiline body, monospace face, plain chrome, a line-number gutter,
+    /// current-line highlight, and 4-space soft tabs by default.
     fn configure(input: TextInput) -> TextInput {
         input
             .multiline(true)
@@ -244,57 +207,50 @@ impl CodeEditor {
             .with_tab_width(4)
     }
 
-    /// Supply the language tokenizer. The editor owns rendering/caret/selection;
-    /// this owns only the per-line lexing.
+    /// The editor owns rendering/caret/selection; this owns only the
+    /// per-line lexing.
     pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
         self.inner.set_highlighter(Some(h));
         self
     }
 
-    /// Replace (or clear with `None`) the language tokenizer after construction.
     pub fn set_highlighter(&mut self, h: Option<Box<dyn Highlighter>>) {
         self.inner.set_highlighter(h);
     }
 
-    /// Use the built-in highlighter for `lang` (a no-op highlighter for
-    /// [`Language::PlainText`]).
+    /// A no-op highlighter for [`Language::PlainText`].
     pub fn with_language(mut self, lang: Language) -> Self {
         self.inner.set_highlighter(lang.highlighter());
         self
     }
 
-    /// Number of spaces a Tab inserts (and the outdent step for Shift+Tab).
     /// `0` inserts a literal `\t`.
     pub fn with_tab_width(mut self, n: usize) -> Self {
         self.inner.set_tab_width(n);
         self
     }
 
-    /// Toggle the line-number gutter (on by default).
     pub fn with_gutter(mut self, on: bool) -> Self {
         self.inner.set_gutter(on);
         self
     }
 
-    /// Toggle the current-line highlight band (on by default).
     pub fn with_current_line_highlight(mut self, on: bool) -> Self {
         self.inner.set_current_line_highlight(on);
         self
     }
 
-    /// Override the body font size.
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.inner.set_font_size(size);
         self
     }
 
-    /// Seed the initial text (caret parked at the end, not counted as an edit).
+    /// Caret parked at the end; not counted as an edit.
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.inner.set_text(s);
         self
     }
 
-    /// Placeholder shown when empty + unfocused.
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.inner.set_placeholder(hint);
         self
@@ -306,56 +262,50 @@ impl CodeEditor {
         self
     }
 
-    /// Bind directly to an Automerge `Text` object. Every edit splices into it
-    /// and [`sync`](Widget::sync) reads from it.
+    /// Every edit splices into `obj` and [`sync`](Widget::sync) reads
+    /// from it.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.inner.bind_text(obj);
     }
 
-    /// Pull the latest text from the bound Automerge object — the convenience a
-    /// host outside the taffy tree calls each frame instead of the `Widget::sync`
-    /// pass. No-op until [`bind_text`](CodeEditor::bind_text) is set.
+    /// For a host outside the taffy tree calling each frame instead of
+    /// the `Widget::sync` pass. No-op until [`bind_text`](CodeEditor::bind_text).
     pub fn pull(&mut self, doc: &mut AutoCommit) {
         self.inner.sync(doc, &automerge::ROOT);
     }
 
-    /// Stamp inserted runs with this author id (peer-attribution highlight).
+    /// Stamps inserted runs with this author id (peer-attribution highlight).
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
     }
 
-    /// Programmatically set the whole buffer (not counted as a user edit).
+    /// Not counted as a user edit.
     pub fn set_text(&mut self, s: &str) {
         self.inner.set_text(s);
     }
 
-    /// The live buffer text.
     pub fn value(&self) -> &str {
         self.inner.value()
     }
 
-    /// The caret byte offset.
     pub fn cursor_pos(&self) -> usize {
         self.inner.cursor_pos()
     }
 
-    /// Move the caret to a byte offset (clamped to a char boundary by the core).
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.inner.set_cursor_pos(pos);
     }
 
-    /// Set the selection to span `[anchor, cursor)` (bytes); `anchor == cursor`
-    /// clears it. Used by a host driving click+drag selection.
+    /// `[anchor, cursor)` in bytes; `anchor == cursor` clears it. Used
+    /// by a host driving click+drag selection.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.inner.set_selection(anchor, cursor);
     }
 
-    /// The active selection's byte range, or `None` when nothing is selected.
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.inner.selection_range_public()
     }
 
-    /// Move the caret to the start of a 1-based line, clearing the selection.
     pub fn goto_line(&mut self, line_1based: usize) {
         let target = line_1based.saturating_sub(1);
         let mut byte = 0usize;
@@ -375,81 +325,72 @@ impl CodeEditor {
         self.inner.set_cursor_pos(byte.min(text.len()));
     }
 
-    /// Select the whole buffer.
     pub fn select_all(&mut self) {
         self.inner.select_all();
     }
 
-    /// One-shot read of user edits since the last call (see
-    /// [`TextInput::take_dirty`]).
     pub fn take_dirty(&mut self) -> Option<String> {
         self.inner.take_dirty()
     }
 
-    /// Number of logical lines in the buffer.
     pub fn line_count(&self) -> usize {
         self.inner.value().bytes().filter(|&b| b == b'\n').count() + 1
     }
 
-    /// Focus / blur the editor.
     pub fn set_focused(&mut self, on: bool) {
         self.inner.set_focus(on);
     }
 
-    /// Whether the editor holds focus.
     pub fn is_focused(&self) -> bool {
         self.inner.is_focused()
     }
 
-    /// Assign the editor's rect when embedded outside the taffy tree (a
-    /// monolithic immediate-mode host). Pairs with [`draw_embedded`].
+    /// For embedding outside the taffy tree (a monolithic immediate-mode
+    /// host). Pairs with [`draw_embedded`].
     ///
     /// [`draw_embedded`]: CodeEditor::draw_embedded
     pub fn set_rect(&mut self, rect: Rect) {
         self.inner.apply_layout_external(rect);
     }
 
-    /// The editor's laid-out rect.
     pub fn rect(&self) -> Rect {
         self.inner.get_rect()
     }
 
-    /// Scroll the body by `dy` logical px (wheel), clamped to the content.
+    /// `dy` logical px (wheel), clamped to the content.
     pub fn scroll_by(&mut self, dy: f64) {
         self.inner.scroll_by(dy);
     }
 
     // ---- geometry for host overlays (diagnostics, markers) -----------------
 
-    /// The on-screen caret rect for a byte offset — a host uses this to align a
-    /// gutter marker with a source line (`caret_rect(theme, line_start)`).
+    /// A host uses this to align a gutter marker with a source line
+    /// (`caret_rect(theme, line_start)`).
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
         self.inner.caret_rect(theme, byte)
     }
 
-    /// On-screen rects covering byte range `[start, end)` — one per visual row.
-    /// A host draws a diagnostic squiggle along each rect's bottom edge.
+    /// One rect per visual row; a host draws a diagnostic squiggle along
+    /// each rect's bottom edge.
     pub fn selection_rects(&self, theme: &Theme, start: usize, end: usize) -> Vec<Rect> {
         self.inner.selection_rects(theme, start, end)
     }
 
-    /// The shared text/caret line-height in logical px.
     pub fn line_height(&self) -> f64 {
         self.inner.body_line_height()
     }
 
-    /// The line-number gutter width in logical px.
     pub fn gutter_width(&self) -> f64 {
         self.inner.gutter_width()
     }
 
-    /// Resolve a logical-space point to a byte offset (hover hit-test).
+    /// Hover hit-test.
     pub fn byte_at_point(&self, point: Point) -> usize {
         self.inner.byte_at_point(point)
     }
 
-    /// Draw when embedded outside the taffy tree — a monolithic host that owns
-    /// its own layout calls [`set_rect`] then this each frame.
+    /// A monolithic host that owns its own layout calls [`set_rect`]
+    /// then this each frame.
     ///
     /// [`set_rect`]: CodeEditor::set_rect
     pub fn draw_embedded(
@@ -463,12 +404,10 @@ impl CodeEditor {
         self.inner.draw(scene, transform, text_renderer, theme, &presence);
     }
 
-    /// Borrow the underlying [`TextInput`] for advanced hosts.
     pub fn inner(&self) -> &TextInput {
         &self.inner
     }
 
-    /// Mutably borrow the underlying [`TextInput`] for advanced hosts.
     pub fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
     }
@@ -489,8 +428,8 @@ impl Widget for CodeEditor {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Build the leaf the way the inner multiline input would, but register
-        // *this* widget so the host drives CodeEditor's own passes.
+        // Registers *this* widget (not the inner input) so the host
+        // drives CodeEditor's own passes.
         let node = taffy
             .new_leaf(Style {
                 size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
@@ -653,7 +592,6 @@ impl Widget for CodeEditor {
 // Built-in highlighters.
 // ---------------------------------------------------------------------------
 
-/// Helper: byte offset of the next occurrence of `needle` at/after `from`.
 fn find_from(hay: &str, from: usize, needle: char) -> Option<usize> {
     hay[from..].find(needle).map(|i| from + i)
 }
@@ -670,8 +608,6 @@ pub struct GenericHighlighter {
 }
 
 impl GenericHighlighter {
-    /// Build from keyword and constant lists, a line-comment prefix (e.g.
-    /// `"//"`), and whether keyword matching is case-insensitive.
     pub fn new(
         keywords: &[&str],
         constants: &[&str],
@@ -708,7 +644,6 @@ impl Highlighter for GenericHighlighter {
         let n = line.len();
         let mut i = 0usize;
         while i < n {
-            // Line comment.
             if let Some(lc) = &self.line_comment {
                 if line[i..].starts_with(lc.as_str()) {
                     spans.push(Span::new(i..n, TokenKind::Comment));
@@ -716,21 +651,18 @@ impl Highlighter for GenericHighlighter {
                 }
             }
             let c = bytes[i] as char;
-            // String literal (double or single quote).
             if c == '"' || c == '\'' {
                 let end = string_end(line, i, c);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
             }
-            // Number.
             if c.is_ascii_digit() {
                 let end = number_end(line, i);
                 spans.push(Span::new(i..end, TokenKind::Number));
                 i = end;
                 continue;
             }
-            // Identifier / keyword.
             if is_ident_start(c) {
                 let end = ident_end(line, i);
                 let word = &line[i..end];
@@ -762,7 +694,6 @@ pub struct RustHighlighter {
 }
 
 impl RustHighlighter {
-    /// A Rust highlighter with the standard keyword / constant sets.
     pub fn new() -> Self {
         const KW: &[&str] = &[
             "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
@@ -784,7 +715,6 @@ impl Default for RustHighlighter {
 impl Highlighter for RustHighlighter {
     fn spans(&self, line: &str, carry: HlState) -> LineSpans {
         let n = line.len();
-        // Continuing a block comment from a previous line.
         if carry & IN_BLOCK_COMMENT != 0 {
             if let Some(close) = line.find("*/") {
                 let end = close + 2;
@@ -802,12 +732,10 @@ impl Highlighter for RustHighlighter {
         let mut i = 0usize;
         let mut carry_out = 0;
         while i < n {
-            // Line comment.
             if line[i..].starts_with("//") {
                 spans.push(Span::new(i..n, TokenKind::Comment));
                 break;
             }
-            // Block comment open.
             if line[i..].starts_with("/*") {
                 if let Some(rel) = line[i + 2..].find("*/") {
                     let end = i + 2 + rel + 2;
@@ -820,29 +748,26 @@ impl Highlighter for RustHighlighter {
                 break;
             }
             let c = bytes[i] as char;
-            // Attribute: `#[ … ]` or `#![ … ]`.
             if c == '#' && (line[i..].starts_with("#[") || line[i..].starts_with("#![")) {
                 let end = find_from(line, i, ']').map(|e| e + 1).unwrap_or(n);
                 spans.push(Span::new(i..end, TokenKind::Attribute));
                 i = end;
                 continue;
             }
-            // String literal.
             if c == '"' {
                 let end = string_end(line, i, '"');
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
             }
-            // Char literal vs lifetime: `'a'` / `'\n'` is a char; `'a` alone is a
-            // lifetime (colour it as an attribute-ish type marker → Keyword).
+            // `'a'` / `'\n'` is a char literal; `'a` alone is a lifetime,
+            // coloured as an attribute-ish type marker → Keyword.
             if c == '\'' {
                 if let Some(end) = char_literal_end(line, i) {
                     spans.push(Span::new(i..end, TokenKind::CharLit));
                     i = end;
                     continue;
                 }
-                // Lifetime: 'ident
                 let end = ident_end(line, i + 1);
                 if end > i + 1 {
                     spans.push(Span::new(i..end, TokenKind::Keyword));
@@ -850,14 +775,12 @@ impl Highlighter for RustHighlighter {
                     continue;
                 }
             }
-            // Number.
             if c.is_ascii_digit() {
                 let end = number_end(line, i);
                 spans.push(Span::new(i..end, TokenKind::Number));
                 i = end;
                 continue;
             }
-            // Identifier / keyword / macro / function call.
             if is_ident_start(c) {
                 let end = ident_end(line, i);
                 let word = &line[i..end];
@@ -867,7 +790,7 @@ impl Highlighter for RustHighlighter {
                 if let Some(kind) = self.generic.classify_word(word) {
                     spans.push(Span::new(i..end, kind));
                 } else if is_macro {
-                    // include the `!` in the function span.
+                    // Include the `!` in the function span.
                     spans.push(Span::new(i..end + 1, TokenKind::Function));
                     i = end + 1;
                     continue;
@@ -890,7 +813,6 @@ pub struct SqlHighlighter {
 }
 
 impl SqlHighlighter {
-    /// A SQL highlighter with a broad ANSI keyword set.
     pub fn new() -> Self {
         const KW: &[&str] = &[
             "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
@@ -983,9 +905,8 @@ const IN_FENCE: HlState = 1;
 
 /// A pragmatic Typst highlighter — a per-line lexer recognising headings,
 /// comments, strings, `#`-functions, numbers, raw code (inline and fenced),
-/// maths, `*strong*` and `_emph_` runs. Fenced code blocks are carried across
-/// lines. Ported from `typst_editor`'s in-app highlighter so the migration
-/// preserves its look.
+/// maths, `*strong*` and `_emph_` runs. Fenced code blocks are carried
+/// across lines.
 pub struct TypstHighlighter;
 
 impl Highlighter for TypstHighlighter {
@@ -1000,7 +921,6 @@ impl Highlighter for TypstHighlighter {
         if carry & IN_FENCE != 0 {
             return LineSpans { spans: vec![Span::new(0..n, TokenKind::Raw)], carry: IN_FENCE };
         }
-        // Heading line.
         if trimmed.starts_with('=') {
             return LineSpans { spans: vec![Span::new(0..n, TokenKind::Heading)], carry: 0 };
         }
@@ -1009,33 +929,28 @@ impl Highlighter for TypstHighlighter {
         let mut i = 0usize;
         while i < n {
             let c = bytes[i] as char;
-            // Line comment.
             if line[i..].starts_with("//") {
                 spans.push(Span::new(i..n, TokenKind::Comment));
                 break;
             }
-            // String literal.
             if c == '"' {
                 let end = find_from(line, i + 1, '"').map(|e| e + 1).unwrap_or(n);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
             }
-            // Inline raw code.
             if c == '`' {
                 let end = find_from(line, i + 1, '`').map(|e| e + 1).unwrap_or(n);
                 spans.push(Span::new(i..end, TokenKind::Raw));
                 i = end;
                 continue;
             }
-            // Maths span.
             if c == '$' {
                 let end = find_from(line, i + 1, '$').map(|e| e + 1).unwrap_or(n);
                 spans.push(Span::new(i..end, TokenKind::Math));
                 i = end;
                 continue;
             }
-            // `#` function / keyword.
             if c == '#' {
                 let mut j = i + 1;
                 while j < n {
@@ -1051,7 +966,6 @@ impl Highlighter for TypstHighlighter {
                 i = end;
                 continue;
             }
-            // *strong* run.
             if c == '*' {
                 if let Some(close) = find_from(line, i + 1, '*') {
                     if close > i + 1 {
@@ -1061,7 +975,6 @@ impl Highlighter for TypstHighlighter {
                     }
                 }
             }
-            // _emph_ run.
             if c == '_' {
                 if let Some(close) = find_from(line, i + 1, '_') {
                     if close > i + 1 {
@@ -1106,7 +1019,6 @@ fn is_ident_continue(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// End (exclusive byte offset) of an identifier starting at `i`.
 fn ident_end(s: &str, i: usize) -> usize {
     let mut j = i;
     for c in s[i..].chars() {
@@ -1176,8 +1088,8 @@ fn char_literal_end(s: &str, i: usize) -> Option<usize> {
     }
 }
 
-/// Shift every span's range right by `by` bytes (used when a leading block
-/// -comment prefix is prepended to a line's remaining spans).
+/// Used when a leading block-comment prefix is prepended to a line's
+/// remaining spans.
 fn shift_spans(spans: &mut [Span], by: usize) {
     for sp in spans.iter_mut() {
         sp.range.start += by;
@@ -1204,7 +1116,6 @@ mod tests {
         let hl = RustHighlighter::new();
         let line = "let x = 42;";
         let ls = hl.spans(line, 0);
-        // `let` keyword, `42` number.
         let kw = ls.spans.iter().find(|s| s.kind == TokenKind::Keyword).unwrap();
         assert_eq!(&line[kw.range.clone()], "let");
         let num = ls.spans.iter().find(|s| s.kind == TokenKind::Number).unwrap();
@@ -1230,7 +1141,6 @@ mod tests {
         assert_eq!(l1.carry & IN_BLOCK_COMMENT, IN_BLOCK_COMMENT);
         let l2 = hl.spans("*/ done();", l1.carry);
         assert_eq!(l2.carry & IN_BLOCK_COMMENT, 0, "closing */ clears the carry");
-        // The `*/` prefix is a comment, and `done` after it is a function.
         assert_eq!(l2.spans[0].kind, TokenKind::Comment);
         assert!(l2.spans.iter().any(|s| s.kind == TokenKind::Function));
     }
@@ -1274,13 +1184,10 @@ mod tests {
     #[test]
     fn token_color_changes_with_theme() {
         use crate::color_compat::ColorCompat;
-        // A keyword is coloured from the theme's ANSI ramp, so light and dark
-        // resolve to different concrete colours.
         let dark = token_color(TokenKind::Keyword, &Theme::dark());
         let light = token_color(TokenKind::Keyword, &Theme::light());
         let rgb = |c: Color| [c.r(), c.g(), c.b()];
         assert_ne!(rgb(dark), rgb(light), "keyword colour must track the theme");
-        // Comment maps to the theme's dim text token.
         assert_eq!(
             rgb(token_color(TokenKind::Comment, &Theme::dark())),
             rgb(Theme::dark().text_dim),
@@ -1294,8 +1201,6 @@ mod tests {
         assert!(Language::Typst.highlighter().is_some());
         assert!(Language::PlainText.highlighter().is_none());
     }
-
-    // ---- widget-level: the real edit/caret/selection/clipboard/a11y path ----
 
     use automerge::AutoCommit;
     use taffy::{Style, TaffyTree};
@@ -1416,14 +1321,12 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        // Select all through the real Ctrl+A path, then confirm a live selection.
         assert!(drive(&mut ed, &mut doc, &char_event("a"), &mods(true, false)));
         assert_eq!(
             ed.inner().selection_range_public(),
             Some((0, 3)),
             "Ctrl+A selects the whole buffer on the real path",
         );
-        // Ctrl+X removes the selection regardless of the clipboard backend.
         assert!(drive(&mut ed, &mut doc, &char_event("x"), &mods(true, false)));
         assert_eq!(ed.value(), "", "Ctrl+X cuts the selection through the shared core");
     }
@@ -1434,7 +1337,6 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        // Caret home, then Ctrl+Shift+Right selects the first word.
         drive(&mut ed, &mut doc, &named_event(NamedKey::Home), &mods(false, false));
         drive(&mut ed, &mut doc, &named_event(NamedKey::ArrowRight), &mods(true, true));
         let sel = ed.inner().selection_range_public().expect("a selection exists");
@@ -1467,8 +1369,8 @@ mod tests {
         let mut ed = CodeEditor::local().with_language(Language::Rust);
         ed.set_text("let x = 1");
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        // A draw builds the visual lines + highlight cache and runs the real
-        // colouring path (`row_segments` → `token_color`).
+        // Draw builds the visual lines + highlight cache and runs the
+        // real colouring path (`row_segments` → `token_color`).
         draw_once(&mut ed, &theme);
         let segs = ed.inner().code_row_colors(&theme);
         let rgb = |c: Color| [c.r(), c.g(), c.b()];
@@ -1478,7 +1380,6 @@ mod tests {
             rgb(token_color(TokenKind::Keyword, &theme)),
             "the `let` keyword is drawn in the themed keyword colour",
         );
-        // A default-coloured gap (whitespace / identifier) uses text_primary.
         assert!(
             segs.iter().any(|(_, c)| rgb(*c) == rgb(theme.text_primary)),
             "uncoloured runs fall back to the theme text colour",
@@ -1487,9 +1388,8 @@ mod tests {
 
     #[test]
     fn no_gutter_offset_when_gutter_disabled() {
-        // With the gutter on, the caret x is pushed right of the plain inset;
-        // turning it off collapses that offset — proves the gutter participates
-        // in the shared caret geometry.
+        // Proves the gutter participates in the shared caret geometry:
+        // turning it off collapses the offset it pushes the caret by.
         let theme = Theme::dark();
         let mut with_g = CodeEditor::local().with_initial_value("x");
         with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));

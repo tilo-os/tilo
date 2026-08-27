@@ -6,10 +6,10 @@
 //! `panic = "abort"` turns the panic into `SIGABRT` — leaving windows on
 //! screen whose processes no longer exist.
 //!
-//! The reproduction runs in a child process for two reasons: the libtest
-//! harness installs an output capture that `eprintln!` checks *before* it ever
-//! reaches file descriptor 2, so an in-process test cannot make it fail; and
-//! the thing asserted is that the process dies, which only a process can show.
+//! The reproduction runs in a child process: the libtest harness installs an
+//! output capture that `eprintln!` checks *before* it reaches file descriptor
+//! 2, so an in-process test cannot make it fail, and the thing asserted (the
+//! process dies) only a process can show.
 
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::process::ExitStatusExt;
@@ -21,9 +21,9 @@ use ui::diag;
 /// Set on the child to select which write it should attempt.
 const ROLE: &str = "QOS_BROKEN_PIPE_ROLE";
 
-/// The name libtest filters on, which is the module path minus the crate root
-/// that `module_path!()` includes. These files are modules of one `it` binary,
-/// so the bare function name matches nothing.
+/// The name libtest filters on: the module path minus the crate root that
+/// `module_path!()` includes. These files are modules of one `it` binary, so
+/// the bare function name matches nothing.
 fn test_path(name: &str) -> String {
     match module_path!().split_once("::") {
         Some((_, module)) => format!("{module}::{name}"),
@@ -54,20 +54,17 @@ fn app_whose_log_reader_left(role: &str, test_name: &str) -> ExitStatus {
     child.wait().expect("wait for the child")
 }
 
-/// The child half: wait until the parent has certainly closed the reading end,
-/// then make the write under test.
-///
-/// Returns `false` in the parent, so the test body goes on to spawn a child. It
-/// never returns in the child — the write either kills it or `exit(0)` does —
-/// and the caller's `return` on `true` is only a guard against that changing.
+/// Returns `false` in the parent, so the test body goes on to spawn a
+/// child. It never returns in the child — the write either kills it or
+/// `exit(0)` does — the caller's `return` on `true` is only a guard
+/// against that changing.
 fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
     if std::env::var(ROLE).as_deref() != Ok(role) {
         return false;
     }
-    // A test binary must be built with unwinding for the harness to work, so
-    // the release profile's `panic = "abort"` is reproduced with a hook that
-    // aborts. Without it the child would exit 101 and the signal the
-    // coredumps recorded would go unasserted.
+    // A test binary must be built with unwinding, so the release profile's
+    // `panic = "abort"` is reproduced with a hook that aborts — without it
+    // the child would exit 101 and the signal would go unasserted.
     std::panic::set_hook(Box::new(|_| std::process::abort()));
     std::thread::sleep(std::time::Duration::from_millis(150));
     write();
@@ -119,15 +116,13 @@ fn diag_lets_the_app_live_when_the_reader_of_stderr_is_gone() {
     );
 }
 
-// The fix must still deliver the line when there is someone to read it. These
-// run in-process: `diag!` writes to `io::stderr()` directly, so unlike
-// `eprintln!` it is not intercepted by the harness's capture and really does
-// reach the descriptor under test.
+// The fix must still deliver the line when there is someone to read it.
+// These run in-process: `diag!` writes to `io::stderr()` directly, so unlike
+// `eprintln!` it is not intercepted by the harness's capture.
 
 /// Serialises the tests below: file descriptor 2 is process-wide.
 static STDERR_SLOT: Mutex<()> = Mutex::new(());
 
-/// Point the process's stderr at `writer_fd`, run `body`, then restore it.
 fn with_stderr_pointed_at<R>(writer_fd: i32, body: impl FnOnce() -> R) -> R {
     // SAFETY: raw fd juggling on a descriptor this process owns, serialised by
     // `STDERR_SLOT` so no other test observes fd 2 mid-swap.
@@ -162,12 +157,10 @@ fn diag_writes_the_line_when_stderr_works() {
     assert_eq!(&buf[..n], b"[app] recv CRDTUpdate 64B\n");
 }
 
-/// A diagnostic line reaches the pipe as one write.
-///
 /// Not tidiness: the compositor's relay decodes this stderr as UTF-8, and a
-/// line torn between two halves of a multi-byte character fails that decode —
-/// a relay that stops on a decode error closes the reading end, which is the
-/// other way an application loses the reader of its stderr.
+/// line torn between two halves of a multi-byte character fails that decode
+/// — a relay that stops on a decode error closes the reading end, which is
+/// the other way an application loses the reader of its stderr.
 #[test]
 fn a_diagnostic_line_reaches_the_pipe_whole() {
     let _guard = STDERR_SLOT.lock().unwrap_or_else(|e| e.into_inner());

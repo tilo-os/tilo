@@ -36,9 +36,8 @@ impl EglExport {
     /// on any failure so the caller can fall back to the SHM path.
     pub fn setup() -> Option<Self> {
         // Default to the first render node; a hybrid machine may need the
-        // node with a working mesa driver (e.g. the AMD iGPU) selected via
-        // QOS_WEBVIEW_DRM_NODE, since a node without a usable driver (an
-        // unsupported dGPU) can't back an EGL display.
+        // node with a working mesa driver selected via QOS_WEBVIEW_DRM_NODE,
+        // since a node without one can't back an EGL display.
         let node_path = std::env::var("QOS_WEBVIEW_DRM_NODE")
             .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
         let node = std::fs::OpenOptions::new()

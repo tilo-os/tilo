@@ -1,22 +1,17 @@
 //! Screen 5 — mint a channel invite.
 //!
-//! Channel owner picks a title + expiry, clicks "Generate invite",
-//! and gets back:
-//! - A `qos://invite/<base32>` URL with a "Copy" button.
-//! - A QR-code rendering of the URL.
-//! - A "Revoke" button — wipes the local copy so the user can mint a
-//!   fresh one.
+//! Channel owner picks a title + expiry, clicks "Generate invite", and gets
+//! back a `qos://invite/<base32>` URL (with Copy/Revoke buttons) and a
+//! QR-code rendering of it.
 //!
-//! Cryptographic flow:
-//! 1. Generate a one-time delegation keypair.
-//! 2. Wrap the invitee role + expiry + delegation pubkey in an
-//!    `InviteEnvelope` and sign over the canonical view with the
-//!    owner's signing key.
-//! 3. Encode the envelope as postcard + base32 into the URL.
+//! Cryptographic flow: generate a one-time delegation keypair, wrap the
+//! invitee role + expiry + delegation pubkey in an `InviteEnvelope` signed
+//! over the canonical view with the owner's key, then encode it as postcard +
+//! base32 into the URL.
 //!
-//! The screen exposes `mint_now` for tests / shell so the owner's
-//! signing key (an Ed25519 secret) can be passed in without
-//! threading it through the widget event surface.
+//! `mint_now` is exposed for tests / shell so the owner's signing key (an
+//! Ed25519 secret) can be passed in without threading it through the widget
+//! event surface.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -207,9 +202,8 @@ impl InviteMintScreen {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
-                // Generating an invite needs the owner's key, which the
-                // shell-side host provides through `mint_now`. The
-                // generate button is wired up at the shell layer.
+                // Needs the owner's key, which the shell-side host provides
+                // through `mint_now`; the button is wired up at that layer.
                 if self.generate_rect.contains(self.last_cursor) {
                     *handled = true;
                     self.error = Some("Wire owner signing key via mint_now".to_string());
@@ -257,7 +251,6 @@ impl Widget for InviteMintScreen {
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let pad = 24.0;
-        // Expiry chooser — four equal-width segments.
         let seg_w = (card_w - 2.0 * pad) / 4.0;
         let seg_h = 36.0;
         let seg_y = card_y + 130.0;
@@ -384,7 +377,6 @@ impl Widget for InviteMintScreen {
                 None,
             );
         }
-        // Generate button.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -405,7 +397,6 @@ impl Widget for InviteMintScreen {
                 )),
             None,
         );
-        // URL display.
         if let Some(url) = &self.last_url {
             let text_y = card.y0 + 240.0;
             text_renderer.draw_text(
@@ -417,7 +408,6 @@ impl Widget for InviteMintScreen {
                 None,
             );
         }
-        // Copy + Revoke buttons.
         scene.fill(
             Fill::NonZero,
             transform,

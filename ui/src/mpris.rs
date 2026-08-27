@@ -1,27 +1,18 @@
 //! MPRIS — `org.mpris.MediaPlayer2` desktop media control, in the toolkit.
 //!
-//! This is the shared, app-agnostic core that publishes now-playing metadata +
-//! transport state to the desktop (GNOME's top-bar media widget, `playerctl`,
-//! KDE, …) and receives **media-key** / system-widget commands back. It was
-//! lifted out of the Music app so that *any* `ui` consumer — the
-//! [`crate::widget::video_player::VideoPlayer`] widget, and hence Tube and the
-//! local video player — gets media-key + top-bar now-playing for free.
+//! Shared, app-agnostic core that publishes now-playing metadata + transport
+//! state to the desktop and receives media-key / system-widget commands back.
+//! Lifted out of the Music app so any `ui` consumer (e.g.
+//! [`crate::widget::video_player::VideoPlayer`], hence Tube) gets this free.
 //!
-//! The real D-Bus serving is gated behind the `mpris` feature (via [`zbus`]);
-//! the pure state/command core always compiles so the default build + tests
-//! exercise it without a D-Bus dependency.
+//! Real D-Bus serving is gated behind the `mpris` feature (via [`zbus`]); the
+//! pure state/command core always compiles so tests run without D-Bus.
 //!
-//! ## Threading
-//!
-//! MPRIS lives on its own worker thread with a private Tokio runtime — the UI
-//! thread is never blocked by D-Bus. Two channels bridge it to the widget:
-//!   * **commands** (bus → widget): an external Play/Pause/… lands as a
-//!     [`MprisCommand`] the widget drains each frame
-//!     ([`MprisHandle::drain_commands`]) and applies to the engine.
-//!   * **publishes** (widget → bus): the widget pushes a [`PlayerSnapshot`]
-//!     whenever state changes ([`MprisHandle::publish`]); the worker updates the
-//!     served properties and emits `PropertiesChanged` for
-//!     `PlaybackStatus` / `Metadata` / `Volume` / the `Can*` flags.
+//! Runs on its own worker thread with a private Tokio runtime so the UI
+//! thread is never blocked. Two channels bridge it to the widget: external
+//! commands land as [`MprisCommand`]s drained each frame
+//! ([`MprisHandle::drain_commands`]); the widget pushes a [`PlayerSnapshot`]
+//! on change ([`MprisHandle::publish`]) and the worker emits `PropertiesChanged`.
 
 use std::sync::mpsc::Receiver;
 
@@ -58,8 +49,6 @@ pub struct MprisConfig {
 }
 
 impl MprisConfig {
-    /// Build a config from an MPRIS app suffix + human-readable identity. The
-    /// bus name becomes `org.mpris.MediaPlayer2.<app_id>` (MPRIS convention).
     pub fn new(app_id: &str, identity: &str) -> Self {
         Self {
             bus_name: format!("org.mpris.MediaPlayer2.{app_id}"),
@@ -265,10 +254,6 @@ pub fn track_object_path(track_id: &str) -> String {
 
 /// The single object path both MPRIS interfaces live at.
 pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
-
-// ---------------------------------------------------------------------------
-// Real D-Bus implementation (feature = "mpris").
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "mpris")]
 mod imp {
@@ -636,11 +621,9 @@ mod tests {
         });
     }
 
-    /// Hermetic D-Bus round-trip (`--features mpris`): serve the real MPRIS
-    /// interfaces over an in-process p2p socket pair (no session bus), then from
-    /// a client proxy call Pause / Next / Play and read `PlaybackStatus` +
-    /// `Metadata` — proving the toolkit's MPRIS service *responds* and *reflects*
-    /// the player state a `VideoPlayer` publishes.
+    /// Hermetic round-trip over an in-process p2p socket pair (no session
+    /// bus): proves the served MPRIS interfaces *respond* and *reflect* the
+    /// player state a `VideoPlayer` publishes.
     #[cfg(feature = "mpris")]
     #[tokio::test]
     async fn mpris_interface_responds_and_reflects_state() {
@@ -714,7 +697,6 @@ mod tests {
             .expect("title in metadata");
         assert_eq!(title, "Runaway", "served now-playing reflected over D-Bus");
 
-        // Media-key style control reaches the widget as commands.
         player_proxy.call_method("Pause", &()).await.expect("Pause call");
         player_proxy.call_method("Next", &()).await.expect("Next call");
         player_proxy.call_method("Play", &()).await.expect("Play call");
@@ -728,7 +710,6 @@ mod tests {
             "external control reaches the widget as commands"
         );
 
-        // A published state change propagates + is readable as new state.
         let mut updated = snap.clone();
         updated.status = PlaybackStatus::Paused;
         imp::apply_update(&server_conn, &snap, &updated).await.expect("apply update");

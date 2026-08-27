@@ -5,18 +5,16 @@
 //! An app that uses `ui` cannot avoid touching `vello`, `taffy`, `winit` and
 //! `automerge` — it hands scenes to a widget tree, sizes nodes in the same
 //! Taffy tree, receives the same winit events, and mutates the same Automerge
-//! document. Each of those is re-exported here, and an app should prefer
-//! `ui::vello` over declaring its own `vello` dependency.
+//! document. Each is re-exported here; prefer `ui::vello` over declaring a
+//! separate `vello` dependency.
 //!
 //! This is not a style preference. Cargo will happily resolve two
 //! semver-incompatible copies of a crate into one binary, and for `vello` and
-//! `winit` that is fatal rather than merely wasteful: `vello::Scene` from one
-//! copy is a *different type* from `vello::Scene` in the other, so a widget
-//! tree built against the toolkit's copy cannot be handed a scene built
-//! against the app's. The failure is a type error at best and a confusing one
-//! at that ("expected `Scene`, found `Scene`"). Going through `ui::` makes the
-//! version question unaskable — there is exactly one copy, and it is the one
-//! the widget tree was compiled against.
+//! `winit` that is fatal: `vello::Scene` from one copy is a *different type*
+//! from `vello::Scene` in the other, so a widget tree built against the
+//! toolkit's copy cannot be handed a scene built against the app's — a type
+//! error at best, and a confusing one ("expected `Scene`, found `Scene`").
+//! Going through `ui::` makes the version question unaskable.
 //!
 //! ```ignore
 //! use ui::vello::kurbo::{Affine, Rect};   // not `use vello::kurbo::...`
@@ -24,9 +22,8 @@
 //! ```
 //!
 //! Apps that already declare these directly keep working — the workspace
-//! pins every member to one version, so they resolve to the same crate. The
-//! re-exports are what lets new code get it right by default, and what lets an
-//! app drop the direct dependency when it is next touched.
+//! pins every member to one version. The re-exports are what lets new code
+//! get it right by default.
 
 pub mod a11y;
 pub mod a11y_tree;
@@ -85,10 +82,8 @@ pub mod search;
 pub mod profiling;
 pub mod sysdirs;
 
-// The toolkit's own stack, re-exported so an app never has to name a version.
-// See the crate-level note above for why this matters for `vello` and `winit`
-// in particular. `kurbo` and `peniko` come through `vello`, which is where the
-// geometry and paint types in every `draw` signature actually live.
+// `kurbo` and `peniko` come through `vello`, where the geometry and paint
+// types in every `draw` signature live.
 pub use automerge;
 pub use taffy;
 pub use vello;
@@ -116,16 +111,13 @@ pub use profiling::{
 };
 pub use selection::SelectionModel;
 
-// Accessibility semantic model (W0). `a11y::Role` / `a11y::Action` are reached
-// through the module path to avoid clashing with `permissions::{Role}` /
-// `permissions::Verb`, which are already re-exported at the crate root.
+// `a11y::Role` / `a11y::Action` are reached through the module path to avoid
+// clashing with `permissions::{Role}` / `permissions::Verb`, which are
+// already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
-// The retained semantic tree: stable frame-to-frame node identity + diffing,
-// with per-node affordances tied to the qOS action model.
 pub use a11y_tree::{SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta};
 
-// Built-in screen reader (W6): the first-party narrator over the a11y tree +
-// qos-tts. `describe` is the pure phrase-builder; `ScreenReader` the imperative
+// `describe` is the pure phrase-builder; `ScreenReader` the imperative
 // narrator the `App` holds when `A11ySettings.screen_reader` is on.
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
@@ -138,37 +130,29 @@ pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
-// The qOS ACTION model (re-exported so apps get the whole vocabulary through
-// `ui::` without a second `use qos_actions` line) + the Ctrl+K bridge.
 pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use qos_actions;
-// Phase 1 (Audit timeline) widgets + their shared types. The
-// `collab_types::OpClass` / `ArtifactKind` re-exports flow through
-// these widgets, so callers can build a `HistoryEntry` without taking
-// a direct dependency on the collab-types crate.
+// Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
+// `ArtifactKind` re-exports flow through these widgets, so callers can build
+// a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_scrubber::HistoryScrubber;
-// Grouping: what turns a flood of individual changes into a small number of
-// bands a person can name, collapse, and restore to.
 pub use widget::history_group::{
     group_entries, GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, OpFamily,
     MAX_GROUP_DEPTH,
 };
-// The one-line in-place field both history surfaces name things with.
 pub use widget::name_field::{NameField, NameFieldOutcome};
-// The producer that turns a live CRDT document into the rows those two
-// widgets render, plus the actor-id → person directory that gives each row
-// an author. Re-exported here so an app reaches the whole history stack
-// through `ui::` without knowing the module layout.
+// Re-exported so an app reaches the whole history stack through `ui::`
+// without knowing the module layout.
 pub use history_source::{AuthorDirectory, HistorySource, heads_for_entry, version_index_for_entry};
 pub use history_source::groups as history_groups;
-// Undoing a run of changes that never reached anybody's undo stack — a remote
-// author's, an agent's — plus the cross-application run record above it.
+// Undoing a run of changes that never reached anybody's undo stack — a
+// remote author's, an agent's.
 pub use history_source::revert::{
     latest_run_by, plan_revert, revert_run, ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot,
 };
@@ -178,13 +162,13 @@ pub use history_source::run_undo::{
 pub use history_source::runs::{
     forget_run, read_runs, record_run, run_starting_at, AgentRun, RunStep,
 };
-// Phase 5 (Channel browser) — see `widget/channel_browser.rs` module
-// doc-comment for the design intent. Source-agnostic; consumes
-// `Vec<ChannelEntry>` from chrome state.
+// Channel browser — see `widget/channel_browser.rs` module doc-comment for
+// the design intent. Source-agnostic; consumes `Vec<ChannelEntry>` from
+// chrome state.
 pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
-// Phase 4 (Conflict toolkit) — see `widget/merge_strategy.rs` module
-// doc-comment for the design intent and convention for declaring a
-// merge strategy on a CRDT-bound widget.
+// Conflict toolkit — see `widget/merge_strategy.rs` module doc-comment for
+// the design intent and convention for declaring a merge strategy on a
+// CRDT-bound widget.
 pub use widget::merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
     surface_banner,
@@ -204,11 +188,8 @@ pub use text_selection::{
 };
 pub use text_edit::{Edit, EditCore, Motion};
 
-// Shared motion system — one curve set, one wall-clock driver, one
-// interruptible open/close transition, one interactive spring.
 pub use animation::{ease_out, Animated, Curve, Lerp, Spring, Transition};
 
-// Collaboration contract types (Phase C).
 pub use presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
 // The capability model (`collab_types::caps`), reached through the
 // toolkit. These are re-exports, not toolkit-local copies — see

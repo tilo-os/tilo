@@ -3,17 +3,15 @@
 //!
 //! This exists because the defect it guards shipped: `ButtonStyle::Primary`
 //! and `Danger` hard-coded a white label over `accent_primary` /
-//! `semantic.danger`, and the selected segment of a toggle group did the same.
-//! On the dark palette the primary button's label measured 3.17:1, and the
-//! high-contrast palette — the one a person picks *because* they need contrast
-//! — was the worst of the three at 3.00:1 for the button and 2.37:1 once
-//! hovered.
+//! `semantic.danger`, and a toggle group's selected segment did the same. On
+//! the dark palette the primary button's label measured 3.17:1, and
+//! high-contrast — the palette a person picks *because* they need contrast —
+//! was worst of the three at 3.00:1 for the button and 2.37:1 hovered.
 //!
-//! A per-widget test on one theme could not have caught that, which is why this
-//! one is a sweep. The unit tests next to each widget pin the shape of a single
-//! style; this walks the product of {style, state} × {theme} and asserts the
-//! only thing that matters at the end of it — that the label clears its floor
-//! against the fill the widget resolved for itself.
+//! A per-widget test on one theme could not have caught that, which is why
+//! this one is a sweep over the product of {style, state} × {theme},
+//! asserting only that the label clears its floor against the fill the
+//! widget resolved for itself.
 
 use ui::a11y::contrast_ratio;
 use ui::color_compat::ColorCompat;

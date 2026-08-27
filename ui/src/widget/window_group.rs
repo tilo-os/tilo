@@ -15,57 +15,28 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
 
-/// Per-mille of the strip's usable width taken by each named tier.
-///
-/// The tiers are *fractions*, not pixel counts, because the strip they
-/// live in is as wide as the display: a fixed 600 px "Normal" is 37 % of
-/// a 1600 px output and 15 % of a 3840 px one, so the same setting meant
-/// something different on every monitor and no setting at all could fill
-/// a large one.
-///
-/// Thirds are the grid the strip already implies: `Narrow + Wide` and
-/// three `Narrow`s each tile the usable width exactly, so cycling a
-/// group through the tiers lands on layouts that divide the strip
-/// cleanly rather than leaving a sliver. `Wide` is the whole usable
-/// width so a lone window can genuinely fill its output — the previous
-/// model's 1200 px ceiling made 31 % the widest attainable on a 4K
-/// panel.
+/// Per-mille (not px) so a tier means the same fraction on every monitor.
+/// Thirds tile the strip cleanly; `Wide` is the full usable width.
 pub const WIDTH_NARROW_PERMILLE: u16 = 333;
-/// See [`WIDTH_NARROW_PERMILLE`]. Two thirds is the launch default: it
-/// reads as the dominant window of the strip while still showing that
-/// there is strip left to scroll into, which a full-width default hides.
 pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
-/// See [`WIDTH_NARROW_PERMILLE`]. The whole usable width of the output.
 pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
 
-/// Narrowest fraction a manual resize can dial in, per-mille. 15 % of
-/// the strip keeps a group readable as a side panel on a wide output
-/// without letting a drag collapse it to a sliver; [`WIDTH_FLOOR_PX`]
-/// backs it up on small outputs where 15 % is too few pixels to use.
+/// [`WIDTH_FLOOR_PX`] backs this up on outputs too small for 15% to be
+/// usable pixels.
 pub const WIDTH_MIN_PERMILLE: u16 = 150;
-/// Widest fraction a group may occupy: the full usable width. Anything
-/// beyond that would push the group past the output it sits on.
 pub const WIDTH_MAX_PERMILLE: u16 = 1000;
 
-/// Absolute floor, in logical px, under which a group is no longer
-/// usable regardless of how narrow the output is. A pure fraction has no
-/// floor — 15 % of an 800 px strip is 120 px, which fits neither a tab
-/// pill nor a scrollbar — so the resolved width is clamped up to this
-/// (and back down to the usable width if the strip is narrower still).
+/// A pure fraction has no floor — 15% of an 800px strip is 120px, too
+/// narrow for a tab pill or scrollbar — so resolved width clamps up to
+/// this (and back down to the strip width if that's narrower still).
 pub const WIDTH_FLOOR_PX: f64 = 240.0;
 
-/// Usable width assumed when nothing has told the strip how wide its
-/// output is. Only reachable from a bare `ui` host that never pushes
-/// output spans (see [`crate::widget::GroupRow::set_output_spans`]); the
-/// shell always pushes the real geometry before the first `build_layout`,
-/// so no production frame resolves against this.
+/// Only reached from a bare `ui` host with no output spans; the shell
+/// always pushes real geometry first.
 pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
-/// Narrowest a group may be laid out at inside a strip whose usable
-/// width is `strip_usable_px`: [`WIDTH_MIN_PERMILLE`] of the strip, but
-/// never under [`WIDTH_FLOOR_PX`] and never over the strip itself.
 pub fn min_group_px(strip_usable_px: f64) -> f64 {
     let usable = strip_usable_px.max(1.0);
     (usable * WIDTH_MIN_PERMILLE as f64 / 1000.0)
@@ -73,83 +44,49 @@ pub fn min_group_px(strip_usable_px: f64) -> f64 {
         .min(usable)
 }
 
-/// Widest a group may be laid out at: the strip's whole usable width.
 pub fn max_group_px(strip_usable_px: f64) -> f64 {
     strip_usable_px.max(1.0)
 }
 
-/// Fraction (per-mille) that resolves to `px` inside a strip of
-/// `strip_usable_px`. Inverse of [`WindowWidth::resolve`] — this is how a
-/// pointer drag, which is inherently in pixels, becomes a stored
-/// resolution-independent width.
+/// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
+/// becomes a stored resolution-independent width.
 pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
     let usable = strip_usable_px.max(1.0);
     let raw = (px.max(0.0) / usable * 1000.0).round();
     (raw.clamp(WIDTH_MIN_PERMILLE as f64, WIDTH_MAX_PERMILLE as f64)) as u16
 }
 
-/// Duration of the per-group fade-in played when a `WindowGroup` is
-/// newly spawned — e.g. via split-into-new-group from a cross-group
-/// drag release. Mirrors the radial-workspace concept's
-/// `transition={{ delay: 0.2, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}`
-/// (`radial-workspace-switcher/src/App.tsx:407`). 420 ms is long enough
-/// for the eased slide-in to read clearly to the user without delaying
-/// the next interaction on the new group — earlier 320 ms tunings made
-/// the spawn read as "instant" in shots-driver captures.
+/// 420ms: mirrors the reference concept's spring timing
+/// (`radial-workspace-switcher/src/App.tsx:407`).
 const SPAWN_ANIM_MS: u64 = 420;
-/// Horizontal start offset for the spawn fade, in CSS-like px. Negative
-/// values mean the group starts to the left of its target and settles
-/// rightward — mirrors the concept's `x: -20` initial. Tuned to -16 so
-/// the slide reads as "arriving" without escaping the row's visible
-/// margin in shots-driver captures.
+/// Mirrors the concept's `x: -20` initial, tuned to -16 to stay inside
+/// the row's visible margin.
 const SPAWN_ANIM_X_OFFSET: f64 = -16.0;
-/// Initial scale for the spawn fade. The group ramps from this to 1.0
-/// over `SPAWN_ANIM_MS`. 0.92 is punchy enough for the user to register
-/// the arrival without making the new group feel like it's leaping in.
 const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
-/// Duration of the group-level close fade-out played when the last
-/// tab is closed out of a `WindowGroup`. Matches the tab-pill
-/// `CLOSE_FADE_MS` in `tabs.rs` so the group's own shrink chains
-/// cleanly onto the final pill fade without a visible gap or double-
-/// bounce. `GroupRow` prunes the group from its `groups` vec once
-/// `close_complete()` returns true.
+/// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
+/// shrink chains onto the final pill fade.
 const GROUP_CLOSE_FADE_MS: u64 = 180;
 
-/// Vertical reveal band (px) for the maximized floating chrome. Matches
-/// the concept's `WindowFrame.tsx:108-123` `useEffect` that watches
-/// `clientY <= 80` and toggles `chromeVisible`. While the cursor sits
-/// at or above this y, the floating title pill + restore + close
-/// cluster paint; once the cursor moves below, the chrome hides so the
-/// maximized content fills the tile uninterrupted. Hit-testing math is
-/// untouched — only the rendering is gated, so a click that lands on
-/// the chrome rects while the cursor is still in the reveal band still
-/// resolves through the existing handle_event arms.
+/// Mirrors the concept's `clientY <= 80` check (`WindowFrame.tsx:108-123`):
+/// above this y the floating title/restore/close cluster paints, below it
+/// they hide. Hit-testing is unaffected — only the paint is gated.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
 
-/// How wide a [`WindowGroup`] is, as a fraction of the usable width of
-/// the strip — and therefore of the output — it sits on.
-///
-/// Nothing here is a pixel count. A width only becomes pixels through
-/// [`WindowWidth::resolve`], against the usable width `GroupRow` derives
-/// from the output the group is on, which is what makes the same stored
-/// width mean the same *proportion* of the screen on a 1600 px laptop
-/// panel and a 3840 px desktop one.
+/// A width only becomes pixels through [`WindowWidth::resolve`], against
+/// the strip's usable width, so the same stored value means the same
+/// proportion of the screen regardless of output resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowWidth {
     Narrow,
     Normal,
     Wide,
-    /// An arbitrary fraction of the strip's usable width, in per-mille.
-    /// What a manual resize produces: the drag is measured in pixels and
-    /// converted straight back to a fraction, so the width the user
-    /// dialled in survives a restart *and* means the same thing if the
-    /// group later lands on a differently-sized output.
+    /// What a manual resize produces: measured in pixels, converted back
+    /// to a fraction so it survives a restart and a differently-sized
+    /// output.
     Fraction(u16),
 }
 
 impl WindowWidth {
-    /// The fraction this width represents, in per-mille of the strip's
-    /// usable width.
     pub fn permille(&self) -> u16 {
         match self {
             WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
@@ -159,31 +96,25 @@ impl WindowWidth {
         }
     }
 
-    /// The same fraction as a 0..=1 multiplier.
     pub fn fraction(&self) -> f64 {
         self.permille() as f64 / 1000.0
     }
 
-    /// Resolve to logical pixels against the usable width of the strip
-    /// the group sits in. Clamped into
-    /// `[min_group_px(usable), max_group_px(usable)]` so a fraction can
+    /// Clamped into `[min_group_px, max_group_px]` so a fraction can
     /// neither collapse a group below usability nor push it past the
     /// output's right edge.
     pub fn resolve(&self, strip_usable_px: f64) -> f64 {
         let usable = strip_usable_px.max(1.0);
-        // Rounded to whole pixels: a window's geometry is configured to a
-        // Wayland client as integers, and a fractional strip width would
-        // otherwise leave sub-pixel seams between adjacent groups.
+        // Rounded: a Wayland client's geometry is integers, and a
+        // fractional width would leave sub-pixel seams between groups.
         (usable * self.fraction())
             .round()
             .clamp(min_group_px(usable), max_group_px(usable))
     }
 
-    /// The width that resolves to `px` in a strip of `strip_usable_px`.
-    /// Always a [`WindowWidth::Fraction`] — a resize records the
-    /// proportion the user landed on, never the tier it happens to
-    /// coincide with, so a later tier retune doesn't silently move their
-    /// window.
+    /// Always a [`WindowWidth::Fraction`] — records the proportion the
+    /// user landed on rather than a coincident tier, so a later tier
+    /// retune doesn't silently move their window.
     pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
         WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
     }
@@ -194,142 +125,53 @@ pub struct WindowGroup {
     bar: TabBar,
     hosts: Vec<(u64, TileHost)>,
     width: WindowWidth,
-    /// Usable width (logical px) this group's [`WindowWidth`] fraction
-    /// resolves against — the width of the output the group sits on,
-    /// minus whatever shell chrome that output reserves. Pushed down by
-    /// the parent [`crate::widget::GroupRow`] at the top of every
-    /// `build_layout`, so it is current before the width is baked into
-    /// the taffy node. Seeded to [`DEFAULT_STRIP_USABLE_PX`] purely so a
-    /// group constructed outside a row still has a definite width.
+    /// Pushed down by the parent [`crate::widget::GroupRow`] before every
+    /// `build_layout`; seeded to [`DEFAULT_STRIP_USABLE_PX`].
     strip_usable_px: f64,
     rect: Rect,
-    /// `(press-time cursor x, press-time resolved width in px)`. The
-    /// gesture is tracked in pixels because a pointer drag is pixels;
-    /// the *result* is converted back to a fraction on every tick.
+    /// `(press-time cursor x, press-time resolved width in px)`.
     resize_origin: Option<(f32, f64)>,
     pub hover_resize: bool,
-    /// User has requested the concept's "maximized" mode for this group.
-    /// The shell paints the floating controls on top of this rect while
-    /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
-    /// The user clicked the search glyph on one of this group's tabs, so
-    /// the shell's search is scoped to this app. Toggled off by clicking
-    /// the same icon again or pressing Esc while the group is focused.
     pub search_active: bool,
-    /// This is the group the keyboard is aimed at: the active group of
-    /// the active strip. Set by the shell each frame from the persisted
-    /// `WorkspaceTree::active_group` pointer, which until now had no
-    /// representation on screen at all — a strip of non-overlapping
-    /// windows has no z-order, so with nothing painted there was no way
-    /// to tell which of three side-by-side windows would take the next
-    /// keystroke.
-    ///
-    /// Consumed by the active [`TileHost`], which carries the signal on
-    /// the window's own edge and shadow. The group deliberately paints
-    /// nothing of its own for this: the group's rect spans its tab row
-    /// *and* its card, so anything stroked around it is a box around a
-    /// region rather than a ring around an object.
+    /// The active group of the active strip, set by the shell each frame.
+    /// Consumed by the active [`TileHost`], which paints the signal on
+    /// the window's own edge/shadow rather than the group drawing a ring
+    /// around both the tab row and the card.
     pub focused: bool,
-    /// Hit region for the floating "restore" pill drawn while maximized.
-    /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
     restore_hover: bool,
-    /// Hit region for the floating "close active tab" glyph drawn while
-    /// maximized, sitting just right of the restore pill to mirror the
-    /// concept's `[Search] [Minimize2] [X]` cluster.
     close_rect: Rect,
     close_hover: bool,
     last_cursor: Point,
-    /// `Instant` at which this group's spawn-fade was latched, or
-    /// `None` if no spawn animation is in-flight (the common case —
-    /// groups built at `build_nirios_root` time don't animate). Set
-    /// via [`WindowGroup::start_spawn_animation`] from code paths that
-    /// create a brand-new group (e.g. split-tab-into-new-group in
-    /// [`crate::widget::GroupRow::split_tab_into_new_group`]).
     spawned_at: Option<Instant>,
     /// Set on any `draw` this group sat out because nothing in it had
-    /// presented yet. Drained on the first `draw` that does paint, which
-    /// is what latches the arrival fade to the moment the window turns
-    /// up rather than to the moment its tab was created. A group that is
-    /// never held back never sets it, and so animates exactly as it did
-    /// before this existed.
+    /// presented yet; drained on the first `draw` that does paint, which
+    /// latches the arrival fade to the moment the window turns up rather
+    /// than the moment its tab was created.
     held_back: bool,
-    /// Hosts whose matching tab pill is in the middle of the
-    /// concept-parity close fade. Keyed by `(tab_id, Instant)` where
-    /// the `Instant` is the close-start timestamp — the same stamp
-    /// the bar snapshots into its `closing_tabs` so the two
-    /// animations stay in lockstep. While an entry is present the
-    /// `TileHost` is kept in `hosts` and still occupies its index;
-    /// once `elapsed > CLOSE_FADE_MS` a sweep at the top of
-    /// `handle_event` drops the entry, removes the host from
-    /// `hosts`, and calls `bar.finalize_close(id)` so the pill
-    /// stops rendering. Side-table rather than a field on `TileHost`
-    /// to keep the `TileHost` shape stable and avoid a touch to
-    /// `tile_host.rs`.
+    /// Tab-pill close fades, keyed by close-start `Instant` — the same
+    /// stamp the bar snapshots into `closing_tabs` so both stay in
+    /// lockstep. A side table (not a `TileHost` field) to keep
+    /// `TileHost`'s shape stable. Swept once `elapsed > CLOSE_FADE_MS`.
     closing_hosts: HashMap<u64, Instant>,
-    /// Set when `maximized` flips, so `take_structure_dirty` requests a
-    /// `build_layout` rebuild and the new flex_grow / width style takes
-    /// effect on the cached taffy node.
     style_dirty: bool,
-    /// The tab id whose `TileHost` the current taffy tile-node was built
-    /// for. `build_layout` only builds the *active* tab's host into the
-    /// tree (inactive tabs are absent), so when the active tab switches
-    /// the cached node stops matching the tab `apply_layout` wants to
-    /// place. Without a rebuild, an `App` tab that becomes active inherits
-    /// the previous tab's node — which for a `Stub`/leaf has no child, so
-    /// `TileHost::apply_layout` skips (the "App content with no taffy
-    /// child" warning) and the app renders at a stale top-left rect.
-    /// `take_structure_dirty` compares this against the live active id and
-    /// requests a rebuild on any divergence so the newly-active host gets
-    /// its own node (and, for apps, its child).
+    /// The tab id the current taffy tile-node was built for.
+    /// `build_layout` only builds the *active* tab's host, so on an
+    /// active-tab switch the cached node still belongs to the old one —
+    /// without a rebuild the new tab inherits a childless leaf and
+    /// renders at a stale top-left rect. `take_structure_dirty` diffs
+    /// this against the live active id to force that rebuild.
     built_active: Option<u64>,
-    /// One-shot pending maximize value awaiting harvest by the shell.
-    /// Set whenever `self.maximized` is mutated by user input (the tab-
-    /// bar Maximize2 toggle or the floating restore / close-while-
-    /// maximized chrome) so the shell can mirror the new value into
-    /// the persisted [`WorkspaceTree`] each frame. Drained via
-    /// [`Self::take_pending_maximize_change`] following the same
-    /// take-pattern as `take_tab_detach` / `take_reorder`. Audit task
-    /// #105 — without this writeback the on-screen flip is in-memory
-    /// only and resets to the pre-toggle value across a shell restart.
     pending_maximize_change: Option<bool>,
-    /// One-shot pending width value awaiting harvest by the shell. Set
-    /// once per resize gesture in [`Self::end_resize`] so the persisted
-    /// width survives a shell restart and replicates across collaborators.
-    /// Same take-pattern as [`Self::take_pending_maximize_change`].
-    /// Carries a *fraction* (per-mille), not pixels, so the value that
-    /// gets persisted and replicated to peers means the same thing on
-    /// their output as it did on this one.
+    /// Per-mille, not px — a peer's output may be a different size.
     pending_width_change: Option<u16>,
-    /// One-shot "open search scoped to this app" request awaiting harvest by
-    /// the shell, carrying the tab id whose magnifier chip was clicked. The
-    /// group itself can't open the palette (that lives on the shell overlay
-    /// host), so the click has to travel out the same take-pattern wire the
-    /// maximize / width / reorder writebacks use. Without it the chip only
-    /// toggled a local focus ring and appeared to do nothing.
     pending_search_open: Option<u64>,
-    /// One-shot "the user clicked this group's + chip" request awaiting
-    /// harvest by the shell, carrying this group's id. Creating a tab
-    /// means mutating the persisted tree and picking what goes in it —
-    /// both shell concerns — so the click travels out on the same
-    /// take-pattern wire as the search / maximize writebacks.
     pending_new_tab: Option<u64>,
-    /// One-shot `(from, to)` tab-index pair awaiting harvest by the shell.
-    /// Set whenever an intra-group drag reorder is applied to the pill list,
-    /// so the shell can mirror the same move into the persisted
-    /// [`crate::widget::WindowGroup`]'s tree entry. Without this writeback the
-    /// new order is in-memory only and resets across a shell restart.
     pending_tab_reorder: Option<(usize, usize)>,
-    /// Group-level close-fade timestamp. `None` while the group is
-    /// alive; `Some(started)` once the user's last tab-close drains
-    /// through `handle_event` and the group has no remaining tabs or
-    /// in-flight closing hosts. Mirrors the per-tab `closing_tabs`
-    /// pattern on the bar: we keep the group rendering at declining
-    /// alpha + scale for `GROUP_CLOSE_FADE_MS`, then the parent
-    /// `GroupRow` sweep prunes us from its `groups` vec once
-    /// `close_complete()` returns true. Kept `Option<Instant>` (not
-    /// a bool + separate timestamp) so `is_closing` and
-    /// `close_elapsed` have a single source of truth.
+    /// `None` while alive; `Some` once the last tab-close drains with no
+    /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
+    /// once `close_complete()` is true.
     closing_at: Option<Instant>,
 }
 
@@ -369,18 +211,11 @@ impl WindowGroup {
     }
     pub fn width(&self) -> WindowWidth { self.width }
 
-    /// Builder: start the group already maximized. Used when constructing
-    /// groups from persisted state where the user had toggled maximize
-    /// before restart (audit task #105).
     pub fn with_maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
         self
     }
 
-    /// Mark this group as the one the keyboard is aimed at. Called by the
-    /// shell each frame for the active group of the active strip; every
-    /// other group is told `false` in the same pass, so focus cannot be
-    /// left latched on a group that lost it.
     pub fn set_focused(&mut self, focused: bool) -> bool {
         if self.focused == focused {
             return false;
@@ -389,29 +224,13 @@ impl WindowGroup {
         true
     }
 
-    /// Whether this group currently holds keyboard focus.
     pub fn focused(&self) -> bool { self.focused }
 
-    /// Latch the concept-faithful spawn fade-in: opacity 0→1, scale
-    /// 0.92→1, and a -16 px → 0 horizontal settle over `SPAWN_ANIM_MS`,
-    /// eased with a cubic-out curve. Callers that create a brand-new
-    /// `WindowGroup` — e.g. the split-into-new-group path in `GroupRow`
-    /// — invoke this immediately after construction so the group reads
-    /// as "arriving" rather than popping in opaque. A subsequent call
-    /// within the animation window restarts it, which is acceptable
-    /// (the group re-acquired focus; replay is the least surprising
-    /// behaviour).
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(Instant::now());
     }
 
-    /// Eased 0..=1 progress through the spawn fade-in, or 1.0 when no
-    /// spawn animation is in flight. Exposed so headless tests can
-    /// assert on the curve's shape (initial near zero, midway near
-    /// half, terminal at one) without poking the draw path. The value
-    /// is the same `eased` factor `draw` uses to compute alpha, scale
-    /// and the x-offset, so it's the single source of truth for "how
-    /// far through the spawn are we".
+    /// The same eased factor `draw` uses for alpha, scale and offset.
     pub fn spawn_anim_t(&self) -> f32 {
         let Some(started) = self.spawned_at else { return 1.0 };
         let elapsed = started.elapsed();
@@ -423,75 +242,33 @@ impl WindowGroup {
         (1.0 - (1.0 - raw).powi(3)) as f32
     }
 
-    /// Latch the group-level close fade. Called from `handle_event`
-    /// the first frame after the bar + `closing_hosts` have been
-    /// fully drained with no surviving tabs. Mirrors
-    /// `TabBar::start_closing` (tab-level) and
-    /// `TileHost::start_spawn_animation` (tile-level) so each layer
-    /// in the group composition has a symmetric open/close
-    /// animation.
-    ///
-    /// Idempotent in spirit: a second call before
-    /// `close_complete()` returns true overwrites the timestamp,
-    /// which is acceptable (the stimulus is strictly "last tab
-    /// went away"; if we somehow observed it twice we want the
-    /// newer clock).
     pub fn start_closing(&mut self) {
         self.closing_at = Some(Instant::now());
     }
 
-    /// True while the group-level close fade is in flight or latched
-    /// but not yet complete. Used by `GroupRow` to branch between
-    /// "keep painting" and "prune".
     pub fn is_closing(&self) -> bool {
         self.closing_at.is_some()
     }
 
-    /// How long the close fade has been running, or `None` if the
-    /// group is still alive. Exposed for parity tests that want to
-    /// assert on the exact progress of the curve without reaching
-    /// into private state.
     pub fn close_elapsed(&self) -> Option<Duration> {
         self.closing_at.map(|t| t.elapsed())
     }
 
-    /// True once the group-level close fade has fully elapsed, i.e.
-    /// the group has finished shrinking out and `GroupRow` should
-    /// drop it from its `groups` vec. False while the fade is still
-    /// in flight — the group keeps painting until this flips.
     pub fn close_complete(&self) -> bool {
         self.closing_at
             .is_some_and(|t| t.elapsed().as_millis() as u64 >= GROUP_CLOSE_FADE_MS)
     }
-    /// Concept-parity gate for the maximized floating chrome (title
-    /// pill + Restore + close cluster). The chrome paints only while
-    /// the group is maximized AND the most recent cursor y sits at or
-    /// above [`MAXIMIZED_CHROME_REVEAL_Y`]. Mirrors
-    /// `WindowFrame.tsx:108-123` where the React effect toggles a
-    /// `chromeVisible` boolean off `clientY <= 80`. Exposed as a
-    /// public predicate so the parity tests can pin both branches
-    /// without poking the draw path.
-    ///
-    /// Hit-testing is unaffected: `handle_event` keeps populating
-    /// `restore_rect`/`close_rect` and resolving clicks through them,
-    /// so a press that lands in the band while chrome is visible still
-    /// works. Only the rendering is gated.
+
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
         self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
     }
 
-    /// Usable width this group's fraction resolves against — see the
-    /// `strip_usable_px` field.
     pub fn strip_usable_px(&self) -> f64 {
         self.strip_usable_px
     }
 
-    /// Tell the group how wide the usable part of its output is. Called
-    /// by [`crate::widget::GroupRow::build_layout`] for every child before
-    /// the child builds its own node, so the width baked into taffy is
-    /// always resolved against current geometry. Flags `style_dirty` on a
-    /// real change so a display resize (or the group moving to another
-    /// output) re-bakes the node.
+    /// Called by [`crate::widget::GroupRow::build_layout`] before each
+    /// child builds its own node.
     pub fn set_strip_usable_px(&mut self, px: f64) {
         let px = px.max(1.0);
         if (self.strip_usable_px - px).abs() > 0.5 {
@@ -500,8 +277,6 @@ impl WindowGroup {
         }
     }
 
-    /// This group's width in logical pixels on the output it currently
-    /// sits on. The single place a `WindowWidth` becomes pixels.
     pub fn resolved_width_px(&self) -> f64 {
         self.width.resolve(self.strip_usable_px)
     }
@@ -518,10 +293,8 @@ impl WindowGroup {
             let next = WindowWidth::from_px(clamped, usable);
             if next != self.width {
                 self.width = next;
-                // `build_layout` bakes the resolved width into the taffy
-                // node as a fixed `Dimension::length`, so a width change is
-                // only visible after the tree is rebuilt. Without this flag
-                // the drag updated the field and nothing moved on screen.
+                // Taffy bakes width as a fixed length; without this flag
+                // the drag updates the field but nothing moves on screen.
                 self.style_dirty = true;
             }
         }
@@ -531,17 +304,10 @@ impl WindowGroup {
         self.pending_width_change = Some(self.width.permille());
     }
 
-    /// Imperative setter used by the between-groups `ResizeHandle`. Clamps
-    /// a [`WindowWidth::Fraction`] into
-    /// `[WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]` and stamps the new
-    /// value. Does NOT touch `resize_origin` — the inter-group handle owns
-    /// its own drag state. Callers wanting a "user finished resizing"
-    /// pulse should follow up with [`Self::stamp_pending_width_change`] on
-    /// mouse-release; mid-drag updates should NOT pulse so the shell isn't
-    /// writing every frame.
+    /// Does NOT touch `resize_origin` — the inter-group handle owns its
+    /// own drag state; follow up with [`Self::stamp_pending_width_change`]
+    /// on release.
     pub fn set_width(&mut self, w: WindowWidth) {
-        // Normalise through Fraction so callers passing Narrow/Normal/Wide
-        // still land on the clamping path's invariant.
         let before = self.width;
         match w {
             WindowWidth::Fraction(p) => {
@@ -550,78 +316,42 @@ impl WindowGroup {
             }
             other => self.width = other,
         }
-        // Same reason as `update_resize`: the taffy node carries a baked
-        // length, so the new width only takes effect after a rebuild.
         if self.width != before {
             self.style_dirty = true;
         }
     }
 
-    /// Set the width from a pixel measurement taken on this group's own
-    /// output — what the inter-group [`crate::widget::ResizeHandle`]
-    /// produces. Converts to a fraction immediately so nothing downstream
-    /// ever stores pixels.
+    /// Converts to a fraction immediately so nothing downstream ever
+    /// stores pixels.
     pub fn set_width_px(&mut self, px: f64) {
         self.set_width(WindowWidth::from_px(px, self.strip_usable_px));
     }
 
-    /// Stamp a pending width-change pulse so the shell harvests this
-    /// group's width on the next frame and persists it. Used by the
-    /// inter-group `ResizeHandle` on mouse-release, mirroring what
-    /// [`Self::end_resize`] does for the per-group right-edge handle.
     pub fn stamp_pending_width_change(&mut self) {
         self.pending_width_change = Some(self.width.permille());
     }
-    /// Drain a one-shot pending width change produced by a completed
-    /// resize gesture (press → drag → release on the right-edge handle).
-    /// Returns `Some(per-mille)` once per gesture, then `None` until the
-    /// next [`Self::end_resize`]. Mirrors
-    /// [`Self::take_pending_maximize_change`]; the shell harvests this
-    /// each frame and writes the value into the persisted
-    /// [`WorkspaceTree`] so resizes survive a restart — as a fraction, so
-    /// the restart can be onto a different display.
     pub fn take_pending_width_change(&mut self) -> Option<u16> {
         self.pending_width_change.take()
     }
 
-    /// Drain a one-shot intra-group tab reorder `(from, to)` produced by a
-    /// completed drag. Returns `Some` once per reorder, then `None` until the
-    /// next one. The shell harvests this each frame and mirrors the move into
-    /// the persisted `WorkspaceTree` via `reorder_tab_within_group`.
     pub fn take_pending_tab_reorder(&mut self) -> Option<(usize, usize)> {
         self.pending_tab_reorder.take()
     }
 
-    /// Drain a one-shot "open search scoped to this app" request produced by a
-    /// click on a tab's magnifier chip. Returns the tab id once per click.
     pub fn take_pending_search_open(&mut self) -> Option<u64> {
         self.pending_search_open.take()
     }
 
-    /// Drain a one-shot "+ was clicked in this group's tab bar" request.
-    /// Returns this group's id once per click.
     pub fn take_pending_new_tab(&mut self) -> Option<u64> {
         self.pending_new_tab.take()
     }
 
-    /// Live hit rect of the tab bar's trailing "+" chip, in the same
-    /// coordinate space as [`Self::tab_rects`]. `Rect::ZERO` when the
-    /// chip is suppressed (bar full, or group maximized).
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
-    /// Give every tab in this group its own document.
-    ///
-    /// `record_for` names the record a tab holds — the host decides that,
-    /// because only it knows what a tab id means (see
-    /// `shell::tab_documents`). Binding is idempotent per tab, so a
-    /// rebuild of the window tree re-binds without handing anybody a fresh
-    /// empty document.
-    ///
     /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
-    /// host and by tests that have no records at all, and a tile with no
-    /// binding keeps the old behaviour of editing whatever document the
-    /// parent pass carries.
+    /// host and by tests with no records at all, where an unbound tile
+    /// keeps editing whatever document the parent pass carries.
     pub fn bind_tab_records(
         &mut self,
         store: &crate::record::RecordStore,
@@ -631,16 +361,9 @@ impl WindowGroup {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
-    /// Whether *any* tab in this group is still holding a place for an app
-    /// that has not drawn yet.
-    ///
-    /// Deliberately not [`Widget::opening`], which asks whether the whole
-    /// group is a placeholder and is therefore false as soon as one tab has
-    /// drawn. A tab behind that one can still be starting, and its tile
-    /// still paints an opening card with a turning spinner — so the group
-    /// keeps asking for animation frames while reporting that it is not
-    /// opening. That pair is not a contradiction, but anything waiting for
-    /// the tree to go quiet has to ask this question rather than that one.
+    /// Deliberately not [`Widget::opening`], which is false as soon as
+    /// one tab has drawn even if a tab behind it is still starting (and
+    /// still needs animation frames).
     pub fn any_tile_opening(&self) -> bool {
         self.hosts.iter().any(|(_, h)| Widget::opening(h))
     }
@@ -651,70 +374,34 @@ impl WindowGroup {
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
-    /// Read-only twin of [`Self::active_host_mut`]. The compositor's
-    /// input router needs the active tile's laid-out rect to translate a
-    /// global cursor position into surface-local coordinates for the
-    /// Wayland client hosted in that tile; taking a `&mut` borrow just to
-    /// read `get_rect()` would conflict with the frame builder's own
-    /// borrows during event dispatch.
+    /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
+    /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {
         let id = self.bar.active_id();
         self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
-    // ------------------------------------------------------------------
-    // Cross-group drag-drop routing (parent: `GroupRow`)
-    // ------------------------------------------------------------------
-
-    /// Drain a cross-group detach request from the underlying `TabBar`.
     /// Returns `(tab_id, release_point)` if the user released a drag
-    /// outside the bar's own rect, else `None`. The parent widget hits-
-    /// tests the release point against sibling bars to find a target.
+    /// outside the bar's own rect. The parent widget hit-tests the
+    /// release point against sibling bars to find a target.
     pub fn take_tab_detach(&mut self) -> Option<(u64, Point)> { self.bar.take_detach() }
 
-    /// Drain a pending maximize-toggle that the user produced via the
-    /// tab-bar Maximize2 glyph or the floating restore / close-while-
-    /// maximized chrome. Returns `Some(new_value)` once per click that
-    /// flipped `self.maximized`, then `None` until the next flip — same
-    /// take-pattern as [`Self::take_tab_detach`] / `TabBar::take_reorder`.
-    /// The shell harvests this each frame and mirrors the value into the
-    /// persisted [`WorkspaceTree`] so the maximize state survives a shell
-    /// restart and replicates across collaborators (audit task #105).
     pub fn take_pending_maximize_change(&mut self) -> Option<bool> {
         self.pending_maximize_change.take()
     }
 
-    /// Test-only: publish a maximize-toggle request into the underlying
-    /// `TabBar` so the next call to `WindowGroup::handle_event` drains
-    /// it through the production `take_max` path — same effect as a
-    /// user click on the tab-bar Maximize2 glyph, but without the
-    /// layout / hit-test setup an integration test would otherwise
-    /// need. Pairs with [`Self::take_pending_maximize_change`] to give
-    /// shell-side wire-up tests a public entry point into the click
-    /// pipeline. Targets the active tab so the drain matches the live
-    /// click's id.
-    ///
-    /// The previous `#[cfg(any(test, debug_assertions))]` gate broke the
-    /// downstream shell's `--release` test build: `ui`'s `cfg(test)` is
-    /// only set when the ui crate itself is under test, and in `--release`
-    /// `debug_assertions` is off — so shell's test module lost the
-    /// method. The method is a tiny no-op in production (nothing in the
-    /// non-test path calls it), so exposing it unconditionally is
-    /// cheaper than a `ui` feature flag.
+    /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
+    /// only applies when `ui` itself is under test, so the downstream
+    /// shell's `--release` test build (debug_assertions off) would lose
+    /// this method.
     pub fn publish_maximize_intent_for_tests(&mut self) {
         let active = self.bar.active_id();
         self.bar.pending_max = Some(active);
     }
 
-    /// Remove a tab + its hosted `TileHost` from this group and return
-    /// them so a sibling group can insert them. Returns `None` if no tab
-    /// with that id is present. Preserves caller-side ordering by
-    /// handing back the `TabDescriptor` and `TileHost` as a pair.
     pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
         let host_idx = self.hosts.iter().position(|(i, _)| *i == tab_id)?;
         let (_, host) = self.hosts.remove(host_idx);
-        // TabBar::remove_tab snips the descriptor list and reassigns the
-        // active id to the next tab in the list.
         let desc_idx = self
             .bar
             .tabs()
@@ -722,28 +409,16 @@ impl WindowGroup {
             .position(|t| t.id == tab_id)?;
         let desc = self.bar.tabs()[desc_idx].clone();
         self.bar.remove_tab(tab_id);
-        // If the tab was mid-close when it was detached, its entry in
-        // `closing_hosts` (and the bar's matching `closing_tabs` fade
-        // entry) would otherwise outlive the host itself. The host is
-        // gone after the `hosts.remove` above, so the fade has nothing
-        // to paint — but `needs_animation_frame` keeps pumping redraws
-        // until the timestamp ages past `CLOSE_FADE_MS`. Drop both
-        // sides together so the run loop quiets immediately.
+        // Drop lingering close-fade state for the moved id, or a stale
+        // entry keeps `needs_animation_frame` pumping until it ages out.
         self.closing_hosts.remove(&tab_id);
         self.bar.finalize_close(tab_id);
         Some((desc, host))
     }
 
-    /// Insert a previously-detached tab at `idx`, becoming the new active
-    /// tab. The content order is kept aligned with the bar's descriptor
-    /// order so a subsequent reorder inside this group stays coherent.
-    ///
-    /// Fires the per-tile spawn fade on the incoming `TileHost` so a
-    /// tab dragged into an existing group arrives with the concept's
-    /// ease-out opacity+scale motion rather than popping in opaque.
-    /// The sibling path — splitting a dragged tab into a *brand-new*
-    /// group — lives in `GroupRow::split_tab_into_new_group` and plays
-    /// the group-level fade instead, so we never double up.
+    /// The sibling path — splitting into a *brand-new* group — plays the
+    /// group-level fade instead, in `GroupRow::split_tab_into_new_group`,
+    /// so the two never double up.
     pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, mut host: TileHost) {
         let id = desc.id;
         self.bar.insert_tab(idx, desc);
@@ -752,14 +427,6 @@ impl WindowGroup {
         self.hosts.insert(clamped, (id, host));
     }
 
-    /// Construct a new `WindowGroup` wrapping a single pre-built
-    /// `(TabDescriptor, TileHost)` pair — the output of `detach_tab`.
-    ///
-    /// Used by `GroupRow` when the user drops a dragged tab into the
-    /// empty space between groups (or past the last group), creating a
-    /// fresh group at that position with the dragged tab as its sole
-    /// child. The equivalent of the concept's `onMoveTab(src, 'new',
-    /// tab, idx)` path in `DesktopView.tsx:414`.
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
@@ -794,80 +461,40 @@ impl WindowGroup {
         }
     }
 
-    /// Number of tabs hosted by this group. Used by `GroupRow` to decide
-    /// whether a detach leaves the source group empty (and thus whether
-    /// to prune it after a new-group drop).
     pub fn tab_count(&self) -> usize { self.hosts.len() }
 
-    /// Return this group's tab-bar rect — i.e. the strip above the tile
-    /// content where sibling drops should resolve. The parent `GroupRow`
-    /// uses it to hit-test cross-group releases.
     pub fn bar_rect(&self) -> Rect { self.bar.bar_rect() }
 
-    /// Per-pill rects inside the bar, in tab order. Mirrors
-    /// `TabBar::tab_rects` so headless tests can read the live layout
-    /// instead of guessing pill x-coords from theme constants.
     pub fn tab_rects(&self) -> &[Rect] { self.bar.tab_rects() }
 
-    /// Whether `p` lands on this group's "grab" zone — the tab-bar
-    /// background a user presses to drag the *whole group* to a new slot
-    /// (its titlebar, in window-manager terms). True when `p` is inside the
-    /// bar rect but NOT on any tab pill (those start a tab-detach drag or
-    /// select a tab) and NOT in the right-edge resize band (that starts a
-    /// width resize). Empty trailing bar space and the gaps between pills
-    /// both qualify, so grabbing "the bar, not a tab" always works even
-    /// when the bar is densely packed. The parent [`GroupRow`] uses this to
-    /// arbitrate a press into a group-reorder drag vs. a tab / resize
-    /// gesture.
+    /// True inside the bar rect but not on a tab pill and not in the
+    /// right-edge resize band. Used by [`GroupRow`] to arbitrate a press
+    /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
         if !self.bar_rect().contains(p) {
             return false;
         }
-        // Right-edge resize band belongs to the width-resize gesture.
         if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
             return false;
         }
-        // The "+" chip sits in the trailing bar space, which is otherwise
-        // pure grab zone — without this it would be impossible to click.
         let plus = self.bar.new_tab_rect();
         if plus.area() > 0.0 && plus.contains(p) {
             return false;
         }
-        // A press on a tab pill belongs to the tab gesture, not the group.
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
-    /// Delegate to the bar's per-pill drop-index resolver. Used by
-    /// `GroupRow` on cross-group releases to figure out which index the
-    /// dropped tab should be spliced at, based on where in the target
-    /// bar the pointer landed.
     pub fn drop_index_for(&self, release_point: Point) -> usize {
         self.bar.drop_index_for(release_point)
     }
 
-    /// Borrow the current tab descriptor list. Exposed so callers (e.g.
-    /// the cross-group drag tests in `GroupRow`) can assert on the tab
-    /// sequence without reaching through the `TabBar` itself.
     pub fn tabs(&self) -> &[TabDescriptor] { self.bar.tabs() }
 
-    /// The id of the tab currently treated as active by the bar. Exposed
-    /// for cross-group drag tests that need to assert on activation flow
-    /// (e.g. detaching the active tab must promote a sibling to active).
     pub fn active_tab_id(&self) -> u64 { self.bar.active_id() }
 
-    /// Step the active-tab index by `dir` (sign-extracted; ±1) with
-    /// wrap-around at the tab list's ends. Returns `true` if the
-    /// active tab changed. Used by the strip's wheel handler when
-    /// there's no overflow to pan against — the user's wheel input
-    /// then cycles tabs widget-side, sidestepping the chrome-tree /
-    /// widget-tree sync gap (`WorkspaceTree::set_active_tab` mutates
-    /// the persisted state, but the `Tabs` widget keeps its own
-    /// `active_id` and doesn't re-read from the tree each frame).
-    /// Select `id` as the active tab, widget-side. The bar's `active_id`
-    /// is the authoritative copy (the shell's per-frame harvest mirrors
-    /// it into the persisted tree), so a programmatic focus jump — the
-    /// Alt+Shift wheel gesture — must land here, not only in the tree.
-    /// Returns `true` if the active tab changed; unknown ids are a no-op.
+    /// The bar's `active_id` is the authoritative copy (the shell's
+    /// per-frame harvest mirrors it into the persisted tree), so a
+    /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
         if self.bar.active_id() == id || !self.bar.tabs().iter().any(|t| t.id == id) {
             return false;
@@ -892,38 +519,22 @@ impl WindowGroup {
         true
     }
 
-    /// Close the tab the user is looking at, exactly as clicking its `✕`
-    /// does: `TabBar::start_closing` snapshots the pill, shifts active-id
-    /// to a neighbour and publishes `pending_close`, which this group's
-    /// `handle_event` drains into the host fade on the next dispatch.
-    ///
-    /// Exists because close was pointer-only. The `✕` is painted only
-    /// while a pill is active, hovered or pressed, so on an inactive tab
-    /// it takes a hover to discover and a second gesture to hit — no
-    /// route at all for someone driving by keyboard. Returns `false` when
-    /// the group has no live tab to close.
+    /// Exists because close was pointer-only: the `✕` only paints on an
+    /// active/hovered/pressed pill, so there was no route for someone
+    /// driving by keyboard.
     pub fn request_close_active_tab(&mut self) -> bool {
         let id = self.bar.active_id();
         self.request_close_tab(id)
     }
 
-    /// Drain a right-click on one of this group's tab pills: the tab it
-    /// landed on, and where to anchor the menu. The shell raises the menu
-    /// — the toolkit only reports the intent.
     pub fn take_tab_context_menu(&mut self) -> Option<(u64, Point)> {
         self.bar.take_context_menu()
     }
 
-    /// Close `tab_id` in this group, whether or not it is the active tab
-    /// — the route a context menu raised over a specific pill takes.
-    /// Same production path as [`Self::request_close_active_tab`].
-    ///
-    /// Drains the bar's `pending_close` here rather than leaving it for
-    /// the next `handle_event`. A `✕` press publishes it mid-dispatch, so
-    /// this group's own `handle_event` picks it up microseconds later; a
-    /// chord or a menu pick arrives from outside the pointer dispatch and
-    /// would otherwise leave the host un-faded until some unrelated event
-    /// happened to reach this group.
+    /// Drains the bar's `pending_close` immediately rather than waiting
+    /// for the next `handle_event`, since a menu pick arrives outside
+    /// pointer dispatch and would otherwise leave the host un-faded
+    /// until an unrelated event landed.
     pub fn request_close_tab(&mut self, tab_id: u64) -> bool {
         if !self.bar.start_closing(tab_id) {
             return false;
@@ -934,84 +545,41 @@ impl WindowGroup {
         true
     }
 
-    /// True while this group's `TabBar` has a drag in flight. Exposed so
-    /// the parent `GroupRow` can paint inter-group drop-zone indicators
-    /// while any child is dragging.
     pub fn drag_in_flight(&self) -> bool { self.bar.drag_in_flight() }
 
-    /// Push an external (cross-group) drag's cursor into this group's
-    /// `TabBar` so its minimalist white-line drop indicator
-    /// (`hover_drop_idx`) paints at the correct inter-pill gap. Called
-    /// by `GroupRow::handle_event` for every group while any child has
-    /// a tab drag in flight: `Some(point)` when the cursor is somewhere
-    /// in the row; `None` when no relevant drag is active.
-    ///
-    /// `TabBar::set_external_drag_hover` is a no-op while the bar has
-    /// its own `pending_drag` in flight, so the source bar's own
-    /// indicator stays put even when the parent's fan-out visits it.
+    /// A no-op while the bar has its own `pending_drag` in flight, so the
+    /// source bar's own indicator stays put.
     pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
         self.bar.set_external_drag_hover(cursor);
     }
 
-    /// Test-only mutable accessor for the underlying `TabBar`. Used by
-    /// `GroupRow` tests that need to publish a synthetic `pending_detach`
-    /// to exercise the post-dispatch detach sweep without staging a full
-    /// press/drag/release event sequence.
     #[cfg(test)]
     pub(crate) fn bar_mut(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
 
-    /// Public test-only twin of [`Self::bar_mut`]. The crate-private
-    /// version above stays gated to `#[cfg(test)]` so it can't leak into
-    /// non-test downstream callers, but cross-strip drag integration
-    /// tests in `shell/tests/` need to publish a synthetic
-    /// `pending_detach` from outside this crate too — that's what this
-    /// accessor exists for. Gated by `cfg(any(test, debug_assertions))`
-    /// so it disappears from release builds, mirroring the pattern used
-    /// by [`crate::widget::GroupRow`]'s test helpers and
-    /// [`Self::publish_maximize_intent_for_tests`].
+    /// `shell/tests/` integration tests need this from outside the crate.
     #[cfg(any(test, debug_assertions))]
     pub fn bar_mut_for_tests(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
 
-    /// Per-tab content kind labels (`"App"` for a live app widget, otherwise
-    /// the stub's app-kind name). Lets a probe tell a genuinely-running app
-    /// apart from a placeholder without downcasting.
     #[cfg(any(test, debug_assertions))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
 
-    /// Read-only twin of [`Self::bar_mut_for_tests`]. Integration tests use it
-    /// to resolve per-tab chip rects (close / maximize / search) from live
-    /// geometry so they can drive the real click instead of publishing an
-    /// intent directly.
     #[cfg(any(test, debug_assertions))]
     pub fn bar_for_tests(&self) -> &crate::widget::TabBar { &self.bar }
 
-    /// Test-only accessor pinning the lucide glyph drawn over the
-    /// maximized floating close chip. Paired with
-    /// `window_group_close_glyph_is_lucide_x` so a revert to the text
-    /// `×` codepoint can't slip in unnoticed.
     #[cfg(test)]
     pub fn close_glyph_icon_for_tests() -> icons::Icon { icons::Icon::X }
 
-    /// Test-only accessor for the glyph prepended to the Restore pill.
-    /// Lucide's `Minimize2` — the "shrink out of fullscreen" bracket
-    /// pair — paired with `window_group_restore_pill_uses_minimize2`.
     #[cfg(test)]
     pub fn restore_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Minimize2 }
 
-    /// Test-only: number of hosts currently in the bar's host list.
-    /// Used by the close-fade tests to verify a host stays until the
-    /// fade elapses.
     #[cfg(test)]
     pub fn host_count(&self) -> usize { self.hosts.len() }
-    /// The tile hosting tab `tab_id`, for a caller that needs to change
-    /// what is *in* a tab without disturbing the tab.
-    ///
-    /// Detaching and re-inserting would do the same job and three other
-    /// things nobody asked for: it makes the tab active, plays the
-    /// arrival fade, and moves it to the caller's index. A window filling
-    /// in behind a card should do none of those to the person watching.
+
+    /// Detaching and re-inserting would do the same job plus three things
+    /// nobody asked for: activate the tab, play the arrival fade, and
+    /// move it to the caller's index.
     pub fn host_for_tab_mut(&mut self, tab_id: u64) -> Option<&mut TileHost> {
         self.hosts
             .iter_mut()
@@ -1019,18 +587,11 @@ impl WindowGroup {
             .map(|(_, h)| h)
     }
 
-    /// Test-only: whether a host with `id` is still present. Paired
-    /// with `host_count` for the "closing host stays until fade
-    /// complete" assertion.
     #[cfg(test)]
     pub fn has_host(&self, id: u64) -> bool {
         self.hosts.iter().any(|(i, _)| *i == id)
     }
 
-    /// Test-only: force the closing-fade start timestamp for `id`
-    /// to an already-expired `Instant` so the next `handle_event`
-    /// sweep finalises the host removal. Lets tests drive the close
-    /// flow deterministically without sleeping past `CLOSE_FADE_MS`.
     #[cfg(test)]
     pub fn force_expire_closing(&mut self, id: u64) {
         if self.closing_hosts.contains_key(&id) {
@@ -1039,36 +600,21 @@ impl WindowGroup {
         }
     }
 
-    /// Test-only accessor: is there at least one host currently in
-    /// the closing-fade window? Mirrors the predicate used inside
-    /// `needs_animation_frame`.
     #[cfg(test)]
     pub fn has_closing_host(&self, id: u64) -> bool {
         self.closing_hosts.contains_key(&id)
     }
 
-    /// Test-only: directly set `closing_at` without waiting for the
-    /// full "last tab was closed" drain sweep. Used by `GroupRow`'s
-    /// prune tests to seed a group with an already-elapsed close
-    /// timestamp (or a fresh one) and assert on the prune vs.
-    /// retain branch deterministically.
     #[cfg(test)]
     pub(crate) fn set_closing_at_for_tests(&mut self, t: Instant) {
         self.closing_at = Some(t);
     }
 
-    /// Test-only: directly set `close_hover` for the maximized close
-    /// chip without routing a CursorMoved event. Lets the parity tests
-    /// exercise the red-500/80 hover branch even when layout hasn't
-    /// populated `close_rect`.
     #[cfg(test)]
     pub(crate) fn set_close_hover_for_tests(&mut self, hover: bool) {
         self.close_hover = hover;
     }
 
-    /// Test-only: current fill color the maximized close chip paints
-    /// under this theme + hover state. Mirrors the branches inside
-    /// `draw` so the visual-parity tests catch drift without a GPU.
     #[cfg(test)]
     pub(crate) fn maximized_close_chip_color_for_tests(
         &self,
@@ -1081,9 +627,7 @@ impl WindowGroup {
         }
     }
 
-    /// Test-only: current glyph color the maximized close chip paints.
-    /// Pairs with `maximized_close_chip_color_for_tests` — on hover the
-    /// concept promotes the `×` to full white (`hover:text-white`).
+    /// On hover promoted to full white (concept: `hover:text-white`).
     #[cfg(test)]
     pub(crate) fn maximized_close_glyph_color_for_tests(
         &self,
@@ -1103,40 +647,24 @@ impl Widget for WindowGroup {
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let bar_node = self.bar.build_layout(taffy, theme, node_map);
         let active_id = self.bar.active_id();
-        // Record which tab this tile-node was built for so
-        // `take_structure_dirty` can force a rebuild when the active tab
-        // later switches (otherwise the stale node desyncs from the tab
-        // `apply_layout` places — see `built_active`).
+        // See `built_active`'s field doc: forces a rebuild when the
+        // active tab switches.
         self.built_active = Some(active_id);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.build_layout(taffy, theme, node_map)
         } else {
             taffy.new_leaf(Style::default()).unwrap()
         };
-        // Maximized groups absorb all remaining row width via a huge
-        // `flex_grow` + zero `flex_basis`, so siblings squeeze down to
-        // min-content. Mirrors the concept's `width: 100vw` on the
-        // fixed-position maximized window (`WindowFrame.tsx:188-200`)
-        // and gives the per-tab Maximize2 click a visible result.
+        // Niri-style infinite strip: `flex_grow: 0` keeps a group at its
+        // declared `WindowWidth` regardless of sibling count or slack —
+        // placing a new app never resizes siblings, the strip extends
+        // past the viewport instead. Maximized overrides to `flex_grow:
+        // 1e6` below, mirroring the concept's fixed `width: 100vw`
+        // maximized window (`WindowFrame.tsx:188-200`).
         let mut style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size { width: Dimension::length(self.resolved_width_px() as f32), height: Dimension::percent(1.0) },
-            // Niri-style infinite strip: groups stay at their declared
-            // `WindowWidth` regardless of how many siblings the strip
-            // already has. Placing a new app *never resizes* siblings —
-            // the strip extends past the viewport and the user scrolls
-            // horizontally to reveal off-screen content. This is the
-            // core spatial-OS invariant; the earlier "shrink to fit"
-            // attempt (flex_shrink: 1 + max_size: 100%) silently
-            // violated it whenever a second tile spawned. GroupRow's
-            // `flex_shrink: 0` override on every child enforces this
-            // at the row level; `flex_grow: 0` keeps the group at its
-            // declared width even when there's strip-internal slack.
-            //
-            // Maximized groups still override to `flex_grow: 1e6` (a
-            // few lines down) so the user's explicit Maximize2 click
-            // expands one group to absorb the strip.
             flex_grow: 0.0,
             gap: taffy::Size { width: length(0.0), height: length(0.0) },
             ..Default::default()
@@ -1145,10 +673,8 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
-            // A maximized group is genuinely fullscreen: the tab strip neither
-            // paints (see `draw`) nor reserves height, so the hosted app runs
-            // edge-to-edge instead of sitting below an empty bar-height band.
-            // The compact floating pill is drawn over the content instead.
+            // Fullscreen: the tab strip neither paints (see `draw`) nor
+            // reserves height; the floating pill draws over the content.
             let mut bar_style = taffy.style(bar_node).unwrap().clone();
             bar_style.display = taffy::Display::None;
             taffy.set_style(bar_node, bar_style).unwrap();
@@ -1169,62 +695,28 @@ impl Widget for WindowGroup {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        // Nothing in this group has drawn yet, and it has not been long
-        // enough to be worth saying so. The group has still been through
-        // `build_layout` and `apply_layout`, so its width is already out
-        // of the strip and its neighbours already stand where they will
-        // stand — the window arrives into a space that was held for it
-        // rather than shouldering one open.
-        //
-        // The wait is passed over in silence only while it is too short
-        // to be a wait. An app already on this machine can be on screen
-        // in well under the delay behind `Widget::opening`, and an
-        // indicator that appears and disappears inside it would be a
-        // flicker on the way to a window that was never slow.
+        // An indicator that flashes in and out before an app has time to
+        // draw would just be a flicker, so nothing paints until either
+        // something has drawn or the wait is long enough to say so.
         if !Widget::presented(self) && !Widget::opening(self) {
             self.held_back = true;
             return;
         }
-        // The frame this group was waiting for has landed, so the
-        // arrival curve starts here — restarted, not merely started.
-        // The shell latches that fade when it splices the group in,
-        // which is before the app has drawn, so by the time there is
-        // something to fade in the fade has already run its course
-        // against an invisible group and the window would pop.
-        //
-        // Gated on having actually been held back, so a group that had
-        // something to show from its first draw — every group at shell
-        // start, and every group rebuilt from an unchanged tree — is
-        // painted exactly as before.
+        // The shell latches the spawn fade when it splices the group in,
+        // before the app has drawn — without restarting it here the fade
+        // would already have run its course against an invisible group.
         if std::mem::take(&mut self.held_back) {
             self.spawned_at = Some(Instant::now());
         }
-        // Per-group spawn / close fades are mutually exclusive in
-        // practice — a group can't be both "just arrived" and "last
-        // tab just left" on the same frame. We check close first so
-        // a latent `spawned_at` from a historically-rare reuse never
-        // clobbers the shutdown curve the user is watching.
-        //
-        // Spawn (`start_spawn_animation` on a freshly-created group,
-        // typically via split-into-new-group) runs the radial-workspace
-        // concept's `initial={{ opacity: 0, scale: 0.92, x: -16 }}` →
-        // `animate={{ opacity: 1, scale: 1, x: 0 }}` curve over
-        // `SPAWN_ANIM_MS` with a cubic-out ease.
-        //
-        // Close (`start_closing` latched after the last tab's host
-        // fade sweeps through) runs the mirror curve over
-        // `GROUP_CLOSE_FADE_MS`: α 1 → 0, scale 1 → 0.95.
-        //
-        // Either way, the whole paint block (bar + tile + chrome
-        // rings) composes under a single alpha layer + translate +
-        // scale so pill hover targets and resize-handle hit-tests
-        // stay aligned with what the user sees on screen mid-fade.
+        // Close checked first (mutually exclusive with spawn in practice):
+        // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
+        // cubic-out; close mirrors it (α 1→0, scale 1→0.95). The whole
+        // paint composes under one alpha+translate+scale layer so hit
+        // tests stay aligned with what's on screen mid-fade.
         let (fade_alpha, fade_x, fade_y, fade_scale): (f32, f64, f64, f64) = if let Some(started) =
             self.closing_at
         {
-            // Close curve: α 1 → 0, scale 1 → 0.95, no offset (the
-            // per-host curve already carries the y-drift; the group
-            // shell just fades + shrinks about its centre).
+            // No offset: the per-host curve already carries the y-drift.
             let raw = (started.elapsed().as_millis() as f32
                 / GROUP_CLOSE_FADE_MS as f32)
                 .clamp(0.0, 1.0);
@@ -1251,9 +743,8 @@ impl Widget for WindowGroup {
         };
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
-            // Clip with a generous margin so the concept-faithful glow
-            // rings (search_active, maximized outline) aren't clipped
-            // mid-fade. 16 px covers the widest outer stroke currently.
+            // 16px clip margin so outer strokes (glow rings, focus
+            // outlines) aren't clipped mid-fade.
             let clip = Rect::new(
                 self.rect.x0 - 16.0,
                 self.rect.y0 - 16.0,
@@ -1268,12 +759,8 @@ impl Widget for WindowGroup {
                 &clip,
             );
         }
-        // All subsequent paint uses `transform` shifted by the fade's
-        // x/y-offset and scaled about the group's center point so the
-        // group reads as "sliding into place". `fade_x` carries the
-        // spawn slide-in (-16 px → 0); `fade_y` is reserved for the
-        // close curve's centre-shrink (currently 0 — kept in the
-        // tuple so a future tweak can re-introduce a subtle settle).
+        // `fade_y` is currently always 0, kept in the tuple in case a
+        // future close curve wants a settle.
         let transform = if fade_x != 0.0 || fade_y != 0.0 || fade_scale != 1.0 {
             let cx = self.rect.center().x;
             let cy = self.rect.center().y;
@@ -1284,32 +771,22 @@ impl Widget for WindowGroup {
         } else {
             transform
         };
-        // A maximized (fullscreen) group replaces its whole tab strip with the
-        // compact floating pill painted further down: the window owns the
-        // entire output, so a persistent multi-pill bar would be exactly the
-        // chrome the user asked to get out of the way. The bar's hit rects stay
-        // live either way — only the paint is gated — so a click that lands on
-        // the revealed pill still resolves through the normal arms.
+        // The bar's hit rects stay live either way — only the paint is
+        // gated (maximized swaps in the floating pill further down).
         if !self.maximized {
             self.bar.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
-        // The tab pill is where a wayland app-id becomes the app's own
-        // name. A tile holding a place for an app that has not arrived
-        // needs that name — it is the whole content of the card it paints
-        // — and takes it from the pill directly above it, so the two can
-        // never name the same window differently.
+        // A tile holding a place for an app that has not arrived takes
+        // its name from the pill above it, so the two never disagree.
         let opening_name = self
             .bar
             .tabs()
             .iter()
             .find(|t| t.id == active_id)
             .map(|t| t.title.clone());
-        // The window the keyboard is aimed at lights its own edge and
-        // shadow (see `TileHost::draw_steady_state`). A search scoped to
-        // this group lights it too: scoping the search *is* aiming the
-        // keyboard here, and it is the group's card the results will act
-        // on.
+        // Scoping search *is* aiming the keyboard at this group, so it
+        // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
@@ -1318,12 +795,8 @@ impl Widget for WindowGroup {
             h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
         }
-        // Concept-parity close fade-out pass on hosts. Mirrors the
-        // per-tile spawn curve in `tile_host.rs` — opacity 1 → 0,
-        // scale 1 → 0.95, y 0 → -20 over `CLOSE_FADE_MS`. Painted
-        // over the active host so the closing tile visibly settles
-        // away instead of popping. Snapshotted id list so we can
-        // borrow `self.hosts` mutably inside the loop without
+        // Opacity 1→0, scale 1→0.95, y 0→-20 over `CLOSE_FADE_MS`. Id
+        // list is snapshotted to borrow `self.hosts` mutably without
         // fighting the borrow checker against `self.closing_hosts`.
         let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
         let closing_ids: Vec<(u64, Instant)> = self
@@ -1341,8 +814,7 @@ impl Widget for WindowGroup {
             let y_offset = -20.0 * eased;
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
                 let rect = h.get_rect();
-                // Generous clip: match the tile-spawn clip so shadow
-                // sprites aren't chopped as the host shrinks.
+                // Matches the tile-spawn clip so shadows aren't chopped.
                 let clip = Rect::new(
                     rect.x0 - 160.0,
                     rect.y0 - 160.0,
@@ -1366,16 +838,8 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        // Per-group resize handle. Painted as two short vertical accent
-        // strokes (a "grip" affordance) just inside the group's right
-        // edge — much more legible than the previous full-height
-        // slate-700 stripe, which blended into the white card and the
-        // dark wallpaper. Hover/drag brightens to `border_focus` so
-        // the user can see whether they've grabbed the handle.
-        //
-        // Hit zone is wider (`RESIZE_HANDLE_PX = 6`) than the painted
-        // grip so a mouse-cursor approach catches before the user
-        // notices the visual.
+        // The hit zone (`RESIZE_HANDLE_PX = 6`) is wider than the
+        // painted grip so the cursor catches it early.
         let grip_col = if self.hover_resize || self.resize_origin.is_some() {
             theme.tokens.colors.border_focus
         } else {
@@ -1399,55 +863,18 @@ impl Widget for WindowGroup {
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
 
-        // Three rings used to be stroked around `self.rect` here — one
-        // for a tab drag in flight, two concentric ones for a scoped
-        // search, and a 2 px accent outline while maximized. All four
-        // strokes were sharp-cornered rectangles around the group's
-        // bounding box, which spans the tab row *and* the rounded card
-        // below it. So each painted a hard right-angled fence a pixel
-        // outside a rounded window, in a saturated accent, at a weight
-        // and a corner radius that matched nothing else in the chrome.
-        //
-        // What each was actually reporting is now said where it belongs:
-        //
-        // * **drag in flight** — the tab bar already draws the drop line
-        //   at the target gap and `GroupRow` draws the accent capsule at
-        //   the destination. A third cue, wrapped around the source, told
-        //   the user something they could already see and competed with
-        //   the two cues that say where the tab will land.
-        // * **scoped search** — folded into the focus signal above: the
-        //   group's own card lights, and the shell's search bar (which
-        //   the same click opens) is the substantive feedback.
-        // * **maximized** — a maximized group is the only thing on the
-        //   strip; its siblings are gone and its tab row has collapsed
-        //   into the floating pill drawn just below. The outline was
-        //   added as interim feedback "even before the shell paints
-        //   concept-style floating controls"; the shell paints them now.
-        //
-        // Per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*, so
-        // maximize and search — both things the user picked — had no
-        // claim on it in the first place.
+        // No outline rings around `self.rect` for drag/search/maximize:
+        // per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*.
         if self.maximized {
-            // Concept-parity auto-hide: only paint the floating chrome
-            // (title pill + Restore + close) while the cursor sits in
-            // the reveal band (y <= MAXIMIZED_CHROME_REVEAL_Y). Mirrors
-            // `WindowFrame.tsx:108-123` where `clientY <= 80` toggles
-            // `chromeVisible`; outside the band the chrome fades out so
-            // the maximized content reads cleanly. Hit-test math
-            // (restore_rect/close_rect) keeps running below — just gate
-            // the visual paint here so a click that lands on the chrome
-            // while it's visible still resolves through the existing
-            // handle_event arms.
+            // Hit-testing (restore_rect/close_rect) keeps running below
+            // regardless of the cursor band — only the paint is gated.
             if self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
 
-            // Floating controls at the top of the maximized group, matching
-            // the concept's `[app title]  …  [Restore][×]` layout.
+            // `[app title]  …  [Restore][×]`, matching the concept layout.
             let pad = 6.0_f64;
             let pill_h = 22.0_f64;
             let y0 = self.rect.y0 + pad;
 
-            // Left: app-title pill. Shows the active tab's title so the
-            // maximized tile still tells you which app owns the surface.
             let active_title = self
                 .bar
                 .tabs()
@@ -1464,11 +891,6 @@ impl Widget for WindowGroup {
                 self.rect.x0 + pad + title_pill_w,
                 y0 + pill_h,
             );
-            // Same look as a WindowGroup tab pill: an opaque raised surface
-            // with the standard border, lifted off the content by a soft
-            // shadow. The previous translucent-white fill was designed for a
-            // dark desktop and disappeared entirely once it floated over a
-            // light app card — the decoration was invisible in fullscreen.
             crate::surface::shadow(
                 scene,
                 transform,
@@ -1489,7 +911,6 @@ impl Widget for WindowGroup {
                 None,
             );
 
-            // Right-action cluster: Restore pill + close glyph.
             let close_w = 22.0_f64;
             let close_x0 = self.rect.x1 - close_w - pad;
             self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
@@ -1498,7 +919,6 @@ impl Widget for WindowGroup {
             self.restore_rect =
                 Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
-            // Restore pill.
             crate::surface::shadow(
                 scene,
                 transform,
@@ -1506,8 +926,6 @@ impl Widget for WindowGroup {
                 self.restore_rect.height() / 2.0,
                 &theme.tokens.elevation.e2,
             );
-            // Hover promotes the chip to the accent fill, matching how a
-            // selected pill reads everywhere else in the toolkit.
             let (restore_fill, restore_border) =
                 crate::surface::chip_colors(theme, self.restore_hover);
             crate::surface::pill(
@@ -1518,15 +936,8 @@ impl Widget for WindowGroup {
                 restore_border,
                 None,
             );
-            // Prepend a lucide `Minimize2` glyph to the Restore pill so
-            // the action reads at a glance — matches the concept's
-            // maximized floating controls in WindowFrame.tsx which
-            // render a `<Minimize2 className="w-4 h-4" />` alongside
-            // the restore affordance. Accessibility: the text label is
-            // preserved (screen readers and i18n still see "Restore");
-            // we just offset it horizontally to leave a 14 px icon
-            // slot at the pill's leading edge. `window_group_restore_pill_uses_minimize2`
-            // pins this variant.
+            // Text label kept (for screen readers/i18n) and offset past
+            // a 14px icon slot for the lucide `Minimize2` glyph.
             let icon_slot = Rect::new(
                 self.restore_rect.x0 + 8.0,
                 self.restore_rect.y0 + 4.0,
@@ -1543,9 +954,6 @@ impl Widget for WindowGroup {
             );
             let label = "Restore";
             let (_lw, lh) = tr.measure(label, title_size, None);
-            // Shift the label past the icon slot (x0 + 28.0) instead of
-            // recentring, so the glyph + label cluster sits together on
-            // the left of the pill.
             let lx = self.restore_rect.x0 + 28.0;
             let ly = self.restore_rect.center().y - lh as f64 / 2.0;
             tr.draw_text(
@@ -1557,11 +965,7 @@ impl Widget for WindowGroup {
                 None,
             );
 
-            // Close glyph: matches the concept's `X` button, tinted red on
-            // hover so the destructive intent is obvious. Hover fill is
-            // `hover:bg-red-500/80` (WindowFrame.tsx:249) — red-500 at
-            // 80% alpha — so we multiply `semantic.danger` by 0.8 rather
-            // than painting it fully opaque.
+            // Concept: `hover:bg-red-500/80` (danger token at 80% alpha).
             crate::surface::shadow(
                 scene,
                 transform,
@@ -1587,15 +991,7 @@ impl Widget for WindowGroup {
                 close_border,
                 None,
             );
-            // Close glyph: lucide `X` painted over the (already-filled)
-            // red-on-hover close chip. Replaces the previous literal
-            // `×` codepoint + measure/draw_text pair so the maximized
-            // floating controls read identically to the concept's
-            // `<X className="w-4 h-4" />` in WindowFrame.tsx. The
-            // filled chip underneath is unchanged; the icon paints on
-            // top via `icons::draw_icon`. On hover the concept promotes
-            // the glyph to full white (`hover:text-white`) so the × reads
-            // crisp against the red fill.
+            // On hover the glyph promotes to full white (`hover:text-white`).
             let glyph_color = if self.close_hover {
                 vello::peniko::Color::from_rgba8(255, 255, 255, 255)
             } else {
@@ -1615,9 +1011,7 @@ impl Widget for WindowGroup {
             self.close_rect = Rect::ZERO;
         }
 
-        // Close out the spawn-fade layer if one was pushed at the top
-        // of `draw`. Mirrors the `spawn_active` branch exactly so every
-        // `push_layer` has a matching pop.
+        // Matches the `spawn_active` push above.
         if spawn_active {
             scene.pop_layer();
         }
@@ -1637,35 +1031,17 @@ impl Widget for WindowGroup {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
                 if self.maximized && self.close_rect.contains(self.last_cursor) =>
             {
-                // Close-glyph click on a maximized group: route through
-                // the same deferred fade flow the per-tab × click uses
-                // (`bar.start_closing` → `closing_hosts` → sweep). A
-                // previous version mutated `self.hosts` + `self.bar`
-                // synchronously here, which meant the 180 ms tab pill
-                // fade and the follow-on group-close fade were both
-                // skipped: the entire group just popped out of
-                // existence. Now we only latch the close; the sweep at
-                // the bottom of `handle_event` runs on the next tick
-                // and removes the host + finalises the pill + (when
-                // tabs empty) starts the group-level close fade, so
-                // the user sees a coherent shrink whether they close
-                // from maximised or the tab bar.
-                //
-                // We still exit maximize immediately so the floating
-                // restore / close chrome stops painting — it's latched
-                // to the active tab and that tab is on its way out;
-                // keeping the chrome up for one extra frame would
-                // render it over a fading tile that no longer owns
-                // the interaction.
+                // Route through the same deferred fade flow as the
+                // per-tab × click (`bar.start_closing` → `closing_hosts`
+                // → sweep) so the group shrinks coherently instead of
+                // popping away. Exit maximize immediately so the floating
+                // chrome stops painting over a tile it no longer owns.
                 let active_id = self.bar.active_id();
                 self.bar.start_closing(active_id);
                 self.closing_hosts
                     .entry(active_id)
                     .or_insert_with(Instant::now);
                 self.maximized = false;
-                // Stash the new value for the shell to harvest into
-                // persisted state — without this writeback the click
-                // is in-memory only and resets across a restart (#105).
                 self.pending_maximize_change = Some(false);
                 *handled = true;
                 return;
@@ -1673,20 +1049,17 @@ impl Widget for WindowGroup {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
                 if self.maximized && self.restore_rect.contains(self.last_cursor) =>
             {
-                // Restore-pill click: exit maximize. Handled here (not via
-                // bar.pending_max) so the click never races with a tab
-                // selection under the pill's geometry.
+                // Handled here (not via bar.pending_max) so the click
+                // never races with a tab selection under the pill's geometry.
                 self.maximized = false;
                 self.pending_maximize_change = Some(false);
                 *handled = true;
                 return;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } if self.hover_resize => {
-                // Anchor on where the pointer actually is, not on the group's
-                // right edge: the hit zone is `RESIZE_HANDLE_PX` wide, so
-                // anchoring on the edge offsets every subsequent delta by
-                // however far inside the zone the user pressed (the window
-                // visibly jumps on grab).
+                // Anchor on the actual press point, not the group's right
+                // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
+                // edge would jump the window on grab.
                 self.begin_resize(self.last_cursor.x as f32);
                 *handled = true; return;
             }
@@ -1700,15 +1073,9 @@ impl Widget for WindowGroup {
                 && m.state().shift_key()
                 && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
             {
-                // Ctrl+Shift+P: toggle pin on the active tab. Routed
-                // through the WindowGroup (rather than the bar's own
-                // keyboard handler) because keyboard events arrive at
-                // the focused widget and the bar isn't focusable —
-                // `WindowGroup::handle_event` is the first stop that
-                // sees the chord while the group has focus. The chord
-                // is intentionally not gated on `bar.tabs().is_empty()`:
-                // an empty bar's `active_id` is `0`, which `toggle_pin`
-                // accepts and the no-op write is harmless.
+                // Routed here (not the bar's own handler) because keyboard
+                // events arrive at the focused widget and the bar isn't
+                // focusable.
                 let active = self.bar.active_id();
                 self.bar.toggle_pin(active);
                 *handled = true;
@@ -1718,14 +1085,8 @@ impl Widget for WindowGroup {
         }
         self.bar.handle_event(event, scale_factor, m, s, p, handled, focus_target, children[0], taffy);
 
-        // Sweep any hosts whose close fade-out has fully elapsed.
-        // `self.bar.start_closing` runs on the press frame (inside
-        // `self.bar.handle_event` above) and simultaneously publishes
-        // `pending_close` for us to drain below. Actual host removal
-        // is deferred so the fade curve plays out with the tile
-        // still in place. Mirrors the tile-level spawn-in pattern in
-        // `tile_host.rs` — both sides of the animation live in the
-        // widget layer, not the shell.
+        // Sweep hosts whose close fade has fully elapsed; removal is
+        // deferred so the fade plays out with the tile still in place.
         let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
         let expired: Vec<u64> = self
             .closing_hosts
@@ -1741,16 +1102,8 @@ impl Widget for WindowGroup {
             self.bar.finalize_close(id);
         }
 
-        // If the final tab's host-level close fade just expired and
-        // dropped the last occupant, latch the group-level close
-        // fade so `GroupRow` paints us shrinking out over the next
-        // `GROUP_CLOSE_FADE_MS` before pruning. Gated on `is_closing`
-        // so a subsequent tick inside the fade window doesn't
-        // restart the curve. We intentionally check
-        // `bar.tabs().is_empty()` instead of just `hosts.is_empty()`
-        // — the two track each other one-for-one, but a future
-        // refactor could introduce tab placeholders without hosts,
-        // and the user-visible "group is empty" signal is the bar.
+        // `bar.tabs().is_empty()` rather than just `hosts.is_empty()` —
+        // the bar is the user-visible "empty" signal.
         if !self.is_closing()
             && self.bar.tabs().is_empty()
             && self.hosts.is_empty()
@@ -1759,12 +1112,7 @@ impl Widget for WindowGroup {
             self.start_closing();
         }
 
-        // Close a tab: drain the bar's one-shot `pending_close` and
-        // latch the host-level fade-out. The bar has already shifted
-        // active-id to the neighbour and snapshotted its pill into
-        // `closing_tabs` so the pill keeps painting while the host
-        // fades out. We keep the `TileHost` in `self.hosts` for the
-        // duration of `CLOSE_FADE_MS`, then the sweep above drops it.
+        // Host stays in `self.hosts` for `CLOSE_FADE_MS`; the sweep above drops it.
         if let Some(close_id) = self.bar.take_close() {
             self.closing_hosts
                 .entry(close_id)
@@ -1772,63 +1120,31 @@ impl Widget for WindowGroup {
             *handled = true;
         }
 
-        // Maximize toggle from the tab bar's hover-action icon. Flagging
-        // `style_dirty` makes `take_structure_dirty` request a
-        // `build_layout` rebuild so the new flex_grow / width style
-        // takes effect — without it the cached taffy node keeps the
+        // Without `style_dirty` the cached taffy node keeps the
         // pre-toggle width and the click looks like a no-op.
         if let Some(_id) = self.bar.take_max() {
             self.maximized = !self.maximized;
             self.style_dirty = true;
-            // Mirror the new value into the harvest slot so the shell
-            // can write it through to the persisted `WorkspaceTree`
-            // each frame. Same one-shot semantics as `take_max`
-            // itself — a second flip before the harvest tick simply
-            // overwrites the slot with the new value, which is what
-            // we want (the user toggles twice in quick succession,
-            // the persisted state lands on the final value).
             self.pending_maximize_change = Some(self.maximized);
             *handled = true;
         }
 
-        // Search toggle from the tab bar's hover-action icon. Same pattern
-        // as maximize — the bar publishes `pending_search` once per click,
-        // we drain it here and flip the search-active ring on the group.
         if let Some(id) = self.bar.take_search() {
             self.search_active = !self.search_active;
-            // Ask the shell to open the search bar scoped to this app — the
-            // same thing Ctrl+K does. The ring toggle above is only the local
-            // focus affordance.
             self.pending_search_open = Some(id);
             *handled = true;
         }
 
-        // "+" chip from the tab bar. The group knows its own id; the
-        // shell knows what a new tab should contain, so republish with
-        // the id and let the harvester decide.
+        // The group knows its own id; the shell knows what a new tab
+        // should contain, so republish with the id and let it decide.
         if self.bar.take_new_tab().is_some() {
             self.pending_new_tab = Some(self.id);
             *handled = true;
         }
 
-        // Drag-reorder within the bar: apply the same permutation to
-        // both the bar's tab list AND the hosts vec so the visible
-        // pill order matches the content order. Previously only `hosts`
-        // got reordered while `self.bar.tabs` stayed in the original
-        // order — the user saw drop zones but no visible reorder.
-        //
-        // Parallel-vec hardening (Wave 2 / 2-D): `bar.tabs` and `hosts`
-        // are the two halves of a strictly-aligned 1:1 mapping. A
-        // future refactor that mutates one without the other would
-        // silently desync the visible pill at index `i` from the
-        // content rendered at host index `i`. The `debug_assert_eq!`
-        // below trips loudly in debug builds the moment the lengths
-        // diverge — index-based bounds checks alone (the prior
-        // `if from < self.hosts.len() && to < self.hosts.len()` guard)
-        // would mask the asymmetry: the bar would be permuted while
-        // the hosts vec quietly stayed put. Now we permute
-        // unconditionally, with the assert documenting the invariant
-        // that's expected to hold every time we get here.
+        // `bar.tabs` and `hosts` are a strictly-aligned 1:1 mapping; a
+        // refactor that permutes only one would desync pill `i` from
+        // content `i` — the debug_assert documents that invariant.
         if let Some((from, to)) = self.bar.take_reorder() {
             debug_assert_eq!(
                 self.bar.tabs().len(),
@@ -1843,8 +1159,6 @@ impl Widget for WindowGroup {
             self.bar.reorder(from, to);
             let item = self.hosts.remove(from);
             self.hosts.insert(to, item);
-            // Publish for the shell so the new order reaches the persisted
-            // tree (and peers) instead of living only in this widget.
             self.pending_tab_reorder = Some((from, to));
             *handled = true;
         }
@@ -1856,62 +1170,28 @@ impl Widget for WindowGroup {
         }
     }
     fn name(&self) -> &str { "WindowGroup" }
-    /// Whether any window in this group has something to show.
-    ///
-    /// **Any**, not all: a group holding a live window and a second one
-    /// still starting is a window the person is looking at, and it does
-    /// not blink out because a tab beside it has not drawn. The gate is
-    /// for the group that is *only* a starting app — which is what a
-    /// launch makes, since a launch opens its own group.
+    /// **Any**, not all: a group with one live window and a second still
+    /// starting must not blink out because a sibling tab hasn't drawn.
     fn presented(&self) -> bool {
         if self.hosts.is_empty() {
             return true;
         }
-        // Every tab is asked, and `any` would not ask them all.
-        //
-        // Asking is what records the answer: a tab's `presented()` is
-        // the only thing that marks its window as having drawn, and its
-        // `opening()` reads that mark. Stopping at the first tab that
-        // says yes therefore strands every tab behind it — nothing ever
-        // records that their windows drew, so they go on painting the
-        // card that holds a window's place over a window that has been
-        // on screen for minutes.
-        //
-        // The tab a peer's window asks this machine to open is bound
-        // into a tab that already exists, which lands it in exactly that
-        // position. It is why the same window reported itself drawn on
-        // the machine that owns it and never did on the one it was
-        // replicated to.
-        //
-        // `h.presented()` first in the `||` so it is evaluated on every
-        // pass; the value is the one `any` would have produced.
+        // `fold`, not `any`: asking `h.presented()` is what records a
+        // tab's window as drawn, so short-circuiting on the first `true`
+        // would strand every tab behind it un-asked, each going on
+        // painting its placeholder over a window on screen for minutes.
         self.hosts
             .iter()
             .fold(false, |seen, (_, h)| h.presented() || seen)
     }
-    /// Whether this group is a window's place being held for an app that
-    /// is still starting — see [`Widget::opening`].
-    ///
-    /// Only while *nothing* in it has presented. A group holding one live
-    /// window and one tab whose app is still starting is a window the
-    /// person is looking at; that tab waits its turn without turning the
-    /// whole group into a placeholder.
+    /// Only true while *nothing* has presented, so a group with one live
+    /// window never turns into a placeholder because a sibling is starting.
     fn opening(&self) -> bool {
         !Widget::presented(self) && self.hosts.iter().any(|(_, h)| h.opening())
     }
     fn get_rect(&self) -> Rect { self.rect }
-    /// East-west resize cursor while the pointer sits in the group's
-    /// right-edge resize band (the `RESIZE_HANDLE_PX`-wide grip that
-    /// `draw` paints and `handle_event` hit-tests via `hover_resize`)
-    /// or a width-resize drag is in flight. Mirrors the inter-group
-    /// [`crate::widget::ResizeHandle`]'s `cursor_shape` so both resize
-    /// affordances give the same OS feedback: without this the
-    /// between-groups handle changed the cursor but a group's own
-    /// right edge — the only resize affordance on the last / lone
-    /// group in a strip — did not. The host (`App::resolve_cursor`)
-    /// hit-tests the tree on every pointer move and adopts the icon;
-    /// the inter-group handle's 16 px hit area is smaller-area, so it
-    /// still wins in the narrow overlap between two groups.
+    /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
+    /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let band = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
@@ -1927,9 +1207,8 @@ impl Widget for WindowGroup {
     }
     fn wants_pointer_capture(&self) -> bool { self.resize_origin.is_some() }
     fn take_structure_dirty(&mut self) -> bool {
-        // Bubble both the TabBar's and every host's dirty flag. Ordered
-        // with `|` over a fold so each child still gets its flag cleared
-        // even if an earlier one already reported dirty.
+        // `fold`, not `any`: every child's flag must be drained even if
+        // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
         let hosts = self
             .hosts
@@ -1937,53 +1216,27 @@ impl Widget for WindowGroup {
             .map(|(_, h)| h.take_structure_dirty())
             .fold(false, |acc, d| acc || d);
         let style = std::mem::take(&mut self.style_dirty);
-        // The active tab switched since the last `build_layout` (e.g. a tab
-        // click or wheel-cycle that only touched `TabBar::active_id`). The
-        // cached tile-node still belongs to the previously-active host, so
-        // request a rebuild to give the newly-active host its own node —
-        // and, for an `App` tab, its child. `built_active` is seeded to the
-        // constructor's active id and updated in `build_layout`, so a fresh
-        // group that hasn't switched tabs reports clean here.
         let active_switched = self.built_active != Some(self.bar.active_id());
         bar || hosts || style || active_switched
     }
     fn needs_animation_frame(&self) -> bool {
-        // The tab bar runs a frame-driven drop-zone expand animation
-        // during drag; its signal would otherwise be invisible to ancestors
-        // because `WindowGroup::children()` uses the default (empty) impl.
-        // Bubble it up plus any active host's signal so nested app
-        // animations (e.g. caret blink in future revisions) keep pumping.
-        // Also honour the per-group spawn fade while it's in flight so
-        // the motion plays out without visible stutter.
+        // `WindowGroup::children()` uses the default (empty) impl, so
+        // ancestors wouldn't otherwise see the bar's drag/spawn signals.
         let spawn_in_flight = self
             .spawned_at
             .map(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
             .unwrap_or(false);
-        // Per-host close fade (180 ms). Same idea as `spawn_in_flight`
-        // but for the concept's `exit={{ opacity: 0, scale: 0.95, y: -20 }}`
-        // tab-close curve: while any host is within its fade window
-        // we need to keep pumping redraws so the pill + host shrink
-        // + fade visibly plays out instead of popping.
         let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
         let close_in_flight = self
             .closing_hosts
             .values()
             .any(|t| t.elapsed() < close_window);
-        // Group-level close fade (180 ms). While `closing_at` is
-        // latched and still inside the fade window the `App` run
-        // loop needs to keep pumping frames so the group visibly
-        // shrinks out instead of popping away the instant the last
-        // tab's fade expires.
         let group_close_in_flight = self.closing_at.is_some_and(|t| {
             t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS)
         });
-        // Only the *active* tab is laid out and drawn (see `build_layout`
-        // / `draw`, which render just the active host). An inactive tab's
-        // animation signal is therefore invisible and must not keep the
-        // compositor's redraw pump running — otherwise a background tab
-        // hosting a live terminal (whose PTY-poll keeps `needs_animation_
-        // frame` perpetually true) pins the whole shell at 60 fps / 100%
-        // CPU forever. Consider only the active host.
+        // Only the *active* tab is laid out and drawn, so only its signal
+        // counts — otherwise a background terminal's PTY-poll would pin
+        // the whole shell at 60fps/100% CPU forever.
         let active_id = self.bar.active_id();
         let host = self
             .hosts
@@ -2019,7 +1272,6 @@ mod tests {
     }
 
 
-    /// A tab whose app has been asked for and has not drawn.
     struct Starting {
         presented: bool,
         opening: bool,
@@ -2097,13 +1349,9 @@ mod tests {
         g
     }
 
-    /// Lay the group out for real and paint it, and report whether
-    /// anything at all landed in the scene.
-    ///
-    /// The full layout pass matters: a group whose tabs have no rects
-    /// paints nothing for reasons that have nothing to do with what is
-    /// being tested here, and would make the "nothing on screen" case
-    /// pass for free.
+    /// A full layout pass matters — a group with no tab rects paints
+    /// nothing for unrelated reasons, which would make the "nothing on
+    /// screen" case pass for free.
     fn painted_anything(g: &mut WindowGroup) -> bool {
         use taffy::prelude::TaffyMaxContent;
         let theme = Theme::dark();
@@ -2126,8 +1374,6 @@ mod tests {
         !scene.encoding().path_data.is_empty()
     }
 
-    /// The layout pass alone must not paint: proof that
-    /// [`painted_anything`] is reading the draw and not the layout.
     #[test]
     fn the_paint_probe_reports_an_untouched_scene_as_empty() {
         let theme = Theme::dark();
@@ -2141,14 +1387,6 @@ mod tests {
         );
     }
 
-    /// An app that opens in a blink must not flash an indicator on its
-    /// way past.
-    ///
-    /// The delay is the whole reason this branch exists: for the first
-    /// fraction of a second a launch is indistinguishable from an
-    /// instantaneous one, and a card that appears and vanishes inside it
-    /// is a flicker rather than information. Nothing at all is the right
-    /// thing to paint while that is still true.
     #[test]
     fn a_group_paints_nothing_while_the_wait_is_still_too_short_to_be_one() {
         let mut g = group_opening("Files", false, false);
@@ -2160,8 +1398,6 @@ mod tests {
         );
     }
 
-    /// Past the delay, the wait gets said out loud — and in the window's
-    /// own place, which is where the person is already looking.
     #[test]
     fn a_group_holds_the_window_place_once_the_wait_is_worth_naming() {
         let mut g = group_opening("Files", false, true);
@@ -2176,9 +1412,6 @@ mod tests {
         );
     }
 
-    /// The card names the app, and it takes that name from the tab above
-    /// it rather than resolving one of its own.
-    ///
     /// A card reading `dev.qos.file-explorer` is the failure this guards:
     /// the person asked for Files, and a package id is not an answer.
     #[test]
@@ -2194,10 +1427,6 @@ mod tests {
         );
     }
 
-    /// A group with a live window in it is a window, not a placeholder.
-    ///
-    /// Opening a second tab beside one the person is working in must not
-    /// turn the whole group into a card saying something is on its way.
     #[test]
     fn a_group_with_a_live_window_is_never_holding_a_place() {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -2219,22 +1448,11 @@ mod tests {
         );
     }
 
-    /// A tab whose window answers the way a client window really does:
-    /// being *asked* whether it has drawn is what records that it has,
-    /// and until something asks, the tile still reports itself as
-    /// holding the window's place.
-    ///
-    /// Not a contrivance — this is `ForeignSurfaceWidget` verbatim. Its
-    /// `presented()` is `ForeignFrameStore::mark_presented`, the only
-    /// thing in the compositor that sets the flag, and its `opening()`
-    /// is `is_opening`, which reads it. A window nobody asks about
-    /// therefore keeps its card forever, however long ago it drew.
+    /// Mirrors `ForeignSurfaceWidget`: being *asked* `presented()` is what
+    /// records a window as drawn (`ForeignFrameStore::mark_presented`).
     struct Latching {
-        /// Whether the client has actually put a frame on screen.
         drawn: bool,
-        /// The store's latch for this one surface.
         latched: std::rc::Rc<std::cell::Cell<bool>>,
-        /// How many times anything asked.
         asked: std::rc::Rc<std::cell::Cell<u32>>,
     }
 
@@ -2317,7 +1535,6 @@ mod tests {
         }
     }
 
-    /// Build a two-tab group where tab 2 is the one on screen.
     fn group_of_two(first_drawn: bool, second_drawn: bool) -> (
         WindowGroup,
         std::rc::Rc<std::cell::Cell<bool>>,
@@ -2332,22 +1549,6 @@ mod tests {
         (WindowGroup::new(10, tabs, 2, WindowWidth::Normal), latched, asked)
     }
 
-    /// Every tab in a group is asked whether its window has drawn — not
-    /// only the tabs up to the first one that says yes.
-    ///
-    /// The group's own answer is "does any of my tabs have a window on
-    /// screen", and `any` is the obvious way to compute it. It is also
-    /// wrong here, because the asking is what records the answer: a tab
-    /// behind one that has already said yes is never asked, so nothing
-    /// ever marks its window as drawn, and the tile goes on painting the
-    /// card that holds the window's place over a window that arrived
-    /// minutes ago.
-    ///
-    /// A window bound into a tab that already exists — which is what a
-    /// peer's window asks this machine to open — lands in exactly that
-    /// position. Which is why it was seen there and not on the machine
-    /// that owns the same window, where the window is the tab that gets
-    /// asked first.
     #[test]
     fn every_tab_in_a_group_is_asked_whether_its_window_has_drawn() {
         let (g, latched, asked) = group_of_two(true, true);
@@ -2368,8 +1569,6 @@ mod tests {
         );
     }
 
-    /// The tile itself stops saying a window is on its way once that
-    /// window has drawn — which is the part a person actually sees.
     #[test]
     fn a_drawn_window_behind_another_tab_retires_its_opening_card() {
         let (g, _latched, _asked) = group_of_two(true, true);
@@ -2387,11 +1586,6 @@ mod tests {
         );
     }
 
-    /// And a window that genuinely has not drawn still gets its card.
-    ///
-    /// The gate exists so a window does not appear at whatever size its
-    /// client happened to pick and then visibly resize itself. Asking
-    /// every tab must not become answering yes for all of them.
     #[test]
     fn a_window_that_has_not_drawn_still_holds_its_place() {
         let (g, latched, _asked) = group_of_two(true, false);
@@ -2410,11 +1604,6 @@ mod tests {
         assert!(Widget::opening(host), "its place is still being held");
     }
 
-    /// Pressing the per-tab Maximize2 hit rect flips
-    /// `WindowGroup::maximized` end-to-end (bar publishes `pending_max`
-    /// → WindowGroup drains it → flag toggles), and a second click
-    /// flips it back. Regression for the live-binary "doesn't work"
-    /// report.
     #[test]
     fn maximize_click_on_tab_pill_toggles_window_group_maximized() {
         use std::collections::HashMap;
@@ -2426,12 +1615,8 @@ mod tests {
         let mut g = make_group();
         assert!(!g.maximized, "fresh group must start non-maximized");
 
-        // Full layout pass so the bar's `max_rects` are authoritative —
-        // the press arm in `TabBar::handle_event` does a fresh hit-test
-        // against `max_rects[i].contains(last_cursor)`, so the rect must
-        // be populated by `apply_layout` before we drive the click.
-        // Reduce-motion so the pill's reveal lands in one layout pass
-        // rather than easing open across frames this test does not pump.
+        // `max_rects` must be populated by `apply_layout` before the
+        // click; reduce-motion so the pill's reveal lands in one pass.
         let theme = Theme::dark().with_reduce_motion(true);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -2442,9 +1627,7 @@ mod tests {
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // A pill only carries a maximize chip once it has opened to make
-        // room for one, so hover it first — exactly the move a user has
-        // to make to see the chip at all — and re-run the pill walk.
+        // A pill only carries a maximize chip once hovered open.
         let pill = g.bar.tab_rects()[0];
         let mut state = automerge::AutoCommit::new();
         let root_id = automerge::ROOT;
@@ -2461,7 +1644,6 @@ mod tests {
         );
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // Aim the synthetic cursor at the centre of tab 0's maximize rect.
         let max_rect = g.bar.max_rects()[0];
         assert!(
             max_rect.area() > 0.0,
@@ -2499,9 +1681,6 @@ mod tests {
             "maximize click on a tab pill must drive WindowGroup::maximized true",
         );
 
-        // Second click flips it back to non-maximized — concept's
-        // `setIsMaximized(!isMaximized)` is a click-to-toggle, not a
-        // one-way latch.
         let mut handled = false;
         g.handle_event(
             &moved, 1.0, &winit::event::Modifiers::default(),
@@ -2520,27 +1699,18 @@ mod tests {
         );
     }
 
-    /// Toggling `maximized` must report `take_structure_dirty()` so
-    /// `App` re-runs `build_layout` and the cached taffy node picks
-    /// up the new width style — otherwise the click visibly does
-    /// nothing.
     #[test]
     fn maximize_toggle_marks_structure_dirty_for_layout_rebuild() {
         let mut g = make_group();
-        // Fresh group is clean.
         assert!(!g.take_structure_dirty(), "fresh group is not dirty");
 
-        // Simulate the bar publishing a maximize request — same code
-        // path the per-tab click hits, just without driving the full
-        // event pump.
+        // Simulate the bar publishing a maximize request, same path the
+        // per-tab click hits.
         g.bar.pending_max = Some(1);
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
         let root_id = automerge::ROOT;
-        // A no-op cursor move drives the WindowGroup drain block, which
-        // is what reads `pending_max` → flips `maximized` → sets
-        // `style_dirty`.
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> = std::collections::HashMap::new();
         let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -2566,13 +1736,6 @@ mod tests {
         assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
     }
 
-    /// Switching the active tab must report `take_structure_dirty()` so the
-    /// host re-runs `build_layout` and the newly-active tile gets its own
-    /// taffy node. `build_layout` only builds the *active* tab's host, so
-    /// without this a switched-to `App` tab inherits the previous tab's
-    /// (childless) node and `TileHost::apply_layout` skips it — the app
-    /// then renders at a stale top-left rect. Regression for the live
-    /// "Files app offset to the top-left of its WindowGroup" report.
     #[test]
     fn active_tab_switch_marks_structure_dirty_for_layout_rebuild() {
         use std::collections::HashMap;
@@ -2580,10 +1743,9 @@ mod tests {
         use taffy::prelude::TaffyMaxContent;
 
         let mut g = make_group();
-        // A fresh group that has never switched tabs is clean.
         assert!(!g.take_structure_dirty(), "fresh group is not dirty");
 
-        // Do a real build so `built_active` is stamped for the active tab.
+        // Real build so `built_active` is stamped for the active tab.
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -2596,8 +1758,7 @@ mod tests {
             "a built group with no tab switch stays clean",
         );
 
-        // Switch the active tab the same way the wheel-cycle / click path
-        // does (mutates `TabBar::active_id` only, no rebuild).
+        // Same as the wheel-cycle / click path: mutates `active_id` only.
         assert!(g.cycle_active_tab(1), "cycle must change the active tab");
         assert!(
             g.take_structure_dirty(),
@@ -2614,11 +1775,6 @@ mod tests {
         );
     }
 
-    /// `take_pending_maximize_change` reports the new maximize value once
-    /// per click — the take-pattern accessor the shell harvests each
-    /// frame to mirror the flip into the persisted `WorkspaceTree`.
-    /// Without it the on-screen toggle is in-memory only and resets to
-    /// the pre-toggle value across a shell restart (audit task #105).
     #[test]
     fn take_pending_maximize_change_drains_on_tab_bar_toggle() {
         use std::collections::HashMap;
@@ -2632,10 +1788,8 @@ mod tests {
             "no pending change before any click",
         );
 
-        // Drive the same drain block the live binary hits when the user
-        // clicks the bar's Maximize2 glyph: prime `pending_max`, run a
-        // no-op cursor-move through `handle_event`, observe the flag
-        // flipped + a pending change waiting for the shell harvest.
+        // Prime `pending_max` and run a no-op cursor-move through
+        // `handle_event` to drive the drain block.
         g.bar.pending_max = Some(1);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -2687,17 +1841,6 @@ mod tests {
         );
     }
 
-    /// `take_pending_width_change` reports the new pixel width once per
-    /// completed resize gesture — the take-pattern accessor the shell
-    /// harvests each frame to mirror the value into the persisted
-    /// `WorkspaceTree`. Without it the on-screen drag is in-memory only
-    /// and resets to the pre-drag width across a shell restart.
-    /// A resize drag must actually change the group's *laid out* width, not
-    /// just its in-memory `width` field. `build_layout` bakes
-    /// `Dimension::length(self.resolved_width_px())` into the taffy node, so a
-    /// width change that doesn't report `take_structure_dirty()` leaves the
-    /// stale length in the tree and the window never visibly resizes —
-    /// which is exactly how "resizing windows doesn't work" shipped.
     #[test]
     fn resize_drag_changes_laid_out_width() {
         use std::collections::HashMap;
@@ -2722,10 +1865,8 @@ mod tests {
             g.get_rect().width()
         }
 
-        // Pin the strip the group thinks it lives in. `Normal` is a
-        // fraction, so it only becomes a pixel count against a basis; 1200
-        // is used throughout these tests because the tiers land on whole
-        // hundreds there (Narrow 400 / Normal 800 / Wide 1200).
+        // 1200 px strip: tiers land on whole hundreds (Narrow 400 /
+        // Normal 800 / Wide 1200).
         g.set_strip_usable_px(1200.0);
         let _ = g.take_structure_dirty();
 
@@ -2749,8 +1890,6 @@ mod tests {
              not as a pixel count",
         );
 
-        // The width changed, so the group must report structure-dirty; that
-        // is the signal `App` / `FrameBuilder` use to re-run `build_layout`.
         assert!(
             g.take_structure_dirty(),
             "a width change must report structure-dirty so the taffy node's \
@@ -2764,10 +1903,6 @@ mod tests {
         );
     }
 
-    /// A maximized group is genuinely fullscreen: the tab strip must not
-    /// reserve any height, so the hosted app runs edge-to-edge instead of
-    /// sitting below an empty bar-height band. (The strip's controls move into
-    /// the floating pill, which paints over the content and auto-hides.)
     #[test]
     fn maximized_group_gives_all_its_height_to_the_app() {
         use std::collections::HashMap;
@@ -2817,10 +1952,6 @@ mod tests {
         );
     }
 
-    /// An intra-group tab reorder must publish a one-shot `(from, to)` for the
-    /// shell to mirror into the persisted `WorkspaceTree`. Without it the new
-    /// pill order is in-memory only and resets on the next shell restart —
-    /// same take-pattern contract as maximize and width.
     #[test]
     fn take_pending_tab_reorder_drains_after_a_reorder() {
         use std::collections::HashMap;
@@ -2865,13 +1996,9 @@ mod tests {
         );
     }
 
-    /// Grabbing the resize handle must anchor on the *press position*, not on
-    /// the group's right edge. The hit zone is `RESIZE_HANDLE_PX` wide, so
-    /// anchoring on the edge makes the window jump by however far inside the
-    /// zone the user actually clicked, and every subsequent delta is offset
-    /// by that amount. Driving the real event path here (CursorMoved →
-    /// Pressed → CursorMoved) is what catches it; calling `begin_resize`
-    /// directly would hide the bug, since the bug is in its caller.
+    /// Drives the real event path (CursorMoved → Pressed → CursorMoved)
+    /// since calling `begin_resize` directly would hide the bug, which is
+    /// in its caller.
     #[test]
     fn resize_grab_anchors_on_press_position_not_group_edge() {
         use std::collections::HashMap;
@@ -2884,9 +2011,9 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        // Definite-size root: the group sizes its height as `percent(1.0)`,
-        // which resolves to 0 against an indefinite parent — the resize
-        // handle's rect would then be empty and no press could ever hit it.
+        // Definite-size root: `percent(1.0)` height resolves to 0 against
+        // an indefinite parent, which would leave the resize handle's
+        // rect empty and unhittable.
         let root = taffy
             .new_with_children(
                 Style {
@@ -2946,11 +2073,6 @@ mod tests {
         );
     }
 
-    /// The group's right-edge resize band must request an east-west
-    /// resize cursor, matching the inter-group [`ResizeHandle`]. Without
-    /// it the last / lone group in a strip — whose only resize affordance
-    /// is its own right edge — gives no cursor feedback. Driven off a real
-    /// layout pass so `self.rect` (and thus the band) is authoritative.
     #[test]
     fn cursor_shape_is_ew_resize_over_right_edge_band() {
         use std::collections::HashMap;
@@ -2994,9 +2116,8 @@ mod tests {
             "pointer over the group body (not the edge band) defers",
         );
 
-        // While a resize drag is in flight the cursor stays EwResize even
-        // if the pointer has wandered off the band (pointer capture keeps
-        // the gesture alive), so long as it's still within the group rect.
+        // In-flight resize drag holds the cursor even off the band —
+        // pointer capture keeps the gesture alive.
         g.begin_resize(rect.x1 as f32);
         assert_eq!(
             Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
@@ -3008,8 +2129,7 @@ mod tests {
     #[test]
     fn take_pending_width_change_drains_after_resize_gesture() {
         let mut g = make_group();
-        // A 1200 px strip: `Normal` (two thirds) resolves to 800 there, and
-        // the bounds are `min_group_px(1200) = 240` .. the strip itself.
+        // 1200 px strip: `Normal` (two thirds) resolves to 800.
         g.set_strip_usable_px(1200.0);
         assert_eq!(g.resolved_width_px(), 800.0);
         assert_eq!(
@@ -3066,9 +2186,8 @@ mod tests {
             "drag past the strip's minimum clamps to the lower bound",
         );
 
-        // Same stored width, wider display: the *fraction* is what
-        // persists, so a group restored onto a 3840 px strip occupies the
-        // same share of it rather than the same pixel count.
+        // Same stored width, wider display: the *fraction* persists, so a
+        // wider strip gets the same share, not the same pixel count.
         let mut wide = make_group();
         wide.set_strip_usable_px(3840.0);
         assert_eq!(
@@ -3093,10 +2212,8 @@ mod tests {
 
     #[test]
     fn search_active_toggles_when_bar_publishes_pending_search() {
-        // Fresh group starts not-searching. Seeding `bar.pending_search`
-        // and re-running the drain block flips the flag, and a second
-        // drain flips it back — matching the concept's click-to-toggle
-        // affordance on the tab pill's search glyph.
+        // Click-to-toggle: seeding `pending_search` and re-draining flips
+        // the flag; doing it again flips it back.
         let mut g = make_group();
         assert!(!g.search_active, "fresh group must not be searching");
         g.bar.pending_search = Some(1);
@@ -3133,22 +2250,13 @@ mod tests {
         );
     }
 
-    /// The spawn animation must be visibly progressive — at the very
-    /// first frame the eased progress is near zero (group reads as
-    /// "just arriving"), around the midpoint it's clearly past half
-    /// (cubic-out ramps fast early), and once the duration elapses it
-    /// pins to 1.0. Without this guard a regression that shortened the
-    /// duration to <50 ms or skipped the easing would re-introduce the
-    /// "spawn invisible / instant" report from the wheel-rebuild
-    /// worker.
     #[test]
     fn spawn_animation_advances_eased_progress_over_time() {
         let mut g = make_group();
         // No spawn in flight — accessor pins to 1.0.
         assert_eq!(g.spawn_anim_t(), 1.0, "idle group reports finished progress");
 
-        // First frame: started "now", elapsed ~0. Eased progress is
-        // near zero — the group should be barely visible.
+        // First frame: elapsed ~0, so eased progress is near zero.
         g.start_spawn_animation();
         let t_start = g.spawn_anim_t();
         assert!(
@@ -3175,10 +2283,8 @@ mod tests {
         );
     }
 
-    /// The spawn duration must stay long enough that the user can see
-    /// the slide-in. Lock it to the "punchy but readable" 350-450 ms
-    /// band so a future pass can't silently shorten it back to the
-    /// 320 ms tuning that read as "instant" in shots-driver captures.
+    /// Locked to a 350-450ms band so a future pass can't silently shorten
+    /// it back to an imperceptible tuning.
     #[test]
     fn spawn_animation_duration_in_visible_band() {
         assert!(
@@ -3189,10 +2295,6 @@ mod tests {
 
     #[test]
     fn window_group_close_glyph_is_lucide_x() {
-        // Pins the maximized floating close chip to lucide's `X`
-        // glyph. Mirrors the per-tab close pin in `tabs.rs` — both
-        // exist to make a future revert to the literal `×` codepoint
-        // or any hand-rolled primitive fail closed at `cargo test`.
         assert_eq!(
             WindowGroup::close_glyph_icon_for_tests(),
             icons::Icon::X,
@@ -3201,10 +2303,6 @@ mod tests {
 
     #[test]
     fn window_group_restore_pill_uses_minimize2() {
-        // Pins the leading glyph of the Restore pill to lucide's
-        // `Minimize2`. Paired with a horizontal offset on the
-        // "Restore" text label in `draw` so the icon + text cluster
-        // reads as one action.
         assert_eq!(
             WindowGroup::restore_glyph_icon_for_tests(),
             icons::Icon::Minimize2,
@@ -3213,11 +2311,6 @@ mod tests {
 
     #[test]
     fn insert_detached_tab_plays_tile_spawn_animation() {
-        // A tab dragged into an existing `WindowGroup` must fire the
-        // per-tile spawn fade so the new pill's content reads as
-        // "arriving" rather than popping in opaque. The sibling
-        // split-into-new-group path plays the group-level fade
-        // instead; we never double up.
         let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
         let host = TileHost::new(TileContent::Stub {
             kind: AppKind::Settings,
@@ -3236,20 +2329,15 @@ mod tests {
         );
     }
 
-    /// Detaching a tab whose id is mid-close (it sits in
-    /// `closing_hosts` because of the leak path described in B-8 —
-    /// a stale entry whose timer never expires after the tab's host
-    /// has been moved) must drop the lingering close-fade state.
-    /// Otherwise `needs_animation_frame` keeps pumping redraws for
-    /// the remainder of the `CLOSE_FADE_MS` window even though the
-    /// host itself is gone. (B-8)
+    /// Its id sits in `closing_hosts` — a stale entry whose timer never
+    /// expires once the host is moved — so `needs_animation_frame` would
+    /// otherwise keep pumping redraws for a host that's gone.
     #[test]
     fn detach_tab_clears_closing_state_for_moved_tab() {
         let mut g = make_group();
-        // Seed `closing_hosts` directly with tab id 1 — this is the
-        // leak shape the plan calls out. The tab is still present in
-        // `bar.tabs` (so `detach_tab` can find it) and in `hosts`,
-        // but the side-table erroneously carries a fade timestamp.
+        // Seed `closing_hosts` directly with tab id 1 to simulate the
+        // leak: still present in `bar.tabs` and `hosts`, but the
+        // side-table erroneously carries a fade timestamp.
         g.closing_hosts.insert(1, Instant::now());
         assert!(
             g.closing_hosts.contains_key(&1),
@@ -3271,11 +2359,6 @@ mod tests {
         );
     }
 
-    /// Drive the close flow end-to-end: the host must survive until
-    /// the fade window elapses, then the sweep at the top of
-    /// `handle_event` drops it from `self.hosts`. Uses
-    /// `force_expire_closing` to move the timestamp into the past so
-    /// the test doesn't need a real `sleep(CLOSE_FADE_MS)`.
     #[test]
     fn closing_host_stays_until_fade_complete() {
         use taffy::Style;
@@ -3284,9 +2367,8 @@ mod tests {
         use std::collections::HashMap;
 
         let mut g = make_group();
-        // Run one layout pass so the bar has authoritative
-        // pill / close rects — `start_closing` snapshots those into
-        // its `closing_tabs` vec.
+        // Layout pass so the bar has authoritative pill/close rects —
+        // `start_closing` snapshots those into `closing_tabs`.
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -3297,17 +2379,12 @@ mod tests {
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // Latch the close via the bar API. `start_closing` both
-        // moves tab 2 into `closing_tabs` and publishes
-        // `pending_close = Some(2)` so the `WindowGroup::handle_event`
-        // drain below can seed `closing_hosts` without us having to
-        // simulate a full press/click sequence through the bar.
+        // Latch via the bar API directly rather than simulating a full
+        // press/click sequence.
         g.bar_mut().start_closing(2);
 
-        // Run a handle_event so the WindowGroup drain code path
-        // seeds `closing_hosts`. We use a `CursorMoved` way off the
-        // rect so no hover handlers fire and the event reaches the
-        // close-drain block at the bottom of `handle_event`.
+        // CursorMoved off-rect so no hover handlers fire and the event
+        // reaches the close-drain block at the bottom of `handle_event`.
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3342,9 +2419,6 @@ mod tests {
         );
         let host_count_during = g.host_count();
 
-        // Force the close fade to be expired, then run another
-        // `handle_event` so the sweep at the top runs. The host
-        // should drop.
         g.force_expire_closing(2);
         let moved2 = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -3377,14 +2451,9 @@ mod tests {
         );
     }
 
-    /// Driving a full "close the sole tab" cycle must end with the
-    /// group-level close fade latched — `GroupRow` relies on
-    /// `is_closing()` → `close_complete()` to sequence the prune so
-    /// if the tick logic never flips `closing_at` the group stays
-    /// around as an empty shell forever (the pre-feature bug this
-    /// commit fixes). We fast-forward the host-level close via
-    /// `force_expire_closing` so the test doesn't have to sleep past
-    /// `CLOSE_FADE_MS`.
+    /// `GroupRow` relies on `is_closing()` → `close_complete()` to
+    /// sequence the prune, so if `closing_at` never flips the group
+    /// stays around as an empty shell forever.
     #[test]
     fn closing_last_tab_kicks_off_group_close() {
         use std::collections::HashMap;
@@ -3410,13 +2479,11 @@ mod tests {
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // Kick the close flow via the bar: this simulates the
-        // user pressing the pill's × on the sole tab.
+        // Simulates pressing the pill's × on the sole tab.
         g.bar_mut().start_closing(1);
 
-        // First handle_event drains `pending_close` into
-        // `closing_hosts`. The group is NOT yet closing because a
-        // closing host is still in flight.
+        // First handle_event drains `pending_close` into `closing_hosts`;
+        // the group is NOT yet closing while a host close is in flight.
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3439,9 +2506,8 @@ mod tests {
             "group close must NOT fire while a host-level close is still in flight",
         );
 
-        // Expire the host-level close; next handle_event sweeps the
-        // host away and then discovers the group is empty, which is
-        // when the group-level close should latch.
+        // Expire the host-level close; the next handle_event sweeps it
+        // away, discovers the group is empty, and latches the group close.
         g.force_expire_closing(1);
         let moved2 = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -3459,9 +2525,6 @@ mod tests {
         );
     }
 
-    /// Pinned directly against the public API so a regression that
-    /// breaks only the elapsed-check (without touching
-    /// `start_closing` or `is_closing`) still fails here.
     #[test]
     fn group_close_complete_true_after_fade_duration() {
         let mut g = make_group();
@@ -3472,7 +2535,6 @@ mod tests {
             g.close_complete(),
             "close_complete must flip true after the fade window elapses",
         );
-        // And a fresh close timestamp must NOT be complete yet.
         g.set_closing_at_for_tests(Instant::now());
         assert!(
             !g.close_complete(),
@@ -3480,10 +2542,7 @@ mod tests {
         );
     }
 
-    /// `GroupRow` calls `draw` every frame regardless of close
-    /// status — the whole point of the fade is that the group keeps
-    /// painting while shrinking out. This test guards against a
-    /// panic or a collapsed rect mid-fade.
+    /// Guards against a panic or a collapsed rect mid-fade.
     #[test]
     fn group_still_paints_during_close_fade() {
         use std::collections::HashMap;
@@ -3505,17 +2564,11 @@ mod tests {
 
         g.start_closing();
 
-        // Paint into a throwaway Scene — the assertion is "no panic"
-        // and "rect still reports prior bounds for the duration of
-        // the fade". The fade scales about the centre via an
-        // Affine; the logical `self.rect` used for hit-tests stays
-        // put so drop-targets and focus bookkeeping don't shift
-        // under the user mid-animation.
+        // The fade scales about the centre via an Affine; the logical
+        // `self.rect` used for hit-tests stays put so drop-targets and
+        // focus bookkeeping don't shift under the user mid-animation.
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
-        // TextRenderer is constructed fresh per crate test; we use
-        // the same factory the other `draw` tests in this file rely
-        // on.
         let mut tr = TextRenderer::new();
         g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
@@ -3530,9 +2583,6 @@ mod tests {
         );
     }
 
-    /// Symmetric to the host-level `window_group_needs_animation_frame_during_close`
-    /// above but for the group-level `closing_at` path. Regression
-    /// guard for a change that breaks only this pump signal.
     #[test]
     fn group_needs_animation_frame_while_closing() {
         let mut g = make_group();
@@ -3542,8 +2592,6 @@ mod tests {
             g.needs_animation_frame(),
             "group-level close fade must pump frames until close_complete",
         );
-        // Expired: the run loop can idle again (the prune sweep
-        // drops us on the next tick regardless).
         g.set_closing_at_for_tests(
             Instant::now() - Duration::from_millis(GROUP_CLOSE_FADE_MS + 20),
         );
@@ -3553,18 +2601,6 @@ mod tests {
         );
     }
 
-    /// A maximized-mode close press must route through the same
-    /// deferred tab-fade + group-close-fade flow as the normal
-    /// per-tab × click. Previously this path mutated `self.hosts`
-    /// and called `bar.remove_tab` synchronously, so closing the
-    /// last tab from maximised mode popped the entire group out of
-    /// existence with zero animation. The fix calls
-    /// `bar.start_closing` + inserts into `closing_hosts`, drops
-    /// maximize, and lets the sweep finish the teardown on the
-    /// next tick(s). End-to-end this test drives the close press,
-    /// asserts the deferred state, then runs a second tick with
-    /// the close fade forced-expired and asserts the host +
-    /// bar-tab are gone and the group-level close fade is latched.
     #[test]
     fn maximized_close_uses_deferred_flow() {
         use std::collections::HashMap;
@@ -3591,10 +2627,8 @@ mod tests {
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // Put the group into maximized mode and seed `close_rect`
-        // + `last_cursor` so the close-press arm matches. The
-        // close_rect normally gets populated in `draw` while
-        // maximized; tests don't paint so we seed it directly.
+        // `close_rect` normally gets populated in `draw` while maximized;
+        // tests don't paint so we seed it directly.
         g.maximized = true;
         g.close_rect = Rect::new(0.0, 0.0, 20.0, 20.0);
         g.last_cursor = Point::new(5.0, 5.0);
@@ -3615,9 +2649,6 @@ mod tests {
             group_node, &taffy,
         );
 
-        // Deferred flow: maximize dropped, host still present
-        // (fade in-flight), bar has latched the pill-close, and
-        // our own closing_hosts carries the active id.
         assert!(handled, "press must be consumed by the close arm");
         assert!(!g.maximized, "maximize must drop immediately");
         assert!(
@@ -3632,17 +2663,11 @@ mod tests {
             g.has_closing_host(1),
             "closing_hosts must carry the active id so the host fade runs",
         );
-        // And the group itself is NOT closing yet — a host fade is
-        // still in flight; the group-level close only latches once
-        // the sweep drains the last host.
         assert!(
             !g.is_closing(),
             "group close must NOT fire while a host-level close is still in flight",
         );
 
-        // Now force-expire the host close and drive another tick.
-        // The sweep drops the host + finalises the pill, then the
-        // "empty group" check latches the group-level close fade.
         g.force_expire_closing(1);
         let moved = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -3667,11 +2692,6 @@ mod tests {
         );
     }
 
-    /// `needs_animation_frame` must report true during the close
-    /// fade so the `App` run loop keeps pumping redraws until the
-    /// curve settles. Pinned independently of the full
-    /// close-host-stays test so a regression that breaks only the
-    /// frame-pump signal is caught in isolation.
     #[test]
     fn window_group_needs_animation_frame_during_close() {
         let mut g = make_group();
@@ -3679,15 +2699,14 @@ mod tests {
             !g.needs_animation_frame(),
             "precondition: idle group doesn't demand frames",
         );
-        // Directly seed `closing_hosts` — bypasses the full event
-        // drive so this test stays narrow. Simulates what happens
-        // after `handle_event` drains a `pending_close`.
+        // Seed `closing_hosts` directly to simulate what `handle_event`
+        // does after draining a `pending_close`, bypassing the full event
+        // drive.
         g.closing_hosts.insert(1, Instant::now());
         assert!(
             g.needs_animation_frame(),
             "a fresh closing host must pump the run loop",
         );
-        // Expired: no more frames needed.
         g.closing_hosts
             .insert(1, Instant::now() - Duration::from_millis(CLOSE_FADE_MS as u64 + 20));
         assert!(
@@ -3696,20 +2715,14 @@ mod tests {
         );
     }
 
-    /// Concept parity: the maximized floating close chip
-    /// (WindowFrame.tsx:249) uses `hover:bg-red-500/80`. Mirrors the
-    /// per-tab close pill pinned by `tabs::close_hover_uses_danger_token_at_80_percent`.
-    /// On hover the chip fills with the theme's `semantic.danger` at 80% alpha
-    /// and the glyph promotes to full white; off-hover reverts to the
-    /// subtle white chrome tint + `text_primary` glyph.
+    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80%
+    /// alpha, glyph promoted to full white.
     #[test]
     fn maximized_close_chip_uses_danger_token_on_hover() {
         let mut g = make_group();
         g.maximized = true;
         let theme = Theme::dark();
 
-        // Idle (maximized but close not hovered): subtle white tint,
-        // glyph reads as theme's text_primary.
         g.set_close_hover_for_tests(false);
         let idle_chip = g.maximized_close_chip_color_for_tests(&theme);
         assert_eq!(
@@ -3725,7 +2738,6 @@ mod tests {
             "idle glyph uses theme text_primary",
         );
 
-        // Hover: danger-token/80 fill, full-white glyph.
         g.set_close_hover_for_tests(true);
         let hover_chip = g.maximized_close_chip_color_for_tests(&theme);
         let expected_chip = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
@@ -3742,12 +2754,7 @@ mod tests {
         );
     }
 
-    /// Concept parity: `WindowFrame.tsx:108-123` only shows the
-    /// floating chrome (title pill + restore + close cluster) when
-    /// `clientY <= 80`. Outside that band the chrome is hidden so the
-    /// maximized content fills the tile cleanly. Pin both branches of
-    /// `should_show_maximized_chrome` so a regression that drops the
-    /// y-gate or shifts the threshold fails closed at `cargo test`.
+    /// Concept parity: `WindowFrame.tsx:108-123`'s `clientY <= 80` gate.
     #[test]
     fn maximized_chrome_visible_when_cursor_y_le_80() {
         let mut g = make_group();
@@ -3756,17 +2763,10 @@ mod tests {
         assert!(g.should_show_maximized_chrome(Some(80.0)));
         assert!(!g.should_show_maximized_chrome(Some(81.0)));
         assert!(!g.should_show_maximized_chrome(Some(400.0)));
-        // Cursor not yet observed — concept treats the absence of a
-        // cursor signal as "below the band", so the chrome stays
-        // hidden until the user moves the pointer into the reveal
-        // strip.
+        // No cursor observed yet is treated as "below the band".
         assert!(!g.should_show_maximized_chrome(None));
     }
 
-    /// Belt-and-braces: even if the gate predicate is asked about a
-    /// y inside the reveal band, an un-maximized group must never
-    /// claim its chrome is visible (there is no chrome to paint when
-    /// the tile is tiled).
     #[test]
     fn maximized_chrome_always_hidden_when_not_maximized() {
         let g = make_group();
@@ -3776,19 +2776,8 @@ mod tests {
         assert!(!g.should_show_maximized_chrome(None));
     }
 
-    /// Parallel-vec invariant: after the bar publishes a `pending_reorder`
-    /// and the `WindowGroup::handle_event` drain block applies it, the
-    /// resulting `bar.tabs()` order MUST match the resulting `hosts`
-    /// order one-for-one (`bar.tabs()[i].id == hosts[i].0` for every i).
-    /// Two parallel vectors that drift out of sync would cause tab pill
-    /// `i` to render content from a different host on the next frame —
-    /// the exact bug the live `bar.reorder(from, to)` call was added to
-    /// fix in Wave 1. This test exercises several from/to combinations
-    /// (forward, backward, no-op, adjacent) so a future refactor that
-    /// permutes only one side trips loudly. The production code's
-    /// `debug_assert_eq!(self.bar.tabs().len(), self.hosts.len())`
-    /// inside the reorder branch would also panic here if any case
-    /// drifted, providing belt-and-braces coverage in debug builds.
+    /// Parallel-vec invariant: drift between `bar.tabs()` and `hosts`
+    /// would render tab pill `i`'s content from a different host.
     #[test]
     fn reorder_keeps_hosts_and_bar_tabs_aligned() {
         use crate::widget::{AppKind, TabDescriptor, TileContent};
@@ -3824,9 +2813,8 @@ mod tests {
         for &(from, to) in cases {
             let mut g = make_group_4();
 
-            // Build a layout pass — `handle_event` walks the cached
-            // taffy children, and an empty children slice would short-
-            // circuit before the drain block. Mirrors the maximize tests.
+            // `handle_event` walks the cached taffy children, so a real
+            // layout pass is needed before the drain block runs.
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -3837,7 +2825,6 @@ mod tests {
             taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
             g.apply_layout(&taffy, group_node, Point::ZERO);
 
-            // Precondition: bar.tabs and hosts are aligned 1:1 in id order.
             for (i, t) in g.bar.tabs().iter().enumerate() {
                 assert_eq!(
                     t.id, g.hosts[i].0,
@@ -3845,8 +2832,7 @@ mod tests {
                 );
             }
 
-            // Publish the reorder request the same way `TabBar::handle_event`
-            // does on a drag release within its own bar.
+            // Same as `TabBar::handle_event` on a drag release.
             g.bar.pending_reorder = Some((from, to));
 
             // Drive the WindowGroup drain block via a no-op cursor move.
@@ -3864,10 +2850,6 @@ mod tests {
                 group_node, &taffy,
             );
 
-            // Postcondition: bar.tabs and hosts must still be aligned
-            // one-for-one after the permutation. Both vectors must
-            // have identical lengths and the i-th tab's id must equal
-            // the i-th host's id for every i.
             assert_eq!(
                 g.bar.tabs().len(),
                 g.hosts.len(),
@@ -3882,11 +2864,6 @@ mod tests {
         }
     }
 
-    /// Ctrl+Shift+P toggles pin state on the active tab. Routed
-    /// through `WindowGroup::handle_event` because the bar isn't
-    /// focusable and keyboard events arrive at the focused widget —
-    /// the WindowGroup is the first layer that owns the bar and can
-    /// see the chord.
     #[test]
     fn ctrl_shift_p_toggles_pin_on_active_tab() {
         use std::collections::HashMap;
@@ -3900,11 +2877,8 @@ mod tests {
         let active = g.bar.active_id();
         assert!(!g.bar.is_pinned(active), "fresh group: active tab is unpinned");
 
-        // Synthesise a Pressed `KeyboardInput` carrying logical key
-        // `Character("p")`. Mirrors the zero-init workaround used in
-        // `command_palette.rs:944-960` — winit 0.30 keeps
-        // `KeyEventExtra` `pub(crate)` so we can't construct
-        // `KeyEvent` through a struct literal.
+        // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
+        // can't be built through a struct literal — zero-init instead.
         fn key_press(logical_key: Key) -> WindowEvent {
             let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
             ev.logical_key = logical_key;
@@ -3924,8 +2898,6 @@ mod tests {
         let mods = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         let event = key_press(Key::Character(SmolStr::new_inline("p")));
 
-        // Drive a layout pass so `handle_event` has a `taffy` tree to
-        // walk — matches the maximize tests above.
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -3964,7 +2936,6 @@ mod tests {
             "second Ctrl+Shift+P must unpin the active tab",
         );
 
-        // Sanity: the same key without modifiers does NOT toggle.
         let plain_mods = Modifiers::default();
         let mut handled = false;
         g.handle_event(

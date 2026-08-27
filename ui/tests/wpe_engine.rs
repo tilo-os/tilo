@@ -64,7 +64,6 @@ fn wpe_engine_renders_a_page_offscreen() {
         "tightly packed RGBA"
     );
 
-    // The red page background must dominate the centre pixel.
     let centre =
         ((frame.height / 2) * frame.width + frame.width / 2) as usize * 4;
     let px = &frame.rgba[centre..centre + 4];

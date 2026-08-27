@@ -216,8 +216,7 @@ fn one_ctrl_z_after_an_agent_edit_reverts_only_the_keystroke() {
 }
 
 /// The other half: the agent's edit is a boundary of its own, attributed to
-/// the agent, rather than something with no entry at all. Without this the
-/// change is in the document and reachable by nobody.
+/// the agent — not something unreachable with no entry at all.
 #[test]
 #[serial_test::serial(quick_collab_sock)]
 fn an_agents_edit_lands_as_its_own_attributed_boundary() {

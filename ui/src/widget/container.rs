@@ -18,31 +18,19 @@ pub struct Container {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
-    /// Pin the container's outer width to an exact logical-pixel value
-    /// instead of the default `percent(1.0)` fill. `Some(px)` switches the
-    /// taffy width to `length(px)` and disables horizontal shrink so the
-    /// container reads as a true fixed-width pane (e.g. a master/detail or
-    /// settings sidebar). `None` keeps the default fill behaviour.
+    /// `Some(px)` switches the taffy width to `length(px)` and disables
+    /// horizontal shrink, instead of the default `percent(1.0)` fill.
     fixed_width: Option<f32>,
-    /// Pin the container's outer height to an exact logical-pixel value.
-    /// Mutually independent from [`Container::fill_height`] — when set this
-    /// overrides the auto/percent height with `length(px)`.
+    /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
-    /// Explicit fill colour for the container's background surface. When
-    /// `Some(c)`, the background is painted in `c` (still themed — callers
-    /// pass a `Theme` token) rather than the default `theme.bg_primary`.
-    /// Setting this also implies `has_background`. `None` keeps the legacy
-    /// `bg_primary` behaviour when [`Container::with_background`] is used.
+    /// Also implies `has_background`. `None` keeps the legacy `bg_primary`
+    /// behaviour when [`Container::with_background`] is used.
     fill_color: Option<vello::peniko::Color>,
-    /// When set, the container grows to fill the free space on its flex line
-    /// from a **zero** basis (`flex_grow: 1, flex_basis: 0`), instead of
-    /// claiming `percent(1.0)` of its parent. In a **wrapping** flex row this
-    /// is the difference between a child that fills the leftover width AFTER
-    /// its siblings are placed (correct — the row wraps only when the fixed
-    /// siblings don't fit) and one that demands the whole line up front
-    /// (which forces every sibling onto the next line even when there was
-    /// room). Use it to wrap a `percent(1.0)`-width field (e.g. a search box)
-    /// so it stays inline on wide rows and wraps only when genuinely narrow.
+    /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
+    /// wrapping flex row this is the difference between filling the
+    /// leftover width AFTER siblings are placed (correct) and demanding
+    /// the whole line up front, forcing every sibling onto the next line
+    /// even when there was room.
     flex_grow: bool,
 }
 
@@ -63,18 +51,14 @@ impl Container {
         }
     }
 
-    /// Grow to fill the free space on the flex line from a zero basis
-    /// (`flex_grow: 1, flex_basis: 0`) rather than claiming `percent(1.0)`.
-    /// See the field docs — this is how a full-width field is kept inline on a
-    /// wide wrapping row yet allowed to wrap only when the row is truly narrow.
+    /// See the field docs.
     pub fn with_flex_grow(mut self) -> Self {
         self.flex_grow = true;
         self
     }
 
-    /// Skip the default `padding_standard` on all sides. Used by the
-    /// shell root so its child Stack reaches y=0 / x=0 without an
-    /// uneditable inner gutter.
+    /// Used by the shell root so its child Stack reaches y=0 / x=0 without
+    /// an uneditable inner gutter.
     pub fn with_no_padding(mut self) -> Self {
         self.no_padding = true;
         self
@@ -90,62 +74,45 @@ impl Container {
         self
     }
 
-    /// Pin the container to an exact logical-pixel width. Disables the
-    /// default `percent(1.0)` horizontal fill and stops the container from
-    /// shrinking below `px`, so a fixed-width sidebar / master-detail pane
-    /// is expressible without faking it with flex fractions. Pass a value
-    /// derived from theme spacing where possible so the pin still tracks
-    /// the design scale.
+    /// Disables the default `percent(1.0)` horizontal fill and stops the
+    /// container from shrinking below `px`.
     pub fn with_width(mut self, px: f32) -> Self {
         self.fixed_width = Some(px);
         self
     }
 
-    /// Pin the container to an exact logical-pixel height (independent of
-    /// [`Container::filling`]). Use together with [`Container::with_width`]
-    /// for a fixed-size box.
+    /// Independent of [`Container::filling`].
     pub fn with_height(mut self, px: f32) -> Self {
         self.fixed_height = Some(px);
         self
     }
 
-    /// Pin both dimensions at once — convenience over chaining
-    /// [`Container::with_width`] + [`Container::with_height`].
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.fixed_width = Some(width);
         self.fixed_height = Some(height);
         self
     }
 
-    /// Paint the container's background in an explicit colour rather than
-    /// the default `theme.bg_primary`. Implies a background (no separate
-    /// [`Container::with_background`] call needed). The colour is still a
-    /// theme decision — pass a token such as `theme.bg_app`,
-    /// `theme.tokens.colors.surfaces.base`, or a selected-row highlight —
-    /// so the surface tint stays OS-controlled. Use this for header bands,
-    /// selected-row highlights, and any surface that must read as distinct
-    /// from the standard raised card.
+    /// Implies a background. Pass a theme token (`theme.bg_app` etc.) so
+    /// the surface tint stays OS-controlled.
     pub fn with_fill(mut self, color: vello::peniko::Color) -> Self {
         self.fill_color = Some(color);
         self.has_background = true;
         self
     }
 
-    /// Opt this container into filling its parent's height (percent(1.0)) rather
-    /// than sizing to its child's intrinsic height. The default (auto height) is
-    /// correct for card-style containers; root shells want `filling()`.
+    /// The default (auto height) is correct for card-style containers;
+    /// root shells want `filling()`.
     pub fn filling(mut self) -> Self {
         self.fill_height = true;
         self
     }
 
-    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this layout behind a permission scope.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -159,7 +126,6 @@ impl Widget for Container {
         }
     }
 
-    /// Forward the per-frame update pass to the wrapped child.
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
@@ -173,9 +139,8 @@ impl Widget for Container {
         let pad = if self.no_padding { 0.0 } else { theme.padding_standard };
         let width = match self.fixed_width {
             Some(px) => length(px),
-            // A grow-from-zero container takes an `auto` width so its basis is
-            // zero (the wrap decision ignores it); the flex_grow below fills
-            // the leftover line width.
+            // `auto` so the basis is zero (the wrap decision ignores it);
+            // flex_grow below fills the leftover line width.
             None if self.flex_grow => taffy::Dimension::auto(),
             None => percent(1.0),
         };
@@ -187,10 +152,8 @@ impl Widget for Container {
         let style = Style {
             display: taffy::Display::Flex,
             flex_shrink: 0.0, // Prevent vertical squashing
-            // A pinned width must not grow to fill a flex parent — keep it
-            // exactly `px`. `flex_basis: auto` lets the `size.width` length
-            // resolve the basis. A `with_flex_grow` container instead grows
-            // from a zero basis to fill the free space on its line.
+            // A pinned width must not grow to fill a flex parent: `flex_basis:
+            // auto` lets `size.width` resolve the basis instead.
             flex_grow: if self.flex_grow { 1.0 } else { 0.0 },
             flex_basis: if self.flex_grow {
                 length(0.0)
@@ -251,9 +214,8 @@ impl Widget for Container {
         }
     }
 
-    /// Propagate pointer-capture intent from the contained child so an
-    /// outer container's event-routing short-circuit honours an active
-    /// drag deeper in the tree.
+    /// So an outer container's event-routing short-circuit honours an
+    /// active drag deeper in the tree.
     fn wants_pointer_capture(&self) -> bool {
         self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
     }
@@ -305,8 +267,6 @@ impl Widget for Container {
         permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) { return; }
-        // Draw the container's own background, then propagate presence/permission
-        // context down to the child so its opt-in chrome still renders.
         if self.has_background {
             let fill = self.fill_color.unwrap_or(theme.bg_primary);
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
@@ -342,8 +302,7 @@ mod tests {
     use vello_encoding::DrawTag;
     use vello::peniko::Color;
 
-    /// Lay the container out inside an 800×600 viewport and return its
-    /// resolved rect. Drives the real five-pass path so the taffy width
+    /// 800×600 viewport. Drives the real five-pass path so the taffy width
     /// pin is exercised end-to-end.
     fn lay_out(mut c: Container) -> (Container, Rect) {
         let theme = Theme::dark();
@@ -387,8 +346,6 @@ mod tests {
 
     #[test]
     fn default_container_still_fills_width() {
-        // Guards the additive contract: an un-pinned container keeps the
-        // legacy `percent(1.0)` fill so existing call sites are unaffected.
         let (_c, rect) = lay_out(Container::new());
         assert!(
             (rect.width() - 800.0).abs() < 0.5,
@@ -399,8 +356,6 @@ mod tests {
 
     #[test]
     fn with_fill_emits_background_distinct_from_bg_primary() {
-        // `with_fill` must paint *a* background (emit a COLOR fill) even
-        // without a separate `with_background()` call.
         let custom = Color::from_rgb8(10, 20, 30);
         let (mut c, _rect) = lay_out(Container::new().with_fill(custom));
         let theme = Theme::dark();

@@ -1,25 +1,10 @@
 //! `ContextMenu` primitive — a right-click / long-press invoked list of
-//! actions with optional separators.
+//! actions with optional separators, backed visually by `overlay::Popover`
+//! so it participates in the overlay stack, scrim dismissal, and focus
+//! contract.
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — Phase A
-//! step 15 (`ContextMenu`, `Tooltip`, `Toast` primitives landed with their
-//! first shell consumer). Backed visually by `overlay::Popover` so the menu
-//! participates in the overlay stack, scrim dismissal and focus contract.
-//!
-//! This landing (plan task **T7**) provides:
-//! - `MenuItem::Action { label, action }` and `MenuItem::Separator` variants.
-//! - `ContextMenu` with `open_at([x, y])`, `close()`, `is_open`, `position`,
-//!   `click_item(idx)` — action items close the menu after invoking the
-//!   callback, separators are no-ops.
-//! - `Widget` impl that renders at the stored position when open on the
-//!   `Theme::tokens` overlay surface — the solid, near-black "menu tier" — with
-//!   a hairline border and a subtle hover veneer (no hard-coded styling).
-//!
-//! Callers (shell chrome / file-explorer) push `MenuItem::action(label, fn)`
-//! and optional `MenuItem::separator()` entries, then call `open_at` on
-//! right-click. Input integration (click routing, keyboard nav) lands
-//! alongside the first shell consumer — this task only has to satisfy the
-//! primitive's construction + invocation contract exercised by the test.
+//! Callers push `MenuItem::action(label, fn)` and optional
+//! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
 use automerge::{AutoCommit, ObjId};
 use std::sync::Arc;
@@ -34,11 +19,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Boxed zero-argument callback invoked when an action item is clicked.
 pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
 
-/// One entry in a [`ContextMenu`]. Actions carry an invocation callback;
-/// separators are purely visual and ignored by [`ContextMenu::click_item`].
+/// Separators are purely visual and ignored by [`ContextMenu::click_item`].
 #[derive(Clone)]
 pub enum MenuItem {
     Action { label: String, action: MenuAction },
@@ -59,7 +42,6 @@ impl std::fmt::Debug for MenuItem {
 }
 
 impl MenuItem {
-    /// Build a clickable action item with the given label and callback.
     pub fn action<F>(label: impl Into<String>, action: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -67,10 +49,8 @@ impl MenuItem {
         MenuItem::Action { label: label.into(), action: Arc::new(action) }
     }
 
-    /// Build a non-interactive separator (visual divider).
     pub fn separator() -> Self { MenuItem::Separator }
 
-    /// Human-readable label for action items. `None` for separators.
     pub fn label(&self) -> Option<&str> {
         match self {
             MenuItem::Action { label, .. } => Some(label.as_str()),
@@ -79,29 +59,22 @@ impl MenuItem {
     }
 }
 
-/// Popover-style list of [`MenuItem`]s anchored at a caller-provided
-/// position. Backed by `overlay::Popover` once wired into the shell's
-/// overlay stack; the primitive itself only owns the open/closed state,
-/// the anchor position and the item list.
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,
     position: Option<[f32; 2]>,
     rect: Rect,
-    /// Index of the action row the cursor is currently over (for hover
-    /// highlight + keyboard navigation). `None` when the cursor is off the
-    /// menu or on a separator.
+    /// `None` when the cursor is off the menu or on a separator.
     hovered: Option<usize>,
-    /// Last cursor position in logical coords — `MouseInput` carries none,
-    /// so we track it from `CursorMoved` to map a press to a row.
+    /// `MouseInput` carries no position, so this is tracked from
+    /// `CursorMoved` to map a press to a row.
     last_cursor: Point,
-    /// Set by `handle_event` to the index of the action row the user just
-    /// chose, drained by [`ContextMenu::take_selection`]. This is the
-    /// `&mut self` + CRDT-friendly action channel: instead of forcing every
-    /// menu action through an `Arc<dyn Fn()>` (which can't splice into an
-    /// Automerge doc the host owns), the host polls `take_selection()` after
-    /// dispatching the event and performs the mutation itself. The legacy
-    /// `Arc` callback still fires too, so existing callers are unaffected.
+    /// Set by `handle_event`, drained by [`ContextMenu::take_selection`].
+    /// The `&mut self` + CRDT-friendly action channel: instead of forcing
+    /// every menu action through an `Arc<dyn Fn()>` (which can't splice
+    /// into an Automerge doc the host owns), the host polls
+    /// `take_selection()` after dispatching the event and mutates itself.
+    /// The legacy `Arc` callback still fires too.
     selection: Option<usize>,
 }
 
@@ -122,29 +95,26 @@ impl ContextMenu {
         }
     }
 
-    /// Append a [`MenuItem`] to the end of the menu.
     pub fn push(&mut self, item: MenuItem) { self.items.push(item); }
 
-    /// Borrow the menu's full item list (actions and separators) in order.
     pub fn items(&self) -> &[MenuItem] { &self.items }
 
-    /// Open the menu anchored at logical position `[x, y]`. Also computes the
-    /// menu's `rect` immediately (via [`layout_at_position`](Self::layout_at_position))
-    /// so [`item_at`](Self::item_at) / [`contains`](Self::contains) are usable
-    /// without first running a `draw`/`apply_layout` pass — needed by consumers
-    /// (like `TextInput`) that route a click to a row in the same input batch
-    /// the menu opened in.
+    /// Also computes `rect` immediately (via
+    /// [`layout_at_position`](Self::layout_at_position)) so
+    /// [`item_at`](Self::item_at) / [`contains`](Self::contains) are usable
+    /// without first running a `draw`/`apply_layout` pass — needed by
+    /// consumers (like `TextInput`) that route a click to a row in the same
+    /// input batch the menu opened in.
     pub fn open_at(&mut self, position: [f32; 2]) {
         self.open = true;
         self.position = Some(position);
         self.layout_at_position();
     }
 
-    /// Recompute `self.rect` from the stored anchor position and the menu's
-    /// item heights, mirroring the `build_layout` + `apply_layout` geometry but
-    /// without a taffy round-trip. A no-op when the menu has never been
-    /// positioned. Lets a standalone consumer (one that owns a `ContextMenu` as
-    /// a field rather than as a tree node) hit-test and draw the menu directly.
+    /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
+    /// round-trip. A no-op when the menu has never been positioned. Lets a
+    /// standalone consumer (one that owns a `ContextMenu` as a field rather
+    /// than a tree node) hit-test and draw the menu directly.
     pub fn layout_at_position(&mut self) {
         let Some([px, py]) = self.position else { return };
         let height =
@@ -154,21 +124,18 @@ impl ContextMenu {
         self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
     }
 
-    /// Close the menu. Safe to call when already closed.
+    /// Safe to call when already closed.
     pub fn close(&mut self) {
         self.open = false;
     }
 
-    /// `true` while the menu is visible.
     pub fn is_open(&self) -> bool { self.open }
 
-    /// The anchor position passed to the most recent [`Self::open_at`],
-    /// preserved across `close()` so callers can re-open at the same spot
-    /// if desired. Returns `None` before the menu has ever been opened.
+    /// Preserved across `close()` so callers can re-open at the same spot.
+    /// `None` before the menu has ever been opened.
     pub fn position(&self) -> Option<[f32; 2]> { self.position }
 
-    /// The item index under a logical `point`, if the menu is open and the
-    /// point lands on an action row. Lets a consumer route a left-click to
+    /// Lets a consumer route a left-click to
     /// [`click_item`](Self::click_item) without re-deriving the row layout.
     pub fn item_at(&self, point: [f64; 2]) -> Option<usize> {
         if !self.open {
@@ -189,16 +156,14 @@ impl ContextMenu {
         None
     }
 
-    /// Whether `point` is inside the open menu's rect (for dismiss-on-
-    /// click-outside routing).
+    /// For dismiss-on-click-outside routing.
     pub fn contains(&self, point: [f64; 2]) -> bool {
         self.open && self.rect.contains(vello::kurbo::Point::new(point[0], point[1]))
     }
 
-    /// Invoke the action for the item at `idx` (no-op for separators /
-    /// out-of-range indices). Action items close the menu after firing and
-    /// record the index in [`Self::selection`] so a `&mut self` / CRDT host
-    /// can react via [`Self::take_selection`].
+    /// No-op for separators / out-of-range indices. Records the index in
+    /// [`Self::selection`] so a `&mut self` / CRDT host can react via
+    /// [`Self::take_selection`].
     pub fn click_item(&mut self, idx: usize) {
         let Some(item) = self.items.get(idx) else { return };
         match item {
@@ -212,23 +177,18 @@ impl ContextMenu {
         }
     }
 
-    /// Drain the index of the action row the user most recently chose (via
-    /// click or Enter). Returns `Some(idx)` exactly once per selection, then
-    /// `None`. This is the CRDT-friendly action channel — poll it after
-    /// dispatching an event to perform a `&mut self` mutation that the
-    /// `Arc<dyn Fn()>` callback model can't express.
+    /// Returns `Some(idx)` exactly once per selection, then `None`. The
+    /// CRDT-friendly action channel — poll it after dispatching an event to
+    /// perform a `&mut self` mutation the `Arc<dyn Fn()>` model can't express.
     pub fn take_selection(&mut self) -> Option<usize> {
         self.selection.take()
     }
 
-    /// The action row currently under the cursor (for hover highlight), or
-    /// `None`.
     pub fn hovered(&self) -> Option<usize> {
         self.hovered
     }
 
-    /// Move the keyboard hover to the next/previous action row, skipping
-    /// separators. `dir > 0` moves down, `dir < 0` up.
+    /// Skips separators. `dir > 0` moves down, `dir < 0` up.
     fn move_hover(&mut self, dir: i32) {
         let n = self.items.len();
         if n == 0 {
@@ -291,9 +251,8 @@ impl Widget for ContextMenu {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // Prefer the caller-provided anchor when the menu is open; otherwise
-        // follow the taffy-assigned position so offscreen/closed menus still
-        // have a sensible rect.
+        // The caller-provided anchor wins when open; otherwise the
+        // taffy-assigned position keeps offscreen/closed menus sensible.
         let l = taffy.layout(node).unwrap();
         let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
             (px as f64, py as f64)
@@ -314,8 +273,8 @@ impl Widget for ContextMenu {
         if !self.open { return; }
 
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        // The solid, near-black overlay tier — the "menu surface" — so the menu
-        // reads as an opaque raised sheet, never bleeding the content beneath.
+        // The near-black overlay tier, so the menu reads as an opaque
+        // raised sheet, never bleeding the content beneath.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -336,7 +295,6 @@ impl Widget for ContextMenu {
         for (idx, item) in self.items.iter().enumerate() {
             match item {
                 MenuItem::Action { label, .. } => {
-                    // Hover highlight behind the active row.
                     if self.hovered == Some(idx) {
                         let hl = Rect::new(
                             self.rect.x0 + 4.0,
@@ -345,9 +303,7 @@ impl Widget for ContextMenu {
                             y + ROW_HEIGHT - 1.0,
                         );
                         let hl_shape = RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64);
-                        // A subtle light veneer for the hovered row — visible on
-                        // the near-black menu surface (matching the dropdown /
-                        // autocomplete row hover).
+                        // Matches the dropdown / autocomplete row hover.
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
@@ -408,9 +364,8 @@ impl Widget for ContextMenu {
                 self.last_cursor =
                     Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
-                // An open menu is a transient overlay; while it's up it owns
-                // the pointer over its own rect. We don't mark hover handled
-                // (so cursor presence still flows), only presses.
+                // Not marked handled (so cursor presence still flows) —
+                // only presses are.
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -447,15 +402,11 @@ impl Widget for ContextMenu {
                 ..
             } => {
                 if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
-                    // Row click — fire the action + record the selection,
-                    // then close. Consume so it doesn't reach widgets behind.
                     self.click_item(idx);
                     *handled = true;
                 } else {
-                    // Click outside the menu (or on a separator) dismisses.
-                    // An open menu is modal-ish: swallow the dismiss click so
-                    // the press that closed the menu doesn't also activate
-                    // whatever sits underneath.
+                    // An open menu is modal-ish: swallow the dismiss click
+                    // so it doesn't also activate whatever sits underneath.
                     self.close();
                     *handled = true;
                 }
@@ -466,9 +417,8 @@ impl Widget for ContextMenu {
 
     fn name(&self) -> &str { "ContextMenu" }
 
-    /// An open context menu traps input over its rect (and dismisses on
-    /// outside-click via `handle_event`), so it participates in the App's
-    /// modal-capture contract — suppressing focus shortcuts while up.
+    /// Participates in the App's modal-capture contract — suppressing focus
+    /// shortcuts while up.
     fn modal_capture(&self) -> Option<Rect> {
         if self.open { Some(self.rect) } else { None }
     }
@@ -477,9 +427,9 @@ impl Widget for ContextMenu {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The menu items are drawn rows (not child widgets), so the container
-        // carries the semantics. `expanded` mirrors the open state and a
-        // closed menu is `hidden` so it collapses out of the focus order.
+        // Menu items are drawn rows (not child widgets), so the container
+        // carries the semantics; a closed menu is `hidden` so it collapses
+        // out of the focus order.
         Some(
             AccessNode::new(Role::Menu).with_state(AccessState {
                 expanded: Some(self.open),
@@ -525,10 +475,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use winit::event::DeviceId;
 
-    /// Open a 3-action menu (with a separator) at (100, 100) and run the
-    /// layout pass so `rect` + row geometry are populated. The callbacks
-    /// must be `Send + Sync` (the `MenuAction` bound), so the counter is an
-    /// `Arc<AtomicU32>`.
+    /// Callbacks must be `Send + Sync` (the `MenuAction` bound), so the
+    /// counter is an `Arc<AtomicU32>`.
     fn open_menu() -> (ContextMenu, Arc<AtomicU32>) {
         let fired = Arc::new(AtomicU32::new(0));
         let f1 = fired.clone();

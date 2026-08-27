@@ -5,10 +5,6 @@
 //! as stopping one collaborator reverting another's work. Matching on a value
 //! two people share does not stop anything.
 //!
-//! It returned `QOS_PACKAGE_ID`, the byte-identical string `local_app_id()`
-//! returns, so every person on every machine running the word processor was
-//! `UserId("dev.qos.word-processor")`.
-//!
 //! These tests mutate the environment in one process, so they are serialised
 //! behind a mutex rather than left to race each other.
 
@@ -61,8 +57,6 @@ impl Drop for EnvGuard {
     }
 }
 
-/// The defect in one assertion: who I am and what application I am were the
-/// same string, so two people running the same app were one person.
 #[test]
 fn a_person_is_not_the_application_they_are_running() {
     let _lock = env_lock();

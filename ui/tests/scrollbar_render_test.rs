@@ -101,9 +101,8 @@ fn scrollbar_paints_along_right_edge() {
         .with_scrollbar(false);
     let rgba_without = render(&mut without_bar, &mut renderer);
 
-    // The right-edge strip (where the bar is drawn) must light up only
-    // when the scrollbar is enabled. Content is left-aligned text, so the
-    // no-bar render leaves this strip on the background.
+    // Content is left-aligned, so the no-bar render leaves the right-edge
+    // strip on the background — it must light up only with the bar on.
     let with_px = right_edge_non_bg(&rgba_with, 12);
     let without_px = right_edge_non_bg(&rgba_without, 12);
 

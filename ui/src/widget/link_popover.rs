@@ -3,18 +3,12 @@
 //! seeded with caller-provided page titles instead of a hard-coded
 //! block-kind list.
 //!
-//! Spec: Phase 4 of the notes app — see
-//! `docs/superpowers/plans/2026-06-02-notes-app-mvp-roadmap.md`.
-//!
-//! ## Why a thin sibling, not a generic `Popover<Item>`?
-//!
-//! The slash menu's API is shaped around block-kind conversions;
-//! folding the page-title flow into the same trait object would mean
-//! either generic-ifying every field (and paying for the boxing) or
-//! collapsing `BlockKind` and `PageEntry` behind an associated type.
-//! Phase 4's scope is "ship the marks demo with a working palette",
-//! not "design a generic popover primitive" — the duplication is
-//! ~150 LOC and a separate widget keeps the test surface small.
+//! A thin sibling rather than a generic `Popover<Item>`: the slash menu's
+//! API is shaped around block-kind conversions, so folding the page-title
+//! flow into the same trait object would mean either generic-ifying every
+//! field (and paying for the boxing) or collapsing `BlockKind` and
+//! `PageEntry` behind an associated type. The duplication is ~150 LOC and
+//! a separate widget keeps the test surface small.
 
 use std::collections::HashMap;
 
@@ -31,25 +25,21 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// One row in the popover. Carries a stable id and the page title to
-/// display + filter on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
     pub id: Uuid,
     pub title: String,
 }
 
-/// Width of the popover in CSS-like pixels.
 const MENU_WIDTH: f64 = 220.0;
 const ROW_HEIGHT: f64 = 26.0;
 const PADDING_Y: f64 = 6.0;
 const PADDING_X: f64 = 10.0;
-/// Cap on rows rendered at once — keeps the popover small for big
-/// workspaces; the user can keep typing to narrow the result.
+/// Keeps the popover small for big workspaces; the user can keep typing
+/// to narrow the result.
 const MAX_VISIBLE_ROWS: usize = 8;
 
 pub struct LinkPopover {
-    /// All known pages (set via `set_items`).
     items: Vec<PageEntry>,
     /// Indices into `items` that survive the current filter.
     visible: Vec<usize>,
@@ -58,8 +48,7 @@ pub struct LinkPopover {
     filter: String,
     visible_flag: bool,
     anchor: Point,
-    /// One-shot slot: when the user picks an entry, the chosen
-    /// `(PageEntry)` lands here.
+    /// One-shot: when the user picks an entry, it lands here.
     pending: Option<PageEntry>,
 }
 
@@ -118,7 +107,6 @@ impl LinkPopover {
         &self.filter
     }
 
-    /// Drain the pending selection from the most-recent Enter press.
     pub fn take_selection(&mut self) -> Option<PageEntry> {
         self.pending.take()
     }
@@ -164,7 +152,6 @@ impl LinkPopover {
         }
     }
 
-    /// Handle a key event. Returns true if consumed.
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
         if !self.visible_flag {
             return false;
@@ -264,7 +251,6 @@ impl LinkPopover {
         );
 
         let font_size = tokens.typography.scale.sm;
-        // Empty-state hint.
         if self.visible.is_empty() {
             let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - font_size as f64) / 2.0;
             text_renderer.draw_text(
@@ -310,7 +296,6 @@ impl LinkPopover {
     }
 }
 
-// `Widget` impl for compatibility with the `Widget`-trait surface;
 // LinkPopover lives in overlay space so most methods no-op.
 impl Widget for LinkPopover {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -464,7 +449,6 @@ mod tests {
         let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
         assert!(consumed);
         assert_eq!(p.filter(), "");
-        // Another backspace with empty filter closes.
         let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
         assert!(!consumed);
         assert!(!p.is_visible());
@@ -472,9 +456,6 @@ mod tests {
 
     #[test]
     fn empty_results_renders_no_matches_hint() {
-        // We don't have a real renderer here, but we can at least
-        // sanity-check the state: filter that matches nothing leaves
-        // visible_len 0 and is_visible true.
         let mut p = seed_three();
         p.set_visible(true);
         p.set_filter("zzz");

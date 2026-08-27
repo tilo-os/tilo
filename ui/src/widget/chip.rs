@@ -32,8 +32,6 @@ const GAP: f64 = 6.0;
 const DOT_D: f64 = 8.0;
 const X_D: f64 = 14.0;
 
-/// A compact pill: label + optional leading dot + optional trailing "×",
-/// selectable and/or removable.
 pub struct Chip {
     label: String,
     selectable: bool,
@@ -49,7 +47,6 @@ pub struct Chip {
 }
 
 impl Chip {
-    /// A plain (informational) chip with a label.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -91,7 +88,6 @@ impl Chip {
         self
     }
 
-    /// Whether the chip is currently selected.
     pub fn is_selected(&self) -> bool {
         self.selected
     }
@@ -117,7 +113,6 @@ impl Chip {
         self.x_rect
     }
 
-    /// Intrinsic width for the current label + affordances.
     fn intrinsic_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
         let (w, _) = text_renderer.measure(&self.label, theme.tokens.typography.scale.sm, None);
         let mut total = PAD_X * 2.0 + w as f64;
@@ -155,27 +150,19 @@ pub struct ChipStyle {
     pub tint: Option<Color>,
     /// Dashed border and dimmed label — an empty slot, not a value.
     pub ghost: bool,
-    /// Drop the pill entirely and paint only the lead and the label.
-    ///
-    /// For chips that already sit inside something that is doing the
-    /// containing — a lit sector of the workspace disc, a row that is
-    /// itself the selection. A pill drawn inside another container reads
-    /// as a box inside a box, and the outer one stops looking like it
-    /// holds anything.
+    /// Drop the pill entirely and paint only the lead and the label — for
+    /// chips that already sit inside something doing the containing (a lit
+    /// disc sector, a row that is itself the selection), where a pill reads
+    /// as a box inside a box.
     pub bare: bool,
     /// Multiplies every painted alpha. Lets a caller fade a whole chip
     /// without recolouring it stop by stop.
     pub alpha: f32,
-    /// Fill, edge and ink already measured against the ground this chip lands
-    /// on. Overrides the derivation from [`Self::tint`].
-    ///
-    /// `tint` alone can only paint the accent at a fixed wash and letter the
-    /// label in that same accent — legible over some grounds and 3.8:1 over
-    /// others, because `accent × 0.18` is a different colour on a white panel
-    /// than on a dark menu and only the composite can be measured. A caller
-    /// that knows its ground resolves the three together through
-    /// [`Colors::accent_chip_on`](crate::tokens::colors::Colors::accent_chip_on)
-    /// and hands the result over.
+    /// Overrides the derivation from [`Self::tint`] — `accent × 0.18` is a
+    /// different colour on a white panel than on a dark menu, and only the
+    /// composite can be measured, so a caller that knows its ground resolves
+    /// the three through
+    /// [`Colors::accent_chip_on`](crate::tokens::colors::Colors::accent_chip_on).
     pub resolved: Option<AccentChip>,
 }
 
@@ -201,7 +188,6 @@ impl ChipStyle {
         Self { ghost: true, ..Self::default() }
     }
 
-    /// Container-less chip — lead and label only, no fill and no border.
     /// `tint` still colours the lead and the label, so a bare chip has
     /// the same quiet/selected pair the pill form does. See
     /// [`ChipStyle::bare`] for when this is the right shape.
@@ -251,22 +237,13 @@ impl Chip {
         PAD_X * 2.0 + lead_w + w as f64
     }
 
-    /// Immediate-mode chip — paint a pill with an optional leading dot or
-    /// glyph and a label directly into `scene` at `rect`, with no layout
-    /// node, caching, or widget instance.
-    ///
-    /// This is the helper a list that lays out its own rows reaches for
-    /// (the sibling of [`Avatar::draw_at`](super::Avatar::draw_at)): rows
-    /// placed on a curve, in a rail, or at any computed position that
-    /// taffy is not going to hand back. Every colour comes from `theme` or
-    /// from `style.tint`, so the pill tracks light / dark / high-contrast
-    /// the same way the widget does.
+    /// No layout node, caching, or widget instance — for a list that lays
+    /// out its own rows (the sibling of
+    /// [`Avatar::draw_at`](super::Avatar::draw_at)): on a curve, in a rail,
+    /// or at any position taffy won't hand back.
     ///
     /// The label is **truncated with an ellipsis** to whatever width `rect`
-    /// allows — callers on a narrowing rail can hand over the space they
-    /// actually have and get a legible chip rather than an overrun one.
-    /// Use [`Chip::natural_width_at`] to size `rect` when the space is
-    /// free.
+    /// allows — use [`Chip::natural_width_at`] to size `rect` when the space is free.
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -469,7 +446,6 @@ impl Widget for Chip {
         let accent = theme.accent_primary;
         let selected = self.selectable && self.selected;
 
-        // Pill surface.
         let pill = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
         let bg = if selected {
             accent.with_alpha_factor(0.18)
@@ -483,7 +459,6 @@ impl Widget for Chip {
         let mut x = self.rect.x0 + PAD_X;
         let cy = self.rect.center().y;
 
-        // Leading dot.
         if let Some(dot) = self.dot {
             scene.fill(
                 Fill::NonZero,
@@ -495,7 +470,6 @@ impl Widget for Chip {
             x += DOT_D + GAP;
         }
 
-        // Label.
         let size = theme.tokens.typography.scale.sm;
         let (lw, lh) = text_renderer.measure(&self.label, size, None);
         self.label_w = lw as f64;
@@ -510,7 +484,6 @@ impl Widget for Chip {
         );
         x += lw as f64;
 
-        // Trailing "×".
         if self.removable {
             x += GAP;
             let xr = Rect::from_center_size(Point::new(x + X_D / 2.0, cy), (X_D, X_D));
@@ -571,7 +544,6 @@ impl Widget for Chip {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A selectable chip is a toggle button; a plain chip is static text.
         if self.selectable {
             Some(
                 AccessNode::new(Role::ToggleButton)
@@ -678,7 +650,6 @@ mod tests {
 
     #[test]
     fn removable_and_selectable_x_wins_over_toggle() {
-        // Clicking the × of a chip that is also selectable removes, doesn't toggle.
         let mut c = Chip::new("tag").selectable().removable();
         lay_out(&mut c);
         draw(&mut c);

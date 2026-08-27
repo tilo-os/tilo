@@ -30,12 +30,10 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
     let mut handled = false;
     let mut focus_target = None;
     let modifiers = Modifiers::default();
-    // A real click would set `focus_target`, but it also re-computes
-    // `cursor_pos` from `char_x_positions` (only populated during a
-    // real draw pass). To keep this test display-free, simulate the
-    // click's only relevant effect: focus the widget. The cursor
-    // stays at the tail (from `with_initial_value`), so the "!"
-    // appended below produces "hi!".
+    // A real click would also re-compute `cursor_pos` from
+    // `char_x_positions`, populated only during a real draw pass. To stay
+    // display-free, simulate its only relevant effect: focus the widget.
+    // The cursor stays at the tail, so "!" appended below gives "hi!".
     (&mut input as &mut dyn Widget).set_focus(true);
 
     let typing = WindowEvent::Ime(Ime::Commit("!".to_string()));

@@ -16,7 +16,6 @@ pub struct StripView {
     active_index: usize,
     rect: Rect,
     last_paginate_ms: Option<u128>,
-    // Internal clock for real-time handling.
     start: Instant,
 }
 
@@ -52,9 +51,9 @@ impl StripView {
 impl Widget for StripView {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        // Zero-height leaf — the StripView's job today is scroll-wheel
-        // pagination, not rendering. Visible strip UI lives on the real
-        // window-groups that the shell tiles next to it.
+        // Zero-height leaf — this widget's job is scroll-wheel pagination,
+        // not rendering; visible strip UI lives on the real window-groups
+        // the shell tiles next to it.
         let node = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
@@ -69,8 +68,8 @@ impl Widget for StripView {
         );
     }
     fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _tr: &mut TextRenderer, _theme: &Theme, _presence: &PresenceCtx) {
-        // Invisible today — real strip chrome lives in the shell's
-        // window-group layout + top-bar.
+        // Invisible — real strip chrome lives in the shell's window-group
+        // layout + top-bar.
     }
     fn handle_event(&mut self, event: &WindowEvent, _scale: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {

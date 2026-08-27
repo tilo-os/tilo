@@ -1,13 +1,9 @@
 //! Framework-owned action dispatch every app gets by default.
 //!
 //! Adopting the qOS [action model](qos_actions) used to mean each app
-//! copy-pasting the *same* four pieces of plumbing: a slot to bracket the undo
-//! boundary before the first action of an event, the encode-and-dispatch call
-//! itself, a record of the last action so a test can prove an affordance and its
-//! Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the identical action, and
-//! a no-op transport for the on-screen affordance path. That boilerplate is
-//! hoisted here so an app declares only its own domain — its `Action` enum and
-//! resource tree — and embeds one [`ActionHost`] field.
+//! copy-pasting the same undo-bracket, encode-and-dispatch,
+//! last-dispatched, and no-op-transport plumbing. Hoisted here so an app
+//! declares only its own domain and embeds one [`ActionHost`] field.
 //!
 //! ```ignore
 //! struct MyApp { actions: ui::ActionHost, /* … */ }
@@ -25,60 +21,39 @@
 use automerge::{AutoCommit, ChangeHash};
 use qos_actions::{Action, EncodedAction};
 
-/// Framework-owned action dispatch an app embeds as a single field, replacing the
-/// hand-rolled `perform_action` method, the per-app `DiscardTransport`, and the
-/// `action_commit_before` / `last_dispatched` fields every migrated app used to
-/// copy-paste verbatim.
+/// Framework-owned action dispatch an app embeds as a single field, in
+/// place of hand-rolled `perform_action`/`DiscardTransport`/
+/// `last_dispatched` boilerplate.
 ///
-/// [`dispatch`](Self::dispatch) is `perform_action`, once, for everyone: it
-/// brackets the undo boundary, encodes the action, remembers it, and dispatches
-/// it through the toolkit's default local transport (applied via the executor so
-/// it replays byte-identically on peers). The host ([`crate::app::App`]) drains
-/// [`take_committed`](Self::take_committed) after each event — wired through
-/// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
-/// — and records exactly one undo boundary bracketing the event, the same
-/// `record_committed_action` path a Ctrl+K palette dispatch takes.
-///
-/// That boundary carries no author: what crosses this seam is heads, not
-/// identity. It is reachable by the interactive Ctrl+Z only because an
-/// author-scoped undo claims unattributed entries as well as its own — see
+/// The undo boundary this brackets carries no author: what crosses this
+/// seam is heads, not identity. It's still reachable by interactive Ctrl+Z
+/// because an author-scoped undo claims unattributed entries too — see
 /// `UndoLog::claimable_by`.
 #[derive(Default)]
 pub struct ActionHost {
-    /// The document heads captured just before the first action of the current
-    /// event was dispatched. The host drains this via
+    /// Drained via
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
     /// to record exactly one undo boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
-    /// The last [`EncodedAction`] dispatched. Lets a test prove an affordance and
-    /// the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
-    /// action — one source of truth, not two code paths.
+    /// Lets a test prove an affordance and the Ctrl+K
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
+    /// action.
     last_dispatched: Option<EncodedAction>,
 }
 
 impl ActionHost {
-    /// A fresh host with nothing bracketed or dispatched yet.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Dispatch one domain `action` against `doc` under `type_id`. This IS
-    /// `perform_action`, once, for every app:
-    ///
-    /// * **Brackets the undo boundary** — captures `doc.get_heads()` into
-    ///   `commit_before` on the *first* action of the event only. `get_heads`
-    ///   flushes any pending app writes, so the bracket covers only the action's
-    ///   own change; the host reads it back via [`take_committed`](Self::take_committed).
-    /// * **Encodes** the action under `type_id` and remembers it as
-    ///   [`last_dispatched`](Self::last_dispatched).
-    /// * **Dispatches** it through the toolkit's default
-    ///   [`LocalTransport`](qos_actions::LocalTransport) (applied via the executor
-    ///   with a pinned actor + committed change, so it replays byte-identically on
-    ///   peers). Peers receive the resulting change through ordinary CRDT sync, so
-    ///   this local affordance path has nothing extra to replicate.
-    ///
-    /// A dispatch error is logged at WARN and otherwise swallowed, exactly as the
-    /// per-app `perform_action` did — an affordance never panics the app.
+    /// Brackets the undo boundary on the *first* action of the event only
+    /// (`get_heads` flushes pending app writes, so the bracket covers only
+    /// the action's own change), encodes + remembers it as
+    /// [`last_dispatched`](Self::last_dispatched), then dispatches through
+    /// the default [`LocalTransport`](qos_actions::LocalTransport) — applied
+    /// via the executor with a pinned actor, so it replays byte-identically
+    /// on peers. A dispatch error is logged at WARN and swallowed; an
+    /// affordance never panics the app.
     pub fn dispatch<A>(&mut self, doc: &mut AutoCommit, type_id: &str, action: &A)
     where
         A: Action + serde::Serialize,
@@ -95,18 +70,13 @@ impl ActionHost {
         }
     }
 
-    /// Hand the host the heads captured before this event's first action, so it
-    /// records one undo boundary bracketing them. Rising-edge: reading clears it,
-    /// so it returns `Some` once per dispatched batch, then `None`. Wire this
-    /// straight to
+    /// Rising-edge: reading clears it, so it returns `Some` once per
+    /// dispatched batch, then `None`. Wire this straight to
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action).
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
     }
 
-    /// The last action dispatched, for `affordance == ActionSpec` covenant tests:
-    /// an app's own control and its Ctrl+K entry must build the byte-identical
-    /// [`EncodedAction`].
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
     }
@@ -120,8 +90,7 @@ mod tests {
     use qos_actions::{ActionError, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
 
-    /// A minimal real action: set a scalar under a key. Deterministic, no
-    /// wall-clock / RNG — the executor's contract.
+    /// Deterministic, no wall-clock / RNG — the executor's contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Put {
         key: String,
@@ -159,11 +128,8 @@ mod tests {
         host.dispatch(&mut doc, PUT_TYPE, &Put { key: "a".into(), value: 1 });
         host.dispatch(&mut doc, PUT_TYPE, &Put { key: "b".into(), value: 2 });
 
-        // Only the first action of the event captures the boundary, and it is the
-        // heads as of just before that first action (the flushed app write).
         let committed = host.take_committed().expect("first dispatch armed the boundary");
         assert_eq!(committed, heads_before_actions, "bracket covers only the actions");
-        // Rising-edge: a second read yields nothing.
         assert!(host.take_committed().is_none(), "reading clears the boundary");
     }
 

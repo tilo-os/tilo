@@ -1,20 +1,12 @@
-//! `Divider` — a standalone themed 1px rule, horizontal or vertical.
+//! A standalone themed 1px rule, horizontal or vertical, usable as a
+//! free-standing element inside a `Column` / `Row` (unlike
+//! `Toolbar::push_separator`, which is toolbar-scoped). Sizes itself along
+//! its cross-axis and stretches to fill the main axis.
 //!
-//! Until now the only separator in the toolkit was `Toolbar::push_separator`,
-//! which is toolbar-scoped and not usable as a free-standing element inside a
-//! `Column` / `Row`. Settings (and any list/section layout) needs a real
-//! widget it can `.push()` between sections. `Divider` is that widget: a
-//! single themed line that sizes itself along its cross-axis and stretches to
-//! fill the main axis.
-//!
-//! * [`Divider::horizontal`] — a full-width 1px rule (fills its parent's
-//!   width, 1px tall). The common case between stacked sections in a `Column`.
-//! * [`Divider::vertical`] — a full-height 1px rule (1px wide, fills its
-//!   parent's height). For separating side-by-side panes in a `Row`.
-//!
-//! The colour comes from `theme.border_standard` (overridable via
-//! [`Divider::with_color`] for callers that want a fainter inset rule). The
-//! thickness defaults to 1px but can be bumped for emphasis.
+//! [`Divider::horizontal`] fills the parent's width, 1px tall, for stacked
+//! sections in a `Column`; [`Divider::vertical`] fills the parent's height,
+//! 1px wide, for side-by-side panes in a `Row`. Colour comes from
+//! `theme.border_standard`, overridable via [`Divider::with_color`].
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -29,16 +21,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Orientation of the rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DividerAxis {
-    /// A horizontal rule: fills the parent's width, `thickness` px tall.
     Horizontal,
-    /// A vertical rule: `thickness` px wide, fills the parent's height.
     Vertical,
 }
 
-/// A themed 1px separator line.
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,
@@ -48,23 +36,20 @@ pub struct Divider {
 }
 
 impl Divider {
-    /// A full-width horizontal rule (the section-separator default).
     pub fn horizontal() -> Self {
         Self { axis: DividerAxis::Horizontal, thickness: 1.0, color: None, rect: Rect::ZERO }
     }
 
-    /// A full-height vertical rule (pane separator).
     pub fn vertical() -> Self {
         Self { axis: DividerAxis::Vertical, thickness: 1.0, color: None, rect: Rect::ZERO }
     }
 
-    /// Override the 1px default thickness (logical pixels).
+    /// Logical pixels.
     pub fn with_thickness(mut self, px: f32) -> Self {
         self.thickness = px.max(0.0);
         self
     }
 
-    /// Paint the rule in an explicit colour instead of `border_standard`.
     /// Pass a theme token (e.g. a fainter `theme.tokens.colors.neutral[..]`)
     /// so the choice still tracks the active theme.
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
@@ -72,7 +57,6 @@ impl Divider {
         self
     }
 
-    /// The axis this divider was constructed for.
     pub fn axis(&self) -> DividerAxis {
         self.axis
     }

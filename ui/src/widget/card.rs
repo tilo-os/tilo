@@ -1,33 +1,14 @@
 //! `Card` + `CardGrid` — the canonical grouped-content primitives.
 //!
-//! # Why this module exists
+//! Promotes two shapes every app was hand-rolling, badly and inconsistently:
+//! a grouped "card" surface (per-app radii, often literal numbers not theme
+//! tokens, so no two cards matched), and a responsive grid of equal cards
+//! reflowing by width (every app re-copied the column formula
+//! `cols = floor((w + gap) / (card + gap))` with different magic numbers, so
+//! cards didn't line up). [`card_columns`]/[`card_column_width`] expose the
+//! pure reflow math so even immediate-mode callers share one correct formula.
 //!
-//! The HIG's rule of thumb: *if an app can express a bad-UX layout without
-//! effort, that is a toolkit bug.* Across the app suite two recurring shapes
-//! were each hand-rolled — badly and inconsistently:
-//!
-//! 1. **A grouped "card" surface** (a rounded, themed panel holding a titled
-//!    group of rows). Apps drew their own `Container::with_background()` +
-//!    title-row + body scaffolding, with per-app radii (often *literal*
-//!    numbers, not theme tokens) so no two cards matched.
-//! 2. **A responsive grid of equal cards** that reflows by width (a gallery, a
-//!    store listing, a dashboard of tiles). Every app re-copied the column
-//!    formula `cols = floor((w + gap) / (card + gap))` with different magic
-//!    numbers and hand-placed each card, so cards **didn't line up**.
-//!
-//! This module promotes both into `ui`:
-//!
-//! * [`Card`] — a themed grouped surface (radius, border, padding, and fill all
-//!   from the [`Theme`]), optionally titled, that stretches to its column's
-//!   width so a stack of cards shares edges and lines up.
-//! * [`CardGrid`] — a responsive grid that reflows arbitrary card children into
-//!   **equal, aligned columns**, snapping every card to the same grid.
-//! * [`card_columns`] / [`card_column_width`] — the pure reflow math, exposed so
-//!   even immediate-mode apps (which draw straight to a `Scene`) can share one
-//!   correct, aligned formula instead of re-deriving it.
-//!
-//! Every colour, radius, and gap is read from the [`Theme`], so cards look the
-//! same across every system app and track the OS palette (HIG §"Theming").
+//! Every colour, radius, and gap is read from the [`Theme`].
 
 use std::collections::HashMap;
 
@@ -55,13 +36,8 @@ const CARD_TITLE_SIZE: f32 = 15.0;
 // Pure reflow geometry — shared by CardGrid and immediate-mode callers.
 // ---------------------------------------------------------------------------
 
-/// How many equal columns of at least `min_card_w` (with `gap` between them)
-/// fit in `avail_w`. Always returns **at least 1** so a too-narrow area still
-/// shows a single column.
-///
-/// This is the one canonical reflow formula — promoted from the copy every
-/// gallery/store/dashboard used to carry. `avail_w + gap` because the last
-/// column needs no trailing gap.
+/// Always returns **at least 1** so a too-narrow area still shows a single
+/// column. `avail_w + gap` because the last column needs no trailing gap.
 pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
     let stride = min_card_w + gap;
     if stride <= 0.0 || avail_w <= 0.0 {
@@ -70,10 +46,8 @@ pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
     (((avail_w + gap) / stride).floor() as usize).max(1)
 }
 
-/// The width each of `cols` equal columns gets when `avail_w` is divided into
-/// `cols` columns separated by `gap`. Never negative. Combined with
-/// [`card_columns`] this snaps every card to the same aligned column so a grid
-/// of cards lines up exactly.
+/// Never negative. Combined with [`card_columns`] this snaps every card to
+/// the same aligned column so a grid of cards lines up exactly.
 pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     let cols = cols.max(1);
     let total_gap = (cols - 1) as f64 * gap;
@@ -84,36 +58,28 @@ pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
 // Card — a themed grouped surface.
 // ---------------------------------------------------------------------------
 
-/// A grouped "card": a rounded, themed surface (fill, radius, border, and
-/// padding all from the [`Theme`]) holding a body, optionally under a title
-/// row. It stretches to fill its column's width, so a stack of cards shares
+/// A rounded, themed surface holding a body, optionally under a title row.
+/// It stretches to fill its column's width, so a stack of cards shares
 /// left/right edges and lines up.
-///
-/// Replaces the per-app `Container::with_background()` + hand-assembled title
-/// scaffolding. A [`Card`] is composed once from the shared `ui` widgets, so
-/// every card in the OS reads identically.
 pub struct Card {
     inner: Element,
 }
 
 impl Card {
-    /// A plain surfaced card holding `body` (no title).
     pub fn new(body: Element) -> Self {
         Self {
             inner: surface(None, None, body),
         }
     }
 
-    /// A titled card: `title` as a heading row above `body`, all on one themed
-    /// surface.
     pub fn titled(title: impl Into<String>, body: Element) -> Self {
         Self {
             inner: surface(Some(title.into()), None, body),
         }
     }
 
-    /// A titled card whose title row also carries a trailing `action` element
-    /// (e.g. an "Add" button or a count badge) on the same line as the title.
+    /// `action` (e.g. an "Add" button or a count badge) sits on the same
+    /// line as the title.
     pub fn titled_with_action(
         title: impl Into<String>,
         action: Element,
@@ -125,10 +91,8 @@ impl Card {
     }
 }
 
-/// Build the composed card tree: a background [`Container`] (theme fill +
-/// radius + border + padding) wrapping a `Column` of an optional title row and
-/// the body. The title sits *inside* the surface, above the body, so the group
-/// reads as one cohesive card.
+/// The title sits *inside* the surface, above the body, so the group reads
+/// as one cohesive card.
 fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Element {
     let inner: Element = if let Some(title) = title {
         let mut title_row = Row::new().push(Box::new(Text::new(&title).with_size(CARD_TITLE_SIZE)));
@@ -149,9 +113,8 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
     Box::new(Container::new().with_background().with_child(inner))
 }
 
-/// A fixed-height empty box injecting deliberate vertical space. An
-/// intrinsic-height `Column` lays out as a block stack that ignores the taffy
-/// `gap`, so explicit spacers are how per-gap spacing is expressed there.
+/// An intrinsic-height `Column` lays out as a block stack that ignores the
+/// taffy `gap`, so explicit spacers are how per-gap spacing is expressed there.
 fn vgap(px: f32) -> Element {
     Box::new(Container::new().with_no_padding().with_height(px))
 }
@@ -269,17 +232,12 @@ impl Widget for Card {
 // CardGrid — a responsive grid of equal, aligned cards.
 // ---------------------------------------------------------------------------
 
-/// A responsive grid that reflows its card children into **equal, aligned
-/// columns** by width. Every card gets the same column width and snaps to the
-/// same grid, so cards line up exactly — the shared answer to the "rounded
-/// cards that don't line up" problem.
-///
-/// Cards share a fixed row height ([`with_card_height`]); the column count is
-/// derived from the allocated width via [`card_columns`]. Children are laid out
-/// in an isolated inner tree (mirroring [`crate::widget::NavShell`]), so their
-/// content still measures and draws while the grid owns the placement.
-///
-/// [`with_card_height`]: CardGrid::with_card_height
+/// Reflows its card children into **equal, aligned columns** by width. Cards
+/// share a fixed row height ([`with_card_height`](CardGrid::with_card_height));
+/// the column count is derived from the allocated width via [`card_columns`].
+/// Children are laid out in an isolated inner tree (mirroring
+/// [`crate::widget::NavShell`]), so their content still measures and draws
+/// while the grid owns the placement.
 pub struct CardGrid {
     cards: Vec<Element>,
     min_card_w: f64,
@@ -315,30 +273,26 @@ impl CardGrid {
         }
     }
 
-    /// Minimum column width (logical px) before the grid drops a column.
     pub fn with_min_card_width(mut self, px: f64) -> Self {
         self.min_card_w = px.max(1.0);
         self
     }
 
-    /// Fixed row height (logical px) of every card cell.
     pub fn with_card_height(mut self, px: f64) -> Self {
         self.card_h = px.max(1.0);
         self
     }
 
-    /// Override the inter-card gap (logical px). Defaults to the theme gap.
+    /// Defaults to the theme gap.
     pub fn with_gap(mut self, px: f64) -> Self {
         self.gap_override = Some(px.max(0.0));
         self
     }
 
-    /// How many columns fit in `width` at the current metrics (always >= 1).
     pub fn columns_for_width(&self, width: f64) -> usize {
         card_columns(width, self.min_card_w, self.gap)
     }
 
-    /// Total content height for `columns` columns of the current cards.
     fn content_height(&self, columns: usize) -> f64 {
         let n = self.cards.len();
         if n == 0 {
@@ -348,7 +302,6 @@ impl CardGrid {
         rows as f64 * self.card_h + (rows.saturating_sub(1)) as f64 * self.gap
     }
 
-    /// Top-left origin of cell `i` within `self.rect`.
     fn cell_origin(&self, i: usize) -> Point {
         let cols = self.columns.max(1);
         let col = i % cols;
@@ -359,22 +312,19 @@ impl CardGrid {
         )
     }
 
-    /// The rect of cell `i`.
     fn cell_rect(&self, i: usize) -> Rect {
         let o = self.cell_origin(i);
         Rect::new(o.x, o.y, o.x + self.cell_w, o.y + self.card_h)
     }
 
-    /// Resolve the column count + column width from the allocated width.
     fn resolve_columns(&mut self) {
         let w = self.rect.width();
         self.columns = self.columns_for_width(w);
         self.cell_w = card_column_width(w, self.columns, self.gap);
     }
 
-    /// Build the inner tree for the cards at their resolved cell rects so they
-    /// lay out, draw, and receive events. Called from `draw` (which has the
-    /// theme + text renderer), mirroring `NavShell`.
+    /// Called from `draw` (which has the theme + text renderer), mirroring
+    /// `NavShell`.
     fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -434,8 +384,8 @@ impl Widget for CardGrid {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Resolve the gap now that we have a theme; the cards are laid out in
-        // an inner tree during draw, so this node is a measured leaf.
+        // The cards are laid out in an inner tree during draw, so this node
+        // is a measured leaf.
         self.gap = self.gap_override.unwrap_or(theme.gap_standard as f64);
         let node = _taffy.new_leaf(Style::default()).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
@@ -573,7 +523,6 @@ mod tests {
 
     #[test]
     fn columns_reflow_by_width() {
-        // 260px min + 16 gap: one column under a stride, more as width grows.
         assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
         assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
         // 2 cols need 260+16+260 = 536; +16 slack in the formula.

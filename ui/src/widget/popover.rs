@@ -1,36 +1,21 @@
 //! `Popover` — an anchored overlay **menu of selectable options**.
 //!
 //! Where [`ContextMenu`](crate::widget::context_menu::ContextMenu) is an
-//! *action* list (each row fires an `Arc<dyn Fn()>` and closes) and
-//! [`PopoverWidget`](crate::widget::popover_widget::PopoverWidget) is a
-//! generic *content container* (arbitrary child tree with chrome), this is
-//! the specialised primitive callers reach for again and again: pick one
-//! option out of a short set, right next to the control that owns the value.
-//! It is the widget behind a "cycle-on-click, long-press for the full list"
-//! pill, a units selector, a sort-order chooser, a refresh-cadence menu.
+//! *action* list, this is the primitive for picking one option out of a
+//! short set next to the control that owns the value — a cycle-on-click
+//! pill, a units selector, a refresh-cadence menu.
 //!
-//! What it provides, once, so every consumer inherits it:
-//!   - **Anchored placement** next to an `anchor` rect (opens below, flips
-//!     above when there's no room, clamps horizontally into the viewport).
-//!   - **A current selection** (a check-marked row) distinct from the
-//!     keyboard/hover **highlight**, so re-opening lands on the active value.
-//!   - **Full keyboard navigation**: ↑/↓ move the highlight, Home/End jump
-//!     to the ends, Enter selects, Esc closes.
-//!   - **Focus capture** while open: every key press is consumed so keystrokes
-//!     don't leak to the app behind, and [`modal_capture`](Widget::modal_capture)
-//!     / [`traps_focus`](Widget::traps_focus) tell the host to stop competing
-//!     for the keyboard.
-//!   - **Accessibility**: a `Role::Menu` container carrying one
-//!     `Role::MenuItem` child per option, each with its 1-based position, its
-//!     `selected` flag, and `focused` on the highlighted row — the same
-//!     semantic model every other widget uses.
-//!   - **Theme-driven chrome** and **dismiss on outside-click**.
+//! Provides once, for every consumer: anchored placement (flips above /
+//! clamps horizontally when there's no room below), a current selection
+//! distinct from the keyboard/hover highlight (so re-opening lands on the
+//! active value), full keyboard nav, focus capture while open
+//! ([`modal_capture`](Widget::modal_capture) / [`traps_focus`](Widget::traps_focus)),
+//! `Role::Menu` accessibility, and dismiss-on-outside-click.
 //!
-//! The primitive is usable two ways: mounted as a real tree widget (its
-//! `handle_event` is fully self-contained), or driven by a hand-drawn host
-//! that owns its own input routing (like the activity monitor's header) via
-//! the [`Popover::open_at`], [`Popover::item_at`], [`Popover::move_highlight`],
-//! [`Popover::select`] and [`Popover::take_selection`] helpers.
+//! Usable two ways: mounted as a real tree widget, or driven by a
+//! hand-drawn host via [`Popover::open_at`], [`Popover::item_at`],
+//! [`Popover::move_highlight`], [`Popover::select`] and
+//! [`Popover::take_selection`].
 
 use std::collections::HashMap;
 
@@ -62,11 +47,9 @@ const MIN_W: f64 = 160.0;
 /// An anchored overlay menu of selectable string options. See the module
 /// docs for the full contract.
 pub struct Popover {
-    /// The option labels, in display order.
     items: Vec<String>,
     /// Accessible name for the menu as a whole (e.g. "Refresh interval").
     label: Option<String>,
-    /// Whether the menu is currently shown.
     open: bool,
     /// The control the menu is anchored to (positions the body).
     anchor: Rect,
@@ -109,7 +92,6 @@ impl Popover {
         }
     }
 
-    /// Builder: seed the option labels.
     pub fn with_items<I, S>(mut self, items: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -119,7 +101,6 @@ impl Popover {
         self
     }
 
-    /// Builder: set the menu's accessible name.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -137,12 +118,10 @@ impl Popover {
         }
     }
 
-    /// The option labels, in order.
     pub fn items(&self) -> &[String] {
         &self.items
     }
 
-    /// Set the menu's accessible name.
     pub fn set_label(&mut self, label: impl Into<String>) {
         self.label = Some(label.into());
     }
@@ -169,17 +148,14 @@ impl Popover {
         self.open = false;
     }
 
-    /// `true` while the menu is visible.
     pub fn is_open(&self) -> bool {
         self.open
     }
 
-    /// The currently-applied option index, if any.
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
 
-    /// The row the highlight currently sits on.
     pub fn highlighted(&self) -> usize {
         self.highlighted
     }
@@ -198,18 +174,16 @@ impl Popover {
         self.highlighted = (self.highlighted as i32 + dir).clamp(0, max) as usize;
     }
 
-    /// Jump the highlight to the first row.
     pub fn highlight_first(&mut self) {
         self.highlighted = 0;
     }
 
-    /// Jump the highlight to the last row.
     pub fn highlight_last(&mut self) {
         self.highlighted = self.items.len().saturating_sub(1);
     }
 
-    /// Choose the option at `idx`: record it as selected + pending and close.
-    /// Out-of-range indices are ignored.
+    /// Record `idx` as selected + pending and close. Out-of-range indices
+    /// are ignored.
     pub fn select(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.selected = Some(idx);
@@ -245,14 +219,13 @@ impl Popover {
         (idx < self.items.len()).then_some(idx)
     }
 
-    /// Whether `point` is inside the open menu body.
     pub fn contains(&self, point: Point) -> bool {
         self.open && self.rect.contains(point)
     }
 
     /// Resolve `self.rect` from the anchor, measured option widths, and the
-    /// viewport (flip above / clamp horizontally). Callable standalone so a
-    /// hand-drawn host — or a test — can place the menu without a full draw.
+    /// viewport. Callable standalone so a hand-drawn host — or a test — can
+    /// place the menu without a full draw.
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let fs = theme.tokens.typography.scale.sm;
         let mut w = MIN_W.max(self.anchor.width());
@@ -285,7 +258,6 @@ impl Popover {
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + ROW_H)
     }
 
-    /// Draw a small check mark centred in the check column of `row`.
     fn draw_check(scene: &mut Scene, t: Affine, row: Rect, color: vello::peniko::Color) {
         let cx = row.x0 + PAD_X + CHECK_W / 2.0 - 6.0;
         let cy = row.center().y;
@@ -376,7 +348,6 @@ impl Widget for Popover {
             );
         }
 
-        // Body + border.
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, c.surfaces.raised, None, &shape);
         scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);

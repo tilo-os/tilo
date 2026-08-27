@@ -57,8 +57,7 @@ fn button_uses_token_radius() {
         ui_scale: 1.0,
         tokens: t,
     };
-    // A scene is required to draw; for this unit, just assert the legacy shortcut
-    // mirrors the token.
+    // A scene is required to draw; just assert the legacy shortcut mirrors the token.
     assert_eq!(theme.radius_standard, 99.0);
     assert_eq!(theme.tokens.radii.md, 99.0);
 }
