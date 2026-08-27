@@ -28,6 +28,7 @@ pub mod apply;
 pub mod model;
 pub mod plan;
 pub mod session;
+pub mod surface;
 pub mod wire;
 
 pub use session::{Config, Session};
