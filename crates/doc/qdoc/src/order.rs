@@ -18,10 +18,8 @@ pub fn cmp_keys(a: &[u8], b: &[u8]) -> Ordering {
     Ordering::Equal
 }
 
-/// `(lo + hi) / 2` as a base-256 fraction. Requires `lo < hi`.
-/// Processes most-significant-first, carrying the division remainder down,
-/// plus one extra digit to absorb the final remainder — so the result is the
-/// exact average and therefore strictly between `lo` and `hi`.
+/// `(lo + hi) / 2` as a base-256 fraction (requires `lo < hi`). Processes most-significant-first,
+/// carrying the division remainder down, so the result is the exact average and strictly between `lo` and `hi`.
 fn midpoint(lo: &[u8], hi: &[u8]) -> Vec<u8> {
     let n = lo.len().max(hi.len()) + 1;
     let mut out = Vec::with_capacity(n);
@@ -50,16 +48,11 @@ pub fn key_between(lo: Option<&[u8]>, hi: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
-/// A key strictly greater than `l`, for "append after `l`" (no upper bound).
-///
-/// A naive `l + [128]` grows the key by a whole byte on *every* append, so a run
-/// of `n` sequential appends produces keys up to `n` bytes long — and since every
-/// [`cmp_keys`] is O(key length), that makes building/sorting `n` blocks O(n²).
-/// Instead this increments `l` as a base-256 value and truncates, so the width is
-/// reused: keys grow ~1 byte per 128 appends rather than 1 byte per append (a
-/// 128× shorter key, turning the quadratic back into near-linear). The result is
-/// still a valid fraction strictly greater than `l`; concurrent appends after the
-/// same `l` still converge (equal order keys are broken by block id downstream).
+/// A key strictly greater than `l`, for "append after `l`" (no upper bound). A naive `l + [128]`
+/// grows the key by a byte on every append, making a run of `n` appends O(n) bytes long and every
+/// [`cmp_keys`] O(key length) — O(n²) to build/sort `n` blocks. This instead increments `l` as a
+/// base-256 value and truncates, so keys grow ~1 byte per 128 appends (128× shorter), turning the
+/// quadratic back into near-linear; the result is still strictly greater than `l`, and concurrent appends after the same `l` still converge (ties broken by block id downstream).
 fn key_after(l: &[u8]) -> Vec<u8> {
     let mut v = l.to_vec();
     // Trailing zeros are insignificant as a fraction; drop them so the increment
@@ -155,8 +148,7 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
-        // Insert at random gaps among a growing sorted key list; the list must
-        // stay strictly ordered and every gap must remain subdividable.
+        // Insert at random gaps among a growing sorted key list; it must stay strictly ordered and every gap must remain subdividable.
         #[test]
         fn random_inserts_stay_strictly_ordered(ops in proptest::collection::vec(any::<u8>(), 0..120)) {
             let mut keys: Vec<Vec<u8>> = vec![key_between(None, None)];

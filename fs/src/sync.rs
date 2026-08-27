@@ -1,14 +1,14 @@
 //! The sync plane: gossip propagation + bootstrap for the namespace CRDT.
 //!
-//! Three protocols ride one iroh endpoint:
-//! - **iroh-gossip** broadcasts Automerge deltas as they happen → live push.
-//! - **`qos-fs-sync/0`** (custom ALPN) serves the full document so a freshly
-//!   joined peer can bootstrap before riding gossip for deltas.
-//! - **iroh-blobs** (wired elsewhere) hydrates content on read.
+//! Three protocols ride one iroh endpoint: iroh-gossip broadcasts
+//! Automerge deltas as they happen (live push); `qos-fs-sync/0` (custom
+//! ALPN) serves the full document so a freshly joined peer can bootstrap
+//! before riding gossip for deltas; iroh-blobs (wired elsewhere)
+//! hydrates content on read.
 //!
-//! Crucially, a joiner must *load the host's document* (so both share the same
-//! Automerge object ids); independently-created docs would fork on merge. The
-//! bootstrap exchange guarantees that shared history.
+//! A joiner must *load the host's document* so both share the same
+//! Automerge object ids — independently-created docs would fork on
+//! merge. The bootstrap exchange guarantees that shared history.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -85,14 +85,14 @@ impl Ticket {
     }
 }
 
-/// Bind an endpoint under this device's own key, with an in-memory address
-/// lookup (so gossip can dial peers we learn about by id). Returns both so
-/// callers can register peer addresses.
+/// Bind an endpoint under this device's own key, with an in-memory
+/// address lookup (so gossip can dial peers we learn about by id).
+/// Returns both so callers can register peer addresses.
 ///
-/// The `NodeId` this produces is the device's Ed25519 public key: iroh's
-/// secret key and the device key are the same 32 bytes. That is what makes the
-/// node id a *name* — authorship attribution and any access-control grant
-/// written against it still mean the same thing after a restart.
+/// The `NodeId` this produces is the device's Ed25519 public key —
+/// iroh's secret key and the device key are the same 32 bytes, which is
+/// what makes the node id a *name* that still means the same thing after
+/// a restart.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
@@ -103,17 +103,16 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
     Ok((endpoint, lookup))
 }
 
-/// Bind an endpoint under a freshly-generated key. **The node id is
-/// different on every call**, so nothing durable may be keyed on it: an
-/// access grant naming it is dead as soon as the process exits. Only for
-/// tests and throwaway probes — a real mount binds with
+/// Bind an endpoint under a freshly-generated key. **The node id differs
+/// on every call**, so nothing durable may be keyed on it — for tests
+/// and throwaway probes only; a real mount uses
 /// [`bind_endpoint_with_key`] so its identity is the device's.
 pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
-/// Fetch the full namespace document from a peer over the bootstrap ALPN.
-/// Bounded by a timeout so a stalled/unresponsive host can't hang the caller.
+/// Fetch the full namespace document from a peer over the bootstrap
+/// ALPN, bounded by a timeout so a stalled host can't hang the caller.
 pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
@@ -128,9 +127,9 @@ pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result
     .map_err(|_| anyhow::anyhow!("timed out fetching workspace document"))?
 }
 
-/// Run the incremental Automerge sync protocol against a peer, applying any
-/// changes each side is missing into `namespace`. Used for periodic anti-entropy
-/// (only the delta is exchanged, not the whole document).
+/// Run the incremental Automerge sync protocol against a peer, applying
+/// missing changes into `namespace` — periodic anti-entropy exchanging
+/// only the delta, not the whole document.
 pub async fn sync_with_peer(
     endpoint: &Endpoint,
     peer: EndpointAddr,
@@ -160,17 +159,16 @@ pub async fn sync_with_peer(
     .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
 }
 
-/// The policy the network planes serve through, or `None` for an unenforced
-/// mount — the same opt-out [`crate::QuickFS`] has: a mount without `--acl`
-/// states no policy, and inventing one here would deny a single-user
-/// workspace its own devices (`fs.service` passes `--acl`). The handle is
-/// live, so a revocation lands on the next connection, not the next remount.
+/// The policy the network planes serve through, or `None` for an
+/// unenforced mount — same opt-out as [`crate::QuickFS`]: a mount
+/// without `--acl` states no policy, and inventing one here would deny a
+/// single-user workspace its own devices. The handle is live, so a
+/// revocation lands on the next connection, not the next remount.
 pub type PeerPolicy = Option<AclHandle>;
 
-/// Does `peer` hold a read grant on *anything* in this workspace?
-///
-/// `None` policy ⇒ unenforced mount ⇒ yes. Otherwise the ACL decides, and it
-/// decides `false` for anyone it has never been told about.
+/// Does `peer` hold a read grant on *anything* here? `None` policy ⇒
+/// unenforced ⇒ yes; otherwise the ACL decides, `false` for anyone it
+/// has never heard of.
 fn peer_may_read_anything(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
     match policy {
         None => true,
@@ -178,20 +176,20 @@ fn peer_may_read_anything(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
     }
 }
 
-/// An iroh endpoint id read as a qOS identity. The two are the same 32 bytes
-/// (see [`bind_endpoint_with_key`]), which is what lets a capability written
-/// against a device key decide who may open a connection.
+/// An iroh endpoint id read as a qOS identity — the same 32 bytes (see
+/// [`bind_endpoint_with_key`]), letting a capability written against a
+/// device key decide who may open a connection.
 fn identity_of(id: iroh::EndpointId) -> IdentityKey {
     *id.as_bytes()
 }
 
 /// Serves the current namespace document to bootstrapping peers. Who may
-/// fetch it is an access-control decision, not a transport detail — denial
-/// is an absence, exactly as on the FUSE path: a stranger cannot tell a
-/// refusal from a host that is not serving. Admission is all-or-nothing:
-/// an admitted peer receives the entire document, naming paths it cannot
-/// read; a per-peer projection would be a change to what the CRDT
-/// replicates, not a check that belongs here.
+/// fetch it is an access-control decision, not a transport detail —
+/// denial is an absence, as on the FUSE path: a stranger can't tell a
+/// refusal from a host that isn't serving. Admission is all-or-nothing:
+/// an admitted peer gets the whole document, naming paths it can't read
+/// — a per-peer projection would change what the CRDT replicates, not
+/// belong here as a check.
 #[derive(Clone)]
 struct SyncProtocol {
     namespace: Arc<Mutex<Namespace>>,
@@ -214,8 +212,8 @@ impl ProtocolHandler for SyncProtocol {
                 "qos-fs-sync: refusing {} — it reads nothing in this workspace",
                 connection.remote_id()
             );
-            // No frame, no error code: the peer sees a closed connection,
-            // same as a host that isn't hosting would give it.
+            // No frame, no error code: the peer sees a closed connection, same
+            // as a host that isn't hosting would give it.
             connection.close(0u32.into(), b"");
             return Ok(());
         }
@@ -267,9 +265,9 @@ impl ProtocolHandler for SyncProtocol {
 }
 
 /// The connect-time verdict for a blob-plane caller, and the identity to
-/// remember for the requests that ride the connection. A `None` endpoint id
-/// means the transport couldn't name the caller: refuse, since an unnamed
-/// caller can't be checked and serving it would serve whoever arrives that way.
+/// remember for requests riding the connection. `None` endpoint id means
+/// the transport couldn't name the caller: refuse, since an unnamed
+/// caller can't be checked.
 fn admit_blob_caller(
     policy: &PeerPolicy,
     endpoint_id: Option<iroh::EndpointId>,
@@ -288,16 +286,16 @@ fn admit_blob_caller(
     }
 }
 
-/// Build the request interceptor iroh-blobs consults before it serves
+/// Build the request interceptor iroh-blobs consults before serving
 /// anything, or `None` for an unenforced mount. `BlobsProtocol::new(store,
-/// None)` serves every blob to anyone who knows its hash, and the
+/// None)` serves every blob to anyone who knows its hash, and
 /// [`EventSender`](iroh_blobs::provider::events::EventSender) is the
-/// protocol's only interception point, so the identity check has to go
-/// here — nothing later still knows who is asking. Only the connect event
-/// names the peer (a request event carries just a connection id), so
-/// identity is recorded at connect and looked up per request. Pushes are
-/// refused outright: this is a *read* plane, content arrives through the
-/// FUSE write path where the capability model's write side is enforced.
+/// protocol's only interception point, so the identity check goes here —
+/// nothing later still knows who is asking. Only the connect event names
+/// the peer (a request event carries just a connection id), so identity
+/// is recorded at connect and looked up per request. Pushes are refused
+/// outright: this is a *read* plane, content arrives via the FUSE write
+/// path where the write-side capability model is enforced.
 fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventSender> {
     use iroh_blobs::provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
@@ -410,10 +408,9 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Begin hosting a new workspace. Returns a ticket to share with peers.
-    ///
-    /// `policy` is what the sync and content planes serve *through*: see
-    /// [`PeerPolicy`]. `None` hosts unenforced.
+    /// Begin hosting a new workspace, returning a ticket to share with
+    /// peers. `policy` is what the sync and content planes serve *through*
+    /// (see [`PeerPolicy`]); `None` hosts unenforced.
     pub async fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -432,11 +429,10 @@ impl Workspace {
         Ok((ws, ticket))
     }
 
-    /// Join an existing workspace described by `ticket`. The caller must already
-    /// have bootstrapped `namespace` from the host (see [`fetch_remote_doc`]).
-    ///
-    /// A joiner serves too — anti-entropy is symmetric — so it carries the same
-    /// `policy` a host does.
+    /// Join an existing workspace described by `ticket`. The caller must
+    /// already have bootstrapped `namespace` from the host (see
+    /// [`fetch_remote_doc`]) — a joiner serves too (anti-entropy is
+    /// symmetric), so it carries the same `policy` a host does.
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -471,8 +467,8 @@ impl Workspace {
         topic_bytes: [u8; 32],
         bootstrap: Vec<EndpointAddr>,
     ) -> Result<Workspace> {
-        // After bootstrap/seed, set the delta watermark so future local writes
-        // produce minimal deltas (and the seed isn't re-broadcast).
+        // After bootstrap/seed, set the delta watermark so future local
+        // writes produce minimal deltas (and the seed isn't re-broadcast).
         namespace.lock().unwrap().prime_baseline();
 
         // Register bootstrap peers so gossip can dial them and we can hydrate.
@@ -537,8 +533,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// The bidirectional pump: broadcast local deltas, apply remote deltas, and
-/// learn peer addresses for hydration as neighbors come up.
+/// The bidirectional pump: broadcast local deltas, apply remote deltas,
+/// and learn peer addresses for hydration as neighbors come up.
 async fn pump_loop(
     mut receiver: GossipReceiver,
     sender: GossipSender,
@@ -557,10 +553,9 @@ async fn pump_loop(
             ev = receiver.next() => {
                 match ev {
                     Some(Ok(Event::Received(msg))) => {
-                        // Apply the delta + break any move-cycle it introduced
-                        // (cheap, pure-CPU). Content-conflict resolution and
-                        // anti-entropy run in reconcile_loop so a slow hydration
-                        // never blocks local delta propagation.
+                        // Apply the delta + break any move-cycle it introduced (cheap,
+                        // pure-CPU). Content-conflict resolution and anti-entropy run in
+                        // reconcile_loop so a slow hydration never blocks local delta propagation.
                         let resolve_delta = {
                             let mut ns = namespace.lock().unwrap();
                             ns.apply_remote_and_resolve(msg.content.as_ref())
@@ -575,9 +570,8 @@ async fn pump_loop(
                     }
                     Some(Ok(_)) => {}
                     Some(Err(_)) => {
-                        // Transient gossip error: don't kill the pump (that
-                        // would silently dead-sync the workspace) — back off
-                        // briefly and keep going.
+                        // Transient gossip error: don't kill the pump (that would silently
+                        // dead-sync the workspace) — back off briefly and keep going.
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     None => break, // stream genuinely ended
@@ -633,12 +627,10 @@ mod tests {
     use crate::namespace::ROOT_INO;
     use std::time::Duration;
 
-    /// The workspace's policy: `entitled` get the run of the tree, and nothing
-    /// is said about anybody else.
-    ///
-    /// Direct entries rather than capabilities so the test states its grant
-    /// outright; `reads_anything` is asked the same question either way (see
-    /// `acl::tests` for the capability route).
+    /// The workspace's policy: `entitled` get the run of the tree, nothing
+    /// said about anybody else. Direct entries rather than capabilities so
+    /// the test states its grant outright; `reads_anything` is asked the
+    /// same question either way (see `acl::tests` for the capability route).
     fn policy_granting(entitled: &[IdentityKey]) -> PeerPolicy {
         let mut acl = WorkspaceAcl::new();
         for id in entitled {
@@ -744,8 +736,8 @@ mod tests {
     }
 
     /// The full collaborative read-write loop: A writes a file with real
-    /// content; B's namespace syncs the entry over gossip; B then hydrates the
-    /// content over iroh-blobs and reads A's actual bytes.
+    /// content; B's namespace syncs the entry over gossip; B then hydrates
+    /// the content over iroh-blobs and reads A's actual bytes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn content_written_on_one_peer_hydrates_on_another() {
         // host A
@@ -809,8 +801,8 @@ mod tests {
         assert_eq!(got.as_slice(), content, "B must read A's real bytes");
     }
 
-    /// A caller the transport could not name is refused, so an endpoint that
-    /// arrives without an id is not served on the strength of arriving.
+    /// A caller the transport could not name is refused — an endpoint
+    /// arriving without an id isn't served on the strength of arriving.
     #[test]
     fn an_unnamed_blob_caller_is_refused() {
         use iroh_blobs::provider::events::AbortReason;
@@ -858,8 +850,8 @@ mod tests {
 
     /// The negative on the document plane: a peer holding no grant asks the
     /// host for the workspace document and gets nothing it can read a
-    /// workspace out of. Asserted on the bytes that land at the far endpoint,
-    /// not on the gate having been consulted.
+    /// workspace out of — asserted on the bytes at the far endpoint, not on
+    /// the gate having been consulted.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stranger_receives_no_namespace_document() {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
@@ -893,9 +885,9 @@ mod tests {
         );
     }
 
-    /// The negative on the content plane: a stranger that already knows a
-    /// blob's hash — content addressing makes a hash easy to learn and
-    /// impossible to keep secret — still cannot fetch the bytes.
+    /// The negative on the content plane: a stranger who already knows a
+    /// blob's hash (easy to learn, impossible to keep secret) still can't
+    /// fetch the bytes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stranger_cannot_hydrate_content() {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
@@ -936,7 +928,7 @@ mod tests {
     }
 
     /// Same host, same policy, an invited peer: bootstrap, gossip and
-    /// hydration all still work. Without this the negatives above are
+    /// hydration all still work — without this the negatives above would be
     /// satisfied by a mount that serves nobody.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_entitled_peer_still_bootstraps_and_hydrates() {

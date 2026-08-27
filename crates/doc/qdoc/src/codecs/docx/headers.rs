@@ -1,11 +1,8 @@
-//! Page header / footer ⇄ OOXML header/footer parts. WordprocessingML keeps each
-//! page region in its own part (`word/header1.xml` = `w:hdr`, `word/footer1.xml` =
-//! `w:ftr`), referenced from the body's `w:sectPr` via `w:headerReference` /
-//! `w:footerReference` (by relationship id) and declared in `[Content_Types].xml`
-//! + `word/_rels/document.xml.rels`. A page-number field is a `PAGE` field, emitted
-//! as a `w:fldSimple w:instr=" PAGE "` (the simple form) and parsed from both the
-//! simple form and the complex `w:instrText` form. This maps the header/footer
-//! paragraph sequences onto the canonical regions, both directions.
+//! Page header / footer ⇄ OOXML header/footer parts. WordprocessingML keeps each page
+//! region in its own part (`word/header1.xml`/`word/footer1.xml`, `w:hdr`/`w:ftr`),
+//! referenced from the body's `w:sectPr` by relationship id. A page-number field is a
+//! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
+//! simple form and the complex `w:instrText` form.
 
 use crate::model::{materialize_region, DocMut, DocRef, Region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
@@ -19,11 +16,8 @@ pub(super) const FOOTER_PART: &str = "word/footer1.xml";
 pub(super) const HEADER_REL_ID: &str = "rIdQdocHdr";
 pub(super) const FOOTER_REL_ID: &str = "rIdQdocFtr";
 
-/// Resolve the default header + footer part names referenced by the body's first
-/// `w:sectPr`, via `word/_rels/document.xml.rels`. Returns `(header_part,
-/// footer_part)` part names (paths under the package root, e.g.
-/// `"word/header1.xml"`), each `None` when no default reference exists. Prefers the
-/// `w:type="default"` reference; falls back to the first reference of each kind.
+/// Resolve the default header + footer part names via `word/_rels/document.xml.rels`.
+/// Prefers the `w:type="default"` reference; falls back to the first of each kind.
 pub(super) fn resolve_default_parts(document_xml: &[u8], rels_xml: Option<&[u8]>) -> (Option<String>, Option<String>) {
     let (hdr_rid, ftr_rid) = sectpr_reference_ids(document_xml);
     let rels = rels_xml.map(rel_targets).unwrap_or_default();
@@ -35,8 +29,7 @@ pub(super) fn resolve_default_parts(document_xml: &[u8], rels_xml: Option<&[u8]>
     (resolve(hdr_rid), resolve(ftr_rid))
 }
 
-/// The default (or first) header/footer relationship ids from the first
-/// `w:sectPr` in the document body.
+/// The default (or first) header/footer relationship ids from the first `w:sectPr`.
 fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>) {
     let Ok(s) = std::str::from_utf8(document_xml) else { return (None, None) };
     let mut reader = Reader::from_str(s);
@@ -110,8 +103,7 @@ fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
     out
 }
 
-/// A rels `Target` (relative to `word/`) → package part name (`header1.xml` →
-/// `word/header1.xml`). Absolute targets (`/word/header1.xml`) are de-slashed.
+/// A rels `Target` (relative to `word/`) → package part name; absolute targets are de-slashed.
 fn normalize_target(target: &str) -> String {
     let t = target.trim_start_matches('/');
     if t.starts_with("word/") {
@@ -125,9 +117,8 @@ fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
     attr_w_val(e, b"r:id")
 }
 
-/// Import a `w:hdr`/`w:ftr` part into a region. Each `w:p` becomes a paragraph
-/// block; `w:t` runs are text; `w:tab`/`w:br` map onto tab/newline; a `PAGE` field
-/// (simple `w:fldSimple` or complex `w:instrText`) becomes a page-number field.
+/// Import a `w:hdr`/`w:ftr` part into a region: `w:p` → paragraph blocks, `w:t` → text,
+/// `w:tab`/`w:br` → tab/newline, a `PAGE` field (simple or complex) → a page-number field.
 pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
     let mut reader = Reader::from_str(s);
@@ -136,13 +127,12 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut cur_len: usize = 0;
     let mut in_t = false;
     let mut in_instr = false; // inside a complex-field <w:instrText>
-    // A complex field whose instruction text contains PAGE; its result runs are
-    // skipped and a single placeholder emitted at the field's start.
+    // A complex field whose instruction text contains PAGE emits a single placeholder at
+    // its start and skips its result runs.
     let mut field_pending = false;
     let mut field_in_progress = false; // between fldChar begin/separate and end
     let mut field_skip_text = false; // skip the field's result-run text
-    // Depth inside a non-self-closing `w:fldSimple` (its cached result-run text is
-    // skipped — the placeholder already stands in for the whole field).
+    // Depth inside a non-self-closing `w:fldSimple`; its cached result-run text is skipped.
     let mut fldsimple_depth = 0usize;
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
@@ -164,8 +154,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 b"w:t" => in_t = true,
                 b"w:instrText" => in_instr = true,
                 b"w:fldSimple" => {
-                    // A fldSimple with children: emit the field once at its start,
-                    // then skip its cached result-run text until it closes.
+                    // Emit the field once at its start, then skip its cached result-run text until it closes.
                     fldsimple_depth += 1;
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
                     if is_page_instr(&instr) {
@@ -193,7 +182,6 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     }
                 }
                 b"w:fldSimple" => {
-                    // Simple field: a PAGE instruction → a page-number field.
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
                     if is_page_instr(&instr) {
                         if let Some(b) = cur.clone() {
@@ -212,8 +200,8 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                             field_skip_text = false;
                         }
                         Some("separate") => {
-                            // Instruction collected; if it was PAGE, emit the field
-                            // now and skip the result-run text until "end".
+                            // Instruction collected; if it was PAGE, emit the field now and skip result-run text
+                            // until "end".
                             if field_pending {
                                 if let Some(b) = cur.clone() {
                                     let start = cur_len;
@@ -291,8 +279,8 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
         .any(|m| m.name == MARK_FIELD && m.start == i && m.end == i + 1 && m.value.as_str() == Some(FIELD_PAGE_NUMBER))
 }
 
-/// Render a region block as `<w:p>` content: plain `w:t` runs, `w:tab`/`w:br` for
-/// tabs/breaks, and a `w:fldSimple w:instr=" PAGE "` for a page-number field.
+/// Render a region block as `<w:p>`: `w:t` runs, `w:tab`/`w:br` for tabs/breaks, and a
+/// `w:fldSimple w:instr=" PAGE "` for a page-number field.
 fn render_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
     let mut out = String::from("<w:p>");
@@ -311,8 +299,7 @@ fn render_block(b: &BlockView) -> String {
         if c == FIELD_PLACEHOLDER {
             flush(&mut out, &mut buf);
             if page_number_field_at(b, i) {
-                // Self-closing so the import sees no cached result-run text (the
-                // field's displayed value is recomputed by the renderer).
+                // Self-closing so import sees no cached result-run text (recomputed by the renderer).
                 out.push_str(r#"<w:fldSimple w:instr=" PAGE "/>"#);
             }
             continue;
@@ -334,8 +321,7 @@ fn render_block(b: &BlockView) -> String {
     out
 }
 
-/// The full `word/header1.xml` (`w:hdr`) / `word/footer1.xml` (`w:ftr`) bytes for a
-/// region's blocks, or `None` when the region is empty.
+/// The full header/footer part bytes for a region's blocks, or `None` when empty.
 fn region_part_xml(blocks: &[BlockView], root: &str) -> Option<Vec<u8>> {
     if blocks.is_empty() {
         return None;
@@ -351,8 +337,7 @@ fn region_part_xml(blocks: &[BlockView], root: &str) -> Option<Vec<u8>> {
     Some(xml.into_bytes())
 }
 
-/// The exported header/footer parts (`(part_name, bytes)`) for the document, plus
-/// whether each exists. Empty regions are omitted.
+/// The exported header/footer parts, plus whether each exists. Empty regions are omitted.
 pub(super) struct ExportedParts {
     pub header: Option<Vec<u8>>,
     pub footer: Option<Vec<u8>>,
@@ -364,7 +349,6 @@ impl ExportedParts {
     }
 }
 
-/// Build the header/footer part bytes from the document's regions.
 pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
     let header = materialize_region(doc.doc, doc.c, Region::Header);
     let footer = materialize_region(doc.doc, doc.c, Region::Footer);
@@ -374,8 +358,7 @@ pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
     }
 }
 
-/// The `w:headerReference`/`w:footerReference` elements (referencing the fixed rel
-/// ids) for a `w:sectPr`, given which parts exist.
+/// The `w:headerReference`/`w:footerReference` elements for a `w:sectPr`, given which parts exist.
 pub(super) fn section_references(parts: &ExportedParts) -> String {
     let mut s = String::new();
     if parts.header.is_some() {

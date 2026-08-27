@@ -1,27 +1,21 @@
-//! Footnotes / endnotes ⇄ ODF inline `text:note`. ODF keeps a note *inline* in the
-//! body text as `<text:note text:note-class="footnote"|"endnote">` carrying a
-//! `<text:note-citation>` (the displayed number) and a `<text:note-body>` holding
-//! the note's paragraphs. This maps a note onto the canonical model: a `note-ref`
-//! marker (placeholder char + `note-ref` mark valued with the note id) at the
-//! note's position in the body paragraph, plus the note's content as a small block
-//! sequence in the `notes` container. Both directions.
+//! Footnotes/endnotes map ODF's inline `text:note` (`text:note-citation` +
+//! `text:note-body`) onto the canonical model: a `note-ref` marker at the note's
+//! position in the body paragraph, plus its content as a block sequence in the
+//! `notes` container, both directions.
 
 use crate::model::{DocMut, NoteKind};
 use crate::snapshot::{BlockView, NoteView};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
-/// Parse one verbatim `<text:note>…</text:note>` element into a fresh note: create
-/// the note (with its class → kind), parse each `text:note-body` paragraph into the
-/// note's blocks, and return the new note id (so the caller can place the inline
-/// reference marker). The citation text is recomputed by renderers, so it is not
-/// modeled.
+/// Parse one `<text:note>` element into a fresh note, importing its body paragraphs
+/// into blocks; returns the new note id. Citation text is recomputed by renderers,
+/// not modeled here.
 pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
     let kind = note_class(raw).map(|c| NoteKind::from_str(&c)).unwrap_or(NoteKind::Footnote);
     let note_id = doc.insert_note(kind);
 
-    // Parse the `text:note-body` paragraphs into the note's content blocks. Each
-    // `text:p`/`text:h` becomes a paragraph block; text + tabs/breaks/spaces map on.
+    // Each `text:p`/`text:h` in `text:note-body` becomes a paragraph block; text/tabs/breaks/spaces map on.
     let mut reader = Reader::from_str(raw);
     let mut in_body = false;
     let mut prev: Option<String> = None;
@@ -121,9 +115,8 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// Render a note's content paragraphs as the `text:note-body` inner XML. Only plain
-/// text + tabs/breaks are modeled in note bodies (richer inline styling is rare in
-/// notes and not modeled here).
+/// Render a note's blocks as `text:note-body` inner XML; only plain text + tabs/breaks
+/// are modeled (richer inline styling isn't supported in note bodies).
 fn render_note_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
     for b in blocks {
@@ -140,8 +133,7 @@ fn render_note_body(blocks: &[BlockView]) -> String {
     out
 }
 
-/// The full inline `<text:note>` XML for a note referenced from body text. `n` is
-/// the 1-based citation number (recomputed on export from the reference order).
+/// Full inline `<text:note>` XML for a note; `n` is the 1-based citation number, recomputed on export from reference order.
 pub(super) fn render_inline_note(note: &NoteView, n: usize) -> String {
     let kind = NoteKind::from_str(&note.kind);
     let class = kind.as_str();

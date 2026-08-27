@@ -1,8 +1,6 @@
-//! Parse OOXML styles (`word/styles.xml`) and list numbering
-//! (`word/numbering.xml`) into a registry the body parser resolves against.
-//! Real `.docx` files keep most formatting (headings, bold, fonts) in named
-//! styles and list ordering in numbering definitions, so resolving them is what
-//! makes real documents import faithfully.
+//! Parse OOXML styles (`word/styles.xml`) and list numbering (`word/numbering.xml`) into
+//! a registry the body parser resolves against — real `.docx` files keep most formatting
+//! in named styles and list ordering in numbering definitions.
 
 use crate::document::MarkValue;
 use crate::schema::{
@@ -21,8 +19,7 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
-/// OOXML toggle property (`<w:b/>`, `<w:i/>`, …): present means *on* unless its
-/// `w:val` explicitly turns it off (used to override an inherited style).
+/// OOXML toggle property (`<w:b/>`, `<w:i/>`, …): present means *on* unless `w:val` explicitly turns it off.
 pub(super) fn toggle_on(e: &BytesStart) -> bool {
     match attr_val(e, b"w:val") {
         None => true,
@@ -45,7 +42,6 @@ pub(super) fn parse_half_point(e: &BytesStart) -> Option<i64> {
         .map(|hp| (hp / 2.0).round() as i64)
 }
 
-/// Collapse a concrete font name onto one of the model's generic families.
 pub(super) fn generic_font(name: &str) -> String {
     let n = name.to_ascii_lowercase();
     if n.contains("mono") || n.contains("courier") || n.contains("consol") {
@@ -59,7 +55,6 @@ pub(super) fn generic_font(name: &str) -> String {
     }
 }
 
-/// `<w:jc w:val>` → the model's `align` value.
 pub(super) fn map_jc(v: &str) -> String {
     match v {
         "center" => "center".into(),
@@ -69,9 +64,7 @@ pub(super) fn map_jc(v: &str) -> String {
     }
 }
 
-/// Normalise an OOXML `w:color w:val` (`RRGGBB`, optionally `#`-prefixed) to the
-/// model's canonical `#rrggbb`. `auto`/non-hex values yield `None` so the style's
-/// colour stays at its neutral default rather than importing garbage.
+/// Normalise an OOXML `w:color w:val` to the model's canonical `#rrggbb`; `auto`/non-hex values yield `None`.
 pub(super) fn normalize_color(v: &str) -> Option<String> {
     let t = v.trim().trim_start_matches('#');
     if t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -81,19 +74,13 @@ pub(super) fn normalize_color(v: &str) -> Option<String> {
     }
 }
 
-/// Parse an OOXML twips length (`w:spacing`/`w:ind`, 1/1440 inch) to pixels at
-/// 96 dpi: 1 twip = 96/1440 = 1/15 px. Mirrors the model's px-based spacing/indent
-/// units (the inverse of `export::px_to_twips`). Negative values (hanging indents)
-/// clamp to 0 since the model has no negative indent.
+/// OOXML twips (1/1440 inch) to pixels at 96 dpi (1 twip = 1/15 px), the inverse of `export::px_to_twips`.
 pub(super) fn twips_to_px(v: &str) -> Option<f64> {
     let n: f64 = v.trim().parse().ok()?;
     Some(((n / 15.0).max(0.0) * 100.0).round() / 100.0)
 }
 
-/// Line spacing from a `<w:spacing>` element: an `auto`-rule `w:line` is in 240ths
-/// of a line (1.5 → 360), which maps onto the model's unitless multiple. Other
-/// `w:lineRule` values (`exact`/`atLeast`) are fixed lengths in twips and have no
-/// clean unitless multiple, so they're left unset (`None`).
+/// Line spacing from `<w:spacing>`: an `auto`-rule `w:line` is in 240ths of a line (1.5 → 360); other rules are left unset.
 pub(super) fn line_spacing_from_spacing(e: &BytesStart) -> Option<f64> {
     let line = attr_val(e, b"w:line").and_then(|v| v.trim().parse::<f64>().ok())?;
     let rule = attr_val(e, b"w:lineRule").unwrap_or_else(|| "auto".to_string());
@@ -104,7 +91,6 @@ pub(super) fn line_spacing_from_spacing(e: &BytesStart) -> Option<f64> {
     }
 }
 
-/// Inline marks implied by a single `w:rPr` child element.
 pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)> {
     match e.name().as_ref() {
         b"w:b" | b"w:bCs" if toggle_on(e) => Some(("strong".into(), MarkValue::Bool(true))),
@@ -116,12 +102,9 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
             .or_else(|| attr_val(e, b"w:hAnsi"))
             .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
         b"w:color" => attr_val(e, b"w:val").and_then(|v| normalize_color(&v)).map(|c| ("color".into(), MarkValue::Str(c))),
-        // Per-run language override. `w:lang w:val` is already a BCP-47 tag (`fr`,
-        // `de-DE`), so it passes straight through to a `lang` mark. Supports per-span
-        // spell-check locale and screen-reader language.
+        // `w:lang w:val` is already a BCP-47 tag, so it passes straight through to a `lang` mark.
         b"w:lang" => attr_val(e, b"w:val").filter(|v| !v.is_empty()).map(|v| ("lang".into(), MarkValue::Str(v))),
-        // Text background (highlight). Prefer `w:shd w:fill` (arbitrary hex);
-        // `w:highlight` carries a named colour (`yellow`, …) mapped to its hex.
+        // Prefer `w:shd w:fill` (arbitrary hex); `w:highlight` carries a named colour mapped to hex.
         b"w:shd" => attr_val(e, b"w:fill")
             .filter(|v| !v.eq_ignore_ascii_case("auto"))
             .and_then(|v| normalize_color(&v))
@@ -140,17 +123,11 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
     }
 }
 
-/// The document default language declared in `word/styles.xml` under
-/// `<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="…"/>`, the home Word reads for
-/// the document's default spell-check / screen-reader locale. Returns the BCP-47 tag
-/// (e.g. `de-DE`) or `None` if the part declares no default language. Only the run
-/// default (`w:rPrDefault`) is inspected — never a `<w:style>`'s own `<w:lang>`.
+/// The document default language from `<w:docDefaults><w:rPrDefault><w:rPr><w:lang>`; a `<w:style>`'s own `<w:lang>` is that style's language, not read here.
 pub(super) fn doc_default_language(styles_xml: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(styles_xml).ok()?;
     let mut reader = Reader::from_str(s);
-    // Track whether we're inside the `docDefaults > rPrDefault > rPr` subtree; only a
-    // `<w:lang>` there is the document default (a `<w:lang>` inside a `<w:style>`'s rPr
-    // is a *style's* language, not the document default).
+    // Track the `docDefaults > rPrDefault > rPr` subtree; a `<w:lang>` inside a style's rPr is that style's language, not the default.
     let (mut in_doc_defaults, mut in_rpr_default, mut in_rpr) = (false, false, false);
     loop {
         match reader.read_event() {
@@ -178,8 +155,7 @@ pub(super) fn doc_default_language(styles_xml: &[u8]) -> Option<String> {
     None
 }
 
-/// Map an OOXML `w:highlight` named colour to a canonical `#rrggbb`. The OOXML
-/// highlight palette is a fixed set of 16 names; unknown names yield `None`.
+/// Map an OOXML `w:highlight` named colour to `#rrggbb`; the palette is a fixed 16 names.
 pub(super) fn highlight_name_to_hex(name: &str) -> Option<String> {
     let hex = match name.trim().to_ascii_lowercase().as_str() {
         "black" => "#000000",
@@ -211,14 +187,10 @@ pub(super) struct ParaStyle {
     pub heading_name: bool,
     pub name_level: Option<i64>,
     pub text: Vec<(String, MarkValue)>,
-    /// Human display name (`w:name w:val`), if any.
     pub display_name: Option<String>,
-    /// A user-facing *named* paragraph style (every `w:style w:type="paragraph"`
-    /// in `word/styles.xml` is one). Distinguishes real named styles the codec
-    /// lifts into the CRDT styles container from styles only used for resolution.
+    /// A user-facing *named* paragraph style, distinguishing real named styles lifted into the styles container from resolution-only ones.
     pub named: bool,
-    /// Typed `StyleProps`-shaped fields (distinct from the inline `text` marks the
-    /// same `w:rPr`/`w:pPr` imply) used to build the container style's scalars.
+    /// Typed `StyleProps`-shaped fields (distinct from the inline `text` marks the same `w:rPr`/`w:pPr` imply).
     pub size: Option<f64>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
@@ -231,9 +203,7 @@ pub(super) struct ParaStyle {
     pub line_spacing: Option<f64>,
 }
 
-/// Map an OOXML `w:numFmt w:val` onto the model's canonical numbering format
-/// (`decimal|lower-roman|upper-roman|lower-alpha|upper-alpha`). Bullet/none have
-/// no format. Unknown ordered formats fall back to `decimal`.
+/// Map an OOXML `w:numFmt w:val` onto the model's numbering format; unknown ordered formats fall back to `decimal`.
 pub(super) fn map_num_format(v: &str) -> Option<&'static str> {
     match v {
         "bullet" | "none" => None,
@@ -245,8 +215,7 @@ pub(super) fn map_num_format(v: &str) -> Option<&'static str> {
     }
 }
 
-/// The captured level-0 numbering of a `w:numId`: ordered-ness + canonical format
-/// + start value, for fidelity preservation of ordered lists.
+/// The captured level-0 numbering of a `w:numId`, for fidelity preservation of ordered lists.
 #[derive(Clone, Default)]
 pub(super) struct NumDef {
     pub ordered: bool,
@@ -267,10 +236,8 @@ pub(super) struct StyleRegistry {
 }
 
 impl StyleRegistry {
-    /// Heading level for a paragraph style id, following `basedOn` chains. Falls
-    /// back to recognising well-known heading ids/names (`Heading1`, …) even when
-    /// the style itself isn't registered — so codec-authored exports re-import
-    /// without a `styles.xml`.
+    /// Heading level for a paragraph style id, following `basedOn` chains. Falls back to well-known heading ids/names even
+    /// when unregistered, so codec-authored exports re-import without a `styles.xml`.
     pub(super) fn heading_level(&self, name: &str) -> Option<i64> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
@@ -303,8 +270,7 @@ impl StyleRegistry {
         None
     }
 
-    /// Line spacing (`w:spacing w:line`, auto) a paragraph style applies, following
-    /// the `basedOn` chain (most-derived first).
+    /// Line spacing (`w:spacing w:line`, auto) a paragraph style applies, following the `basedOn` chain (most-derived first).
     pub(super) fn para_line_spacing(&self, name: &str) -> Option<f64> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
@@ -318,8 +284,7 @@ impl StyleRegistry {
         None
     }
 
-    /// Inline marks a paragraph style applies to its whole text (parent-first so
-    /// the most-derived style wins).
+    /// Inline marks a paragraph style applies to its whole text (parent-first, most-derived wins).
     pub(super) fn para_text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
         let mut chain: Vec<&ParaStyle> = Vec::new();
         let mut cur = Some(name.to_string());
@@ -343,10 +308,8 @@ impl StyleRegistry {
         self.text.get(name).cloned().unwrap_or_default()
     }
 
-    /// Whether `id` is a user-facing *named* paragraph style (every paragraph
-    /// style declared in `word/styles.xml`) — the styles lifted into the styles
-    /// container. Built-in heading styles resolve to a heading level first, so the
-    /// body parser never lifts them even though they are also "named".
+    /// Whether `id` is a user-facing *named* paragraph style. Built-in heading styles resolve to a heading level first, so
+    /// the body parser never lifts them even though they are also "named".
     pub(super) fn is_named_para(&self, id: &str) -> bool {
         self.para.get(id).map(|p| p.named).unwrap_or(false)
     }
@@ -364,16 +327,13 @@ impl StyleRegistry {
         chain
     }
 
-    /// Resolve a named paragraph style into the `StyleProps`-shaped scalar map the
-    /// CRDT styles container stores (self overrides `basedOn` parent for each
-    /// field; unset fields fall back to neutral defaults so the editor renders
-    /// them, and so the round-trip is idempotent). Mirrors the `.odt` codec.
+    /// Resolve a named paragraph style into the scalar map the CRDT styles container stores (self overrides `basedOn`
+    /// parent per field; unset fields fall back to neutral defaults, keeping the round-trip idempotent).
     pub(super) fn style_props(&self, id: &str) -> Option<BTreeMap<String, AttrVal>> {
         let chain = self.para_chain(id);
         if chain.is_empty() {
             return None;
         }
-        // First-set-wins scan over the chain (most-derived first).
         let display = chain.iter().find_map(|p| p.display_name.clone());
         let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
         let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
@@ -414,8 +374,6 @@ fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
     (false, None)
 }
 
-/// Parse all `w:style` from a `word/styles.xml` stream into `reg`. Safe to call
-/// once per import.
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
     let mut reader = Reader::from_str(s);
@@ -427,7 +385,6 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     let mut align: Option<String> = None;
     let mut outline: Option<i64> = None;
     let mut text: Vec<(String, MarkValue)> = Vec::new();
-    // Typed `StyleProps`-shaped scratch (built alongside `text`).
     let mut size: Option<f64> = None;
     let mut bold: Option<bool> = None;
     let mut italic: Option<bool> = None;
@@ -451,8 +408,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                 b"w:outlineLvl" if in_ppr => {
                     outline = attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok()).map(|n| n + 1)
                 }
-                // Paragraph spacing (twips) → px space_before/space_after; an
-                // auto-rule `w:line` → the unitless line_spacing multiple.
+                // Paragraph spacing (twips) → px space_before/space_after; an auto-rule `w:line` → the unitless line_spacing multiple.
                 b"w:spacing" if in_ppr => {
                     if let Some(v) = attr_val(&e, b"w:before") {
                         space_before = twips_to_px(&v);
@@ -471,7 +427,6 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                     }
                 }
                 _ if in_rpr => {
-                    // Typed style fields, in parallel with the inline `text` marks.
                     match e.name().as_ref() {
                         b"w:b" | b"w:bCs" => bold = Some(toggle_on(&e)),
                         b"w:i" | b"w:iCs" => italic = Some(toggle_on(&e)),
@@ -601,14 +556,12 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     }
 }
 
-/// Parse `word/numbering.xml` into `reg.num_ordered`: a `w:numId` is ordered iff
-/// its abstract numbering's level-0 `w:numFmt` is something other than `bullet`.
+/// Parse `word/numbering.xml` into `reg.num_ordered`: ordered iff the abstract numbering's level-0 `w:numFmt` isn't `bullet`.
 pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
     let mut reader = Reader::from_str(s);
 
-    // abstractNumId → its level-0 numbering (format string + start), and which
-    // numId maps to which abstractNum.
+    // abstractNumId → its level-0 numbering, and which numId maps to which abstractNum.
     let mut abstract_def: HashMap<String, NumDef> = HashMap::new();
     let mut num_to_abstract: HashMap<String, String> = HashMap::new();
 

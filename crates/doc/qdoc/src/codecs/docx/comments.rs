@@ -1,11 +1,8 @@
-//! Comments / annotations ⇄ OOXML `word/comments.xml`. WordprocessingML stores
-//! comment content in a dedicated `word/comments.xml` part as `<w:comment w:id w:author
-//! w:date>` elements, each a sequence of `w:p` paragraphs. The body marks the
-//! commented range with `<w:commentRangeStart w:id="N"/>` / `<w:commentRangeEnd
-//! w:id="N"/>` and references it via a `<w:commentReference w:id="N"/>` run. The part
-//! is wired via `[Content_Types].xml` + `word/_rels/document.xml.rels`. This maps a
-//! comment onto the canonical model: a `comment` mark over the body range carrying the
-//! comment id, plus the comment's author/date/content in the `comments` container.
+//! Comments / annotations ⇄ OOXML `word/comments.xml`: `<w:comment w:id w:author w:date>`
+//! elements of `w:p` paragraphs, referenced from the body by `<w:commentRangeStart/End
+//! w:id="N"/>` bracketing the range and a `<w:commentReference w:id="N"/>` run. This maps
+//! a comment onto a `comment` mark over the body range carrying the comment id, plus its
+//! author/date/content in the `comments` container.
 
 use crate::model::{materialize_comments, DocMut, DocRef};
 use crate::snapshot::BlockView;
@@ -16,9 +13,8 @@ use std::collections::BTreeMap;
 /// The fixed part name + relationship id qdoc writes for comments.
 pub(super) const COMMENTS_PART: &str = "word/comments.xml";
 
-/// Import `word/comments.xml` into the comments container, returning a `docx_id →
-/// qdoc_comment_id` map so the body parser can wire each `commentRangeStart/End` (by
-/// docx id) onto the canonical comment.
+/// Import `word/comments.xml`, returning a `docx_id → qdoc_comment_id` map so the body
+/// parser can wire each `commentRangeStart/End` onto the canonical comment.
 pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     let Ok(s) = std::str::from_utf8(xml) else { return map };
@@ -63,9 +59,8 @@ pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<Str
     map
 }
 
-/// Parse one verbatim `<w:comment>` element into a fresh comment (author/date taken
-/// from the open tag's attributes) and return its qdoc id. Each `w:p` becomes a
-/// paragraph block; `w:t` runs are text, `w:tab`/`w:br` map onto tab/newline.
+/// Parse one verbatim `<w:comment>` element into a fresh comment (author/date from the
+/// open tag) and return its qdoc id: each `w:p` becomes a paragraph block.
 fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> Option<String> {
     let comment_id = doc.insert_comment(author, date);
     let mut reader = Reader::from_str(raw);
@@ -152,8 +147,8 @@ fn escape_attr(s: &str) -> String {
     out
 }
 
-/// Render a comment's content paragraphs as the inner XML of a `w:comment` element
-/// (plain text + tabs/breaks; richer inline styling in comments is not modeled).
+/// Render a comment's paragraphs as `w:comment` inner XML (plain text + tabs/breaks;
+/// richer inline styling in comments is not modeled).
 fn render_comment_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
     for b in blocks {
@@ -188,16 +183,14 @@ fn render_comment_body(blocks: &[BlockView]) -> String {
     out
 }
 
-/// The exported `word/comments.xml` part + the `qdoc-id → docx-id` map the body
-/// exporter uses to emit `commentRangeStart/End` + `commentReference`. The part is
-/// `None` when the document has no comments.
+/// The exported comments part + the `qdoc-id → docx-id` map the body exporter uses for
+/// `commentRangeStart/End` + `commentReference`; `None` when there are no comments.
 pub(super) struct ExportedComments {
     pub comments_xml: Option<Vec<u8>>,
     /// qdoc comment id → the docx numeric id emitted in the body + part.
     pub id_map: BTreeMap<String, i64>,
 }
 
-/// Build the comments part from the document's comments, assigning docx ids from 0.
 pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
     let comments = materialize_comments(doc.doc, doc.c);
     let mut id_map = BTreeMap::new();
@@ -222,8 +215,7 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
     ExportedComments { comments_xml: Some(xml.into_bytes()), id_map }
 }
 
-/// The `<w:commentReference>` run for a comment id (its citation marker), or `None`
-/// when the comment isn't being exported.
+/// The `<w:commentReference>` run for a comment id, or `None` when it isn't being exported.
 pub(super) fn comment_reference_run(comment_id: &str, id_map: &BTreeMap<String, i64>) -> Option<String> {
     let docx_id = id_map.get(comment_id)?;
     Some(format!(

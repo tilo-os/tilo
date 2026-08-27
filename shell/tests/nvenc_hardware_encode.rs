@@ -1,13 +1,9 @@
-//! Hardware NVENC encode integration tests.
-//!
-//! Requires the `nvenc` cargo feature. Self-skips if the host has no
-//! working H.264 NVENC encoder — `/dev/nvidia0` might exist without
-//! usable CUDA (containers stripped of CAP_SYS_ADMIN, etc.).
-//!
-//! Rootless podman drops the capability CUDA needs to init. To exercise
-//! this on a distrobox-built binary, compile inside distrobox then run
-//! the test executable directly on the host with the ffmpeg libs
-//! pointed to via `LD_LIBRARY_PATH`.
+//! Hardware NVENC encode integration tests. Requires the `nvenc` feature;
+//! self-skips without a working H.264 NVENC encoder — `/dev/nvidia0` can
+//! exist without usable CUDA. Rootless podman drops the capability CUDA
+//! needs to init, so to exercise a distrobox-built binary, compile inside
+//! distrobox then run the executable directly on the host with
+//! `LD_LIBRARY_PATH` pointed at the ffmpeg libs.
 
 #![cfg(feature = "nvenc")]
 
@@ -41,11 +37,10 @@ fn nvenc_produces_annex_b_h264_bytes() {
     if !nvenc_available() {
         return;
     }
-    // 1280x720 rather than a smaller frame because ffmpeg 8's
-    // h264_nvenc wrapper rejects sub-720p CBR+baseline config on some
-    // driver versions with a bare "Unknown error" from `avcodec_open2`.
-    // The single-frame path we're asserting on doesn't care about the
-    // pixel count.
+    // 1280x720 rather than smaller: ffmpeg 8's h264_nvenc wrapper rejects
+    // sub-720p CBR+baseline config on some driver versions with a bare
+    // "Unknown error" from `avcodec_open2`; the single-frame path here
+    // doesn't care about pixel count.
     const W: u32 = 1280;
     const H: u32 = 720;
     let init = EncoderInit::sdr_h264(W, H, 30, 6000, 2);
@@ -190,8 +185,7 @@ fn shared_flatpak_session_rolls_up_nvenc() {
         encoder: EncoderChoice::Auto,
         hdr: None,
     };
-    // 1280x720 for the same driver-config reason as
-    // nvenc_produces_annex_b_h264_bytes.
+    // 1280x720 for the same driver-config reason as above.
     let session =
         SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 1280, 720, cfg).expect("session");
     let (chosen_probe, _) = probe(Codec::H264, Some(EncoderChoice::Nvenc));

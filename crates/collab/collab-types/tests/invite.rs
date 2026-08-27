@@ -38,9 +38,7 @@ fn spec(
     }
 }
 
-// ---------------------------------------------------------------------
 // Attenuation: a child that DROPS a cap is valid + verifies.
-// ---------------------------------------------------------------------
 
 #[test]
 fn derived_token_may_drop_caps() {
@@ -73,9 +71,7 @@ fn derived_token_may_drop_caps() {
     assert!(!effective.caps.contains(&Verb::Write), "write was dropped");
 }
 
-// ---------------------------------------------------------------------
 // Attenuation: adding a cap the parent LACKS is rejected at mint.
-// ---------------------------------------------------------------------
 
 #[test]
 fn derived_token_cannot_add_a_cap_the_parent_lacks() {
@@ -103,9 +99,7 @@ fn derived_token_cannot_add_a_cap_the_parent_lacks() {
     );
 }
 
-// ---------------------------------------------------------------------
 // Raising the ROLE above the parent is a widening too.
-// ---------------------------------------------------------------------
 
 #[test]
 fn derived_token_cannot_raise_role() {
@@ -129,9 +123,7 @@ fn derived_token_cannot_raise_role() {
     assert!(matches!(err, InviteError::Widens(_)), "raising role must widen");
 }
 
-// ---------------------------------------------------------------------
 // A child may pin to ONE sub-resource; it may not unpin or repoint.
-// ---------------------------------------------------------------------
 
 #[test]
 fn sub_resource_pin_only_narrows() {
@@ -189,9 +181,7 @@ fn sub_resource_pin_only_narrows() {
     assert_eq!(same.sub_resource, Some(doc));
 }
 
-// ---------------------------------------------------------------------
 // An expired token is rejected at verification.
-// ---------------------------------------------------------------------
 
 #[test]
 fn expired_token_is_rejected() {
@@ -222,9 +212,7 @@ fn expired_token_is_rejected() {
     );
 }
 
-// ---------------------------------------------------------------------
 // A child may not outlive its parent's window.
-// ---------------------------------------------------------------------
 
 #[test]
 fn child_expiry_cannot_exceed_parent() {
@@ -266,9 +254,7 @@ fn child_expiry_cannot_exceed_parent() {
     assert_eq!(ok.not_after, Some(t(80)));
 }
 
-// ---------------------------------------------------------------------
 // Only the holder may attenuate; a non-holder is rejected.
-// ---------------------------------------------------------------------
 
 #[test]
 fn only_the_holder_may_attenuate() {
@@ -293,9 +279,7 @@ fn only_the_holder_may_attenuate() {
     assert_eq!(err, InviteError::NotHolder);
 }
 
-// ---------------------------------------------------------------------
 // A chain whose root is not a trusted authority is rejected.
-// ---------------------------------------------------------------------
 
 #[test]
 fn untrusted_root_is_rejected() {
@@ -316,11 +300,9 @@ fn untrusted_root_is_rejected() {
     );
 }
 
-// ---------------------------------------------------------------------
-// A forged wider child — re-signed with the delegator's real key so its
-// OWN signature is valid — is still caught by verify_chain's narrowing
-// check.
-// ---------------------------------------------------------------------
+// A forged wider child — re-signed with the delegator's real key so
+// its OWN signature is valid — is still caught by verify_chain's
+// narrowing check.
 
 #[test]
 fn forged_wider_child_is_caught_at_verification() {

@@ -1,17 +1,10 @@
 //! What the workspace overview is made of.
 //!
-//! A workspace in qOS is not primarily a region of screen space — it is a
-//! **room**: a host, a set of people, its own permissions and shared files.
-//! So the overview answers the questions a person actually has about
-//! rooms (which am I in and who else is, what is shared, how do I reach
-//! another one), not a count of windows and tab titles — a lot of text
-//! about the thing already on screen, saying nothing about the people or
-//! sharing that make a workspace a workspace.
-//!
-//! Everything below derives those answers from the authoritative
-//! [`WorkspaceTree`] as plain data, so the draw pass has no vocabulary of
-//! its own to drift with and the claims the screen makes can be asserted
-//! directly.
+//! A workspace in qOS is a **room** — a host, people, permissions,
+//! shared files — so the overview answers questions about rooms (who
+//! else is here, what is shared), not window/tab counts. Derived from
+//! the authoritative [`WorkspaceTree`] as plain data, so the draw pass
+//! has no vocabulary of its own to drift with.
 
 use crate::shell::state::{
     CapRole, Collaborator, Effect, Principal, Subject, UserId, Workspace, WorkspaceId,
@@ -62,8 +55,7 @@ impl OverviewView {
         &self.cards
     }
 
-    /// Activate the workspace behind the card at `idx`. Out-of-range indices
-    /// are ignored.
+    /// Out-of-range indices are ignored.
     pub fn click_card(&mut self, idx: usize, tree: &mut WorkspaceTree) {
         if let Some(card) = self.cards.get(idx) {
             tree.set_active(card.id);
@@ -71,7 +63,6 @@ impl OverviewView {
         }
     }
 
-    /// Whether the card at `idx` matches the currently active workspace.
     pub fn is_active(&self, idx: usize) -> bool {
         match (self.cards.get(idx), self.active) {
             (Some(card), Some(active)) => card.id == active,
@@ -90,80 +81,60 @@ impl Default for OverviewView {
 // Rooms: people, sharing, and where you are
 // ---------------------------------------------------------------------------
 
-/// One person's standing in a room.
-///
-/// The two facts are kept apart on purpose, because they answer
-/// different questions and the overview shows both: [`Self::role`] is
-/// what the room's capabilities say this person *may* do, and
-/// [`Self::present`] is whether they are here *now*. A member who has
-/// gone home is still a member; a surface that collapsed the two would
-/// either invent people on the screen or lose them from the roster.
+/// `role` and `present` are kept apart on purpose: role is what the
+/// room's capabilities say this person *may* do, present is whether
+/// they're here *now*. A member who has gone home is still a member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomPerson {
-    /// The principal the room's capabilities are written against.
     pub id: UserId,
-    /// What to call them. Their display name if this session has met
-    /// them, otherwise the principal itself — which is at least the
-    /// string you would revoke.
+    /// Display name if this session has met them, else the principal
+    /// itself — at least the string you would revoke.
     pub name: String,
     pub role: CapRole,
-    /// In this room right now, per the live roster.
     pub present: bool,
     /// The person sitting at this machine.
     pub is_you: bool,
 }
 
-/// One thing a room shares out, and who with.
-///
-/// "Shares out" means a capability naming a *resource* — a path, a
-/// document, a device — held by a person. Room membership is excluded:
-/// that is [`RoomCard::people`], and conflating the two would let the
-/// screen report "shared one file with Bob" as "Bob is a member".
+/// A capability naming a *resource* — a path, document, device — held
+/// by a person. Room membership is [`RoomCard::people`] instead, so
+/// "shared one file with Bob" can't collapse into "Bob is a member".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomShare {
-    /// What is shared, in the permission pane's own words — the two
-    /// surfaces read from `workspace_settings::scope_label` so a person
-    /// who revokes a share there recognises it here.
+    /// In `workspace_settings::scope_label`'s own words, so a revoke
+    /// there is recognisable here.
     pub what: String,
-    /// Who holds it, by display name.
     pub with: Vec<String>,
     /// Whether any holder may write, not just read.
     pub writable: bool,
 }
 
-/// A room, as the overview states it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomCard {
     pub id: WorkspaceId,
     pub name: String,
-    /// The room this session is in.
     pub is_current: bool,
-    /// Everyone the room's capabilities admit, owner first.
+    /// Owner first.
     pub people: Vec<RoomPerson>,
-    /// Everything the room shares out, most-shared first.
+    /// Most-shared first.
     pub shares: Vec<RoomShare>,
 }
 
 impl RoomCard {
-    /// How many members are in the room right now.
     pub fn present_count(&self) -> usize {
         self.people.iter().filter(|p| p.present).count()
     }
 
-    /// Members other than the person at this machine.
     pub fn others(&self) -> impl Iterator<Item = &RoomPerson> {
         self.people.iter().filter(|p| !p.is_you)
     }
 
-    /// Whether anyone but you can reach this room.
     pub fn is_private(&self) -> bool {
         self.others().next().is_none()
     }
 }
 
-/// Display name for a principal, from whoever this session has met.
-///
-/// Falls back to the principal itself rather than to a placeholder: a
+/// Falls back to the principal itself rather than a placeholder — a
 /// row labelled "Unknown" tells the reader nothing, while the raw
 /// subject is both true and the value a revoke would name.
 fn display_name(id: &UserId, ws: &Workspace, tree: &WorkspaceTree) -> String {
@@ -172,7 +143,6 @@ fn display_name(id: &UserId, ws: &Workspace, tree: &WorkspaceTree) -> String {
         .unwrap_or_else(|| id.clone())
 }
 
-/// The roster row for a principal, if this session has one.
 fn known_collaborator<'a>(
     id: &UserId,
     ws: &'a Workspace,
@@ -184,16 +154,14 @@ fn known_collaborator<'a>(
         .find(|c| &c.id == id)
 }
 
-/// Everyone the room admits, owner first, with presence folded in.
 pub fn room_people(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomPerson> {
     let me = local_user_id();
     ws.roster()
         .into_iter()
         .map(|(id, role)| RoomPerson {
             name: display_name(&id, ws, tree),
-            // Present means a live session said so. Being the local user
-            // is not evidence of being in *this* room — you are only in
-            // the one you are looking at.
+            // Being the local user isn't evidence of being in *this*
+            // room — you're only in the one you're looking at.
             present: ws.collaborators.iter().any(|c| c.id == id)
                 || (id == me && ws.id == tree.active),
             is_you: id == me,
@@ -203,12 +171,8 @@ pub fn room_people(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomPerson> {
         .collect()
 }
 
-/// Everything the room shares out, grouped by what is shared.
-///
-/// Grouping is by scope rather than by capability, because two grants on
-/// the same folder to two people are one share with two holders — which
-/// is how a person thinks about it and how the list stays short enough
-/// to read.
+/// Grouped by what is shared (scope, not capability): two grants on
+/// the same folder to two people are one share with two holders.
 pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
     use crate::shell::workspace_settings::scope_label;
     let now = Some(now_unix());
@@ -217,16 +181,12 @@ pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
         if !cap.is_live_at(now) || cap.effect != Effect::Grant {
             continue;
         }
-        // Room membership belongs to `room_people`, and an app's portal
-        // grant is not a share with a person — the overview's sharing
-        // question is about people.
         if cap.is_room_membership() || !cap.subject_is_person() {
             continue;
         }
         let holder = match &cap.subject {
             Subject::Principal(Principal::Person(p)) => p.clone(),
-            // A key-identified subject is the same person under their
-            // durable name; resolving it here is what stops one holder
+            // Resolving the durable name here stops one holder
             // appearing twice on the same share.
             Subject::User(key) => match Principal::person_from_key(*key) {
                 Principal::Person(p) => p,
@@ -255,7 +215,6 @@ pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
     out
 }
 
-/// The overview's model of every room, in tree order.
 pub fn room_cards(tree: &WorkspaceTree) -> Vec<RoomCard> {
     tree.workspaces
         .iter()
@@ -269,20 +228,15 @@ pub fn room_cards(tree: &WorkspaceTree) -> Vec<RoomCard> {
         .collect()
 }
 
-/// Who can reach this room, as one line.
-///
-/// This is the line that answers "what workspace with what people am I
-/// in". It names people while naming them still helps and counts them
-/// once it stops: a row reading "Shared with Ada, Bob, Cleo, Dara, Eve"
-/// is a wall of text where "Shared with Ada and 4 others" is a fact.
+/// Names people while it helps, counts once it stops: "Shared with
+/// Ada, Bob, Cleo, Dara, Eve" is a wall of text where "Shared with Ada
+/// and 4 others" is a fact.
 pub fn room_access_label(card: &RoomCard) -> String {
     let others: Vec<&RoomPerson> = card.others().collect();
     match others.len() {
         0 => {
             if card.people.is_empty() {
-                // No owner, no membership capability. Saying "private"
-                // would be a claim about a room that has recorded no
-                // access at all.
+                // No owner, no membership capability recorded at all.
                 "No members".to_string()
             } else {
                 "Private to you".to_string()
@@ -294,8 +248,7 @@ pub fn room_access_label(card: &RoomCard) -> String {
     }
 }
 
-/// How many things the room shares out, as one line. `None` when it
-/// shares nothing — the caller draws nothing rather than a zero.
+/// `None` when it shares nothing — the caller draws nothing rather than a zero.
 pub fn room_shares_label(card: &RoomCard) -> Option<String> {
     match card.shares.len() {
         0 => None,
@@ -304,8 +257,7 @@ pub fn room_shares_label(card: &RoomCard) -> Option<String> {
     }
 }
 
-/// Who is in the room *right now*, as one line. `None` when nobody is —
-/// including you, which is the case for every room you are not in.
+/// `None` when nobody is here, including you — every room you aren't in.
 pub fn room_presence_label(card: &RoomCard) -> Option<String> {
     let live: Vec<&RoomPerson> = card.people.iter().filter(|p| p.present).collect();
     let others: Vec<&&RoomPerson> = live.iter().filter(|p| !p.is_you).collect();

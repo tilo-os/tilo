@@ -1,9 +1,7 @@
-//! Tonemap shader spot-check.
-//!
-//! Two tracks: a CPU reference pass, and shader validation via naga
-//! (parse + type/binding check) rather than a real GPU dispatch, since
-//! fetching an adapter costs the OffscreenRenderer bring-up. Both paths
-//! use the same PQ math, so together they cover the pipeline.
+//! Tonemap shader spot-check: a CPU reference pass plus shader validation
+//! via naga (parse + type/binding check) rather than a real GPU dispatch,
+//! since fetching an adapter costs the OffscreenRenderer bring-up. Both
+//! paths use the same PQ math.
 
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
@@ -15,13 +13,11 @@ fn p010(code: u16) -> u16 {
     code << 6
 }
 
-/// Build a 4×4 P010 luma plane at the given 10-bit code with neutral
-/// chroma. Returns (y, uv).
+/// A 4×4 P010 luma plane at the given 10-bit code with neutral chroma.
 fn solid_p010(luma_code: u16, width: u32, height: u32) -> (Vec<u16>, Vec<u16>) {
     let y = vec![p010(luma_code); (width * height) as usize];
-    // Neutral chroma at 512 (10-bit mid). UV plane is interleaved,
-    // 4:2:0 subsampled → width/2 * height/2 pixel-pairs, 2 samples
-    // per pair.
+    // Neutral chroma at 512 (10-bit mid); UV is interleaved and 4:2:0
+    // subsampled → width/2 * height/2 pairs, 2 samples per pair.
     let uv = vec![p010(512); ((width / 2) * (height / 2) * 2) as usize];
     (y, uv)
 }
@@ -63,8 +59,7 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
         assert_eq!(chunk[3], 0xFF, "alpha for pixel {i} not full");
     }
 
-    // The first pixel should be near-gray (R ≈ G ≈ B) because chroma
-    // is neutral.
+    // First pixel should be near-gray (R ≈ G ≈ B) since chroma is neutral.
     let r = rgba[0];
     let g = rgba[1];
     let b = rgba[2];
@@ -140,8 +135,7 @@ fn cpu_tonemap_peak_saturates_toward_white() {
         },
     );
     let r = rgba[0];
-    // Peak PQ (~10 000 nits) tone-mapped down to 100-nit peak
-    // saturates hard toward white after the Hable curve.
+    // Peak PQ (~10 000 nits) mapped to a 100-nit peak saturates toward white.
     assert!(r > 200, "PQ peak should saturate near white, got R={r}");
 }
 

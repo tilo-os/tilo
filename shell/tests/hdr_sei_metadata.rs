@@ -1,22 +1,11 @@
-//! End-to-end HDR10 SEI metadata verification.
-//!
-//! Constructs a solid-red HDR frame, encodes it with the first
-//! available HEVC hardware backend, and scans the resulting Annex-B
-//! byte stream for the two HDR10 SEI messages our encoder attaches:
-//!
-//! - HEVC Prefix SEI NAL (NAL unit type 39, extracted from the two-
-//!   byte NAL header via `(byte0 >> 1) & 0x3F`) containing SEI payload
-//!   type 137 = `mastering_display_colour_volume` (SMPTE ST 2086).
-//! - Same NAL kind carrying SEI payload type 144 =
-//!   `content_light_level_info` (CTA-861.3).
-//!
-//! Self-skips if neither hardware HEVC backend is available on this
-//! host — the check is meaningful only when there's a real encoder to
-//! drive.
-//!
-//! Scanning raw NALs is more portable than round-tripping through a
-//! decoder: it works with any libavcodec build that emits HEVC (which
-//! every ffmpeg-8 build does), including builds without a matching
+//! End-to-end HDR10 SEI metadata verification: encodes a solid-red HDR
+//! frame with the first available HEVC hardware backend and scans the
+//! Annex-B stream for the two HDR10 SEI messages our encoder attaches —
+//! HEVC Prefix SEI NAL (type 39) carrying payload type 137
+//! (`mastering_display_colour_volume`, SMPTE ST 2086) and payload type
+//! 144 (`content_light_level_info`, CTA-861.3). Self-skips if neither
+//! hardware backend is available. Scanning raw NALs works with any
+//! libavcodec build that emits HEVC, including ones with no matching
 //! decoder linked in.
 
 #![cfg(any(feature = "vaapi", feature = "nvenc"))]
@@ -31,16 +20,14 @@ const SEI_CONTENT_LIGHT_LEVEL: u8 = 144;
 
 /// HEVC PREFIX_SEI_NUT = 39. In the 2-byte NAL header the first byte
 /// carries `forbidden_zero_bit(1) | nal_unit_type(6) | nuh_layer_id_high(1)`,
-/// MSB-first. `(byte0 >> 1) & 0x3F` extracts `nal_unit_type` independent
-/// of the layer-id upper bit.
+/// MSB-first, so `(byte0 >> 1) & 0x3F` extracts `nal_unit_type`
+/// independent of the layer-id upper bit.
 const HEVC_NAL_TYPE_PREFIX_SEI: u8 = 39;
 
-/// Extract the 6-bit HEVC NAL unit type from a NAL header's first byte.
 fn hevc_nal_type(byte0: u8) -> u8 {
     (byte0 >> 1) & 0x3F
 }
 
-/// Solid-red RGBA test frame.
 fn red_frame(w: u32, h: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for _ in 0..(w * h) {
@@ -49,8 +36,7 @@ fn red_frame(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// Try to find a working HEVC Main10 backend on this host. Preference
-/// order matches the runtime probe: NVENC first, then VA-API.
+/// Preference order matches the runtime probe: NVENC first, then VA-API.
 fn pick_hevc_backend() -> Option<EncoderKind> {
     #[cfg(feature = "nvenc")]
     {
@@ -73,9 +59,8 @@ fn pick_hevc_backend() -> Option<EncoderKind> {
     None
 }
 
-/// Walk `bytes` looking for Annex-B NAL unit boundaries; returns the
-/// index of every byte immediately after a start code (i.e. the first
-/// byte of each NAL header).
+/// Index of every byte immediately after an Annex-B start code, i.e. the
+/// first byte of each NAL header.
 fn nal_header_offsets(bytes: &[u8]) -> Vec<usize> {
     let mut offsets = Vec::new();
     let mut i = 0;
@@ -97,32 +82,24 @@ fn nal_header_offsets(bytes: &[u8]) -> Vec<usize> {
     offsets
 }
 
-/// Given the byte offset of a prefix SEI NAL header in an Annex-B
-/// stream, return `Some(payload_type)` for the first SEI message
-/// carried inside, or `None` if the NAL isn't a prefix SEI or is
-/// truncated. Reads only the first payload_type; each SEI NAL can
-/// carry multiple messages but our encoder never batches them.
+/// `Some(payload_type)` for the first SEI message in the prefix SEI NAL
+/// at this offset — our encoder never batches multiple messages per NAL.
 ///
-/// SEI RBSP layout per H.265 § 7.3.5:
-/// 1. NAL header (2 bytes)
-/// 2. payload_type: zero or more 0xff continuation bytes + final byte;
-///    the accumulated value is payload_type.
-/// 3. payload_size: same encoding.
-/// 4. payload bytes.
+/// SEI RBSP layout per H.265 § 7.3.5: NAL header (2 bytes), payload_type
+/// (0xff continuation bytes + final byte, summed), payload_size (same
+/// encoding), then payload bytes.
 fn sei_payload_types_at(bytes: &[u8], nal_offset: usize) -> Vec<u8> {
     let mut out = Vec::new();
-    // Need at least NAL header (2 bytes) + one payload_type byte.
     if nal_offset + 2 >= bytes.len() {
         return out;
     }
     if hevc_nal_type(bytes[nal_offset]) != HEVC_NAL_TYPE_PREFIX_SEI {
         return out;
     }
-    // Skip the 2-byte NAL header. Iterate SEI messages until a byte
-    // pattern that isn't a legitimate continuation (or we run out).
+    // Skip the 2-byte NAL header, then iterate SEI messages until a byte
+    // pattern that isn't a legitimate continuation.
     let mut cur = nal_offset + 2;
     while cur < bytes.len() {
-        // Accumulate payload_type.
         let mut payload_type: u32 = 0;
         while cur < bytes.len() && bytes[cur] == 0xff {
             payload_type += 0xff;
@@ -133,7 +110,6 @@ fn sei_payload_types_at(bytes: &[u8], nal_offset: usize) -> Vec<u8> {
         }
         payload_type += bytes[cur] as u32;
         cur += 1;
-        // Accumulate payload_size.
         let mut payload_size: u32 = 0;
         while cur < bytes.len() && bytes[cur] == 0xff {
             payload_size += 0xff;
@@ -144,15 +120,13 @@ fn sei_payload_types_at(bytes: &[u8], nal_offset: usize) -> Vec<u8> {
         }
         payload_size += bytes[cur] as u32;
         cur += 1;
-        // Record the payload_type if it fits in a u8 (all HEVC-defined
-        // payload types do).
+        // All HEVC-defined payload types fit in a u8.
         if payload_type <= u8::MAX as u32 {
             out.push(payload_type as u8);
         }
-        // Skip payload bytes.
         cur = cur.saturating_add(payload_size as usize);
-        // A trailing rbsp_trailing_bits byte closes the SEI; if we
-        // land on 0x80 or byte close to a NAL boundary, stop.
+        // A trailing rbsp_trailing_bits byte closes the SEI: stop on 0x80 or
+        // near a NAL boundary.
         if cur >= bytes.len() || bytes[cur] == 0x80 {
             break;
         }
@@ -202,7 +176,6 @@ fn hdr10_sei_survives_encode() {
     }
     assert!(!accumulated.is_empty(), "hevc backend produced no bytes");
 
-    // Walk every NAL and inspect the SEI prefix ones.
     let nal_offsets = nal_header_offsets(&accumulated);
     let mut seen_mastering = false;
     let mut seen_content_light = false;
@@ -234,10 +207,8 @@ fn hdr10_sei_survives_encode() {
 #[test]
 #[ignore = "requires a hardware HEVC Main10 encoder; self-skips otherwise"]
 fn sdr_h264_pipeline_never_emits_hdr_sei() {
-    // Sanity: on the SDR H.264 path we should not see any HDR SEI —
-    // the encoder ignores hdr metadata (init.hdr is None). Proves the
-    // SEI attachment is gated on the config, not a stale side-data
-    // attachment leaking across configs.
+    // Sanity: the SDR H.264 path should show no HDR SEI (init.hdr is None) —
+    // proves SEI attachment is gated on config, not a stale side-data leak.
     #[cfg(feature = "nvenc")]
     let kind = {
         use shell::collab::encoder::nvenc;
@@ -275,10 +246,8 @@ fn sdr_h264_pipeline_never_emits_hdr_sei() {
             .expect("h264 encode");
         accumulated.extend_from_slice(&out);
     }
-    // H.264 uses a different NAL byte pattern (SPS = 0x67, SEI = 0x06)
-    // so the HEVC-specific `sei_payload_types_at` search will simply
-    // find nothing. The assertion is that no HDR-typed payload turns
-    // up even if the scanner had been reused for H.264.
+    // H.264 uses different NAL byte patterns (SPS=0x67, SEI=0x06), so no
+    // HDR-typed payload turns up even if the scanner were reused for H.264.
     let offsets = nal_header_offsets(&accumulated);
     for offset in offsets {
         let types = sei_payload_types_at(&accumulated, offset);

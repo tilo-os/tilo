@@ -1,12 +1,10 @@
 //! Does a `DestIn` mask layer cost more than a plain clip at viewport size?
 //!
-//! The wheel disc wants one: masking the whole disc with a vertical fade
-//! is the exact way to say "this object dissolves at the top and bottom",
-//! and it makes the body a single smooth gradient instead of a stack of
-//! concentric strokes. Whether it can have one is a question about vello,
-//! which sizes a per-tile blend buffer for everything under a blend layer.
-//!
-//! Times both shapes at the size the compositor actually runs at.
+//! The wheel disc wants one — masking the whole disc with a vertical fade
+//! makes the body a single smooth gradient instead of concentric strokes —
+//! but whether it can have one depends on vello, which sizes a per-tile
+//! blend buffer for everything under a blend layer. Times both shapes at
+//! the compositor's actual run size.
 
 use std::time::Instant;
 
@@ -86,8 +84,7 @@ fn dest_in_mask_layer_is_affordable_at_viewport_size() {
     masked.pop_layer();
     masked.pop_layer();
 
-    // Warm the pipeline so the first-render setup is not attributed to
-    // either shape.
+    // Warm the pipeline so first-render setup isn't attributed to either shape.
     let _ = renderer.render(&plain, Color::BLACK);
 
     let t0 = Instant::now();

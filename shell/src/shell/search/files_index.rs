@@ -1,17 +1,11 @@
 //! Tantivy-backed content index for the files provider.
 //!
 //! Owns a persistent on-disk index at `~/.cache/qos/files-index` with BM25
-//! scoring over file bodies. A background walker (started at construction)
-//! rebuilds only what changed since the last commit, using each doc's
-//! stored `mtime` to skip unchanged files.
-//!
-//! A small LRU query cache absorbs repeated keystrokes; the writer commits
-//! every [`COMMIT_BATCH`] docs or [`COMMIT_INTERVAL_SECS`] seconds,
-//! whichever is first, to amortise the tantivy commit cost.
-//!
-//! Files over [`MAX_FILE_BYTES`] are indexed by header only (still
-//! contributing a filename-only doc beyond that); [`BINARY_EXTS`] and the
-//! name index's skip-dir list are excluded entirely.
+//! scoring over file bodies. A background walker rebuilds only what
+//! changed since the last commit, using each doc's stored `mtime`. A small
+//! LRU query cache absorbs repeated keystrokes; the writer commits every
+//! [`COMMIT_BATCH`] docs or [`COMMIT_INTERVAL_SECS`] seconds, whichever is
+//! first. Files over [`MAX_FILE_BYTES`] are indexed by header only.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -27,8 +21,7 @@ use tantivy::schema::{FAST, Field, INDEXED, STORED, STRING, Schema, TEXT, Value}
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use walkdir::WalkDir;
 
-/// Skip these directory names anywhere in the tree — same list the name
-/// index uses; hoisted here so the two agree without a runtime coupling.
+/// Same list the name index uses, hoisted here so the two agree.
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -58,35 +51,22 @@ const BINARY_EXTS: &[&str] = &[
 ];
 
 const MAX_DEPTH: usize = 8;
-/// Bytes of each file's body we index. Capping this low is the single
-/// biggest lever on total index size, which bounds tantivy's background
-/// merge memory: a 1 MB cap over a 50k-file home produced a multi-GB merge
-/// spike that OOM'd the compositor ~90s after boot; 16 KB keeps relevance
-/// for real text while holding merges small. Peak merge memory scales with
-/// `MAX_FILE_BYTES * MAX_DOCS_BEFORE_MERGE`, so both are kept small
-/// deliberately.
+/// Bytes of each file's body indexed — the biggest lever on tantivy's
+/// background merge memory: a 1 MB cap over a 50k-file home produced a
+/// multi-GB merge spike that OOM'd the compositor ~90s after boot.
 const MAX_FILE_BYTES: u64 = 16_384;
 const MAX_ENTRIES: usize = 50_000;
 const COMMIT_BATCH: usize = 512;
 const COMMIT_INTERVAL_SECS: u64 = 3;
 const QUERY_CACHE_CAPACITY: usize = 32;
-/// Cap on docs per segment before the merge policy stops growing it.
-/// Without a cap, tantivy's default `LogMergePolicy` eventually merges
-/// everything into one segment and reads the whole index into memory at
-/// once. With `MAX_FILE_BYTES` at 16 KB this caps a merged segment's
-/// indexed text at ~32 MB, keeping background-merge memory well under the
-/// OOM threshold.
+/// Cap on docs per segment — without one, tantivy's default merge policy
+/// eventually reads the whole index into memory. Caps a segment's text at ~32 MB.
 const MAX_DOCS_BEFORE_MERGE: usize = 2_000;
 /// Minimum gap between reader-reload calls — reload does disk I/O, and
-/// per-keystroke reloads produced visible palette jitter. Under a second is
-/// imperceptible for content freshness (the walker commits in batches
-/// anyway), and keeps the query hot-path allocation-and-syscall-free on
-/// cache misses.
+/// per-keystroke reloads produced visible palette jitter.
 const READER_RELOAD_INTERVAL_MS: u64 = 500;
-/// Tantivy writer heap for the single indexing thread. Bounds the
-/// in-memory buffer before each flush; smaller means smaller segments
-/// (and smaller merges). 15 MB comfortably fits the `COMMIT_BATCH` doc
-/// batches we push.
+/// Tantivy writer heap for the single indexing thread; smaller means
+/// smaller segments and merges. Comfortably fits a [`COMMIT_BATCH`] batch.
 const WRITER_HEAP_BYTES: usize = 15_000_000;
 
 /// One row of tantivy output.
@@ -104,8 +84,7 @@ struct Fields {
     mtime: Field,
 }
 
-/// LRU query cache. Small keys, small values (Vec<ContentHit>), so a
-/// bare VecDeque + linear scan is cheaper than a real LRU crate.
+/// Small keys/values, so a bare VecDeque + linear scan beats a real LRU crate.
 struct QueryCache {
     entries: VecDeque<(String, usize, Vec<ContentHit>)>,
     capacity: usize,
@@ -140,25 +119,21 @@ impl QueryCache {
     }
 }
 
-/// Public façade over the tantivy index. Cheap to construct — heavy
-/// work runs on background threads.
+/// Public façade over the tantivy index; cheap to construct.
 pub struct FilesIndex {
     fields: Fields,
     reader: IndexReader,
     query_parser: QueryParser,
     cache: Arc<Mutex<QueryCache>>,
-    /// Timestamp of the last `reader.reload()`; rate-limited to one reload
-    /// per [`READER_RELOAD_INTERVAL_MS`].
+    /// Rate-limited to one reload per [`READER_RELOAD_INTERVAL_MS`].
     last_reload: Arc<Mutex<Option<Instant>>>,
-    /// Kept alive so the writer thread doesn't drop while we're using
-    /// the reader.
+    /// Kept alive so the writer thread doesn't drop while in use.
     _writer_handle: Arc<RwLock<Option<thread::JoinHandle<()>>>>,
 }
 
 impl FilesIndex {
-    /// Open the on-disk index at `~/.cache/qos/files-index` (creating it if
-    /// missing) and kick off a background walker. Returns immediately; the
-    /// reader can answer queries as soon as the first batch commits.
+    /// Open (or create) the index and kick off a background walker.
+    /// Returns immediately; queries answer once the first batch commits.
     pub fn open_or_create(home: &Path) -> Result<Self, tantivy::error::TantivyError> {
         let dir = files_index_dir()?;
         fs::create_dir_all(&dir).ok();
@@ -178,8 +153,7 @@ impl FilesIndex {
         let query_parser = QueryParser::for_index(&index, vec![fields.stem, fields.body]);
         let cache = Arc::new(Mutex::new(QueryCache::new(QUERY_CACHE_CAPACITY)));
 
-        // Background walker thread. Owns the writer for its lifetime so
-        // the reader on the main thread only ever needs a &IndexReader.
+        // Owns the writer for its lifetime; the main thread only needs a &IndexReader.
         let writer_handle = Arc::new(RwLock::new(None));
         {
             let writer_handle = Arc::clone(&writer_handle);
@@ -193,19 +167,14 @@ impl FilesIndex {
             let handle = thread::Builder::new()
                 .name("qos-files-index-walker".into())
                 .spawn(move || {
-                    // Single indexing thread with a bounded heap, plus a
-                    // merge policy that caps segment size — together these
-                    // keep the walker's peak memory small (see
-                    // MAX_FILE_BYTES / MAX_DOCS_BEFORE_MERGE for the
-                    // measured numbers).
+                    // Bounded heap + a merge policy capping segment size —
+                    // see MAX_FILE_BYTES / MAX_DOCS_BEFORE_MERGE.
                     let Ok(mut writer) = index.writer_with_num_threads(1, WRITER_HEAP_BYTES) else {
                         return;
                     };
                     let mut merge_policy = tantivy::merge_policy::LogMergePolicy::default();
                     merge_policy.set_max_docs_before_merge(MAX_DOCS_BEFORE_MERGE);
                     writer.set_merge_policy(Box::new(merge_policy));
-                    // Load path → indexed-mtime snapshot to decide which
-                    // files need re-indexing.
                     let existing = load_mtime_snapshot(&index, path, mtime).unwrap_or_default();
                     walk_and_index(
                         &home,
@@ -238,8 +207,7 @@ impl FilesIndex {
         })
     }
 
-    /// Run a query against the current index snapshot. Blocks; returns up
-    /// to `limit` hits sorted by BM25 score descending.
+    /// Blocks; returns up to `limit` hits sorted by BM25 score descending.
     pub fn query(&self, needle: &str, limit: usize) -> Vec<ContentHit> {
         if needle.trim().is_empty() {
             return Vec::new();
@@ -290,9 +258,8 @@ impl FilesIndex {
                 snippet: None,
             });
         }
-        // Only cache non-empty results — an empty response often just
-        // means the walker hasn't reached these files yet, and caching it
-        // would pin a stale miss until the next explicit invalidate.
+        // Only cache non-empty results — an empty one often just means the
+        // walker hasn't reached these files yet.
         if !out.is_empty() {
             if let Ok(mut cache) = self.cache.lock() {
                 cache.put(needle.to_string(), limit, out.clone());
@@ -303,9 +270,7 @@ impl FilesIndex {
 }
 
 fn files_index_dir() -> Result<PathBuf, tantivy::error::TantivyError> {
-    // QOS_FILES_INDEX_DIR is honoured first so tests can point at a
-    // scratch dir without racing the real ~/.cache. Production reads
-    // dirs::cache_dir() and lands the index under qos/files-index.
+    // Honoured first so tests can point at a scratch dir, not the real ~/.cache.
     if let Some(explicit) = std::env::var_os("QOS_FILES_INDEX_DIR") {
         return Ok(PathBuf::from(explicit));
     }
@@ -354,13 +319,11 @@ fn load_mtime_snapshot(
     Ok(out)
 }
 
-/// Read at most `cap` bytes from the head of `path` into a fresh buffer.
-/// Never allocates more than `cap` regardless of the file's real size —
-/// `fs::read` would allocate the *entire* file first and truncate after,
-/// which ballooned the walker to gigabytes on a single large non-binary
-/// file (a multi-GB log/json/csv the extension filter doesn't catch).
-/// `known_len` only sizes the initial `Vec`; it is not trusted as an upper
-/// bound (the file may have grown).
+/// Read at most `cap` bytes from the head of `path`. Never allocates more
+/// than `cap` regardless of file size — `fs::read` would allocate the
+/// *entire* file first, which ballooned the walker to gigabytes on a
+/// single large non-binary file. `known_len` only sizes the initial `Vec`;
+/// it is not trusted as an upper bound.
 fn read_head(path: &Path, known_len: u64, cap: u64) -> Option<Vec<u8>> {
     let reserve = known_len.min(cap) as usize;
     let file = fs::File::open(path).ok()?;
@@ -489,12 +452,9 @@ mod tests {
 
     #[test]
     fn read_head_caps_allocation_regardless_of_file_size() {
-        // Must never return more than `cap` bytes, even when `known_len`
-        // understates the real size (e.g. a file that grew after `stat`).
         let dir = std::env::temp_dir().join(format!("qos-read-head-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.log");
-        // 5 MiB file; cap at 16 KiB.
         let big = vec![b'a'; 5 * 1024 * 1024];
         fs::write(&path, &big).unwrap();
 
@@ -505,8 +465,7 @@ mod tests {
             cap as usize,
             "read_head must stop at the cap for a large file",
         );
-        // Under-reporting known_len (0) still caps — the bound comes from
-        // `take`, not `known_len`.
+        // Under-reporting known_len (0) still caps — bound is `take`, not `known_len`.
         let out2 = read_head(&path, 0, cap).unwrap();
         assert_eq!(
             out2.len(),
@@ -539,8 +498,7 @@ mod tests {
         let mut c = QueryCache::new(2);
         c.put("a".to_string(), 10, Vec::new());
         c.put("b".to_string(), 10, Vec::new());
-        // Re-put "a" — should not double-insert, and eviction of the
-        // oldest on the next put should drop "b" (not "a").
+        // Re-put "a": the next eviction should drop "b", not "a".
         c.put("a".to_string(), 10, Vec::new());
         c.put("c".to_string(), 10, Vec::new());
         assert!(c.get("a", 10).is_some());
@@ -551,10 +509,9 @@ mod tests {
 
 #[cfg(test)]
 mod content_index_integration {
-    //! End-to-end coverage for the tantivy content index against a
-    //! `tempdir`. Runs with `QOS_FILES_INDEX_DIR` overridden so the shared
-    //! `~/.cache/qos/files-index` isn't touched; [`serial_test::serial`]
-    //! serializes the tests so the env-var mutation can't race.
+    //! End-to-end coverage against a `tempdir`, with `QOS_FILES_INDEX_DIR`
+    //! overridden so the shared cache isn't touched; `serial` keeps the
+    //! env-var mutation from racing.
     use super::*;
     use serial_test::serial;
     use std::fs;
@@ -622,8 +579,6 @@ mod content_index_integration {
     fn walks_home_and_finds_content_match() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        // QOS_FILES_INDEX_DIR redirect so the on-disk index lives under
-        // tmp/.cache/qos/files-index, not the developer's real ~/.cache.
         let cache_dir = tmp.path().join(".cache/qos/files-index");
         fs::create_dir_all(&cache_dir).ok();
         unsafe {
@@ -643,7 +598,6 @@ mod content_index_integration {
         fs::write(home.join("binary.png"), &[0u8, 1, 2, 3]).unwrap();
 
         let index = FilesIndex::open_or_create(home).expect("open index");
-        // Wait for the walker + first commit.
         let ready = wait_for(
             || {
                 let hits = index.query("registry BM25", 10);
@@ -660,7 +614,7 @@ mod content_index_integration {
             hits
         );
 
-        // Binary file must NOT surface — we filter by extension.
+        // Binary must NOT surface — filtered by extension.
         let hits = index.query("binary", 5);
         assert!(
             !hits.iter().any(|h| h.path.ends_with("binary.png")),
@@ -669,12 +623,8 @@ mod content_index_integration {
         );
     }
 
-    /// Latency budget for a keystroke through the tantivy path: a
-    /// cache-miss query must land well under the perceived-instant
-    /// threshold (100 ms is the informal one-frame budget; asserted at
-    /// 200 ms for CI jitter), and a cache-hit query must be sub-millisecond
-    /// so repeating a prior needle (e.g. backspace) doesn't re-pay the
-    /// reader-reload/search chain.
+    /// A cache-miss query must land under 200 ms (CI jitter budget); a
+    /// cache-hit must be sub-millisecond.
     #[test]
     #[serial]
     fn query_latency_stays_inside_keystroke_budget() {
@@ -696,9 +646,8 @@ mod content_index_integration {
         }
 
         let idx = FilesIndex::open_or_create(home).unwrap();
-        // Walker's initial commit + reader-refresh can take a second or two
-        // on cold disk (especially CI); the perf assertion below only
-        // kicks in once the index is hot, so a slow walker doesn't skew it.
+        // The perf assertion below kicks in only once the index is hot, so
+        // a slow initial walker doesn't skew it.
         let ready = wait_for(
             || !idx.query("keyword", 10).is_empty(),
             Duration::from_secs(30),
@@ -748,12 +697,8 @@ mod content_index_integration {
             assert!(ready, "first pass didn't index within 15s");
         }
 
-        // Second pass — mtime unchanged, walker should skip both files. We
-        // can't observe "skipped" directly; the existing docs staying
-        // queryable proves the reopen path doesn't wipe the index.
+        // mtime unchanged; prove docs stay queryable, since "skipped" isn't observable.
         let idx = FilesIndex::open_or_create(home).unwrap();
-        // The reopened index reader might need a tick before it sees
-        // the previous commit — poll briefly.
         let ready = wait_for(
             || !idx.query("alpha", 10).is_empty(),
             Duration::from_secs(15),

@@ -1,20 +1,21 @@
 //! What a sandboxed app's environment actually contains.
 //!
-//! The app's environment is meant to be a closed set — a list of variables the
-//! launcher puts there, beside the binds that make each of them mean
-//! something. `bwrap` does not do that by default: it hands the child whatever
-//! the parent was carrying, which here is the compositor's own environment.
+//! The app's environment is meant to be a closed set — a list of
+//! variables the launcher puts there, beside the binds that make each
+//! mean something. `bwrap` doesn't do that by default: it hands the
+//! child whatever the parent was carrying, the compositor's own
+//! environment.
 //!
 //! These tests start the real thing under `bwrap`, through the same
-//! `run_with_captured` path the launcher uses, and read the answer out of the
-//! process's own `environ` after `exec`. **They deliberately do not assert on
-//! the argv.** An argv containing `--clearenv` is the launcher's intention; a
-//! `--setenv` spliced ahead of it leaves the intention intact and the
-//! environment full. The environment the process has is the boundary.
+//! `run_with_captured` path the launcher uses, and read the answer out
+//! of the process's own `environ` after `exec`. **They deliberately do
+//! not assert on the argv** — a `--setenv` spliced ahead of
+//! `--clearenv` leaves the intention intact and the environment full.
+//! The environment the process has is the boundary.
 //!
-//! Not `#[ignore]`d, for the reason `room_confinement.rs` gives: bwrap is how
-//! a qOS app runs at all, so a machine that cannot run these cannot run the
-//! product.
+//! Not `#[ignore]`d, for the reason `room_confinement.rs` gives: bwrap
+//! is how a qOS app runs at all, so a machine that can't run these
+//! can't run the product.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,14 +25,13 @@ use launcher::run::{RunOptions, run_with_captured};
 
 const PACKAGE: &str = "dev.qos.envtest";
 
-/// A variable name no part of qOS sets, so its presence inside the sandbox can
-/// only mean one thing: it walked in from the parent.
+/// A variable name no part of qOS sets, so its presence inside the
+/// sandbox can only mean one thing: it walked in from the parent.
 const MARKER: &str = "QOS_ENV_LEAK_MARKER";
 
-/// Stand-ins for the compositor's own wiring. Real names, each something the
-/// session genuinely sets and an app genuinely must not be handed: the
-/// privileged clipboard socket, the local collaboration broker, and the user's
-/// identity file.
+/// Stand-ins for the compositor's own wiring: the privileged clipboard
+/// socket, the local collaboration broker, and the user's identity
+/// file — real names an app genuinely must not be handed.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("QOS_WAYLAND_PRIVILEGED", "wayland-priv-9"),
     ("QUICK_COLLAB_SOCK", "/run/user/1000/qos-collab.sock"),
@@ -87,9 +87,8 @@ fn manifest() -> MinimalManifest {
     }
 }
 
-/// Resolved on `PATH` rather than at a fixed `/usr/bin/bwrap`, because the
-/// distro decides where it lives and a test that assumes one layout fails on
-/// machines where nothing is wrong.
+/// Resolved on `PATH` rather than at a fixed `/usr/bin/bwrap`, since
+/// the distro decides where it lives.
 fn bwrap() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
@@ -104,9 +103,9 @@ fn bwrap() -> PathBuf {
         })
 }
 
-/// Variables set on *this* process for the duration of one test, and put back
-/// afterwards. What the launcher is carrying when it builds the launch is the
-/// whole subject here, so the fixture has to be able to plant it.
+/// Variables set on *this* process for the duration of one test, put
+/// back afterwards — what the launcher carries when it builds the
+/// launch is the whole subject here.
 struct ParentEnv {
     previous: Vec<(String, Option<std::ffi::OsString>)>,
 }
@@ -209,10 +208,10 @@ fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
 
 /// The app's environment is a closed set, not a filtered one.
 ///
-/// Stronger than naming variables that must be absent: a variable arriving
-/// some other way fails this even though nobody thought to name it — which is
-/// the point, since the leak this closes was exactly a variable nobody had
-/// thought of.
+/// Stronger than naming variables that must be absent: a variable
+/// arriving some other way fails this even though nobody named it —
+/// the point, since the leak this closes was exactly a variable nobody
+/// had thought of.
 #[test]
 #[serial_test::serial(process_env)]
 fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
@@ -227,8 +226,8 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
     ]);
 
     // What the launcher gives an app: `PATH` and the allowlist from
-    // `push_clean_environment`, plus one set beside each bind that makes it
-    // reachable.
+    // `push_clean_environment`, plus one set beside each bind that makes
+    // it reachable.
     let mut allowed: Vec<String> = vec![
         "PATH".to_string(),
         // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
@@ -244,8 +243,8 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         "QOS_WORKSPACE_ROOTS".to_string(),
         "QOS_PARTICIPATION".to_string(),
         "QOS_CLI_COMMAND".to_string(),
-        // The egress gate and the proxy variables naming it. Absent for this
-        // fixture, which declares `net = "off"`, but part of the set.
+        // The egress gate and proxy variables naming it. Absent here (this
+        // fixture declares `net = "off"`), but part of the set.
         "QOS_NET_GATE".to_string(),
         "HTTPS_PROXY".to_string(),
         "HTTP_PROXY".to_string(),
@@ -288,9 +287,9 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
     );
 }
 
-/// The user's language crosses the boundary, because it is the user's and not
-/// the session's. Clearing the environment without putting the locale back
-/// would leave every app in the C locale.
+/// The user's language crosses the boundary, since it's the user's,
+/// not the session's — clearing the environment without putting the
+/// locale back would leave every app in the C locale.
 #[test]
 #[serial_test::serial(process_env)]
 fn the_users_locale_is_carried_across_explicitly() {
@@ -308,9 +307,9 @@ fn the_users_locale_is_carried_across_explicitly() {
 }
 
 /// `PATH` inside the sandbox is the sandbox's, not the session's: the
-/// inherited one named host directories that are not in the namespace, and
-/// could name a writable directory of the user's, which would decide which
-/// binary the app's own `exec` resolves to.
+/// inherited one named host directories outside the namespace, and
+/// could name a writable directory that decides which binary the
+/// app's `exec` resolves to.
 #[test]
 #[serial_test::serial(process_env)]
 fn path_is_the_sandboxes_own() {
@@ -327,10 +326,9 @@ fn path_is_the_sandboxes_own() {
     );
 }
 
-/// What the session asked its applications to say out loud crosses too:
-/// without `RUST_LOG` a sandboxed app falls back to errors only, and the lines
-/// it writes about itself are the only account anything outside its window has
-/// of what happened inside it.
+/// What the session asked its applications to say out loud crosses
+/// too: without `RUST_LOG` a sandboxed app falls back to errors only,
+/// its only account of what happened inside it.
 #[test]
 #[serial_test::serial(process_env)]
 fn the_sessions_logging_preference_reaches_the_app() {

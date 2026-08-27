@@ -1,24 +1,15 @@
 //! The broker's outbound half: handing a locally-authored payload to the
-//! peer network, once, for both collaboration transports (the legacy
-//! JSON dialect and the native Cap'n Proto one).
-//!
-//! It exists because there used to be two answers to "does a local edit
-//! leave this host": the JSON reader loop republished every increment
-//! over libp2p, the capnp server republished nothing — so everything a
-//! sandboxed app (which dials capnp) typed stopped silently at the
-//! machine boundary, indistinguishable from nobody typing.
+//! peer network, once, for both collaboration transports — one answer
+//! to "does a local edit leave this host", not one per transport.
 //!
 //! A publish is addressed by the same [`CrdtRoute`] the caller handed to
-//! the local fanout, rebuilt remotely through the same
-//! [`CrdtRoute::delivers_to`]. Scope follows the payload, not the
-//! transport: documents publish the route verbatim, records included;
-//! presence reaches the room only, since the wire frame has no record
-//! field — "who else is here" is a room fact, not a document one.
-//! Beyond that, this module never widens or narrows a route it is given.
+//! the local fanout, rebuilt remotely through [`CrdtRoute::delivers_to`].
+//! Scope follows the payload, not the transport: documents publish the
+//! route verbatim, records included; presence reaches the room only,
+//! since the wire frame has no record field.
 //!
-//! Every refusal to publish is logged via [`tracing::warn!`] — once per
-//! publisher for steady-state conditions (no network), so an hour-long
-//! session leaves one line to find, not one per keystroke.
+//! Every refusal to publish is logged once per publisher for
+//! steady-state conditions (no network), not once per keystroke.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,14 +19,10 @@ use collab_types::{ArtifactId, SignedOp};
 use crate::shell::collab_broker::CrdtRoute;
 use crate::shell::network::ShellNetwork;
 
-/// The network operations the broker's outbound half needs.
-///
-/// A trait rather than a bare [`ShellNetwork`] so the routing decision
-/// can be tested against a recording sink: the thing worth asserting
-/// is *which route reached the wire*, and standing up libp2p to find
-/// that out would test the transport instead of the decision.
+/// The network operations the broker's outbound half needs. A trait
+/// rather than a bare [`ShellNetwork`] so the routing decision can be
+/// tested against a recording sink instead of standing up libp2p.
 pub trait PeerPublishSink: Send + Sync {
-    /// Republish an unsigned CRDT increment to the peers in a room.
     fn app_crdt_incremental(
         &self,
         app_id: String,
@@ -44,7 +31,6 @@ pub trait PeerPublishSink: Send + Sync {
         data: Vec<u8>,
     );
 
-    /// Republish a signed CRDT envelope to the peers in a room.
     fn app_crdt_signed(
         &self,
         app_id: String,
@@ -53,7 +39,6 @@ pub trait PeerPublishSink: Send + Sync {
         envelope: SignedOp,
     );
 
-    /// Republish one document's whole state to the peers in a room.
     fn app_crdt_snapshot(
         &self,
         app_id: String,
@@ -62,10 +47,9 @@ pub trait PeerPublishSink: Send + Sync {
         data: Vec<u8>,
     );
 
-    /// Republish a presence frame to the peers in a room. The frame is
-    /// a serialised `CollabRequest::Presence`, which is what the
-    /// receiving drain decodes — so a caret published over capnp and
-    /// one published over JSON are the same bytes on the wire.
+    /// Republish a presence frame — a serialised `CollabRequest::Presence`,
+    /// so a caret published over capnp and one over JSON are the same
+    /// bytes on the wire.
     fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>);
 
     /// Ask the room whether anyone still holds a range of history.
@@ -132,17 +116,14 @@ impl Transport {
     }
 }
 
-/// The one place a local payload becomes a peer publish.
-///
-/// Construct with [`PeerPublisher::new`] (network wired) or
-/// [`PeerPublisher::disabled`]. Both brokers hold the same instance,
-/// so "did this edit leave the machine" has one answer per session
-/// instead of one per transport.
+/// The one place a local payload becomes a peer publish. Construct with
+/// [`PeerPublisher::new`] (network wired) or [`PeerPublisher::disabled`].
+/// Both brokers hold the same instance, so "did this edit leave the
+/// machine" has one answer per session instead of one per transport.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
-    /// Set the first time a publish is dropped because there is no
-    /// network. Keeps the "collaboration is off" line to one per
-    /// session rather than one per keystroke.
+    /// Set the first time a publish is dropped for no network — keeps
+    /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
 }
 
@@ -155,8 +136,8 @@ impl PeerPublisher {
         })
     }
 
-    /// A publisher with nowhere to publish — the shell is running
-    /// without peer sync. Every call is a no-op, announced once.
+    /// A publisher with nowhere to publish. Every call is a no-op,
+    /// announced once.
     pub fn disabled() -> Arc<Self> {
         Arc::new(Self {
             sink: None,
@@ -164,10 +145,9 @@ impl PeerPublisher {
         })
     }
 
-    /// Build from the shell's optional network handle. `None` is a
-    /// single-machine session, which is a legitimate configuration —
-    /// but one worth naming in the log, because from inside an app it
-    /// is indistinguishable from a peer who never typed.
+    /// `None` is a legitimate single-machine session, but worth naming
+    /// in the log since from inside an app it's indistinguishable from
+    /// a peer who never typed.
     pub fn from_network(net: Option<Arc<ShellNetwork>>) -> Arc<Self> {
         match net {
             Some(n) => {
@@ -194,9 +174,8 @@ impl PeerPublisher {
         self.sink.is_some()
     }
 
-    /// Republish a document increment on the route it was fanned out
-    /// locally. Returns whether it reached the network, so a caller
-    /// that wants to assert delivery can.
+    /// Returns whether it reached the network, so a caller that wants
+    /// to assert delivery can.
     pub fn document_incremental(
         &self,
         route: &CrdtRoute,
@@ -215,10 +194,8 @@ impl PeerPublisher {
         true
     }
 
-    /// Republish a signed document envelope on the route it was fanned
-    /// out locally. The remote broker validates it against its own
-    /// channel state before showing it to anyone, exactly as this host
-    /// did — publishing is not vouching.
+    /// The remote broker validates against its own channel state before
+    /// showing it to anyone — publishing is not vouching.
     pub fn signed_document(
         &self,
         route: &CrdtRoute,
@@ -237,15 +214,10 @@ impl PeerPublisher {
         true
     }
 
-    /// Republish one document's whole state on the route it was fanned
-    /// out locally.
-    ///
-    /// This is the frame that makes two *separately created* documents
-    /// one document — sent in reply to a peer's `Arrived`, never on a
-    /// commit, so publishing it answers a question rather than
-    /// announcing into the room. Without it the deltas cross correctly
-    /// but refer to objects the receiving document has never seen: the
-    /// peer's caret moves over a blank page.
+    /// Makes two *separately created* documents one document — sent in
+    /// reply to a peer's `Arrived`, never on a commit. Without it, deltas
+    /// refer to objects the receiver never saw: the peer's caret moves
+    /// over a blank page.
     pub fn document_snapshot(
         &self,
         route: &CrdtRoute,
@@ -264,15 +236,9 @@ impl PeerPublisher {
         true
     }
 
-    /// Republish a presence frame — a caret, a selection, an arrival —
-    /// to the room the route names.
-    ///
-    /// Pass the route **un-widened**: the app id rides along so the
-    /// receiving side can attribute the caret, and the record is
-    /// dropped here (the wire frame `NeighbourMsg::AppPresence` has no
-    /// record field) because "who else is here" is a room fact, so a
-    /// peer editing a different document in the same room is still a
-    /// legitimate audience.
+    /// The app id rides along so the receiver can attribute the caret;
+    /// the record is dropped since "who else is here" is a room fact,
+    /// and a peer editing a different document is still a legitimate audience.
     pub fn presence(&self, route: &CrdtRoute, transport: Transport, frame: Vec<u8>) -> bool {
         let Some(sink) = self.ready_quietly(route, transport, "presence") else {
             return false;
@@ -281,10 +247,9 @@ impl PeerPublisher {
         true
     }
 
-    /// Ask the room for a range of history the local op log no longer
-    /// holds. Routed like any other outbound: a connection that never
-    /// announced an address gets no cooperative fetch, because the
-    /// answer would have nowhere to land.
+    /// Routed like any other outbound: a connection that never announced
+    /// an address gets no cooperative fetch, since the answer would
+    /// have nowhere to land.
     pub fn scrollback_request(
         &self,
         route: &CrdtRoute,
@@ -301,13 +266,10 @@ impl PeerPublisher {
     }
 
     /// The two refusals every publish shares: no network, or a route
-    /// that addresses nobody. Both are logged; the "no network" line is
-    /// throttled to once per publisher because it is a session-long
-    /// state, the route refusal is not, because it names a specific
-    /// misbehaving connection and repeats are the signal.
-    ///
-    /// See [`Self::ready_quietly`] for the one payload that has to opt
-    /// out of the second half of that.
+    /// that addresses nobody. "No network" is throttled to once per
+    /// publisher; the route refusal is not, since repeats name a
+    /// specific misbehaving connection. See [`Self::ready_quietly`] for
+    /// the opt-out.
     fn ready(
         &self,
         route: &CrdtRoute,
@@ -317,11 +279,8 @@ impl PeerPublisher {
         self.ready_at(route, transport, what, true)
     }
 
-    /// [`Self::ready`] for a payload that repeats. A pointer publishes
-    /// at cursor rate, so an unaddressable route would put a warning on
-    /// every frame and bury the one that matters; a lost caret is also
-    /// cosmetic where a lost edit is not. Same gate, same decision,
-    /// logged at `debug!`.
+    /// [`Self::ready`] for a payload that repeats (pointer rate) — same
+    /// gate, logged at `debug!` so it doesn't bury the warning that matters.
     fn ready_quietly(
         &self,
         route: &CrdtRoute,
@@ -349,11 +308,8 @@ impl PeerPublisher {
             }
             return None;
         };
-        // Fail closed on an unaddressable route, and say which
-        // connection did it. The wire carries the route verbatim, so
-        // publishing an empty or nil cluster would put a frame in the
-        // room that no receiver can place — the remote broker drops it
-        // and neither side has a record of why.
+        // Fail closed on an unaddressable route: publishing an empty or
+        // nil cluster would put a frame in a room no receiver can place.
         if !route.is_publishable() {
             if loud {
                 tracing::warn!(
@@ -379,14 +335,9 @@ impl PeerPublisher {
     }
 }
 
-/// A sink that keeps what it was asked to publish instead of
-/// publishing it.
-///
-/// The question a test about this module wants to ask is "what route
-/// reached the wire", and standing up libp2p to ask it would exercise
-/// the transport instead. Lives here rather than in one test module
-/// because both broker transports have the same question to answer and
-/// should answer it against the same instrument.
+/// A sink that keeps what it was asked to publish, so a test can ask
+/// "what route reached the wire" without standing up libp2p. Lives here
+/// since both broker transports share this instrument.
 #[cfg(test)]
 pub mod recording {
     use super::*;
@@ -435,7 +386,6 @@ pub mod recording {
             self.sent.lock().unwrap().clone()
         }
 
-        /// Take everything published so far, leaving the log empty.
         pub fn drain(&self) -> Vec<Sent> {
             std::mem::take(&mut *self.sent.lock().unwrap())
         }
@@ -535,10 +485,6 @@ mod tests {
 
     #[test]
     fn a_capnp_cluster_route_publishes_without_an_app_id() {
-        // `joinChannel` carries no app identity, so a capnp route is
-        // cluster-scoped. That is a legitimate address, not a missing
-        // one — refusing it here is exactly the bug this module exists
-        // to close.
         let (pubr, sink) = wired();
         let route = CrdtRoute::from_channel_key("22222222-2222-4222-8222-222222222222");
         assert!(pubr.document_incremental(&route, Transport::Capnp, vec![1]));
@@ -578,11 +524,6 @@ mod tests {
             CrdtRoute::cluster("00000000-0000-0000-0000-000000000000"),
             CrdtRoute::record("notes", "", "doc"),
         ] {
-            // Every payload kind fails closed on the same test. A
-            // snapshot or a caret published into a room that does not
-            // exist is as undeliverable as a delta, and the nil-uuid
-            // case would put all of them in one room shared by every
-            // unminted workspace on every machine.
             assert!(
                 !pubr.document_incremental(&route, Transport::Json, vec![7]),
                 "route {route:?} addresses nobody and must not reach the wire",
@@ -642,9 +583,6 @@ mod tests {
 
     #[test]
     fn a_snapshot_carries_its_record_onto_the_wire() {
-        // A whole document merged into the wrong record cannot be taken
-        // back out, so the record matters more here than on a delta,
-        // not less.
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "66666666-6666-4666-8666-666666666666", "letter");
         assert!(pubr.document_snapshot(&route, Transport::Capnp, vec![4, 2]));
@@ -661,10 +599,6 @@ mod tests {
 
     #[test]
     fn presence_reaches_the_room_and_leaves_the_record_behind() {
-        // The app id rides along so the far side can attribute the
-        // caret; the record does not, because a peer editing another
-        // document in this room is still someone you should be able to
-        // see.
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
         assert!(pubr.presence(&route, Transport::Capnp, vec![1, 2, 3]));
@@ -680,11 +614,8 @@ mod tests {
 
     #[test]
     fn both_transports_publish_through_one_instance() {
-        // The bug this module exists to close was two answers to "does
-        // a local edit leave this machine" — one per transport. The
-        // publisher does not branch on `Transport` for anything but the
-        // wording of a refusal, and this is the assertion that keeps it
-        // that way.
+        // The publisher never branches on `Transport` for anything but
+        // the wording of a refusal.
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("notes", "88888888-8888-4888-8888-888888888888", "doc");
         assert!(pubr.document_incremental(&route, Transport::Json, vec![5]));

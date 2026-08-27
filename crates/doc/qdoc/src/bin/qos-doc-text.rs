@@ -1,28 +1,13 @@
-//! Print the text an Automerge document holds.
-//!
-//! A late joiner that asks a running app for its document gets back an
-//! `Automerge::save()` — and that is not a file you can grep. Automerge
-//! writes each column of a change chunk DEFLATE-compressed once it is
-//! over a few hundred bytes, so a phrase a person typed is present in
-//! the document and absent from its bytes. A harness that searched the
-//! bytes therefore reported an empty page for a document that had the
-//! text in it, and the size growing run over run made it read like the
-//! wrong document was being served rather than the right one being
-//! misread.
-//!
-//! So: decode it properly. This walks the whole object graph and prints
-//! every `Text` object and every string value it finds, each with the
-//! path it sits at. No knowledge of any app's schema — the point is that
-//! a harness should not need one to ask "is this text in there".
+//! Print the text an Automerge document holds. Automerge compresses each text column once a
+//! change chunk passes a few hundred bytes, so a document's text is not found by grepping its
+//! saved bytes — this walks the whole object graph and prints every `Text`/string it finds, with
+//! no knowledge of any app's schema.
 //!
 //! ```text
 //! qos-doc-text <file>                 # every string in the document
 //! qos-doc-text -                      # ...read from stdin
 //! qos-doc-text <file> --contains WORD # exit 0 if present, 1 if not
 //! ```
-//!
-//! `--contains` is the form an assertion wants: it says nothing on a
-//! hit and prints the strings it did find on a miss, so a failing check
 //! explains itself instead of just failing.
 
 use std::io::Read;
@@ -30,9 +15,7 @@ use std::process::ExitCode;
 
 use automerge::{Automerge, ObjId, ObjType, ReadDoc, Value};
 
-/// How deep the walk goes before giving up. An Automerge object graph is
-/// a tree, so this is a guard against a malformed document rather than a
-/// real limit — no app nests anywhere near it.
+/// How deep the walk goes before giving up — a guard against a malformed document, not a real limit (no app nests anywhere near it).
 const MAX_DEPTH: usize = 64;
 
 fn main() -> ExitCode {
@@ -73,9 +56,7 @@ fn main() -> ExitCode {
         }
     };
 
-    // `load` is the strict one and it is the right one: a document this
-    // cannot parse is not a document, and reporting "no text found"
-    // for it would be the same false negative in a new coat.
+    // `load` is the strict one and it is the right one: a document this cannot parse is not a document, and reporting "no text found" for it would be a false negative in a new coat.
     let doc = match Automerge::load(&bytes) {
         Ok(d) => d,
         Err(e) => {
@@ -121,8 +102,7 @@ fn read_input(path: &str) -> std::io::Result<Vec<u8>> {
     }
 }
 
-/// Walk `obj` and push every text/string it holds onto `out` as
-/// `(path, text)`.
+/// Walk `obj` and push every text/string it holds onto `out` as `(path, text)`.
 fn collect(doc: &Automerge, obj: &ObjId, path: &str, depth: usize, out: &mut Vec<(String, String)>) {
     if depth > MAX_DEPTH {
         return;
@@ -145,8 +125,7 @@ fn collect(doc: &Automerge, obj: &ObjId, path: &str, depth: usize, out: &mut Vec
                 }
             }
         }
-        // Map, and anything a future Automerge adds that still keys by
-        // string — walking it is strictly better than skipping it.
+        // Map, and anything a future Automerge adds that still keys by string — walking it is strictly better than skipping it.
         _ => {
             for key in doc.keys(obj) {
                 let child = if path.is_empty() {
@@ -184,10 +163,8 @@ mod tests {
 
     const TYPED: &str = "the same document on both machines";
 
-    /// The shape a `ui` app's document actually has: a list of blocks,
-    /// each a map with a `Text` under it, beside a map of styles. Built
-    /// through the ordinary API and put through `save()`, because it is
-    /// the saved form a late joiner is handed.
+    /// The shape a `ui` app's document actually has: a list of blocks, each a map with a `Text`
+    /// under it, beside a map of styles. Built through the ordinary API and `save()`d, the form a late joiner is handed.
     fn saved_document(body: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
         doc.put(&automerge::ROOT, "schema", "qos.richtext").unwrap();
@@ -198,9 +175,7 @@ mod tests {
         doc.put(&block, "kind", "paragraph").unwrap();
         let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
         doc.splice_text(&text, 0, 0, body).unwrap();
-        // Enough sibling content that the save is the size a real
-        // document is, rather than a toy small enough to dodge every
-        // encoding decision Automerge makes on the way out.
+        // Enough sibling content that the save is the size a real document is, rather than a toy small enough to dodge Automerge's compression.
         let styles = doc
             .put_object(&automerge::ROOT, "styles", ObjType::Map)
             .unwrap();
@@ -241,23 +216,13 @@ mod tests {
             !found.iter().any(|(_, t)| t.contains(TYPED)),
             "a document that does not hold the phrase must not claim to",
         );
-        // ...and it is not simply finding nothing: the surrounding
-        // content is still there, which is what makes the negative
-        // above a real answer rather than a broken walk.
+        // Confirms this isn't simply finding nothing: the surrounding content is still there.
         assert!(found.iter().any(|(p, _)| p == "schema"));
         assert!(found.iter().any(|(p, t)| p == "styles.quote.name" && t == "quote"));
     }
 
-    /// The document a real word processor answered with, kept as it came
-    /// off the wire.
-    ///
-    /// Captured from a running packaged app: a headless session, the
-    /// word processor launched into it, `TYPED` typed at the keyboard,
-    /// and then a client attached to that session's broker announcing
-    /// the app's own address asked for the document. This is that
-    /// reply, byte for byte. Recording it is what makes the two tests
-    /// below claims about the product rather than guesses about
-    /// Automerge's encoder.
+    /// The document a real word processor answered with, captured byte-for-byte from a running
+    /// packaged app (headless session, text typed, a client asking for the document) — makes the tests below claims about the product, not guesses about Automerge's encoder.
     const FROM_A_RUNNING_APP: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/data/word-processor-typed.automerge"
@@ -269,15 +234,6 @@ mod tests {
         "/tests/data/word-processor-untouched.automerge"
     ));
 
-    /// The reason this program exists.
-    ///
-    /// A harness asked a running app for its document and searched the
-    /// reply for the phrase that had just been typed into it. The phrase
-    /// was in the document and not in the bytes, so the harness reported
-    /// an empty page on a screen that plainly had the text on it — and
-    /// because the document grows as an app is used, it looked like the
-    /// wrong document was being served rather than the right one being
-    /// misread.
     #[test]
     fn the_reply_from_a_running_app_cannot_be_searched_as_bytes() {
         assert!(
@@ -295,9 +251,7 @@ mod tests {
         );
     }
 
-    /// The control. Without it the test above would also pass against a
-    /// document that never had the text, which is the very confusion it
-    /// is meant to end.
+    /// The control: without it the test above would also pass against a document that never had the text.
     #[test]
     fn the_same_app_before_typing_holds_no_such_text() {
         let found = strings(BEFORE_TYPING);
@@ -316,16 +270,9 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
     }
 
-    /// A table, built through the model's own API and put through `save()`,
-    /// because that is the form a late joiner is handed. The two rows the
-    /// assertions read by name, followed by enough further rows to carry the
-    /// text column past Automerge's compression threshold.
-    ///
-    /// The size matters to the control assertion, not to the walk: below that
-    /// threshold the cell text survives verbatim in the saved bytes and a plain
-    /// byte search finds it, so the test would prove the opposite of what it is
-    /// for. A real table of facts is comfortably past it, and the padding
-    /// reproduces the ordinary case rather than contriving one.
+    /// A table, built through the model's own API and `save()`d (the form a late joiner is handed):
+    /// the two rows the assertions read by name, plus enough further rows to carry the text column
+    /// past Automerge's compression threshold — below it a plain byte search would find the cell text and the test would prove nothing.
     fn table_document() -> Vec<u8> {
         const NAMED: [[&str; 3]; 2] =
             [["alpha one", "alpha two", "alpha three"], ["beta one", "beta two", "beta three"]];
@@ -355,13 +302,7 @@ mod tests {
         d.save()
     }
 
-    /// Text in a table cell is text, and is found.
-    ///
-    /// A walk that stopped at body text would report an empty page for a document
-    /// that keeps its facts in cells. Cells are ordinary blocks, so it does not
-    /// stop there — said out loud because "the phrase is only in a table" is the
-    /// first guess when a check calls a document empty, and acting on it sends
-    /// the fix into the wrong file.
+    /// Text in a table cell is text, and is found: cells are ordinary blocks, so the walk does not stop at body text.
     #[test]
     fn text_written_into_a_table_cell_is_found() {
         let saved = table_document();
@@ -382,8 +323,7 @@ mod tests {
                 "the cell {cell:?} is in the table and must be found",
             );
         }
-        // ...and it is genuinely unfindable without decoding, which is why
-        // nothing may fall back to searching the bytes.
+        // ...and it is genuinely unfindable without decoding, which is why nothing may fall back to searching the bytes.
         assert!(
             !contains_bytes(&saved, "beta two"),
             "the phrase must be absent from the saved bytes — that absence is what \

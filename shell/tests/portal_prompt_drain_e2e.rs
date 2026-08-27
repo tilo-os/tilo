@@ -1,18 +1,15 @@
-//! End-to-end for the prompt queue: a portal request that needs the
-//! user's answer gets one, instead of waiting forever.
+//! End-to-end for the prompt queue: a portal request that needs the user's
+//! answer gets one, instead of waiting forever.
 //!
 //! `PromptQueueHandle::drain()` must actually be called in production —
-//! nothing else empties the queue, and an unanswered `PendingGrant`
-//! hangs the D-Bus caller indefinitely rather than closing the channel
-//! (the "channel closed ≡ deny" defence never fires while the sender
-//! sits in a `Vec` for the life of the process).
+//! nothing else empties the queue, and an unanswered `PendingGrant` hangs
+//! the D-Bus caller indefinitely rather than closing the channel, so the
+//! "channel closed = deny" defence never fires.
 //!
-//! `FileChooser` no longer uses the prompt queue at all (the dialog is
-//! the consent), which means the file-chooser tests do not cover this.
-//! `Access` still does, and it is the interface `xdg-desktop-portal`
-//! routes `Camera.AccessCamera` through, so it is the honest subject.
-//!
-//! The chain under test, all production code:
+//! `FileChooser` no longer uses the prompt queue (its dialog is the
+//! consent), so `Access` is the honest subject — the interface
+//! `xdg-desktop-portal` routes `Camera.AccessCamera` through. The chain
+//! under test, all production code:
 //!
 //! ```text
 //!   D-Bus AccessDialog
@@ -136,8 +133,7 @@ fn tick(host: &mut ShellOverlayHost) {
     host.pump_permission_prompt();
 }
 
-/// Wait for the prompt widget to appear, turning the pumps as the
-/// compositor would.
+/// Wait for the prompt widget to appear, turning the pumps as the compositor would.
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
     for _ in 0..1000 {
         tick(host);
@@ -224,8 +220,8 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
     );
 }
 
-/// Session-scoped approval both answers the call and persists, so the
-/// next request for the same capability does not ask again.
+/// Session-scoped approval answers the call and persists, so the next
+/// request for the same capability does not ask again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_grant_answers_and_persists() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
@@ -271,8 +267,7 @@ async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
 
     let call = spawn_access(proxy);
 
-    // Wait for the request to reach the queue, then drop the queue's
-    // contents the way a compositor with no chrome does.
+    // Drop the queue's contents the way a compositor with no chrome does.
     for _ in 0..1000 {
         if prompts.queued_len() > 0 {
             break;
