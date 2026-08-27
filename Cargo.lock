@@ -245,6 +245,7 @@ dependencies = [
  "chat",
  "clap",
  "hex",
+ "photos",
  "qdoc",
  "qos-actions",
  "reqwest 0.12.28",
