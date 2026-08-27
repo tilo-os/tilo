@@ -530,13 +530,32 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// that is 13 MB reserved against upstream's 165 MB; at 3840x2160, 37 MB,
 /// where upstream's ptcl constant is itself only four times the
 /// structural floor.
+///
+/// The 28-scene catalogue above has no *foreign* surface in it, and a
+/// composited Wayland client is not a flat fill: `foreign.rs` draws it
+/// as `push_layer(rounded-rect clip) + draw_image + pop_layer`, and a
+/// blend layer around a sampled image costs far more per-tile `ptcl`
+/// than the vector UI the catalogue was measured from. Compositing a
+/// client for the first time -- `client_buffer_pixels_are_composited_
+/// into_the_tab_rect` in `shell/tests/foreign_surface_compositing.rs`,
+/// a 1310x768 tab in a 1600x900 (5700-tile) viewport -- asked for
+/// 1,085,696 `ptcl` words, ~190/tile against every tile in the
+/// viewport, more than the old floor's 96/tile reserved in total. That
+/// is the first frame a client ever presents: there is no prior frame
+/// for growth to have learned from, so the floor is the only thing
+/// standing between that frame and a silently missing window. Chrome
+/// (the sidebar, the top bar) is permanent screen furniture in this
+/// shell, so a maximized single tab cannot exceed roughly the 70% tile
+/// coverage this measurement already has; 320/tile keeps clear of it
+/// with room over both measurement noise and a second simultaneous
+/// composited surface.
 const FLOOR_LINES: u32 = 1 << 16;
 const FLOOR_BINNING: u32 = 1 << 14;
 const FLOOR_BLEND_SPILL: u32 = 1 << 14;
 const FLOOR_TILES_PER_TILE: u32 = 24;
 const FLOOR_SEG_COUNTS_PER_TILE: u32 = 8;
 const FLOOR_SEG_COUNTS_MIN: u32 = 1 << 17;
-const FLOOR_PTCL_PER_TILE: u32 = 96;
+const FLOOR_PTCL_PER_TILE: u32 = 320;
 const FLOOR_PTCL_MIN: u32 = 1 << 17;
 
 /// How much bump-allocated scratch a renderer reserves, in elements.
@@ -723,6 +742,44 @@ mod tests {
                 "{w}x{h}: {dynamic} words to allocate from, under a floor of {structural}",
             );
         }
+    }
+
+    /// A composited Wayland client is not a flat fill: the compositor
+    /// draws it as `push_layer(rounded-rect clip) + draw_image +
+    /// pop_layer`, which costs far more `ptcl` per tile than the vector
+    /// UI the floor's per-tile constant was calibrated from. This is
+    /// the exact ask a real first frame of `shell`'s
+    /// `client_buffer_pixels_are_composited_into_the_tab_rect` made
+    /// (`VELLO_BUMP_LOG=1`, a 1310x768 tab in a 1600x900 viewport): a
+    /// regression test, not a synthetic bound, because a synthetic one
+    /// would have missed this exact shape of scene the way the
+    /// catalogue did the first time.
+    ///
+    /// The first frame a client ever presents has no earlier frame for
+    /// `BumpBudget::observe` to have grown from, so the static floor is
+    /// the only thing standing between that frame and a client's
+    /// window rendering with its content silently missing. Below the
+    /// floor this raised, that is exactly what happened: `failed=0x10`
+    /// (the `ptcl` bit), and the composited pixels never reached the
+    /// screen.
+    #[test]
+    fn ptcl_floor_covers_a_clipped_foreign_surface_composite_first_frame() {
+        let width_in_tiles = 1600u32.div_ceil(16);
+        let height_in_tiles = 900u32.div_ceil(16);
+        let n_tiles = width_in_tiles * height_in_tiles;
+        // BumpAllocators.ptcl measured on that frame; already excludes
+        // the structural `n_tiles * PTCL_INITIAL_ALLOC` term (see
+        // `ptcl_reserves_the_structural_floor_on_top_of_the_heuristic_one`),
+        // so it compares directly against the heuristic floor alone.
+        let measured_ptcl_words = 1_085_696;
+        let floor = BumpBudget::floor_for_viewport(n_tiles);
+        assert!(
+            floor.ptcl >= measured_ptcl_words,
+            "floor of {} ptcl words does not cover the {measured_ptcl_words} a real clipped \
+             client composite asked for at {n_tiles} tiles -- the first frame a client \
+             presents would overflow ptcl and render with its pixels silently missing",
+            floor.ptcl,
+        );
     }
 
     /// The structural `n_tiles * PTCL_INITIAL_ALLOC` term is reserved on
