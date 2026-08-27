@@ -2,9 +2,8 @@
 //!
 //! YouTube gates *some* clients' media streams (and increasingly the player
 //! response itself) behind a **PoToken** minted by its BotGuard challenge, and
-//! behind SABR streaming. The research brief calls this "the make-or-break
-//! gotcha" and asks for it to be a *swappable module* so the live backend never
-//! hard-codes how a token is obtained.
+//! behind SABR streaming. This module keeps minting swappable so the live
+//! backend never hard-codes how a token is obtained.
 //!
 //! ## Why the default provider is enough for audio
 //!

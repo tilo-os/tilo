@@ -1,70 +1,23 @@
 //! The canonical on-disk home for a qOS app's Automerge document.
 //!
-//! # Why one crate
+//! One store per installed package: one file format (raw Automerge, so any
+//! peer or tool can merge against it), atomic writes, and a debounced
+//! background writer. Path is `$XDG_DATA_HOME/<package-id>/state.automerge`,
+//! derived only from `QOS_PACKAGE_ID`: an app cannot name its own storage
+//! path or another app's — [`DocStore::open_for`] rejects any id that is
+//! absolute, contains a separator, or contains `..`. Deliberately not routed
+//! through `cli::resolve_workspace_path`: that resolves against the shared
+//! workspace FUSE root, which app state must never appear in.
 //!
-//! Every `ui` app keeps its whole user-visible state in one Automerge
-//! document ([`ui::State::doc`]). Before this crate, what happened to that
-//! document when the process exited was up to each app: most apps dropped it
-//! on the floor (several while carrying a module comment promising the
-//! opposite), and the ones that did persist had picked five mutually
-//! incompatible conventions — raw Automerge bytes under half a dozen
-//! different directory names, serde JSON, TOML, newline-delimited text, and
-//! one app that rebuilt a brand-new `AutoCommit` on every save and thereby
-//! threw away the history its own doc comment said it was keeping.
+//! [`Autosave`] appends `doc.save_after(persisted_heads)` rather than a full
+//! `doc.save()` on every edit, so write volume stays linear rather than
+//! quadratic in document size.
 //!
-//! This crate replaces all of that with a single store: one location per
-//! installed package, one file format (raw Automerge, so any peer or tool
-//! can merge against it), atomic writes, and a debounced background writer
-//! so a keystroke never blocks on the disk.
-//!
-//! # Where the bytes go
-//!
-//! `$XDG_DATA_HOME/<package-id>/state.automerge`, i.e.
-//! `~/.local/share/dev.qos.ebook/state.automerge` for the e-book reader.
-//! The directory is derived from `QOS_PACKAGE_ID` — the launcher sets it for
-//! every sandboxed launch and it is the only input. **An app cannot name its
-//! own storage path, and it cannot name another app's**: [`DocStore::open`]
-//! takes no path, and [`DocStore::open_for`] rejects any package id that is
-//! absolute, contains a separator, or contains `..`.
-//!
-//! The resolver is [`cli::standalone_state_dir`] — the same function
-//! `cli::resolve_workspace_path` uses for its own fallback, so there is one
-//! implementation of "where does package X keep its data", not a third one.
-//! `resolve_workspace_path` itself is deliberately *not* used: inside qOS it
-//! resolves against the workspace FUSE root, which is shared by every app
-//! and by the user's own file tree. App state is not a user document — it
-//! would collide at the workspace root and show up in the file manager. The
-//! workspace resolver stays the right call for documents the user browses
-//! and shares; this store is for the app's own state.
-//!
-//! # Format and growth
-//!
-//! The file is a plain Automerge save followed by zero or more appended
-//! change chunks — the format `AutoCommit::load` already understands and the
-//! same shape the calendar and chat stores were already writing, so existing
-//! files load unchanged.
-//!
-//! Saving a full `doc.save()` after every edit is quadratic in the number of
-//! edits; [`Autosave`] therefore appends only `doc.save_after(persisted_heads)`
-//! and rewrites the whole file only once the appended volume exceeds the
-//! compacted base. That makes total write volume linear in document size,
-//! amortised, the same way a growing `Vec` is.
-//!
-//! # Actor identity
-//!
-//! The store keeps the document's Automerge actor id in an `actor` sidecar
-//! and restores it on load, so a restarted app continues the same actor's
-//! change sequence instead of forking a new one on every launch. Two live
-//! instances must never share an actor id — that would produce two different
-//! changes claiming the same `(actor, seq)` — so [`DocStore::open`] takes an
-//! exclusive `flock` on a `writer.lock` file and only adopts the sidecar
-//! identity when it wins the lock. A second instance runs on a fresh random
-//! actor, which is exactly what Automerge expects of a concurrent writer.
-//!
-//! What is *not* negotiable is history: the store round-trips the document's
-//! own bytes. It never rebuilds a document by replaying an app's model into
-//! a fresh `AutoCommit`, which is what made one app's saved file unmergeable
-//! with any peer that had diverged before the save.
+//! The store round-trips the document's own bytes rather than rebuilding a
+//! fresh `AutoCommit` from an app's model, so a saved file stays mergeable
+//! with a peer that diverged before the save. It keeps the actor id in a
+//! sidecar so a restart continues the same change sequence; [`DocStore::open`]
+//! takes an exclusive `flock` so two live instances never share one.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -321,18 +274,15 @@ impl DocStore {
         Self::open_for(&cli::package_id())
     }
 
-    /// Open the store, using `manifest_id` when the launcher has not set
+    /// Open the store, falling back to `manifest_id` (the app's own
+    /// `[package] id` from `qos-app.toml`) when the launcher has not set
     /// `QOS_PACKAGE_ID`.
     ///
-    /// The env var always wins, so this cannot be used to escape the
-    /// launcher's decision — it only supplies an answer for a run that has
-    /// no launcher at all (a developer running the binary straight out of
-    /// `target/debug`, or a test harness). Without it every such run would
-    /// land in the shared `qos-standalone` directory and 44 apps would
-    /// scribble over one document.
-    ///
-    /// `manifest_id` is the app's own `[package] id` from its
-    /// `qos-app.toml`.
+    /// The env var always wins, so this can't be used to escape the
+    /// launcher's decision — it only answers for a run with no launcher at
+    /// all (dev binary, test harness). Without it every such run would land
+    /// in the shared `qos-standalone` directory and every app would scribble
+    /// over one document.
     pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
         let id = std::env::var("QOS_PACKAGE_ID")
             .ok()
@@ -355,21 +305,17 @@ impl DocStore {
     /// Open the store for **one record** of a package.
     ///
     /// A record is the unit of collaboration: one document, one identity, one
-    /// change graph. An automerge change graph cannot be served in part — a
+    /// change graph. An Automerge change graph can't be served in part — a
     /// change names its dependencies by hash, so a filtered stream leaves the
-    /// receiver holding changes whose parents never arrive — so "share this
-    /// document and not that one" has to mean *separate documents*, which
-    /// means separate files.
+    /// receiver holding changes whose parents never arrive — so sharing one
+    /// document and not another means *separate files*.
     ///
-    /// `record_key` is a filesystem-safe key derived from the record's
-    /// identity by the caller (`ui::record::RecordId::storage_key`), and it is
-    /// validated exactly as strictly as a package id: a record whose identity
-    /// is a *path* must not be able to turn that path into a directory
-    /// traversal.
-    ///
-    /// The bytes land in `<package dir>/records/<record_key>/state.automerge`,
-    /// beside — not inside — the package's own `state.automerge`, which stays
-    /// the room index (which records this room holds).
+    /// `record_key` (from `ui::record::RecordId::storage_key`) is validated
+    /// exactly as strictly as a package id, since a record's identity can
+    /// itself be a path. Lands in
+    /// `<package dir>/records/<record_key>/state.automerge`, beside — not
+    /// inside — the package's own `state.automerge`, which stays the room
+    /// index.
     pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(record_key)?;
@@ -382,16 +328,12 @@ impl DocStore {
     /// Open the index of **one room** — the list of which records that room
     /// holds.
     ///
-    /// A room's index is a document like any other, and it is deliberately not
-    /// a record: a record is a thing the user made, an index is the room's
-    /// statement about which of those things it reaches. Keeping them in
-    /// sibling directories rather than one is what stops a room id from ever
-    /// resolving to a record's document, which would merge the two.
-    ///
-    /// `room_key` is validated exactly as strictly as a record key — the same
-    /// containment boundary, for the same reason.
-    ///
-    /// The bytes land in `<package dir>/rooms/<room_key>/state.automerge`.
+    /// Deliberately not a record itself: a record is a thing the user made,
+    /// an index is the room's statement about which of those it reaches.
+    /// Sibling directories, not one, so a room id can never resolve to a
+    /// record's document and merge the two. `room_key` is validated exactly
+    /// as strictly as a record key, for the same reason. Lands in
+    /// `<package dir>/rooms/<room_key>/state.automerge`.
     pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(room_key)?;
@@ -402,11 +344,8 @@ impl DocStore {
     }
 
     fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
-        // The state directory already exists on every launch after the first,
-        // and — for apps that ran under an older layout — the path may exist as
-        // a *file* rather than a directory. Both cases must come up with
-        // persistence enabled, not drop the app to an in-memory document; see
-        // `ensure_state_dir`.
+        // Must come up with persistence enabled even on a pre-existing dir or
+        // an older layout's stale file at this path; see `ensure_state_dir`.
         ensure_state_dir(&dir)?;
 
         let lock = acquire_writer_lock(&dir.join(LOCK_FILE));
@@ -697,25 +636,18 @@ impl DocStore {
 /// Make `dir` an existing, writable directory, recovering from a state path a
 /// previous app layout left as a *file* where this layout wants a directory.
 ///
-/// The current layout keeps a package's document in `<dir>/state.automerge`. A
-/// predecessor wrote the document straight to `<dir>` itself — a regular file.
-/// `create_dir_all` fails with `EEXIST` on a path that already exists as a
+/// `create_dir_all` fails `EEXIST` on a path that already exists as a
 /// non-directory, and [`open`](crate::persist::open) swallows that into a
-/// disabled, in-memory session — so every app that ever ran under the old
-/// layout lost persistence on *every* launch, not just the first. This is the
-/// real second-run failure, and a directory-only fixture never reproduces it.
-/// Recover rather than fail:
+/// disabled, in-memory session — so an app that ever ran under the old
+/// layout would lose persistence on *every* launch, not just the first.
+/// Recover rather than fail: a zero-byte leftover is removed; a non-empty
+/// file might be an old-format document, so it is moved aside to a
+/// `<dir>.stale` sibling — never deleted — and, best effort, seeded as the
+/// new `state.automerge` so it migrates in and loads.
 ///
-/// * a directory is already what we want;
-/// * a zero-byte leftover (the observed case) carries nothing, so it is removed;
-/// * a non-empty file might be an old-format document, so it is moved aside to
-///   a `<dir>.stale` sibling — never deleted — and, best effort, seeded as the
-///   new `state.automerge`, so a genuine old document migrates in and loads.
-///
-/// A real filesystem failure (an unwritable parent, a rename that cannot
-/// complete) still surfaces as an error, so persistence is disabled only when
-/// the disk genuinely cannot hold it — the idempotent/recovering create never
-/// masks a true failure, and never blindly deletes a user's bytes.
+/// A real filesystem failure (unwritable parent, a rename that can't
+/// complete) still surfaces as an error — persistence is disabled only when
+/// the disk genuinely can't hold it, and a user's bytes are never deleted.
 fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
     match fs::metadata(dir) {
         // Already a directory (or a symlink to one): nothing to do.
@@ -1263,35 +1195,23 @@ mod tests {
         );
     }
 
-    /// The second launch of an app must keep persistence ON.
-    ///
-    /// The failure this pins: the per-package state directory already exists on
-    /// every run after the first, so opening the store has to treat an
-    /// already-existing directory as success. If the directory create were not
-    /// idempotent it would fail with `EEXIST` on the second open, the caller
-    /// (`ui::persist::open`) would swallow the error and drop to an in-memory
-    /// document, and every app would silently lose its state on every launch
-    /// but the very first. Fresh-XDG CI never sees it because the directory is
-    /// always absent there — so this test creates the directory *before* the
-    /// first open, exercising the pre-existing-directory path both times.
+    /// If the directory create were not idempotent, the second open would fail
+    /// `EEXIST`, `ui::persist::open` would swallow that into an in-memory
+    /// fallback, and every app would silently lose its state after the first
+    /// launch. Fresh-XDG CI never sees it since the directory starts absent
+    /// there, so this test pre-creates it before the *first* open too.
     #[test]
     #[serial_test::serial]
     fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
         let _tmp = scratch_home();
         let pkg = "dev.qos.persist-twice";
 
-        // The directory is already present before the *first* open, exactly as
-        // it is on every launch after the app has run once. This is the path
-        // that must not fail with EEXIST.
         let dir = cli::standalone_state_dir(pkg);
         fs::create_dir_all(&dir).unwrap();
         assert!(dir.is_dir(), "the state directory pre-exists for both opens");
 
-        // Run 1: open, confirm the store is live (not refused), then persist a
-        // value through the real autosave writer — enabled, not the disabled
-        // in-memory fallback a swallowed EEXIST would have produced. `seed` runs
-        // on the freshly loaded document (before any edit), exactly as
-        // `ui::persist::open` sequences it, so the later edit is seen as a change.
+        // `seed` runs on the freshly loaded document, exactly as
+        // `ui::persist::open` sequences it, so the later edit reads as a change.
         let mut run1 = DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
         let mut doc = run1.load_or_new();
         assert!(run1.refusal().is_none(), "a fresh store is not refused");
@@ -1304,8 +1224,6 @@ mod tests {
         assert_eq!(autosave1.last_error(), None, "no write may have failed");
         drop(autosave1);
 
-        // Run 2: the directory still exists. The open must succeed again, the
-        // autosave must be enabled again, and run 1's value must be present.
         let run2 = DocStore::open_for(pkg);
         assert!(
             run2.is_ok(),
@@ -1325,16 +1243,13 @@ mod tests {
             "the SECOND run must persist too — this is the bug: a non-idempotent \
              directory create disabled persistence for every launch after the first"
         );
-        // The reopened store is still writable end-to-end.
         doc2.put(&ROOT, "note", ScalarValue::Str("again".into())).unwrap();
         autosave2.flush();
     }
 
-    /// The real second-run failure: an older app layout wrote the document as a
-    /// zero-byte *file* at the directory's path. `create_dir_all` fails EEXIST
-    /// on a non-directory, so every such app came up without persistence on
-    /// every launch. Opening must recover — remove the empty leftover, create
-    /// the directory, come up ENABLED — and stay recovered on the next launch.
+    /// An older layout's zero-byte file at the directory's path used to fail
+    /// `create_dir_all` with EEXIST on every launch. Opening must recover —
+    /// remove the leftover, create the directory, come up ENABLED.
     #[test]
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
@@ -1342,12 +1257,9 @@ mod tests {
         let pkg = "dev.qos.stale-empty";
         let path = cli::standalone_state_dir(pkg);
 
-        // The old layout's leftover: a zero-byte regular file *at* the path the
-        // new layout wants to be a directory.
         fs::write(&path, b"").unwrap();
         assert!(path.is_file(), "the leftover is a file, not a directory");
 
-        // Run 1: open must recover and enable persistence, then write a value.
         let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
         assert!(path.is_dir(), "the stale file must have become a directory");
         let mut doc = run1.load_or_new();
@@ -1363,8 +1275,6 @@ mod tests {
         assert_eq!(autosave1.last_error(), None, "no write may have failed");
         drop(autosave1);
 
-        // Run 2: the path is a directory now — the ordinary second-run path —
-        // and the value written after recovery must be there.
         let mut run2 = DocStore::open_for(pkg).expect("second open after recovery");
         let doc2 = run2.load_or_new();
         assert_eq!(
@@ -1421,10 +1331,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn an_uncreatable_state_dir_is_still_an_error() {
-        // A regular file sits where a parent directory would need to be, so the
-        // package directory cannot be created. This fails with `ENOTDIR` for
-        // any uid — unlike a read-only directory, which root would sail past —
-        // so the test is deterministic wherever it runs.
+        // A file where a parent directory needs to be fails ENOTDIR for any
+        // uid — unlike a read-only directory, which root would sail past.
         let tmp = TempDir::new().unwrap();
         let blocker = tmp.path().join("blocker");
         fs::write(&blocker, b"not a directory").unwrap();

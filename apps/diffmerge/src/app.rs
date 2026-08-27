@@ -171,8 +171,8 @@ impl DiffMergeApp {
     }
 
     fn content_rect(&self) -> Rect {
-        // No bottom status strip: the summary floats as a transient bubble
-        // (see `draw_status_bubble`), so the content spans to the window bottom.
+        // Content spans to the window bottom; the summary floats as a
+        // transient bubble (see `draw_status_bubble`), not a bottom strip.
         Rect::new(
             self.rect.x0,
             self.rect.y0 + TOOLBAR_H,
@@ -450,11 +450,9 @@ impl DiffMergeApp {
         }
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old full-width bottom status strip.
-    /// It surfaces on a real change to the summary (poked only when the string
+    /// Surfaces on a real change to the summary (poked only when the string
     /// differs) or while the pointer hovers the bottom-right reveal band, then
-    /// fades. All colours come from the theme (via `draw_pill`).
+    /// fades.
     fn draw_status_bubble(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let now = std::time::Instant::now();
         let label = self.status_text();

@@ -350,11 +350,9 @@ pub struct Video {
 
 impl Video {
     /// The title to display given the DeArrow toggle.
-    pub fn display_title<'a>(&'a self, dearrow: bool) -> &'a str {
-        if dearrow {
-            if let Some(t) = &self.dearrow_title {
-                return t;
-            }
+    pub fn display_title(&self, dearrow: bool) -> &str {
+        if dearrow && let Some(t) = &self.dearrow_title {
+            return t;
         }
         &self.title
     }
@@ -718,12 +716,11 @@ impl TubeModel {
     /// video's own thumbnail. Keeps the DeArrow/original choice in one place so
     /// every card + poster stays consistent.
     pub fn display_thumbnail_url<'a>(&'a self, v: &'a Video) -> &'a str {
-        if self.settings.dearrow_thumbs_on() {
-            if let Some(url) = self.dearrow_thumb_url.get(&v.id) {
-                if !url.is_empty() {
-                    return url;
-                }
-            }
+        if self.settings.dearrow_thumbs_on()
+            && let Some(url) = self.dearrow_thumb_url.get(&v.id)
+            && !url.is_empty()
+        {
+            return url;
         }
         &v.thumbnail_url
     }
@@ -838,10 +835,10 @@ impl TubeModel {
         if id.is_empty() || url.is_empty() {
             return;
         }
-        if let Some(ch) = self.channels.iter_mut().find(|c| c.id == id) {
-            if ch.avatar_url.is_empty() {
-                ch.avatar_url = url.to_string();
-            }
+        if let Some(ch) = self.channels.iter_mut().find(|c| c.id == id)
+            && ch.avatar_url.is_empty()
+        {
+            ch.avatar_url = url.to_string();
         }
     }
 
@@ -884,10 +881,10 @@ impl TubeModel {
             return;
         }
         for ch in self.channels.iter_mut() {
-            if ch.avatar_url.is_empty() {
-                if let Some(url) = by_name.get(&norm_channel_name(&ch.name)) {
-                    ch.avatar_url = url.clone();
-                }
+            if ch.avatar_url.is_empty()
+                && let Some(url) = by_name.get(&norm_channel_name(&ch.name))
+            {
+                ch.avatar_url = url.clone();
             }
         }
     }
@@ -1000,8 +997,7 @@ mod tests {
 
     #[test]
     fn sponsorblock_master_switch_overrides_categories() {
-        let mut s = Settings::default();
-        s.sponsorblock_enabled = false;
+        let s = Settings { sponsorblock_enabled: false, ..Settings::default() };
         assert!(!s.category_enabled(Category::Sponsor));
         assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
         assert!(!s.should_auto_skip(Category::Sponsor));

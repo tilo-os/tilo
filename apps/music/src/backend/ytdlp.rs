@@ -1,29 +1,21 @@
 //! Optional `yt-dlp`-backed **full-track** stream resolver.
 //!
-//! ## Why this exists
+//! rustypipe resolves audio through the iOS/TV player clients (no PoToken),
+//! but since YouTube's SABR rollout those googlevideo URLs are **range-gated
+//! to their first ~1-minute segment** — playback stalls at ~1 MB (HTTP
+//! 403/416). The Invidious `local` proxy fallback ([`crate::backend::proxy`])
+//! only helps while a public instance is up, and that network has largely
+//! collapsed.
 //!
-//! rustypipe resolves audio through the iOS/TV player clients (no PoToken). As
-//! of YouTube's SABR rollout those direct googlevideo URLs are **range-gated to
-//! their first ~1-minute segment** — a track plays for ~1 minute and then the
-//! server refuses every byte range past ~1 MB (HTTP 403/416). The classic fix,
-//! a fully-rangeable Invidious `local` proxy (see [`crate::backend::proxy`]),
-//! only works while a public instance is up — and the public Invidious/Piped
-//! network has largely collapsed, so in practice no instance serves media.
+//! `yt-dlp` resolves the same video through the **`android_vr`** client,
+//! which is not SABR-gated and serves the whole file. rustypipe can't use
+//! that client itself (its player-client order is fixed to `[Ios, Tv]`), so
+//! when `yt-dlp` is present we shell out to it for the full-stream URL.
 //!
-//! `yt-dlp` resolves a googlevideo URL through the **`android_vr`** client,
-//! which is *not* SABR-gated: it serves arbitrary byte ranges over the whole
-//! file, so the entire track streams. rustypipe cannot use that client (its
-//! player-client order is fixed to `[Ios, Tv]` and not configurable), so when
-//! `yt-dlp` is present we shell out to it for the full-stream URL and hand that
-//! to the ordinary staging + playback path.
-//!
-//! ## Runtime-optional, not a build dependency
-//!
-//! This is invoked as a **subprocess** — no new crate is linked, and if `yt-dlp`
-//! is not installed (or is disabled) resolution falls back to the proxy and then
-//! the direct (truncating) URL, so the pure-Rust path still works. Set
-//! `QOS_MUSIC_YTDLP` to the binary path to override, or to an empty string to
-//! disable it.
+//! Runtime-optional, not a build dependency: invoked as a subprocess, so if
+//! `yt-dlp` is missing or disabled, resolution falls back to the proxy and
+//! then the direct (truncating) URL. Set `QOS_MUSIC_YTDLP` to the binary path
+//! to override, or to an empty string to disable it.
 
 use crate::backend::ResolvedStream;
 
@@ -44,7 +36,7 @@ pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
     // The `mime` param is a media type, not form data: a `+` in it is literal
     // (`image/svg+xml`), so this decodes per RFC 3986.
     let mime = field("mime")
-        .map(|v| ui::uri::decode(v))
+        .map(ui::uri::decode)
         .unwrap_or_else(|| "audio/mp4".to_string());
     // Sniff codec/container off the (decoded or raw) mime — both carry the words.
     let m = mime.to_ascii_lowercase();

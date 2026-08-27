@@ -1,22 +1,17 @@
 //! Content-addressed **CRDT change-history** storage + versioning for office
 //! documents.
 //!
-//! When an office file (`.odt`/`.docx`/…) lives in the FS it is not re-saved as
-//! an opaque blob on every write. Its canonical form is a `qdoc` automerge
-//! document, and this module persists that document as its **change history** —
-//! each automerge change stored once as a content-addressed blob in the same
-//! [`ContentStore`] (blake3 / iroh-blobs) the rest of the FS uses. A *version* is
-//! a small [`VersionManifest`] listing the change hashes in causal order, chained
-//! to the previous version. So:
-//!
-//! * **Editing mutates OS-understood changes, not bytes.** A save appends only the
-//!   new automerge changes; the unchanged history dedups (identical change bytes →
-//!   identical content hash → stored once).
-//! * **Every version is content-addressed and reconstructible.** [`DocStore::checkout`]
-//!   replays a manifest's change blobs into a fresh document — exact time-travel.
-//! * **Native version-diff across formats.** [`DocStore::diff_versions`] checks out
-//!   two versions and runs the structural [`qdoc::diff`] over them, so an `.odt`
-//!   and a `.docx` diff the same way — they share one canonical model.
+//! An office file (`.odt`/`.docx`/…) is not re-saved as an opaque blob on
+//! every write. Its canonical form is a `qdoc` automerge document, and this
+//! module persists that document as its **change history**: each automerge
+//! change stored once as a content-addressed blob in the same
+//! [`ContentStore`] the rest of the FS uses, and a *version* is a small
+//! [`VersionManifest`] listing the change hashes in causal order, chained
+//! to the previous version. So a save appends only new changes (unchanged
+//! history dedups), [`DocStore::checkout`] replays a manifest's blobs into
+//! a fresh document for exact time-travel, and [`DocStore::diff_versions`]
+//! runs the structural [`qdoc::diff`] over two checkouts — an `.odt` and a
+//! `.docx` diff the same way, since they share one canonical model.
 
 use anyhow::{anyhow, Result};
 use automerge::{AutoCommit, Change};
@@ -241,7 +236,6 @@ mod tests {
         let store = ContentStore::memory();
         let mut ds = DocStore::new(&store);
 
-        // v0: the imported document.
         let v0 = ds.commit_document(&mut doc, "alice").await.unwrap();
         assert!(v0.change_count >= 1, "a version records the CRDT change history, not a blob");
         let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
@@ -252,17 +246,12 @@ mod tests {
         let hlen = doc.block_text(&hid).unwrap_or_default().chars().count();
         doc.splice_text(&hid, hlen, 0, " (DRAFT)");
 
-        // v1: after the edit.
         let v1 = ds.commit_document(&mut doc, "alice").await.unwrap();
         let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
         assert_eq!(m1.parent, Some(*v0.manifest_hash.as_bytes()), "v1 chains to v0");
-
-        // Incremental change history: v1 extends v0's change list (the shared prefix
-        // dedups; only the new changes were added).
         assert!(v1.change_count > v0.change_count, "the edit added new changes");
         assert!(m1.change_hashes.starts_with(&m0.change_hashes), "unchanged history is reused, not re-saved");
 
-        // Checkout reconstructs each version exactly.
         let mut back0 = ds.checkout_version(0).await.unwrap();
         let c0 = qdoc::model::open(&back0, &automerge::ROOT).unwrap();
         let heading0 = qdoc::model::block_text(&back0, &c0, &hid).unwrap();
@@ -275,7 +264,6 @@ mod tests {
             "v1 has the edited heading"
         );
 
-        // The version diff surfaces exactly the heading change.
         let diff = ds.diff_versions(0, 1).await.unwrap();
         assert_eq!(diff.summary.changed, 1, "one block changed between versions");
         assert_eq!(diff.summary.added, 0);
@@ -283,8 +271,6 @@ mod tests {
         let ch = diff.blocks.iter().find(|b| b.op == qdoc::BlockOp::Changed).unwrap();
         assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
 
-        // Re-committing an unchanged document is a no-op in stored change blobs
-        // (pure dedup) — proving content addressing, not blob re-saving.
         let v2 = ds.commit_document(&mut doc, "alice").await.unwrap();
         let m2 = ds.load_manifest(v2.manifest_hash).await.unwrap();
         assert_eq!(m2.change_hashes, m1.change_hashes, "no edit → identical change set");
@@ -307,7 +293,6 @@ mod tests {
         doc.splice_text(&hid, hlen, 0, " v2");
         ds.commit_document(&mut doc, "bob").await.unwrap();
 
-        // Check out v1, export to .docx, reopen — the edit is present and valid.
         let back = ds.checkout_document(1).await.unwrap();
         let out = reg.provider_for_ext("docx").unwrap().export(back.as_ref()).unwrap();
         let mut reopened = qdoc::Document::new();
@@ -321,7 +306,6 @@ mod tests {
     /// formulas) works across versions.
     #[tokio::test]
     async fn commits_workbook_versions_as_change_history_and_diffs() {
-        // Build a workbook directly in the canonical CRDT model.
         let mut wb = qdoc::Workbook::new();
         let s = wb.add_sheet("Sheet1");
         wb.set_cell(&s, "A1", qdoc::CellInput::number("10"));
@@ -330,31 +314,26 @@ mod tests {
         let store = ContentStore::memory();
         let mut ds = DocStore::new(&store);
 
-        // v0: the initial workbook.
         let v0 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
         assert!(v0.change_count >= 1, "a version records the CRDT change history, not a blob");
         let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
         assert!(m0.parent.is_none(), "first version has no parent");
 
-        // Edit a cell (a CRDT op) + add a new formula cell.
         wb.set_cell(&s, "A1", qdoc::CellInput::number("15"));
         wb.set_cell(&s, "B1", qdoc::CellInput::formula("A1+A2", "35", qdoc::CellType::Number));
 
-        // v1: after the edit — incremental change history (shared prefix dedups).
         let v1 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
         let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
         assert_eq!(m1.parent, Some(*v0.manifest_hash.as_bytes()), "v1 chains to v0");
         assert!(v1.change_count > v0.change_count, "the edit added new changes");
         assert!(m1.change_hashes.starts_with(&m0.change_hashes), "unchanged history is reused, not re-saved");
 
-        // Checkout reconstructs v0 exactly (no B1, A1 still 10).
         let back0 = ds.checkout_workbook(0).await.unwrap();
         let snap0 = back0.materialize();
         let sheet0 = snap0.sheet_by_name("Sheet1").unwrap();
         assert_eq!(sheet0.cell("A1").unwrap().value, "10", "v0 has the original A1");
         assert!(sheet0.cell("B1").is_none(), "v0 predates B1");
 
-        // The version diff surfaces exactly the changed + added cells, formula intact.
         let diff = ds.diff_workbook_versions(0, 1).await.unwrap();
         assert_eq!(diff.summary.cells_changed, 1, "one cell changed (A1)");
         assert_eq!(diff.summary.cells_added, 1, "one cell added (B1)");
@@ -368,14 +347,10 @@ mod tests {
         assert_eq!(b1.new.as_ref().unwrap().formula.as_deref(), Some("A1+A2"), "added formula preserved in the diff");
     }
 
-    /// Two peers co-edit the *same file* exactly the way a shared CRDT
-    /// doc is co-edited: they fork the document, splice the same heading
-    /// concurrently, exchange the incremental Automerge changes, and
-    /// converge. Committing the converged replicas into the shared
-    /// content-addressed `DocStore` reuses the seed change history
-    /// (incremental sync — the common prefix dedups) and lands an
-    /// identical change set on both sides. This is the file-backed
-    /// counterpart to the toolkit's in-memory co-edit convergence.
+    /// Two peers co-edit the *same file*: fork, splice the same heading
+    /// concurrently, merge, and converge. Committing the converged
+    /// replicas into the shared `DocStore` reuses the seed change history
+    /// (common prefix dedups) and lands an identical change set on both sides.
     #[tokio::test]
     async fn two_replicas_of_a_file_coedit_and_converge_incrementally() {
         let reg = qdoc::builtin_registry();
@@ -386,7 +361,6 @@ mod tests {
         let store = ContentStore::memory();
         let mut ds = DocStore::new(&store);
 
-        // The shared file is committed once as the seed version.
         let v0 = ds.commit_document(&mut base, "seed").await.unwrap();
         let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
 
@@ -396,19 +370,16 @@ mod tests {
             .find(|id| base.block_kind(id).as_deref() == Some("heading"))
             .expect("seed document has a heading block");
 
-        // Two peers fork the shared file and edit the SAME heading Text
-        // object concurrently — A appends, B prepends.
+        // Two peers fork and edit the SAME heading concurrently — A appends, B prepends.
         let mut peer_a = base.fork();
         let mut peer_b = base.fork();
         let hlen = peer_a.block_text(&hid).unwrap_or_default().chars().count();
         peer_a.splice_text(&hid, hlen, 0, " [A]");
         peer_b.splice_text(&hid, 0, 0, "[B] ");
 
-        // Exchange the incremental changes both ways (Automerge merge).
         peer_a.merge(&mut peer_b);
         peer_b.merge(&mut peer_a);
 
-        // Both replicas converge on the shared file, carrying both edits.
         let text_a = peer_a.block_text(&hid).unwrap_or_default();
         let text_b = peer_b.block_text(&hid).unwrap_or_default();
         assert_eq!(text_a, text_b, "both replicas converge on the shared file");
@@ -417,8 +388,6 @@ mod tests {
             "the converged heading carries both concurrent edits: {text_a:?}"
         );
 
-        // Committing a converged replica reuses the seed history: only
-        // the new changes are stored, the shared prefix dedups.
         let va = ds.commit_document(&mut peer_a, "alice").await.unwrap();
         let ma = ds.load_manifest(va.manifest_hash).await.unwrap();
         assert!(
@@ -430,8 +399,6 @@ mod tests {
             "the two concurrent edits added to the change history"
         );
 
-        // The other converged replica stores the identical change set
-        // (order may differ for concurrent changes; the set does not).
         let vb = ds.commit_document(&mut peer_b, "bob").await.unwrap();
         let mb = ds.load_manifest(vb.manifest_hash).await.unwrap();
         let mut a_set = ma.change_hashes.clone();

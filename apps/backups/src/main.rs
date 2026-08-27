@@ -1,9 +1,9 @@
 //! Backups — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 use std::collections::HashMap;
 

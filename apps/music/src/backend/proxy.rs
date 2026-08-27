@@ -220,16 +220,12 @@ pub(crate) const BROWSER_UA: &str =
 /// Probe a proxy media URL with a tiny range request: `true` only when the
 /// instance actually serves **audio media bytes** — not merely `2xx + non-empty`.
 ///
-/// Public Invidious instances routinely answer with an HTTP 200/206 *HTML* body:
-/// an anti-bot interstitial (nerdvpn's "gandalf" challenge), a Cloudflare page,
-/// a "hosted-service moved" blog, or an error page rendered as HTML. The old
-/// check (`status().is_success() && !bytes.is_empty()`) accepted all of those,
-/// so the resolver committed to a dead instance and the staging download fed
-/// **HTML** into GStreamer — the pipeline errored and the transport froze at
-/// 0:00 while the UI still said "playing". We therefore require the response to
-/// actually look like media: a success status, a media `Content-Type` (never
-/// `text/html` / `text/plain` / `application/json`), and a body that does not
-/// sniff as HTML.
+/// Public Invidious instances routinely answer with an HTTP 200/206 *HTML*
+/// body: an anti-bot interstitial, a Cloudflare page, or an error page
+/// rendered as HTML. Accepting any success status would commit the resolver
+/// to a dead instance and feed HTML into the audio decoder, so this also
+/// requires a media `Content-Type` (never `text/html` / `text/plain` /
+/// `application/json`) and a body that does not sniff as HTML.
 #[cfg(feature = "live")]
 fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
     match client
@@ -404,8 +400,7 @@ mod tests {
         assert!(content_type_is_media("audio/webm; codecs=\"opus\""));
         assert!(content_type_is_media("application/octet-stream"));
         assert!(content_type_is_media("video/mp4"));
-        // Anti-bot / error pages an Invidious instance actually returns — these
-        // are the false-positives that made the resolver commit to a dead proxy.
+        // Anti-bot / error pages an Invidious instance actually returns as 2xx.
         assert!(!content_type_is_media("text/html; charset=utf-8"));
         assert!(!content_type_is_media("text/plain; charset=utf-8"));
         assert!(!content_type_is_media("application/json"));

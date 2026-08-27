@@ -484,7 +484,6 @@ impl SearchProvider for LibrarySearchProvider {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

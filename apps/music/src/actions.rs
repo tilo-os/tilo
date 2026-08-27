@@ -454,8 +454,8 @@ mod tests {
         let new_track = lib
             .tracks
             .keys()
+            .find(|t| !taken.contains(*t))
             .cloned()
-            .find(|t| !taken.contains(t))
             .expect("a track not already in the playlist");
         let pid = playlist.id.clone();
         let action = add_track_action(&pid, &new_track);

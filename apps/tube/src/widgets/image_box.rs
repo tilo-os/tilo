@@ -84,13 +84,13 @@ impl ImageBox {
 
 impl Widget for ImageBox {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -103,7 +103,7 @@ impl Widget for ImageBox {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.height),
                 },
                 flex_shrink: 0.0,

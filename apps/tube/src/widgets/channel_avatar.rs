@@ -107,13 +107,13 @@ impl Widget for ChannelAvatar {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -252,8 +252,8 @@ mod tests {
     fn unresolved_avatar_paints_initials_not_image() {
         let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
         let tags = draw_tags(&mut av);
-        assert!(!tags.iter().any(|t| *t == DrawTag::IMAGE), "no image → initials only");
-        assert!(tags.iter().any(|t| *t == DrawTag::COLOR), "initials chip fills a circle");
+        assert!(!tags.contains(&DrawTag::IMAGE), "no image → initials only");
+        assert!(tags.contains(&DrawTag::COLOR), "initials chip fills a circle");
     }
 
     /// A culled (never-drawn) avatar with a real rect reports it is NOT layout

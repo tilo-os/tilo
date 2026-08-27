@@ -83,8 +83,8 @@ impl Widget for SeekBar {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: percent(1.0),
-                    height: length(26.0),
+                    width: percent(1.0_f32),
+                    height: length(26.0_f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()

@@ -321,7 +321,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
                 // view count / date never shows a dangling "0 • " or a trailing "•".
                 .push_if(
                     !views_date_line(v.views, &v.published).is_empty(),
-                    dim(theme, &views_date_line(v.views, &v.published), 11.5),
+                    dim(theme, views_date_line(v.views, &v.published), 11.5),
                 ),
         )
 }
@@ -668,7 +668,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
 
 pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let mut vids: Vec<&Video> = model.videos.iter().collect();
-    vids.sort_by(|a, b| b.views.cmp(&a.views));
+    vids.sort_by_key(|v| std::cmp::Reverse(v.views));
     let cards: Vec<Flex> = vids.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
     scroll(
         Flex::col()
@@ -783,7 +783,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
                     border: None,
                 })
                 .push(icon(IconKind::Playlist, 12.0, Color::WHITE))
-                .push(text_c(&format!("{} videos", human_count(p.video_count)), 11.0, Color::WHITE)),
+                .push(text_c(format!("{} videos", human_count(p.video_count)), 11.0, Color::WHITE)),
         );
     let stack = Flex::col()
         .fill_w()
@@ -799,8 +799,8 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
         .grow(1.0)
         .gap(3.0)
         .push(text(&p.title, 14.5))
-        .push(dim(theme, &format!("{} • Playlist", p.channel_name), 12.5))
-        .push(dim(theme, &format!("{} videos", human_count(p.video_count)), 12.5));
+        .push(dim(theme, format!("{} • Playlist", p.channel_name), 12.5))
+        .push(dim(theme, format!("{} videos", human_count(p.video_count)), 12.5));
 
     Flex::col()
         .fill_w()
@@ -885,7 +885,7 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
 
     let body = if model.search_loading {
         // While a fetch is in flight, show a skeleton — NEVER a premature "No
-        // results" (the bug that shipped).
+        // results".
         skeleton_grid(theme, 8)
     } else if query.trim().is_empty() {
         empty_state(theme, "Search Tube", "Type a query above to find videos, playlists and creators.")
@@ -941,7 +941,7 @@ pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, i
         .push(text(&pl.title, 26.0))
         .push(dim(
             theme,
-            &format!("{}  •  {} videos", pl.channel_name, human_count(pl.video_count)),
+            format!("{}  •  {} videos", pl.channel_name, human_count(pl.video_count)),
             13.5,
         ));
     if let Some(fid) = first_id {
@@ -1068,10 +1068,10 @@ pub fn watch(
     bus: &ActionBus,
     imgs: Imgs,
     id: &str,
-    content_w: f64,
-    content_h: f64,
+    content_size: (f64, f64),
     player: SharedPlayer,
 ) -> Scrollable {
+    let (content_w, content_h) = content_size;
     let Some(v) = model.video(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Video unavailable", "")));
     };
@@ -1180,7 +1180,7 @@ pub fn watch(
                             border: None,
                         })
                         .on_click(bus, Action::SkipSegment(s.end))
-                        .push(text_c(&format!("Skip {}", s.category.label()), 13.0, Color::WHITE))
+                        .push(text_c(format!("Skip {}", s.category.label()), 13.0, Color::WHITE))
                         .push(icon(IconKind::Skip, 14.0, Color::WHITE)),
                 ),
         );
@@ -1217,7 +1217,7 @@ pub fn watch(
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(dim(theme, &format!("{} • {}", human_views(v.views), v.published), 13.0))
+        .push(dim(theme, format!("{} • {}", human_views(v.views), v.published), 13.0))
         .push(spring())
         .push(
             pill(
@@ -1261,7 +1261,7 @@ pub fn watch(
                     model.channel(&v.channel_id).and_then(|c| subs_label(c.subscribers)).is_some(),
                     dim(
                         theme,
-                        &model
+                        model
                             .channel(&v.channel_id)
                             .and_then(|c| subs_label(c.subscribers))
                             .unwrap_or_default(),
@@ -1290,7 +1290,7 @@ pub fn watch(
         Flex::row()
             .gap(10.0)
             .align(Align::Center)
-            .push(text(&format!("{} Comments", human_count(v.comments.len() as u64)), 17.0)),
+            .push(text(format!("{} Comments", human_count(v.comments.len() as u64)), 17.0)),
     );
     if model.settings.show_comments {
         for c in &v.comments {
@@ -1426,9 +1426,9 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
         .gap(6.0)
         .align(Align::Center)
         .push(icon(IconKind::Like, 13.0, theme.text_dim))
-        .push(dim(theme, &human_count(c.likes), 11.5))
+        .push(dim(theme, human_count(c.likes), 11.5))
         .push(gap(8.0, 1.0))
-        .push_if(c.replies > 0, dim(theme, &format!("{} replies", c.replies), 11.5));
+        .push_if(c.replies > 0, dim(theme, format!("{} replies", c.replies), 11.5));
 
     Flex::row()
         .fill_w()
@@ -1870,9 +1870,9 @@ mod search_screen_tests {
         out
     }
 
-    /// The search screen no longer renders a result-count header (the query
-    /// already appears once in the top-bar field), and its type-filter chips are
-    /// present so results can be narrowed by kind.
+    /// The search screen has no result-count header (the query already appears
+    /// once in the top-bar field), and its type-filter chips are present so
+    /// results can be narrowed by kind.
     #[test]
     fn search_screen_has_type_chips_and_no_count_header() {
         use crate::model::Route;
@@ -1914,11 +1914,10 @@ mod search_screen_tests {
         }
     }
 
-    /// Issue 2 — a search-result row paints the fetched thumbnail. Rendered
-    /// through the real `search` screen with an image store that has decoded the
-    /// result's thumbnail URL, the card must emit an IMAGE draw (the real still),
-    /// not just the gradient poster — the same `video_card` image path
-    /// Home/Trending use.
+    /// Rendered through the real `search` screen with an image store that has
+    /// decoded the result's thumbnail URL, a search-result card must emit an
+    /// IMAGE draw (the real still), not just the gradient poster — the same
+    /// `video_card` image path Home/Trending use.
     #[test]
     fn search_result_row_paints_the_fetched_thumbnail() {
         let store = ui::ImageStore::new(Arc::new(|_u: &str| Some(px_png())));

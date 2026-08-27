@@ -120,22 +120,16 @@ pub struct RunOptions {
     /// Skip all service-socket resolution.
     pub no_services: bool,
     /// Explicit override for the host directory holding a qos-runtime
-    /// bundle. When set, wins over the manifest's `runtime` field and
-    /// the automatic lookup under `$XDG_DATA_HOME/qos-runtime/`.
-    /// Version is hard-coded to "1" for compatibility with the older
-    /// mount path when this is the only signal; when the manifest
-    /// declares a runtime, its version is used instead.
+    /// bundle. Wins over the manifest's `runtime` field. Version is
+    /// hard-coded to "1" for compatibility with the older mount path
+    /// when this is the only signal; a manifest-declared runtime uses
+    /// its own version instead.
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
-    /// Bind-mount the minimum host paths a dynamically-linked ELF
-    /// needs to `execve()`: ld-linux + libc + libgcc_s + friends,
-    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap that
-    /// preceded the runtime-bundle path — apps that declare
-    /// `runtime = "qos-runtime/..."` and have that bundle installed
-    /// don't need it (and if both are set, the runtime bundle wins
-    /// and `minimal_libs` is silently ignored). Deprecated: kept
-    /// working for backward compatibility.
+    /// Bind-mount the minimum host paths a dynamically-linked ELF needs
+    /// to `execve()` (ld-linux, libc, etc.), read-only. Ignored when a
+    /// runtime bundle is resolved — the bundle wins silently.
     pub minimal_libs: bool,
     /// Route the exec through the `__sandbox-exec` shim so Landlock
     /// is installed *inside* bwrap's mount namespace before the
@@ -164,64 +158,35 @@ pub struct RunOptions {
     /// by policy-strict callers and by tests. The launcher's trust
     /// config (a follow-up) will pin this by default.
     pub require_runtime_publisher: Option<String>,
-    /// Host path of the Wayland socket a GUI app should connect to
-    /// (typically `$XDG_RUNTIME_DIR/wayland-N` for the running
-    /// compositor). When set, the socket is bound into the sandbox at
-    /// `/run/user/<uid>/wayland-0` and `WAYLAND_DISPLAY` /
-    /// `XDG_RUNTIME_DIR` are set to match, so `wl_display_connect`
-    /// inside the sandbox finds it.
-    ///
-    /// `None` means the app gets no display at all — which is correct
-    /// for CLI launches and for a GUI app launched from a context with
-    /// no compositor. A GUI app without this simply fails to connect;
-    /// we never fall back to the launcher process's own
-    /// `$WAYLAND_DISPLAY`, because "whatever display the launcher
-    /// happened to inherit" is not a security decision anyone made.
+    /// Host path of the Wayland socket a GUI app should connect to. When
+    /// set, it's bound into the sandbox at `/run/user/<uid>/wayland-0`
+    /// with `WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR` pointed at it. `None`
+    /// means no display — never falls back to the launcher's own
+    /// `$WAYLAND_DISPLAY`, since that's not a decision anyone made for
+    /// this sandbox.
     pub wayland_socket: Option<PathBuf>,
-    /// The DRM render node the compositor resolved for itself, e.g.
-    /// `/dev/dri/renderD128`.
-    ///
-    /// A Wayland client has to render on the *same* GPU as the
-    /// compositor: buffers allocated on a different device either cost
-    /// a cross-device copy on every frame or cannot be imported at all,
-    /// and the tile shows an import error instead of the app. The
-    /// compositor already made this decision (it advertises the node as
-    /// `zwp_linux_dmabuf_v1`'s `main_device`) and passes it down here
-    /// rather than letting the launcher re-derive it — two independent
-    /// probes can disagree, and a client on the wrong GPU is exactly
-    /// the failure this plumbing exists to prevent.
-    ///
-    /// `None` means no compositor told us anything: the app's loaders
-    /// keep their own defaults, which is right for a CLI launch and for
-    /// a GUI launch from a context with no compositor.
+    /// The DRM render node the compositor resolved for itself (e.g.
+    /// `/dev/dri/renderD128`). A Wayland client must render on the same
+    /// GPU as the compositor or buffer imports fail/cost a copy; the
+    /// compositor already decided this via `zwp_linux_dmabuf_v1`'s
+    /// `main_device`, so the launcher uses that instead of re-deriving
+    /// it and risking disagreement. `None` means no compositor told us
+    /// anything, so loaders keep their own defaults.
     pub render_node: Option<PathBuf>,
-    /// Explicit host path to the user identity JSON. When `None`,
-    /// the launcher resolves the default location from the process's
-    /// `$XDG_CONFIG_HOME` / `$HOME` env vars and uses it only if the
-    /// file actually exists. Tests supply an override so they can
-    /// point at a tempdir without shimming `$HOME`.
-    ///
-    /// When resolved (either explicitly or from env), the file is
-    /// ro-bound into the sandbox at
-    /// [`crate::sandbox::SANDBOX_IDENTITY_PATH`] and
-    /// `QOS_USER_IDENTITY` is set to that path — so the sandboxed
-    /// `runtime-identity::load()` finds a real identity to attach to
-    /// join_channel presence + signed-op attribution.
+    /// Explicit host path to the user identity JSON; `None` resolves the
+    /// default from `$XDG_CONFIG_HOME`/`$HOME` if the file exists. Tests
+    /// override so they can point at a tempdir without shimming `$HOME`.
+    /// When resolved, ro-bound into the sandbox at
+    /// [`crate::sandbox::SANDBOX_IDENTITY_PATH`] with `QOS_USER_IDENTITY`
+    /// set, so `runtime-identity::load()` finds a real identity.
     pub identity_host_path: Option<PathBuf>,
-    /// Workspace (collaboration room) this launch belongs to, as the
-    /// compositor names it. Forwarded into the sandbox as
-    /// [`crate::sandbox::WORKSPACE_ID_ENV`].
-    ///
-    /// This is what makes collaboration between two locally-hosted
-    /// apps possible at all: the toolkit turns it into the cluster id
-    /// every CRDT delta is addressed to, so apps sharing a workspace
-    /// share a room and apps in different workspaces do not.
-    ///
-    /// `None` — the default — means the child sees no
-    /// `QOS_WORKSPACE_ID`, which is the correct answer for a launch
-    /// that isn't inside a session (`qos-launcher run` from a shell,
-    /// the CLI shim, tests). Apps then fall back to their
-    /// standalone-dev identity.
+    /// Workspace (collaboration room) this launch belongs to, forwarded
+    /// into the sandbox as [`crate::sandbox::WORKSPACE_ID_ENV`]. The
+    /// toolkit turns it into the cluster id every CRDT delta is
+    /// addressed to, so apps sharing a workspace share a room and apps
+    /// in different ones do not. `None` (the default, for launches
+    /// outside a session) means no `QOS_WORKSPACE_ID`; apps fall back to
+    /// their standalone-dev identity.
     pub workspace_id: Option<String>,
     /// Host path of a JSON file holding the `Vec<CapOverride>` the user
     /// granted in the workspace this app is being launched into. Written
@@ -238,19 +203,13 @@ pub struct RunOptions {
     /// pre-filtered, so a capability file that names another app's
     /// grants still binds nothing for this one.
     pub app_id: Option<String>,
-    /// A document the app should open on start, as an absolute host
-    /// path. Forwarded to the entrypoint as its `argv[1]`.
-    ///
-    /// The path is *only* an argument. Whether the app can actually read
-    /// it is decided entirely by the manifest and the capability file:
-    /// naming a path here binds nothing and unlocks nothing, so a caller
-    /// that wants the app to succeed has to grant the path as well
-    /// (`Scope::FsPath`). That separation is deliberate — an argument
-    /// the app chose to pass itself must never be a way to widen its own
-    /// sandbox.
-    ///
-    /// `None` — the default — launches the app with no arguments, which
-    /// is every launch that isn't opening something.
+    /// A document the app should open on start, forwarded to the
+    /// entrypoint as `argv[1]`. The path is *only* an argument — whether
+    /// the app can read it is decided entirely by the manifest and
+    /// capability file, so naming a path here binds nothing and unlocks
+    /// nothing. That separation is deliberate: an argument the app chose
+    /// to pass itself must never be a way to widen its own sandbox.
+    /// `None` (the default) launches with no arguments.
     pub open_document: Option<PathBuf>,
 }
 
@@ -282,23 +241,14 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
     plan
 }
 
-/// Resolve which runtime bundle to mount, if any.
+/// Priority: explicit override > manifest declaration (per-user path,
+/// then system) > no bind. `Ok(None)` is deliberately distinct from
+/// `Err`: no declaration is fine, an unresolvable one is an error unless
+/// `allow_missing_runtime` is set.
 ///
-/// Priority:
-/// 1. `opts.runtime_root` (explicit CLI / test override) — paired
-///    with the manifest's declared version when present, else "1"
-///    for backward compat with the older `--runtime <path>` shape.
-/// 2. `manifest.runtime` → look up under the default per-user path,
-///    then the system fallback.
-/// 3. Nothing: no runtime bind.
-///
-/// The `Ok(None)` branch is deliberately distinct from `Err(...)`:
-/// no runtime declaration is fine (apps might rely on --minimal-libs
-/// still), whereas a declaration that can't be resolved is an error
-/// unless `allow_missing_runtime` is set.
 /// Shim identical to [`resolve_runtime`], re-exported under a
-/// test-friendly name so integration tests don't need to duplicate
-/// the resolution logic.
+/// test-friendly name so integration tests don't need to duplicate the
+/// resolution logic.
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
@@ -307,15 +257,8 @@ pub fn resolve_runtime_test_helper(
 }
 
 /// Resolve, create and migrate into the one directory this launch may
-/// write to.
-///
-/// This replaces `materialise_write_grants`, which walked
-/// `sandbox.fs.write` and created whatever the package named that fell
-/// under the user's home — so a package asking for `~` got the launcher
-/// to hand it the home directory, and a package asking for another
-/// app's state directory got that. There is no list to walk any more:
-/// there is one directory, the launcher picks it, and the package has
-/// no say in where it is.
+/// write to. There is no list to walk: the launcher picks the directory
+/// and the package has no say in where it is.
 ///
 /// The room comes from `opts.workspace_id` — the same value the
 /// collaboration cluster is keyed on — so an app opened into a
@@ -342,19 +285,12 @@ fn resolve_app_dir(
     })
 }
 
-/// Priority:
-/// 1. `opts.identity_host_path` explicit override — used verbatim,
-///    without an existence check (tests may point at a not-yet-created
-///    file that a fixture will materialise before the sandbox runs).
-/// 2. `$XDG_CONFIG_HOME/qos/identity/primary.json` if the env var is
-///    set + the file exists.
-/// 3. `$HOME/.config/qos/identity/primary.json` if it exists.
-/// 4. `None` — no identity to plumb; apps fall back to the "no
-///    identity" path unchanged.
-///
-/// The env-var path also matches what `shell::firstboot` writes on
-/// first login and what `shell::identity_provisioning::DiskIdentityStore`
-/// uses, so a machine with a fresh boot chain converges on one file.
+/// Priority: explicit override (used verbatim, no existence check) >
+/// `$XDG_CONFIG_HOME/qos/identity/primary.json` >
+/// `$HOME/.config/qos/identity/primary.json` > `None`. The env-var path
+/// matches what `shell::firstboot` writes on first login and what
+/// `shell::identity_provisioning::DiskIdentityStore` uses, so a fresh
+/// boot chain converges on one file.
 pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     if let Some(p) = &opts.identity_host_path {
         return Some(p.clone());
@@ -387,17 +323,10 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
 }
 
 /// Derive the GPU pinning for this launch, or `None` when there is
-/// nothing to pin.
-///
-/// `None` in two distinct situations, both correct:
-/// - the caller passed no `render_node` (a CLI launch, or a GUI launch
-///   with no compositor), so nobody has decided which GPU is right;
-/// - the manifest grants the app no DRM access *and* nothing could be
-///   derived, so there is no loader to steer.
-///
-/// Everything the derivation declined to pin is logged. "The app quietly
-/// came up on the other GPU" is precisely the failure this is here to
-/// stop, so it must never happen silently.
+/// nothing to pin — no `render_node` was passed, or the manifest grants
+/// no DRM access and nothing could be derived. Everything declined is
+/// logged: the app quietly landing on the wrong GPU is exactly the
+/// failure this exists to stop, so it must never happen silently.
 pub fn resolve_gpu_selection(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
@@ -610,13 +539,9 @@ pub enum LaunchMode {
     },
 }
 
-/// `run` variant taking a pre-parsed manifest. Useful for tests that
-/// want to build a manifest in-memory.
 /// Env override that turns the egress gate off, downgrading a
-/// host-scoped grant to unrestricted access.
-///
-/// Deliberately an explicit operator action rather than a default: the
-/// point of the gate is that a grant naming a host is not silently
+/// host-scoped grant to unrestricted access. Deliberately explicit
+/// rather than a default: a grant naming a host must not be silently
 /// applied as "every host".
 pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
 
@@ -694,35 +619,26 @@ fn start_egress_gate(
     }
 }
 
-/// Put every opened service socket on the fd number the app was told
-/// to look at, in the child, before `exec`.
+/// Put every opened service socket on the fd number the app was told to
+/// look at, in the child, before `exec`. This is the whole of the
+/// service handoff: bwrap forwards fds it wasn't asked about untouched,
+/// so an fd placed here survives the namespace setup and the app finds
+/// a live connection at a known number.
 ///
-/// This is the whole of the service handoff, and it is how a
-/// descriptor actually crosses into the sandbox: left open, at a known
-/// number, inherited through bwrap's exec and the `__sandbox-exec`
-/// re-exec. bwrap forwards fds it was not asked about untouched, so an
-/// fd placed here survives the namespace setup and arrives in the app
-/// as a live connection. `child_fd`s start above the fixed seccomp
-/// descriptor, so this cannot land on top of it.
+/// Not bwrap's `--file FD DEST`: that copies the descriptor's *contents*
+/// into a regular file at DEST, so pointed at a connected socket it
+/// blocks reading for an EOF the broker will never send — the launch
+/// hangs before `exec` with no symptom but an app that never appears.
 ///
-/// What does *not* work — and used to be what this did — is bwrap's
-/// `--file FD DEST`. That is the flag that looks right and is not: it
-/// copies the descriptor's *contents* into a regular file at DEST, so
-/// pointed at a connected socket it blocks reading for an EOF the
-/// broker will never send. The launch hangs before it ever reaches
-/// `exec` and the only symptom is an app that never appears.
+/// Two passes because target numbers start at 17 and a source *can*
+/// already be sitting on a target not yet written; relocating every
+/// source above the target window first means no `dup2` can clobber a
+/// descriptor still waiting to be placed.
 ///
-/// The two passes matter. Target numbers start at 17 and sources are
-/// whatever `connect` handed out, so a source *can* already be sitting
-/// on a target we have not written yet; relocating every source above
-/// the target window first means no `dup2` can clobber a descriptor
-/// still waiting to be placed.
-///
-/// Returns an error rather than continuing quietly: we are here only
-/// because the socket existed and we connected to it, so a failure at
-/// this point is a bug, not an absent service — and an app that starts
-/// with collaboration silently off is exactly the outcome worth
-/// refusing.
+/// Errors rather than continuing quietly: we're here because the socket
+/// existed and we connected to it, so a failure now is a bug, not an
+/// absent service — and collaboration silently starting off is exactly
+/// the outcome worth refusing.
 ///
 /// # Safety
 /// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
@@ -761,14 +677,12 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
             }
         }
     }
-    // And the relocated copies, now that every target holds one. What the app
-    // is handed is one descriptor per service, at the number it was told to
-    // read — not the same socket open on three of them, two unnamed.
-    //
-    // Skipping any number that is *some* pair's target matters because the
-    // relocation above is best-effort: a source `F_DUPFD` could not move may
-    // still be sitting on another pair's target, and closing it here would
-    // shut the descriptor the `dup2` just placed there.
+    // Close the relocated copies now that every target holds one, so the
+    // app gets exactly one descriptor per service — not the same socket
+    // open on an extra, unnamed fd. Skip any number that is *some* pair's
+    // target: the relocation above is best-effort, so a source that
+    // couldn't move may be sitting on another pair's target, and closing
+    // it here would shut the descriptor `dup2` just placed there.
     for (src, dst) in pairs.iter() {
         if *src != *dst && !pairs.iter().any(|(_, other)| other == src) {
             unsafe { libc::close(*src) };
@@ -791,17 +705,15 @@ pub fn run_with(
         });
     }
 
-    // 0. Policy. A manifest that names a filesystem path is refused
-    // before anything else happens — before a socket is opened, before
-    // a directory is created, before bwrap is spawned. Refused rather
-    // than ignored: an app whose declared paths were silently dropped
-    // comes up broken in a way that looks like a bug in the app.
+    // 0. Policy. A manifest naming a filesystem path is refused before
+    // anything else — before a socket, a directory or bwrap. Refused
+    // rather than ignored: silently dropping declared paths comes up as
+    // an app bug, not a policy one.
     //
-    // This runs at launch as well as at install because a manifest can
-    // reach the launcher without ever passing an installer —
-    // `qos-launcher run --manifest <path>` is the supported way to test
-    // a package, and a package installed before this rule existed still
-    // has its old manifest on disk.
+    // Runs at launch too, not just install: a manifest can reach the
+    // launcher without an installer (`qos-launcher run --manifest`),
+    // and a package installed before this rule existed still has its
+    // old manifest on disk.
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
@@ -1170,9 +1082,8 @@ pub fn run_with(
         // match nothing.
         argv.push("--rw".to_string());
         argv.push(crate::appdir::SANDBOX_APP_DIR.to_string());
-        // The GPU device nodes the profile bound. A GPU context is
-        // opened O_RDWR, so a read-only rule surfaces at device open and
-        // looks exactly like "no GPU present".
+        // The GPU device nodes the profile bound — same O_RDWR reasoning
+        // as above.
         for path in crate::profile::landlock_rw_device_paths() {
             argv.push("--rw".to_string());
             argv.push(path.display().to_string());
@@ -1251,12 +1162,6 @@ pub fn run_with(
         );
     }
     // Landlock plan: derived here so we can log it from the parent.
-    // We deliberately do NOT install Landlock in `pre_exec` on the
-    // bwrap process — bwrap needs broad FS access to mount and pivot
-    // and would be locked out. The correct wiring is a small shim
-    // binary (modeled on `shell/src/sandbox/landlock_shim.rs`) that
-    // bwrap execs as its command; the shim restricts itself and then
-    // execs the real entrypoint. That shim is a follow-up.
     let landlock_plan = crate::landlock::plan_from_paths(
         &crate::profile::landlock_ro_paths(egress.shares_host_network()),
         &[PathBuf::from(crate::appdir::SANDBOX_APP_DIR)],
@@ -1370,11 +1275,8 @@ pub fn run_with_captured(
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with`
-    // resolves them. This path used to build a GUI argv unconditionally
-    // and drop `opts.mode` and `opts.open_document` on the floor, so a
-    // caller asking for a CLI launch got the GUI binary with no
-    // arguments — a silent disagreement between the two entries into the
-    // same sandbox.
+    // resolves them — both entries into the sandbox builder must agree
+    // on which binary and arguments a launch mode gets.
     let (entry_bin, passthrough): (String, Vec<String>) = match &opts.mode {
         LaunchMode::Gui => (
             manifest
@@ -1480,15 +1382,15 @@ pub fn run_with_captured(
 /// `--clearenv` cannot silently become a leak.
 ///
 /// The argv already carries `--clearenv`
-/// ([`crate::sandbox::push_clean_environment`]), and that is what decides what
-/// the *app* sees. This is the same statement made where the process is
-/// spawned: bwrap is handed nothing to pass on, so an argv that lost its flag
-/// fails closed with an empty environment instead of quietly handing over the
-/// compositor's.
+/// ([`crate::sandbox::push_clean_environment`]), which decides what the
+/// *app* sees. This is the same statement made where the process is
+/// spawned: bwrap is handed nothing to pass on, so an argv that lost its
+/// flag fails closed with an empty environment instead of quietly
+/// handing over the compositor's.
 ///
-/// `PATH` survives because the spawn itself needs it: `bwrap_bin` defaults to
-/// the bare name `bwrap`, which `Command` resolves against the child's `PATH`.
-/// It is the sandbox's own [`crate::sandbox::SANDBOX_PATH`], not the
+/// `PATH` survives because the spawn itself needs it: `bwrap_bin`
+/// defaults to the bare name `bwrap`, resolved against the child's
+/// `PATH` — the sandbox's own [`crate::sandbox::SANDBOX_PATH`], not the
 /// session's.
 fn clear_bwrap_environment(cmd: &mut Command) {
     cmd.env_clear();
@@ -1593,28 +1495,15 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 pub const SHIM_MOUNT_PATH: &str = "/qos-launcher";
 
 /// Decide how (or whether) to expose D-Bus into the sandbox based on the
-/// manifest's portal declaration.
+/// manifest's portal declaration. Preferred: spawn `xdg-dbus-proxy`
+/// filtered to portals + notifications + MPRIS, and bind its socket in —
+/// that blocks the sandboxed app from reaching every other well-known
+/// name on the host session bus.
 ///
-/// Returns a pair:
-/// - `Option<DBusBindPlan>` — the plan to hand to `build_bwrap_argv`.
-///   `None` means no D-Bus at all (no portals declared, all `Deny`, or
-///   the host has no session bus).
-/// - `Option<DBusProxyGuard>` — RAII handle keeping the spawned proxy
-///   alive. When it drops the proxy is SIGTERMed and its socket unlinked.
-///   `None` on the direct-bind fallback (nothing to keep alive) or when
-///   no bind is happening.
-///
-/// The preferred path is: spawn `xdg-dbus-proxy` filtered to portals
-/// + notifications + MPRIS, bind ITS socket into the sandbox. That
-/// blocks the sandboxed app from reaching every other well-known name
-/// the host session bus carries.
-///
-/// The fallback fires only when `xdg-dbus-proxy` isn't installed OR
-/// couldn't be spawned. It emits a `tracing::warn!` so operators
-/// notice, then bind-mounts the raw session bus path. Abstract bus
-/// addresses can't be bind-mounted at all, so the fallback also
-/// returns `(None, None)` when the address is `unix:abstract=...` —
-/// that host really does need the proxy.
+/// Fallback (proxy missing or failed to spawn, logged with
+/// `tracing::warn!`) bind-mounts the raw session bus path instead,
+/// exposing the whole bus. Abstract bus addresses can't be bind-mounted
+/// at all, so that host gets `(None, None)` and needs the proxy.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
 ) -> (Option<DBusBindPlan>, Option<DBusProxyGuard>) {
@@ -1793,10 +1682,6 @@ mod identity_resolution_tests {
         assert_eq!(resolved, None);
     }
 }
-
-// The prior HEAD block above the identity_resolution_tests module
-// carried the resolve_dbus_bind helper; find_proxy_binary and
-// spawn_dbus_proxy live in the crate::dbus_proxy module.
 
 #[cfg(test)]
 mod app_dir_tests {

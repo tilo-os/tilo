@@ -399,7 +399,7 @@ impl Catalog {
         // --- Today (day 0) ---
         push("w-0-1700", "workspace", "pool", 0, "17:00", Auto, Hourly, 9 * GB + 700 * MB, 240 * MB, 312, Verifying);
         push("w-0-1600", "workspace", "pool", 0, "16:00", Auto, Hourly, 9 * GB + 500 * MB, 180 * MB, 211, Complete);
-        push("m-0-1422", "home", "pool", 0, "14:22", Manual, Keep, 48 * GB + 200 * MB, 1 * GB + 100 * MB, 1840, Complete);
+        push("m-0-1422", "home", "pool", 0, "14:22", Manual, Keep, 48 * GB + 200 * MB, GB + 100 * MB, 1840, Complete);
         push("w-0-1500", "workspace", "pool", 0, "15:00", Auto, Hourly, 9 * GB + 300 * MB, 96 * MB, 142, Complete);
         push("h-0-0300", "home", "pool", 0, "03:00", Auto, Daily, 47 * GB + 800 * MB, 820 * MB, 1320, Complete);
 
@@ -525,9 +525,7 @@ mod tests {
 
     #[test]
     fn snapshot_sizes_render_with_iec_binary_units() {
-        // Snapshot sizes are base-1024, so they must wear IEC binary units
-        // (KiB/MiB/GiB/TiB) — not the base-1000 KB/MB/GB labels this app used
-        // to print for the identical division.
+        // Base-1024, so labels must be IEC (KiB/MiB/GiB/TiB), not base-1000.
         assert_eq!(ui::format::bytes(4 * MB), "4.0 MiB");
         assert_eq!(ui::format::bytes(512 * GB), "512.0 GiB");
         assert_eq!(ui::format::bytes(2 * TB), "2.0 TiB");

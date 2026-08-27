@@ -8,11 +8,11 @@
 //! through [`crate::app::TubeApp::pump`].
 //!
 //! Endpoints (researched, current as of 2026):
-//!   * Invidious   `GET {instance}/api/v1/search?q=&type=video`
-//!                 `GET {instance}/api/v1/videos/{id}`
-//!   * SponsorBlock `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
-//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
-//!   * Dislikes    `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
+//! - Invidious: `GET {instance}/api/v1/search?q=&type=video`,
+//!   `GET {instance}/api/v1/videos/{id}`
+//! - SponsorBlock: `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
+//! - DeArrow: `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
+//! - Dislikes: `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
 //!
 //! Real video playback resolves to a **fully-rangeable** proxied stream URL that
 //! the shared media engine plays. [`crate::backend::proxy::resolve_rangeable`]
@@ -127,7 +127,9 @@ fn client() -> reqwest::blocking::Client {
         .user_agent("tube/0.1 (+qos)")
         .timeout(Duration::from_secs(8))
         .build()
-        .expect("reqwest client")
+        // Only a static user-agent + timeout are set (no proxy/TLS config that
+        // could fail to parse), so `build()` cannot return `Err` here.
+        .expect("reqwest client builder cannot fail with these fixed options")
 }
 
 /// Fetch SponsorBlock segments for a video via the direct
@@ -355,7 +357,11 @@ impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
-        std::thread::Builder::new()
+        // If the OS can't give us a thread (resource exhaustion), degrade to a
+        // worker that never produces updates rather than crashing the app:
+        // `request` sends go unread and `poll` stays empty, same as "no live
+        // data yet".
+        if let Err(e) = std::thread::Builder::new()
             .name("tube-fetch".into())
             .spawn(move || {
                 let client = client();
@@ -606,7 +612,9 @@ impl Worker {
                     }
                 }
             })
-            .expect("spawn tube-fetch");
+        {
+            tracing::error!("failed to spawn the tube-fetch worker thread: {e}");
+        }
         Self { tx: req_tx, rx: up_rx }
     }
 
@@ -645,12 +653,11 @@ fn resolve_stream_url(
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
     // play the full length and seek. (Proven with `--probe-engine`: full
     // duration, buffered to 100%.)
-    if let Some(b) = live.as_ref() {
-        if let Ok(src) = b.resolve_playback_source(id) {
-            if !src.url.is_empty() {
-                return Some((src.url, src.has_audio, src.quality));
-            }
-        }
+    if let Some(b) = live.as_ref()
+        && let Ok(src) = b.resolve_playback_source(id)
+        && !src.url.is_empty()
+    {
+        return Some((src.url, src.has_audio, src.quality));
     }
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
@@ -774,10 +781,10 @@ fn fetch(
             }
         }
     }
-    if fallback {
-        if let Ok(r) = offline.run(query) {
-            return Some((r, false));
-        }
+    if fallback
+        && let Ok(r) = offline.run(query)
+    {
+        return Some((r, false));
     }
     None
 }
@@ -798,10 +805,9 @@ fn feed_trending(
     // retired endpoint is visible rather than silently swallowed.
     if let Some((BackendResult::Videos(vs), true)) =
         fetch(live, offline, Query::Trending, false, up_tx)
+        && !vs.is_empty()
     {
-        if !vs.is_empty() {
-            return Some((vs, "live · trending".into()));
-        }
+        return Some((vs, "live · trending".into()));
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
