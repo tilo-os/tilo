@@ -32,8 +32,7 @@ fn selection_range_construction() {
 
 #[test]
 fn caret_is_single_location_per_peer() {
-    // A peer's caret moving from block A to block B must NOT leave a
-    // stale caret (and the caret-driven focus outline) behind on A.
+    // A caret moving from block A to B must not leave a stale one on A.
     let mut ctx = PresenceCtx::empty();
     let a = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
     let b = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
@@ -117,7 +116,6 @@ fn draw_peer_caret_emits_scene_content() {
     let ctx = PresenceCtx::empty();
     let mut scene = Scene::new();
     let theme = Theme::dark();
-    // A fresh scene is structurally empty; after drawing a caret it must have content.
     assert!(scene.encoding().is_empty(),
         "precondition: scene must start empty");
     ctx.draw_peer_caret(

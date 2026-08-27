@@ -24,7 +24,6 @@ pub enum LabelCue {
     Strike,
 }
 
-/// One toolbar button.
 #[derive(Clone)]
 pub struct ToolbarItem {
     pub label: String,

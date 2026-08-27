@@ -22,9 +22,6 @@ fn spring_settled_after_convergence() {
 
 #[test]
 fn tween_interpolates_linearly() {
-    // `Tween`/`Ease` became `Animated`/`Curve`, which are driven by a clock
-    // rather than by `advance(dt)` — so the start instant is pinned and time is
-    // supplied, instead of stepped.
     let start = Instant::now();
     let t = Animated::starting_at(0.0f32, 100.0f32, start, Duration::from_secs(1), Curve::Linear);
     assert!((t.current(start + Duration::from_millis(500)) - 50.0).abs() < 0.01);

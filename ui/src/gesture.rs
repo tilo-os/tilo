@@ -9,17 +9,12 @@ use std::collections::HashMap;
 use std::time::Instant;
 use vello::kurbo::Point;
 
-// ─────────────────────── navigation gestures (back / forward) ──────────────
+// Navigation gestures (back / forward): app-agnostic recognisers for the
+// two ways a user asks to go back or forward, recognised once in the host
+// `App` and delivered to the whole widget tree via `Widget::on_nav_gesture`.
 //
-// App-agnostic recognisers for the two ways a user asks to go back or
-// forward, recognised once in the host `App` and delivered to the whole
-// widget tree via `Widget::on_nav_gesture` — so every app gets history
-// navigation without re-implementing the input plumbing:
-//
-//   * **two-finger horizontal swipe** on a touchpad (precise / pixel
-//     scroll), and
-//   * **edge-pull swipe** from the left or right screen edge on a
-//     touchscreen (the phone/tablet back gesture).
+//   * two-finger horizontal swipe on a touchpad (precise/pixel scroll)
+//   * edge-pull swipe from a screen edge (the phone/tablet back gesture)
 
 /// The direction a recognised navigation gesture asks for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,9 +49,8 @@ const EDGE_ZONE_PX: f64 = 24.0;
 const EDGE_PULL_PX: f64 = 56.0;
 
 /// Default sign mapping: a positive horizontal scroll delta (as winit
-/// reports it) is treated as a *back* swipe — matching the touchpad
-/// convention on Firefox/Safari (swipe the content rightward to reveal
-/// the previous page). Flip this one constant if it feels inverted for a
+/// reports it) is treated as a *back* swipe — matching the Firefox/Safari
+/// touchpad convention. Flip this one constant if it feels inverted for a
 /// given natural-scroll setting.
 const POSITIVE_DX_IS_BACK: bool = true;
 
@@ -325,7 +319,6 @@ mod tests {
     #[test]
     fn two_finger_swipe_navigates_by_direction() {
         let mut g = NavGestureRecognizer::new();
-        // Positive-dx swipe → Back by default; negative → Forward.
         assert_eq!(swipe(&mut g, 200.0, 5.0), Some(NavDirection::Back));
         let mut g2 = NavGestureRecognizer::new();
         assert_eq!(swipe(&mut g2, -200.0, 5.0), Some(NavDirection::Forward));
@@ -334,7 +327,6 @@ mod tests {
     #[test]
     fn mostly_vertical_scroll_never_navigates() {
         let mut g = NavGestureRecognizer::new();
-        // Large horizontal but even larger vertical → not a swipe.
         assert_eq!(swipe(&mut g, 200.0, 400.0), None);
     }
 
@@ -362,12 +354,10 @@ mod tests {
     fn left_edge_pull_goes_back_right_edge_goes_forward() {
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
-        // Left edge → drag inward (rightward) past threshold → Back.
         assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
         assert_eq!(g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Back));
         assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
 
-        // Right edge → drag inward (leftward) past threshold → Forward.
         assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
         assert_eq!(g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Forward));
     }

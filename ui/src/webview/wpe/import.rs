@@ -1,10 +1,10 @@
 //! DMA-BUF → wgpu texture import via Vulkan external memory.
 //!
-//! WebKit exports a GPU buffer as a dmabuf fd (see [`super::egl`]); here we
-//! wrap it as a sampleable `wgpu::Texture` with **no copy** — the texture
+//! WebKit exports a GPU buffer as a dmabuf fd (see [`super::egl`]); this
+//! wraps it as a sampleable `wgpu::Texture` with **no copy** — the texture
 //! aliases the same GPU memory WebKit rendered into. Works on a **linear
-//! single-plane** buffer (`AMD_DEBUG=nodcc,notiling`), which needs only
-//! `VK_EXT_external_memory_dma_buf` + `VK_KHR_external_memory_fd` — both
+//! single-plane** buffer (`AMD_DEBUG=nodcc,notiling`), needing only
+//! `VK_EXT_external_memory_dma_buf` + `VK_KHR_external_memory_fd`, both
 //! already enabled by wgpu-hal. Tiled/compressed buffers would additionally
 //! need `VK_EXT_image_drm_format_modifier`, which wgpu-hal does not enable.
 
@@ -16,8 +16,7 @@ use vello::wgpu::hal::vulkan;
 
 use super::egl::DmabufFrame;
 
-/// Import a linear single-plane dmabuf as a sampleable texture. The
-/// returned texture owns the imported VkImage + VkDeviceMemory (and the
+/// The returned texture owns the imported VkImage + VkDeviceMemory (and the
 /// dup'd fd) and frees them when dropped. `None` on a non-linear frame or
 /// any Vulkan failure (caller keeps using the SHM path).
 pub fn import_dmabuf(device: &wgpu::Device, frame: &DmabufFrame) -> Option<wgpu::Texture> {
@@ -30,8 +29,7 @@ pub fn import_dmabuf(device: &wgpu::Device, frame: &DmabufFrame) -> Option<wgpu:
         );
         return None;
     }
-    // Vulkan takes ownership of the imported fd on success, so hand it a dup
-    // and keep our original alive for the frame's lifetime.
+    // Vulkan takes ownership of the imported fd on success, so hand it a dup.
     let dup = frame.planes[0].fd.try_clone().ok()?;
 
     // AR24 = DRM_FORMAT_ARGB8888 = bytes B,G,R,A in memory = VK B8G8R8A8.

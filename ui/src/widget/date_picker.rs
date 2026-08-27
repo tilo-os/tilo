@@ -27,10 +27,9 @@ use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::Widget;
 
-/// Number of weeks rendered. Six rows covers every possible month layout
-/// (a 31-day month starting on Sunday is the worst case — 6 rows · 7 cols
-/// = 42 cells, leaving room for the spill-in/spill-out days from
-/// neighbouring months).
+/// Six rows covers every possible month layout — a 31-day month starting
+/// on Sunday is the worst case, needing 6 rows to fit the spill-in/out
+/// days from neighbouring months.
 const GRID_ROWS: usize = 6;
 const GRID_COLS: usize = 7;
 
@@ -80,33 +79,28 @@ impl DatePicker {
         self
     }
 
-    /// Advance the visible month by one. Wraps December → January of the
-    /// next year. Does **not** move the selected date — the user must
-    /// click a day to change selection.
+    /// Wraps December → January. Does **not** move the selected date —
+    /// the user must click a day to change selection.
     pub fn advance_month(&mut self) {
         let (y, m) = self.month_view;
         self.month_view = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
     }
 
-    /// Retreat the visible month by one. Wraps January → December of the
-    /// previous year.
+    /// Wraps January → December.
     pub fn retreat_month(&mut self) {
         let (y, m) = self.month_view;
         self.month_view = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
     }
 
-    /// Programmatically set the selected date (and slide the visible month to
-    /// match). Does **not** fire `on_change` — this is for a host seeding the
-    /// picker from its own state before showing it.
+    /// Does **not** fire `on_change` — for a host seeding the picker from
+    /// its own state before showing it.
     pub fn set_selected(&mut self, date: NaiveDate) {
         self.selected = date;
         self.month_view = (date.year(), date.month());
     }
 
-    /// Move the selection by `days` (keyboard navigation) and fire `on_change`
-    /// with the new date. The visible month follows the selection so arrowing
-    /// off the end of a month reveals the next one, matching every native
-    /// date grid.
+    /// The visible month follows the selection so arrowing off the end of
+    /// a month reveals the next one, matching every native date grid.
     fn move_selection(&mut self, days: i64) {
         if let Some(d) = self.selected.checked_add_signed(chrono::Duration::days(days)) {
             self.selected = d;
@@ -117,28 +111,20 @@ impl DatePicker {
         }
     }
 
-    /// Column index (0..=6) of the first-of-month for the currently
-    /// visible month, where Monday = 0 and Sunday = 6. Tests pin the
-    /// locale assumption against this helper so the test failure
-    /// message is unambiguous if a future locale change forgets to
-    /// update the weekday header row.
+    /// Column index (0..=6) of the first-of-month, Monday = 0.
     pub fn first_visible_col(&self) -> usize {
         let (y, m) = self.month_view;
-        // `from_ymd_opt(_, _, 1)` only fails on invalid year ranges
-        // (i32::MIN…). For any realistic year this is `Some`; fall back
-        // to column 0 if it ever isn't, so the picker still renders.
+        // Falls back to column 0 on an invalid year range.
         NaiveDate::from_ymd_opt(y, m, 1)
             .map(|d| d.weekday().num_days_from_monday() as usize)
             .unwrap_or(0)
     }
 
-    /// Position the picker at `rect` and rebuild the header-chevron and
-    /// per-day hit-rects from it. Shared by the taffy [`Widget::apply_layout`]
-    /// path and the taffy-free [`Self::apply_layout_external`] embed path.
+    /// Shared by the taffy [`Widget::apply_layout`] path and the
+    /// taffy-free [`Self::apply_layout_external`] embed path.
     fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
 
-        // Header chevrons sit at the left and right edges of the header.
         self.prev_button_rect = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -152,10 +138,8 @@ impl DatePicker {
             self.rect.y0 + HEADER_HEIGHT,
         );
 
-        // Build the per-day hit-rects for the visible grid. Cell widths
-        // are derived from the host rect so the grid stretches/shrinks
-        // gracefully if layout assigns a different width than the
-        // build_layout default.
+        // Derived from the host rect, not the build_layout default, so the
+        // grid stretches/shrinks with whatever width layout assigns.
         let grid_top = self.rect.y0 + HEADER_HEIGHT + WEEKDAY_HEIGHT;
         let cell_w = self.rect.width() / GRID_COLS as f64;
         let cell_h = (self.rect.y1 - grid_top) / GRID_ROWS as f64;
@@ -172,17 +156,14 @@ impl DatePicker {
         }
     }
 
-    /// Place the picker at an explicit rect without going through taffy — the
-    /// embed path a host uses when it hand-positions the picker inside a
-    /// popover (see the calendar's New-Event form). The picker draws and hit-
-    /// tests exactly as it does under [`Widget::apply_layout`].
+    /// For a host that hand-positions the picker inside a popover; draws
+    /// and hit-tests exactly as under [`Widget::apply_layout`].
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.set_rect(rect);
     }
 
-    /// The date that fills cell `(row, col)` in the visible grid. Days
-    /// before the first-of-month spill in from the previous month;
-    /// days past the end spill into the next month.
+    /// Days before the first-of-month spill in from the previous month;
+    /// days past the end spill into the next.
     fn cell_date(&self, row: usize, col: usize) -> Option<NaiveDate> {
         let (y, m) = self.month_view;
         let first = NaiveDate::from_ymd_opt(y, m, 1)?;
@@ -243,7 +224,6 @@ impl Widget for DatePicker {
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        // Surface fill so the picker is visually grouped on any backdrop.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -252,8 +232,6 @@ impl Widget for DatePicker {
             &self.rect,
         );
 
-        // Keyboard-focus ring around the whole calendar so arrow-key day
-        // navigation reads as a focused control.
         if self.is_focused {
             scene.stroke(
                 &Stroke::new(2.0),
@@ -264,7 +242,6 @@ impl Widget for DatePicker {
             );
         }
 
-        // Header label: "Month YYYY".
         let (y, m) = self.month_view;
         let month_name = month_name_en(m);
         let header_label = format!("{} {}", month_name, y);
@@ -280,7 +257,7 @@ impl Widget for DatePicker {
             None,
         );
 
-        // Chevrons — drawn as text glyphs so we don't need a vector path.
+        // Drawn as text glyphs so we don't need a vector path.
         let (lw, _) = text_renderer.measure("\u{2039}", text_size, None);
         let (rw, _) = text_renderer.measure("\u{203A}", text_size, None);
         text_renderer.draw_text(
@@ -310,7 +287,6 @@ impl Widget for DatePicker {
             None,
         );
 
-        // Weekday header row (Mo Tu We Th Fr Sa Su).
         let cell_w = self.rect.width() / GRID_COLS as f64;
         let weekday_y = self.rect.y0
             + HEADER_HEIGHT
@@ -328,17 +304,14 @@ impl Widget for DatePicker {
             );
         }
 
-        // Today (for the "1 px ring" highlight).
         let today = Local::now().date_naive();
         let (vy, vm) = self.month_view;
 
-        // Day cells.
         for (date, cell_rect) in &self.day_rects {
             let is_in_view_month = date.year() == vy && date.month() == vm;
             let is_selected = *date == self.selected;
             let is_today = *date == today && is_in_view_month;
 
-            // Selected pill — filled rounded rect under the day text.
             if is_selected {
                 let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
                 let inner = Rect::new(
@@ -357,8 +330,8 @@ impl Widget for DatePicker {
                 );
             }
 
-            // Today ring — drawn on top of the cell (and below the text)
-            // so it's visible even when the day is selected.
+            // On top of the cell fill, below the text, so it's visible even
+            // when selected.
             if is_today {
                 let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
                 let inner = Rect::new(
@@ -377,8 +350,6 @@ impl Widget for DatePicker {
                 );
             }
 
-            // Day number text — centred, colour depends on
-            // selected / in-view-month / out-of-view-month.
             let day_str = date.day().to_string();
             let color = if is_selected {
                 tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
@@ -418,10 +389,8 @@ impl Widget for DatePicker {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } if self.is_focused => {
-                // Arrow keys walk the grid a day (horizontal) or a week
-                // (vertical) at a time; PageUp/PageDown page the month;
-                // Enter/Space (re-)commit the current selection. Every move
-                // fires `on_change`, so the host stays in step without a click.
+                // Arrows walk a day/week; PageUp/PageDown page the month;
+                // Enter/Space (re-)commit. Every move fires `on_change`.
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => { self.move_selection(-1); *handled = true; }
                     Key::Named(NamedKey::ArrowRight) => { self.move_selection(1); *handled = true; }
@@ -459,8 +428,7 @@ impl Widget for DatePicker {
                     *handled = true;
                     return;
                 }
-                // Day cell hit — clone first so we can mutate `selected`
-                // and call the callback without borrowing `self.day_rects`.
+                // Cloned so mutating `selected` doesn't borrow `self.day_rects`.
                 let hit = self
                     .day_rects
                     .iter()
@@ -468,9 +436,8 @@ impl Widget for DatePicker {
                     .map(|(d, _)| *d);
                 if let Some(date) = hit {
                     self.selected = date;
-                    // If the click was on a spill-in/out day, slide the
-                    // visible month to match the new selection — matches
-                    // every common picker UX.
+                    // Slides the visible month on a spill-in/out click,
+                    // matching every common picker UX.
                     self.month_view = (date.year(), date.month());
                     if let Some(cb) = self.on_change.as_mut() {
                         cb(date);
@@ -489,10 +456,8 @@ impl Widget for DatePicker {
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
 
-    /// The date picker reports [`Role::ComboBox`] — a selector whose value
-    /// is the currently-chosen date in ISO `YYYY-MM-DD` form. The grid is
-    /// rendered inline (there is no separate open/closed state), so
-    /// `expanded` is left unset.
+    /// Value is the selected date in ISO `YYYY-MM-DD` form; `expanded` is
+    /// left unset since the grid is rendered inline.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
@@ -538,10 +503,8 @@ mod tests {
     }
 
     fn fake_device_id() -> DeviceId {
-        // `DeviceId::dummy()` is only available behind a winit unstable
-        // feature; the regular winit constructor isn't pub. We construct
-        // one via `unsafe { std::mem::zeroed() }` because the value is
-        // never inspected by `handle_event` for these widgets.
+        // `DeviceId::dummy()` needs a winit unstable feature and the
+        // regular constructor isn't pub; never inspected by `handle_event`.
         unsafe { std::mem::zeroed() }
     }
 
@@ -572,7 +535,6 @@ mod tests {
         dp.advance_month();
         assert_eq!(dp.month_view(), (2024, 7));
 
-        // Advance from December → January of the next year.
         let mut dp_dec = DatePicker::new(NaiveDate::from_ymd_opt(2024, 12, 1).unwrap());
         dp_dec.advance_month();
         assert_eq!(dp_dec.month_view(), (2025, 1));
@@ -580,18 +542,14 @@ mod tests {
 
     #[test]
     fn date_picker_clicking_day_updates_selection() {
-        // Pin the visible month so day_rects are deterministic.
         let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
 
-        // Capture on_change emissions.
         let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
         let captured_cb = captured.clone();
         let mut dp = DatePicker::new(initial).on_change(move |d| {
             *captured_cb.borrow_mut() = Some(d);
         });
 
-        // Drive apply_layout manually — build a 1-node taffy tree, run
-        // build_layout, then apply_layout at origin (0,0).
         let theme = crate::theme::Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -601,7 +559,6 @@ mod tests {
             .unwrap();
         dp.apply_layout(&taffy, node, Point::ZERO);
 
-        // Find the cell rect for June 7 2024 and click its centre.
         let target = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
         let cell = dp
             .day_rects
@@ -663,13 +620,8 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("2024-06-07"));
     }
 
-    /// Keyboard navigation moves the selection and emits the new date through
-    /// `on_change` (the same callback the click path fires), including across a
-    /// month boundary — which is what lets a host drive the picker with the
-    /// arrow keys alone. Exercises the `move_selection` seam the `handle_event`
-    /// arrow-key arm calls (winit's `KeyEvent` has no public constructor, so —
-    /// as `TimePicker`'s keyboard tests do — we drive the handler's logic
-    /// method directly).
+    /// winit's `KeyEvent` has no public constructor, so (as `TimePicker`'s
+    /// keyboard tests do) this drives `move_selection` directly.
     #[test]
     fn date_picker_keyboard_nav_moves_selection_and_emits() {
         let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
@@ -677,14 +629,13 @@ mod tests {
         let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap())
             .on_change(move |d| *cb.borrow_mut() = Some(d));
 
-        // Right arrow: +1 day, crossing June → July, updating both the
-        // selection and the visible month, and emitting the new date.
+        // Crosses June → July, updating both the selection and the visible
+        // month, and emitting the new date.
         dp.move_selection(1);
         assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 1).unwrap());
         assert_eq!(dp.month_view(), (2024, 7));
         assert_eq!(*captured.borrow(), Some(NaiveDate::from_ymd_opt(2024, 7, 1).unwrap()));
 
-        // Down arrow: +7 days.
         dp.move_selection(7);
         assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 8).unwrap());
     }
@@ -721,9 +672,6 @@ mod tests {
             .count()
     }
 
-    /// A focused date picker paints a focus ring around the calendar — one
-    /// extra stroke over the unfocused render. Asserts on the production
-    /// `draw` path via the scene encoding.
     #[test]
     fn focused_date_picker_paints_a_focus_ring() {
         let without = picker_color_fills(false);

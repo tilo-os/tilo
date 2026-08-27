@@ -1,26 +1,18 @@
-//! `ConflictBanner` — narrow horizontal strip a CRDT-backed widget
-//! mounts above itself when one or more unresolved conflicts exist
-//! on the doc.
-//!
-//! Shape:
+//! `ConflictBanner` — narrow horizontal strip a CRDT-backed widget mounts
+//! above itself when one or more unresolved conflicts exist on the doc.
 //!
 //! ```text
 //!  [!]  File rename collision — 3 conflicts in this doc        [Review] [Dismiss]
 //! ```
 //!
-//! The banner is **decorative + actionable**: it never mutates the
-//! underlying CRDT itself. Clicking `[Review]` fires `on_review`
-//! (host typically opens a [`crate::widget::conflict_picker::ConflictPicker`]);
-//! clicking `[Dismiss]` fires `on_dismiss` and hides the banner for
-//! this session. The host is responsible for re-mounting the
-//! banner the next time the doc loads if conflicts persist.
+//! Decorative + actionable: it never mutates the CRDT itself. `[Review]`
+//! fires `on_review` (host typically opens a
+//! [`crate::widget::conflict_picker::ConflictPicker`]); `[Dismiss]` fires
+//! `on_dismiss` and hides the banner for this session — the host re-mounts
+//! it next time the doc loads if conflicts persist.
 //!
-//! When `conflict_count == 0` the widget paints nothing and reports
-//! `Rect::ZERO`, so the host can leave it permanently in the layout
-//! tree without affecting layout when there's no conflict.
-//!
-//! Spec: `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
-//! Phase 4 ("Conflict toolkit + reconciliation UI").
+//! At `conflict_count == 0` the widget paints nothing and reports
+//! `Rect::ZERO`, so the host can leave it permanently in the layout tree.
 
 use std::collections::HashMap;
 
@@ -65,7 +57,6 @@ pub struct ConflictBanner {
     /// Hover state for the Review chip — drives a subtle background
     /// tint on hover so the user knows it's interactive.
     review_hovered: bool,
-    /// Hover state for the Dismiss chip.
     dismiss_hovered: bool,
     on_review: Option<ReviewCallback>,
     on_dismiss: Option<DismissCallback>,
@@ -73,10 +64,9 @@ pub struct ConflictBanner {
 }
 
 impl ConflictBanner {
-    /// Build a banner for `family` (the conflict-family display
-    /// name, e.g. `"Kanban move"`, `"File rename collision"`).
-    /// Starts with `conflict_count = 0` so the banner is invisible
-    /// until the host calls [`Self::set_conflict_count`].
+    /// Build a banner for `family` (the conflict-family display name, e.g.
+    /// `"Kanban move"`). Starts with `conflict_count = 0`, invisible until
+    /// the host calls [`Self::set_conflict_count`].
     pub fn new(family: impl Into<String>) -> Self {
         Self {
             family_name: family.into(),
@@ -100,45 +90,38 @@ impl ConflictBanner {
         }
     }
 
-    /// Read the current conflict count. Useful for tests + chrome
-    /// that wants to read what the banner is showing.
     pub fn conflict_count(&self) -> usize {
         self.conflict_count
     }
 
-    /// Read the family name. Useful for tests + the chrome that
-    /// wants to match a banner against a resolver registry.
     pub fn family_name(&self) -> &str {
         &self.family_name
     }
 
-    /// Test-only escape hatch: set the banner's rect without running
-    /// the taffy layout pass. Used by sibling-module tests
-    /// (`conflict_picker::tests::banner_to_picker_round_trip_outcome`)
-    /// to seed a banner geometry without spinning a full layout
-    /// tree.
+    /// Test-only escape hatch: set the banner's rect without running the
+    /// taffy layout pass, so a sibling-module test can seed a banner
+    /// geometry without spinning up a full layout tree.
     #[cfg(test)]
     pub(crate) fn set_rect_for_test(&mut self, rect: Rect) {
         self.rect = rect;
     }
 
-    /// Builder: install the `[Review]` callback. Typically opens a
-    /// `ConflictPicker` over the same artifact.
+    /// Install the `[Review]` callback. Typically opens a `ConflictPicker`
+    /// over the same artifact.
     pub fn on_review<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_review = Some(Box::new(f));
         self
     }
 
-    /// Builder: install the `[Dismiss]` callback. Typically hides
-    /// the banner for the session.
+    /// Install the `[Dismiss]` callback. Typically hides the banner for
+    /// the session.
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
     }
 
-    /// Computed rect for the `[Review]` chip. Returns `None` when
-    /// the banner is in zero-conflict mode and paints nothing — the
-    /// hit-test then short-circuits.
+    /// Computed rect for the `[Review]` chip. `None` in zero-conflict mode
+    /// (the banner paints nothing, so the hit-test short-circuits).
     pub fn review_chip_rect(&self) -> Option<Rect> {
         if self.conflict_count == 0 {
             return None;
@@ -174,9 +157,8 @@ impl ConflictBanner {
         ))
     }
 
-    /// Build the human-readable "N conflicts in this doc" label.
-    /// Handles the singular/plural fork in one place so the picker
-    /// + banner stay consistent.
+    /// The "N conflicts in this doc" label. Singular/plural handled here
+    /// so the picker + banner stay consistent.
     fn count_label(&self) -> String {
         if self.conflict_count == 1 {
             format!(
@@ -292,8 +274,6 @@ impl Widget for ConflictBanner {
             self.dirty = false;
             return;
         }
-        // Warning-tinted background — theme.warning at low alpha so
-        // the text overlay still reads cleanly.
         let warn = theme.tokens.colors.semantic.warning;
         let warn_rgba = warn.to_rgba8();
         let bg_color = Color::from_rgba8(
@@ -321,8 +301,6 @@ impl Widget for ConflictBanner {
         let text_size = theme.tokens.typography.scale.sm;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
 
-        // Leading warning glyph — exclamation in the theme's warning
-        // colour for emphasis.
         let glyph = "!";
         let (gw, gh) = text_renderer.measure(glyph, text_size + 2.0, None);
         let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - gw as f64) / 2.0;
@@ -335,8 +313,6 @@ impl Widget for ConflictBanner {
             None,
         );
 
-        // Family name + count label, taking the rest of the leading
-        // space up to the chip cluster.
         let label = self.count_label();
         let label_x = self.rect.x0 + PADDING + GLYPH_W + 6.0;
         let (_lw, lh) = text_renderer.measure(&label, text_size, None);
@@ -349,7 +325,6 @@ impl Widget for ConflictBanner {
             None,
         );
 
-        // Trailing chip cluster.
         if let Some(rect) = self.review_chip_rect() {
             self.draw_chip(
                 scene,
@@ -479,10 +454,6 @@ impl Widget for ConflictBanner {
     }
 }
 
-// =====================================================================
-// Tests
-// =====================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,10 +521,8 @@ mod tests {
 
     #[test]
     fn banner_paints_nothing_when_count_zero() {
-        // A zero-count banner reports `Rect::ZERO` as its get_rect
-        // and exposes no chip rects. This is the contract the
-        // chrome relies on to leave the banner in the layout tree
-        // without affecting layout.
+        // The contract the chrome relies on to leave the banner in the
+        // layout tree without affecting layout.
         let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 0);
         assert_eq!(b.conflict_count(), 0);
         assert_eq!(b.get_rect(), Rect::ZERO);
@@ -563,9 +532,7 @@ mod tests {
 
     #[test]
     fn banner_paints_warning_strip_when_count_positive() {
-        // With count > 0 both chip rects must be inside the banner
-        // rect (so they can be hit-tested) and the family name
-        // must be reflected in the count label.
+        // Both chip rects must be inside the banner rect (hit-testable).
         let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 3);
         assert_eq!(b.conflict_count(), 3);
         let r = b.get_rect();
@@ -617,9 +584,7 @@ mod tests {
 
     #[test]
     fn count_updates_via_setter() {
-        // The setter is the only way the chrome mutates the count;
-        // assert the round-trip plus the side-effects on the chip
-        // rects (rect existence flips at zero/non-zero).
+        // Chip-rect existence flips at zero/non-zero.
         let mut b = ConflictBanner::new("Kanban move");
         b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
         assert_eq!(b.conflict_count(), 0);

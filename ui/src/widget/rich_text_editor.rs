@@ -1,13 +1,9 @@
 //! `RichTextEditor` — a shared CRDT-native WYSIWYG rich-text editor widget.
 //!
-//! The toolkit already had a caret core (the shared [`text_selection`] walkers,
-//! now formalised as [`EditCore`](crate::text_edit::EditCore)) and a rich-run
-//! layout primitive ([`RichTextLayout`]), but no *editable* widget tied them
-//! together — every app that wanted WYSIWYG formatting (the word processor, slide
-//! text boxes, a rich caption) re-implemented caret motion, selection, splicing,
-//! and run styling by hand. This is that widget: type into it, select ranges,
-//! toggle **bold** / *italic* / underline over a selection, and switch the block
-//! between body / heading / bullet — all backed by the CRDT.
+//! Ties together the shared caret core ([`EditCore`](crate::text_edit::EditCore))
+//! and the rich-run layout primitive ([`RichTextLayout`]) into an *editable*
+//! widget, so apps that want WYSIWYG formatting stop re-implementing caret
+//! motion, selection, splicing, and run styling by hand.
 //!
 //! Design, following the five-pass [`Widget`] model:
 //!
@@ -15,26 +11,20 @@
 //!   inline formatting is stored as Automerge **native marks** (`bold` / `italic`
 //!   / `underline`), which shift automatically as text is spliced and merge
 //!   collaboratively — the same mechanism [`TextInput`] uses for authorship. The
-//!   block style is a scalar beside the text. The widget holds only render / caret
-//!   caches.
-//! * **Caret + selection are [`EditCore`].** Motion (char / word / line / doc),
-//!   shift-select, select-all, and the insert / delete splices come from the
-//!   shared core, so this editor and any future adopter get identical, tested
-//!   behaviour rather than a private fork.
-//! * **Runs render through [`RichTextLayout`].** Marks become
-//!   [`RichSpan`]s via the shared [`marks::segments_for`] partition, so bold /
-//!   italic / underline shape as real attributed runs (not glyph over-paint), with
-//!   caret geometry, selection rectangles, and click hit-testing from the same
-//!   laid-out buffer.
+//!   widget holds only render / caret caches.
+//! * **Caret + selection are [`EditCore`].** Motion, shift-select, select-all,
+//!   and the insert/delete splices come from the shared core, so this editor
+//!   and any future adopter get identical, tested behaviour.
+//! * **Runs render through [`RichTextLayout`].** Marks become [`RichSpan`]s via
+//!   the shared [`marks::segments_for`] partition, so bold/italic/underline
+//!   shape as real attributed runs (not glyph over-paint).
 //! * **IME-friendly.** Committed IME text is inserted; an in-progress preedit is
-//!   rendered inline (underlined) at the caret without touching the CRDT until it
-//!   commits.
+//!   rendered inline at the caret without touching the CRDT until it commits.
 //!
 //! Scope: this is a **single-paragraph** rich field that *word-wraps* — one
 //! Automerge `Text`, no hard line breaks (Enter is a no-op and pasted newlines
-//! fold to spaces), because [`RichTextLayout`] indexes bytes per paragraph. That
-//! covers titles, captions, and formatted fields; a multi-paragraph document is
-//! composed as a column of these (one editor per block) and is a later step.
+//! fold to spaces), because [`RichTextLayout`] indexes bytes per paragraph. A
+//! multi-paragraph document composes a column of these, one editor per block.
 //!
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
@@ -217,11 +207,9 @@ impl RichTextEditor {
         self
     }
 
-    /// The current plain text.
     pub fn text(&self) -> &str {
         &self.text
     }
-    /// The current block style.
     pub fn block_style(&self) -> RichBlockStyle {
         self.style
     }
@@ -241,19 +229,15 @@ impl RichTextEditor {
 
     // --- host-facing formatting actions (call from the app's event handler) ---
 
-    /// Toggle **bold** over the current selection.
     pub fn toggle_bold(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Bold, "bold");
     }
-    /// Toggle *italic* over the current selection.
     pub fn toggle_italic(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Italic, "italic");
     }
-    /// Toggle underline over the current selection.
     pub fn toggle_underline(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Underline, "underline");
     }
-    /// Set the block style (heading / body / bullet …).
     pub fn set_block_style(&mut self, state: &mut AutoCommit, style: RichBlockStyle) {
         if let Some(f) = self.field_obj.clone() {
             let _ = state.put(&f, "style", style.as_str());
@@ -261,7 +245,6 @@ impl RichTextEditor {
         self.style = style;
         self.mark_dirty();
     }
-    /// Rotate to the next block style.
     pub fn cycle_block_style(&mut self, state: &mut AutoCommit) {
         let next = self.style.next();
         self.set_block_style(state, next);

@@ -35,7 +35,6 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// Construct a collapsed selection at `pos`.
     pub fn collapsed(pos: usize) -> Self {
         Self { anchor: pos, cursor: pos }
     }
@@ -45,22 +44,18 @@ impl Selection {
         self.anchor == self.cursor
     }
 
-    /// Lower byte index of the selection.
     pub fn min(&self) -> usize {
         self.anchor.min(self.cursor)
     }
 
-    /// Upper byte index of the selection.
     pub fn max(&self) -> usize {
         self.anchor.max(self.cursor)
     }
 
-    /// Sorted byte range covering the selection.
     pub fn range(&self) -> Range<usize> {
         self.min()..self.max()
     }
 
-    /// Collapse the selection to the cursor position (anchor follows).
     pub fn collapse_to_cursor(&mut self) {
         self.anchor = self.cursor;
     }
@@ -254,16 +249,15 @@ pub fn word_boundaries_chars(text: &str, char_idx: usize) -> (usize, usize) {
 /// Word/line-granularity drag extension — the shared rule behind
 /// double-click-then-drag in `TextInput` and the reader.
 ///
-/// After a double- or triple-click snapped the anchor to a whole unit
-/// `(anchor_lo, anchor_hi)` (a word or a line, `lo <= hi`), a continuing drag
-/// must keep that original unit *inside* the selection and grow by whole units.
-/// Given the boundary span `(unit_lo, unit_hi)` the pointer now sits in and the
-/// pointer's own position `raw` (to decide which side of the anchor it is on),
-/// this returns the `(anchor, cursor)` the selection should adopt.
+/// After a double-/triple-click snaps the anchor to a whole unit
+/// `(anchor_lo, anchor_hi)` (`lo <= hi`), a continuing drag must keep that
+/// unit *inside* the selection and grow by whole units. Given the boundary
+/// span `(unit_lo, unit_hi)` the pointer now sits in and its own position
+/// `raw` (to decide which side of the anchor it's on), returns the
+/// `(anchor, cursor)` the selection should adopt.
 ///
-/// Position type `T` is whatever a selector indexes by — a byte offset
-/// (`TextInput`) or a `(block, char)` document position (the reader) — so both
-/// share one rule instead of re-deriving the anchor pinning.
+/// `T` is whatever a selector indexes by — a byte offset (`TextInput`) or a
+/// `(block, char)` document position (the reader) — so both share one rule.
 pub fn extend_span_drag<T: Ord + Copy>(
     anchor_lo: T,
     anchor_hi: T,
@@ -272,14 +266,10 @@ pub fn extend_span_drag<T: Ord + Copy>(
     unit_hi: T,
 ) -> (T, T) {
     if raw < anchor_lo {
-        // Pointer is left of the original unit: pin the anchor to that unit's
-        // far (right) edge and walk the cursor to the left edge of the unit the
-        // pointer is inside.
+        // Left of the original unit: pin the anchor to its far edge.
         (anchor_hi, unit_lo)
     } else {
-        // Pointer is inside or right of the original unit: pin the anchor to the
-        // near (left) edge and walk the cursor to the right edge under the
-        // pointer.
+        // Inside or right of the original unit: pin the anchor to its near edge.
         (anchor_lo, unit_hi)
     }
 }
@@ -287,14 +277,12 @@ pub fn extend_span_drag<T: Ord + Copy>(
 /// Lazy global `arboard` handle, used **only on X11** and other non-Wayland
 /// platforms.
 ///
-/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, the
-/// clipboard-manager protocol, which qOS does not offer to sandboxed apps for
-/// the reasons in `shell/src/compositor/selection.rs`. A `ui` app on Wayland
-/// goes through [`crate::clipboard::WaylandClipboard`] and `wl_data_device`
-/// instead, so constructing arboard there would only produce a handle that
-/// fails on every call. Construction is skipped rather than attempted, because
-/// arboard's Wayland probe is slow and its failure is the exact thing that
-/// used to be mistaken for "no clipboard support".
+/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which qOS does
+/// not offer to sandboxed apps (see `shell/src/compositor/selection.rs`); a
+/// `ui` app there goes through [`crate::clipboard::WaylandClipboard`] and
+/// `wl_data_device` instead. Construction is skipped rather than attempted
+/// on Wayland because arboard's probe there is slow, and a handle that
+/// fails on every call is worse than no handle.
 fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
     static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
     CB.get_or_init(|| {
@@ -315,11 +303,10 @@ fn running_on_wayland() -> bool {
 /// nor arboard can serve the request — a unit test, a headless scenario run,
 /// or a session with no clipboard owner at all.
 ///
-/// It keeps copy → paste round-tripping **within the process** so the shared
-/// caret/clipboard core stays testable headlessly. That convenience is also
-/// how a completely dead clipboard went unnoticed for so long, so every fall
-/// through to this buffer now logs once via
-/// [`crate::clipboard::warn_fallback_once`].
+/// Keeps copy → paste round-tripping **within the process** so the shared
+/// caret/clipboard core stays testable headlessly. A silently-working
+/// fallback can mask a genuinely dead clipboard, so every fall-through here
+/// logs once via [`crate::clipboard::warn_fallback_once`].
 fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
     static FB: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
     FB.get_or_init(|| Mutex::new((None, None)))
@@ -438,13 +425,8 @@ pub fn clipboard_paste() -> Option<String> {
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
 /// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
 /// and editors set this whenever a range is selected so a middle-click paste
-/// in any app receives it.
-///
-/// This used to be a silent no-op on qOS: the only implementation went through
-/// arboard, which could not open at all against a compositor that advertised
-/// no selection protocol, so the terminal's "middle-click paste works" promise
-/// was dead code. It now goes through the same backend chain as the clipboard,
-/// including the in-process fallback, so it is never silently nothing.
+/// in any app receives it. Goes through the same backend chain as the
+/// clipboard, including the in-process fallback.
 pub fn clipboard_copy_primary(text: &str) {
     write_selection(ClipboardTarget::Primary, text);
 }
@@ -460,10 +442,8 @@ mod tests {
     use super::*;
 
     /// Copy → paste must round-trip within the process even with no system
-    /// clipboard (the headless test env). Without the in-process fallback this
-    /// silently returned `None`, so the shared Ctrl+C/Ctrl+V core couldn't be
-    /// proven headlessly. When a real clipboard IS present this still holds
-    /// (copy then paste from the same clipboard).
+    /// clipboard (the headless test env), and equally when a real clipboard
+    /// is present.
     #[test]
     fn clipboard_round_trips_in_process() {
         let payload = "https://example.com/feed.xml";
@@ -511,8 +491,6 @@ mod tests {
         assert_eq!(s.cursor, 10);
     }
 
-    /// Walking back through a sentence with `prev_word_boundary` must
-    /// land on the start of each word.
     #[test]
     fn prev_word_boundary_walks_word_starts() {
         let s = "hello world quick ui";
@@ -545,8 +523,7 @@ mod tests {
         assert_eq!(word_boundaries(s, 11), (6, 11));
     }
 
-    /// Multi-byte UTF-8 must be handled cleanly — no slicing into the
-    /// middle of a code point. "café" — é is 2 bytes.
+    /// No slicing into the middle of a code point ("café" — é is 2 bytes).
     #[test]
     fn word_boundaries_utf8_clean() {
         let s = "café latte";
@@ -600,13 +577,11 @@ mod tests {
     fn prev_next_char_boundary_utf8() {
         let s = "aé€b"; // a=0, é=1..3, €=3..6, b=6..7. len=7.
         assert_eq!(s.len(), 7);
-        // Step right across multi-byte chars.
         assert_eq!(next_char_boundary(s, 0), 1);
         assert_eq!(next_char_boundary(s, 1), 3);
         assert_eq!(next_char_boundary(s, 3), 6);
         assert_eq!(next_char_boundary(s, 6), 7);
         assert_eq!(next_char_boundary(s, 7), 7);
-        // And left.
         assert_eq!(prev_char_boundary(s, 7), 6);
         assert_eq!(prev_char_boundary(s, 6), 3);
         assert_eq!(prev_char_boundary(s, 3), 1);
@@ -617,13 +592,10 @@ mod tests {
     #[test]
     fn boundaries_at_edges() {
         let s = "abc";
-        // At end.
         assert_eq!(prev_word_boundary(s, s.len()), 0);
         assert_eq!(next_word_boundary(s, s.len()), s.len());
-        // At start.
         assert_eq!(prev_word_boundary(s, 0), 0);
         assert_eq!(next_word_boundary(s, 0), s.len());
-        // Empty string.
         assert_eq!(prev_word_boundary("", 0), 0);
         assert_eq!(next_word_boundary("", 0), 0);
     }

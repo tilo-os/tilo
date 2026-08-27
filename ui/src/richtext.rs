@@ -58,7 +58,6 @@ impl BaselineShift {
     /// Font-size multiplier applied to super/subscript runs (~0.7×).
     pub const SCALE: f32 = 0.7;
 
-    /// True for `Super`/`Sub` (i.e. anything that shifts off the baseline).
     pub fn is_shifted(self) -> bool {
         !matches!(self, BaselineShift::None)
     }
@@ -119,12 +118,10 @@ impl RichSpan {
         self.color = c;
         self
     }
-    /// Set a highlight / background colour (RGB) painted behind this run.
     pub fn background(mut self, c: Option<[u8; 3]>) -> Self {
         self.background = c;
         self
     }
-    /// Set a baseline shift (super/subscript) for this run.
     pub fn baseline(mut self, b: BaselineShift) -> Self {
         self.baseline = b;
         self

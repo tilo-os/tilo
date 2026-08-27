@@ -45,11 +45,8 @@ pub enum Motion {
 /// for `AutoCommit::splice_text` (Automerge `Text` is char-addressed).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Edit {
-    /// Byte offset where the splice begins.
     pub at: usize,
-    /// Number of bytes removed at `at`.
     pub removed: usize,
-    /// Text inserted at `at`.
     pub inserted: String,
 }
 
@@ -131,7 +128,6 @@ impl EditCore {
         self.sel = Selection { anchor: 0, cursor: text.len() };
     }
 
-    /// Byte target for `m` from the current cursor.
     fn target(&self, text: &str, m: Motion) -> usize {
         let c = self.sel.cursor.min(text.len());
         match m {

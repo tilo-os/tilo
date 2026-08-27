@@ -1,13 +1,10 @@
 //! Making an app's state survive a restart.
 //!
-//! Historically the toolkit deliberately stayed away from the disk —
-//! [`State::save`]/[`State::load`] convert to and from bytes and nothing
-//! more — and each app was left to invent its own storage. Most never got
-//! round to it: 29 of the shipped apps started from an empty `AutoCommit`
-//! every launch, several of them while carrying a module comment that said
-//! their state survived restarts.
+//! The toolkit stays away from the disk itself —
+//! [`State::save`]/[`State::load`] only convert to and from bytes — so
+//! without this, each app has to invent its own storage.
 //!
-//! This module closes that gap in three lines of app code. Instead of
+//! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
 //! let state = ui::State::new();
@@ -21,20 +18,17 @@
 //! ui::App::new(state, my_app::app_root()).with_autosave(autosave).run();
 //! ```
 //!
-//! and gets: the previous session's document loaded before the first
-//! `sync`, every subsequent change written back atomically and debounced,
-//! and a flush on exit. Where the bytes live, and why an app has no say in
-//! it, is documented on [`app_state`].
+//! and gets the previous session's document loaded before the first
+//! `sync`, every change written back atomically and debounced, and a
+//! flush on exit. Where the bytes live is documented on [`app_state`].
 //!
-//! The string is the app's own `[package] id` from its `qos-app.toml`. It is
-//! only a fallback: `QOS_PACKAGE_ID`, which the launcher sets on every
-//! sandboxed launch, always wins. Without it a binary run straight out of
+//! The id string is a fallback: `QOS_PACKAGE_ID`, set by the launcher on
+//! every sandboxed launch, always wins — without it a binary run from
 //! `target/debug` would share one document with every other app.
 //!
-//! Apps that also carry state an older release wrote somewhere else call
+//! Apps carrying state an older release wrote elsewhere call
 //! [`open_migrating`] once with that legacy path; the old document is
-//! merged in rather than replacing anything, so the migration is safe to
-//! run repeatedly and cannot orphan a user's data.
+//! merged in, so the migration is safe to run repeatedly.
 
 use std::path::Path;
 use std::time::Duration;
@@ -90,15 +84,11 @@ pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
 
 fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {
     let mut doc = store.load_or_new();
-    // A document written by a newer build is not opened, and the empty one
-    // standing in for it must never reach the disk. Switching the writer off is
-    // the difference between "this app came up empty" and "this app deleted
-    // your work": with autosave on, the first edit — or the flush on exit —
-    // would save the stand-in over the real document.
-    //
-    // The store refuses the write too. Both, because they fail differently: the
-    // store's refusal is the guarantee, and a disabled writer is what stops the
-    // app logging an error on every keystroke to earn it.
+    // A document written by a newer build is not opened, and the empty
+    // stand-in must never reach disk — with autosave on, the first edit
+    // (or the exit flush) would save it over the real document. The store
+    // also refuses the write itself; the disabled writer is what stops
+    // the app logging an error on every keystroke to earn that guarantee.
     if let Some(reason) = store.refusal() {
         let reason = reason.to_string();
         tracing::error!(
@@ -149,24 +139,19 @@ mod tests {
         }
     }
 
-    /// Opening an app for the SECOND time must keep persistence ON.
-    ///
-    /// The per-package state directory already exists on every launch after the
-    /// first. If opening the store treated that as an error, [`try_open`] would
-    /// propagate it, [`open`] would swallow it and hand back
-    /// [`in_memory_fallback`] — a disabled autosave — and the app would come up
-    /// unable to save, silently, on every run but the very first. Fresh-XDG CI
-    /// never sees it because the directory is always absent there, so this test
-    /// creates the directory before the first open and drives two opens against
-    /// it, asserting persistence stays enabled and state round-trips.
+    /// Opening an app for the SECOND time must keep persistence ON. If the
+    /// store treated an already-existing state directory as an error,
+    /// [`open`] would silently fall back to a disabled, in-memory
+    /// [`in_memory_fallback`] on every run but the first — a case
+    /// fresh-XDG CI never exercises, so this test creates the directory
+    /// up front and drives two opens against it.
     #[test]
     #[serial_test::serial(state_dir_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let pkg = "dev.qos.persist-open-twice";
 
-        // The per-package directory is already present before the first open,
-        // exactly as on every launch after the app has run once.
+        // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: serialised on `app_state_dir`; no other thread reads the var
@@ -176,8 +161,7 @@ mod tests {
             std::env::remove_var("QOS_PACKAGE_ID");
         }
 
-        // Run 1: open must enable persistence even though the dir already
-        // exists, then write and flush a value.
+        // Run 1: write and flush a value.
         {
             let (mut state, mut autosave) = open_for(pkg).expect("run 1 open");
             assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
@@ -190,9 +174,8 @@ mod tests {
             assert_eq!(autosave.last_error(), None, "no write may have failed");
         }
 
-        // Run 2: the directory still exists. `open` must STILL enable
-        // persistence — the second-run bug is precisely this returning the
-        // disabled in-memory fallback — and run 1's value must load.
+        // Run 2: the directory still exists; persistence must stay enabled
+        // and run 1's value must load.
         let (state, autosave) = open(pkg);
         assert!(
             autosave.is_enabled(),
@@ -208,19 +191,17 @@ mod tests {
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
-    /// The actual field failure: an older app layout wrote the document as a
-    /// zero-byte *file* at the per-package state path. `open` has to recover and
-    /// come up with persistence enabled — not swallow the `EEXIST` and hand back
-    /// the disabled in-memory fallback, which is what left `maps`, `weather` and
-    /// friends unable to save on every launch.
+    /// An older app layout wrote the document as a zero-byte *file* at the
+    /// per-package state path. `open` must recover and come up with
+    /// persistence enabled, not swallow the `EEXIST` and fall back to the
+    /// disabled in-memory store.
     #[test]
     #[serial_test::serial(state_dir_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let pkg = "dev.qos.stale-file-open";
 
-        // The old layout's leftover: a zero-byte file where the new layout wants
-        // a directory.
+        // Old layout's leftover: a file where the new layout wants a directory.
         let path = tmp.path().join(pkg);
         std::fs::write(&path, b"").unwrap();
         assert!(path.is_file(), "the leftover is a file, not a directory");
@@ -230,8 +211,7 @@ mod tests {
             std::env::remove_var("QOS_PACKAGE_ID");
         }
 
-        // Run 1: `open` — the swallow-and-log entry apps use — must recover to
-        // enabled persistence, then persist a value.
+        // Run 1: `open` must recover to enabled persistence.
         {
             let (mut state, mut autosave) = open(pkg);
             assert!(

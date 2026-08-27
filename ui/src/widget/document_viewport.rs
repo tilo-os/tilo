@@ -1,57 +1,15 @@
 //! `DocumentViewport` — a reusable zoom/pan viewport for document & canvas
-//! content.
+//! content: cursor-focal Ctrl+wheel zoom, centre zoom for +/- buttons,
+//! fit-reset, drag-to-pan, arrow-key pan, Shift+wheel horizontal pan, and
+//! scrollbars that appear only on overflow.
 //!
-//! This is the promotion of the zoom/pan kernel proven in the PDF reader
-//! (`apps/pdf_viewer`): cursor-focal Ctrl+wheel zoom, centre zoom for the
-//! +/- buttons, fit-reset, drag-to-pan, arrow-key pan, Shift+wheel
-//! horizontal pan, scroll clamping that keeps the full content reachable,
-//! and horizontal + vertical scrollbars that appear only when the content
-//! overflows the viewport.
+//! Two entry points share the same [`ViewportState`] math: the kernel
+//! itself, for a canvas-root app that owns its own draw + event handling;
+//! or [`DocumentViewport`], the composing `Widget` that wraps a child
+//! [`Element`] (or draw closure).
 //!
-//! It is offered through **two entry points** so it fits both shapes of
-//! host:
-//!
-//! 1. **[`ViewportState`] — the standalone state kernel.** A pure, render-
-//!    agnostic value (like [`crate::widget::FlapState`]) that owns the
-//!    zoom + scroll, the content↔screen transform, and every input
-//!    reducer. A *canvas-root* app — one whose root is a single custom-draw
-//!    widget, like the PDF reader — keeps a `ViewportState`, feeds it
-//!    pointer/keyboard/wheel events from its own `handle_event`, draws its
-//!    content under [`ViewportState::content_to_screen`], and hit-tests
-//!    pointer events back with [`ViewportState::screen_to_content`]. No
-//!    second widget is involved; the host stays in full control of paint
-//!    order and chrome. This is the recommended path for apps that already
-//!    own their canvas.
-//!
-//! 2. **[`DocumentViewport`] — the composing widget.** Wraps a single
-//!    content [`Element`] (or a host-supplied draw closure) and *is* a
-//!    `Widget`: it handles the zoom/pan input itself, applies the transform
-//!    when drawing the content, and paints the scrollbars on top. Drop it
-//!    into a normal widget tree when the content is itself expressible as a
-//!    child widget and you want the viewport to own the interaction. The
-//!    wrapped child is drawn under the viewport transform, so its own
-//!    coordinate space is the content space.
-//!
-//! Both share the exact same [`ViewportState`] math, so behaviour is
-//! identical whichever entry point a host chooses.
-//!
-//! ## Coordinate spaces
-//!
-//! * **Content space** — the intrinsic coordinate system of the document
-//!   (PDF page points, an image's pixels, a canvas's world units). The
-//!   host declares the content's size in this space via
-//!   [`ViewportState::set_content_size`]. The origin `(0, 0)` is the
-//!   content's top-left.
-//! * **Screen space** — logical pixels in the window, the same space the
-//!   viewport's own `rect` lives in.
-//!
-//! The mapping is a uniform `zoom` scale plus a translation:
-//!
-//! ```text
-//! screen = content * zoom + viewport_top_left + pad - scroll
-//! ```
-//!
-//! recovered exactly by [`ViewportState::content_to_screen`] /
+//! `screen = content * zoom + viewport_top_left + pad - scroll`, recovered
+//! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
 use std::time::Instant;
@@ -236,7 +194,6 @@ impl ViewportState {
 
     // ---- read-only accessors ----------------------------------------
 
-    /// The viewport's on-screen rect.
     pub fn rect(&self) -> Rect {
         self.rect
     }
@@ -804,14 +761,10 @@ enum Content {
     Draw(ContentDraw),
 }
 
-/// The composing viewport widget. Wraps content (a child widget or a draw
-/// closure) and *is* a [`Widget`]: it owns the zoom/pan input, draws the
-/// content under the content→screen transform, and paints scrollbars on top.
-///
-/// Use this when the content is expressible as a child widget (or a small
-/// draw closure) and you want the viewport to own the interaction. For a
-/// canvas-root app that already owns its draw + event handling, prefer the
-/// standalone [`ViewportState`] kernel instead — see the module docs.
+/// The composing viewport widget: wraps content (a child widget or a draw
+/// closure), owns the zoom/pan input, and paints scrollbars on top. See the
+/// module docs for when to prefer the standalone [`ViewportState`] kernel
+/// instead.
 pub struct DocumentViewport {
     state: ViewportState,
     content: Content,
@@ -1121,11 +1074,9 @@ impl Widget for DocumentViewport {
 }
 
 impl DocumentViewport {
-    /// Route an event to the wrapped child (if any) with the child's content
-    /// transform implicit in its content-space layout. Events reach the
-    /// child in window/screen coordinates; the child is responsible for
-    /// mapping with the host's help. The child's inner taffy node is passed
-    /// through so child containers can recurse.
+    /// Route an event to the wrapped child, if any. Events reach the child
+    /// in window/screen coordinates; its inner taffy node is passed through
+    /// so child containers can recurse.
     #[allow(clippy::too_many_arguments)]
     fn route_to_child(
         &mut self,

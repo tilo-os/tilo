@@ -31,8 +31,8 @@ impl WorkspaceView {
         }
     }
     pub fn active_index(&self) -> usize { self.active_index }
-    /// Returns the current pending slide offset (non-zero while a switch
-    /// transition is in flight). The spring eases this back to 0.
+    /// Non-zero while a switch transition is in flight; the spring eases it
+    /// back to 0.
     pub fn slide_target(&self) -> f32 { self.slide.value() }
     pub fn switch(&mut self, d: WorkspaceSwitchDirection) -> bool {
         let (new_idx, direction_sign) = match d {
@@ -61,9 +61,8 @@ impl Widget for WorkspaceView {
         if !self.slide.is_settled() { self.tick_animation(1.0 / 60.0); true } else { false }
     }
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        // Zero-height leaf — WorkspaceView is a keyboard-handler +
-        // animation driver, not a visible rect. Visible workspace chrome
-        // lives in the top bar.
+        // Zero-height: this is a keyboard-handler + animation driver, not a
+        // visible rect. Workspace chrome lives in the top bar.
         let n = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(n, self as *mut dyn Widget);
         n
@@ -78,9 +77,8 @@ impl Widget for WorkspaceView {
         );
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
-        // Only fill the slide-target rect while an animation is in flight — a
-        // static workspace inherits the app background and doesn't need to
-        // re-paint it. The "workspace N/M" indicator lives in the top bar.
+        // A static workspace inherits the app background and doesn't need
+        // to re-paint it.
         let offset = self.slide.value();
         if offset.abs() > f32::EPSILON {
             let t = transform * Affine::translate((0.0, offset as f64));

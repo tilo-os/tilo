@@ -8,8 +8,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 pub struct Modal {
     pub id_tag: String,
     pub scrim: Scrim,
-    /// Accessible title — the dialog's name. A screen reader announces it
-    /// when the modal opens. Empty leaves the dialog unnamed.
+    /// Empty leaves the dialog unnamed.
     pub title: String,
 }
 

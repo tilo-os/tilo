@@ -13,13 +13,9 @@
 //! For first-run, the identity is in 1-of-1 bootstrap mode — there is
 //! no real recovery share yet. We show a deterministic placeholder
 //! mnemonic derived from the identity's public key so the user goes
-//! through the "write it down" muscle-memory; the screen's caption
-//! tells them the real recovery share is generated when they pair a
-//! second device.
-//!
-//! This is the only way to handle "first-run shows a recovery card"
-//! given the engine's invariants. Once a second device pairs,
-//! screen 2 is re-presented with the proper threshold-mode mnemonic.
+//! through the "write it down" muscle-memory; the caption tells them
+//! the real share is generated once they pair a second device, at
+//! which point this screen is re-presented with the real mnemonic.
 
 use std::collections::HashMap;
 
@@ -73,10 +69,8 @@ pub struct RecoveryShareScreen {
     continue_rect: Rect,
     ack_rect: Rect,
     /// Click target spanning the checkbox AND its label, so the user
-    /// can tap anywhere on the "I've written them down somewhere safe"
-    /// row to tick the box (matching every other form on the planet).
-    /// `ack_rect` stays the visual checkbox geometry; this rect is
-    /// the structural hit target.
+    /// can tap anywhere on the row to tick the box. `ack_rect` stays
+    /// the visual checkbox geometry.
     ack_hit_rect: Rect,
     last_cursor: Point,
     /// Most recent clipboard write status — surfaced so a sandbox
@@ -259,19 +253,14 @@ impl Widget for RecoveryShareScreen {
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        // Copy button (right of the header).
         self.copy_rect = Rect::new(
             card.x1 - pad - 140.0,
             card.y0 + pad,
             card.x1 - pad,
             card.y0 + pad + 36.0,
         );
-        // Acknowledgement checkbox + label band, bottom of card.
-        // The 18×18 visible square is the *visual* checkbox; the row
-        // it sits on is the *clickable* region — anywhere on the
-        // label or its checkbox toggles. ~360 px label width is
-        // generous enough for any reasonable translation of
-        // "I've written them down somewhere safe".
+        // ~360 px label width is generous enough for any reasonable
+        // translation of "I've written them down somewhere safe".
         self.ack_rect = Rect::new(
             card.x0 + pad,
             card.y1 - pad - 80.0,
@@ -284,7 +273,6 @@ impl Widget for RecoveryShareScreen {
             self.ack_rect.x1 + 360.0,
             self.ack_rect.y1 + 4.0,
         );
-        // Continue button, bottom-right.
         self.continue_rect = Rect::new(
             card.x1 - pad - 160.0,
             card.y1 - pad - 44.0,
@@ -326,7 +314,6 @@ impl Widget for RecoveryShareScreen {
             &RoundedRect::from_rect(card, radius),
         );
 
-        // Title.
         text_renderer.draw_text(
             scene,
             "Your recovery words",
@@ -335,7 +322,6 @@ impl Widget for RecoveryShareScreen {
             transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
             None,
         );
-        // Caption.
         text_renderer.draw_text(
             scene,
             "Write these 24 words down. They restore your identity if you lose every device.",
@@ -345,7 +331,6 @@ impl Widget for RecoveryShareScreen {
             None,
         );
 
-        // Copy button.
         let copy_bg = if self.copy_hovered {
             theme.bg_hover
         } else {
@@ -390,7 +375,6 @@ impl Widget for RecoveryShareScreen {
             let col = i % 4;
             let x = grid_x + col as f64 * col_w;
             let y = grid_y + row as f64 * row_h;
-            // Number prefix.
             let prefix = format!("{:>2}.", i + 1);
             text_renderer.draw_text(
                 scene,
@@ -410,7 +394,6 @@ impl Widget for RecoveryShareScreen {
             );
         }
 
-        // Acknowledgement checkbox.
         let check_bg = if self.acknowledged {
             theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
         } else {
@@ -431,7 +414,6 @@ impl Widget for RecoveryShareScreen {
             &RoundedRect::from_rect(self.ack_rect, 3.0),
         );
         if self.acknowledged {
-            // White tick.
             let mut p = vello::kurbo::BezPath::new();
             p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
             p.line_to((
@@ -467,7 +449,6 @@ impl Widget for RecoveryShareScreen {
             );
         }
 
-        // Continue button.
         let cont_enabled = self.is_continue_enabled();
         let cont_bg = if !cont_enabled {
             theme.tokens.colors.surfaces.base

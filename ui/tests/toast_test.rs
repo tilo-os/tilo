@@ -16,7 +16,6 @@ fn toast_stack_caps_entries() {
     let mut s = ToastStack::new().with_max(3);
     for i in 0..5 { s.push(format!("t{i}"), ToastKind::Info); }
     assert_eq!(s.len(), 3);
-    // oldest dropped, newest retained
     assert!(s.iter().any(|t| t.text == "t4"));
     assert!(!s.iter().any(|t| t.text == "t0"));
 }

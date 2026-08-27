@@ -1,23 +1,12 @@
 //! [`IconGrid`] — a responsive, selectable grid of icon + label cells.
 //!
-//! The toolkit had no wrap-flow grid: the file-explorer's "icon view" was
-//! hand-built as a `Column` of `Row`s with a hard-coded six-cells-per-row
-//! and no selection or keyboard support. `IconGrid` replaces that with a
-//! single measured leaf widget that:
+//! A single measured leaf widget that **reflows** to the available width
+//! (column count derived from cell size at layout time), **selects** via
+//! the shared [`SelectionModel`](crate::selection::SelectionModel), and
+//! **activates** items on double-click or Enter via `on_activate`.
 //!
-//! * **reflows** to the available width — the column count is derived from
-//!   the cell size at layout time, so the same grid adapts from a narrow
-//!   sidebar to a wide window;
-//! * **selects** via the shared [`SelectionModel`](crate::selection::SelectionModel)
-//!   (click / Ctrl-click / Shift-click, plus arrow-key navigation that
-//!   understands the 2-D layout);
-//! * **activates** items on double-click or Enter via `on_activate`;
-//! * renders each item's [`Icon`](crate::icons::Icon) as a crisp vector
-//!   glyph (not a font codepoint) with a truncated label beneath it.
-//!
-//! Like the file-explorer's other views it is designed to be rebuilt each
-//! frame by a stateless host: seed the selection with
-//! [`set_selection`](IconGrid::set_selection) and react to
+//! Designed to be rebuilt each frame by a stateless host: seed the
+//! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
 use std::collections::HashMap;
@@ -35,7 +24,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// One cell: a vector glyph and a label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
     pub icon: Icon,
@@ -48,20 +36,18 @@ impl IconGridItem {
     }
 }
 
-/// Responsive icon grid widget.
 pub struct IconGrid {
     items: Vec<IconGridItem>,
     /// Per-cell box (icon + label) in logical px.
     cell_w: f64,
     cell_h: f64,
-    /// Gap between cells (both axes).
+    /// Both axes.
     gap: f64,
-    /// Icon glyph size within a cell.
     icon_px: f64,
 
     rect: Rect,
-    /// Column count resolved at the last layout, cached for hit-testing +
-    /// keyboard navigation. Always `>= 1`.
+    /// Resolved at the last layout, cached for hit-testing + keyboard
+    /// navigation. Always `>= 1`.
     columns: usize,
 
     selection: SelectionModel,
@@ -75,8 +61,8 @@ pub struct IconGrid {
 }
 
 impl IconGrid {
-    /// A grid with the default cell metrics (96×88 px cells, 12 px gap,
-    /// 40 px glyphs) — tuned for a file-manager icon view.
+    /// Default cell metrics (96×88 px cells, 12 px gap, 40 px glyphs)
+    /// are tuned for a file-manager icon view.
     pub fn new(items: Vec<IconGridItem>) -> Self {
         Self {
             items,
@@ -96,54 +82,49 @@ impl IconGrid {
         }
     }
 
-    /// Override the per-cell metrics.
     pub fn with_cell_size(mut self, w: f64, h: f64) -> Self {
         self.cell_w = w.max(8.0);
         self.cell_h = h.max(8.0);
         self
     }
 
-    /// Override the glyph size.
     pub fn with_icon_size(mut self, px: f64) -> Self {
         self.icon_px = px.max(4.0);
         self
     }
 
-    /// Seed the selection (host owns it across frames).
+    /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;
     }
 
-    /// Builder form of [`set_selection`](IconGrid::set_selection).
     pub fn with_selection(mut self, sel: SelectionModel) -> Self {
         self.selection = sel;
         self
     }
 
-    /// Borrow the selection.
     pub fn selection(&self) -> &SelectionModel {
         &self.selection
     }
 
-    /// Number of columns resolved at the last layout (always `>= 1`).
     pub fn column_count(&self) -> usize {
         self.columns
     }
 
-    /// Per-click handler `(index, ctrl, shift)`.
+    /// `(index, ctrl, shift)`.
     pub fn on_item_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_item_click = Some(Box::new(f));
         self
     }
 
-    /// Activation handler (double-click / Enter), given the item index.
+    /// Double-click or Enter.
     pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
     }
 
-    /// How many columns fit in `width` given the cell metrics. Always
-    /// at least one so a too-narrow grid still shows a single column.
+    /// Always at least one, so a too-narrow grid still shows a single
+    /// column.
     pub fn columns_for_width(&self, width: f64) -> usize {
         let stride = self.cell_w + self.gap;
         if stride <= 0.0 {
@@ -153,7 +134,6 @@ impl IconGrid {
         (((width + self.gap) / stride).floor() as usize).max(1)
     }
 
-    /// Total content height for `columns` columns of the current items.
     fn content_height(&self, columns: usize) -> f64 {
         let rows = if self.items.is_empty() {
             0
@@ -167,7 +147,6 @@ impl IconGrid {
         }
     }
 
-    /// Top-left origin of cell `i` within `self.rect`.
     fn cell_origin(&self, i: usize) -> Point {
         let col = i % self.columns;
         let row = i / self.columns;
@@ -182,7 +161,6 @@ impl IconGrid {
         Rect::new(o.x, o.y, o.x + self.cell_w, o.y + self.cell_h)
     }
 
-    /// Item index under a logical point, if any.
     pub fn item_at(&self, pt: Point) -> Option<usize> {
         if self.columns == 0 {
             return None;
@@ -231,8 +209,8 @@ impl Widget for IconGrid {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // Pick a width: known wins, else the definite available width,
-        // else fall back to enough for one cell.
+        // known wins, else the definite available width, else enough
+        // for one cell.
         let width = known.width.map(|w| w as f64).unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w as f64,
             _ => self.cell_w,
@@ -254,8 +232,8 @@ impl Widget for IconGrid {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Resolve columns from the actual allocated width (measure may have
-        // run against a different available width).
+        // Actual allocated width — measure may have run against a
+        // different available width.
         self.columns = self.columns_for_width(self.rect.width());
     }
 
@@ -286,7 +264,6 @@ impl Widget for IconGrid {
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            // Icon: a centred square in the upper portion of the cell.
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
             let icon_y = cell.y0 + 10.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
@@ -297,7 +274,6 @@ impl Widget for IconGrid {
             };
             draw_icon(scene, transform, icon_rect, self.items[i].icon, glyph_color, LUCIDE_DEFAULT_STROKE_PX);
 
-            // Label: centred under the icon, truncated to the cell width.
             let label = truncate_to_width(text_renderer, &self.items[i].label, label_size, self.cell_w - 8.0);
             let (tw, _) = text_renderer.measure(&label, label_size, None);
             let tx = cell.x0 + (self.cell_w - tw as f64) / 2.0;
@@ -310,9 +286,8 @@ impl Widget for IconGrid {
             text_renderer.draw_text(scene, &label, label_size, label_color, transform * Affine::translate((tx, ty)), None);
         }
 
-        // Keyboard-focus ring: when the grid holds focus, draw the shared
-        // focus border around the active (primary) cell so arrow-key
-        // navigation is visible without relying on the selection fill alone.
+        // So arrow-key navigation is visible without relying on the
+        // selection fill alone.
         if self.is_focused {
             if let Some(i) = self.selection.primary() {
                 let cell = self.cell_rect(i);
@@ -442,9 +417,8 @@ impl Widget for IconGrid {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A grid of icon cells is a list of items; the items are drawn (not
-        // child widgets), so the container carries the semantics. Surface the
-        // primary-selected cell's label as the current value.
+        // Items are drawn, not child widgets, so the container carries
+        // the semantics.
         let primary = self.selection.primary();
         let value = primary
             .and_then(|i| self.items.get(i))
@@ -456,7 +430,7 @@ impl Widget for IconGrid {
                 focused: self.is_focused(),
                 ..Default::default()
             });
-        // Surface the selected cell's ordinal so the reader can say "2 of 9".
+        // So the reader can say "2 of 9".
         if let Some(i) = primary {
             if i < self.items.len() {
                 node = node.with_position(i + 1, self.items.len());
@@ -570,7 +544,6 @@ mod tests {
         assert!(node.state.focusable);
         assert_eq!(node.value, None, "no selection → no value");
 
-        // Selecting an item surfaces its label as the value.
         g.selection.select_only(4);
         let node = Widget::accessibility(&g).unwrap();
         assert_eq!(node.value.as_deref(), Some("f4"));
@@ -600,9 +573,7 @@ mod tests {
             .count()
     }
 
-    /// A focused grid with a primary cell must paint a focus ring — one extra
-    /// stroke — that an unfocused grid does not. Asserts on the production
-    /// `draw` path via the scene encoding.
+    /// Asserts on the production `draw` path via the scene encoding.
     #[test]
     fn focused_grid_paints_a_focus_ring() {
         let theme = Theme::dark();

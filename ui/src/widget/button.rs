@@ -14,55 +14,45 @@ use crate::i18n;
 pub struct Button {
     _id: String,
     label: String,
-    /// Accessible name for a button whose visible label is empty (an
-    /// icon-only button). Without this the icon carries no meaning for a
-    /// screen reader. When the button does show a label, the label is the
-    /// accessible name and this is left unset.
+    /// Accessible name for an icon-only button (empty visible label);
+    /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
-    /// Hover-tooltip text (a fluent key or plain string). Revealed by the
-    /// host's central [`TooltipHost`](crate::widget::TooltipHost) after a short
-    /// hover-dwell over the button, and — for an icon-only button — used as the
-    /// accessible name when none was set explicitly, so one short label serves
-    /// both mouse hover and screen-reader users. `None` = no tooltip.
+    /// Fluent key or plain string, revealed by the host's central
+    /// [`TooltipHost`](crate::widget::TooltipHost) — and, for an
+    /// icon-only button, used as the accessible name when none was set
+    /// explicitly.
     tooltip: Option<String>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
-    /// Optional leading vector glyph drawn instead of (icon-only) or
-    /// before (icon + label) the text. Lets toolbars render crisp lucide
-    /// icons without depending on a Nerd Font being installed.
+    /// Drawn instead of (icon-only) or before (icon + label) the text,
+    /// so toolbars render crisp lucide icons without depending on a
+    /// Nerd Font being installed.
     icon: Option<crate::icons::Icon>,
-    /// Optional fixed (width, height) override; defaults to 120×40.
+    /// Defaults to 120×40.
     size: Option<(f32, f32)>,
-    /// Visual style: neutral (default), primary (accent CTA), or danger.
     /// Drives the fill / border / label colours via [`face_colors`], the
     /// same source of truth the immediate-mode [`Button::paint`] face uses.
     style: ButtonStyle,
     on_click_path: Option<String>, // Path in CRDT to mutate
-    /// Optional imperative click handler, fired on release-while-hovered
-    /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
-    /// that isn't modelling its control flow in the CRDT (e.g. the file
-    /// explorer's command sink) react to a press without a message bus.
+    /// Fires on release-while-hovered *in addition to* any
+    /// `on_click_path` CRDT mutation, for app code that isn't modelling
+    /// its control flow in the CRDT (e.g. the file explorer's command sink).
     on_click: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// When `false` the button is disabled: skipped by focus, rejects
-    /// input (no `on_click`, no CRDT write, no hover/press feedback) and
-    /// renders dimmed. Default `true`.
+    /// When `false`: skipped by focus, rejects input, renders dimmed.
     enabled: bool,
-    /// Scene cache. Holds the last emitted body / border / label
-    /// primitives at *logical* coordinates; the App's transform
-    /// is reapplied on `Scene::append`. See `widget::text` for the
-    /// canonical pattern.
+    /// Holds the last emitted body/border/label primitives at *logical*
+    /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
     dirty: bool,
-    /// Rect the cache was emitted at — compared *by size* to the
-    /// current rect; pure translation gets absorbed by the per-
-    /// frame append transform without invalidating the cache.
+    /// Compared *by size* to the current rect — pure translation is
+    /// absorbed by the per-frame append transform without invalidating
+    /// the cache.
     cache_rect: Rect,
-    /// Visual-state snapshot the cache was emitted from. If any
-    /// changes we invalidate the cache so the next draw rebuilds.
+    /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool), // (hovered, pressed, focused)
 }
 
@@ -92,80 +82,67 @@ impl Button {
         }
     }
 
-    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     /// An empty path leaves presence opt-out (the default).
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this widget behind a permission scope. When the scope is denied
-    /// the widget renders dimmed and rejects input.
+    /// When the scope is denied the widget renders dimmed and rejects input.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
     }
 
-    /// Attach an imperative click handler. Fires once per completed
-    /// click (left-button release while the cursor is still over the
-    /// button), in addition to any `on_click_path` CRDT mutation.
+    /// Fires once per completed click (left-button release while the
+    /// cursor is still over the button), in addition to any
+    /// `on_click_path` CRDT mutation.
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
         self
     }
 
-    /// Draw `icon` as a leading vector glyph. With an empty label the
-    /// icon is centred (icon-only button); with a label it sits to its
-    /// left.
+    /// With an empty label the icon is centred (icon-only button); with
+    /// a label it sits to its left.
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Give an icon-only button a spoken name. The text isn't painted —
-    /// it's what a screen reader announces in place of the empty visible
-    /// label. Use it for every icon-only toolbar control ("Close",
-    /// "Bold", "Add row") so the glyph isn't silent. A button that shows
-    /// a label doesn't need this; the label is its accessible name.
+    /// The text isn't painted — it's what a screen reader announces in
+    /// place of the empty visible label. Use for every icon-only toolbar
+    /// control so the glyph isn't silent. A button that shows a label
+    /// doesn't need this; the label is its accessible name.
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
     }
 
-    /// Attach a hover tooltip. On an icon-only button this is strongly
-    /// recommended: the glyph alone is ambiguous, so the tooltip reveals the
-    /// label on hover and — absent an explicit [`with_accessible_name`]
-    /// (Self::with_accessible_name) — also becomes the button's accessible
-    /// name, so the same short label serves both mouse and screen-reader users.
-    /// A fluent key is preferred so the label localises; a plain string is fine
-    /// for un-localised chrome. Rendered centrally by the host's
+    /// On an icon-only button, absent an explicit
+    /// [`with_accessible_name`](Self::with_accessible_name), this also
+    /// becomes the accessible name, so the same short label serves both
+    /// mouse and screen-reader users. Rendered centrally by the host's
     /// [`TooltipHost`](crate::widget::TooltipHost) — no per-app wiring.
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
         self
     }
 
-    /// Imperatively set or clear the hover tooltip.
     pub fn set_tooltip(&mut self, text: Option<String>) {
         self.tooltip = text;
     }
 
-    /// Override the default 120×40 intrinsic size — e.g. a compact 40×36
-    /// square for a toolbar icon button.
+    /// Overrides the default 120×40 intrinsic size.
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self
     }
 
-    /// Set the enabled state at build time. A disabled button is skipped
-    /// by focus, rejects clicks/keys and renders dimmed. Default `true`.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
 
-    /// Imperatively flip the enabled state. Marks the scene cache dirty so
-    /// the dimmed/normal look is re-emitted on the next frame.
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled != enabled {
             self.enabled = enabled;
@@ -173,39 +150,29 @@ impl Button {
         }
     }
 
-    /// Set the visual [`ButtonStyle`] at build time — `Primary` for the
-    /// accent-filled default action (Send / Save), `Danger` for a
-    /// destructive one. Colours resolve through [`face_colors`], so the
-    /// retained widget and the immediate-mode [`Button::paint`] face stay
-    /// pixel-identical for the same style + interaction state.
+    /// Colours resolve through [`face_colors`], so the retained widget
+    /// and the immediate-mode [`Button::paint`] face stay pixel-identical
+    /// for the same style + interaction state.
     pub fn with_style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
 
-    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Primary)` — the
-    /// accent-filled primary action.
     pub fn primary(mut self) -> Self {
         self.style = ButtonStyle::Primary;
         self
     }
 
-    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Danger)` — a
-    /// destructive action.
     pub fn danger(mut self) -> Self {
         self.style = ButtonStyle::Danger;
         self
     }
 
-    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Ghost)` — a
-    /// borderless, transparent-at-rest affordance (close-`X`, icon button).
     pub fn ghost(mut self) -> Self {
         self.style = ButtonStyle::Ghost;
         self
     }
 
-    /// Imperatively set the style, invalidating the scene cache so the new
-    /// fill/label is re-emitted next frame.
     pub fn set_style(&mut self, style: ButtonStyle) {
         if self.style != style {
             self.style = style;
@@ -213,12 +180,10 @@ impl Button {
         }
     }
 
-    /// Place the button at an absolute rect without going through taffy —
-    /// the counterpart to [`TextInput::apply_layout_external`] for an app
-    /// that hand-positions a shared control over its own painted chrome. The
-    /// button still owns its focus / a11y / activation contract; only its
-    /// geometry is caller-driven. Marks the cache dirty on a size change so
-    /// the face re-emits at the new dimensions.
+    /// The counterpart to [`TextInput::apply_layout_external`] for an app
+    /// that hand-positions a shared control over its own painted chrome;
+    /// the button still owns its focus / a11y / activation contract, only
+    /// its geometry is caller-driven.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         let size_changed =
             rect.width() != self.rect.width() || rect.height() != self.rect.height();
@@ -229,17 +194,10 @@ impl Button {
     }
 }
 
-/// Visual style for a button face. Mirrors the conventions the retained
-/// [`Button`] and the standard app toolbars already paint by hand:
-/// - `Neutral` — a raised surface with a standard border (the default).
-/// - `Primary` — an accent-filled default action (Send / Save / Open),
-///   white label, no border (the accent fill is self-defining).
-/// - `Danger` — a destructive action, danger-filled, white label, no border.
-/// - `Ghost` — borderless and transparent at rest, tinting to `bg_hover` /
-///   `bg_active` only on interaction, dim label/icon. The look a close-`X`,
-///   a toolbar icon, or an overlay affordance wants: no box at rest, real
-///   themed hover/press feedback on top. Replaces the per-app "draw a bare
-///   icon and hit-test the rect" pattern with a themed face.
+/// `Ghost` is borderless and transparent at rest, tinting to `bg_hover` /
+/// `bg_active` only on interaction with a dim label/icon — the look a
+/// close-`X`, toolbar icon, or overlay affordance wants, replacing the
+/// per-app "draw a bare icon and hit-test the rect" pattern.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ButtonStyle {
     #[default]
@@ -249,10 +207,9 @@ pub enum ButtonStyle {
     Ghost,
 }
 
-/// Interaction state for an immediate-mode button face. The retained
-/// [`Button`] tracks these itself; an immediate-mode caller (a canvas app
-/// that owns its own hit-testing) passes what it knows — usually just
-/// `hovered`, derived from the last cursor position.
+/// The retained [`Button`] tracks these itself; an immediate-mode caller
+/// (a canvas app that owns its own hit-testing) passes what it knows —
+/// usually just `hovered`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ButtonInteract {
     pub hovered: bool,
@@ -261,10 +218,10 @@ pub struct ButtonInteract {
     pub disabled: bool,
 }
 
-/// Resolve the `(fill, border, label)` colours for a button face. The single
-/// source of truth for both the retained widget's look and the immediate-mode
-/// [`Button::paint`]. `border` is `None` for the accent-filled styles, whose
-/// fill is self-defining; the painter adds a focus ring on top when focused.
+/// The single source of truth for both the retained widget's look and
+/// the immediate-mode [`Button::paint`]. `border` is `None` for the
+/// accent-filled styles, whose fill is self-defining; the painter adds a
+/// focus ring on top when focused.
 pub fn face_colors(
     theme: &Theme,
     style: ButtonStyle,
@@ -292,10 +249,10 @@ pub fn face_colors(
             let rest = theme.accent_primary;
             let active = theme.accent_hover;
             let bg = if interact.hovered || interact.pressed { active } else { rest };
-            // White is the label this style wants, and on a dark enough accent
-            // it is what comes back. On a bright one it does not survive its
-            // own fill, so the ink walks out of white far enough to be read —
-            // once, over both fills, so it does not change under the pointer.
+            // White is the label this style wants and, on a dark enough
+            // accent, what comes back; on a bright one it walks out far
+            // enough to be read — resolved once over both fills so it
+            // doesn't change under the pointer.
             let fg =
                 theme.tokens.colors.ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
             (bg, None, fg)
@@ -303,13 +260,13 @@ pub fn face_colors(
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
             let d = theme.tokens.colors.semantic.danger;
-            // The label first: it is what the feedback then has to respect.
+            // The label is resolved first: the feedback has to respect it.
             let fg = theme.tokens.colors.ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
-            // Hover/press shift the fill ~15% for feedback, and the direction
-            // is not a constant. Lifting a mid-tone danger toward white is what
-            // took a white label from 4.97:1 at rest to 3.96:1 the moment the
-            // pointer arrived — a control cannot buy feedback with the
-            // legibility of its own label. So the shift always moves the fill
+            // Hover/press shift the fill ~15%, and the direction is not a
+            // constant: lifting a mid-tone danger toward white took a
+            // white label from 4.97:1 at rest to 3.96:1 the moment the
+            // pointer arrived. A control can't buy feedback with its own
+            // label's legibility, so the shift always moves the fill
             // *away* from the ink that sits on it.
             let toward: u8 = if crate::a11y::contrast_ratio(fg, Color::WHITE)
                 > crate::a11y::contrast_ratio(fg, Color::from_rgb8(0, 0, 0))
@@ -324,9 +281,6 @@ pub fn face_colors(
             (bg, None, fg)
         }
         ButtonStyle::Ghost => {
-            // Transparent + borderless at rest; a themed surface tint only
-            // on hover / press. Dim label so it reads as a secondary
-            // affordance, not a primary action.
             let bg = if interact.pressed {
                 theme.bg_active
             } else if interact.hovered {
@@ -334,11 +288,10 @@ pub fn face_colors(
             } else {
                 Color::TRANSPARENT
             };
-            // At rest the ghost paints nothing, so the ground is whatever it
-            // was placed over; the base surface is the closest the widget can
-            // know. The hover and press surfaces are its own, and a dim label
-            // is most at risk on `bg_hover` — close enough to the dim tier that
-            // the label all but vanishes on it.
+            // At rest the ghost paints nothing, so the base surface is
+            // the closest the widget can know as "the ground". The label
+            // is most at risk on `bg_hover`, close enough to the dim
+            // tier that it can all but vanish.
             let fg = theme.tokens.colors.ink_on_any(
                 &[theme.tokens.colors.surfaces.base, theme.bg_hover, theme.bg_active],
                 theme.tokens.colors.text_dim,
@@ -349,9 +302,8 @@ pub fn face_colors(
     }
 }
 
-/// Configuration for [`Button::paint`], the immediate-mode button face. Built
-/// fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`. Defaults
-/// to a neutral, medium-weight, 14px label at an 8px corner radius.
+/// Built fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`.
+/// Defaults to a neutral, medium-weight, 14px label at an 8px corner radius.
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
@@ -390,30 +342,24 @@ impl<'a> ButtonFace<'a> {
     pub fn pressed(mut self, v: bool) -> Self { self.interact.pressed = v; self }
     pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
     pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
-    /// Spoken name for an icon-only face (empty visible label). Carried for
-    /// callers that expose a their own accessibility node for the region.
+    /// For callers that expose their own accessibility node for the region.
     pub fn accessible_name(mut self, name: &'a str) -> Self { self.accessible_name = Some(name); self }
-    /// The accessible name a screen reader should announce: the visible label,
-    /// or the explicit `accessible_name` when the label is empty.
+    /// The visible label, or the explicit `accessible_name` when it's empty.
     pub fn spoken_name(&self) -> &str {
         if !self.label.is_empty() { self.label } else { self.accessible_name.unwrap_or("") }
     }
-    /// The style resolved for the current interaction state, as `(fill,
-    /// border, label)` colours. Exposed for tests and callers that want the
-    /// resolved palette without painting.
+    /// Exposed for tests and callers that want the resolved palette
+    /// without painting.
     pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
         face_colors(theme, self.style, self.interact)
     }
 }
 
 impl Button {
-    /// Immediate-mode paint of a themed button face inside `face.rect`,
-    /// matching the retained [`Button`]'s look (fill / border / hover / press /
-    /// focus-ring / disabled dim, centred label + optional leading icon). For
-    /// canvas/immediate-mode apps that own their own rect hit-testing: call
-    /// this to paint, keep your existing hit-test to fire the action. Extends
-    /// the widget rather than forking a second painter — the retained draw, the
-    /// file picker's footer, and every converted app now share `face_colors`.
+    /// Matches the retained [`Button`]'s look. For canvas/immediate-mode
+    /// apps that own their own rect hit-testing: call this to paint, keep
+    /// your existing hit-test to fire the action. Shares `face_colors`
+    /// with the retained draw rather than forking a second painter.
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -424,8 +370,8 @@ impl Button {
         let (bg, border, fg) = face_colors(theme, face.style, face.interact);
         let shape = RoundedRect::from_rect(face.rect, face.radius);
 
-        // Disabled faces dim as one layer so fill + border + label fade
-        // together, matching the retained widget's DISABLED_ALPHA look.
+        // One layer so fill + border + label dim together, matching the
+        // retained widget's DISABLED_ALPHA look.
         let dim = face.interact.disabled;
         if dim {
             scene.push_layer(
@@ -449,7 +395,7 @@ impl Button {
         let icon_px = (rect.height() - 14.0).clamp(12.0, 22.0);
         match (face.icon, label.is_empty()) {
             (Some(icon), true) => {
-                // Icon-only face — centre the glyph.
+                // Icon-only — centre the glyph.
                 let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
                 crate::icons::draw_icon(
@@ -462,7 +408,6 @@ impl Button {
                 );
             }
             (icon, _) => {
-                // Optional leading icon + centred label cluster.
                 let (text_width, _) =
                     text_renderer.measure_weighted(&label, face.text_size, None, face.weight);
                 let gap = if icon.is_some() { 6.0 } else { 0.0 };
@@ -502,7 +447,6 @@ impl Button {
 
 impl Widget for Button {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Button label could be synced from CRDT here
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
@@ -555,17 +499,13 @@ impl Widget for Button {
             }
             return;
         }
-        // Re-emit at current absolute coords. cache_rect tracks
-        // *where* the cache was emitted so subsequent frames can
-        // translate without re-encoding.
+        // cache_rect tracks *where* the cache was emitted so subsequent
+        // frames can translate without re-encoding.
         self.cached.reset();
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
-        // Resolve fill / border / label from the shared `face_colors` source
-        // of truth so `Neutral` matches the historical look exactly and
-        // `Primary`/`Danger` gain the accent / destructive fills. `disabled`
-        // is left false here — the dimmed look is applied by the
-        // `DISABLED_ALPHA` layer around the cache append, not by the colours.
+        // `disabled` is left false — the dimmed look is applied by the
+        // `DISABLED_ALPHA` layer around the cache append, not the colours.
         let (bg_color, border_opt, fg_color) = face_colors(
             theme,
             self.style,
@@ -586,9 +526,8 @@ impl Widget for Button {
             &shape,
         );
 
-        // Focus ring wins over the style border; an accent-filled style has
-        // no rest border (its fill is self-defining) so it only strokes when
-        // focused.
+        // Focus ring wins over the style border; an accent-filled style
+        // has no rest border, so it only strokes when focused.
         if self.is_focused {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
@@ -625,7 +564,6 @@ impl Widget for Button {
                 );
             }
             (icon, _) => {
-                // Optional leading icon + centred label cluster.
                 let (text_width, _) = text_renderer.measure(&label, text_size as f32, None);
                 let gap = if icon.is_some() { 6.0 } else { 0.0 };
                 let icon_w = if icon.is_some() { icon_px } else { 0.0 };
@@ -654,9 +592,6 @@ impl Widget for Button {
                 );
             }
         }
-        // End of cache build — splice the freshly-emitted local
-        // scene into the outer App scene with the host transform.
-        // delta = 0 here since cache_rect was just set to self.rect.
         self.cache_rect = self.rect;
         if self.enabled {
             out_scene.append(&self.cached, Some(out_transform));
@@ -675,17 +610,14 @@ impl Widget for Button {
 
     fn mark_drawn(&mut self) { self.dirty = false; }
 
-    /// Button has a fixed 120×40 intrinsic size that doesn't change
-    /// between frames — its layout only needs to be computed once.
     /// The `Rect::ZERO` sentinel keeps the first frame's
-    /// `compute_layout` running so `apply_layout` can populate the
-    /// rect; after that it stays clean (pure translation handled
-    /// via the cache's append transform, no taffy involvement).
+    /// `compute_layout` running so `apply_layout` can populate the rect;
+    /// after that it stays clean (pure translation handled via the
+    /// cache's append transform, no taffy involvement).
     fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
-        // Disabled: reject all input — no hover/press feedback, no CRDT
-        // write, no callback. Return without setting `handled`.
+        // Reject all input without setting `handled`.
         if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -710,7 +642,6 @@ impl Widget for Button {
                             *focus_target = Some(node_id);
                         }
 
-                        // CRDT Mutation
                         if !self.is_pressed {
                             if let Some(path) = &self.on_click_path {
                                 match state.get(root, path.as_str()) {
@@ -723,18 +654,15 @@ impl Widget for Button {
                                                 let _ = state.put(root, path.as_str(), true);
                                             }
                                             _ => {
-                                                // Default to setting true if it's some other scalar
                                                 let _ = state.put(root, path.as_str(), true);
                                             }
                                         }
                                     }
                                     _ => {
-                                        // If it doesn't exist, we'll try to put a boolean true
                                         let _ = state.put(root, path.as_str(), true);
                                     }
                                 }
                             }
-                            // Imperative handler fires alongside the CRDT path.
                             if let Some(cb) = &mut self.on_click {
                                 cb();
                             }
@@ -755,9 +683,8 @@ impl Widget for Button {
         Some(self.label.as_str())
     }
 
-    /// Expose the hover tooltip to the host's central
-    /// [`TooltipHost`](crate::widget::TooltipHost). Returning the raw string
-    /// (a fluent key or plain text); the host resolves i18n and renders.
+    /// Returns the raw string (a fluent key or plain text); the host
+    /// resolves i18n and renders.
     fn tooltip(&self) -> Option<&str> {
         self.tooltip.as_deref()
     }
@@ -766,8 +693,6 @@ impl Widget for Button {
         self.rect
     }
 
-    /// A button is a clickable affordance, so the pointer-finger cursor
-    /// while hovered. `_point` is in the same logical space as `rect`.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.rect.contains(point) {
             Some(winit::window::CursorIcon::Pointer)
@@ -781,8 +706,8 @@ impl Widget for Button {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
-    /// Keyboard / AT activation: Enter, Space, or an AccessKit `Activate`
-    /// performs the same CRDT mutation + imperative callback as a mouse click.
+    /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
+    /// mutation + imperative callback as a mouse click.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -818,17 +743,13 @@ impl Widget for Button {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The visible label is the accessible name. When it's empty (an
-        // icon-only button) fall back to the explicit accessible name set
-        // via `with_accessible_name`, so the icon isn't silent.
         let label = i18n!(&self.label);
         let name = if !label.is_empty() {
             Some(label)
         } else {
-            // Icon-only button: prefer the explicit accessible name, else fall
-            // back to the tooltip text so the same short label a mouse user
-            // sees on hover is what a screen reader announces. The glyph is
-            // never left silent when a tooltip is set.
+            // Icon-only: prefer the explicit accessible name, else fall
+            // back to the tooltip text so the glyph is never silent when
+            // a tooltip is set.
             self.accessible_name
                 .as_ref()
                 .map(|n| i18n!(n))
@@ -901,8 +822,6 @@ mod tests {
 
     #[test]
     fn face_colors_neutral_tracks_hover_and_press() {
-        // The immediate-mode face must resolve to the exact tokens the
-        // retained widget draws for its neutral look, per interaction state.
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
@@ -917,10 +836,6 @@ mod tests {
 
     #[test]
     fn face_colors_ghost_is_transparent_at_rest_then_tints() {
-        // A ghost face draws no box and no border at rest — only the dim
-        // label/icon — then tints to the same hover/press surface tokens the
-        // neutral face uses, so an icon affordance gets real feedback without
-        // a resting box.
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
@@ -928,9 +843,8 @@ mod tests {
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Ghost, rest);
         assert_eq!(bg, vello::peniko::Color::TRANSPARENT, "ghost rest fill is transparent");
         assert_eq!(border, None, "ghost has no border");
-        // The ghost label is the quiet tier, but quiet is a rank and not a
-        // licence to be unreadable: the tone starts at `text_dim` and steps out
-        // only as far as the hover surface demands.
+        // Quiet is a rank, not a licence to be unreadable: the tone starts
+        // at `text_dim` and steps out only as far as the hover surface demands.
         use crate::a11y::contrast_ratio;
         let base = theme.tokens.colors.surfaces.base;
         assert!(
@@ -954,9 +868,6 @@ mod tests {
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
         assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
         assert_eq!(border, None, "accent fill is self-defining — no border");
-        // The label used to be pinned to white. What the style actually needs
-        // is a label that can be read on its own fill; white is only the right
-        // answer when the accent is dark enough for it.
         let r = contrast_ratio(fg, bg);
         assert!(
             r >= ON_FILL_MIN_CONTRAST,
@@ -987,8 +898,6 @@ mod tests {
             theme.tokens.colors.semantic.danger,
             "danger hover lifts off the rest colour for feedback",
         );
-        // The hover lift moves the fill, and the direction it moves is exactly
-        // what can cost the label its contrast. It has to hold.
         let hr = contrast_ratio(hfg, hbg);
         assert!(hr >= ON_FILL_MIN_CONTRAST, "danger hover label {hfg:?} on {hbg:?} is {hr:.2}:1");
         assert_eq!(hfg, fg, "the label must not change colour under the pointer");
@@ -1005,8 +914,8 @@ mod tests {
         let (bg, border, fg) = f.colors(&theme);
         assert_eq!(bg, theme.accent_hover);
         assert_eq!(border, None);
-        // The immediate-mode face resolves through `face_colors`, so it carries
-        // the same derived label rather than a literal of its own.
+        // Resolves through `face_colors`, so it carries the same derived
+        // label rather than a literal of its own.
         assert_eq!(
             fg,
             face_colors(
@@ -1030,9 +939,6 @@ mod tests {
 
     #[test]
     fn paint_emits_fill_and_label_geometry() {
-        // The immediate-mode painter must actually emit geometry — the body
-        // fill plus the label glyphs — so a converted app draws a visible,
-        // labelled button.
         use vello_encoding::DrawTag;
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
@@ -1055,8 +961,6 @@ mod tests {
 
     #[test]
     fn cursor_shape_is_pointer_over_button() {
-        // Lay the button out so it has a non-zero hit rect, then assert the
-        // pointer-finger cursor is claimed over it and deferred elsewhere.
         let mut b = Button::new("id", "Go", None);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1096,7 +1000,6 @@ mod tests {
             Button::new("id", "Go", None).on_click(move || fired.set(fired.get() + 1))
         };
 
-        // Lay the button out so it has a non-zero hit rect.
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
         let theme = Theme::dark();
@@ -1121,7 +1024,6 @@ mod tests {
             b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
         };
 
-        // Hover, press, release — the callback fires once on release.
         dispatch(&mut b, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
         dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
         assert_eq!(fired.get(), 0, "not fired until release");
@@ -1161,8 +1063,6 @@ mod tests {
 
     #[test]
     fn accessibility_icon_only_button_without_name_is_silent() {
-        // An icon-only button with no explicit accessible name still has
-        // none — the glyph alone carries no spoken meaning.
         let b = Button::new("id", "", None).with_icon(crate::icons::Icon::Check);
         let node = Widget::accessibility(&b).unwrap();
         assert_eq!(node.name, None);
@@ -1170,8 +1070,6 @@ mod tests {
 
     #[test]
     fn accessibility_icon_only_button_uses_accessible_name() {
-        // `with_accessible_name` supplies the spoken name for an icon-only
-        // button so a screen reader announces "Confirm" instead of nothing.
         let b = Button::new("id", "", None)
             .with_icon(crate::icons::Icon::Check)
             .with_accessible_name("Confirm");
@@ -1181,8 +1079,6 @@ mod tests {
 
     #[test]
     fn tooltip_is_exposed_to_the_host() {
-        // The `.tooltip(..)` builder makes the text visible to the central
-        // TooltipHost via the `Widget::tooltip` query.
         let b = Button::new("id", "", None)
             .with_icon(crate::icons::Icon::Search)
             .tooltip("Search");
@@ -1193,9 +1089,6 @@ mod tests {
 
     #[test]
     fn icon_only_tooltip_doubles_as_accessible_name() {
-        // An icon-only button with only a tooltip (no explicit accessible name)
-        // announces the tooltip text — so the tooltip is accessibility, not
-        // just a mouse-hover affordance.
         let b = Button::new("id", "", None)
             .with_icon(crate::icons::Icon::Search)
             .tooltip("Search");
@@ -1205,8 +1098,6 @@ mod tests {
 
     #[test]
     fn explicit_accessible_name_wins_over_tooltip() {
-        // When both are set the explicit accessible name is authoritative; the
-        // tooltip is only the fallback.
         let b = Button::new("id", "", None)
             .with_icon(crate::icons::Icon::MoreHorizontal)
             .with_accessible_name("View options")
@@ -1217,8 +1108,6 @@ mod tests {
 
     #[test]
     fn accessibility_visible_label_wins_over_accessible_name() {
-        // When a button shows a label, that label is the accessible name —
-        // an accessible-name override is only the icon-only fallback.
         let b = Button::new("id", "Save", None).with_accessible_name("Persist");
         let node = Widget::accessibility(&b).unwrap();
         assert_eq!(node.name.as_deref(), Some("Save"));

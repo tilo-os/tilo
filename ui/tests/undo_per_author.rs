@@ -24,18 +24,15 @@ fn commit_action_authored_records_user() {
 #[test]
 fn undo_for_author_skips_entries_owned_by_other_users() {
     let mut state = State::new();
-    // Alice's change
     state.doc.put(&state.root, "v", 1).unwrap();
     state.commit_action_authored(None, None, Some(UserId("alice".into())));
-    // Bob's change
     state.doc.put(&state.root, "v", 2).unwrap();
     state.commit_action_authored(None, None, Some(UserId("bob".into())));
-    // Alice's change
     state.doc.put(&state.root, "v", 3).unwrap();
     state.commit_action_authored(None, None, Some(UserId("alice".into())));
 
-    // Alice's undo should pop the top entry (alice's own, v=3 becomes v=2).
-    // This test doesn't care about caret state, so pass None/None.
+    // Pops the top entry (alice's own, v=3 becomes v=2). Caret state is
+    // irrelevant here, hence None/None throughout this file.
     let popped = state
         .undo_for_author(&UserId("alice".into()), None, None)
         .expect("alice entry");
@@ -49,24 +46,19 @@ fn undo_for_author_skips_entries_owned_by_other_users() {
     assert!(state
         .undo_for_author(&UserId("alice".into()), None, None)
         .is_none());
-    // Bob can still undo his entry.
     let popped = state
         .undo_for_author(&UserId("bob".into()), None, None)
         .expect("bob entry");
     assert_eq!(popped.author, Some(UserId("bob".into())));
 }
 
-/// The path an app's own toolbar button takes, end to end.
+/// The path an app's own toolbar button takes, end to end: a widget
+/// dispatches its `qos_actions` action out-of-band, the host brackets it
+/// via `record_committed_action`, then Ctrl+Z is `undo_as(Some(local_author))`
+/// — never the plain LIFO `undo`.
 ///
-/// A widget dispatches its `qos_actions` action out-of-band and reports the
-/// heads it captured beforehand; the host drains
-/// `Widget::take_committed_action` once per frame and calls
-/// `record_committed_action` to bracket it. Then the user presses Ctrl+Z,
-/// which is `undo_as(Some(local_author))` — never the plain LIFO `undo`.
-///
-/// A recorded entry carries no author (the drain has none to give), so this is
-/// the case an author-scoped undo has to claim rather than walk past. Nothing
-/// else can ever reach one.
+/// A recorded entry carries no author (the drain has none to give), so an
+/// author-scoped undo has to claim it rather than walk past.
 #[test]
 fn ctrl_z_reverts_a_button_driven_action() {
     let mut state = State::new();
@@ -144,9 +136,7 @@ fn claiming_an_unattributed_entry_still_skips_another_person() {
 /// in, or the shared schema a `qdoc` document adopts rather than mints. The
 /// baseline the *next* action brackets against has to move past it, or one
 /// Ctrl+Z takes the document's own containers out along with the keystroke.
-///
-/// Here the move happens on an empty commit: the interaction that changed
-/// nothing (a selection drag, a focus move) is what runs next.
+/// Here the move happens on an empty commit (a selection drag, a focus move).
 #[test]
 fn an_empty_commit_moves_the_baseline_past_a_change_nobody_committed_here() {
     let mut state = State::new();

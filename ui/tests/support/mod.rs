@@ -167,8 +167,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::FetchScrollback { artifact, .. } => {
                 // The test broker holds no op log — answer the requester
-                // with an empty, exhausted batch (Phase 6 state is
-                // broker-side, mirrored from collaboration.rs).
+                // with an empty, exhausted batch.
                 if let Some(inbox) = inboxes.get_mut(&from) {
                     inbox.push_back(CollabEvent::ScrollbackBatch {
                         artifact: artifact.clone(),

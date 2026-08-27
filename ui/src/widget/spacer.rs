@@ -66,18 +66,12 @@ impl Widget for Spacer {
 
     fn name(&self) -> &str { "Spacer" }
 
-    /// Spacers never paint anything — `draw` is a no-op. They're
-    /// also fixed-size relative to their parent's flex spec. Both
-    /// of these reduce to "never dirty, never needs layout reflow,
-    /// never blocks the App redraw gate". The cost saving here is
-    /// per-frame: with many Spacers in a tree (toolbars, padding
-    /// rows), the default-true `needs_redraw` was pinning the
-    /// whole tree to "always-dirty".
+    /// `draw` is a no-op, so this is never dirty. With many Spacers in a
+    /// tree (toolbars, padding rows), the default-true `needs_redraw`
+    /// was pinning the whole tree to "always-dirty".
     fn needs_redraw(&self) -> bool { false }
-    /// Spacer has zero intrinsic primitives but its `flex_grow: 1.0`
-    /// means a parent reflow legitimately moves it. Rely on the
-    /// default container-recursion at the parent level — Spacer
-    /// itself reports false after the first apply_layout.
+    /// `Rect::ZERO` sentinel for the first `apply_layout`; a parent
+    /// reflow after that is caught by the parent's own recursion.
     fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 
     fn get_rect(&self) -> Rect {

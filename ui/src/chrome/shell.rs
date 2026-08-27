@@ -1,28 +1,10 @@
 //! The shared vocabulary the OS's own chrome is drawn from.
 //!
-//! Everything here exists because the shell's surfaces — the top bar,
-//! window decorations, the workspace disc, quick settings, the palette,
-//! the collaborator surfaces — were each transliterated from a separate
-//! mockup component and carried that mockup's literal values inward.
-//! `bg-black/80` for the bar, `bg-slate-900/80` for quick settings,
-//! `rounded-3xl` on one panel and a 4 px radius on another, `text-green-400`
-//! for a CPU label. The token vocabulary in [`crate::tokens`] was already
-//! good; the chrome simply was not reading from it, so surfaces that share
-//! a screen did not share a language.
-//!
-//! The rule this module encodes is in `ui/HIG.md` §9:
-//!
-//! > Shell chrome does not invent appearance. It selects a **role**, and
-//! > the role resolves to tokens.
-//!
-//! Two pieces were already correct and merely unreachable. [`Colors::lift`]
-//! and [`Colors::hairline_on`] measure their move against the ground they
-//! are drawn on by relative luminance, so they behave on dark, light and
-//! high-contrast without a per-theme branch — and the tab strip's
-//! appearance tiers were built on them. But those tiers lived `pub(crate)`
-//! inside `widget::tabs`, so the shell could not call them and grew its own
-//! incompatible answers instead. Promoting them is most of what this module
-//! is: one selection model, reachable from both crates.
+//! Shell chrome does not invent appearance (`ui/HIG.md` §9): it selects a
+//! **role**, which resolves to tokens in [`crate::tokens`]. [`Colors::lift`]
+//! and [`Colors::hairline_on`] measure their move against the ground by
+//! relative luminance, so they behave on dark, light and high-contrast
+//! without a per-theme branch.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
@@ -33,72 +15,38 @@ use crate::theme::Theme;
 use crate::tokens::Colors;
 
 /// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
-/// surface, so the whole chrome reads as one material.
-///
-/// That material is **opaque**, and the constant survives as the one
-/// place that says so rather than as a dial to turn.
-///
-/// Chrome used to be painted at 0.80. Translucency is only worth its cost
-/// when the backdrop is blurred, and nothing here can blur a backdrop:
-/// vello can blur a *shape* (see [`crate::surface::shadow`]) but has no
-/// backdrop filter, and giving it one means rendering the scene to a
-/// texture, convolving it and compositing it back — a change to the paint
-/// pipeline, not to a colour. Unblurred, 20 % of whatever is behind the
-/// panel is simply added to it, and that is not glass, it is a loss of
-/// contrast that varies with what the user happens to have open. Measured
-/// on the light palette, the quick-settings panel's own body ran
-/// `#ffffff` where it overlapped a document window and `#f7f7f7` where it
-/// overlapped the desktop — one flat surface, two colours, a seam across
-/// the middle of it. Over a white document the panel was the *same
-/// colour as the document*, leaving a hairline and a heavy shadow as the
-/// only evidence a panel was there at all.
-///
-/// This finishes a migration the shell had already started and tested. A
-/// 2026-07-09 report ("search bar / file viewer are too transparent —
-/// looks terrible") took the palette and the workspace-settings modal
-/// opaque, pinned by `overlay_host::tests::
-/// palette_surface_alpha_lifts_off_desktop`. The quick-settings popover
-/// kept 0.80 and drew the same complaint in 2026-08. Depth is carried by
-/// the scrim under a modal, by [`panel_ground`] and [`panel_border`]
-/// against the desktop, and by a subtle `e4` — not by letting the desktop
-/// through.
+/// surface — kept opaque because nothing here can blur a *backdrop* (vello
+/// only blurs shapes), so translucency is just contrast loss that varies
+/// with what's behind it: on the light palette the quick-settings panel
+/// measured `#ffffff` over a window and `#f7f7f7` over the desktop, one
+/// surface reading as two colours. Depth instead comes from the modal
+/// scrim, [`panel_ground`]/[`panel_border`], and the `e4` shadow.
 pub const CHROME_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
 
-/// Alpha of the edge around a floating [`ChromeRole::Panel`].
-///
-/// Heavier than a control's hairline because it is doing a different
-/// job: a control's edge defines it against a surface the user is
-/// already looking at, while a panel's edge has to separate it from
-/// whatever content it floats over. On the high-contrast palette it is
-/// the *only* thing that separates them — see [`panel_ground`].
+/// Alpha of the edge around a floating [`ChromeRole::Panel`]. Heavier than
+/// a control's hairline because a panel must separate itself from whatever
+/// content it floats over, not just a surface already in view — on
+/// high-contrast it's the *only* thing that does (see [`panel_ground`]).
 pub const PANEL_BORDER_ALPHA: u8 = 92;
 
-/// Smallest relative-luminance gap at which a panel is legible as a
-/// distinct surface rather than as a slightly different patch of the
-/// desktop. Matches the toolkit's hairline threshold.
+/// Smallest relative-luminance gap for a panel to read as its own surface
+/// rather than a slightly different patch of the desktop. Matches the
+/// toolkit's hairline threshold.
 const PANEL_MIN_DELTA: f64 = 0.02;
 
-/// Alphas [`chrome_ground`] tries, in order, when the declared overlay
-/// tier is swallowed by a ground the surface has to sit on.
-///
-/// Ascending, and the first that clears every ground wins, so a surface
-/// moves the smallest distance from its theme's declared colour that
-/// still leaves it legible. Relative luminance is heavily compressed at
-/// the dark end, so the same luminance delta costs far more RGB on a dark
-/// palette than a light one — which is exactly why this is a ladder to
-/// climb rather than one tuned constant.
+/// Alphas [`panel_ground`] tries, ascending, when the declared overlay
+/// tier is swallowed by a ground the surface sits on — a ladder rather
+/// than one constant because relative luminance compresses heavily at the
+/// dark end, so the same delta costs far more RGB there than on light.
 const PANEL_GROUND_STEPS: &[u8] = &[16, 24, 32, 40, 56, 72, 96];
 
 /// Alpha of the inset stroke that gives an active control its inner glow.
 pub const GLOW_ALPHA: u8 = 51;
 
-/// How far a hovered control lifts, as a fraction of the full active
-/// lift. Hover and active are the same *kind* of change at two strengths,
-/// so a control reads as one continuous affordance rather than two
-/// unrelated looks.
+/// Fraction of the full active lift a hovered control reaches.
 pub const HOVER_LIFT_T: f32 = 0.5;
 
 /// Uniform scale a pressed control takes, about its own centre.
@@ -125,17 +73,13 @@ pub enum ChromeRole {
 }
 
 impl ChromeRole {
-    /// The corner radius for this role.
-    ///
-    /// `height` is the surface's own height, used only by
-    /// [`ChromeRole::Selector`], which is a capsule: asking for
-    /// `radii.full` (9999) on a short rect degenerates the rounded-rect
-    /// path, so a Selector resolves to half its height instead.
+    /// `height` is used only by [`ChromeRole::Selector`], a capsule that
+    /// resolves to half its own height rather than the degenerate
+    /// `radii.full` (9999), which breaks the rounded-rect path on a short
+    /// rect.
     pub fn radius(self, theme: &Theme, height: f64) -> f64 {
         let radii = &theme.tokens.radii;
         match self {
-            // The bar spans its edge; only its corners against the
-            // screen edge exist, and those are square.
             ChromeRole::Bar => 0.0,
             ChromeRole::Panel | ChromeRole::Object => radii.xl as f64,
             ChromeRole::Control => radii.lg as f64,
@@ -143,14 +87,9 @@ impl ChromeRole {
         }
     }
 
-    /// The surface colour for this role, at chrome opacity where the role
-    /// is translucent.
-    ///
-    /// Chrome reads the *semantic* surface tokens, never a ramp slot.
-    /// A ramp slot is a colour; a surface token is a promise about
-    /// contrast that each theme keeps in its own way, and only the latter
-    /// survives a theme its author never saw. Quick settings reaching for
-    /// `neutral[1]` is why it looked like a dark slab on a light desktop.
+    /// Surface colour at chrome opacity where the role is translucent.
+    /// Reads the *semantic* surface tokens, never a ramp slot, so it
+    /// survives a theme whose author never saw this code.
     pub fn surface(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
@@ -158,9 +97,7 @@ impl ChromeRole {
                 panel_ground(theme).with_alpha_factor(CHROME_SURFACE_ALPHA)
             }
             ChromeRole::Object => colors.surfaces.window_card,
-            // Control and Selector bodies come from the selection tiers
-            // (see `selection_tier`) rather than from a fixed surface,
-            // because their body *is* their state.
+            // Body is state: see `selection_tier`.
             ChromeRole::Control | ChromeRole::Selector => Color::TRANSPARENT,
         }
     }
@@ -186,15 +123,14 @@ impl SelectionState {
 /// How one control paints for one frame.
 #[derive(Clone, Copy, Debug)]
 pub struct SelectionTier {
-    /// Body fill. Alpha 0 for an idle control — callers skip the fill
-    /// call rather than emitting a no-op draw per control per frame.
+    /// Alpha 0 for an idle control — callers skip the fill call rather
+    /// than emitting a no-op draw per control per frame.
     pub fill: Color,
     /// 1 px outer border. `None` unless lifted.
     pub border: Option<Color>,
     /// 1 px inset stroke giving a lifted control a subtle inner glow.
     /// `None` unless lifted.
     pub inner_glow: Option<Color>,
-    /// Uniform scale about the control's centre.
     pub scale: f64,
 }
 
@@ -209,22 +145,17 @@ pub struct SelectionTier {
 /// | active | `lift(1.0)` | hairline | hairline | 1.0 |
 /// | pressed | as active | as active | as active | 0.97 |
 ///
-/// Selection is a **lift**, never an accent fill. `lift` measures against
-/// the chrome's own ground, so it works in every theme; and it leaves the
-/// accent free to mean one thing — live state the user did not choose and
-/// should notice (recording, sharing, a peer joining, unread). A control
-/// that expressed "selected" with the accent would collide with that.
+/// Selection is a **lift**, never an accent fill: the accent is reserved
+/// for live state the user did not choose (recording, sharing, a peer
+/// joining, unread), and a selected control using it would collide with
+/// that. An active control never gets more prominent on hover — the
+/// contrast gain belongs to inactive controls brightening toward it —
+/// and pressed implies the lifted tier before activation propagates, so a
+/// click feels instant.
 ///
-/// An active control never gets *more* prominent on hover: the contrast
-/// gain belongs to the inactive controls brightening toward the active
-/// tier. Pressed implies the lifted tier even before activation
-/// propagates, so a click feels instant.
-///
-/// Note what is **absent**: a shadow. Elevation and selection are
-/// different vocabularies — a shadow means "off the surface", a lift means
-/// "chosen on the surface". A selected control is not floating, it is
-/// picked. Rows of idle controls each laying down a soft shadow is what
-/// made the tab strip read as muddy rather than as chrome.
+/// No shadow: elevation and selection are different vocabularies, and
+/// rows of idle controls each casting one is what made the tab strip
+/// read as muddy rather than as chrome.
 pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
@@ -246,49 +177,19 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
 
 // ---------- glass ----------
 //
-// What a selector *is made of*, as opposed to `selection_tier` above, which
-// says how far each state is pushed. The two are separate on purpose: the
-// tier table is the semantics ("active is further out than hover") and this
-// is the material ("and both are the same substance").
-//
-// The tab strip is the surface that made the split necessary. Its three
-// states were, in practice, three unrelated recipes: an idle pill painted
-// nothing, a hovered pill painted a flat wash of literal white at 5 %, and
-// an active pill painted an **opaque** body ringed by two white strokes.
-// Opaque is the important word — a body you cannot see through is not a
-// window onto the desktop, it is a slab sitting on it, and the one light
-// cue the hovered pill had (a faint top-down alpha ramp) is silently a
-// no-op on it, because scaling the alpha of an already-opaque colour does
-// nothing. So the state the strip most needed to look deliberate was the
-// only one with no light on it at all.
-//
-// A surface reads as glass when four things are true at once, and the old
-// hover had exactly one of them:
-//
-//   1. it is translucent, so its colour is partly the ground's,
-//   2. its fill is tinted from that ground rather than washed with white,
-//   3. there is a light direction — one end of it is lit, the other seated,
-//   4. it has an edge, slightly stronger than its fill, that holds the
-//      silhouette.
-//
-// All four are derived per theme here, so the same material survives a
-// paper-white desktop, where "brighter" points the other way.
+// What a selector is *made of* (the material), as opposed to
+// `selection_tier` above, which is the semantics (how far each state is
+// pushed). A surface reads as glass when: it's translucent and tinted from
+// its ground rather than washed with white, it has a light direction (one
+// end lit, one seated), and its edge is slightly stronger than its fill.
+// All four are derived per theme, so the material survives a paper-white
+// desktop, where "brighter" points the other way.
 
 /// Film alpha of a hovered selector.
-///
-/// Chosen so the composite over the default dark ground lands where the
-/// old literal-white hover landed: hover was the one state that read
-/// acceptably, and it should not move while the material under it is
-/// replaced. On a light theme it now lands somewhere *visible*, which the
-/// literal never did.
 pub const GLASS_HOVER_ALPHA: u8 = 44;
 
-/// Film alpha of an active or pressed selector.
-///
-/// Well past hover so the two never read as the same tier, and well short
-/// of opaque so the pill keeps the property that makes it glass. Glass is
-/// the reason this is a fraction rather than a full body: the ground has
-/// to come through, or the material is over.
+/// Film alpha of an active or pressed selector. Well short of opaque — the
+/// ground has to keep coming through, or the material stops being glass.
 pub const GLASS_ACTIVE_ALPHA: u8 = 132;
 
 /// Film density at the lit end of a selector, relative to its own alpha.
@@ -297,61 +198,40 @@ pub const GLASS_LIT_GAIN: f32 = 1.9;
 /// Film density at the seated end, relative to its own alpha.
 pub const GLASS_SEAT_FALLOFF: f32 = 0.68;
 
-/// How far down a selector the lit end's extra density has decayed to the
-/// body's own value.
-///
-/// This is what separates a highlight from a wash. Spread over half the
-/// pill, the extra film reads as "this pill is a lighter grey"; concentrated
-/// near the edge it reads as light landing on a surface, and the rest of the
-/// body stays dark enough to keep looking like something you can see through.
+/// How far down a selector the lit end's extra density decays to the
+/// body's own value. Spread over half the pill this would read as "a
+/// lighter grey"; concentrated near the edge it reads as light landing on
+/// a surface.
 pub const GLASS_LIT_SPAN: f32 = 0.2;
 
-/// Edge alpha of a hovered selector. Below [`HAIRLINE_ALPHA`] — a hovered
-/// pill is being pointed at, not chosen, and a full hairline on it reads
-/// as a second active tab.
-///
-/// It carries more of the state than it looks like it should, and that is
-/// deliberate. A translucent body can only move the ground as far as the
-/// palette leaves room for: on the light preset the bar sits about 19
-/// levels below white, so a hover film lands about 3 levels off its ground
-/// no matter how the film is derived, while the same film moves a graphite
-/// ground by twelve. The edge does not have that problem, because
-/// [`Colors::hairline_on`] picks whichever polarity moves the ground it is
-/// actually drawn on — the same division of labour a floating panel already
-/// makes, where a stark palette leaves nearly all the work to its border.
+/// Edge alpha of a hovered selector. Below [`HAIRLINE_ALPHA`] — a hover is
+/// pointed at, not chosen, and a full hairline reads as a second active
+/// tab. Carries more of the state than it looks like: the light preset's
+/// translucent body only lands ~3 levels off its ground (bar sits ~19
+/// below white) versus ~12 on a graphite ground, but [`Colors::hairline_on`]
+/// picks whichever polarity moves the ground it's actually drawn on.
 pub const GLASS_EDGE_HOVER_ALPHA: u8 = 28;
 
-/// Edge alpha of an active selector, at the lit end. Runs down to
-/// [`GLASS_EDGE_SEAT_SCALE`] of itself at the seated end, which is what
-/// makes the edge a light rather than a halo.
+/// Edge alpha of an active selector at the lit end; runs down to
+/// [`GLASS_EDGE_SEAT_SCALE`] of itself at the seated end, making the edge a
+/// light rather than a halo.
 pub const GLASS_EDGE_ACTIVE_ALPHA: u8 = 40;
 
 /// How much of its lit-end strength a selector's edge keeps at the seated
 /// end.
 pub const GLASS_EDGE_SEAT_SCALE: f32 = 0.34;
 
-/// Fraction of a selector's height over which its inner glow survives.
-///
-/// The glow is a lit *rim*, not a ring: it belongs where the light lands
-/// and has no business tracing the bottom of the pill, which is the part
-/// in shadow. Stroked all the way round at a constant alpha — which is
-/// what an inset stroke in a flat colour does — it is exactly the milky
-/// halo that made the active pill look cheap.
+/// Fraction of a selector's height over which its inner glow survives. A
+/// lit *rim*, not a ring — stroked at constant alpha all the way round it
+/// becomes the milky halo that made the active pill look cheap.
 pub const GLASS_GLOW_SPAN: f64 = 0.55;
 
-/// How one selector paints, as a material rather than as a tier.
-///
-/// Same three states and the same ordering as [`selection_tier`] — this is
-/// deliberately not a second opinion about what "active" means — but the
-/// bodies are films rather than washes, and they carry the light direction
-/// the tier table has no field for.
-///
-/// Kept beside [`selection_tier`] rather than replacing it because the two
-/// have different call sites and only one of them paints through
-/// [`paint_glass_body`]. A translucent fill handed to a caller that fills
-/// it flat is *weaker* than the opaque wash it replaced, so the swap has to
-/// happen per surface, together with its painter. The tab strip is the
-/// first; the bar's own selectors are the obvious next.
+/// Same three states and ordering as [`selection_tier`] — not a second
+/// opinion about what "active" means — but the bodies are films rather
+/// than washes, carrying the light direction the tier table has no field
+/// for. Kept separate rather than replacing it: a translucent fill handed
+/// to a caller that fills it flat is *weaker* than an opaque wash, so the
+/// swap must happen per surface, together with its painter.
 pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let ground = colors.surfaces.base;
@@ -381,14 +261,12 @@ pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     }
 }
 
-/// Where the light falls on a selector, as a gradient offset pair.
-///
-/// `(lit, seated)` in the 0..1 range down the surface. Light comes from
-/// above, so on a palette whose surfaces lift by getting brighter the lit
-/// end is the top. On a paper-white palette a film can only ever make the
-/// surface *darker*, so the same physical story — top catches the light —
-/// is told by thinning the film at the top instead, and the ends swap.
-/// Getting this wrong does not merely look flat; it looks lit from below.
+/// `(lit, seated)` offsets in 0..1 down the surface. Light comes from
+/// above: on a palette that lifts by brightening, the lit end is the top;
+/// on paper-white, a film can only darken, so the same story (top catches
+/// the light) is told by thinning the film at the top instead, and the
+/// ends swap. Getting this wrong doesn't just look flat — it looks lit
+/// from below.
 fn light_ends(theme: &Theme) -> (f64, f64) {
     if theme.tokens.colors.lifts_bright() {
         (0.0, 1.0)
@@ -397,15 +275,9 @@ fn light_ends(theme: &Theme) -> (f64, f64) {
     }
 }
 
-/// `base` with its alpha scaled by `gain`, saturating at opaque.
-///
-/// The clamp is not decoration. Scaling a colour's alpha past 1.0 is not a
-/// no-op in a renderer that premultiplies — the components come out
-/// multiplied too, so an out-of-range gain silently *brightens* rather than
-/// doing nothing, and the amount depends on how close to opaque the input
-/// already was. The strip's old body gradient depended on exactly that
-/// accident for its highlight. A material should not be built on a
-/// library's saturation behaviour.
+/// `base` with its alpha scaled by `gain`, clamped to opaque. The clamp
+/// matters: in a premultiplying renderer, an alpha pushed past 1.0 doesn't
+/// no-op, it silently brightens the colour components too.
 fn scaled(base: Color, gain: f32) -> Color {
     let a = (base.a() as f32 * gain).clamp(0.0, 255.0).round() as u8;
     Color::from_rgba8(base.r(), base.g(), base.b(), a)
@@ -439,11 +311,10 @@ fn vertical(
 /// or out. It multiplies rather than replaces so a half-revealed pill is
 /// half of *this* material, not a different one.
 ///
-/// Deliberately lays down **no shadow**. Elevation and selection are
-/// separate vocabularies (see [`selection_tier`]), and a row of pills each
-/// casting its own soft rings is what made this strip read as muddy in the
-/// first place. What replaces it is the edge: a surface that reports its
-/// own light does not need a shadow to say it is a surface.
+/// Deliberately lays down **no shadow** — elevation and selection are
+/// different vocabularies (see [`selection_tier`]). What replaces it is the
+/// edge: a surface that reports its own light does not need a shadow to
+/// say it is a surface.
 pub fn paint_glass_body(
     scene: &mut Scene,
     transform: Affine,
@@ -532,38 +403,16 @@ pub fn paint_glass_body(
 }
 
 /// The opaque colour a chrome surface is built from, guaranteed to
-/// register against the grounds it actually meets.
+/// register against both the desktop and the window card (Bar/Panel share
+/// one material, and a Panel floats over app content).
 ///
-/// `surfaces.overlay` is the theme's declared popover tier and is used
-/// verbatim wherever it separates. It does not always: on the default
-/// dark palette `overlay` is `#0d0e11` against a `#16171b` ground, and on
-/// high-contrast the two are *the same colour*. Painting the declared
-/// token there gives a surface that is, literally, the desktop with a
-/// faint line around it.
-///
-/// Where the declared tier would be swallowed, the ground is walked away
-/// from it by the same luminance reasoning [`Colors::hairline_on`] uses,
-/// so chrome keeps a body on every theme. This is the fill half;
-/// [`PANEL_BORDER_ALPHA`] is the edge half, and a surface needs both — on
-/// high-contrast the edge does nearly all the work, because a stark
-/// ground with a bright edge *is* that palette's idiom.
-///
-/// The grounds chrome has to stay distinguishable from are the desktop
-/// **and the window card**. A Bar meets only the desktop, but a Panel
-/// floats over app content, and Bar and Panel are deliberately one
-/// material (see `bar_and_panel_share_one_material`) — a popover has to
-/// read as belonging to the bar it hangs off, not as a foreign slab — so
-/// the stricter of the two constraints sets the material for both.
-///
-/// Adding the window card is the fix for a panel that was invisible over
-/// a document. On the light palette the declared overlay tier is
-/// `#ffffff`, and so is `window_card`: quick settings dropped over a
-/// document was exactly the colour of the document, leaving a hairline
-/// and a heavy shadow as the only evidence a panel was there. Measured,
-/// its body ran `#ffffff` where it overlapped the window and `#f7f7f7`
-/// where it overlapped the desktop — one surface reading as two. A
-/// shadow forced to make up for a surface that does not separate is the
-/// shadow that gets called too big.
+/// `surfaces.overlay` is used verbatim where it separates, but not always:
+/// on high-contrast it's identical to the ground, and on light both it and
+/// `window_card` are `#ffffff` — painted verbatim there, a panel is the
+/// desktop with a faint line around it. Where it's swallowed, the ground
+/// is walked away from it (same luminance reasoning as
+/// [`Colors::hairline_on`]) until it clears both; [`PANEL_BORDER_ALPHA`]
+/// is the edge half of the same fix.
 pub fn panel_ground(theme: &Theme) -> Color {
     use crate::a11y::relative_luminance;
     let colors = &theme.tokens.colors;
@@ -578,10 +427,8 @@ pub fn panel_ground(theme: &Theme) -> Color {
     if clears(declared) {
         return declared;
     }
-    // Composite a derived step over the declared tier so the result stays
-    // in the theme's own colour family rather than jumping to a grey.
-    // `hairline_on` picks the direction that moves away from the desktop,
-    // and the steps climb until the surface clears every ground it meets.
+    // Composite each step over the declared tier so the result stays in
+    // the theme's own colour family instead of jumping to a grey.
     let mut last = declared;
     for alpha in PANEL_GROUND_STEPS {
         let step = Colors::hairline_on(base, *alpha);
@@ -607,27 +454,12 @@ pub fn panel_border(theme: &Theme) -> Color {
 }
 
 /// Lay down a floating panel's elevation, clipped to the ring *outside*
-/// its own silhouette.
-///
-/// The shadow is [`crate::surface::shadow`]: a Gaussian blur of the
-/// panel's **own rounded rect**, at the strength `e4` declares. Being the
-/// panel's own shape is what makes it even — the previous painter blurred
-/// a square-cornered field, so around a 24 px rounded corner the shadow
-/// kept a hard corner of its own and composited about a fifth of what the
-/// flat edges did. Measured on the light palette against a white
-/// document, that shadow darkened the ground by 140/255 under the bottom
-/// edge and 19/255 beside it: a seven-fold swing around one panel, which
-/// is what "boxy and uneven" looks like from the outside.
-///
-/// It was also painting at full black. `soft_shadow` ignores its colour's
-/// alpha in favour of a separate `intensity`, and this passed `1.0`, so
-/// `e4`'s 110/255 never reached the screen.
-///
-/// The ring clip stays. A blurred rounded rect is solid in the middle,
-/// and a surface must never see its own shadow through itself — chrome is
-/// opaque now ([`CHROME_SURFACE_ALPHA`]), but `intensity` can fade a
-/// panel in, and a half-faded panel would otherwise darken its own
-/// interior on the way.
+/// its own silhouette. The shadow is [`crate::surface::shadow`], a blur of
+/// the panel's own rounded rect (so it stays even around a corner instead
+/// of showing a flat-edged ghost of a square one). The ring clip stays
+/// even though chrome is opaque: a blurred rect is solid in the middle,
+/// and a half-faded panel (`intensity`) must not darken its own interior
+/// on the way in.
 pub fn panel_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -661,12 +493,10 @@ pub fn panel_shadow(
     scene.pop_layer();
 }
 
-/// A separator or edge drawn on a chrome surface.
-///
-/// Derived against the ground it sits on rather than declared, so it
-/// registers on every theme. A declared `border_standard` stroked onto a
-/// translucent panel does not track what is under it and either vanishes
-/// on one theme or glares on another.
+/// A separator or edge drawn on a chrome surface. Derived against the
+/// ground it sits on rather than a declared `border_standard`, which
+/// doesn't track what's under a translucent panel and either vanishes on
+/// one theme or glares on another.
 pub fn chrome_hairline(theme: &Theme) -> Color {
     Colors::hairline_on(theme.tokens.colors.surfaces.overlay, HAIRLINE_ALPHA)
 }
@@ -677,34 +507,20 @@ pub const SCRIM_LEVEL_SHARE: f32 = 0.55;
 
 /// Paint a scrim over `rect` at `strength`, in the theme's own scrim hue.
 ///
-/// One flat fill dims by an amount that depends on how much lightness was
-/// there to begin with. Measured on a real frame, a flat 0.45 wash took
-/// **39.6 L\*** off a word processor's `bg-white` page (252 → 143) and
-/// **1.5 L\*** off the desktop beside it (20 → 16): the page read as blanked
-/// out and nothing else read as dimmed at all. It also flattens what it dims —
-/// the 12 code values between that page and a rule drawn on it closed to 7,
-/// because a flat wash scales the whole range toward the scrim colour and the
-/// top of the range has furthest to fall.
+/// A flat wash dims by an amount that depends on the ground's own
+/// lightness: measured on a real frame, a flat 0.45 wash took 39.6 L* off
+/// a `bg-white` page (252→143) and 1.5 L* off the desktop beside it
+/// (20→16) — the page read as blanked out and nothing else read as dimmed
+/// — and flattened the 12 code values between the page and a rule on it
+/// down to 7.
 ///
-/// So the wash is split into two fills that answer the two halves:
-///
-/// - **Tone**, a soft-light layer with a black source. Soft light against
-///   black squares the backdrop (`Cb²`), which is a *proportional* move: it
-///   barely touches the top of the range and takes real bites out of the
-///   middle and the bottom, where a flat wash can only shift a code value or
-///   two. This is the stage that makes a dark desktop visibly dim.
-/// - **Level**, the theme's `surfaces.scrim` at [`SCRIM_LEVEL_SHARE`] of the
-///   strength. Something has to bring the top of the range down, and the hue
-///   is the theme's because the dim behind a modal is chrome.
-///
-/// Together they take **21-23 L\* off every ground from `#ffffff` down to mid
-/// grey**, tapering only below that, where a ground has no lightness left to
-/// give up.
-///
-/// Both stages scale with `strength`, so a caller multiplying by an openness
-/// still gets a scrim that fades in and out cleanly. Blend modes need a
-/// backdrop, so call this after whatever it is dimming has been drawn into the
-/// same `Scene`.
+/// So this is two fills instead of one: a soft-light **tone** stage (`Cb²`
+/// against black, a proportional move that dims the middle/bottom without
+/// flattening the top) and a flat **level** stage in the theme's scrim hue
+/// at [`SCRIM_LEVEL_SHARE`] of `strength`. Together they take a uniform
+/// 21-23 L* off every ground from `#ffffff` to mid grey. Blend modes need
+/// a backdrop, so call this after whatever it dims is already drawn into
+/// the same `Scene`.
 pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
     let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 {
@@ -747,12 +563,11 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
     }
 }
 
-/// What [`fill_scrim`] does to one 8-bit grey behind it, as a pure function of
-/// the same inputs the painter uses — so the property the two fills are *for*
-/// can be asserted without a GPU. Mirrors the shader: soft light against a
-/// black source is `Cb²` (W3C compositing), the layer composites
-/// `lerp(Cb, Cb², αs)`, and the level stage is an ordinary source-over of the
-/// theme's scrim hue.
+/// What [`fill_scrim`] does to one 8-bit grey behind it, as a pure function
+/// so the property the two fills are for can be asserted without a GPU.
+/// Must mirror the shader: soft light against black is `Cb²` (W3C
+/// compositing) composited `lerp(Cb, Cb², αs)`, then an ordinary
+/// source-over of the theme's scrim hue for the level stage.
 pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
     let strength = strength.clamp(0.0, 1.0) as f64;
     let v = value as f64 / 255.0;
@@ -780,8 +595,6 @@ mod tests {
         ]
     }
 
-    /// How many paint operations the material emits for one selector, by
-    /// state, counted off the real encoding.
     fn glass_fill_count(theme: &Theme, state: SelectionState) -> usize {
         let rect = Rect::new(0.0, 0.0, 120.0, 28.0);
         let mut scene = Scene::new();
@@ -800,20 +613,6 @@ mod tests {
         scene.encoding().draw_tags.len()
     }
 
-    /// The material paints a body, an edge and (when lifted) a rim — and
-    /// nothing else.
-    ///
-    /// Pinned against the encoding rather than against a predicate,
-    /// because the thing worth forbidding is a *paint*, and a helper that
-    /// returns `false` is only ever a restatement of itself. The strip used
-    /// to lay four stacked black rings under every pill with a body; if
-    /// they ever come back here the count moves and this fails, on the dark
-    /// theme where the rings are almost invisible as well as on the light
-    /// one where they are a grey slab.
-    ///
-    /// Elevation and selection are different vocabularies. A chosen tab is
-    /// picked on the bar, not floating above it, so what reports that a
-    /// pill is a surface is its own lit edge.
     #[test]
     fn the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else() {
         for (name, theme) in themes() {
@@ -837,17 +636,6 @@ mod tests {
         }
     }
 
-    /// Every state a glass selector paints has to keep the ground
-    /// visible through it.
-    ///
-    /// This is the failure the material was built to fix, and it is worth
-    /// stating as a property rather than a look: the old active pill was
-    /// **opaque**. That is not a matter of taste — it silently disabled
-    /// the one light cue the strip had, because the painter expressed
-    /// "brighter at the lit end" by scaling the fill's alpha, and scaling
-    /// the alpha of an opaque colour is a no-op. So the state that most
-    /// needed to look deliberate was the only one rendered flat, and
-    /// nothing in the code said so.
     #[test]
     fn a_glass_body_is_never_opaque_and_always_has_somewhere_to_lighten() {
         for (name, theme) in themes() {
@@ -887,12 +675,6 @@ mod tests {
         }
     }
 
-    /// A body and its edge arrive and leave together.
-    ///
-    /// An edge without a body is a loose outline on the bar; a body
-    /// without an edge is a smudge with no silhouette. Tying them to the
-    /// same condition is what lets the strip's reveal animation fade one
-    /// material rather than two things that happen to agree.
     #[test]
     fn a_glass_body_and_its_edge_are_the_same_decision() {
         for (name, theme) in themes() {
@@ -913,16 +695,6 @@ mod tests {
         }
     }
 
-    /// The film is made of the theme's own surface family, and it moves
-    /// the ground the same way a flat lift does.
-    ///
-    /// `surface_white_*` is this idea written as a literal, and it is why
-    /// the old hover was invisible on a light theme: white over paper is
-    /// paper. Deriving the film instead means the only thing that changes
-    /// across the light/dark line is which way "away from the ground"
-    /// points — and this asserts the material and [`Colors::lift`] agree
-    /// on that, because a strip whose glass lifts one way and whose flat
-    /// chrome lifts the other is worse than either.
     #[test]
     fn the_film_lifts_the_same_way_a_flat_lift_does_on_every_preset() {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
@@ -955,14 +727,6 @@ mod tests {
         }
     }
 
-    /// Light comes from above on every palette.
-    ///
-    /// On a graphite desktop the film brightens, so its dense end is the
-    /// top. On a paper desktop a film can only darken, so the same story —
-    /// the top catches the light — is told by thinning the film there
-    /// instead, and the gradient's ends swap. Painted with a single fixed
-    /// orientation, one of the two themes gets a pill lit from below,
-    /// which reads as broken rather than as subtle.
     #[test]
     fn the_lit_end_of_a_selector_is_its_top_on_every_preset() {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
@@ -980,20 +744,16 @@ mod tests {
         }
     }
 
-    /// The tiers are ordered: an active control is further from the
-    /// ground than a hovered one, which is further than an idle one.
-    /// Asserted per theme, because a fixed white wash satisfies this on
-    /// dark and fails on light — which is exactly the bug `lift` exists
-    /// to prevent.
+    /// Per theme: a fixed white wash would pass this on dark and fail on
+    /// light.
     #[test]
     fn selection_tiers_move_progressively_away_from_the_ground() {
         for (name, theme) in themes() {
             let ground = relative_luminance(theme.tokens.colors.surfaces.base);
             let dist = |s: SelectionState| {
                 let t = selection_tier(&theme, s);
-                // Composite the tier's fill over the ground before
-                // measuring: an idle tier is transparent, and its
-                // *effective* luminance is the ground's.
+                // An idle tier is transparent, so composite over the
+                // ground first — its effective luminance is the ground's.
                 let f = t.fill;
                 let a = f.components[3];
                 let over = |c: f32, g: f32| c * a + g * (1.0 - a);
@@ -1020,9 +780,6 @@ mod tests {
         }
     }
 
-    /// Selection never reaches for the accent. The accent means live
-    /// state; if a selected control used it, "this is chosen" and "this
-    /// is live" would be the same pixel.
     #[test]
     fn selection_never_uses_the_accent() {
         for (name, theme) in themes() {
@@ -1042,8 +799,6 @@ mod tests {
         }
     }
 
-    /// An active control does not gain prominence on hover — the whole
-    /// contrast budget goes to inactive controls brightening toward it.
     #[test]
     fn hovering_an_active_control_changes_nothing() {
         for (name, theme) in themes() {
@@ -1058,8 +813,6 @@ mod tests {
         }
     }
 
-    /// A Selector is a capsule at any height, and never asks for the
-    /// degenerate `radii.full` value on a short rect.
     #[test]
     fn a_selector_is_a_capsule_at_every_height() {
         let theme = Theme::dark();
@@ -1073,8 +826,8 @@ mod tests {
         }
     }
 
-    /// Radii come off the token scale. 16 px is deliberately absent from
-    /// that scale (see `tokens::radii`), so no role may resolve to it.
+    /// 16 px is deliberately absent from the radius scale (`tokens::radii`);
+    /// no role may resolve to it.
     #[test]
     fn no_role_resolves_to_an_off_scale_radius() {
         let theme = Theme::dark();
@@ -1096,9 +849,6 @@ mod tests {
         }
     }
 
-    /// Bar and Panel are the same material at the same opacity — that is
-    /// what makes a popover read as belonging to the bar it hangs off
-    /// rather than as a foreign slab.
     #[test]
     fn bar_and_panel_share_one_material() {
         for (name, theme) in themes() {
@@ -1112,14 +862,9 @@ mod tests {
         }
     }
 
-    /// A panel is always legible as its own surface, on every theme.
-    ///
-    /// The declared `surfaces.overlay` token does not guarantee this: on
-    /// the light palette it is #ffffff against a #f3f3f1 ground, and on
-    /// high-contrast it is the same colour as the ground. A panel that
-    /// paints the declared token there is the desktop with a line round
-    /// it. Fill *or* edge must carry the separation, and this asserts at
-    /// least one of them does.
+    /// On high-contrast, `surfaces.overlay` is the same colour as the
+    /// ground, so fill *or* edge must carry the separation — this asserts
+    /// at least one does.
     #[test]
     fn a_panel_separates_from_the_desktop_on_every_theme() {
         for (name, theme) in themes() {
@@ -1148,9 +893,6 @@ mod tests {
         }
     }
 
-    /// Chrome surfaces track the theme. A chrome that paints the same
-    /// pixels on a light desktop as on a dark one is ignoring the user's
-    /// theme, which is the defect this module exists to stop.
     #[test]
     fn chrome_surfaces_differ_between_light_and_dark() {
         let dark = ChromeRole::Panel.surface(&Theme::dark());
@@ -1162,20 +904,18 @@ mod tests {
         );
     }
 
-    /// Perceived lightness of an 8-bit grey, CIE L\*.
-    ///
-    /// A scrim's job is described in what the *eye* loses, not in what the
-    /// code value loses: a flat wash takes the same fraction of every code
-    /// value, and that is precisely why it reads as two completely different
-    /// amounts of dimming on a light page and on a dark desktop.
+    /// Perceived lightness of an 8-bit grey, CIE L\*. A scrim's job is
+    /// judged in what the eye loses, not the code value — a flat wash takes
+    /// the same fraction of every code value, which is why it reads as two
+    /// different amounts of dimming on a light page versus a dark desktop.
     fn lstar(v: u8) -> f64 {
         let s = v as f64 / 255.0;
         let y = if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) };
         if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
     }
 
-    /// The one flat fill this replaced, so the comparisons below are against
-    /// what was actually on screen rather than a remembered number.
+    /// The flat fill this replaced, so comparisons below are against what
+    /// was actually on screen rather than a remembered number.
     fn flat_wash(v: u8, strength: f32, theme: &Theme) -> u8 {
         let a = strength.clamp(0.0, 1.0) as f64;
         let hue = theme.tokens.colors.surfaces.scrim;
@@ -1185,16 +925,9 @@ mod tests {
         (out.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
-    /// A scrim must read as the same amount of dimming whatever is behind it.
-    ///
-    /// This is the property the two fills in [`fill_scrim`] exist for, and the
-    /// one a single flat wash cannot have: the flat 0.45 wash took 39.6 L\*
-    /// off a `bg-white` page and 1.5 L\* off the desktop beside it.
-    ///
-    /// Asserted across every ground from `#ffffff` down to mid grey, because
-    /// those are the ones that *can* lose a fixed amount; below that a ground
-    /// simply has less lightness than the scrim wants to take, and the honest
-    /// requirement there is the separate one below.
+    /// Asserted only from `#ffffff` down to mid grey — those grounds *can*
+    /// lose a fixed amount; below that a ground has less lightness than
+    /// the scrim wants, and that's the separate requirement below.
     #[test]
     fn a_scrim_dims_every_bright_ground_by_the_same_amount() {
         for (name, theme) in themes() {
@@ -1218,9 +951,6 @@ mod tests {
         }
     }
 
-    /// …and it must not take so much that a light page stops being one. At a
-    /// flat 0.45 a `bg-white` page went to 143, which reads as the document
-    /// blanking out rather than as the document being behind something.
     #[test]
     fn a_scrim_does_not_erase_the_brightest_ground() {
         for (name, theme) in themes() {
@@ -1235,19 +965,10 @@ mod tests {
         }
     }
 
-    /// A scrim lowers the level of what is behind it. It must not flatten it.
-    ///
-    /// A flat wash scales the whole range toward the scrim colour, so the top
-    /// of the range — which has furthest to fall — loses its internal
-    /// differences first: the 12 code values between a page and a rule drawn
-    /// on it closed to 7 under the old fill. That is the half of the range a
-    /// light app lives in.
-    ///
-    /// The trade is stated rather than hidden. Squaring the backdrop does the
-    /// opposite at the bottom: a span low on the ramp comes out a code value
-    /// tighter than the flat wash left it (6 rather than 7, from 12). That is
-    /// the price of the dark grounds moving at all — see the test below — and
-    /// it is bounded here so it cannot quietly become a collapse.
+    /// A scrim must lower what's behind it without flattening it — a flat
+    /// wash closed the 12 code values between a page and a rule on it down
+    /// to 7. Squaring the backdrop trades the opposite way at the dark end,
+    /// bounded here so that can't quietly become a collapse either.
     #[test]
     fn a_scrim_keeps_the_structure_of_what_is_behind_it() {
         for (name, theme) in themes() {
@@ -1279,12 +1000,8 @@ mod tests {
         }
     }
 
-    /// Every dark ground must move *further* than the flat wash moved it.
-    ///
-    /// The desktop and the window cards around a page barely changed under the
-    /// flat wash, so the screen did not read as dimmed — only the page did. A
-    /// ground at L\* 6 cannot lose 20 L\*, so the requirement is not a fixed
-    /// amount; it is that the new scrim beats the old one everywhere.
+    /// Relative, not absolute: a ground at L\* 6 cannot lose 20 L\*, but it
+    /// must move further than the flat wash moved it.
     #[test]
     fn a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not() {
         for (name, theme) in themes() {
@@ -1301,8 +1018,8 @@ mod tests {
         }
     }
 
-    /// A scrim fades with its surface, and both of its fills have to fade with
-    /// it or the dim arrives before the panel does.
+    /// Both fills must fade with the surface's openness, or the dim arrives
+    /// before the panel does.
     #[test]
     fn a_scrim_fades_monotonically_with_its_openness() {
         for (name, theme) in themes() {
@@ -1324,10 +1041,8 @@ mod tests {
         }
     }
 
-    /// The high-contrast palette is white ink on pure black, and a scrim over
-    /// it must not undo the reason somebody chose it. The flat wash did: it
-    /// took white text to 143, which is 6.4:1 against the black behind it,
-    /// below the 7:1 the palette exists to clear.
+    /// White on black must not drop below the 7:1 (AAA) that palette exists
+    /// to clear.
     #[test]
     fn a_scrim_leaves_high_contrast_high_contrast() {
         let theme = Theme::high_contrast();
@@ -1346,8 +1061,8 @@ mod tests {
         );
     }
 
-    /// The paint path and the model in [`scrim_maps`] have to agree about how
-    /// many fills a scrim is, or the model describes something nobody sees.
+    /// The paint path and [`scrim_maps`] must agree on the fill count, or
+    /// the model describes something nobody sees.
     #[test]
     fn a_scrim_paints_the_two_stages_the_model_describes() {
         let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
@@ -1375,63 +1090,34 @@ mod tests {
 // Strip ribbon
 // ---------------------------------------------------------------------------
 
-/// Geometry and appearance for the **strip ribbon** — the indicator that
-/// says which strip of the current workspace has focus, and how many
-/// there are (HIG §9.10, §9.11).
+/// Geometry and appearance for the **strip ribbon** — the indicator for
+/// which strip of the current workspace has focus, and how many there are
+/// (HIG §9.10, §9.11). Every strip renders at once sharing the content
+/// height, so this means **the strip with focus** (where a new window
+/// joins, where the keyboard is aimed), not "the strip you can see".
 ///
-/// Strips had no representation on screen whatsoever. A workspace could
-/// hold four of them with nothing indicating that a second one existed,
-/// no key bound to move between them, and no animation when focus did
-/// move. A user could not discover the level of the model they were
-/// standing in.
-///
-/// What the ribbon indicates is worth being precise about. Every strip in
-/// a workspace renders at once, sharing the content height between them,
-/// so the ribbon does not mean "this is the strip you can see". It means
-/// **this is the strip with focus** — the one a new window joins and the
-/// one the keyboard is aimed at — which is exactly the fact that was
-/// invisible.
-///
-/// It sits on the content's right edge because the workspace disc owns
-/// the left and horizontal scrolling inside the content belongs to
-/// groups and tabs; keeping one level of the model per edge is what lets
-/// a user tell, from the control alone, what a gesture is about to
-/// change.
+/// Sits on the content's right edge because the workspace disc owns the
+/// left and horizontal scrolling belongs to groups and tabs — one level
+/// of the model per edge.
 #[derive(Clone, Copy, Debug)]
 pub struct StripRibbon {
-    /// Content rect the ribbon is anchored to the right edge of.
     pub content: Rect,
-    /// How many strips the workspace holds.
     pub count: usize,
-    /// Index of the focused strip.
     pub focused: usize,
 }
 
-/// Width of a ribbon segment.
 pub const RIBBON_SEG_W: f64 = 6.0;
-/// Height of an unfocused segment.
 pub const RIBBON_SEG_H: f64 = 22.0;
-/// Height of the focused segment. Longer, so the ribbon reads at a glance
-/// without needing colour to carry the whole signal — which is what keeps
-/// it legible on the high-contrast palette.
+/// Longer than [`RIBBON_SEG_H`], so the ribbon reads at a glance without
+/// needing colour to carry the signal — what keeps it legible on
+/// high-contrast.
 pub const RIBBON_SEG_H_FOCUSED: f64 = 40.0;
-/// Gap between segments.
-///
-/// Sized so that segment height plus gap clears the minimum pointer
-/// target: an unfocused segment is [`RIBBON_SEG_H`] tall, and its hit
-/// rect claims half the gap either side, so the pitch is exactly
-/// [`RIBBON_HIT_W`]. Adjacent targets therefore tile without overlapping
-/// — a click near a boundary belongs to exactly one strip.
+/// Sized so segment height plus gap equals [`RIBBON_HIT_W`]: adjacent hit
+/// rects tile without overlapping, so a click near a boundary belongs to
+/// exactly one strip.
 pub const RIBBON_GAP: f64 = RIBBON_HIT_W - RIBBON_SEG_H;
-/// Distance from the content's right edge to the ribbon.
-///
-/// Small, so the ribbon hugs the screen edge and reads as chrome the
-/// shell owns rather than as something attached to the window beside it.
-/// Rendered at a larger margin it sat a few pixels from the Notes app's
-/// own scrollbar, and the two vertical marks read as a pair.
 pub const RIBBON_MARGIN: f64 = 5.0;
-/// Minimum pointer target (HIG §9.6). The segment itself is 6 px wide;
-/// the hit rect around it is not.
+/// Minimum pointer target (HIG §9.6) — the segment itself is 6 px wide.
 pub const RIBBON_HIT_W: f64 = 32.0;
 
 /// Weight of an unfocused ribbon segment against the desktop.
@@ -1441,27 +1127,14 @@ const RIBBON_HOVER_ALPHA: u8 = 96;
 /// Weight of the focused segment.
 const RIBBON_FOCUSED_ALPHA: u8 = 224;
 
-/// Body of one ribbon segment.
-///
-/// The ribbon cannot use [`selection_tier`] unmodified, and the reason is
-/// worth recording. That tier is built for a control sitting in a row of
-/// its own, where "unselected" can legitimately be transparent because
-/// the row around it supplies the context. A ribbon segment has no row:
-/// an unfocused segment painted at zero alpha would mean the only
-/// evidence that a second strip exists is invisible.
-///
-/// Giving unfocused segments a floor is not enough on its own either.
-/// [`Colors::lift`] has nothing to move toward on the high-contrast
-/// palette — `surfaces.base` and `surfaces.raised` are both pure black —
-/// so it falls back to a weak derived step, and a floored unfocused
-/// segment came out *brighter than the focused one*. Rendered, the
-/// high-contrast ribbon read inverted: the strip with focus was the
-/// dimmest of the three.
-///
-/// So the ribbon states are three explicitly ordered weights against the
-/// desktop's own ground, which keeps the ordering true on every palette
-/// and gives high-contrast what it actually wants — a bright mark on
-/// black.
+/// Can't reuse [`selection_tier`] unmodified — it lets "unselected" be
+/// transparent because a row of controls supplies context, but a ribbon
+/// segment has no row, so an unfocused one at zero alpha would be the only
+/// evidence of a second strip, invisible. A floor alone isn't enough
+/// either: on high-contrast, `surfaces.base`/`raised` are both pure black,
+/// so a floored unfocused segment came out *brighter than the focused
+/// one*. Hence three explicit, hand-ordered weights instead of a derived
+/// tier.
 fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
     let alpha = if focused {
         RIBBON_FOCUSED_ALPHA
@@ -1474,7 +1147,6 @@ fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
 }
 
 impl StripRibbon {
-    /// Total height the whole ribbon occupies.
     pub fn extent(&self) -> f64 {
         if self.count == 0 {
             return 0.0;
@@ -1486,7 +1158,6 @@ impl StripRibbon {
             + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
     }
 
-    /// Rect of segment `i`, or `None` if out of range.
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
         if i >= self.count {
             return None;
@@ -1502,9 +1173,7 @@ impl StripRibbon {
         Some(Rect::new(x0, y, x1, y + h))
     }
 
-    /// Pointer target for segment `i` — widened to the minimum target
-    /// size and half the gap on each side, so the ribbon is clickable
-    /// rather than merely visible.
+    /// Widened past the visible segment to the minimum pointer target.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
         let cx = seg.center().x;
@@ -1516,12 +1185,10 @@ impl StripRibbon {
         ))
     }
 
-    /// Which segment, if any, contains `p`.
     pub fn hit(&self, p: vello::kurbo::Point) -> Option<usize> {
         (0..self.count).find(|i| self.hit_rect(*i).is_some_and(|r| r.contains(p)))
     }
 
-    /// Paint the ribbon. `hover` is the segment under the pointer.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -1556,88 +1223,44 @@ impl StripRibbon {
 }
 
 /// A map of the windows along one strip, and where on it the user is
-/// standing.
+/// standing — the counterpart of [`StripRibbon`] for the axis a strip can
+/// overflow. Three facts in order of importance: how many windows the
+/// strip holds (one segment each — the fact that makes travel worth
+/// attempting), which has focus (the long, bright segment), and which are
+/// on screen right now (the middle weight, sliding as the strip pans).
 ///
-/// The counterpart of [`StripRibbon`], for the axis that had nothing.
-/// A strip is a horizontal run of window groups wider than the display,
-/// so at any moment most of it is off screen — and nothing on screen said
-/// so. A user looking at two windows had no way to tell whether that was
-/// the whole workspace or the middle of six, and therefore no reason to
-/// look for a way to travel. That is the state a live session produced
-/// the question "how do I change windows / scroll left to right in a
-/// strip?" from.
-///
-/// Three facts, in the order they matter:
-///
-///   * **How many windows this strip holds** — one segment each. This is
-///     the fact that makes travel worth attempting.
-///   * **Which one has focus** — the long, bright segment.
-///   * **Which ones are on screen right now** — the middle weight. This
-///     is what turns the rail into a position readout rather than a
-///     count: the lit run slides as the strip pans.
-///
-/// It is a control, not a readout: clicking a segment focuses that
-/// window. A user who cannot yet name the gesture can still get where
-/// they are going by pointing at the map, which is the whole reason the
-/// rail is clickable rather than decorative.
-///
+/// A control, not a readout: clicking a segment focuses that window.
 /// Bottom edge, because the disc owns the left and the strip ribbon owns
-/// the right — one level of the model per edge, so the control alone says
-/// what a gesture is about to change.
+/// the right.
 #[derive(Clone, Debug)]
 pub struct StripRail {
-    /// Content rect the rail is anchored to the bottom edge of.
     pub content: Rect,
-    /// How many window groups this strip holds.
     pub count: usize,
-    /// Index of the focused group.
     pub focused: usize,
-    /// Indices currently at least partly on screen. Empty before the
-    /// first layout pass has anything to report.
+    /// Empty before the first layout pass has anything to report.
     pub visible: Vec<usize>,
 }
 
-/// Thickness of the rail. Matches [`RIBBON_SEG_W`] on its own axis, so
-/// the two controls read as the same object turned ninety degrees.
+/// Matches [`RIBBON_SEG_W`] on its own axis, so the two controls read as
+/// the same object turned ninety degrees.
 pub const RAIL_SEG_H: f64 = 6.0;
-/// Length of a segment for a group that does not have focus.
 pub const RAIL_SEG_W: f64 = 22.0;
-/// Length of the focused segment. Longer, so focus survives a palette
-/// that has no colour to spare — the same reason the ribbon's focused
-/// segment is taller.
 pub const RAIL_SEG_W_FOCUSED: f64 = 40.0;
-/// Gap between segments. Sized like the ribbon's so each segment's hit
-/// rect claims half the gap either side and adjacent targets tile
-/// without overlapping.
 pub const RAIL_GAP: f64 = RAIL_HIT_H - RAIL_SEG_W;
-/// Distance from the content's bottom edge to the rail.
 pub const RAIL_MARGIN: f64 = 10.0;
 /// Minimum pointer target (HIG §9.6) across the rail's short axis.
 pub const RAIL_HIT_H: f64 = 32.0;
 
-/// Weight of a segment whose group is off screen.
-///
-/// Deliberately heavier than the ribbon's idle step. An unfocused
-/// *strip* segment only has to hint that another strip exists; an
-/// off-screen *window* segment is the rail's entire message — it is the
-/// mark that says the strip continues past the edge of the display, and
-/// a mark nobody notices does not deliver it.
+/// Heavier than the ribbon's idle step: an off-screen *window* segment is
+/// the rail's entire message (the strip continues past the display edge),
+/// where an unfocused *strip* segment only has to hint another exists.
 const RAIL_ABSENT_ALPHA: u8 = 64;
-/// Weight of a segment whose group is on screen but not focused.
 const RAIL_PRESENT_ALPHA: u8 = 110;
-/// Weight of a hovered segment, whether or not its group is on screen.
 const RAIL_HOVER_ALPHA: u8 = 160;
-/// Weight of the focused segment.
 const RAIL_FOCUSED_ALPHA: u8 = 224;
 
-/// Body of one rail segment.
-///
-/// Four explicitly ordered weights against the desktop's own ground, for
-/// the reason [`ribbon_fill`] records at length: [`Colors::lift`] has
-/// nothing to move toward on the high-contrast palette, where
-/// `surfaces.base` and `surfaces.raised` are both pure black, so a tier
-/// system that derives its steps can invert. Ordering weights by hand
-/// keeps focus the brightest mark on every palette.
+/// Four hand-ordered weights, same reason as [`ribbon_fill`]: a derived
+/// tier has nothing to lift toward on high-contrast and can invert.
 fn rail_fill(theme: &Theme, focused: bool, hover: bool, present: bool) -> Color {
     let alpha = if focused {
         RAIL_FOCUSED_ALPHA
@@ -1652,13 +1275,12 @@ fn rail_fill(theme: &Theme, focused: bool, hover: bool, present: bool) -> Color 
 }
 
 impl StripRail {
-    /// Whether the rail has anything to say. One window is not a strip
-    /// you can travel along, and a single segment would be noise.
+    /// One window is not a strip you can travel along, and a single
+    /// segment would be noise.
     pub fn is_meaningful(&self) -> bool {
         self.count >= 2
     }
 
-    /// Total width the whole rail occupies.
     pub fn extent(&self) -> f64 {
         if self.count == 0 {
             return 0.0;
@@ -1670,7 +1292,6 @@ impl StripRail {
             + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
     }
 
-    /// Rect of segment `i`, or `None` if out of range.
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
         if i >= self.count {
             return None;
@@ -1686,9 +1307,8 @@ impl StripRail {
         Some(Rect::new(x, y0, x + w, y1))
     }
 
-    /// Pointer target for segment `i` — widened to the minimum target
-    /// size across the rail's short axis and half the gap either side,
-    /// so the rail is clickable rather than merely visible.
+    /// Widened past the visible segment to the minimum pointer target
+    /// across the rail's short axis.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
         let cy = seg.center().y;
@@ -1700,7 +1320,6 @@ impl StripRail {
         ))
     }
 
-    /// Which segment, if any, contains `p`.
     pub fn hit(&self, p: Point) -> Option<usize> {
         if !self.is_meaningful() {
             return None;
@@ -1708,7 +1327,6 @@ impl StripRail {
         (0..self.count).find(|i| self.hit_rect(*i).is_some_and(|r| r.contains(p)))
     }
 
-    /// Paint the rail. `hover` is the segment under the pointer.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -1757,7 +1375,6 @@ mod rail_tests {
         }
     }
 
-    /// One window is not a strip you can travel along.
     #[test]
     fn a_single_group_draws_no_rail() {
         assert!(!rail(1, 0, vec![0]).is_meaningful());
@@ -1765,8 +1382,6 @@ mod rail_tests {
         assert!(rail(1, 0, vec![0]).hit(Point::new(800.0, 884.0)).is_none());
     }
 
-    /// Segments tile left to right without overlapping, and the focused
-    /// one is the long one.
     #[test]
     fn segments_run_in_order_with_the_focused_one_longest() {
         let r = rail(4, 2, vec![1, 2]);
@@ -1789,18 +1404,8 @@ mod rail_tests {
         );
     }
 
-    /// Focus is the strongest mark on every palette, and a group that is
-    /// off screen is fainter than one that is on it. Both orderings are
-    /// what let the rail be read as a position rather than a count.
-    ///
-    /// [`Colors::hairline_on`] resolves the direction to move once per
-    /// ground, so on a given palette all four weights are the same
-    /// colour and differ only in alpha — the assertion checks exactly
-    /// that (a weight that came out a different colour would not be
-    /// comparable by alpha at all) and then that the alphas rise. This
-    /// is the ordering the ribbon's own notes record going wrong on
-    /// high-contrast, where `surfaces.base` and `surfaces.raised` are
-    /// both pure black and a derived tier system inverts.
+    /// All four weights resolve to the same colour and differ only in
+    /// alpha, so this checks that and then that the alphas rise.
     #[test]
     fn weights_stay_ordered_on_every_palette() {
         for (name, theme) in [
@@ -1835,8 +1440,6 @@ mod rail_tests {
         }
     }
 
-    /// Every segment is reachable by pointer at the HIG's minimum target
-    /// size, and a click near a boundary belongs to exactly one of them.
     #[test]
     fn hit_targets_tile_and_clear_the_minimum_size() {
         let r = rail(5, 0, vec![0, 1]);
@@ -1862,7 +1465,6 @@ mod ribbon_tests {
         StripRibbon { content: Rect::new(0.0, 40.0, 1600.0, 900.0), count, focused }
     }
 
-    /// Segments appear in strip order, top to bottom, and never overlap.
     #[test]
     fn segments_are_ordered_and_disjoint() {
         let r = ribbon(4, 2);
@@ -1877,9 +1479,6 @@ mod ribbon_tests {
         }
     }
 
-    /// The focused segment is visibly longer than the others, so the
-    /// ribbon reads without relying on colour alone — which is what keeps
-    /// it legible on the high-contrast palette.
     #[test]
     fn the_focused_segment_is_longer() {
         let r = ribbon(3, 1);
@@ -1892,9 +1491,6 @@ mod ribbon_tests {
         }
     }
 
-    /// The ribbon is centred in the content it belongs to, whichever
-    /// segment has focus — so changing strips does not shift the whole
-    /// control up or down the screen.
     #[test]
     fn the_ribbon_stays_centred_whichever_strip_has_focus() {
         let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
@@ -1911,8 +1507,6 @@ mod ribbon_tests {
         }
     }
 
-    /// Every segment is clickable at the minimum pointer target, even
-    /// though the painted segment is 6 px wide.
     #[test]
     fn every_segment_is_clickable_at_the_minimum_target() {
         let r = ribbon(3, 0);
@@ -1928,9 +1522,6 @@ mod ribbon_tests {
         }
     }
 
-    /// Pointer targets tile without overlapping, so a click near a
-    /// boundary resolves to exactly one strip rather than to whichever
-    /// the hit-test happened to check first.
     #[test]
     fn pointer_targets_do_not_overlap() {
         let r = ribbon(4, 2);
@@ -1946,21 +1537,15 @@ mod ribbon_tests {
         }
     }
 
-    /// A click in the gutter beside the ribbon is not a strip switch.
     #[test]
     fn a_click_away_from_the_ribbon_hits_nothing() {
         let r = ribbon(3, 1);
         assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
     }
 
-    /// The focused segment is the *most* prominent one, on every theme.
-    ///
-    /// This is the assertion that was missing when the ribbon first
-    /// rendered: on the high-contrast palette the focused segment came
-    /// out dimmer than its unfocused neighbours, because `lift` has
-    /// nothing to move toward when base and raised are both black while
-    /// the unfocused floor was a fixed weight. The ribbon read inverted
-    /// and only a rendered crop showed it.
+    /// `lift` has nothing to move toward on high-contrast, where base and
+    /// raised are both black, so this pins the ordering explicitly rather
+    /// than trusting a derived tier.
     #[test]
     fn the_focused_segment_is_the_most_prominent_on_every_theme() {
         use crate::a11y::relative_luminance;
@@ -1999,8 +1584,8 @@ mod ribbon_tests {
         }
     }
 
-    /// A workspace with one strip still shows its ribbon: that single
-    /// segment is how the control is discovered at all.
+    /// Unlike [`StripRail`], a single strip still shows its ribbon segment
+    /// — it's how the control is discovered at all.
     #[test]
     fn one_strip_still_draws_a_segment() {
         let r = ribbon(1, 0);
