@@ -4,18 +4,11 @@
 //! every member runs their own app against it. So a
 //! [`TileContent::PeerWindow`] tab arriving in the room document is news
 //! that the room has one open, and the honest local answer is to open
-//! one too.
-//!
-//! The tab carries only the app id and the peer's name for it; app state
-//! travels separately, over the broker's channels. Starting a local
-//! instance answers to the capability model like any launch: [`admits`]
-//! checks the room's **owner** for `Write` on `ResourceRef::App(id)`,
-//! and the launch goes through [`crate::shell::launcher`] with the
-//! room's own grants.
-//!
-//! The launch binds into the existing tab ([`Placement::IntoTab`]).
-//! `PeerWindow::note` both labels the card and records that a decision
-//! was made, so a refusal or a launch is not re-run on every sync round.
+//! one too — with the app id and peer name it carries, checked against
+//! the room owner's `Write` grant on `ResourceRef::App(id)` via
+//! [`admits`], and launched through [`crate::shell::launcher`], binding
+//! into the existing tab. `PeerWindow::note` labels the card and marks
+//! the decision made, so a refusal or launch is not re-run on every sync.
 
 use crate::compositor::tab_binding::Placement;
 use crate::shell::launcher;
