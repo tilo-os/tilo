@@ -314,12 +314,57 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
     )
 }
 
-/// Every app the agent can speak to: a rich-text document, a conversation —
-/// deliberately different shapes, and neither special-cased past this
-/// point. Adding a third is one entry here.
+/// The photograph as its edits leave it: the file the document names,
+/// cropped and turned the way the document says, encoded as a PNG and put
+/// in this machine's blob store.
 ///
-/// Chat is also the room people are already talking in, which is what
-/// makes [`crate::listen`] possible.
+/// The bytes come from [`photos::doc::bytes_of`] — the path first, for the
+/// session that opened the picture, then the content hash — never a raw
+/// `std::fs::read` of the document's path directly. That path is true on
+/// exactly one machine: the same photograph is staged under a different
+/// absolute path in every session that receives it, and a participant with
+/// no window of its own is never the one whose path won. Reading it here
+/// would work by the accident of every session sharing a filesystem and
+/// fail on any real, separate ones.
+fn photos_product(_view: &View, doc: &AutoCommit) -> Option<Product> {
+    let image = photos::doc::PhotosDoc::image(doc)?;
+    let edits = photos::doc::PhotosDoc::edits(doc);
+    let bytes = photos::doc::bytes_of(&image).or_else(|| {
+        tracing::warn!(
+            path = %image.path, content = ?image.content,
+            "cannot get the photograph's bytes: neither the path in the \
+             document nor its content is available to this participant",
+        );
+        None
+    })?;
+    let decoded = photos::pixels::decode(&bytes)?;
+    let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
+    let png = photos::pixels::encode_png(&rendered)?;
+    Some(Product::Content {
+        hash: qdoc::blobstore::put(&png),
+    })
+}
+
+fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
+    use qos_actions::ResourceProvider;
+    photos::actions::PhotosResources.resources(doc)
+}
+
+/// Whether a document is the photo editor's — asked of its own schema.
+/// `is_empty` is the app's own test for "never written to", so its negation
+/// is "this app has written here".
+fn photos_document(doc: &AutoCommit) -> bool {
+    !photos::doc::PhotosDoc::is_empty(doc)
+}
+
+/// Every app the agent can speak to: a rich-text document, a conversation, a
+/// photograph — deliberately different shapes, and none special-cased past
+/// this point. Adding a fourth is one entry here.
+///
+/// The photo editor is what makes an instruction naming two apps worth
+/// having: a photograph is edited here to be put somewhere else. Chat is
+/// also the room people are already talking in, which is what makes
+/// [`crate::listen`] possible.
 pub static CONTRACTS: &[AppContract] = &[
     AppContract {
         app_id: "dev.qos.word-processor",
@@ -343,6 +388,16 @@ pub static CONTRACTS: &[AppContract] = &[
         register: chat::actions::register,
         fallback: false,
         product: nothing,
+    },
+    AppContract {
+        app_id: "dev.qos.photos",
+        title: "the photo editor",
+        namespace: "photos",
+        recognises: photos_document,
+        resources: photos_resources,
+        register: photos::actions::register,
+        fallback: false,
+        product: photos_product,
     },
 ];
 
@@ -864,10 +919,12 @@ pub enum NoMatch {
 /// does not try to. It matches the instruction's own words against the
 /// words the apps put on their operations, and insists on a clear winner:
 /// an instruction that fits two operations equally is [`NoMatch::Ambiguous`],
-/// not whichever came first. A run with no model reachable either does the
-/// one thing plainly named, or says which of these three it ran into — it
-/// never reports success for something it did not do, and never substitutes
-/// the nearest available operation for the one asked for.
+/// not whichever came first — unless what the instruction *supplied* breaks
+/// the tie itself (see [`collects_a_value_said`]). A run with no model
+/// reachable either does the one thing plainly named, or says which of
+/// these three it ran into — it never reports success for something it did
+/// not do, and never substitutes the nearest available operation for the
+/// one asked for.
 pub fn from_verbs<'a>(
     rest: &str,
     offers: &'a [Offer],
@@ -893,6 +950,28 @@ pub fn from_verbs<'a>(
     if best.is_empty() {
         return Err(NoMatch::Nothing);
     }
+    let said = quoted_literal(rest);
+    if best.len() > 1 {
+        // Two operations answering to one verb need not be two meanings.
+        // Whether the instruction supplied a value is a fact about which of
+        // them it named — the same fact dispatch reads a moment later, off
+        // [`Offer::wants_text`] — so a tie between an operation that takes
+        // one and an operation that does not is not a guess.
+        //
+        // Only ever narrowing, and never to nothing: if every tied
+        // operation refuses what the instruction supplied, the tie stands
+        // and is refused, which is what keeps a genuine ambiguity (two
+        // operations that both take nothing) a question rather than a coin
+        // toss.
+        let fits: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|o| collects_a_value_said(o) == said.is_some())
+            .collect();
+        if !fits.is_empty() {
+            best = fits;
+        }
+    }
     if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
@@ -902,18 +981,27 @@ pub fn from_verbs<'a>(
         ));
     }
     let chosen = best[0];
-    // An operation that collects *content* collects a content hash, and
-    // there is no content hash anywhere in a sentence. So it is not asked
-    // for here: either an earlier step produced content and the caller
-    // binds it (see `plan::Step`), or the operation is refused at dispatch
-    // for having nothing to place.
-    if !chosen.wants_text() || chosen.wants_content() {
+    if !collects_a_value_said(chosen) {
         return Ok((chosen, None));
     }
-    match quoted_literal(rest) {
+    match said {
         Some(text) => Ok((chosen, Some(text))),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
+}
+
+/// Whether performing `offer` needs a value the instruction could have said.
+///
+/// Narrower than [`Offer::wants_text`]. An operation that collects
+/// *content* wants text too, but the text it wants is a content hash —
+/// there is none anywhere in a sentence, nobody writes one down, and
+/// inventing one would name bytes that do not exist. So it is never asked
+/// of the words: either an earlier step produced content and the caller
+/// binds it, or the operation is refused at dispatch for having nothing to
+/// place. This is the question to ask of an instruction and an operation
+/// together — whether what the one said is what the other takes.
+fn collects_a_value_said(offer: &Offer) -> bool {
+    offer.wants_text() && !offer.wants_content()
 }
 
 #[cfg(test)]
@@ -978,6 +1066,184 @@ mod tests {
         );
         assert_eq!(quoted_literal("don't rename anything"), None);
         assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+    }
+
+    // -- telling two operations of one verb apart -------------------------
+
+    fn offer(
+        app: &'static str,
+        resource: &str,
+        action: &str,
+        label: &str,
+        input: qos_actions::InputSpec,
+    ) -> Offer {
+        Offer {
+            app,
+            descriptor: ActionDescriptor {
+                address: ActionAddress::new(resource, action),
+                resource_kind: format!("{app}.thing"),
+                resource_label: "a thing".to_string(),
+                action_label: label.to_string(),
+                description: None,
+                locus: qos_actions::ExecutionLocus::ClientLocal,
+                input,
+            },
+        }
+    }
+
+    /// Which of two operations sharing a verb an instruction names is
+    /// settled by whether the instruction supplied a value.
+    ///
+    /// Two offers, one verb, the way a real app can genuinely publish one —
+    /// a crop that collects a region and a crop that collects nothing —
+    /// which used to be an unconditional [`NoMatch::Ambiguous`] even when
+    /// the instruction was not actually silent about the difference.
+    ///
+    /// Asserted in both directions: a rule that always preferred the
+    /// prompted operation would pass the first half and leave the
+    /// argument-less one unreachable, and one that always preferred the
+    /// argument-less operation would pass the second while throwing away a
+    /// value somebody had written down.
+    #[test]
+    fn a_supplied_value_tells_two_same_verb_operations_apart() {
+        let offers = vec![
+            offer(
+                "photos",
+                "photos.image:1",
+                "crop",
+                "Crop to a region",
+                qos_actions::InputSpec::Text {
+                    prompt: "Region to keep".to_string(),
+                    placeholder: "0.25,0.25,0.5,0.5".to_string(),
+                    collects: qos_actions::Collects::Words,
+                },
+            ),
+            offer(
+                "photos",
+                "photos.image:1",
+                "crop-square",
+                "Crop to a square",
+                qos_actions::InputSpec::None,
+            ),
+        ];
+
+        let (chosen, argument) = from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
+            .expect("a quoted region tells the two crops apart");
+        assert_eq!(
+            chosen.address().action,
+            "crop",
+            "a quoted region must reach the crop that collects one, not {}",
+            chosen.descriptor.action_label,
+        );
+        assert_eq!(argument.as_deref(), Some("0.25,0.25,0.5,0.5"));
+
+        let (chosen, argument) = from_verbs("crop the photograph", &offers)
+            .expect("with no region said, the crop that needs none is the one that can act");
+        assert_eq!(chosen.address().action, "crop-square");
+        assert_eq!(argument, None);
+
+        // What is gone is a false ambiguity, not the mechanism: two
+        // operations that both take nothing are still not told apart by an
+        // instruction that supplies nothing, and that is still a genuine
+        // question rather than a guess.
+        let both_bare = vec![
+            offer("photos", "photos.image:1", "rotate-left", "Rotate left", qos_actions::InputSpec::None),
+            offer("photos", "photos.image:1", "rotate-right", "Rotate right", qos_actions::InputSpec::None),
+        ];
+        match from_verbs("rotate the photograph", &both_bare) {
+            Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+            other => panic!("a genuine ambiguity must still be refused: {other:?}"),
+        }
+
+        // Nor is it dropped when the split would leave nothing: two tied
+        // operations that both *want* a value are still ambiguous when the
+        // instruction supplied none — narrowing must give up and leave the
+        // original tie standing rather than choose from an empty set.
+        let both_prompted = vec![
+            offer(
+                "photos",
+                "photos.image:1",
+                "crop-left-half",
+                "Crop the left half",
+                qos_actions::InputSpec::Text {
+                    prompt: "Which half".to_string(),
+                    placeholder: String::new(),
+                    collects: qos_actions::Collects::Words,
+                },
+            ),
+            offer(
+                "photos",
+                "photos.image:1",
+                "crop-right-half",
+                "Crop the right half",
+                qos_actions::InputSpec::Text {
+                    prompt: "Which half".to_string(),
+                    placeholder: String::new(),
+                    collects: qos_actions::Collects::Words,
+                },
+            ),
+        ];
+        match from_verbs("crop the photograph", &both_prompted) {
+            Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+            other => panic!(
+                "with no value supplied and both operations wanting one, the \
+                 tie must stand rather than pick from nothing: {other:?}"
+            ),
+        }
+    }
+
+    /// The picture a participant was asked to work on is one it can get the
+    /// bytes of, whoever opened it.
+    ///
+    /// A participant with no window has no staging directory of its own:
+    /// the path in the shared document belongs to whichever session opened
+    /// the photograph, and this one is not it. Reading that path is the
+    /// failure that ends the whole errand quietly — no bytes, no product,
+    /// nothing to hand to the document the picture was going into, and
+    /// every step still reporting that it applied. The content hash is the
+    /// same word in every session, so it is what this resolves through.
+    #[test]
+    fn a_photograph_is_rendered_from_its_content_and_not_from_somebody_elses_path() {
+        // The bytes, as the room holds them: in the content store, addressed
+        // by their hash, exactly as they reach a participant that never
+        // touched the file.
+        let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32))
+            .expect("the fixture encodes");
+        let hash = qdoc::blobstore::put(&png);
+
+        // The document, as this participant receives it: a path under
+        // another session's runtime directory, which is not a path here.
+        let theirs = format!("/run/user/1000/qlvx-another-session/qos-opened/{hash}.png");
+        assert!(
+            std::fs::read(&theirs).is_err(),
+            "the stand-in for another session's path is readable here, so it \
+             is not standing in for one"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        photos::doc::PhotosDoc::seed(&mut doc);
+        photos::doc::PhotosDoc::set_image(
+            &mut doc,
+            Some(&photos::OpenImage::from_path(&theirs, 64, 32).with_content(&hash)),
+        );
+        // And an edit in force, because the product is the picture *as
+        // asked for* — a crop nobody can render is the same failure one
+        // step later.
+        photos::doc::PhotosDoc::set_edits(&mut doc, &photos::Edits::default().rotated_right());
+        doc.commit();
+
+        let product = photos_product(&View::default(), &doc)
+            .expect("a participant holding the content can render what it was asked for");
+        let Product::Content { hash: made } = product;
+        assert_ne!(
+            made, hash,
+            "the product has to be the edited picture, not the original \
+             handed straight back"
+        );
+        assert!(
+            qdoc::blobstore::get(&made).is_some(),
+            "the product names content this participant does not hold, so \
+             the document it is placed into would reference a permanent hole"
+        );
     }
 
     // -- opening an application ------------------------------------------

@@ -44,6 +44,11 @@ struct Cli {
     /// How long a model may take to choose before the keyword vocabulary
     /// decides instead. Short on purpose: an instruction must never wait on
     /// the network.
+    ///
+    /// Bounds the retries too: a request an overloaded service turns away is
+    /// made again with a short backoff, carved out of this deadline rather
+    /// than added to it, so shortening this also shortens how long the agent
+    /// will wait out a busy service.
     #[arg(long, default_value_t = 9000)]
     model_timeout_ms: u64,
     /// How long to wait for the room to answer with the document before
