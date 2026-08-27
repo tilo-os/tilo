@@ -6,12 +6,8 @@
 //! load_tree_from}`. Nothing is re-implemented locally and no test
 //! helper stands in for the code that ships.
 //!
-//! The bias is towards **denial**, deliberately. Before this work the
-//! compositor's permission surface passed every "does allow work?"
-//! question and failed every "does deny work?" one: `is_active_
-//! workspace_owner` returned `true` unconditionally, no production code
-//! path persisted a grant, and a revoke never left the local cache. The
-//! tests below are the ones that would have caught each of those.
+//! The bias is towards **denial**, deliberately: these are the "does
+//! deny work?" tests, not just "does allow work?".
 
 use shell::shell::persist;
 use shell::shell::state::{
@@ -235,8 +231,7 @@ fn the_host_can_change_a_peers_permissions_live() {
 }
 
 // =====================================================================
-// Revocation replicates. This is the half that was entirely missing:
-// the old revoke touched only the local cache.
+// Revocation replicates.
 // =====================================================================
 
 #[test]

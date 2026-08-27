@@ -1,20 +1,9 @@
-//! End-to-end `color-management-v1` protocol walk.
-//!
-//! Wires an in-process wayland-client connection through a `UnixStream`
-//! pair into a headless smithay `State`, then:
-//!
-//! 1. Walks the `wl_registry` for `wl_compositor` + `wp_color_manager_v1`.
-//! 2. Collects the compositor's advertised `supported_primaries_named`,
-//!    `supported_tf_named`, and `supported_feature` events — asserts the
-//!    canonical HDR set (`Srgb + Bt2020`, `Bt1886 + St2084Pq + Hlg`,
-//!    `Parametric + SetPrimaries`) is present.
-//! 3. Builds a parametric image description with BT.2020 primaries +
-//!    PQ transfer, calls `create`, waits for `ready2`.
-//! 4. Creates a `wl_surface`, mints a `wp_color_management_surface_v1`
-//!    for it, attaches the image description, and commits.
-//! 5. Server-side, drains dispatch, then looks up the compositor's
-//!    `ColorManagementSurfaceData` for that surface and asserts the
-//!    stored `Colorimetry` matches BT.2020 + PQ.
+//! End-to-end `color-management-v1` protocol walk: an in-process
+//! wayland-client wired through a `UnixStream` pair into a headless smithay
+//! `State`. Walks the registry, asserts the canonical HDR support set is
+//! advertised, builds a parametric BT.2020 + PQ image description, attaches
+//! it to a surface, and asserts the compositor's stored `Colorimetry`
+//! matches server-side.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -40,11 +29,8 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 
-// -----------------------------------------------------------------------------
-// Client-side state — collects the registry advertisements and drives
-// the protocol walk. Exposes the intermediate object handles so the test
-// body can send explicit requests.
-// -----------------------------------------------------------------------------
+// Client-side state: collects registry advertisements and drives the walk,
+// exposing intermediate object handles so the test body can send requests.
 
 #[derive(Default)]
 struct ClientAppState {
@@ -188,14 +174,11 @@ impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> fo
     }
 }
 
-// -----------------------------------------------------------------------------
 // Helpers to drive both sides.
-// -----------------------------------------------------------------------------
 
-/// Pump the client → server → client round-trip enough times for the
-/// pending events to settle. Both sides flush + read/dispatch in a
-/// bounded loop with a small sleep so events queued at either end
-/// propagate.
+/// Pump the client → server → client round-trip until pending events settle:
+/// both sides flush and dispatch in a bounded loop so events queued at
+/// either end propagate.
 fn pump(
     conn: &Connection,
     ev: &mut wayland_client::EventQueue<ClientAppState>,
@@ -210,8 +193,8 @@ fn pump(
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
         let _ = display.flush_clients();
-        // Drain events without blocking. `roundtrip` blocks; we
-        // interleave with the server dispatch so it can complete.
+        // `roundtrip` blocks, so drain without blocking and interleave with
+        // the server dispatch.
         let _ = ev.dispatch_pending(app);
         if let Some(guard) = conn.prepare_read() {
             let _ = guard.read();
@@ -361,9 +344,8 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
     cm_surface.set_image_description(&desc, RenderIntent::Perceptual);
     surface.commit();
 
-    // 4. Drain the server dispatch loop, then look up the surface
-    //    server-side by protocol id and read its
-    //    `ColorManagementSurfaceData`.
+    // 4. Drain the server dispatch loop, then read the surface's
+    //    `ColorManagementSurfaceData` server-side.
     let surface_protocol_id = surface.id().protocol_id();
     let _ = conn.flush();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -391,7 +373,6 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
         "compositor's SurfaceData did not record the attached BT.2020/PQ image description"
     );
 
-    // Suppress unused warning on the SurfaceData type import — we
-    // consume it indirectly through `surface_current_colorimetry`.
+    // The SurfaceData import is consumed indirectly via `surface_current_colorimetry`.
     let _ = std::marker::PhantomData::<ColorManagementSurfaceData>;
 }

@@ -34,8 +34,6 @@ fn remote_cursor_is_clipped_to_active_tile_bounds() {
 
 #[test]
 fn remote_cursor_overlay_exposes_active_tile_bounds() {
-    // The overlay is a stub in T24; T26 fleshes out draw/filter logic. We
-    // still assert its shape so downstream tasks can rely on construction.
     let ov = RemoteCursorOverlay::new();
     assert_eq!(ov.active_tile_bounds(), [0.0, 0.0, 0.0, 0.0]);
 }

@@ -1410,24 +1410,16 @@ const HALF_WIDTH_PERMILLE: u16 = 500;
 /// Four shell-hosted apps side by side along the strip, then the strip
 /// panned across them.
 ///
-/// The scrollable strip is the compositor's whole spatial model, and
-/// nothing else in the catalogue shows it doing its job: the placement
-/// scenarios open *foreign* toplevels, which hold their window's place
-/// with a card naming the app until a real client attaches a buffer,
-/// and every hosted-app scenario has one window in the strip. So this
-/// one opens Notes, Files, Terminal and Editor — each drawing its own
-/// content in-process — as four separate windows, then travels focus
-/// across them and back.
-///
-/// Each app is opened with the previous one selected and alone in its
-/// group, which is the placement rule's first branch: a window opened
-/// beside a lone window takes the column to its right. So the strip
-/// grows rightwards one real window at a time, rather than the apps
-/// stacking up as tabs of a single group.
-///
-/// Half-width windows are what make the pan legible — two windows on
-/// screen at once, a third clipped at the right edge, and content
-/// leaving the left edge as the strip moves.
+/// Nothing else in the catalogue shows the scrollable strip doing its
+/// job: the placement scenarios open *foreign* toplevels (card-only
+/// until a real client attaches), and every hosted-app scenario has one
+/// window in the strip. This opens Notes, Files, Terminal and Editor —
+/// each drawing its own content in-process — as four separate windows
+/// (each opened with the previous one selected and alone in its group,
+/// so the placement rule's "beside a lone window" branch grows the
+/// strip rightwards one real window at a time), then travels focus
+/// across them and back. Half-width windows make the pan legible: two
+/// on screen, a third clipped at the edge.
 fn strip_scroll_across_apps() -> Scenario {
     let mut actions = vec![
         // The desktop boots with one four-tab group. Cut it to Notes so

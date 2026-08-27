@@ -103,27 +103,16 @@ use terminal::TerminalWidget;
 /// `Box<dyn AppWidget>` instances in [`tile::TileContent::App`] rather than
 /// the persisted tree's symbolic `AppPlaceholder` placeholders.
 ///
-/// Introduced in Plan 3 Task 15 so the `apps_integration` test harness (and
-/// future chrome-level logic that mutates tabs, handles drops, etc.) has a
-/// single, owned root to operate on. The existing `build_nirios_root` entry
-/// point continues to render from the serializable `WorkspaceTree` until a
-/// follow-up task rewires it onto the runtime tree.
-///
-/// In addition to the tree, the shell owns a single Automerge document
-/// ([`ui::state::State`]) shared across every hosted `AppWidget`. Each
-/// app's own sub-tree under `state.root` is what the widget reads from in
-/// `sync` and mutates in `handle_event` / `update`, matching the direct-
-/// mutation event model `quick-ui` is built around (see `quick-ui` docs).
+/// Also owns the single Automerge document ([`ui::state::State`]) shared
+/// across every hosted `AppWidget`; each app's own sub-tree under
+/// `state.root` is what it reads in `sync` and mutates in `handle_event` /
+/// `update`.
 pub struct Shell {
     tree: RuntimeTree,
-    /// CRDT document shared by every hosted `AppWidget`. In the production
-    /// wiring (Plan 3 follow-up) this is the same `State` the compositor
-    /// feeds into the quick-ui `App`; here we create one up-front so the
-    /// test harness (and any eager `sync` call during construction) has a
-    /// document to bind against.
+    /// CRDT document shared by every hosted `AppWidget`.
     state: ui::state::State,
 
-    // --- chrome widgets (T27 wires these into the root) ---
+    // --- chrome widgets ---
     /// Top-edge row: LeftNav + CenterWidgets + RightTray.
     topbar: TopBar,
     /// Left-edge vertical strip wheel + management button + overscroll
@@ -139,39 +128,29 @@ pub struct Shell {
     ctx_menu: ContextMenu,
 
     // --- overlay visibility flags ---
-    /// Whether the overview grid is currently covering the workspace area.
     overview_visible: bool,
-    /// Whether the global search palette is currently rendered.
     search_visible: bool,
-    /// Whether the QuickSettings popover is currently open.
     quick_settings_visible: bool,
-    /// Whether the WorkspaceSettings modal is currently open.
     ws_settings_visible: bool,
 
-    /// Test-only side channel: raw pointer to the first hosted
-    /// [`TerminalWidget`], captured at construction before coercion into the
-    /// `Box<dyn AppWidget>` stored in the runtime tree. Stays valid for the
-    /// lifetime of the `Shell` because `Box<T>` -> `Box<dyn Trait>` is an
-    /// unsizing coercion that does not move the heap allocation. Used only
-    /// by the `cfg(any(test, debug_assertions))` introspection helpers
-    /// below; `None` if the PTY spawn failed and the terminal tile fell
-    /// back to a `Stub`.
+    /// Test-only pointer to the first hosted [`TerminalWidget`], captured
+    /// before coercion into `Box<dyn AppWidget>`. Stays valid because
+    /// `Box<T>` -> `Box<dyn Trait>` is an unsizing coercion that does not
+    /// move the heap allocation. `None` if PTY spawn failed and the tile
+    /// fell back to a `Stub`.
     #[cfg(any(test, debug_assertions))]
     first_terminal_ptr: Option<*const TerminalWidget>,
     /// Test-only pointer to the first hosted [`FileExplorerWidget`]. Same
     /// allocation-stability argument as `first_terminal_ptr`. `None` when
-    /// the default workspace has no file-explorer tile (e.g. future
-    /// variants that omit it).
+    /// the default workspace has no file-explorer tile.
     #[cfg(any(test, debug_assertions))]
     first_file_explorer_ptr: Option<*const FileExplorerWidget>,
 }
 
 impl Shell {
-    /// Construct a shell hosting the default demo workspace: three tabs in a
-    /// single window-group on the `Main` strip — Terminal (real PTY via
-    /// `TerminalWidget::spawn_default`, falling back to a `Stub` with the
-    /// spawn error per spec §9a), Files (`FileExplorerWidget::new`), and
-    /// the Browser stub (Servo not ported).
+    /// Constructs a shell hosting the default demo workspace: Terminal
+    /// (real PTY, falling back to a `Stub` on spawn failure), Files, Notes,
+    /// Editor, and a Browser stub (Servo not ported).
     pub fn new_with_default_demo_workspace() -> Self {
         let DemoTabs {
             tabs,
@@ -185,9 +164,7 @@ impl Shell {
         let workspace = RuntimeWorkspace::new("Home", vec![strip]);
         let tree = RuntimeTree::new(vec![workspace]);
         // The WorkspaceSettings modal must target a workspace id; pre-seed
-        // it with the active id so the shell can open/close the modal
-        // without having to construct one on the fly (the visibility flag
-        // is the real gate). `rebind_ws_settings` keeps the target aligned
+        // it with the active id. `open_ws_settings` rebinds the target
         // whenever the active workspace changes.
         let active_ws_id = tree.active;
         let mut shell = Self {
@@ -208,23 +185,15 @@ impl Shell {
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
         };
-        // Seed the global search palette with its default commands so
-        // Cmd+K opens to a populated list rather than an empty query.
+        // Seed the global search palette so Cmd+K opens to a populated list.
         shell.search.seed_default_commands();
         // Prime every app against the shared doc so subsequent `update`
-        // calls have their CRDT sub-trees initialised. This mirrors the
-        // first-frame `sync` pass the quick-ui `App` runs before its first
-        // `draw`.
+        // calls have their CRDT sub-trees initialised.
         shell.sync_all_apps();
         shell
     }
 
     /// Test-only alias for [`Self::new_with_default_demo_workspace`].
-    /// Added in Plan 3 Task 27 so chrome interaction tests can spin up a
-    /// shell with a shorter name and without advertising "demo workspace"
-    /// in their read path. The two constructors are identical today; a
-    /// future task may strip the live PTY/file-explorer tiles out of the
-    /// test variant if they start introducing flakes.
     #[cfg(any(test, debug_assertions))]
     pub fn new_for_test() -> Self {
         Self::new_with_default_demo_workspace()
@@ -255,14 +224,12 @@ impl Shell {
     }
 
     /// Drive every hosted `AppWidget` through one `sync` + `update` pass
-    /// against the shared doc, without painting. Used by the Task 16
-    /// integration test harness to advance the terminal's PTY reader thread
-    /// and the CRDT without needing a GPU-backed render loop.
+    /// against the shared doc, without painting — advances the terminal's
+    /// PTY reader thread and the CRDT without needing a GPU-backed render
+    /// loop.
     ///
     /// Parallel to the five-pass pipeline in `quick-ui`'s `App`, but skips
-    /// `measure` / `build_layout` / `apply_layout` / `draw` — introspection
-    /// only cares about state, and the apps' `update` paths are what move
-    /// bytes from the PTY reader into the CRDT grid.
+    /// `measure` / `build_layout` / `apply_layout` / `draw`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_for_test(&mut self) {
         for ws in &mut self.tree.workspaces {
@@ -283,19 +250,15 @@ impl Shell {
     /// `None` if no live terminal tile exists (e.g. PTY spawn failed and
     /// the tile fell back to a `Stub`).
     ///
-    /// Implementation note: the `TerminalWidget::grid` field is private to
-    /// `quick-terminal`, but every byte the PTY produces is also mirrored
-    /// into the shared Automerge doc under `terminal_grid` (a `List` of
-    /// `Map`s each carrying a `text` field — see `TerminalPerformer`).
-    /// Since the shell drives `sync` + `update` through its own doc, we can
-    /// read the first line back from the CRDT without touching the app
-    /// crate's internals.
+    /// `TerminalWidget::grid` is private to `quick-terminal`, but every
+    /// byte the PTY produces is also mirrored into the shared Automerge doc
+    /// under `terminal_grid` (a `List` of `Map`s each carrying a `text`
+    /// field — see `TerminalPerformer`), so we read it back from the CRDT
+    /// instead.
     #[cfg(any(test, debug_assertions))]
     pub fn first_terminal_line(&self) -> Option<String> {
         use automerge::{ObjType, ReadDoc, Value};
 
-        // Gate on presence of a live terminal tile; if spawn failed, the
-        // tile is a `Stub` and the caller should treat that as a skip.
         self.first_terminal_ptr?;
 
         let doc = &self.state.doc;
@@ -322,13 +285,9 @@ impl Shell {
     /// directory read came back empty (e.g. a pristine sandbox).
     ///
     /// Unlike the terminal, the file-explorer keeps its listing in local
-    /// widget state rather than the CRDT, so we reach through the raw
-    /// pointer captured at construction. Safety: the pointer targets the
-    /// heap allocation of the `Box<FileExplorerWidget>` that was coerced
-    /// into `Box<dyn AppWidget>` and now lives inside the runtime tree. A
-    /// `Box<T>` -> `Box<dyn Trait>` unsizing coercion keeps the same heap
-    /// address, and the `Shell` owns the tree for its entire lifetime, so
-    /// the pointer remains valid as long as `&self` does.
+    /// widget state rather than the CRDT, so this reaches through the raw
+    /// pointer captured at construction (same validity argument as
+    /// `first_terminal_ptr`).
     #[cfg(any(test, debug_assertions))]
     pub fn first_file_explorer_entries(&self) -> Vec<String> {
         let Some(ptr) = self.first_file_explorer_ptr else {
@@ -340,12 +299,11 @@ impl Shell {
     }
 
     // ---------------------------------------------------------------
-    // Chrome accessors (Plan 3 Task 27)
+    // Chrome accessors
     //
-    // These are intentionally trivial `has_*` / visibility getters so the
-    // T27 wiring test can assert every chrome piece was constructed on a
-    // real `Shell` without exposing the fields themselves. Later tasks
-    // (T28+) extend this surface with `dispatch_key`, `toast_count`, etc.
+    // Intentionally trivial `has_*` / visibility getters so tests can
+    // assert every chrome piece was constructed on a real `Shell`
+    // without exposing the fields themselves.
     // ---------------------------------------------------------------
 
     /// Borrow the topbar chrome (read-only). Primarily for tests.
@@ -358,22 +316,18 @@ impl Shell {
         &self.sidebar
     }
 
-    /// Whether the overview grid is currently covering the workspace area.
     pub fn overview_visible(&self) -> bool {
         self.overview_visible
     }
 
-    /// Whether the global search palette is currently rendered.
     pub fn search_visible(&self) -> bool {
         self.search_visible
     }
 
-    /// Whether the QuickSettings popover is currently open.
     pub fn quick_settings_visible(&self) -> bool {
         self.quick_settings_visible
     }
 
-    /// Whether the WorkspaceSettings modal is currently open.
     pub fn ws_settings_visible(&self) -> bool {
         self.ws_settings_visible
     }
@@ -394,24 +348,20 @@ impl Shell {
         self.search_visible = false;
     }
 
-    /// Toggle the overview grid on/off.
     pub fn toggle_overview(&mut self) {
         self.overview_visible = !self.overview_visible;
     }
 
-    /// Open the QuickSettings popover.
     pub fn open_quick_settings(&mut self) {
         self.quick_settings_visible = true;
     }
 
-    /// Close the QuickSettings popover.
     pub fn close_quick_settings(&mut self) {
         self.quick_settings_visible = false;
     }
 
-    /// Toggle the QuickSettings popover on/off. Driven by the tray gear
-    /// click path in T28 — a second click closes the popover rather than
-    /// re-opening it.
+    /// Toggle the QuickSettings popover on/off — a second tray-gear click
+    /// closes it rather than re-opening it.
     pub fn toggle_quick_settings(&mut self) {
         self.quick_settings_visible = !self.quick_settings_visible;
     }
@@ -426,7 +376,6 @@ impl Shell {
         self.ws_settings_visible = true;
     }
 
-    /// Close the WorkspaceSettings modal.
     pub fn close_ws_settings(&mut self) {
         self.ws_settings_visible = false;
     }
@@ -444,24 +393,21 @@ impl Shell {
     }
 
     // -----------------------------------------------------------------
-    // T28 — global hotkey / event routing
+    // Global hotkey / event routing
     //
     // `dispatch_key` is the canonical entry point for shell-level global
-    // hotkeys. Both the production path (a winit `WindowEvent::KeyboardInput`
-    // unpacked via [`Shell::handle_window_event`]) and tests (via the
-    // [`shell::test_support::key_press`] helper) funnel through this method
-    // so the routing rules live in one place.
-    //
-    // Rules (spec §10):
+    // hotkeys. Both the production path (via
+    // [`Shell::handle_window_event`]) and tests (via
+    // [`shell::test_support::key_press`]) funnel through this method so
+    // the routing rules live in one place:
     //
     //   - `Cmd+K` opens the global search palette (idempotent).
     //   - `Cmd+Tab` toggles the workspace overview.
     //   - `Escape` closes whichever overlay is currently on top, in the
     //     priority order search > overview > quick_settings > ws_settings.
     //
-    // Keys that don't match any rule are ignored here and left for the
-    // focused widget tree to consume through the normal `handle_event`
-    // plumbing inside `quick-ui::App`.
+    // Unmatched keys fall through to the focused widget tree via the
+    // normal `handle_event` plumbing inside `quick-ui::App`.
     // -----------------------------------------------------------------
 
     /// Route a synthesized [`test_support::KeyPress`] through the shell's
@@ -575,7 +521,7 @@ impl Shell {
     }
 
     // -----------------------------------------------------------------
-    // T28 — test-only event simulators
+    // Test-only event simulators
     // -----------------------------------------------------------------
 
     /// Number of toasts currently in the stack. Useful for tests that want
@@ -586,10 +532,8 @@ impl Shell {
     }
 
     /// Snapshot the [`ToastKind`] of every active toast in push order.
-    /// Useful for tests that want to assert *which* kind of toast fired
-    /// (e.g. that a create emits `Success` rather than `Error`) without
-    /// reaching into the widget's internals. Mirrors
-    /// [`Self::toast_count`] in the "read-only introspection" role.
+    /// Lets a test assert *which* kind fired (e.g. `Success` vs `Error`)
+    /// without reaching into the widget's internals.
     #[cfg(any(test, debug_assertions))]
     pub fn toast_kinds(&self) -> Vec<ui::widget::toast::ToastKind> {
         self.toasts.iter().map(|t| t.kind).collect()
@@ -602,14 +546,10 @@ impl Shell {
     /// same method from the Wayland-event layer.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_sidebar_wheel(&mut self, dir: i32) -> usize {
-        // Reshape the shell's runtime tree into the serializable
-        // `state::WorkspaceTree` that the sidebar widget operates on —
-        // `SidebarWheel::on_wheel` reads from/writes to `active_strip`
-        // (per-workspace `StripId` map) and the strip list, both of which
-        // live on the state tree, not on `tile::WorkspaceTree`. Rather
-        // than duplicate the wheel logic we sync the runtime tree's
-        // per-workspace strip list into a scratch state tree, dispatch,
-        // and copy the updated `active_strip` entry back out.
+        // `SidebarWheel::on_wheel` reads/writes `active_strip` on
+        // `state::WorkspaceTree`, not on the runtime tree, so sync a
+        // scratch state tree, dispatch, and copy `active_strip` back out
+        // rather than duplicating the wheel logic.
         let active_ws = self.tree.active;
         let mut scratch = state::WorkspaceTree {
             workspaces: self
@@ -672,19 +612,16 @@ impl Shell {
     }
 
     /// Drive the sidebar's overscroll gesture past the commit threshold,
-    /// emitting a `"Workspace created"` toast. The actual new-workspace
-    /// append lives on `state::WorkspaceTree`; the runtime-tree mirror for
-    /// that is a follow-up task. What we do assert here is the *toast*
-    /// side of the routing — T28's observable behaviour.
+    /// emitting a `"Workspace created"` toast. The new-workspace append
+    /// itself lands on `state::WorkspaceTree`, not the runtime tree; what
+    /// this asserts is the toast side of the routing.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_overscroll_commit(&mut self) {
         use ui::widget::toast::ToastKind;
-        // Drive the wheel widget through a full gesture so its internal
-        // state progresses through `begin → drag (past threshold) → release`.
-        // We use a scratch state tree (same reason as
-        // `simulate_sidebar_wheel`) so the runtime tree stays untouched —
-        // the toast is what T28 verifies; the workspace-tree mirror is a
-        // follow-up task.
+        // Drive the wheel widget through a full gesture: begin → drag
+        // (past threshold) → release, against a scratch state tree (same
+        // reason as `simulate_sidebar_wheel`) so the runtime tree stays
+        // untouched.
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
@@ -721,11 +658,9 @@ impl Shell {
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_new_workspace_via_management(&mut self) {
         use ui::widget::toast::ToastKind;
-        // Dispatch against a scratch state tree for the same reason
-        // `simulate_sidebar_wheel` and `simulate_overscroll_commit` do:
-        // the sidebar widget operates on the persisted `state::WorkspaceTree`
-        // which the runtime tree doesn't yet mirror (that's a follow-up
-        // task). The observable T29 behaviour is the toast push.
+        // Same scratch-state-tree reason as `simulate_sidebar_wheel` and
+        // `simulate_overscroll_commit`: the sidebar widget operates on
+        // `state::WorkspaceTree`, which the runtime tree doesn't mirror.
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
@@ -740,11 +675,9 @@ impl Shell {
     }
 
     /// Rename the currently-active workspace via the WorkspaceSettings
-    /// modal and emit a `"Workspace renamed"` toast. Used by T29 to assert
-    /// the rename-commit side of the chrome's notification wiring. The
-    /// mutation itself goes through [`WorkspaceSettings::rename`], matching
-    /// the production path where the General tab's name field commits a
-    /// new value.
+    /// modal and emit a `"Workspace renamed"` toast. The mutation itself
+    /// goes through [`WorkspaceSettings::rename`], matching the production
+    /// path where the General tab's name field commits a new value.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_rename_active_workspace(&mut self, new_name: &str) {
         use ui::widget::toast::ToastKind;
@@ -779,7 +712,7 @@ impl Shell {
     }
 
     // -----------------------------------------------------------------
-    // T30 — ContextMenu wiring: right-click on tile
+    // ContextMenu wiring: right-click on tile
     //
     // The default tile context menu carries three tile-scoped actions
     // separated by a single `MenuItem::Separator`:
@@ -790,9 +723,8 @@ impl Shell {
     //   "Move to New Group"
     //
     // The callbacks are currently no-ops — wiring them to real tree
-    // mutations (tab removal, sibling-group splits, group promotion)
-    // lands in follow-up tasks. T30 only asserts the menu is populated
-    // and anchored at the right-click position.
+    // mutations (tab removal, sibling-group splits, group promotion) is
+    // still to come.
     // -----------------------------------------------------------------
 
     /// Whether the tile context menu is currently visible.
@@ -827,7 +759,7 @@ impl Shell {
     }
 
     // -----------------------------------------------------------------
-    // File-drop onto workspace (§10, concept `DesktopView.tsx:187-205`)
+    // File-drop onto workspace
     //
     // `handle_file_drop` is the public entry point for
     // `WindowEvent::DroppedFile` events — winit delivers the absolute
@@ -900,7 +832,7 @@ fn default_demo_tabs() -> DemoTabs {
     #[cfg(any(test, debug_assertions))]
     let first_file_explorer_ptr: Option<*const FileExplorerWidget>;
 
-    // Terminal — spawn PTY; on failure fall back to a Stub per spec §9a.
+    // Terminal — spawn PTY; on failure fall back to a Stub.
     match TerminalWidget::spawn_default() {
         Ok(t) => {
             let boxed: Box<TerminalWidget> = Box::new(t);
@@ -957,7 +889,7 @@ fn default_demo_tabs() -> DemoTabs {
         RuntimeTile::App(Box::new(editor)),
     ));
 
-    // Browser — explicit stub (Servo not ported; spec §10.6).
+    // Browser — explicit stub (Servo not ported).
     tabs.push(RuntimeTab::new(
         "Browser",
         RuntimeTile::App(Box::new(BrowserStubWidget::new())),
@@ -977,10 +909,10 @@ fn to_ui_width(w: state::WindowWidth) -> UiWidth {
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
-    // Note: `ui::AppKind` was aligned to spec §7 variants in Plan 3
-    // Task 1 (Terminal, Files, Editor, Browser, Settings). The shell's own
-    // `AppKind` still carries `FileExplorer` and `Other(String)` for v1
-    // compatibility; map them to the nearest UI variant.
+    // `ui::AppKind` only has five variants (Terminal, Files, Editor,
+    // Browser, Settings); the shell's own `AppKind` still carries
+    // `FileExplorer` and `Other(String)` for v1 compatibility, so map
+    // them to the nearest UI variant.
     match k {
         ShellKind::Terminal => UiKind::Terminal,
         ShellKind::FileExplorer => UiKind::Files,
@@ -998,14 +930,11 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
 /// The apps the shell hosts in-process under an `AppKind::Other` label,
 /// as `(tab title, label)`.
 ///
-/// The two columns exist because the tree and the widget layer identify a
-/// tab differently. The persisted tree names the app by label, which is
-/// what [`to_ui_tile`] hydrates from. The widget layer only knows the
-/// toolkit's five app kinds, so a group rebuilt out of widgets — the one
-/// a user makes by dragging a tab out into its own window — has nothing
-/// but the tab's title to recover the label from. Keeping both columns in
-/// one table is what stops those two paths from disagreeing and turning a
-/// real app back into a placeholder card.
+/// Two columns because the persisted tree names an app by label (what
+/// [`to_ui_tile`] hydrates from), while a group rebuilt from widgets — a
+/// tab dragged out into its own window — has only the tab's title to
+/// recover the label from. One table keeps those two paths from
+/// disagreeing and turning a real app back into a placeholder card.
 const HOSTED_OTHER_APPS: &[(&str, &str)] = &[
     ("Notes", "Notes"),
     ("Editor", "Editor"),
@@ -1034,11 +963,10 @@ pub(crate) fn hosted_label_for_title(title: &str) -> String {
 }
 
 /// Test-only probe into [`to_ui_tile`]: returns `"App"` if the persisted
-/// tile resolved into a live `UiTile::App`, `"Stub"` otherwise. Integration
-/// tests use this to assert that `AppPlaceholder { kind: Terminal }` /
-/// `AppPlaceholder { kind: FileExplorer }` come online as live app widgets
-/// instead of silently falling through to a stub card. Keeps the full
-/// `UiTile` type (and its boxed `AppWidget`) out of the public surface.
+/// tile resolved into a live `UiTile::App`, `"Stub"` otherwise — lets a
+/// test assert a placeholder came online as a live widget instead of
+/// silently falling through to a stub card, without the full `UiTile`
+/// type (and its boxed `AppWidget`) leaving the public surface.
 #[cfg(any(test, debug_assertions))]
 pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
     match to_ui_tile(t) {
@@ -1093,9 +1021,9 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             detail: note.clone(),
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
-            // Terminal — spawn a real PTY; on failure fall back to a Stub per
-            // spec §9a, mirroring the same pattern `default_demo_tabs` uses
-            // for the eager-constructed demo workspace.
+            // Terminal — spawn a real PTY; on failure fall back to a Stub,
+            // mirroring the same pattern `default_demo_tabs` uses for the
+            // eager-constructed demo workspace.
             ShellKind::Terminal => match TerminalWidget::spawn_default() {
                 Ok(w) => UiTile::App(Box::new(w)),
                 Err(e) => {
@@ -1140,9 +1068,8 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
 
 /// Variant of [`build_nirios_root`] that lets the caller flip the
 /// peer-sync palette commands on, surfacing `/invite` and `/connect`
-/// in the command palette. Mirrors `--enable-peer-sync` plumbed
-/// through `compositor::hosted::run_with_options` for Phase 3 Task
-/// 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+/// in the command palette. Mirrors `--enable-peer-sync` plumbed through
+/// `compositor::hosted::run_with_options`.
 ///
 /// `build_nirios_root` keeps the existing zero-arg shape so unrelated
 /// call-sites (the `shots` headless harness, integration tests) don't
@@ -1189,16 +1116,6 @@ pub fn build_nirios_overlay_host_with_options(
     build_nirios_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
 }
 
-/// Handle-based variant — the production entry point under C-3. The
-/// hosted boot path threads the *shared* [`WorkspaceTreeHandle`] (the
-/// same `Arc<RwLock<_>>` that the portal's `GrantStoreHandle` and
-/// peer-sync's `WorkspaceTreeReplica` hold), so chrome mutations land
-/// on the same tree the other subsystems read from.
-///
-/// Reads from the handle once to build the initial widget tree (the
-/// layout / draw structure only needs a snapshot of the workspaces /
-/// strips shape; subsequent rebuilds run through `sync_from_tree` on
-/// each chrome widget when the chrome revision bumps).
 /// Convert a persisted [`state::WindowGroup`] into the UI-side
 /// [`UiGroup`] the shell paints. Extracted from
 /// [`build_nirios_overlay_host_with_handle`] so the
@@ -1245,6 +1162,16 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
     });
 }
 
+/// Handle-based variant — the production entry point. The hosted boot
+/// path threads the *shared* [`WorkspaceTreeHandle`] (the same
+/// `Arc<RwLock<_>>` that the portal's `GrantStoreHandle` and peer-sync's
+/// `WorkspaceTreeReplica` hold), so chrome mutations land on the same
+/// tree the other subsystems read from.
+///
+/// Reads from the handle once to build the initial widget tree (the
+/// layout / draw structure only needs a snapshot of the workspaces /
+/// strips shape; subsequent rebuilds run through `sync_from_tree` on
+/// each chrome widget when the chrome revision bumps).
 pub fn build_nirios_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
@@ -1279,7 +1206,7 @@ pub fn session_record_store() -> ui::record::RecordStore {
 /// can rebuild the content when the active workspace changes: the strip
 /// widgets are a projection of ONE workspace, and switching workspaces
 /// must swap that projection or the screen keeps showing the boot
-/// workspace forever (the "jump only works in Home" bug, 2026-08-22).
+/// workspace forever.
 pub fn build_workspace_root(
     tree: &WorkspaceTree,
     records: &ui::record::RecordStore,
@@ -1312,22 +1239,16 @@ pub fn build_workspace_root(
         // bottom padding ended up below the screen edge — apps were
         // painted right up to the absolute bottom.
         .with_fill_remaining_height()
-        // 2026-06-24 user spec: "window/tab groups need to be higher
-        // with less border to top and bottom by default (only a few
-        // px on my screen)". 8 px is the minimum that keeps the
-        // active-tile bottom from clipping past the windowed DE's
-        // bottom edge — the tile-host's bloom shadow paints up to
-        // 120 px past `self.rect.y1` (see `TileHost::draw_steady_
-        // state`) and at 4 px the shadow / tile-rounding combination
-        // visibly bled past the window edge on small viewports.
+        // 8 px is the minimum that keeps the active-tile bottom from
+        // clipping past the windowed DE's bottom edge — the tile-host's
+        // bloom shadow paints up to 120 px past `self.rect.y1` (see
+        // `TileHost::draw_steady_state`) and at 4 px the shadow /
+        // tile-rounding combination visibly bled past the window edge.
         .with_vertical_padding(8.0)
         // No horizontal padding: the strip's `GroupRow::leading_inset`
         // reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and
         // the wheel/strip pan as one unit — leaving a wallpaper gutter
-        // on the left would split that canvas in two. The previous
-        // `extra_left_padding(SIDEBAR_WIDTH_PX)` lived here back when
-        // the wheel was a fixed overlay sitting outside the strip;
-        // 2026-06-24 redesign collapses that into a single canvas.
+        // on the left would split that canvas in two.
         .with_horizontal_padding(0.0, 0.0)
         .push(workspace_view)
         .push(strip_view);
@@ -1419,10 +1340,7 @@ pub fn build_nirios_overlay_host_with_records(
 
     let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
     // Wheel disc is the only sidebar — each workspace is a spoke. Dragging
-    // rotates spokes; releasing snaps to the nearest workspace. Per user
-    // spec 2026-04-21: "No permanent sidebar, but workspaces appear as
-    // rotated axes of the wheel disc, meaning you can go to the left and
-    // drag it to move between workspaces."
+    // rotates spokes; releasing snaps to the nearest workspace.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
         .workspaces
         .iter()
@@ -1443,13 +1361,13 @@ pub fn build_nirios_overlay_host_with_records(
     );
 
     // The disc is vertically centred within its absolute-positioned
-    // sidebar slot (see `ShellOverlayHost::build_layout`, which sets
-    // `top: sidebar_top_y, bottom: 0` and relies on `align_self: Center`
-    // on the disc's leaf to pin it mid-column). We still pin the slot's
-    // top below the real topbar so the sidebar's click-guard rect doesn't
-    // overlap the overview-toggle grid icon. With the outer Container +
-    // foreground Column now opting out of padding so the topbar lands
-    // at y=0, the topbar-bottom is exactly `TOPBAR_HEIGHT_PX`.
+    // sidebar slot (`ShellOverlayHost::build_layout` sets `top:
+    // sidebar_top_y, bottom: 0` and relies on `align_self: Center` on the
+    // disc's leaf). The slot's top still needs pinning below the real
+    // topbar so the sidebar's click-guard rect doesn't overlap the
+    // overview-toggle grid icon; with padding off on the outer Container
+    // and foreground Column, the topbar lands at y=0, so its bottom is
+    // exactly `TOPBAR_HEIGHT_PX`.
     let sidebar_top = topbar_chrome::TOPBAR_HEIGHT_PX;
     let host = overlay_host::ShellOverlayHost::new(root)
         .with_chrome(chrome.clone())
@@ -1465,19 +1383,11 @@ pub fn build_nirios_overlay_host_with_records(
 /// from the active workspace's collaborator roster.
 ///
 /// For each `Collaborator` whose [`Collaborator::active_tab`] is
-/// `Some(tab_id)`, this registers that peer under
-/// `PresenceKey::Tab { id: format!("{:x}", tab_id) }`, which is the key
-/// `TabBar::draw` reads to paint the low-alpha presence dots beneath a
-/// tab pill. Collaborators with `None` are skipped — the top-bar avatar
-/// stack + sidebar card still show them, they just don't attribute to
-/// a specific tab yet.
-///
-/// Intended to be called by the shell host once per frame (before
-/// draw) so the presence context tracks the tree's current state
-/// without accumulating stale entries. Callers that want the roster
-/// cleared between frames should reset `PresenceCtx::here` first;
-/// this helper is additive by design so it can also be invoked from
-/// incremental presence-update handlers.
+/// `Some(tab_id)`, registers that peer under `PresenceKey::Tab { id:
+/// format!("{:x}", tab_id) }` — the key `TabBar::draw` reads to paint
+/// presence dots beneath a tab pill. Additive by design (call it once
+/// per frame before draw; reset `PresenceCtx::here` first if the roster
+/// needs clearing between frames).
 pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
     use ui::permissions::UserId;
     use ui::presence::PresenceKey;

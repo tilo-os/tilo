@@ -1,44 +1,25 @@
 //! Pipewire stream provisioning for the `ScreenCast` portal backend.
 //!
-//! Sandbox Phase 4.3 follow-up: previously, `ScreenCast.Start` returned
-//! `streams: vec![]` on Allow. This module supplies the abstraction
-//! the portal calls into to actually allocate a Pipewire node and
-//! return its id + properties to the frontend.
+//! [`ScreenCastStreamProvisioner`] is the surface the portal calls into to
+//! allocate a Pipewire node and return its id + properties to the
+//! frontend. [`MockScreenCastProvisioner`] is the default implementor —
+//! used by tests and by the `pipewire`-feature-disabled build, returning a
+//! synthetic node id so the response shape is correct without touching
+//! the system Pipewire daemon. `RealPipewireProvisioner` (gated behind
+//! the `pipewire` Cargo feature) opens a connection to the system daemon,
+//! creates a video stream of the workspace's composed scene at the
+//! negotiated dimensions, and returns the real node id; the compositor's
+//! frame loop pushes buffers into it.
 //!
-//! ## Architecture
+//! Pipewire is a C-library system dep we can't assume is available on
+//! every build host (CI, distrobox, dev laptops), so the `pipewire` crate
+//! is an optional dependency and the mock ships by default; production OS
+//! builds turn the feature on and link `libpipewire-0.3`.
 //!
-//! The trait [`ScreenCastStreamProvisioner`] is the surface the
-//! portal interacts with. Two implementors are imagined:
-//!
-//! - [`MockScreenCastProvisioner`] — used by tests and by the
-//!   `pipewire`-feature-disabled build. Returns a synthetic node id
-//!   so the portal response shape is correct without touching the
-//!   system Pipewire daemon.
-//! - `RealPipewireProvisioner` (gated behind the `pipewire` crate
-//!   feature in `Cargo.toml`) — opens a connection to the system
-//!   Pipewire daemon, creates a video stream of the workspace's
-//!   composed scene at the negotiated dimensions, and returns the
-//!   real node id. Stream content delivery is a v1 step: the
-//!   provisioner just sets up the node; the compositor's frame loop
-//!   pushes buffers into it.
-//!
-//! ## Why mock is the default
-//!
-//! Pipewire is a C-library system dep. We can't assume it's
-//! available on every build host (Cargo's `cargo test -p
-//! quick-desktop --lib` runs in CI, distrobox, dev laptops). The
-//! `pipewire` crate is therefore an optional dep in `Cargo.toml`,
-//! and the `MockScreenCastProvisioner` is the default that ships
-//! when the feature is off. Production OS builds turn the feature
-//! on; the resulting binary links against `libpipewire-0.3`.
-//!
-//! ## v1 limitation: owner's-scene-only
-//!
-//! The first-pass ScreenCast stream carries the workspace owner's
-//! own composed scene — the same surface their wgpu renderer paints
-//! into the offscreen output buffer. Multi-surface composition
-//! (peers, overlay layer, etc.) is a v2 follow-up; the same shape
-//! the Phase 4 peer-sync code takes.
+//! The current stream carries only the workspace owner's own composed
+//! scene, the same surface their wgpu renderer paints into the offscreen
+//! output buffer. Compositing in peers or the overlay layer is future
+//! work.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

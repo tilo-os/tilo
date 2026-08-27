@@ -1,10 +1,8 @@
 //! Video encoder trait + runtime selection.
 //!
-//! The encoder abstraction lives here (instead of `network::encoder`
-//! which still hosts the openh264 wrapper for backwards compatibility)
-//! because the flatpak-share pipeline is the only caller today, and
-//! keeping the trait next to the session code makes the ownership graph
-//! obvious.
+//! Lives here rather than `network::encoder` (which still hosts the
+//! openh264 wrapper for backwards compatibility) because the
+//! flatpak-share pipeline is the only caller today.
 //!
 //! Three concrete backends × three codecs:
 //!
@@ -90,7 +88,7 @@ pub enum Codec {
 }
 
 impl Codec {
-    /// Wire label matching [`crate::network::protocol::SurfaceStreamStart::codec`].
+    /// Must match [`crate::network::protocol::SurfaceStreamStart::codec`].
     pub fn wire_label(self) -> &'static str {
         match self {
             Codec::H264 => "h264",
@@ -112,7 +110,6 @@ impl Codec {
         }
     }
 
-    /// Bit depth of the codec's target pixel format.
     pub fn bit_depth(self) -> u8 {
         match self {
             Codec::H264 => 8,
@@ -124,7 +121,6 @@ impl Codec {
 /// One frame's encoder stats — populated by every backend after `encode`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
-    /// Wall-clock time spent inside `encode`.
     pub encode_wallclock: Duration,
     /// Was this frame an IDR / keyframe?
     pub keyframe: bool,

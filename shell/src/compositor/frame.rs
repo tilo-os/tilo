@@ -1,29 +1,17 @@
 //! Per-frame scene builder shared between `bin/shots` and the native
-//! compositor.
-//!
-//! Both consumers need exactly the same set of operations:
-//!
-//!   1. Build a `ShellOverlayHost` plus its shared `Chrome` state from a
-//!      `WorkspaceTree`.
-//!   2. Maintain a `TaffyTree` keyed by widget pointers.
-//!   3. Run the layout pass (`compute_layout_with_measure` →
-//!      `apply_layout`) at a given viewport size.
-//!   4. Run the draw pass into a fresh `vello::Scene`.
+//! compositor. Both consumers need the same steps: build a
+//! `ShellOverlayHost` + `Chrome` from a `WorkspaceTree`, maintain a
+//! `TaffyTree` keyed by widget pointers, run layout
+//! (`compute_layout_with_measure` → `apply_layout`), and draw into a
+//! fresh `vello::Scene`.
 //!
 //! `bin/shots`'s [`ShellDriver`] (in `bin/shots/driver.rs`) wraps a
-//! [`FrameBuilder`] and adds the bits scenarios need on top: a winit
+//! [`FrameBuilder`] and adds what scenarios need on top: a winit
 //! `Modifiers` snapshot, a focus cursor, the cached last-cursor point,
-//! and the click/drag/key synthesis helpers.
-//!
-//! The native compositor (`compositor::native::run`) only ever needs
-//! the layout-and-paint core, so it talks to a [`FrameBuilder`]
-//! directly. Lifting this module out of `bin/shots` is the contract the
-//! Phase 4 plan ("Adapt the shots driver for compositor frames") asks
-//! for: both code paths render through the same builder, so the
-//! pixel output is byte-identical.
-//!
-//! See `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-//! Phase 4, Task 4.1.
+//! and click/drag/key synthesis. The native compositor
+//! (`compositor::native::run`) only needs the layout-and-paint core, so
+//! both code paths render through the same builder and their pixel
+//! output is byte-identical.
 
 use std::collections::HashMap;
 
@@ -84,13 +72,9 @@ pub struct FrameBuilder {
     /// display, the size of the viewport", which is true for winit, headless
     /// and every single-output DRM setup.
     outputs: Option<Vec<OutputGeometry>>,
-    /// Live peer presence for this session.
-    ///
-    /// Persistent rather than rebuilt per paint. A cursor is a thing
-    /// that is *somewhere* between the frames that move it, and every
-    /// paint used to hand the widget tree a fresh empty context — so
-    /// the overlay that draws peers was drawing an empty map on every
-    /// frame no matter what the room was doing.
+    /// Live peer presence for this session. Persistent rather than
+    /// rebuilt per paint — a cursor is *somewhere* between the frames
+    /// that move it, so a fresh-each-paint context would show no peers.
     presence: PresenceCtx,
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
@@ -201,18 +185,11 @@ impl FrameBuilder {
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
             presence: {
-                // The desktop overlay draws every workspace-scoped
-                // pointer in this store, which includes the ones the
-                // session's *own* apps publish: the broker resolves
-                // every local connection to one participant and fans
-                // each app's frames to the rest of the room, this
-                // subscription included. Without this the owner gets a
-                // pill with their own name on it, floating over their
-                // own window.
-                //
-                // The same rule the roster has always applied — see
-                // `room_roster`, which drops the local handle before it
-                // builds a row.
+                // The broker fans every local app's frames to the whole
+                // room including this subscription, so without excluding
+                // our own identity the owner would see a presence pill
+                // floating over their own window (`room_roster` applies
+                // the same rule).
                 let mut ctx = PresenceCtx::default();
                 ctx.set_own_identity([crate::shell::state::local_user_id()]);
                 ctx
@@ -295,13 +272,11 @@ impl FrameBuilder {
         let (w, h) = self.viewport;
         let outer = self.root_node.expect("rebuild_layout_tree first");
         let child = self.host_node.expect("rebuild_layout_tree first");
-        // D-2 fix: previously this closure captured `let measure_map =
-        // self.node_map.clone();`, which copied the entire widget-ptr
-        // map on every relayout (50-100 entries on a typical frame —
-        // visible cost on a continuous resize). The closure only needs
-        // read access, so we borrow `&self.node_map` directly. The
-        // borrow is disjoint from `self.taffy` and `self.text_renderer`
-        // (separate fields) so the borrow checker is happy.
+        // Borrowed rather than cloned: the closure only needs read access,
+        // and the borrow is disjoint from `self.taffy` / `self.text_renderer`
+        // (separate fields), so the borrow checker allows it. Cloning the
+        // 50-100 entry widget-ptr map every relayout was a visible cost
+        // on a continuous resize.
         let measure_map: &HashMap<NodeId, *mut dyn Widget> = &self.node_map;
         let tr = &mut self.text_renderer;
         self.taffy
@@ -327,14 +302,10 @@ impl FrameBuilder {
     /// into the CRDT) then `update` (advance widget-local state). Returns
     /// `true` when something changed and the frame should be repainted.
     ///
-    /// `ui::App::run` does this every frame for standalone apps, but the
-    /// compositor's frame loop only ever laid out and painted — so a hosted app
-    /// that depends on the pump never advanced. The visible symptom was a live
-    /// terminal that stayed on its empty placeholder forever: `sync` is what
-    /// drains the PTY into the grid, so without it no shell output ever
-    /// arrived. Apps whose content is captured at construction (the notes seed,
-    /// the file listing) looked fine, which is why only the terminal appeared
-    /// "not real".
+    /// `ui::App::run` does this every frame for standalone apps; the
+    /// compositor's frame loop needs it too, or a hosted app that depends
+    /// on this pump (e.g. the terminal draining its PTY into the grid)
+    /// never advances.
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         self.replicate_room_records();
         self.pump_room_contents();
@@ -345,16 +316,12 @@ impl FrameBuilder {
     /// Turn "a peer's changes landed in the tree" into "the widget tree
     /// is rebuilt". Returns whether it had to.
     ///
-    /// The shell splices groups and tabs into its widget tree in
-    /// `ShellOverlayHost::resync_strips_from_tree`, which is gated on
-    /// the chrome revision and returns immediately when it has not
-    /// moved. Peer-sync writes the tree from the network thread, which
-    /// cannot touch the chrome, so a window that arrived from a peer
-    /// was in the tree — readable, assertable, provably replicated —
-    /// with no widget ever built for it, and the receiving desktop
-    /// stayed empty. Any later click that happened to bump the revision
-    /// for its own reasons made the window appear, which is what made
-    /// this look intermittent rather than broken.
+    /// `ShellOverlayHost::resync_strips_from_tree` splices groups and tabs
+    /// into the widget tree, gated on the chrome revision, and returns
+    /// immediately when it hasn't moved. Peer-sync writes the tree from
+    /// the network thread, which cannot touch the chrome, so this bumps
+    /// it whenever the room epoch (or a pending peer-window decision) has
+    /// moved.
     ///
     /// Cheap on a quiet frame: one `u64` read under the tree's read
     /// lock, compared against the last one seen.
@@ -720,20 +687,15 @@ impl FrameBuilder {
 
     /// Register the chrome affordances that are painted by the overlay
     /// host rather than by a child widget, so they can be clicked by
-    /// name.
-    ///
-    /// These are drawn straight into the scene and hit-tested from
-    /// cached rects, so a tree walk cannot see them: the overview's
-    /// add-workspace tile, its workspace cards, the workspace-settings
-    /// tab pills and name field, the Permissions tab's Revoke buttons,
-    /// the connect prompt's buttons. `ShellDriver` had a hand-curated
-    /// table covering three of them; a rect that only one of the two
-    /// harnesses can address is a rect only half the tests can reach,
-    /// so the list lives here and both read it.
+    /// name: the overview's add-workspace tile and workspace cards, the
+    /// workspace-settings tab pills and name field, the Permissions
+    /// tab's Revoke buttons, the connect prompt's buttons. These are
+    /// drawn straight into the scene and hit-tested from cached rects,
+    /// so a tree walk cannot see them — kept here so both `ShellDriver`
+    /// and the out-of-process control protocol read the same list.
     ///
     /// Zero-area rects are skipped, which is what makes a name mean
-    /// "on screen now" — the overview's tile is unaddressable while the
-    /// overview is closed rather than clickable at the origin.
+    /// "on screen now" rather than clickable at the origin while hidden.
     fn register_chrome_rects(&self, out: &mut HashMap<String, vello::kurbo::Rect>) {
         use crate::shell::chrome_state::WsTab;
         let host = &self.host;
@@ -888,21 +850,11 @@ mod tests {
     }
 
     /// A window that arrived from a peer has to reach the widget tree,
-    /// not just the workspace tree.
-    ///
-    /// The shell splices groups and tabs in
-    /// `ShellOverlayHost::resync_strips_from_tree`, which returns
-    /// immediately unless the chrome revision moved. Peer-sync writes
-    /// the tree from the network thread and cannot move it, so a
-    /// replicated window was in the tree — readable, and provably
-    /// replicated by every assertion we had — with no widget ever built
-    /// for it. The receiving desktop stayed empty until some unrelated
-    /// click happened to bump the revision, which is what made it look
-    /// intermittent instead of broken.
-    ///
+    /// not just the workspace tree: peer-sync writes the tree from the
+    /// network thread, which cannot itself bump the chrome revision that
+    /// `ShellOverlayHost::resync_strips_from_tree` gates its rebuild on.
     /// Drives the real ingest (`apply_room_changes`) and the real
-    /// per-frame pump, so it fails if either end of that signal is
-    /// dropped again.
+    /// per-frame pump, so it fails if that signal is dropped again.
     #[test]
     fn a_peers_changes_landing_make_the_frame_rebuild() {
         use crate::shell::state::PeerOrigin;
@@ -993,16 +945,12 @@ mod tests {
     }
 
     /// The top bar's workspace chevrons follow the *live* active
-    /// workspace, not the one the bar was built on.
-    ///
-    /// The bar refreshes `workspace_index` in `Widget::update` when the
-    /// chrome revision bumps, and the host reaches it through the
-    /// `Stack` → `Column` it sits in. When those containers swallowed
-    /// `update`, the bar never re-synced: the up-chevron stayed painted
-    /// as disabled on every workspace, even with one above. Drives the
-    /// real per-frame path (`pump_apps` → paint) and reads the chevron
-    /// state the way a scenario would — by whether the `_enabled` name
-    /// resolves in the registry.
+    /// workspace, not the one the bar was built on: the bar refreshes
+    /// `workspace_index` in `Widget::update` when the chrome revision
+    /// bumps, reached through the `Stack` → `Column` it sits in. Drives
+    /// the real per-frame path (`pump_apps` → paint) and reads the
+    /// chevron state the way a scenario would — by whether the
+    /// `_enabled` name resolves in the registry.
     #[test]
     fn topbar_workspace_chevrons_track_the_live_active_workspace() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -1216,12 +1164,10 @@ mod tests {
         );
     }
 
-    /// D-2 perf-fix contract: `widget_registry` is idempotent — two
-    /// consecutive calls (no layout / chrome mutation between them)
-    /// return the same set of keys mapped to the same rects. This
-    /// mirrors the contract before the relayout-clone perf fix: the
-    /// walker may not mutate anything, so subsequent reads must see
-    /// the same data.
+    /// `widget_registry` is idempotent — two consecutive calls (no
+    /// layout / chrome mutation between them) return the same set of
+    /// keys mapped to the same rects; the walker may not mutate
+    /// anything.
     #[test]
     fn widget_registry_is_idempotent_between_calls() {
         let mut fb = FrameBuilder::new((1600, 900));

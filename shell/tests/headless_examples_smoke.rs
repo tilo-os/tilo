@@ -5,19 +5,10 @@
 //! via the NiriosClient API). Without a gate they'll bit-rot the next
 //! time someone tweaks the wire format or renames a `test_id`.
 //!
-//! Each test:
-//! 1. Confirms the compiled compositor binary exists at
-//!    `target/debug/quick-desktop` (the script's hard-coded path).
-//! 2. Shells out to `python3 scripts/headless-examples/<script>` with
-//!    the test-runner's CWD = repo root.
-//! 3. Asserts exit code 0 and that the script's documented output
-//!    files were written.
-//!
-//! ## Why `#[ignore]` by default
-//!
-//! These tests spawn a real `quick-desktop --backend headless` child,
-//! which needs a wgpu adapter. CI runners without a software-rasterizer
-//! Mesa would fail on adapter init. Opt-in:
+//! `#[ignore]` by default: these tests spawn a real
+//! `quick-desktop --backend headless` child, which needs a wgpu
+//! adapter, and CI runners without a software-rasterizer Mesa would
+//! fail on adapter init. Opt-in:
 //!
 //! ```text
 //! cargo build -p quick-desktop --bin quick-desktop

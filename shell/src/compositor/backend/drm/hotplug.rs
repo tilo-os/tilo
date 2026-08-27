@@ -1,35 +1,20 @@
 //! What changes when a display is plugged in or pulled out.
 //!
 //! The udev source hands the backend three edges — a DRM device appeared,
-//! an existing one changed, a device went away — and each of them means
-//! "re-ask the hardware what is connected, then reconcile". The messy part
-//! is the reconciliation, and none of it needs a GPU: given the outputs
-//! that are currently live and the connectors that are currently
-//! connected, the decisions are
+//! changed, or went away — and each means "re-ask the hardware what is
+//! connected, then reconcile": which connectors are new (modeset), which
+//! live outputs are gone (tear down), which are the same connector at a
+//! different mode (re-modeset), where every surviving output sits in the
+//! combined coordinate space, and where the pointer ends up when that
+//! space shrank. This module computes it; [`super::runtime`] performs it.
 //!
-//! * which connectors are **new** (modeset them),
-//! * which live outputs are **gone** (tear their scanout down),
-//! * which are the **same connector at a different mode** (re-modeset),
-//! * where every surviving output now sits in the combined coordinate
-//!   space, and
-//! * where the pointer ends up when the space it was in shrank.
-//!
-//! That is what this module computes. [`super::runtime`] performs it.
-//!
-//! # Where the windows go when a monitor is unplugged
-//!
-//! Nowhere — and that is deliberate, not an omission. qOS does not pin a
-//! window to an output: a workspace holds strips, a strip holds groups,
-//! and the shell places those groups across whatever displays it is told
-//! about (`overlay_host::set_output_geometry`). Removing a display
-//! therefore re-flows the same groups onto the remaining ones on the next
-//! layout pass, in strip order, rather than leaving anything at absolute
-//! coordinates that no longer have a panel behind them.
-//!
-//! Two things are *not* automatic and are computed here:
-//! [`clamp_pointer`], because the pointer does live in absolute combined
-//! coordinates, and [`layout`], because the surviving outputs have to be
-//! re-packed so there is no hole where the unplugged one used to be.
+//! qOS does not pin a window to an output — a workspace holds strips, a
+//! strip holds groups, and the shell places those groups across whatever
+//! displays it is told about. So removing a display re-flows the same
+//! groups onto the remaining ones on the next layout pass rather than
+//! leaving anything at coordinates with no panel behind them. Only the
+//! pointer ([`clamp_pointer`]) and the surviving outputs' packing
+//! ([`layout`]) need computing explicitly.
 
 use crate::compositor::backend::OutputId;
 

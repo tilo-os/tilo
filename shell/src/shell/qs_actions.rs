@@ -1,16 +1,15 @@
 //! Re-export shim for the shared `os-actions` crate.
 //!
 //! The brightnessctl/wpctl/nmcli/bluetoothctl/powerprofilesctl bindings
-//! used to live here. They moved to `os-actions` so the standalone
-//! Settings app can drive the same hardware without depending on the
-//! compositor — see `os-actions/src/lib.rs` for the design notes.
+//! live in `os-actions` so the standalone Settings app can drive the
+//! same hardware without depending on the compositor — see
+//! `os-actions/src/lib.rs` for the design notes.
 //!
-//! This module continues to expose the historical names
+//! This module keeps re-exporting them under their historical names
 //! (`qs_actions::set_brightness`, `qs_actions::QsActions`,
-//! `qs_actions::RealQsActions`) so existing shell call-sites and the
-//! `shell/tests/qs_actions_click_routing.rs` integration test keep
-//! compiling without rename churn. New code should import from
-//! `os_actions::*` directly.
+//! `qs_actions::RealQsActions`) so existing shell call-sites and
+//! `shell/tests/qs_actions_click_routing.rs` keep compiling without
+//! rename churn. New code should import from `os_actions::*` directly.
 
 // Re-export the free shell-out helpers.
 pub use os_actions::{

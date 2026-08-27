@@ -1,41 +1,21 @@
 //! Minimal EDID / CTA-861-G parser for the fields we surface to
-//! `color-management-v1` clients.
-//!
-//! # What we extract
+//! `color-management-v1` clients. Base block per VESA E-EDID 1.4;
+//! extension block per CTA-861-G ("A DTV Profile for Uncompressed High
+//! Speed Digital Interfaces").
 //!
 //! An EDID blob is 128 bytes of base information plus zero or more
 //! 128-byte extension blocks. HDR-capable displays advertise their
-//! peak / average / minimum luminance and their preferred EOTFs (HLG,
-//! ST-2084 PQ, gamma) through a **CTA-861 extension block** containing
-//! two "Extended Data Blocks":
+//! peak/average/minimum luminance and preferred EOTFs (HLG, ST-2084 PQ,
+//! gamma) through a CTA-861 extension block's HDR Static Metadata Data
+//! Block (§7.5.13, `extended_tag = 6`) and Colorimetry Data Block
+//! (§7.5.5, `extended_tag = 5`). We also read the base block's
+//! chromaticity bytes so the compositor reports the display's actual
+//! gamut rather than assuming BT.2020 for every HDR display.
 //!
-//! - **HDR Static Metadata Data Block** (CTA-861-G §7.5.13,
-//!   `extended_tag = 6`) — carries the EOTF bitfield, the static-metadata
-//!   descriptor bitfield, and desired luminances.
-//! - **Colorimetry Data Block** (CTA-861-G §7.5.5, `extended_tag = 5`) —
-//!   advertises BT.2020-cYCC / BT.2020-YCC / BT.2020-RGB / DCI-P3 / etc.
-//!
-//! We also read the base block's chromaticity bytes (CIE 1931 xy of
-//! the R/G/B primaries + white point) so the compositor can report the
-//! display's actual gamut and not just "assume BT.2020" for HDR
-//! displays.
-//!
-//! # What we do NOT parse
-//!
-//! - Detailed Timing Descriptors, monitor names, standard timings,
-//!   established timings. Not needed for color-management.
-//! - DisplayID (a separate spec; a small number of modern displays
-//!   ship DisplayID alongside EDID).
-//! - EDID checksum verification. Callers can layer that on if they
-//!   need it — the parser is defensive against short / malformed
-//!   blobs and returns `HdrDisplayInfo::default_sdr()` rather than
-//!   panicking, so a bogus checksum just falls back to SDR.
-//!
-//! # Reference
-//!
-//! - VESA E-EDID 1.4 base block layout.
-//! - CTA-861-G, "A DTV Profile for Uncompressed High Speed Digital
-//!   Interfaces" — extension block, extended-tag data blocks.
+//! Not parsed: Detailed Timing Descriptors, monitor names, timings,
+//! DisplayID, or the EDID checksum (the parser is defensive against
+//! short/malformed blobs and returns `HdrDisplayInfo::default_sdr()`
+//! rather than panicking, so a bogus checksum just falls back to SDR).
 
 use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 

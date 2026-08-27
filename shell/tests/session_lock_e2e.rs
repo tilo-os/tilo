@@ -167,7 +167,6 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to control socket");
 
-    // Starts unlocked.
     assert!(!is_locked(&mut stream), "session should start unlocked");
 
     // 1. Idle auto-lock engages (2s timeout + margin). No input is sent, so

@@ -1,23 +1,18 @@
 //! Left-edge workspace wheel chrome widget.
 //!
-//! TODO: superseded chrome — replaced by `SidebarWheelDisc`
-//! (`sidebar_wheel_disc.rs`). Module retained in-tree for reference but
-//! is not mounted; see `docs/nirios/parity-status.md` row §3 for the
-//! switchover. Do not theme-migrate raw `colors.accent[4]` reads here
-//! (e.g. line 519) — the file is dead code paths.
+//! Superseded by `SidebarWheelDisc` (`sidebar_wheel_disc.rs`); retained
+//! in-tree for reference but not mounted. Do not theme-migrate raw
+//! `colors.accent[4]` reads here (e.g. line 519) — the file is dead code.
 //!
-//! Paints a 96 px wide vertical strip of workspace cards. The active
-//! workspace's card is highlighted with accent-500 fill; inactive cards
-//! render as raised-surface pills with a dim label. A trailing "+" card
-//! is reserved for creating a new workspace (click wiring lands together
-//! with the topbar-click plumbing).
+//! Paints a 96 px wide vertical strip of workspace cards: the active
+//! workspace highlighted with accent-500 fill, inactive cards as
+//! raised-surface pills with a dim label, plus a trailing "+" card to
+//! create a new workspace.
 //!
-//! The wheel is composed as a *floating* overlay above the desktop
-//! wallpaper, not as a left-leaf of a split row. `ShellOverlayHost`
-//! places it absolutely so only the cards and a subtle glassy backdrop
-//! catch the eye — the column-wide opaque fill used previously has been
-//! removed to match the concept (`DesktopView.tsx:219-248`, which uses
-//! `absolute left-0 top-0 bottom-0 w-24` with no background column).
+//! Composed as a *floating* overlay above the desktop wallpaper by
+//! `ShellOverlayHost`, not as a left-leaf of a split row, so only the
+//! cards and a subtle glassy backdrop catch the eye. Matches the concept
+//! (`DesktopView.tsx:219-248`).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -48,10 +43,6 @@ use crate::shell::state::{WorkspaceId, WorkspaceTree};
 /// viewports the sidebar narrows inside the gutter, leaving a slim band
 /// of wallpaper between sidebar and content (a deliberate breathing-room
 /// margin, not wasted space).
-///
-/// History: was 200 (concept-pill design) → 360 (initial quiet-disc
-/// redesign, 2026-05-23) → 320 fixed gutter + viewport-driven slot
-/// (2026-05-25, addressing "looks slightly too wide at 1080p").
 pub const SIDEBAR_WIDTH_PX: f32 = 320.0;
 
 /// Intents the sidebar wheel can emit. Held internally so the shell can
@@ -99,18 +90,13 @@ pub struct SidebarWheelChrome {
     /// so scrolling only cycles workspaces when the pointer is over the
     /// sidebar.
     last_cursor: Option<Point>,
-    /// How many collaborators are present on the active workspace. Today we
-    /// don't track per-workspace presence yet, so we treat tree-level
-    /// collaborators as "everyone is on the active workspace" — good enough
-    /// for the visual parity signal "this card has people on it". Clamped
-    /// to 3 when drawn so the chrome doesn't overflow the card.
+    /// Legacy mirror of the active card's `collab_count`, kept for callers
+    /// of `active_collaborator_count()`; prefer `card_collab_count`.
     active_collab_count: usize,
     /// Drag-to-rotate state: set on `MouseInput::Pressed` inside the wheel,
-    /// cleared on release. `drag_last_y` is the running cursor anchor used
-    /// to compute per-frame `dy`; `drag_accum` is the signed pixel distance
-    /// since the last emitted workspace switch. When `|drag_accum| >=
-    /// DRAG_SWITCH_THRESHOLD_PX`, we fire `switch_workspace` and subtract
-    /// the threshold so continued dragging keeps rotating.
+    /// cleared on release. `drag_last_y` anchors per-frame `dy`; once
+    /// `|drag_accum| >= DRAG_SWITCH_THRESHOLD_PX` we fire `switch_workspace`
+    /// and subtract the threshold so continued dragging keeps rotating.
     drag_start_y: Option<f64>,
     drag_last_y: Option<f64>,
     drag_accum: f64,
@@ -120,10 +106,9 @@ pub struct SidebarWheelChrome {
     drag_moved: bool,
     /// Eased [0.0, 1.0] progress for the pill highlight + rim arc. 1.0 is
     /// the fully-expanded pose (hover or drag in flight); 0.0 is the
-    /// collapsed 4-px-strip pose. Stepped per-frame in `draw` toward the
-    /// current `is_expanded()` signal over `EXPAND_ANIM_MS` ms using
-    /// smoothstep easing. Mirrors the concept's motion-layer eased
-    /// transitions at `DesktopView.tsx:238-248` / `:306-314`.
+    /// collapsed 4-px-strip pose. Stepped per-frame toward `is_expanded()`
+    /// over `EXPAND_ANIM_MS` ms with smoothstep easing, mirroring the
+    /// concept's motion layer (`DesktopView.tsx:238-248` / `:306-314`).
     pill_anim_t: f32,
     /// Timestamp of the last `draw` call so we can compute `dt` without
     /// relying on a frame-scheduler tick. `None` until the first frame.
@@ -179,9 +164,9 @@ impl SidebarWheelChrome {
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
         self.active = Some(tree.active);
         // Active card flows through the shared helper so its peer count
-        // always agrees with the top-bar avatar stack (audit B-10);
-        // non-active cards keep their own per-ws filtered count (no
-        // fallback into the tree-level roster).
+        // always agrees with the top-bar avatar stack; non-active cards
+        // keep their own per-ws filtered count (no fallback into the
+        // tree-level roster).
         let active_count = crate::shell::state::active_workspace_peer_count(tree);
         self.cards = tree
             .workspaces
@@ -293,7 +278,6 @@ impl Widget for SidebarWheelChrome {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Place cards vertically inside the strip.
         let pad_top = 16.0_f64;
         let pad_x = 12.0_f64;
         let card_h = 64.0_f64;
@@ -305,7 +289,6 @@ impl Widget for SidebarWheelChrome {
             card.rect = Rect::new(left, y, right, y + card_h);
             y += card_h + gap;
         }
-        // Trailing "+" card, same metrics as the regular ones.
         self.plus_rect = Rect::new(left, y, right, y + card_h);
     }
 
@@ -321,12 +304,9 @@ impl Widget for SidebarWheelChrome {
         let colors = &tokens.colors;
 
         // The concept (`DesktopView.tsx:219-248`) floats the wheel over the
-        // wallpaper — no opaque column. We only paint a subtle glassy
-        // backdrop behind the stack of cards themselves so the wheel reads
-        // as a distinct object while still letting the desktop behind it
-        // show through. The old full-column fill + divider + gradient rim
-        // pattern has been removed; the wheel is now painted as an overlay
-        // by `ShellOverlayHost`, not as a left-leaf of the `SplitRow`.
+        // wallpaper — no opaque column. Paint only a subtle glassy backdrop
+        // behind the stack of cards so the wheel reads as a distinct object
+        // while the desktop behind it still shows through.
         let backdrop_inset_y = 24.0_f64;
         let backdrop = Rect::new(
             self.rect.x0 + 8.0,
@@ -446,17 +426,13 @@ impl Widget for SidebarWheelChrome {
             scene.pop_layer();
         }
 
-        // Draw each workspace card.
         for (idx, card) in self.cards.iter().enumerate() {
             let is_active = self.active == Some(card.id);
             let is_hover = self.hover_idx == Some(idx);
             // Hover-scale matches concept `DesktopView.tsx:446`
-            // `whileHover={{ scale: 1.05 }}` — a subtle 5 % grow on the
-            // hovered card so the user gets proprioceptive feedback that
-            // the pill is interactive. Scaled about the card's center
-            // so it grows symmetrically rather than from the top-left.
-            // Applied to both the card rect and its glyph/subtitle
-            // transforms below so the pill stays a coherent unit.
+            // (`whileHover={{ scale: 1.05 }}`), scaled about the card's
+            // center so it grows symmetrically. Applied to the glyph and
+            // subtitle transforms below too, so the pill stays one unit.
             let card_xform = if is_hover && !is_active {
                 let cx = card.rect.center().x;
                 let cy = card.rect.center().y;
@@ -471,10 +447,9 @@ impl Widget for SidebarWheelChrome {
             if is_active {
                 // Glass-pill treatment per concept `DesktopView.tsx` sidebar
                 // wheel: `bg-white/5 border border-white/10 rounded-full`
-                // plus an indigo glow for the active state. The glow was
-                // two hardcoded-indigo concentric rounded rects that
-                // stair-stepped; now it's the shared soft-shadow Gaussian
-                // tinted from `accent[5]`, over a translucent accent pill.
+                // plus an indigo glow for the active state, drawn as the
+                // shared soft-shadow Gaussian tinted from `accent[5]` over
+                // a translucent accent pill.
                 ui::surface::soft_shadow(
                     scene,
                     card_xform,
@@ -542,7 +517,6 @@ impl Widget for SidebarWheelChrome {
                 None,
             );
 
-            // Subtitle: "{n} strip" / "{n} strips".
             let subtitle = if card.strip_count == 1 {
                 "1 strip".to_string()
             } else {
@@ -566,14 +540,10 @@ impl Widget for SidebarWheelChrome {
                 None,
             );
 
-            // Collaborator presence dots on every card. Per-workspace
-            // presence is now modeled (`Workspace::collaborators`), so
-            // each card can show its own roster; we still fall back to
-            // the tree-level roster on the active card when the workspace
-            // has none. Clamp to 3 and overflow into a "+N" chip so 4+
-            // peers stay readable inside the 96-px-wide card. Inactive
-            // cards render at half-alpha so the active card still reads
-            // as the focus anchor.
+            // Collaborator presence dots on every card, clamped to 3 with
+            // overflow into a "+N" chip so 4+ peers stay readable inside
+            // the 96-px-wide card. Inactive cards render at half-alpha so
+            // the active card still reads as the focus anchor.
             let card_count = card.collab_count;
             if card_count > 0 {
                 let shown = card_count.min(3);
@@ -693,13 +663,10 @@ impl Widget for SidebarWheelChrome {
                     }
                     if self.drag_moved {
                         self.drag_accum += dy;
-                        // Dragging *down* visually rotates the wheel so the
-                        // next (higher-index) workspace comes into view — mirror
-                        // the scroll-wheel sign convention at lines above:
-                        // scrolling *up* (positive dy line-delta) goes to an
-                        // earlier workspace, scrolling *down* (negative) goes
-                        // to a later one. Drag matches: `drag_accum > 0`
-                        // (cursor moved down) → later workspace (+1).
+                        // Dragging *down* rotates to the next (higher-index)
+                        // workspace, mirroring the scroll-wheel sign
+                        // convention above: `drag_accum > 0` (cursor moved
+                        // down) → later workspace (+1).
                         while self.drag_accum >= DRAG_SWITCH_THRESHOLD_PX {
                             if let Some(chrome) = self.chrome.clone() {
                                 if !chrome.borrow_mut().switch_workspace(1) {
@@ -771,9 +738,10 @@ impl Widget for SidebarWheelChrome {
                     self.pending_intent = Some(SidebarIntent::CreateWorkspace);
                     if let Some(chrome) = self.chrome.clone() {
                         let mut state = chrome.borrow_mut();
-                        // Reuse SidebarWheel's commit_new_workspace helper
-                        // so we share the "append + activate + seed Main
-                        // strip" semantics with the overscroll-gesture path.
+                        // Reuse SidebarWheel's click_management_new_workspace
+                        // helper so we share the "append + activate + seed
+                        // Main strip" semantics with the overscroll-gesture
+                        // path.
                         let wheel = SidebarWheel::new();
                         {
                             let mut tree = state.tree_mut();

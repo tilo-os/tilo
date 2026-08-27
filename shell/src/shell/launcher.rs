@@ -1,66 +1,25 @@
 //! Launching real applications from the desktop.
 //!
-//! An installed qOS application is a `.qpkg` that `qos-install` has
-//! unpacked and recorded in `~/.local/share/qos-apps/registry.toml`.
-//! This module is the shell's side of running one: enumerate what is
-//! installed, and start a chosen package as a **separate sandboxed
-//! process** that connects back to this compositor as a Wayland client.
+//! The shell never builds a sandbox itself — it execs `qos-launcher`
+//! (the [`launcher`] crate's binary) as a separate process, which reads
+//! the manifest, compiles the seccomp filter, mounts the signed runtime
+//! bundle, and re-execs itself as `__sandbox-exec` so Landlock applies
+//! after bwrap's mount setup. That has to be out-of-process: the
+//! Landlock shim is `current_exe()`-relative, so the re-exec target has
+//! to *be* `qos-launcher`, and a broken package can't take the
+//! compositor down with it.
 //!
-//! ## What actually runs
+//! [`set_wayland_socket`] publishes the compositor's socket; with none
+//! published, a launch is refused rather than starting an app that can
+//! never draw. Permissions are the manifest (what the packager asked
+//! for) intersected with the workspace's capabilities (what the user
+//! granted, staged to a private JSON file as `--capabilities`) — either
+//! alone is not enough.
 //!
-//! The shell does not build a sandbox itself. It execs `qos-launcher`
-//! (the [`launcher`] crate's binary), which is the canonical
-//! implementation of a qOS app launch:
-//!
-//! - reads the package manifest and derives every bind from it,
-//! - compiles the baseline seccomp filter and hands it to `bwrap` on an
-//!   fd,
-//! - mounts the signed runtime bundle the manifest pins,
-//! - re-execs itself inside the namespace as the `__sandbox-exec` shim
-//!   so Landlock is applied *after* bwrap finishes its mount setup,
-//! - resolves declared service sockets, and finally execs the app.
-//!
-//! Running it as a child process rather than calling the crate in-process
-//! is deliberate: the Landlock shim is `current_exe()`-relative, so the
-//! binary bwrap re-execs has to *be* `qos-launcher`. It also keeps a
-//! launch failure inside its own process — a broken package cannot take
-//! the compositor down with it.
-//!
-//! ## The display
-//!
-//! [`set_wayland_socket`] is called by the compositor once it knows which
-//! `wayland-N` it bound. Every launch passes that socket to
-//! `qos-launcher --wayland-socket`, which binds it into the sandbox at
-//! `/run/user/<uid>/wayland-0`. Nothing is inherited from the
-//! compositor's own environment: with no compositor socket published
-//! there is no display in the sandbox, and the launch is refused up
-//! front rather than silently starting an app that can never draw.
-//!
-//! ## Permissions
-//!
-//! The manifest is what the *packager* asked for. What the **user**
-//! granted lives on the workspace, as capabilities
-//! ([`crate::shell::state::Workspace::capabilities`]). Both have to be
-//! true before an app can reach a path, a device or the network, so
-//! every launch carries the workspace's capabilities across to
-//! `qos-launcher`: they are written to a private JSON file in the
-//! runtime dir and named on the command line with `--capabilities`.
-//!
-//! The launcher turns them into bind mounts and Landlock rules. That is
-//! the whole of what "Always allow" does — with no capability there is
-//! no mount, and an app cannot open what is not in its namespace. A
-//! launch with no capabilities (nothing published, nothing granted,
-//! file missing) gets exactly the sandbox the manifest describes;
-//! nothing here can widen one.
-//!
-//! ## Never on the frame thread
-//!
-//! [`launch`] resolves the package from an in-memory cache and hands the
-//! prepared command to a worker thread, which does the `fork`/`exec` and
-//! then blocks for the child's lifetime relaying its output. The
-//! compositor's 60fps loop only ever touches a `Mutex<Vec<_>>`. Outcomes
-//! come back through [`drain_events`], which the chrome drains once per
-//! frame and turns into notifications.
+//! [`launch`] hands the command to a worker thread that forks/execs and
+//! blocks for the child's lifetime; the frame loop only ever touches a
+//! `Mutex<Vec<_>>`. Outcomes come back through [`drain_events`], drained
+//! once per frame.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -1236,14 +1195,11 @@ mod tests {
         );
     }
 
-    // The tests that repoint `QOS_APPS_DATA_DIR` / `QOS_LAUNCHER_BIN` /
-    // the published wayland socket are serialised on `process_env` — the
-    // crate's one group for process-global environment. They used to
-    // hold a private mutex in this module instead, which serialised them
-    // against each other but not against the rest of the crate: any test
-    // elsewhere that repoints the same variables (`shell::doc_open`'s
-    // opens, for instance) raced them, and the failure landed in
-    // whichever of the two got there second.
+    // Tests that repoint `QOS_APPS_DATA_DIR` / `QOS_LAUNCHER_BIN` / the
+    // published wayland socket are serialised on `process_env` — the
+    // crate's one group for process-global environment, shared with
+    // other tests that repoint the same variables (`shell::doc_open`'s
+    // opens, for instance).
 
     /// Write a registry + manifest pair into `dir` and point the
     /// launcher's registry reader at it. Returns the app's payload root.
@@ -1314,8 +1270,7 @@ mod tests {
 
         // Enumerating it is fine; offering it to launch is not. A headless
         // package has no window to show, so a row that starts it would open
-        // nothing. This asserts
-        // the filter the applications provider actually calls.
+        // nothing.
         let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
         assert_eq!(
             offered_ids,
@@ -1420,8 +1375,7 @@ mod tests {
             "the message must name the id it could not find: {message}"
         );
         // "installed" is not a word this desktop says to a user — nobody
-        // asked to install anything. The message was moved off it and
-        // this assertion had kept asserting the old wording.
+        // asked to install anything.
         assert!(
             !message.contains("install"),
             "user-facing text must not talk about installing: {message}"

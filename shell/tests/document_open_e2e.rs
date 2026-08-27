@@ -1,22 +1,14 @@
-//! Opening a document from search, end to end.
+//! Opening a document from search, end to end: Super+K, the document's
+//! name, Enter — through a real `ShellOverlayHost`, real layout, real winit
+//! key events, the real search fan-out, `doc_open` routing and
+//! `qos-launcher` invocation, asserting on the command actually executed.
 //!
-//! The headline user story is "open some document in its respective app",
-//! and the palette is where a user starts it: Super+K, the document's
-//! name, Enter. This drives exactly that — real `ShellOverlayHost`, real
-//! layout, real winit key events, the real search fan-out, the real
-//! `doc_open` routing, the real `qos-launcher` invocation — and asserts
-//! on the command the compositor actually executed.
-//!
-//! Two things make that assertable without a session:
-//!
-//! - `HOME` points at a temporary tree, so the Files provider indexes a
-//!   directory this test wrote and the palette can find the document.
-//! - `QOS_LAUNCHER_BIN` (the launcher's own documented seam) points at a
-//!   script that records its argv. What the log holds is therefore the
-//!   command the production launch path ran, not a value returned by
-//!   anything under test.
-//!
-//! Both are process-wide, which is why this is its own test binary.
+//! Two process-wide env vars make that assertable without a session (which
+//! is why this is its own test binary): `HOME` points at a temporary tree
+//! the Files provider indexes, and `QOS_LAUNCHER_BIN` — the launcher's own
+//! documented seam — points at a script that records its argv, so the log
+//! holds what the production launch path ran rather than a value returned
+//! by anything under test.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -81,9 +73,8 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     Layout { taffy, child_node: child }
 }
 
-/// The document the palette writes its query into, kept across events —
-/// the palette's input is CRDT-backed, so a fresh doc per keystroke would
-/// lose every character but the last.
+/// Kept across events: the palette's input is CRDT-backed, so a fresh doc
+/// per keystroke would lose every character but the last.
 struct Session {
     doc: automerge::AutoCommit,
     root: automerge::ObjId,
@@ -244,9 +235,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
     install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
-    // A decoy that claims nothing and sorts first by display name, so a
-    // routing that ignored the extension would pick *it* and this test
-    // would say so. Without a second package installed, "resolve the
+    // A decoy claiming nothing and sorting first by display name, so a
+    // routing that ignored the extension would pick it. Without a second
+    // package installed, "resolve the
     // owner" and "take whatever is installed" are indistinguishable.
     install(&apps, "dev.qos.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
@@ -283,9 +274,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         "Super+K must open the palette; without it there is no row to activate"
     );
 
-    // The Files provider walks `$HOME` on a background thread. Type the
-    // query and keep re-typing the last character until the walk has
-    // committed and the document is on offer — the palette re-runs the
+    // The Files provider walks `$HOME` on a background thread, so re-type
+    // the last character until the walk commits and the document is on
+    // offer — the palette re-runs the
     // fan-out on every keystroke, so this exercises the production
     // refresh rather than reaching into the index.
     session.type_str(&mut host, &layout, "quarterly-repor");
@@ -311,9 +302,8 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         "the palette never offered the document; rows were {rows:#?}"
     );
 
-    // Enter activates the selected row. Assert which row that is first —
-    // otherwise a palette that offered something else looks identical to
-    // one that ignored the key.
+    // Assert which row is selected first, or a palette that offered
+    // something else looks identical to one that ignored the key.
     let (_, _, selected, entries) = host.palette_snapshot();
     let selected = selected.expect("a row is selected");
     let selected_label = entries
@@ -374,12 +364,8 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
 }
 
 /// Dropping a document onto a window group opens it in the app that owns
-/// the type, in the group the pointer was over.
-///
-/// It used to grow a tab *named after the file* holding an app that had
-/// never been told which file — the read grant was recorded and then
-/// nothing read it. Driven through the real `WindowEvent::DroppedFile`
-/// entry point on `ShellOverlayHost`.
+/// the type, in the group the pointer was over — through the real
+/// `WindowEvent::DroppedFile` entry point.
 #[test]
 #[serial_test::serial(process_env)]
 fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {

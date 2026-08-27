@@ -1,13 +1,5 @@
 //! The hardware keys along the top of every laptop keyboard.
 //!
-//! `NamedKey::AudioVolumeUp`, `AudioVolumeDown`, `AudioVolumeMute`,
-//! `BrightnessUp`, `BrightnessDown`, `MediaPlayPause`, `MediaTrackNext`
-//! and `MediaTrackPrevious` existed in the vendored winit keyboard tables
-//! and appeared in no handler anywhere in the compositor. Of the whole
-//! function row only `NamedKey::Power` did anything. Pressing volume-up
-//! on a qOS machine sent the keysym to whichever client had focus, which
-//! is not what a user pressing a speaker glyph is asking for.
-//!
 //! This module is the classification and the actuation, kept out of the
 //! backend loops so both of them route the same press to the same
 //! outcome. The loop's job is one `else if`.
@@ -361,7 +353,6 @@ mod tests {
         assert_eq!(osd.caption(), "Muted");
         assert!(bridge.snapshot().volume.unwrap().muted);
 
-        // And back again.
         let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(osd.caption(), "Volume 50%");
         assert!(!bridge.snapshot().volume.unwrap().muted);

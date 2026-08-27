@@ -7,16 +7,7 @@
 //! name itself could name itself anything, beside a caret editing a
 //! document that room's capabilities gate.
 //!
-//! The pointer and roster paths read it. Two others did not: the
-//! attribution the broker stamps on a locally-connected app's presence,
-//! and the one it stamps on the signed delta a caret is drawn from.
-//! Both minted a synthetic `peer-<n>` per *connection* instead, with no
-//! room lookup on the path at all — so one person appeared as a
-//! different stranger in every app they had open, under a number, while
-//! the roster beside them showed a real name for somebody else.
-//!
-//! What is asserted here is the shape of that failure rather than one
-//! instance of it: a frame delivered to an app must not carry a raw
+//! A frame delivered to an app must not carry a raw
 //! `peer-` / `peer@` form for a participant the room can name. Both
 //! transports are exercised, because every packaged qOS app reaches the
 //! broker over the capnp one and that is where a person is normally
@@ -40,8 +31,7 @@ use ui::presence::PresenceKey;
 
 /// This machine's liveness handle, as the room document's keys hash to.
 /// Arbitrary but fixed: what matters is that the lookup and the
-/// resolver agree on it, which is exactly what silently failed when
-/// one path hashed the room's keys and another did not.
+/// resolver agree on it.
 const LOCAL_HANDLE: u64 = 5_537_458_103_208_628_978;
 
 /// What the room calls this machine's peer. A name a person chose,

@@ -1,51 +1,18 @@
 //! Local CRDT fan-out broker for the `QUICK_COLLAB_SOCK` Unix socket.
 //!
-//! Every quick-ui app instantiates a [`ui::collaboration::CollaborationManager`]
-//! that connects to `QUICK_COLLAB_SOCK` and exchanges length-prefixed JSON
-//! frames (`u32` little-endian length + JSON body). Pre-broker, nothing in
-//! production bound that socket — the protocol was only exercised by the
-//! `ui/tests/real_socket_two_peer.rs` test-only relay.
-//!
-//! This module lifts the relay's fan-out pattern into the shell so two
-//! co-located apps (e.g. two `cargo run -p terminal` instances pointed at
-//! the same socket) share scrollback CRDT updates live.
-//!
-//! Behaviour:
-//! - Bind the configured socket path (best-effort `unlink` first so a
-//!   crashed prior shell doesn't lock us out).
-//! - Accept any number of peer connections (unlike the test broker's
-//!   hardcoded N=2).
-//! - For each peer, spawn a reader thread that decodes `CollabRequest`s
-//!   and translates them to the matching `CollabEvent`, then fans the
-//!   event to the peers the event is addressed to (see "Routing").
-//! - Drop dead peers (write failure) from the fan-out table.
-//!
-//! The mapping from request → event mirrors the test relay verbatim:
-//! - `SyncIncremental { data }` → `CRDTIncremental { data }`
-//! - `SyncCRDT { data }` → `CRDTUpdate { data }`
-//! - `Presence { key, payload }` → `RemotePresenceUpdate { user_id:
-//!   "peer-<src_id>", key, payload }`
-//! - `Hello { .. }` → swallowed (no fan-out; the hello records the
-//!   connection's [`CrdtRoute`])
-//!
-//! ## Routing
-//!
-//! Every event is delivered against a [`CrdtRoute`] — the `(app_id,
-//! cluster_id)` pair the sender announced on its `Hello`. A connection
-//! only receives an event when its own announced route matches:
-//!
-//! - **CRDT payloads** (`CRDTIncremental`, `CRDTUpdate`,
-//!   `SignedCRDTIncremental`, cooperative `ScrollbackBatch`) carry a
-//!   full `(app_id, cluster_id)` route: the Notes app never sees the
-//!   Terminal's document deltas, and cluster A never sees cluster B.
-//! - **Chrome traffic** (presence, cursors, context) carries a
-//!   cluster-only route — every app in the cluster is a legitimate
-//!   audience for "who else is here".
+//! Every quick-ui app connects a [`ui::collaboration::CollaborationManager`]
+//! to `QUICK_COLLAB_SOCK` and exchanges length-prefixed JSON frames (`u32`
+//! little-endian length + JSON body). The broker accepts any number of
+//! peers and, per peer, decodes each `CollabRequest` into the matching
+//! `CollabEvent` — `SyncIncremental`/`SyncCRDT` → `CRDTIncremental`/
+//! `CRDTUpdate`, `Presence` → `RemotePresenceUpdate`, `Hello` swallowed
+//! and just records the connection's [`CrdtRoute`] — then fans it out to
+//! the peers it's addressed to; see [`CrdtRoute`] for the routing rules.
 //!
 //! Routing **fails closed**: a connection that has not said `Hello`
-//! receives nothing at all, and a frame whose sender has not said
-//! `Hello` is neither fanned out locally nor republished over libp2p.
-//! There is no broadcast primitive left in the broker.
+//! receives nothing, and a frame whose sender has not said `Hello` is
+//! neither fanned out locally nor republished over libp2p. There is no
+//! broadcast primitive left in the broker.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -68,10 +35,9 @@ use crate::shell::collab_outbound::{PeerPublisher, Transport};
 use crate::shell::network::ShellNetwork;
 
 /// Maximum number of audit-log entries retained per channel before
-/// the in-memory ring buffer evicts its oldest entry. Persistence
-/// (and per-channel retention policy) is a Phase 3.5 follow-up —
-/// the in-memory record is enough for current debugging and tests
-/// that want to assert "this op was dropped".
+/// the in-memory ring buffer evicts its oldest entry. The in-memory
+/// record is enough for current debugging and tests that want to
+/// assert "this op was dropped".
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
 /// One entry in the per-channel audit log. The full envelope is
@@ -89,8 +55,7 @@ pub struct AuditEntry {
     /// for tracing; `Some(reason)` is a rejection.
     pub rejection: Option<ValidationError>,
     /// Wall-clock time the entry was minted on this host. Used by
-    /// the chrome's "Activity pane" widget (Phase 1) to render the
-    /// timeline.
+    /// the chrome's "Activity pane" widget to render the timeline.
     pub at: std::time::SystemTime,
 }
 
@@ -99,8 +64,7 @@ pub struct AuditEntry {
 /// Keyed by [`ArtifactId`] because a `SignedOp` carries an artifact
 /// id but not a channel id directly — and the broker's v1 channel
 /// state is keyed by artifact id too (see the
-/// [`Broker::channel_state_for`] note below). Phase 3.5 reshapes
-/// this to a true channel-id keyed map.
+/// [`Broker::channel_state_for`] note below).
 #[derive(Default)]
 pub struct AuditLog {
     pub entries: HashMap<ArtifactId, VecDeque<AuditEntry>>,
@@ -127,7 +91,7 @@ impl AuditLog {
     }
 }
 
-/// Phase 9: one entry in the per-channel **redaction record** log.
+/// One entry in the per-channel **redaction record** log.
 ///
 /// Independent of the per-artifact rejection-audit ring buffer — a
 /// redaction is a positive governance event, not a failure. Stored in
@@ -162,7 +126,7 @@ pub struct RedactionRecord {
     pub redacted_at: std::time::SystemTime,
 }
 
-/// Phase 9: per-artifact redaction-record log.
+/// Per-artifact redaction-record log.
 ///
 /// Like [`AuditLog`] this is a fixed-capacity ring buffer to avoid
 /// unbounded growth, but redaction events are rare by construction
@@ -247,10 +211,7 @@ const LABEL_TTL: Duration = Duration::from_secs(2);
 ///
 /// The broker stamps an identity on everything an app sends before
 /// another app sees it: presence, pointers, and the signed deltas a
-/// caret is drawn from. Those stamps used to be minted per connection
-/// (`peer-<n>`), so one person showed up as a different stranger in
-/// every app they had open, and no amount of the room knowing their
-/// name could reach them — there was no lookup on those paths at all.
+/// caret is drawn from.
 ///
 /// A local connection is *this machine's* peer, so the name is the one
 /// the room wrote for this machine's peer id: the same governance fact
@@ -351,6 +312,12 @@ impl LocalIdentity {
     }
 }
 
+/// Sentinel cluster id: `crate::shell::state::RoomId::nil` rendered as
+/// a string. A workspace announces this when its durable room identity
+/// has not been minted yet; never delivered to or from — see
+/// [`CrdtRoute::is_addressable`].
+const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
+
 /// The address a CRDT (or chrome) event is delivered to.
 ///
 /// Built from the `(app_id, cluster_id)` pair a connection announces
@@ -363,16 +330,6 @@ impl LocalIdentity {
 ///   a legitimate audience, and for the Cap'n Proto transport, whose
 ///   `joinChannel(channelId, identity)` surface carries a channel id
 ///   but no app identity (the SDK sets `channelId = cluster_id`).
-///
-/// A route with an empty `cluster_id` addresses nobody: that is the
-/// fail-closed case for a connection that never said hello, or for a
-/// libp2p frame published by a peer that could not stamp one.
-/// Rendering of `crate::shell::state::RoomId::nil` — the cluster id a
-/// workspace announces when its durable room identity has not been
-/// minted yet. Never delivered to or from; see
-/// [`CrdtRoute::is_addressable`].
-const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this
@@ -483,8 +440,7 @@ impl CrdtRoute {
     /// see `crate::shell::state::RoomId::nil`). The nil case matters
     /// because it is not empty: without this, every workspace still
     /// carrying the sentinel would share one enormous room, on every
-    /// machine at once, which is precisely the failure that deriving
-    /// the cluster from a local counter used to cause.
+    /// machine at once.
     fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
@@ -510,20 +466,18 @@ impl CrdtRoute {
     /// Fails closed on either side lacking an addressable cluster. App
     /// granularity applies only when both ends announced an app id; an
     /// end that announced none stays cluster-scoped rather than
-    /// silently receiving nothing. Both transports do announce one —
-    /// capnp carries it in the channel id
-    /// ([`Self::from_channel_key`]) — so that fallback now covers a
-    /// connection that predates the app segment, not a whole transport.
+    /// silently receiving nothing — both transports do announce one
+    /// (capnp carries it in the channel id, see
+    /// [`Self::from_channel_key`]), so that fallback now covers only a
+    /// connection predating the app segment, not a whole transport.
     ///
     /// **Record granularity is the innermost test and it fails closed
     /// both ways.** Two app-scoped ends agree only when they name the
     /// same record, and "no record" is a value like any other: a
     /// converted app's document deltas are not handed to an
-    /// unconverted connection of the same app, and vice versa, because
-    /// those two are not looking at the same document. An app that has
-    /// not adopted records still matches its own kind exactly as
-    /// before (both ends empty), which is what keeps the rest of the
-    /// fleet working untouched.
+    /// unconverted connection of the same app, and vice versa. An app
+    /// that has not adopted records still matches its own kind exactly
+    /// as before (both ends empty).
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
         if !Self::is_addressable(&self.cluster_id) || !Self::is_addressable(&subscriber.cluster_id)
         {
@@ -545,7 +499,7 @@ impl CrdtRoute {
     }
 }
 
-/// Phase 3 channel-state cache.
+/// Per-artifact channel-state cache.
 ///
 /// The broker keeps one [`ChannelState`] per artifact id (a v1
 /// proxy — see the TODO inside `state_for`). Reader threads acquire
@@ -557,27 +511,25 @@ impl CrdtRoute {
 /// makes every signed op fail step 2 of the validator
 /// ([`ValidationError::UnauthorisedAttestation`]) — which is the
 /// **correct, secure** default for an artifact whose role table the
-/// broker has never been told about. Tests (and the eventual Phase 3.5
-/// bootstrap path) populate the state via
+/// broker has never been told about. Tests populate the state via
 /// [`Broker::register_channel_state`] before driving traffic through
 /// the broker. The audit log records the rejection so an operator can
 /// see that an envelope was dropped because the channel was
 /// un-bootstrapped vs. genuinely-invalid.
 ///
-/// TODO(phase-3.5): wire the channel state up from the persisted
+/// TODO: wire the channel state up from the persisted
 /// `Workspace.collaborators` + governance log so production traffic
 /// no longer needs the bootstrap dance.
 #[derive(Default)]
 pub struct BrokerChannels {
     /// Per-artifact channel state. v1 keys on artifact id rather than
-    /// channel id because the wire only carries artifact id; the
-    /// 3.5 follow-up adds a real artifact→channel resolver.
+    /// channel id because the wire only carries artifact id.
     pub states: HashMap<ArtifactId, ChannelState>,
     /// Per-artifact audit log, fixed-capacity. Records rejected
-    /// envelopes (and Phase 9's `OpArrivedRedacted` late-arrival
-    /// records via the same shape) so an operator can triage drops.
+    /// envelopes (and `OpArrivedRedacted` late-arrival records via the
+    /// same shape) so an operator can triage drops.
     pub audit: AuditLog,
-    /// Phase 9: per-artifact redaction record log. Separate from the
+    /// Per-artifact redaction record log. Separate from the
     /// rejection-audit because a redaction is a positive governance
     /// event, not a failure.
     pub redactions: RedactionLog,
@@ -587,15 +539,13 @@ impl BrokerChannels {
     /// Look up the [`ChannelState`] for `artifact`, lazily inserting
     /// a default. The lazy default has empty `authorised_signers` so
     /// every signed op fails step 2 of the validator until a test
-    /// or the eventual Phase 3.5 bootstrap fills it in.
+    /// fills it in.
     pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
         self.states.entry(artifact).or_default()
     }
 
     /// Inject a populated [`ChannelState`] for `artifact`, replacing
-    /// any existing entry. Tests use this to set up role tables; the
-    /// eventual Phase 3.5 bootstrap path calls the same helper from
-    /// the persisted workspace metadata.
+    /// any existing entry. Tests use this to set up role tables.
     pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
         self.states.insert(artifact, state);
     }
@@ -628,13 +578,9 @@ pub struct PeerTable {
 
 /// A subscriber inside the shell process, addressed by room.
 ///
-/// The shell hosts the broker but was never a reader of it, so the
-/// presence its own apps publish went out to the other apps in the
-/// room and nowhere else — the compositor drawing those windows never
-/// saw it.
-///
-/// A room subscription is how it reads. It is addressed the way every
-/// other subscriber is: a room is a cluster, and delivery is decided
+/// A room subscription is how the shell's own compositor reads
+/// presence its apps publish. It is addressed the way every other
+/// subscriber is: a room is a cluster, and delivery is decided
 /// by [`CrdtRoute::delivers_to`] against `CrdtRoute::cluster(room)`.
 /// That is deliberate rather than convenient — presence is widened to
 /// cluster scope on the way out ([`CrdtRoute::to_cluster_scope`])
@@ -820,7 +766,7 @@ impl PeerTable {
         }
     }
 
-    /// Send `event` to exactly one peer by id. Used by the Phase 6
+    /// Send `event` to exactly one peer by id. Used by the
     /// `FetchScrollback` path — the reply only belongs to the
     /// requester, not the whole fan-out. Drops the peer if the write
     /// fails. Returns whether the send happened (false when the peer
@@ -873,7 +819,6 @@ enum TranslatedAction {
     /// (peers downstream need to evict their own logs too) but the
     /// local channel state has already been mutated by the time this
     /// variant is returned.
-    ///
     CompactionApplied {
         event: CollabEvent,
         route: CrdtRoute,
@@ -903,8 +848,7 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Phase 9: apply a validated Redact envelope to the shared channel
-/// state.
+/// Apply a validated Redact envelope to the shared channel state.
 ///
 /// Hoisted to a helper because both the local-broker hot path
 /// (`translate`) and the libp2p drain thread reach the same code
@@ -1038,11 +982,11 @@ fn translate(
             let Some(route) = src_route.cloned() else {
                 return unrouted(src_id, "SignedSyncIncremental");
             };
-            // Phase 3 hot path: validate the envelope against the
-            // per-artifact `ChannelState` before fanning out. Default
-            // state has empty `authorised_signers`, so a freshly-
-            // touched artifact rejects every signed op until its
-            // role table is registered (the secure default).
+            // Validate the envelope against the per-artifact
+            // `ChannelState` before fanning out. Default state has
+            // empty `authorised_signers`, so a freshly-touched
+            // artifact rejects every signed op until its role table
+            // is registered (the secure default).
             let artifact = envelope.artifact;
             let validation = {
                 let Ok(mut ch) = channels.lock() else {
@@ -1053,23 +997,21 @@ fn translate(
             };
             match validation {
                 Ok(()) => {
-                    // Phase 6 housekeeping after a green validation:
-                    // record the op in the per-artifact in-memory log,
-                    // then — if this op is itself a Compaction
-                    // checkpoint — apply it. The order matters: a
-                    // checkpoint op's own envelope should NOT be
-                    // evicted by its own application (its seq is
-                    // strictly greater than `up_to_seq` by
-                    // construction), so recording first and
-                    // compacting afterwards is safe.
+                    // After a green validation: record the op in the
+                    // per-artifact in-memory log, then — if this op is
+                    // itself a Compaction checkpoint — apply it. The
+                    // order matters: a checkpoint op's own envelope
+                    // should NOT be evicted by its own application (its
+                    // seq is strictly greater than `up_to_seq` by
+                    // construction), so recording first and compacting
+                    // afterwards is safe.
                     //
-                    // Phase 9 housekeeping: if this op is a Redact,
-                    // parse the payload and apply the redaction —
-                    // rewrites local op-log entries matching
-                    // `target_op_id` to the redacted marker. Records
-                    // a `RedactionRecord` in the redaction log so
-                    // `BrokerHandle::redactions_for` can surface the
-                    // governance event to the chrome.
+                    // If this op is a Redact, parse the payload and
+                    // apply the redaction — rewrites local op-log
+                    // entries matching `target_op_id` to the redacted
+                    // marker. Records a `RedactionRecord` in the
+                    // redaction log so `BrokerHandle::redactions_for`
+                    // can surface the governance event to the chrome.
                     let mut compaction_evicted: Option<usize> = None;
                     if let Ok(mut ch) = channels.lock() {
                         let state = ch.state_for(artifact);
@@ -1132,8 +1074,8 @@ fn translate(
                     }
                 }
                 Err(ValidationError::OpAlreadyRedacted { target }) => {
-                    // Phase 9 §7: a buggy or offline peer re-broadcast
-                    // an op whose id we have already redacted. Do NOT
+                    // A buggy or offline peer re-broadcast an op whose
+                    // id we have already redacted. Do NOT
                     // fan it out, but DO push a marker-payload entry
                     // into the local op log so the seq stream doesn't
                     // form a hole (late-joiners would otherwise hunt
@@ -1193,10 +1135,10 @@ fn translate(
             before_seq,
             max,
         } => {
-            // Phase 6: read-only access to the artifact's in-memory
-            // op log. The broker returns up to `max` ops in seq
-            // order; the `exhausted` flag tells the requester
-            // whether to fall back to the cooperative path.
+            // Read-only access to the artifact's in-memory op log. The
+            // broker returns up to `max` ops in seq order; the
+            // `exhausted` flag tells the requester whether to fall
+            // back to the cooperative path.
             //
             // The `ScrollbackBatch` goes ONLY to the requesting
             // peer — other locally-connected apps did not ask, and
@@ -1336,9 +1278,9 @@ fn reader_loop(
             }
             _ => {}
         }
-        // Phase 6 cooperative-fetch outbound bridge: a local
-        // `FetchScrollback` always replies first from the local op
-        // log (handled by `translate`). When peer-sync is wired AND
+        // Cooperative-fetch outbound bridge: a local `FetchScrollback`
+        // always replies first from the local op log (handled by
+        // `translate`). When peer-sync is wired AND
         // the local broker's reply turned out to be empty, ALSO
         // publish a cooperative request so remote peers can chime in.
         // The remote responses funnel back through the drain thread
@@ -1365,9 +1307,9 @@ fn reader_loop(
                 table.fanout_to_route(&event, peer.id, &route);
             }
             TranslatedAction::ReplyToSource(event) => {
-                // Phase 6 targeted reply: scrollback batches only go
-                // to the peer that asked. Failure is silently
-                // dropped; the peer can re-ask.
+                // Targeted reply: scrollback batches only go to the
+                // peer that asked. Failure is silently dropped; the
+                // peer can re-ask.
                 let _ = table.send_to_peer(peer.id, &event);
                 // Cooperative follow-up: if the local reply was
                 // empty (the in-memory log holds nothing in the
@@ -1444,8 +1386,8 @@ pub struct BrokerHandle {
     /// Listener thread handle. Wrapped in `Option` so `Drop` can
     /// `take()` and `join()` it without violating the moved-out rule.
     listener_thread: Option<JoinHandle<()>>,
-    /// Phase 2 inbound-drain thread handle. Spawned only when the
-    /// broker has a `ShellNetwork` to pump.
+    /// Inbound-drain thread handle. Spawned only when the broker has
+    /// a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
     /// Drain-thread quit flag. Drop sets it; the drainer exits at
     /// its next wake.
@@ -1458,13 +1400,12 @@ pub struct BrokerHandle {
     /// exits at its next wake.
     capnp_quit: Arc<AtomicBool>,
     /// Shared peer table — the reader threads use it; the broker keeps
-    /// a reference so external callers (Phase 2: libp2p bridge) can
-    /// fan a remote event in to every locally-connected peer.
+    /// a reference so external callers (the libp2p bridge) can fan a
+    /// remote event in to every locally-connected peer.
     pub(crate) peers: Arc<PeerTable>,
-    /// Phase 3 channel-state cache + audit log. Reader threads pull
-    /// the lock for the duration of one validation; tests + the
-    /// eventual Phase 3.5 bootstrap path mutate the state map to
-    /// register role attestations before traffic flows.
+    /// Channel-state cache + audit log. Reader threads pull the lock
+    /// for the duration of one validation; tests mutate the state map
+    /// to register role attestations before traffic flows.
     channels: Arc<Mutex<BrokerChannels>>,
 }
 
@@ -1503,10 +1444,8 @@ impl BrokerHandle {
 
     /// Subscribe this process to the rooms it hosts.
     ///
-    /// The shell runs the broker but is not otherwise a reader of it,
-    /// so everything its apps published reached the other apps and
-    /// stopped there. This is how the compositor reads the same
-    /// stream — addressed by room, and delivered by the broker's own
+    /// This is how the compositor reads its own apps' presence stream —
+    /// addressed by room, and delivered by the broker's own
     /// [`CrdtRoute::delivers_to`], so a subscription sees exactly what
     /// a socket peer in that room would see and nothing more.
     ///
@@ -1520,10 +1459,6 @@ impl BrokerHandle {
         self.peers.subscribe_rooms(rooms, sink)
     }
 
-    /// Shared handle to the broker's per-channel state + audit log.
-    /// Tests use this to install a [`ChannelState`] *before* sending
-    /// signed envelopes through the broker. The eventual Phase 3.5
-    /// bootstrap path is the production caller.
     /// The bound Cap'n Proto socket, or `None` if this broker has no
     /// app-facing transport.
     ///
@@ -1536,6 +1471,9 @@ impl BrokerHandle {
         self.capnp_socket_path.as_deref()
     }
 
+    /// Shared handle to the broker's per-channel state + audit log.
+    /// Tests use this to install a [`ChannelState`] *before* sending
+    /// signed envelopes through the broker.
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
     }
@@ -1560,10 +1498,10 @@ impl BrokerHandle {
             .unwrap_or_default()
     }
 
-    /// Phase 9: snapshot the structured redaction records for one
-    /// artifact. Used by chrome widgets (the activity timeline +
-    /// history scrubber) and by tests that want to assert "this
-    /// op was redacted by this owner at this time with this reason."
+    /// Snapshot the structured redaction records for one artifact.
+    /// Used by chrome widgets (the activity timeline + history
+    /// scrubber) and by tests that want to assert "this op was
+    /// redacted by this owner at this time with this reason."
     /// Independent of the rejection-audit `audit_for` so the
     /// compliance surface doesn't have to filter through every
     /// dropped envelope.
@@ -1707,7 +1645,7 @@ fn spawn_inner(
     let listener = UnixListener::bind(&socket_path)?;
 
     let table = Arc::new(PeerTable::new());
-    // Phase 3 per-artifact channel state + audit log. Created here so
+    // Per-artifact channel state + audit log. Created here so
     // every reader thread gets the same `Arc`, and so the
     // `BrokerHandle::channels()` accessor returns a handle to the
     // same instance reader threads consult during validation.
@@ -1789,14 +1727,14 @@ fn spawn_inner(
             }
         })?;
 
-    // Phase 2 inbound-drain: when peer-sync is on, drain the
+    // Inbound-drain: when peer-sync is on, drain the
     // `ShellNetwork`'s `inbound_app_crdt` buffer every 100 ms and
     // fan each entry out to every locally-connected app as a
     // `CRDTIncremental`. 100 ms is well under typical CRDT
     // convergence cadence and keeps the drainer's CPU footprint
     // negligible.
     //
-    // Phase 6 stretches the same drainer to cover three new queues:
+    // The same drainer also covers three more queues:
     //   - inbound app-CRDT-signed envelopes (validated + fanned to
     //     local apps as `SignedCRDTIncremental`),
     //   - inbound cooperative-scrollback requests (consult local op
@@ -2011,14 +1949,10 @@ fn spawn_inner(
                                         );
                                     }
                                     // The id the *same* peer's presence
-                                    // arrives under, and named through
-                                    // the same room lookup. It used to
-                                    // be `peer-net-<handle>` while the
-                                    // pointer beside it was
-                                    // `peer@<handle>`, so one person was
-                                    // two participants on the receiving
-                                    // screen — two colours, and a roster
-                                    // entry that named only one of them.
+                                    // arrives under, named through the
+                                    // same room lookup, so one person
+                                    // reads as one participant across
+                                    // the caret and the pointer.
                                     let from_user_id = remote_participant_id(
                                         &entry.cluster_id,
                                         entry.peer,
@@ -2045,9 +1979,9 @@ fn spawn_inner(
                                     drain_table.fanout_to_route(&event, u64::MAX, &route);
                                 }
                                 Err(ValidationError::OpAlreadyRedacted { target }) => {
-                                    // Phase 9 §7: late-arriving op via the
-                                    // libp2p bridge whose id is already in
-                                    // our redacted set. Don't fan; do push
+                                    // Late-arriving op via the libp2p
+                                    // bridge whose id is already in our
+                                    // redacted set. Don't fan; do push
                                     // a marker entry into the log so the
                                     // seq stream stays gapless.
                                     tracing::warn!(
@@ -2215,32 +2149,13 @@ fn spawn_inner(
     })
 }
 
-/// What, if anything, to tell local apps this peer is called.
-///
-/// `said` is the name last announced for the peer, `known` what the room
-/// says now, and `id` the `peer@<handle>` the presence frames carry.
-///
-/// Three cases, and the last two are the ones worth spelling out:
-///
-/// - The room names the peer and that is not what was last said: say it.
-/// - The room has **stopped** naming a peer that was named: say the id.
-///   An app told a name once holds it until told otherwise, so a label
-///   taken back in the room would otherwise stay on screen for the rest
-///   of the session — and it would be a name over a caret that nobody
-///   is entitled to any more.
-/// - The room has never named the peer and still does not: say nothing.
-///   The id is already what an app that was told nothing shows, so an
-///   announcement would be a frame per presence frame saying so.
 /// The id a **remote** peer's traffic is attributed under, announcing
 /// the room's name for it first when the room has one and nobody has
 /// said it yet.
 ///
 /// Every path that shows a remote participant goes through here — the
 /// pointer, the presence, and the signed delta a caret is drawn from —
-/// because they have to agree. They did not: presence used
-/// `peer@<handle>` and deltas used `peer-net-<handle>`, so the roster
-/// entry naming the first left the second showing a number, and the
-/// palette gave one person two colours in one document.
+/// because they have to agree.
 ///
 /// The id stays the peer handle even once a name is known. A roster
 /// entry names a participant; it does not recolour one, and a peer
@@ -2321,6 +2236,22 @@ fn remote_participant_id(
     user_id
 }
 
+/// What, if anything, to tell local apps this peer is called.
+///
+/// `said` is the name last announced for the peer, `known` what the room
+/// says now, and `id` the `peer@<handle>` the presence frames carry.
+///
+/// Three cases, and the last two are the ones worth spelling out:
+///
+/// - The room names the peer and that is not what was last said: say it.
+/// - The room has **stopped** naming a peer that was named: say the id.
+///   An app told a name once holds it until told otherwise, so a label
+///   taken back in the room would otherwise stay on screen for the rest
+///   of the session — and it would be a name over a caret that nobody
+///   is entitled to any more.
+/// - The room has never named the peer and still does not: say nothing.
+///   The id is already what an app that was told nothing shows, so an
+///   announcement would be a frame per presence frame saying so.
 fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Option<String> {
     let now = known.unwrap_or(id);
     match said {
@@ -2337,8 +2268,7 @@ mod tests {
     /// name is worth attaching to it and why it is not one.
     const PEER: &str = "peer@5537458103208628978";
 
-    /// The demo beat: a peer the room has named is announced under that
-    /// name, once.
+    /// A peer the room has named is announced under that name, once.
     #[test]
     fn a_named_peer_is_announced_and_then_left_alone() {
         assert_eq!(
@@ -2373,12 +2303,6 @@ mod tests {
 
     /// A remote peer is one participant on the receiving screen, and
     /// the same one whichever kind of frame it sent.
-    ///
-    /// Presence carried `peer@<handle>` and signed deltas carried
-    /// `peer-net-<handle>`, so a peer that typed and pointed became two
-    /// entries in the palette, and the roster entry — announced against
-    /// the first form — named only one of them. The caret said a number
-    /// while the pointer beside it said a name.
     #[test]
     fn a_remote_peer_is_one_id_across_presence_and_deltas() {
         let table = Arc::new(super::PeerTable::new());
@@ -2440,13 +2364,12 @@ mod tests {
     ///
     /// The roster is published when the room's answer changes, because
     /// presence arrives at pointer rate and a roster update per pointer
-    /// move is not a roster. But "changes" was measured against what
-    /// had been *said*, not against who had *heard* it, so an app that
-    /// connected a second later missed the one broadcast and nothing
-    /// ever repeated it. Its caret drew the peer's handle while the
+    /// move is not a roster. But "changes" is measured against what had
+    /// been *said*, not against who had *heard* it, so an app that
+    /// connects a second later misses the one broadcast and nothing
+    /// ever repeats it: its caret shows the peer's handle while the
     /// chrome two centimetres away — which reads the room directly —
-    /// drew the name. Both were reporting honestly; only one had been
-    /// told.
+    /// shows the name.
     #[test]
     fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
         let table = Arc::new(super::PeerTable::new());
@@ -2511,10 +2434,7 @@ mod tests {
     ///
     /// The unit test above pins `remote_participant_id`'s contract; it
     /// says nothing about whether the signed-delta drain actually calls
-    /// it, and that is precisely where the bug lived — the delta path
-    /// minted `peer-net-<handle>` inline, right beside a presence path
-    /// that had been resolving names correctly for months. So this
-    /// drives a real room, a real signed envelope through
+    /// it. So this drives a real room, a real signed envelope through
     /// `ShellNetwork`'s inbound buffer, and reads what a connected app
     /// is handed.
     #[test]
@@ -2796,10 +2716,6 @@ mod tests {
 
     /// Two people editing two **different** documents in one room must not
     /// merge each other's state.
-    ///
-    /// Before records both announced the identical `(app, cluster)` pair, so
-    /// the broker delivered each edit to the other and every keystroke in one
-    /// file landed in the other file's document.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn two_documents_in_one_room_do_not_merge() {
@@ -2962,14 +2878,8 @@ mod tests {
     /// and the receiving host has to rebuild it. This drives the real inbound
     /// path: a frame queued as if it had just arrived off gossipsub, picked up
     /// by the broker's drain thread, routed by what the sender stamped.
-    /// The two transports must publish through the same thing.
-    ///
-    /// They did not. The JSON reader loop republished every
-    /// `SyncIncremental` over libp2p; the capnp server, which is the
-    /// one a sandboxed app dials, held no network handle at all — so
-    /// "does a local edit leave this machine" had two answers and the
-    /// sandboxed one was no. Asserting a shared publisher here is what
-    /// stops that from being re-derived independently a third time.
+    /// The two transports must publish through the same thing, asserted
+    /// here so it can't be re-derived independently and diverge again.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_json_edit_reaches_the_same_publisher_the_capnp_transport_uses() {
@@ -3230,8 +3140,8 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn broker_fans_out_to_three_peers() {
-        // Phase 1 acceptance test: prove N=3 fan-out, not just N=2.
-        // Mirrors `ui/tests/real_socket_two_peer.rs` but exercises the
+        // Prove N=3 fan-out, not just N=2. Mirrors
+        // `ui/tests/real_socket_two_peer.rs` but exercises the
         // production module and a peer count beyond the test broker.
         let socket_path = temp_sock("fanout3");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
@@ -3299,13 +3209,9 @@ mod tests {
         // --- Assertion 3: presence is attributed to a participant, and
         // the same one on every screen it reaches.
         //
-        // It used to be attributed to a *connection* — peer B was the
-        // second to connect, so it arrived as "peer-1" — which meant one
-        // person was a different stranger in each app they had open and
-        // could never resolve to a name. There is no room here to name
-        // anyone, so what B is called is this machine's own user id;
-        // what is asserted is that it is an identity rather than a slot,
-        // and that A and C agree on it.
+        // There is no room here to name anyone, so what B is called is
+        // this machine's own user id; what is asserted is that it is an
+        // identity rather than a slot, and that A and C agree on it.
         peer_b.send(CollabRequest::Presence {
             key: PresenceKey::Workspace { id: "42".into() },
             payload: PresencePayload::Arrived,
@@ -3432,10 +3338,6 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn crdt_deltas_do_not_cross_app_boundaries() {
-        // The leak this closes: the broker used to write every CRDT
-        // payload to every connected socket, so a note-taking app
-        // received a terminal's document deltas.
-        //
         // Three peers in ONE cluster: two instances of "app-alpha" and
         // one of "app-beta". Alpha-1 sends a delta. Alpha-2 must get
         // it (otherwise this test would pass by simply breaking
@@ -3544,10 +3446,8 @@ mod tests {
     ///
     /// It is not the empty string, so without an explicit rule every
     /// workspace still carrying the unminted sentinel — on every
-    /// machine at once — would be one enormous shared room. That is the
-    /// exact failure that deriving the cluster from a local counter
-    /// used to cause, and it must not reappear through the migration
-    /// window.
+    /// machine at once — would be one enormous shared room, and that
+    /// must not reappear through the migration window.
     #[test]
     fn the_unminted_room_addresses_nobody() {
         let unminted = CrdtRoute::app(
@@ -4175,9 +4075,8 @@ mod tests {
     fn an_invited_host_joins_the_room_and_an_uninvited_one_does_not() {
         // The cross-machine claim. Three hosts, three brokers, three
         // independently-built workspace trees — and, deliberately, the
-        // same local workspace id on all three, because that number
-        // used to be what decided the room and it must now decide
-        // nothing.
+        // same local workspace id on all three, which must not decide
+        // the room.
         //
         // Only the second host accepts the first's invite. One frame
         // goes onto the (broadcast) wire; the assertions are about

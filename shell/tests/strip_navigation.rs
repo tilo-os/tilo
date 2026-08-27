@@ -1,28 +1,26 @@
 //! Navigating along a strip, and the affordances that must not.
 //!
-//! A strip is a horizontal run of window groups wider than the display,
-//! so "where am I looking" is a real piece of state (`GroupRow::scroll_x`)
-//! that several unrelated interactions can move. Three things are pinned
-//! here:
+//! A strip is a horizontal run of window groups wider than the display, so
+//! "where am I looking" is real state (`GroupRow::scroll_x`) that several
+//! unrelated interactions can move. Pinned here:
 //!
-//!   * The tab strip's `+` opens the picker and moves nothing. It is a
-//!     button, and a button that pans the desktop under the pointer is
-//!     the kind of thing a person notices immediately and cannot explain.
+//!   * The tab strip's `+` opens the picker and moves nothing — a button
+//!     that pans the desktop under the pointer is the kind of thing a
+//!     person notices immediately and cannot explain.
 //!   * Stepping focus along the strip works from the keyboard and from a
 //!     horizontal scroll, and both land on the same window, because they
 //!     are one operation.
-//!   * The rail says how much strip there is and which part of it is on
-//!     screen — and goes there when clicked.
+//!   * The rail says how much strip there is and which part is on screen
+//!     — and goes there when clicked.
 //!
-//! Note what does *not* move the view: a bare wheel. That boundary lives
-//! in `desktop_env_interactions::wheel_over_strip_does_not_move_it` —
-//! the view travels through focus changes, which is exactly why a
-//! sideways scroll here steps focus rather than free-panning the canvas.
+//! A bare wheel does *not* move the view (see
+//! `desktop_env_interactions::wheel_over_strip_does_not_move_it`) — the
+//! view travels through focus changes, which is why a sideways scroll
+//! here steps focus rather than free-panning the canvas.
 //!
 //! The harness builds a real `ShellOverlayHost` over a real
 //! `WorkspaceTree`, runs a real layout pass, and drives real
-//! `WindowEvent`s. Nothing here asserts against a helper that
-//! reimplements what production does.
+//! `WindowEvent`s — nothing here asserts against a reimplementation.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -46,19 +44,15 @@ const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
 /// Half the display each, so three of them plus the wheel-disc gutter
-/// overflow the viewport and the strip genuinely has somewhere to pan.
-/// A strip whose content fits cannot demonstrate anything about panning:
-/// `scroll_x` is clamped to 0 and every assertion about it passes for
-/// the wrong reason.
+/// overflow the viewport and the strip genuinely has somewhere to pan — a
+/// strip whose content fits cannot demonstrate anything about panning
+/// (`scroll_x` clamps to 0 and every assertion passes for the wrong reason).
 const HALF_DISPLAY_PERMILLE: u16 = 500;
 
-/// How many window groups the fixture strip holds.
-///
-/// Enough that travelling to the far end pushes the near end entirely
-/// off screen. With three, the whole strip is only slightly wider than
-/// the viewport and the first group still pokes in at maximum scroll —
-/// so "the strip moved" and "the strip moved enough to change what you
-/// can see" would be indistinguishable.
+/// How many window groups the fixture strip holds — enough that travelling
+/// to the far end pushes the near end entirely off screen. With fewer, the
+/// first group would still poke in at maximum scroll, making "the strip
+/// moved" indistinguishable from "the strip moved enough to matter".
 const GROUPS: usize = 5;
 
 /// Windows on one strip, two tabs per group.
@@ -221,11 +215,8 @@ impl Harness {
         self.host.tick_clear_stale_open_target_for_tests();
         self.host.tick_active_tab_writeback_for_tests();
         self.host.tick_scroll_active_into_view_for_tests();
-        // Run the focus-follow pan to its end. It is an eased curve on
-        // wall time, and a harness that stepped it at whatever speed the
-        // test happens to run at would assert against a frame in the
-        // middle of it — sometimes indistinguishable from no pan at all.
-        // `tick_snap_at` takes the clock as an argument for exactly this.
+        // Run the focus-follow pan (an eased curve on wall time) to its
+        // end via `tick_snap_at`, rather than asserting mid-animation.
         if let Some(row) = self.host.group_row_mut_for_tests(self.strip) {
             row.tick_snap_at(Instant::now() + Duration::from_secs(2));
         }
@@ -253,8 +244,7 @@ impl Harness {
     /// entry point the compositor calls.
     fn key(&mut self, logical: Key, mods: ModifiersState) {
         // winit's `KeyEvent` carries a private platform field, so the
-        // struct is zero-initialised and every public field overwritten —
-        // the same synthesis the test-control executor uses.
+        // struct is zero-initialised and every public field overwritten.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
         ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
@@ -365,11 +355,9 @@ fn the_fixture_strip_is_wider_than_its_viewport() {
 fn the_plus_chip_does_not_move_the_viewport() {
     let mut h = Harness::new();
     let parked = h.scroll_x();
-    // Group 1 straddles the right edge of the display: its `+` chip sits
-    // in the middle of its tab row and is fully clickable, while the rest
-    // of the group is not on screen. That is the shape that made the
-    // press pan the desktop — a focus change asking for a group the
-    // viewport only half holds.
+    // Group 1 straddles the right edge: its `+` chip is fully clickable
+    // while the rest of the group is off screen — the shape that made the
+    // press pan the desktop (a focus change asking for a half-visible group).
     let row_right = h
         .host
         .group_row_rect_for_tests(h.strip)
@@ -421,12 +409,8 @@ fn the_plus_chip_opens_the_picker_filtered_to_apps() {
 }
 
 // =====================================================================
-// Travelling along the strip.
-//
-// The strip is the primary axis of this desktop and had no keyboard
-// binding at all: the only way to step along it was Alt+Shift and a
-// wheel, which is not something anyone finds. These pin the three ways
-// in, and that they are one operation rather than three.
+// Travelling along the strip. These pin the three ways in, and that they
+// are one operation rather than three.
 // =====================================================================
 
 /// Super+Right walks forward through the strip's windows, and does not
@@ -437,9 +421,8 @@ fn super_right_walks_the_whole_strip() {
     let mut h = Harness::new();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    // Every window on the strip, in visual order — the sequence the
-    // chord is claimed to walk. Built from the fixture so the assertion
-    // cannot drift out of step with it.
+    // Every window on the strip, in visual order, built from the fixture
+    // so the assertion cannot drift out of step with it.
     let expected: Vec<(GroupId, u64)> = h
         .groups
         .iter()

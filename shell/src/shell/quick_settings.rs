@@ -2,23 +2,11 @@
 //!
 //! Owns the headline controls (brightness, volume) and the popover
 //! navigation state (root → WiFi/Bluetooth drill-in via `nav_stack`).
-//! Concept ref: `nirios-concept/src/components/QuickSettings.tsx:80-310`.
-//!
-//! Layout sections (rendered in `overlay_host::draw_quick_settings`):
-//! 1. **Action row** (`:181-201`): 3 equal-width tiles — Settings / Camera /
-//!    Power. Power is tinted red (concept `bg-red-500/20`).
-//! 2. **Slider card** (`:204-215`): brightness + volume sliders, each
-//!    `h-1.5 rounded-full` thin bar with **white** fill (concept `bg-white`).
-//!    Sun / Volume2 leading icons.
-//! 3. **Toggle card grid** (`:218-246`): 2-col grid of Wi-Fi / Bluetooth
-//!    cards with a sub-line subtitle (e.g. "Connected: Foo Network").
-//! 4. **Power Profile row** (`:249-258`): Battery glyph + label + cycle
-//!    chevron showing the current profile.
 //!
 //! State model:
 //! - `brightness`, `volume`: `f32` in `[0.0, 100.0]`. Setters clamp.
 //! - `nav_stack`: starts with `vec![QsLevel::Root]`; `push_level`/`pop_level`
-//!   drive WiFi/BT drill-in (consumed by T9's renderer).
+//!   drive WiFi/BT drill-in.
 //! - `power_profile`: cycles Saver → Balanced → Performance → Saver via
 //!   [`QuickSettings::cycle_power_profile`].
 //! - `wifi_ssid` / `bluetooth_device`: optional connection identifiers used
@@ -26,9 +14,6 @@
 //!   field is `None`) the sub-line falls back to `"Not connected"`.
 
 /// A single frame in the QuickSettings navigation stack.
-///
-/// `Wifi*`/`Bluetooth*` variants are consumed by T9's drill-in renderer
-/// but declared up-front so the enum doesn't get rewritten mid-plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
     Root,
@@ -53,13 +38,11 @@ pub struct WifiNetwork {
 
 /// An in-flight "join this protected network" prompt.
 ///
-/// The Wi-Fi list used to call `connect_wifi(ssid, None)` on a row
-/// click, full stop. That works for an open network and for one whose
-/// profile NetworkManager already holds — and fails for every protected
-/// network the machine has not seen before, which is every network on
-/// first boot. There was nowhere to type a passphrase in the whole
-/// compositor, and Settings is the other place it could have been asked
-/// for, which does not help a machine that has no network yet to install
+/// A plain `connect_wifi(ssid, None)` works for an open network and for
+/// one whose profile NetworkManager already holds, and fails for every
+/// protected network the machine has not seen before — which is every
+/// network on first boot. There is nowhere else to type a passphrase:
+/// Settings doesn't help a machine with no network yet to install
 /// anything from. So the chrome asks for it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WifiPasswordPrompt {
@@ -109,10 +92,8 @@ pub struct BtDevice {
 }
 
 /// Power-management profile shown in the Power Profile row at the bottom
-/// of the QuickSettings popover. Concept ref:
-/// `QuickSettings.tsx:249-258` — "Balanced" is the only label rendered in
-/// the static mock-up, but the chevron implies a cycle through the three
-/// canonical profiles `powerprofilesctl` exposes on Linux.
+/// of the QuickSettings popover — the three canonical profiles
+/// `powerprofilesctl` exposes on Linux.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerProfile {
     Saver,

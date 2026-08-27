@@ -151,7 +151,6 @@ pub fn driver_supports_cpu_map(driver: &str) -> bool {
     MAPPABLE_DRIVERS.contains(&driver)
 }
 
-/// `st_rdev` of `path`, or the `io::Error` from `stat`.
 fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
     use std::os::unix::fs::MetadataExt as _;
     // `metadata` follows symlinks, which is what we want: a caller may
@@ -318,9 +317,6 @@ pub struct ProcessPin {
 /// first, so the compositor can end up initialising on one GPU while
 /// telling its clients to allocate on another, or blocking in a
 /// half-installed vendor driver it was never going to use.
-///
-/// Setting the selection variables here fixes both: the loaders see one
-/// driver, and it is the one that matches the node.
 ///
 /// # Ordering
 ///

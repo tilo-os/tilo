@@ -5,10 +5,9 @@
 //! into an offscreen texture, then copies the texture bytes back to
 //! the CPU so tests can inspect pixels or write PNGs.
 //!
-//! The ralph-loop brief asks for "screenshots here to check for issues"
-//! — this lets the test suite produce those screenshots even in CI-like
-//! environments that lack a GNOME Shell (so `scripts/screenshot-app.py`
-//! is unusable) and lack a compositor (so we can't rely on winit).
+//! Lets the test suite produce screenshots in CI-like environments that
+//! lack a GNOME Shell (so `scripts/screenshot-app.py` is unusable) and
+//! lack a compositor (so we can't rely on winit).
 //!
 //! # Why wgpu row-pitch alignment matters
 //! `copy_texture_to_buffer` requires the buffer's row pitch to be a

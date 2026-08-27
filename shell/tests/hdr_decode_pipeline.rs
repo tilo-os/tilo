@@ -14,12 +14,10 @@
 //! `--disable-decoder='h264,hevc,vc1,vvc'` and offers no libx265
 //! encoder, so on a stock image none of this is observable.
 //!
-//! It used to be compiled anyway: the round-trip printed "skipping" and
-//! returned green while proving nothing, and its two neighbours failed
-//! outright and were waved through as pre-existing. A test that cannot
-//! see its subject must not report success, so the gate is explicit
-//! instead. Run these against an HEVC-capable libavcodec
-//! (rpmfusion's `libavcodec-freeworld`, or a self-built ffmpeg) with:
+//! A test that cannot see its subject must not report success, so the
+//! gate is explicit rather than self-skipping quietly. Run these against
+//! an HEVC-capable libavcodec (rpmfusion's `libavcodec-freeworld`, or a
+//! self-built ffmpeg) with:
 //!
 //! ```text
 //! cargo test -p shell --features hevc-codec-tests --test hdr_decode_pipeline
@@ -143,12 +141,8 @@ fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option
     let mut out = Vec::new();
     for i in 0..num_frames {
         let mut frame = gradient_frame_yuv420p10(width, height);
-        // Shift the gradient by i so each frame carries different
-        // content — a diagonal offset.
-        // The Y-plane build already put a diagonal there; per-frame
-        // uniqueness would come from re-baking with a phase but for
-        // this test the same gradient is fine — libx265 still
-        // motion-encodes each into a distinct P-frame.
+        // Same gradient every frame is fine — libx265 still motion-encodes
+        // each into a distinct P-frame.
         let _ = i;
         unsafe {
             (*frame.as_mut_ptr()).pts = i as i64;
@@ -210,13 +204,8 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
                         !all_top6_zero,
                         "top 6 bits of every luma sample are zero — decoder likely downcast to 8-bit"
                     );
-                    // Additionally: check that samples span > 8-bit's
-                    // 256-level dynamic range in the top-bit layout.
-                    // A 10-bit-in-upper-bits P010 stream has samples
-                    // in the top 10 bits, so a proper 1023-code
-                    // gradient should show at least 200 distinct
-                    // samples (much more than the 256 an 8-bit could
-                    // produce in the same space).
+                    // And that the gradient's precision actually survived
+                    // the round-trip, not just its top bits being nonzero.
                     let mut buckets = std::collections::HashSet::new();
                     for s in y.iter().take(4096) {
                         buckets.insert(*s >> 6);
@@ -255,7 +244,6 @@ fn hevc_decoder_returns_none_for_empty_input() {
 fn video_decoder_factory_picks_hevc_from_wire_label() {
     use shell::network::decoder::VideoDecoder;
     let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc-main10 works");
-    // Confirm the decoder is present (compiler-checked by the pattern).
     match d {
         VideoDecoder::Hevc(_) => {}
         _ => panic!("wire label hevc-main10 should build a Hevc decoder"),

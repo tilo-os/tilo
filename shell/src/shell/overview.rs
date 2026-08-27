@@ -1,28 +1,17 @@
 //! What the workspace overview is made of.
 //!
-//! # What this surface is for
-//!
-//! A workspace in qOS is not primarily a region of screen space. It is a
-//! **room**: it has a host, a set of people, its own permissions and its
-//! own shared files. So the overview answers the questions a person
-//! actually has about rooms —
-//!
-//! * which room am I in, and who is in it with me,
-//! * what is shared out of it and what is not,
-//! * how do I get to another one.
+//! A workspace in qOS is not primarily a region of screen space — it is a
+//! **room**: a host, a set of people, its own permissions and shared files.
+//! So the overview answers the questions a person actually has about
+//! rooms (which am I in and who else is, what is shared, how do I reach
+//! another one), not a count of windows and tab titles — a lot of text
+//! about the thing already on screen, saying nothing about the people or
+//! sharing that make a workspace a workspace.
 //!
 //! Everything below derives those answers from the authoritative
-//! [`WorkspaceTree`], as plain data, so the draw pass has no vocabulary
-//! of its own to drift with and the claims the screen makes can be
-//! asserted directly.
-//!
-//! # What it deliberately does not do
-//!
-//! It does not describe the furniture. A count of windows and a list of
-//! tab titles is close to the least interesting thing this screen could
-//! say: it is a lot of text about the thing you are already looking at,
-//! and it says nothing about the people or the sharing that make a
-//! workspace a workspace.
+//! [`WorkspaceTree`] as plain data, so the draw pass has no vocabulary of
+//! its own to drift with and the claims the screen makes can be asserted
+//! directly.
 
 use crate::shell::state::{
     CapRole, Collaborator, Effect, Principal, Subject, UserId, Workspace, WorkspaceId,

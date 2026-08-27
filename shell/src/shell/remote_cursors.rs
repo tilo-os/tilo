@@ -1,18 +1,13 @@
-//! Remote-cursor bounds helper, overlay widget, and a simulated feed.
-//!
-//! T24 landed the smallest load-bearing API: a pure predicate used when the
-//! overlay decides which `PresenceCtx::remote_cursors` entries should render
-//! over the active tile.
+//! Remote-cursor bounds helper and overlay widget.
 //!
 //! There is deliberately no simulated feed here. A fabricated peer is
 //! indistinguishable on screen from a real one, which makes "is
-//! collaboration working?" unanswerable by looking — and a demo that
-//! depends on one is showing the fabrication, not the feature. Peers
-//! reach this overlay from `shell::shell::peer_presence` or not at all.
+//! collaboration working?" unanswerable by looking. Peers reach this
+//! overlay from `shell::shell::peer_presence` or not at all.
 //!
-//! T26 fleshes out [`RemoteCursorOverlay`] into a real [`Widget`] that draws
-//! a small caret triangle + label chip for each remote cursor currently over
-//! the active tile. Cursors outside the tile's bounds are filtered out via
+//! [`RemoteCursorOverlay`] is a [`Widget`] that draws a small caret
+//! triangle + label chip for each remote cursor currently over the active
+//! tile. Cursors outside the tile's bounds are filtered out via
 //! `cursor_in_bounds`, and the scene is clipped to the tile rect so the
 //! overlay can never leak pixels into surrounding chrome. Per-cursor colors
 //! come from `RemoteCursor::color` (RGBA f32); label text + chip background

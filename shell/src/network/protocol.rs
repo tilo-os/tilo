@@ -1,10 +1,10 @@
 //! Peer-sync wire protocol — message envelope shared by all neighbour transports.
 //!
-//! Phase 1 Task 1.1 of the peer-sync end-to-end plan: a single tagged enum
-//! carrying every kind of cross-host payload (CRDT sync, presence, surface
-//! frames, remote input, capability negotiation). Concrete transport bindings
-//! (libp2p gossipsub, in-process [`crate::network::hub::Hub`]) operate purely
-//! on `NeighbourMsg`; they never inspect the payload.
+//! A single tagged enum carrying every kind of cross-host payload (CRDT
+//! sync, presence, surface frames, remote input, capability negotiation).
+//! Concrete transport bindings (libp2p gossipsub, in-process
+//! [`crate::network::hub::Hub`]) operate purely on `NeighbourMsg`; they
+//! never inspect the payload.
 
 use serde::{Deserialize, Serialize};
 
@@ -87,9 +87,8 @@ pub enum NeighbourMsg {
     ///
     /// Distinct from `SurfaceFrame` so late-joining peers can build a
     /// decoder / [`crate::shell::peer_view::PeerView`] with the correct
-    /// dimensions *before* the first NALU arrives — the previous "peel
-    /// dimensions off the first decode" path meant one dropped frame per
-    /// share. Codec is negotiated up-front: `"h264"` in v1, but the field
+    /// dimensions *before* the first NALU arrives, avoiding a dropped
+    /// frame. Codec is negotiated up-front: `"h264"` in v1, but the field
     /// leaves room for `"av1"` / `"h265"` when hardware paths land.
     SurfaceStreamStart {
         surface: SurfaceId,
@@ -186,12 +185,10 @@ pub enum NeighbourMsg {
     /// `quick-ui` toolkit's `ui::collaboration::CollabRequest::SyncIncremental`
     /// produces, opaque to the shell.
     ///
-    /// Two laptops with the broker wired up exchange these so two
-    /// terminals (or any pair of apps) running on different hosts
-    /// share their CRDT state via libp2p. The remote-receive path
-    /// fans the payload into every locally-connected app as a
-    /// `CollabEvent::CRDTIncremental` — same translation the broker's
-    /// local fan-out does.
+    /// Lets any pair of apps on different hosts share CRDT state via
+    /// libp2p — the remote-receive path fans the payload into every
+    /// locally-connected app as `CollabEvent::CRDTIncremental`, the same
+    /// translation the broker's local fan-out does.
     AppCrdtIncremental {
         peer: PeerId,
         /// App-id from the originating `CollabRequest::Hello`. The
@@ -217,8 +214,8 @@ pub enum NeighbourMsg {
         /// untouched.
         data: Vec<u8>,
     },
-    /// Phase 3 of the spaces+channels spec: a signed CRDT envelope
-    /// crossing the libp2p boundary. Recipients route the envelope
+    /// A signed CRDT envelope crossing the libp2p boundary. Recipients
+    /// route the envelope
     /// into their local broker, which runs the validation pipeline
     /// (`collab_types::validate_inbound_op`) before fanning the
     /// payload to any locally-connected app.
@@ -265,30 +262,22 @@ pub enum NeighbourMsg {
     /// App-level presence crossing the host boundary — a peer's caret,
     /// selection, pointer or just-typed run inside a shared document.
     ///
-    /// The counterpart to [`NeighbourMsg::AppCrdtIncremental`], and it
-    /// has to be its own variant rather than reusing
-    /// [`NeighbourMsg::PresenceMoved`]: that one carries a point in a
-    /// named coordinate space, which is all a pointer needs and none of
-    /// what a caret needs. An app's presence is a
-    /// `ui::collaboration::PresenceKey` — a widget path, a tab, a
-    /// broadcast view — paired with a `PresencePayload` that may be a
-    /// caret offset, a selection range or an authorship run. Flattening
-    /// those into an `(x, y)` loses exactly the information the
-    /// receiving app renders.
-    ///
-    /// So the originating `CollabRequest::Presence` frame rides across
-    /// serialised and otherwise untouched, the same way the CRDT blob
-    /// does. The shell does not interpret either.
+    /// Distinct from [`NeighbourMsg::PresenceMoved`], which carries only a
+    /// point in a named coordinate space — none of what a caret needs. An
+    /// app's presence is a `ui::collaboration::PresenceKey` paired with a
+    /// `PresencePayload` (caret offset, selection range, authorship run);
+    /// flattening that into `(x, y)` loses exactly what the receiving app
+    /// renders. So the originating `CollabRequest::Presence` frame rides
+    /// across serialised and otherwise untouched, same as the CRDT blob.
     ///
     /// # Routed at cluster scope, not record scope
     ///
-    /// Deliberately carries no `record_id`. The local broker fans
-    /// presence with `CrdtRoute::to_cluster_scope` — every app in the
-    /// room is a legitimate audience for "who else is here", where a
-    /// document delta is not. Adding a record here would make remote
-    /// presence narrower than local presence, so a peer would appear in
-    /// the room to people on their own machine and be invisible to
-    /// everyone else.
+    /// Deliberately carries no `record_id`. The local broker fans presence
+    /// with `CrdtRoute::to_cluster_scope` — every app in the room is a
+    /// legitimate audience for "who else is here", where a document delta
+    /// is not. A record here would make remote presence narrower than
+    /// local presence: a peer would appear in the room on their own
+    /// machine and be invisible to everyone else.
     AppPresence {
         /// Hashed libp2p PeerId of the publisher. Receiving shells drop
         /// their own gossipsub echoes on it, and it is what the remote
@@ -307,57 +296,38 @@ pub enum NeighbourMsg {
         /// Opaque to every hop between the two apps.
         frame: Vec<u8>,
     },
-    /// App-level CRDT **snapshot** — one document's whole state, sent
-    /// so a peer that has just joined can adopt a document it has no
-    /// history for.
+    /// App-level CRDT **snapshot** — one document's whole state, sent so a
+    /// peer that has just joined can adopt a document it has no history for.
     ///
     /// # Why a whole document ever crosses
     ///
-    /// [`NeighbourMsg::AppCrdtIncremental`] carries a change that names
-    /// its dependencies by hash. A receiver that never saw those
-    /// dependencies cannot apply it — automerge parks it — so two apps
-    /// that each *created* a document rather than opening a shared one
-    /// exchange deltas forever without converging: the bytes arrive,
-    /// reference objects the receiving document has never seen, and
-    /// land nowhere its widgets read. Something has to carry the state
-    /// the deltas are relative to, once, and that is this variant.
+    /// [`NeighbourMsg::AppCrdtIncremental`] carries a change that names its
+    /// dependencies by hash; a receiver that never saw those dependencies
+    /// cannot apply it — automerge parks it — so two apps that each
+    /// *created* a document rather than opening a shared one exchange
+    /// deltas forever without converging. This variant carries the state
+    /// the deltas are relative to, once.
     ///
     /// # Sent on arrival, not on every commit
     ///
-    /// The frame behind this (`ui::collaboration::CollabRequest::
-    /// SyncCRDT`) is not reliably a join reply: it also feeds same-host
-    /// fan-out and the undo snapshot, and whether a commit produces one
-    /// depends on the toolkit build rather than on anything visible in
-    /// the frame. Republishing whatever arrives therefore risks a whole
-    /// document on the room topic per commit — unbounded, growing with
-    /// the session, and redundant with the delta that already carries
-    /// the same edit to anyone who shares the history.
+    /// Whether a commit produces this frame depends on the toolkit build,
+    /// not on anything visible here, so republishing whatever arrives would
+    /// risk a whole document on the room topic per commit. The publish is
+    /// instead gated on somebody needing one: a peer's
+    /// `PresencePayload::Arrived` is noted by
+    /// [`crate::shell::network::ShellNetwork::note_snapshot_request`], and
+    /// the next whole document for that room goes out — once per peer that
+    /// arrives, not more.
     ///
-    /// So the publish is gated on somebody needing one. A peer's
-    /// `PresencePayload::Arrived` passes through the local broker's own
-    /// drain, which notes it
-    /// ([`crate::shell::network::ShellNetwork::note_snapshot_request`]);
-    /// the next whole document for that room goes out, and the ones
-    /// after stay local until somebody else arrives. The rate is
-    /// therefore once per peer that arrives, which is what makes a
-    /// broadcast medium acceptable for it at all — the same rare,
-    /// single-shot shape [`NeighbourMsg::ScrollbackRequest`] /
-    /// [`NeighbourMsg::ScrollbackResponse`] already take.
-    ///
-    /// It is not addressed to the joiner, deliberately: merging is
-    /// idempotent and commutative, so a peer that missed one converges
-    /// from somebody else's copy, and naming a recipient would need the
-    /// *app* to say who its reply is for.
+    /// Not addressed to the joiner: merging is idempotent and commutative,
+    /// so a peer that missed one converges from somebody else's copy.
     ///
     /// # Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`]
     ///
-    /// A document has no upper bound and a gossipsub RPC does (64 KiB,
-    /// the libp2p default this shell does not raise). Publishing is
-    /// therefore refused above a cap set below that ceiling rather than
-    /// handing the transport a message it would reject — see the
-    /// constant for the arithmetic. A document past the cap does not
-    /// converge, loudly, in a log line that names the size; it does not
-    /// half-converge and it does not fail somewhere unattributable.
+    /// A document has no upper bound and a gossipsub RPC does (64 KiB, the
+    /// libp2p default this shell does not raise) — publishing above a cap
+    /// set below that ceiling fails loudly, in a log line naming the size,
+    /// rather than half-converging or failing unattributably.
     AppCrdtSnapshot {
         /// Hashed libp2p PeerId of the publisher. Receiving shells drop
         /// their own gossipsub echoes on it, as on every App* variant.
@@ -381,7 +351,7 @@ pub enum NeighbourMsg {
         /// opaque to every hop between the two apps.
         data: Vec<u8>,
     },
-    /// Phase 6: cooperative scrollback request. Broadcast over
+    /// Cooperative scrollback request. Broadcast over
     /// gossipsub when a peer's local broker has no in-memory
     /// scrollback for a given artifact range and the requesting app
     /// asked for it. Any peer that *does* hold the range replies
@@ -406,7 +376,7 @@ pub enum NeighbourMsg {
         /// requests back over gossipsub.
         requester: PeerId,
     },
-    /// Phase 6: response to a [`NeighbourMsg::ScrollbackRequest`].
+    /// Response to a [`NeighbourMsg::ScrollbackRequest`].
     /// The responding broker fetched `ops` from its own local op
     /// log and forwarded them; the requesting broker delivers them
     /// to the original requesting local app via
@@ -682,9 +652,8 @@ mod tests {
 
     #[test]
     fn scrollback_request_round_trips_serde_json() {
-        // Phase 6 — the cooperative-fetch request must survive the
-        // actor's serde_json pipeline the same way every other
-        // gossipsub message does.
+        // The cooperative-fetch request must survive the actor's
+        // serde_json pipeline the same way every other gossipsub message does.
         use collab_types::ArtifactId;
         round_trip(NeighbourMsg::ScrollbackRequest {
             artifact: ArtifactId::new(),

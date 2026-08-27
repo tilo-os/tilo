@@ -7,11 +7,10 @@
 //! runtime tree defined here, constructing the concrete `AppWidget` for each
 //! `AppPlaceholder` and preserving `Stub` fallbacks verbatim.
 //!
-//! Introduced in Plan 3 Task 15 to wire real `quick-terminal` and
-//! `file-explorer` widgets into the default demo workspace. The runtime tree
-//! mirrors the field layout of [`crate::shell::state::WorkspaceTree`] so the
-//! shell UI (chrome, strips, tabs) can treat both uniformly when it
-//! introspects structure — only the `tile` variant differs.
+//! The runtime tree mirrors the field layout of
+//! [`crate::shell::state::WorkspaceTree`] so the shell UI (chrome, strips,
+//! tabs) can treat both uniformly when it introspects structure — only the
+//! `tile` variant differs.
 
 use ui::widget::{AppKind as UiAppKind, AppWidget};
 
@@ -21,8 +20,6 @@ use crate::shell::state::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
 /// [`crate::shell::state::TileContent`], this enum carries live
 /// `Box<dyn AppWidget>` handles for apps that have been successfully
 /// constructed at boot.
-///
-/// Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` §5.
 pub enum TileContent {
     /// A live in-process app hosted inside the tile. The trait object's
     /// `app_kind`/`app_title`/`app_icon` drive presentation and permission
@@ -30,7 +27,7 @@ pub enum TileContent {
     App(Box<dyn AppWidget>),
     /// A static placeholder rendered as a card — used both for "coming
     /// soon" apps (e.g. the browser) and as a fallback when an
-    /// `AppWidget::new`/`spawn_default` call fails (spec §9a).
+    /// `AppWidget::new`/`spawn_default` call fails.
     Stub { kind: UiAppKind, label: String },
 }
 

@@ -162,21 +162,12 @@ fn the_launcher_refuses_to_bind_the_filesystem_root() {
     );
 }
 
-/// Why the `"/"` sentinel was still a serious bug even though the
-/// launcher would not bind it.
-///
-/// The damage was never at the bwrap layer. It was that
-/// `Scope::FsPath("/")` is a prefix match over every path, so every
-/// compositor-side check that asks "has this app already been granted
-/// this?" answers yes — for anything. That is the same predicate
-/// `fs/src/acl.rs` answers `open`/`read`/`write` with, and it is what
-/// `flow::resolve` consulted before deciding whether to prompt: with an
-/// Always-scoped `/` recorded, the file dialog stopped appearing and
-/// every subsequent request was auto-approved.
-///
-/// This test pins that consequence, so the reason the sentinel had to go
-/// is written down as an executable fact rather than a claim in a commit
-/// message.
+/// Why a `"/"` grant is dangerous even though the launcher refuses to
+/// bind it: `Scope::FsPath("/")` is a prefix match over every path, so
+/// every compositor-side check that asks "has this app already been
+/// granted this?" answers yes for anything — the same predicate
+/// `fs/src/acl.rs` answers `open`/`read`/`write` with, and the one
+/// `flow::resolve` consults before deciding whether to prompt.
 #[test]
 fn a_root_grant_makes_every_path_read_as_already_granted() {
     let (store, ws) = store();

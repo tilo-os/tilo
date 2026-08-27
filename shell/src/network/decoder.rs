@@ -48,9 +48,7 @@ use crate::collab::colorimetry::{
 /// 10-bit precision.
 #[derive(Debug, Clone)]
 pub struct DecodedFrame {
-    /// Pixel width in pixels.
     pub width: u32,
-    /// Pixel height in pixels.
     pub height: u32,
     /// The pixel payload — either 8-bit RGBA or 10-bit P010 planes.
     pub pixels: DecodedPixels,
@@ -209,7 +207,6 @@ pub struct H264Decoder {
 }
 
 impl H264Decoder {
-    /// Build a new decoder with default openh264 settings.
     pub fn new() -> Self {
         let inner =
             Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
@@ -308,10 +305,6 @@ impl HevcDecoder {
     /// semantics as [`H264Decoder::decode`] — failures fold into
     /// `None`.
     pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
-        // libavcodec wants a `Packet` referencing the bytes. `borrow`
-        // avoids the copy — the packet's lifetime is bounded by the
-        // borrow of `nalus`, and `send_packet` finishes with the
-        // bytes before returning.
         let packet = ffmpeg_next::packet::Packet::copy(nalus);
         if self.ctx.send_packet(&packet).is_err() {
             return None;
@@ -374,9 +367,7 @@ impl HevcDecoder {
                         uv.push(v_val << 6);
                     }
                 }
-                // Y plane conversion — YUV420P10LE stores 10-bit in
-                // the lower bits, so shift to the P010 upper-bit
-                // convention.
+                // Same upper-bit shift for the Y plane.
                 let mut y_shifted = y_plane;
                 for sample in y_shifted.iter_mut() {
                     *sample <<= 6;

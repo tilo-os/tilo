@@ -1,58 +1,24 @@
-//! The broker's outbound half: handing a locally-authored payload to
-//! the peer network.
+//! The broker's outbound half: handing a locally-authored payload to the
+//! peer network, once, for both collaboration transports (the legacy
+//! JSON dialect and the native Cap'n Proto one).
 //!
-//! Both collaboration transports — the legacy JSON dialect in
-//! [`crate::shell::collab_broker`] and the native Cap'n Proto one in
-//! [`crate::shell::collab_broker_capnp`] — fan a local frame out to
-//! other apps *on this machine* through the shared
-//! [`crate::shell::collab_broker::PeerTable`]. Reaching another
-//! machine is a second step, and this module is that step, once, for
-//! both of them.
+//! It exists because there used to be two answers to "does a local edit
+//! leave this host": the JSON reader loop republished every increment
+//! over libp2p, the capnp server republished nothing — so everything a
+//! sandboxed app (which dials capnp) typed stopped silently at the
+//! machine boundary, indistinguishable from nobody typing.
 //!
-//! It exists because there used to be two answers to "does a local
-//! edit leave this host": the JSON reader loop republished every
-//! `SyncIncremental` over libp2p, and the capnp server did not
-//! republish anything at all. Sandboxed apps dial the capnp socket, so
-//! everything a launched app typed stopped at the machine boundary —
-//! and stopped silently, because a peer who sees nothing cannot tell
-//! "not delivered" from "nobody typed". Two implementations of "decide
-//! the route, then publish" is how those two answers came to differ;
-//! one implementation is how they stop differing.
+//! A publish is addressed by the same [`CrdtRoute`] the caller handed to
+//! the local fanout, rebuilt remotely through the same
+//! [`CrdtRoute::delivers_to`]. Scope follows the payload, not the
+//! transport: documents publish the route verbatim, records included;
+//! presence reaches the room only, since the wire frame has no record
+//! field — "who else is here" is a room fact, not a document one.
+//! Beyond that, this module never widens or narrows a route it is given.
 //!
-//! ## What goes on the wire is what the local fanout used
-//!
-//! A publish is addressed by the same [`CrdtRoute`] the caller just
-//! handed to `fanout_to_route`. The remote broker rebuilds that route
-//! from the wire fields and runs it through the same
-//! [`CrdtRoute::delivers_to`] its local frames go through, so a
-//! document that is record-scoped here stays record-scoped there.
-//!
-//! Scope follows the payload, not the transport:
-//!
-//! - **Documents** — CRDT increments (signed or not) and whole-state
-//!   snapshots — publish on the route verbatim, records and all. A
-//!   document is what people share, and which document it is is part
-//!   of its address.
-//! - **Presence** reaches the room, not the record. Callers hand over
-//!   the same un-widened route, and the record is dropped here because
-//!   the presence frame on the wire has no record field: "who else is
-//!   here" is a fact about the room, so a peer editing a different
-//!   document in the same room is still a legitimate audience for it.
-//!
-//! Beyond that per-payload rule this module never widens or narrows a
-//! route it is given. Handing it a cluster-scoped route publishes
-//! cluster-scoped; that decision belongs to the caller that knows what
-//! kind of payload it holds.
-//!
-//! ## Refusals are loud
-//!
-//! Collaboration failures are invisible by construction: "the network
-//! is off", "this connection never announced an address" and "the
-//! other person is not typing" all render as an empty screen. So every
-//! path here that declines to publish says so through
-//! [`tracing::warn!`] — once per publisher for the steady-state
-//! conditions, so a session that runs for an hour with peer sync off
-//! leaves exactly one line to find rather than one per keystroke.
+//! Every refusal to publish is logged via [`tracing::warn!`] — once per
+//! publisher for steady-state conditions (no network), so an hour-long
+//! session leaves one line to find, not one per keystroke.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -275,16 +241,11 @@ impl PeerPublisher {
     /// out locally.
     ///
     /// This is the frame that makes two *separately created* documents
-    /// one document. The toolkit sends it in reply to a peer's
-    /// `Arrived`, never on a commit, so publishing it answers a
-    /// question rather than announcing into the room — and
-    /// `ShellNetwork::publish_app_crdt_snapshot` is where that "is
-    /// anyone actually waiting" gate and the gossip size cap live, so
-    /// both transports are bounded by one rule rather than two.
-    ///
-    /// Without it the deltas cross correctly and refer to objects the
-    /// receiving document has never seen: the peer's caret moves over
-    /// a blank page.
+    /// one document — sent in reply to a peer's `Arrived`, never on a
+    /// commit, so publishing it answers a question rather than
+    /// announcing into the room. Without it the deltas cross correctly
+    /// but refer to objects the receiving document has never seen: the
+    /// peer's caret moves over a blank page.
     pub fn document_snapshot(
         &self,
         route: &CrdtRoute,
@@ -308,18 +269,10 @@ impl PeerPublisher {
     ///
     /// Pass the route **un-widened**: the app id rides along so the
     /// receiving side can attribute the caret, and the record is
-    /// dropped here rather than by the caller because the wire frame
-    /// (`NeighbourMsg::AppPresence`) has no record field at all. "Who
-    /// else is here" is a fact about the room, so a peer editing a
-    /// different document in the same room is still a legitimate
-    /// audience — the room scope is the payload's, not the caller's.
-    ///
-    /// `frame` is the serialised `CollabRequest::Presence` the
-    /// receiving drain decodes, so the two transports put identical
-    /// bytes on the wire.
-    ///
-    /// Without this a peer's caret stopped at the machine that produced
-    /// it, and every collaborator looked like they were doing nothing.
+    /// dropped here (the wire frame `NeighbourMsg::AppPresence` has no
+    /// record field) because "who else is here" is a room fact, so a
+    /// peer editing a different document in the same room is still a
+    /// legitimate audience.
     pub fn presence(&self, route: &CrdtRoute, transport: Transport, frame: Vec<u8>) -> bool {
         let Some(sink) = self.ready_quietly(route, transport, "presence") else {
             return false;

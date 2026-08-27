@@ -1,22 +1,13 @@
-//! Desktop backdrop widget — paints the nirios desktop background behind
-//! all shell content.
-//!
-//! Matches `nirios-concept/src/components/DesktopView.tsx:210-217`:
-//!   1. Linear gradient top-left → bottom-right across the theme's ground
-//!      surface, settled toward neutral and falling away toward the far
-//!      corner (see [`ground_stops`]).
-//!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
-//!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
-//!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
-//!      mix-blend-overlay`; we approximate with a procedurally-generated
-//!      RGBA8 buffer uploaded to a Vello `Image` with `Extend::Repeat` so
-//!      it tiles across the full backdrop rect.
+//! Desktop backdrop widget — paints the desktop background behind all
+//! shell content: a diagonal gradient across the theme's ground surface
+//! (see [`ground_stops`]), a 24×24 px grid of faint lines, and a tiled
+//! 64×64 noise overlay (procedurally generated, uploaded to a Vello
+//! `Image` with `Extend::Repeat`) that breaks banding on the gradient.
 //!
 //! Structurally, this widget is a thin `Container`-style wrapper around an
 //! optional single child: it forwards sync/layout/events/presence/commit
-//! exactly like [`ui::widget::Container`], but with no padding and
-//! no rounded-rect chrome — just the flat gradient + grid beneath the
-//! child.
+//! exactly like [`ui::widget::Container`], but with no padding and no
+//! rounded-rect chrome — just the flat gradient + grid beneath the child.
 
 use std::sync::Arc;
 
@@ -214,22 +205,11 @@ impl DesktopBackdrop {
     /// The backdrop is *purely* a function of `self.rect`'s size — every
     /// shape position is anchored to `self.rect.x0/y0`, and the gradient
     /// stops are constant. Re-encoding the gradient + ~80 grid strokes +
-    /// the tiled noise overlay each frame is the single biggest static
-    /// surface in the shell; with a `Scene::reset()` + 80-stroke rebuild
-    /// it dominated the at-rest `draw=` budget seen in `QUICK_UI_PERF=1`.
-    ///
-    /// Strategy mirrors `ui::widget::button::Button`'s scene cache:
-    ///
-    ///   1. Bake the full backdrop into `self.cached` exactly once at
-    ///      the current rect coordinates.
-    ///   2. On subsequent frames where the size hasn't changed, append
-    ///      the cached scene with a `translate(rect.x0 - cache_rect.x0,
-    ///      rect.y0 - cache_rect.y0)` so pure window-position changes
-    ///      (rare for the root backdrop, but cheap to support) reuse
-    ///      the encoding.
-    ///   3. If the viewport resizes, `apply_layout` updates `self.rect`;
-    ///      `paint_backdrop` detects the width/height mismatch against
-    ///      `self.cache_rect` and rebuilds.
+    /// the tiled noise overlay each frame dominated the at-rest `draw=`
+    /// budget seen in `QUICK_UI_PERF=1`, so this bakes once into
+    /// `self.cached` and replays it via translate on subsequent frames,
+    /// rebuilding only when `self.rect`'s size or the theme changes.
+    /// Mirrors `ui::widget::button::Button`'s scene cache.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);
         let size_changed = self.rect.width() != self.cache_rect.width()
@@ -304,7 +284,6 @@ impl DesktopBackdrop {
             &self.rect,
         );
 
-        // Vertical lines.
         let mut x = (self.rect.x0 / GRID_STEP).ceil() * GRID_STEP;
         while x < self.rect.x1 {
             let line = Line::new((x, self.rect.y0), (x, self.rect.y1));
@@ -312,7 +291,6 @@ impl DesktopBackdrop {
             x += GRID_STEP;
         }
 
-        // Horizontal lines.
         let mut y = (self.rect.y0 / GRID_STEP).ceil() * GRID_STEP;
         while y < self.rect.y1 {
             let line = Line::new((self.rect.x0, y), (self.rect.x1, y));
@@ -571,9 +549,7 @@ mod tests {
 
     /// The backdrop's baked noise texture must exist and have the right
     /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone
-    /// accidentally dropping the `include_bytes!` / procedural generation
-    /// path and reverting the visual gap documented in
-    /// `docs/nirios/visual-gaps.md` item #10.
+    /// accidentally dropping the noise-generation path.
     #[test]
     fn noise_buffer_is_populated() {
         let backdrop = DesktopBackdrop::new();

@@ -177,19 +177,12 @@ fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
     conventional.is_dir().then_some(conventional)
 }
 
-/// Is a configured documents directory worth opening on?
-///
-/// It has to exist, and it has to be somewhere other than `$HOME`.
-/// `xdg-user-dirs` writes `XDG_DOCUMENTS_DIR="$HOME/"` when the user has
-/// no documents folder — this machine does — and that value carries no
-/// information: it is the "unset" state spelled as a path. Honouring it
-/// literally lands the dialog on the home directory, whose first screen
-/// is whatever sorts first there. On a developer's machine that is
-/// eighteen rows of dotfiles and not one document.
-///
-/// So a documents directory that *is* the home directory is treated as
-/// absent, and the conventional `~/Documents` gets a look before we give
-/// up and use `$HOME` anyway.
+/// Is a configured documents directory worth opening on? It has to exist
+/// and be somewhere other than `$HOME`: `xdg-user-dirs` writes
+/// `XDG_DOCUMENTS_DIR="$HOME/"` when there is no documents folder, which
+/// carries no information — it is the "unset" state spelled as a path.
+/// So a documents directory that *is* home is treated as absent, and the
+/// conventional `~/Documents` gets a look before falling back to `$HOME`.
 fn is_useful_documents_dir(dir: &Path, home: &Path) -> bool {
     dir.is_dir() && dir != home
 }
@@ -277,10 +270,6 @@ mod tests {
 
     #[test]
     fn a_documents_dir_that_is_home_is_treated_as_unset() {
-        // `xdg-user-dirs` writes XDG_DOCUMENTS_DIR="$HOME/" when there
-        // is no documents folder. Taking that literally opens the dialog
-        // on the home directory, which on a developer's machine is a
-        // screen of dotfiles.
         let home = Path::new("/home/someone");
         assert!(
             !is_useful_documents_dir(home, home),

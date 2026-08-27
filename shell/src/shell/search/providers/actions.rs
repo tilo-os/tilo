@@ -1,7 +1,6 @@
-//! Shell-action provider: the palette rows that used to be seeded
-//! statically as `CommandEntry`s in `ShellOverlayHost::new`. Migrating
-//! them into the provider protocol keeps them under the same chip strip
-//! + grouping the notes / files providers use.
+//! Shell-action provider: palette rows exposed through the provider
+//! protocol, under the same chip strip + grouping the notes / files
+//! providers use.
 //!
 //! # Parameters
 //!
@@ -184,24 +183,13 @@ impl Action {
                 Ok(())
             },
         ),
-        // Inviting somebody by name. `peer.invite` mints a token and
-        // says nothing about who it is for, which is why a peer that
-        // joins with one is drawn as the number its transport identity
-        // hashes to. A number says a machine is here; it does not say
-        // who is here.
-        //
-        // The name has to come from the inviter rather than from the
-        // invitee, and that is not a stylistic preference: a peer that
-        // announced its own name could announce any name, and it would
-        // render next to a caret inside a document this room's
-        // capabilities gate. So the name is recorded here, by the
+        // Inviting somebody by name. The name must come from the inviter,
+        // not the invitee: a peer that announced its own name could claim
+        // any name, and it would render next to a caret inside a document
+        // this room's capabilities gate. So it's recorded here, by the
         // person doing the inviting, into the room document — the same
-        // replicated, authority-checked place the capability grants
-        // live, refused from every peer but the room's own.
-        //
-        // The peer id stays the identity; the name is a label on it.
-        // A peer nobody has named keeps its id as its label, which is
-        // honest, rather than acquiring a name nobody chose.
+        // replicated, authority-checked place the capability grants live.
+        // The peer id stays the identity; the name is just a label on it.
         Action {
             id: "peer.invite.named",
             label: "Invite peer to workspace as",
@@ -252,19 +240,14 @@ impl Action {
                 Ok(())
             },
         },
-        // Admitting an agent. Deliberately alongside the peer rows and
-        // not in a corner of its own: a person reaching for "who else is
-        // in this room with me" should find both answers in one place,
-        // because the OS's claim is that an agent is an ordinary kind of
-        // participant rather than a special mode.
-        //
-        // It is not, however, the *same* operation. A peer is reached
-        // over the network and admitted with a signed token it presents;
-        // an agent presents nothing, and is admitted by the room
-        // recording a capability naming it. So this mints no token and
-        // opens no prompt — it writes the grant, and the grant is what
-        // the agent's authority is made of. Revoking it in Workspace
-        // Settings is the whole of taking it back.
+        // Admitting an agent, deliberately alongside the peer rows: the
+        // OS treats an agent as an ordinary kind of participant, not a
+        // special mode. But it is not the *same* operation — a peer
+        // presents a signed token; an agent presents nothing and is
+        // admitted by the room recording a capability naming it. This
+        // mints no token and opens no prompt; it writes the grant, and
+        // revoking it in Workspace Settings is the whole of taking it
+        // back.
         Action {
             id: "agent.invite",
             label: "Invite agent to workspace",
@@ -598,15 +581,10 @@ mod tests {
         assert!(out.iter().all(|r| r.score == 0));
     }
 
-    /// The peer-sync rows are offered only by a session that is running
-    /// peer sync — there is nothing to invite anyone into otherwise —
-    /// and when they are offered, naming one selects it.
-    ///
-    /// The second half is the property that was missing: the rows used
-    /// to be appended to the palette's entry list after the ranked
-    /// search hits, so they sorted below every result and typing
-    /// "invite" put a file whose name contained the word on the row
-    /// Enter activates.
+    /// The peer-sync rows are offered only by a session running peer
+    /// sync — there is nothing to invite anyone into otherwise — and
+    /// when they are offered, naming one selects it: a label-prefix
+    /// match must outrank hits from other providers.
     #[test]
     fn peer_sync_rows_appear_only_with_peer_sync_and_lead_when_named() {
         let p = ActionsProvider::new();

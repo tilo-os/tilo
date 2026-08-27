@@ -1,21 +1,10 @@
 //! Integration tests for the runtime encoder probe in
-//! [`shell::collab::flatpak_share::SharedFlatpakSession`].
+//! [`shell::collab::flatpak_share::SharedFlatpakSession`], which walks
+//! `NVENC → VA-API → openh264` in priority order and picks the
+//! highest-priority backend that comes up.
 //!
-//! The probe walks `NVENC → VA-API → openh264` in priority order and
-//! picks the highest-priority backend that comes up. The tests below
-//! assert:
-//!
-//! 1. On a stripped host (no `vaapi` / `nvenc` feature; no `/dev/dri`)
-//!    `EncoderChoice::Auto` lands on `Openh264`. Runs everywhere.
-//! 2. Explicit `EncoderChoice::Openh264` bypasses the hardware probes
-//!    entirely. Also runs everywhere.
-//! 3. `EncoderChoice::Vaapi` on a hardware-having host lands on
-//!    `VaApi`. `#[ignore]`d — depends on `/dev/dri/renderD128` + a real
-//!    libva runtime. Enable with `--include-ignored` on a workstation.
-//!
-//! These tests exercise the **session-start probe**, not the tracker
-//! or encode loop — those live in `flatpak_share_e2e.rs`. Splitting
-//! keeps the intent obvious when the test log has ~200 tests.
+//! Exercises the **session-start probe** only, not the tracker or encode
+//! loop — those live in `flatpak_share_e2e.rs`.
 
 use shell::collab::encoder::EncoderKind;
 use shell::collab::flatpak_share::SharedFlatpakSession;
@@ -92,8 +81,6 @@ fn requested_vaapi_falls_back_when_hardware_absent() {
         cfg(EncoderChoice::Vaapi),
     )
     .expect("session should fall back rather than fail");
-    // On the default build (no `vaapi` feature), we're guaranteed to
-    // fall back to openh264.
     #[cfg(not(feature = "vaapi"))]
     {
         assert_eq!(
@@ -102,9 +89,8 @@ fn requested_vaapi_falls_back_when_hardware_absent() {
             "no vaapi feature: probe must fall back to openh264"
         );
     }
-    // On a vaapi-feature build with a real `/dev/dri`, the probe
-    // succeeds and picks VA-API. Both outcomes are valid — we assert
-    // the enum is one of the compiled backends.
+    // On a vaapi-feature build with a real `/dev/dri`, the probe may
+    // succeed and pick VA-API instead — both outcomes are valid here.
     let _ = session.chosen_encoder();
 }
 
@@ -133,14 +119,10 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
 }
 
 /// On a real VA-API host with a wired encoder, Auto picks VaApi.
-///
-/// The vaapi backend is now wired end-to-end via ffmpeg-next's
-/// `h264_vaapi` codec, so on a host with a working render node the
-/// probe reports `available = true` and Auto lands on `VaApi`. The
-/// test still `#[ignore]`s because CI runners don't ship `/dev/dri`;
-/// run with `--include-ignored` on a workstation. It self-skips when
-/// the host itself doesn't have a functional H.264 VA-API path (e.g.
-/// the render node exists but the driver doesn't expose H.264 encode).
+/// `#[ignore]`d because CI runners don't ship `/dev/dri`; run with
+/// `--include-ignored` on a workstation. Self-skips when the host
+/// doesn't have a functional H.264 VA-API path (e.g. the render node
+/// exists but the driver doesn't expose H.264 encode).
 #[test]
 #[ignore = "requires --features vaapi + a real /dev/dri render node; run with --include-ignored on a workstation"]
 fn auto_probe_picks_vaapi_when_hardware_present() {

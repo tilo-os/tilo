@@ -1,7 +1,6 @@
 //! `org.freedesktop.impl.portal.FileChooser` backend.
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.FileChooser.xml`.
-//! Plan: Sandbox Phase 4.3, lines 335-353.
 //!
 //! Three methods:
 //!
@@ -156,26 +155,14 @@ impl FileChooserBackend {
     ///
     /// ## The dialog is the prompt
     ///
-    /// There used to be a permission prompt in front of this: a
-    /// `flow::resolve` on a `Capability::Filesystem { path: "/" }`
-    /// sentinel, asking "may this app read the filesystem?", and only
-    /// then a dialog asking which file. Two things were wrong with it.
-    ///
-    /// The first is that it asks the user a question they cannot
-    /// answer. "May Notes read your files?" has no good answer in the
-    /// abstract; "open which file?" does, and it is the same decision
-    /// with the ambiguity removed.
-    ///
-    /// The second is what the answer meant. Answering *Always* stored a
-    /// capability on `"/"`, and `Scope::FsPath` covers its whole
-    /// subtree — so one Always click on one Open dialog granted that app
-    /// the entire filesystem, permanently, and every later `OpenFile`
-    /// took `flow::resolve`'s fast path and never showed a dialog again.
-    ///
-    /// So the consent is the pick. The user browsing a
-    /// compositor-owned dialog and choosing a file is an act of
-    /// authorisation that names exactly one path, and that path is what
-    /// gets granted — nothing wider, and nothing the app chose.
+    /// There is deliberately no separate "may this app read the
+    /// filesystem?" permission prompt in front of this — that question
+    /// has no good abstract answer, unlike "open which file?", and a
+    /// blanket capability on `"/"` (which `Scope::FsPath` would cover
+    /// the whole subtree of) is not what the user is consenting to. The
+    /// user browsing a compositor-owned dialog and choosing a file is
+    /// the act of authorisation, naming exactly one path — nothing
+    /// wider, and nothing the app chose.
     async fn pick_and_grant(
         &self,
         opts: FilePickerOptions,
@@ -416,10 +403,8 @@ mod tests {
         assert_eq!(caller.workspace_id, ws_id);
     }
 
-    /// Required test from the Sandbox 4.3 follow-up brief —
-    /// `open_file_returns_user_selected_uri`. Wires a
-    /// `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
-    /// backend's response builder, and asserts the FileChooser
+    /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls
+    /// the backend's response builder, and asserts the FileChooser
     /// response contains `file:///tmp/test.txt`.
     #[test]
     fn open_file_returns_user_selected_uri() {
@@ -457,26 +442,18 @@ mod tests {
         let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
         let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
         assert_eq!(uris, vec!["file:///tmp/test.txt".to_string()]);
-        // The mock saw exactly one request — and the title + save flag
-        // were forwarded correctly.
         let seen = mock.requests();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1, "Open file");
         assert!(!seen[0].2);
     }
 
-    /// The regression this whole change exists for.
-    ///
-    /// The backend used to raise a permission prompt on a
-    /// `Capability::Filesystem { path: "/" }` sentinel and persist it
-    /// verbatim on Session/Always. `Scope::FsPath` covers its subtree,
-    /// and the launcher turns a read grant into `--ro-bind-try <p> <p>`,
-    /// so one Always click read-only mounted the whole host filesystem
-    /// into the app at its next launch — while the file the user
-    /// actually chose was never granted at all.
-    ///
-    /// Asserted on the production path (`pick_and_grant` is what every
-    /// FileChooser method calls), against the real grant store.
+    /// A grant on `"/"` would cover the launcher's whole
+    /// `--ro-bind-try <p> <p>` subtree, read-only mounting the entire
+    /// host filesystem into the app at its next launch — so this
+    /// asserts the grant names only the picked path, on the production
+    /// path (`pick_and_grant` is what every FileChooser method calls),
+    /// against the real grant store.
     #[test]
     fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
         use crate::shell::state::Capability;

@@ -2,9 +2,9 @@
 //!
 //! The widget side toggles `WindowGroup::maximized` in memory when the
 //! user clicks the tab-bar Maximize2 glyph (or the floating restore /
-//! close-while-maximized chrome). Audit task #105 already added the
-//! persisted-state field + the `with_maximized` builder, but a runtime
-//! click stayed widget-local until the shell harvests it back into the
+//! close-while-maximized chrome). The persisted-state field and the
+//! `with_maximized` builder already existed, but a runtime click stayed
+//! widget-local until the shell harvests it back into the
 //! `WorkspaceTree`. This file pins that harvest end-to-end:
 //!
 //!   1. Build a single-group tree with `maximized = false` and seed the
@@ -21,8 +21,7 @@
 //!      flipped to `true` (+ the inverse round-trip flips it back).
 //!
 //! Without the per-frame writeback the on-screen toggle is in-memory
-//! only and resets to `false` on the next shell restart, which is the
-//! exact regression #105 closes.
+//! only and resets to `false` on the next shell restart.
 
 use std::collections::HashMap;
 
@@ -234,8 +233,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // entry.
     host.tick_pending_maximize_harvest_for_tests();
 
-    // Post-harvest: persisted state now matches the widget — this is
-    // the writeback #105 needs.
+    // Post-harvest: persisted state now matches the widget.
     {
         let st = chrome.borrow();
         let g = &st.tree().workspaces[0].strips[0].window_groups[0];

@@ -1,97 +1,57 @@
 //! Adopt foreign Wayland clients into the active workspace's tab tree.
 //!
-//! Phase 6 (Task 6.1 + 6.2) of
-//! `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`.
+//! When a client commits its first `xdg_toplevel`, the compositor splices a
+//! new tab into the workspace tree so the chrome paints a tab pill and the
+//! frame loop knows which surface to blit into the tile rect. The reverse
+//! path — destroyed surface → tab close — also lives here.
 //!
-//! When a client commits its first `xdg_toplevel`, the compositor needs to
-//! splice a new tab into the workspace tree so the chrome paints a tab pill
-//! and the frame loop knows which surface to blit into the tile rect. The
-//! reverse path — destroyed surface → tab close — also lives here.
-//!
-//! The two public entry points,
-//! [`adopt_toplevel`] and [`close_tab_for_destroyed_surface`], take a
-//! `surface_id: u64` (from [`crate::compositor::state::surface_id`], which
-//! composes the client's connection index with the object's protocol id —
-//! a bare protocol id is only unique within one client and would make two
-//! clients' first windows the same tab) rather than an `&WlSurface`. That's a
-//! deliberate testability
-//! refactor: smithay's `WlSurface` cannot be constructed without a running
-//! `Display` + client, so unit tests would otherwise need a full server
-//! runtime. The compositor's `XdgShellHandler` impl performs the
-//! `WlSurface → u64` conversion at the call-site (see
-//! `compositor::state::State::new_toplevel`).
+//! Entry points take a `surface_id: u64` (from
+//! [`crate::compositor::state::surface_id`], composing the client's
+//! connection index with the object's protocol id, since a bare protocol id
+//! collides across clients) rather than an `&WlSurface`, so unit tests don't
+//! need a running `Display` + client. `XdgShellHandler` converts
+//! `WlSurface → u64` at the call-site (`compositor::state::State::new_toplevel`).
 
 use crate::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     WorkspaceTree, next_id,
 };
 
-/// Where a newly-adopted toplevel should land.
-///
-/// The spatial model is `Workspace → Strip → WindowGroup → Tab`: tabs
-/// tile inside a group, groups scroll horizontally along a strip. So the
-/// choice between "new group" and "new tab" is the choice between "this
-/// is a new thing" and "this belongs with what I was already doing", and
-/// it is worth making on purpose rather than inheriting from whatever
-/// the tree walk reached first.
+/// Where a newly-adopted toplevel should land: a new window group ("this is
+/// a new task") or a tab inside an existing one ("this belongs with what I
+/// was already doing") — worth deciding on purpose rather than inheriting
+/// from whatever the tree walk reached first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    /// Its own window group, inserted immediately to the right of the
-    /// active group in the active strip.
+    /// Its own window group, right of the active group in the active strip.
     ///
-    /// This is what a **launch** gets. Opening an app is starting a new
-    /// task, and the strip is the axis tasks live on — a launch that
-    /// became a tab in whatever group happened to be focused would hide
-    /// the window the user just asked for behind another app's tab bar,
-    /// one keystroke after they asked for it. Inserting to the right of
-    /// the focused group (rather than at the end of the strip) keeps the
-    /// new window next to the one it was opened from, so the strip does
-    /// not scroll away from the user on every launch.
+    /// What a **launch** gets: opening an app is a new task, not a tab
+    /// hidden in whatever group happens to be focused. Inserted beside the
+    /// focused group rather than appended, so the strip doesn't scroll away
+    /// on every launch.
     NewGroup,
     /// A tab inside an existing group.
     ///
-    /// This is what a **document opened from another app** gets — the
-    /// file explorer opening a spreadsheet, a search result opening the
-    /// file it matched. The document and the app that asked for it are
-    /// one task, and a tab group in qOS is precisely the primitive for
-    /// "these arbitrary apps belong together". It also keeps the strip
-    /// from growing a column every time the user peeks at a file.
-    ///
+    /// What a **document opened from another app** gets — the file explorer
+    /// opening a spreadsheet, a search result opening its match. Keeps the
+    /// strip from growing a column every time the user peeks at a file.
     /// Falls back to [`Placement::NewGroup`] when the named group no
-    /// longer exists (the opener was closed while its document was
-    /// starting).
+    /// longer exists (the opener closed while its document was starting).
     TabIn(GroupId),
-    /// Its own window group, inserted immediately to the right of the
-    /// group named here.
+    /// Its own window group, right of the group named here.
     ///
-    /// [`Placement::NewGroup`] says "beside whatever has focus"; this
-    /// says "beside *that* one". It is what
-    /// [`crate::shell::placement::placement_for_new_window`] returns
-    /// when the position was decided from something other than the
-    /// focus pointer — a seam the user could see, in particular — so the
-    /// answer survives focus moving between the launch and the window
-    /// arriving.
-    ///
-    /// Falls back to [`Placement::NewGroup`] when the named group is
-    /// gone, exactly as [`Placement::TabIn`] does.
+    /// Unlike [`Placement::NewGroup`] ("beside whatever has focus"), names
+    /// a specific group, so the answer survives focus moving between the
+    /// launch and the window arriving. Falls back to [`Placement::NewGroup`]
+    /// when the named group is gone, exactly as [`Placement::TabIn`] does.
     RightOf(GroupId),
     /// Into a tab that already exists, replacing whatever it holds.
     ///
-    /// Every other variant answers "where does this new window go"; this
-    /// one says the tab is already there and the window is what it was
-    /// waiting for. It is what a launch started on behalf of a peer's
-    /// window asks for ([`crate::shell::peer_windows`]): the tab arrived
-    /// in the room document, this machine started its own instance of the
-    /// app the tab names, and the window that comes back belongs *in that
-    /// tab* — not in a second one beside it. Minting a tab there would
-    /// leave the room's window showing a card next to a duplicate of
-    /// itself, which is the shape this whole path exists to remove.
-    ///
-    /// Falls back to [`Placement::NewGroup`] when the tab is gone by the
-    /// time the window arrives — the peer closed it while we were
-    /// starting. A window with nowhere to go is not a window that quietly
-    /// disappears; it is one the compositor keeps buffers alive for and
-    /// nobody can see or close.
+    /// What a launch started on behalf of a peer's window asks for
+    /// ([`crate::shell::peer_windows`]): the tab already arrived in the
+    /// room document, so the window that comes back belongs in it rather
+    /// than in a second tab beside it. Falls back to [`Placement::NewGroup`]
+    /// when the tab is gone by the time the window arrives.
     IntoTab(TabId),
 }
 
@@ -106,39 +66,26 @@ impl Default for Placement {
 ///
 /// `surface_id` is the wayland-server protocol id of the `wl_surface`
 /// (widened to `u64`). `app_id` may be `None` if the client hasn't called
-/// `set_app_id` yet — in that case a synthetic placeholder app-id of the
-/// form `anon-<surface_id>` is recorded; [`rename_adopted_toplevel`]
-/// rewrites it when the client eventually sets one.
-///
-/// Returns the freshly-minted tab id.
+/// `set_app_id` yet — a synthetic `anon-<surface_id>` placeholder is
+/// recorded until [`rename_tab_for_app_id`] rewrites it.
 ///
 /// The placement comes from whichever launch this client belongs to
 /// ([`crate::shell::launcher::placement_for_toplevel`]), matched by
-/// app-id exactly as the tab's label is — that note was written when the
-/// user asked, against the layout they were looking at.
+/// app-id. An unrecognised client falls back to
+/// [`crate::shell::placement::placement_for_new_window`] with no layout
+/// snapshot — it still belongs beside or inside whatever the user is in.
 ///
-/// A client we did not launch, or one whose app-id we cannot correlate,
-/// gets the rule applied here instead
-/// ([`crate::shell::placement::placement_for_new_window`]) with no
-/// layout snapshot: an unrecognised window is still a window opening,
-/// and it belongs beside — or inside — whatever the user is in, the same
-/// as any other.
-///
-/// When the active workspace has no strips, a default strip (with one
-/// window group) is synthesized so the new tab always lands somewhere
-/// visible. The previous behaviour returned a synthetic id without
-/// mutating the tree — the foreign surface was then alive at the
-/// protocol layer but invisible to the chrome, leaking buffer + shm-pool
-/// memory until the client tore the toplevel down on its own.
+/// When the active workspace has no strips, a default strip is
+/// synthesized so the tab always lands visible — otherwise the foreign
+/// surface stays alive at the protocol layer, leaking buffer + shm-pool
+/// memory until the client tears the toplevel down on its own.
 pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<String>) -> TabId {
     let placement = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
         .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
-    // If this window is the one a document open asked for, that is where
-    // the document now lives — recorded here because this is where the
-    // launch and the window it produced meet, the same correlation the
-    // placement lookup above makes.
+    // If this window is what a document open asked for, record that here —
+    // the launch and the window it produced meet at this point.
     if let Some(id) = app_id.as_deref() {
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
     }
@@ -154,9 +101,8 @@ pub fn adopt_toplevel_at(
     placement: Placement,
 ) -> TabId {
     let resolved_id = app_id.unwrap_or_else(|| format!("anon-{}", surface_id));
-    // A window that was started *for* an existing tab is bound into it
-    // rather than placed beside it. Done before the tab is minted so the
-    // ordinary path below is untouched by it.
+    // A window started *for* an existing tab is bound into it rather than
+    // placed beside it, before the tab is minted.
     if let Placement::IntoTab(target) = placement
         && bind_into_tab(tree, target, &resolved_id, surface_id)
     {
@@ -176,13 +122,12 @@ pub fn adopt_toplevel_at(
 /// Point the existing tab `target` at `surface_id`, and bring it to the
 /// front of the group it is in.
 ///
-/// Returns whether the tab was found. A `false` means the tab has gone
-/// since the launch was started, and the caller places the window the
-/// ordinary way instead of dropping it.
+/// Returns whether the tab was found; `false` means it's gone since the
+/// launch started, and the caller places the window the ordinary way.
 ///
-/// The whole tree is searched, not the active workspace: the tab this is
-/// for arrived from a peer, and which workspace of ours their room landed
-/// in is not something the launch knew or should have to.
+/// The whole tree is searched, not the active workspace: the tab arrived
+/// from a peer, and which workspace their room landed in is not something
+/// the launch knew.
 fn bind_into_tab(
     tree: &mut WorkspaceTree,
     target: TabId,
@@ -200,12 +145,10 @@ fn bind_into_tab(
                     app_id: app_id.to_string(),
                     surface_id,
                 };
-                // The tab is the one showing the window now, so it is the
-                // one in front. Focus is *not* moved to it beyond that:
-                // the tab belongs to a peer's window arriving, and taking
-                // the strip away from whatever this person was doing
-                // because somebody else opened something is precisely the
-                // behaviour the room model rules out.
+                // Front the tab, but move focus no further: the window
+                // arrived via a peer, and stealing the strip from whatever
+                // this person was doing because somebody else opened
+                // something is exactly what the room model rules out.
                 group.active_tab = target;
                 let _ = strip_id;
                 return true;
@@ -219,16 +162,12 @@ fn bind_into_tab(
 /// (Notes, Editor, Files, Terminal) rather than one that arrives as a
 /// foreign Wayland client — at `placement`.
 ///
-/// The sibling of [`adopt_toplevel_at`]: the same placement rule and the
-/// same insertion, around a different kind of tile. A hosted app has no
-/// client process, so there is no toplevel to adopt and no launch note to
-/// correlate against — the caller applies
-/// [`crate::shell::placement::placement_for_new_window`] itself and hands
-/// the answer in.
-///
-/// Returns the freshly-minted tab id. The tile is a
-/// [`TileContent::AppPlaceholder`], which is what
-/// [`crate::shell::to_ui_tile`] resolves into the live app widget.
+/// The sibling of [`adopt_toplevel_at`], around a different kind of tile.
+/// A hosted app has no client process, so there is no toplevel to adopt
+/// and no launch note to correlate against — the caller applies
+/// [`crate::shell::placement::placement_for_new_window`] itself. The tile
+/// is a [`TileContent::AppPlaceholder`], which [`crate::shell::to_ui_tile`]
+/// resolves into the live app widget.
 pub fn open_hosted_app(
     tree: &mut WorkspaceTree,
     kind: AppKind,
@@ -248,12 +187,10 @@ pub fn open_hosted_app(
 /// `placement`, and focus it.
 ///
 /// Where a window lands is a property of the placement and the tree, not
-/// of what is inside the window — so both the foreign-toplevel adoption
-/// and the hosted-app open route through here rather than each growing
-/// their own copy of the strip walk.
-///
-/// Returns `new_tab`'s id, including on the paths that could not splice
-/// it (no active workspace), so callers always have the id they minted.
+/// of what's inside it, so both foreign-toplevel adoption and hosted-app
+/// open route through here rather than each growing their own strip walk.
+/// Returns `new_tab`'s id even on paths that can't splice it (no active
+/// workspace), so callers always have the id they minted.
 pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -> TabId {
     let tab_id = new_tab.id;
 
@@ -311,9 +248,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
 
     if let Some(idx) = tab_target {
         let group = &mut strip.window_groups[idx];
-        // Immediately right of the tab the user was on, not at the end
-        // of the bar: the new window is the next thing along from what
-        // they were looking at, and a tab bar reads left to right.
+        // Right of the tab the user was on, not at the end of the bar.
         let after = group
             .tabs
             .iter()
@@ -336,10 +271,9 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         maximized: false,
     };
     let group_id = group.id;
-    // Immediately right of the group the placement named — the one the
-    // rule picked out, falling back to the focused one when that group
-    // is gone, and to the end of the strip when nothing is focused
-    // either.
+    // Right of the group the placement named, falling back to the focused
+    // one when that group is gone, and to the end of the strip when
+    // nothing is focused either.
     let anchor = match placement {
         Placement::RightOf(g) => Some(g).filter(|g| {
             strip.window_groups.iter().any(|w| w.id == *g)
@@ -357,19 +291,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     tab_id
 }
 
-/// Rewrite the `app_id` (and the tab `title`) of a previously-adopted
+/// Rewrite the `app_id` and tab `title` of a previously-adopted
 /// `TileContent::Foreign` tab to match a freshly-received
 /// `xdg_toplevel::set_app_id` request.
 ///
-/// The client may call `set_app_id` *after* `xdg_surface::get_toplevel`
-/// fires [`adopt_toplevel`], in which case the original adoption recorded a
-/// synthetic `anon-<surface_id>` placeholder. This helper walks the
-/// workspace tree, finds the foreign tab whose `surface_id` matches, and
-/// rewrites both the recorded `app_id` and the tab's display title.
-///
-/// Returns `true` when a matching tab was found and rewritten; `false`
-/// otherwise (e.g. the toplevel was never adopted into the active
-/// workspace, or it has since been destroyed).
+/// The client may call `set_app_id` *after* [`adopt_toplevel`] recorded the
+/// synthetic `anon-<surface_id>` placeholder; this walks the tree to find
+/// the matching tab and rewrite it. Returns `false` when no matching tab
+/// exists (never adopted, or since destroyed).
 pub fn rename_tab_for_app_id(
     tree: &mut WorkspaceTree,
     surface_id: u64,
@@ -423,13 +352,8 @@ pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<Gro
 
 /// Walk the persisted tree looking for a `TileContent::Foreign` tab whose
 /// `surface_id` matches `destroyed_surface_id`; remove it from its group
-/// when found and return `true`. Phase 6 (Task 6.2) of the compositor
-/// plan: surface destroy → tab close.
-///
-/// Returns `false` when no matching tab exists (e.g. the surface was
-/// never adopted, or the tab was already removed via another path).
-/// The widget tree handles close animation; the data layer just records
-/// absence.
+/// when found and return `true`. The widget tree handles close animation;
+/// the data layer just records absence.
 pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
@@ -445,10 +369,9 @@ pub fn close_tab_for_destroyed_surface(
                     )
                 }) {
                     let removed = group.tabs.remove(pos);
-                    // If the removed tab was the active one, fall back to
-                    // the new last tab (or leave `active_tab` pointing at
-                    // a stale id — the chrome's resolver tolerates that
-                    // and picks the first existing tab on next frame).
+                    // If the removed tab was active, fall back to the new
+                    // last tab; a stale id is tolerated by the chrome's
+                    // resolver, which picks the first existing tab.
                     if group.active_tab == removed.id {
                         group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
                     }
@@ -463,15 +386,10 @@ pub fn close_tab_for_destroyed_surface(
 /// Remove the tab `tab_id` from wherever in the tree it is, repairing its
 /// group's selection when it was the tab in front.
 ///
-/// The undo for a placement whose window then never came: a caller can
-/// put a tab down before a launch starts, to give the open an identity
-/// something can point at, and a launch that fails to start has to take
-/// that tab away again rather than leave a card describing a window
-/// nobody is opening.
-///
-/// [`close_tab_for_destroyed_surface`] is the same removal keyed on a
-/// surface. This one is keyed on the tab, because the tab in question
-/// never got a surface at all.
+/// The undo for a placement whose window never came: a launch that fails
+/// to start has to take its placeholder tab away rather than leave a card
+/// describing a window nobody is opening. [`close_tab_for_destroyed_surface`]
+/// is the same removal keyed on a surface instead of a tab.
 pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     for ws in tree.workspaces.iter_mut() {
         for strip in ws.strips.iter_mut() {
@@ -492,21 +410,14 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
 
 /// Turn a wayland app-id into a tab-bar friendly label.
 ///
-/// The app's own name wins wherever one can be found — from this
-/// session's launches, from the installed package's manifest, or from a
-/// host `.desktop` entry. A tab is the app's name badge, and the one
-/// thing it must never show is a machine identifier the user did not
-/// choose and does not recognise.
-///
-/// When nothing names it, the trailing app-id component is humanised
-/// rather than printed raw: `dev.qos.word-processor` → `Word Processor`,
-/// not `word-processor`. This is the same transformation the package
-/// registry applies to a manifest with no declared name, so an app
-/// reaches the same label by either route.
-///
-/// Shared with the cards the compositor paints in a window's own place,
-/// which name the app for the same reason a tab does. One rule, so a
-/// window cannot be called two different things at once.
+/// The app's own name wins wherever one can be found — this session's
+/// launches, the installed package's manifest, or a host `.desktop` entry —
+/// since a tab must never show a machine identifier the user doesn't
+/// recognise. Otherwise the trailing app-id component is humanised rather
+/// than printed raw (`dev.qos.word-processor` → `Word Processor`), the same
+/// transformation the package registry applies to an unnamed manifest.
+/// Shared with the compositor's own window cards, so an app is never
+/// called two different things at once.
 pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
@@ -524,12 +435,11 @@ pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     }
 }
 
-// Every test here drives `launcher`'s process-wide pending-placement
-// table, so they are serialised on the crate's one group for global
-// state — against each other and against everything else that stages a
-// launch (`shell::doc_open`'s opens, most of `shell::launcher`'s own
-// tests). Clearing the table at the top of each test only protects a
-// test from its predecessors, not from one running beside it.
+// Every test here drives `launcher`'s process-wide pending-placement table,
+// so they're serialised on the crate's one group for global state —
+// against each other and against everything else that stages a launch.
+// Clearing the table at the top of each test only protects it from its
+// predecessors, not from one running beside it.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,12 +476,8 @@ mod tests {
     }
 
     /// Cut the bootstrap strip's group down to the one window it is
-    /// showing, and focus it.
-    ///
-    /// Rules 1 and 2 differ on exactly one thing — whether the selection
-    /// is one tab of several — so a fixture for either has to say which
-    /// it is. `bootstrap_demo` ships a four-tab group, which is the
-    /// rule-2 shape; this is the rule-1 one.
+    /// showing, and focus it — `bootstrap_demo` ships a four-tab group,
+    /// so a fixture needing a lone selected window has to trim it.
     fn focus_lone_window(tree: &mut WorkspaceTree) -> (StripId, GroupId) {
         let strip_id = tree.workspaces[0].strips[0].id;
         let group = &mut tree.workspaces[0].strips[0].window_groups[0];
@@ -584,10 +490,7 @@ mod tests {
     }
 
     /// A window started for a tab the room already has lands *in* that
-    /// tab. The demo case: a peer opened the word processor, this machine
-    /// started its own instance to fill the tab that arrived, and the
-    /// window that comes back must be that tab's window — not a second
-    /// one next to a card describing the first.
+    /// tab, not in a second one beside it.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_window_started_for_an_existing_tab_lands_in_it() {
@@ -652,9 +555,7 @@ mod tests {
     }
 
     /// The tab was closed by its owner while the local instance was
-    /// starting. The window still has to go somewhere a person can see and
-    /// close it, so the placement degrades to the ordinary launch rule
-    /// rather than the window being dropped on the floor.
+    /// starting; placement degrades to the ordinary launch rule.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_window_whose_tab_vanished_is_still_placed() {
@@ -724,10 +625,8 @@ mod tests {
         }
     }
 
-    /// Selection inside a group of several tabs means the person is
-    /// working *in* that group, so a window opened from there joins it as
-    /// a tab — immediately right of the tab they were on — rather than
-    /// splitting the layout into another column.
+    /// Selection inside a group of several tabs joins the launch as a tab
+    /// right of the selection, rather than splitting into another column.
     #[test]
     fn a_launch_from_inside_a_tabbed_group_becomes_the_next_tab_in_it() {
         crate::shell::launcher::clear_pending_placements();
@@ -964,13 +863,10 @@ mod tests {
 
     /// The compositor adopts every toplevel **twice** — once into the
     /// protocol-side tree `XdgShellHandler` mutates, once into the
-    /// rendered tree `reconcile_foreign_tabs` mirrors it onto, which is
-    /// the one the chrome paints. Both adoptions have to reach the same
-    /// answer, or the window is a tab in one tree and a column in the
-    /// other and the user sees the wrong one.
-    ///
-    /// A note that were consumed by the first reader would leave the
-    /// rendered tree on the default placement — the bug this pins.
+    /// rendered tree `reconcile_foreign_tabs` mirrors it onto. Both must
+    /// reach the same placement, or a note consumed by the first reader
+    /// leaves the rendered tree on the default and the user sees the
+    /// wrong tree.
     #[test]
     #[serial_test::serial(process_env)]
     fn both_trees_place_the_same_toplevel_the_same_way() {
@@ -1059,10 +955,7 @@ mod tests {
     }
 
     /// `remove_tab` takes the tab out of whichever group holds it and
-    /// repairs the group's selection when the removed tab was the one
-    /// in front — the same repair `close_tab_for_destroyed_surface`
-    /// makes, but keyed on the tab rather than on a surface, for a tab
-    /// that was placed ahead of a launch and never got one.
+    /// repairs the group's selection when it was the tab in front.
     #[test]
     #[serial_test::serial(process_env)]
     fn remove_tab_takes_a_placed_tab_out_and_repairs_selection() {
@@ -1161,9 +1054,7 @@ mod tests {
     }
 
     /// The package's manifest names the app, and that name is the app's
-    /// name whoever started the window. Previously only apps this
-    /// session had launched itself were resolvable, so a window that
-    /// arrived any other way fell through to the raw app-id.
+    /// name whoever started the window.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
@@ -1173,8 +1064,6 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
-        // Nothing was launched through this session — exactly the case
-        // that used to produce `file-explorer`.
         assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "Files");
         // And by the trailing-component convention the app-id may use.
         assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
@@ -1227,12 +1116,8 @@ mod tests {
         );
     }
 
-    /// C-6 regression: when the active workspace has no strips, a
-    /// foreign-toplevel adoption used to be silently dropped — the
-    /// function returned a synthetic tab id without touching the tree,
-    /// orphaning the surface (alive at the protocol layer but never
-    /// painted). Post-fix, the adoption synthesizes a default strip +
-    /// group so the new tab is always reachable.
+    /// Adoption into a workspace with no strips must synthesize a default
+    /// strip + group rather than orphan the surface.
     #[test]
     #[serial_test::serial(process_env)]
     fn adopt_toplevel_creates_strip_when_workspace_empty() {
@@ -1281,12 +1166,9 @@ mod tests {
     }
 
     /// A toplevel from a package this session launched is labelled with
-    /// the installed app's name, not the raw wayland app-id. Drives the
-    /// production `adopt_toplevel` path — the same call the compositor's
-    /// `XdgShellHandler::new_toplevel` makes.
-    ///
-    /// The launch history is process-global, so the fixture uses an id
-    /// no other test registers.
+    /// the installed app's name, not the raw wayland app-id. The launch
+    /// history is process-global, so the fixture uses an id no other test
+    /// registers.
     #[test]
     #[serial_test::serial(process_env)]
     fn adopted_tab_takes_the_launched_app_name() {
@@ -1324,13 +1206,10 @@ mod tests {
         assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
     }
 
-    /// A shell-hosted app opened beside a lone window is a window, not a
-    /// tab: it takes the column to the right, and what lands in it is a
-    /// tile that resolves to a live app widget rather than a stub card.
-    ///
-    /// That second half is the point of the whole path — a window group
-    /// holding a placeholder nothing renders would look identical in the
-    /// tree and blank on screen.
+    /// A shell-hosted app opened beside a lone window takes the column to
+    /// the right, and lands as a tile that resolves to a live app widget
+    /// rather than a stub card that would look identical in the tree and
+    /// blank on screen.
     #[test]
     fn a_hosted_app_opened_beside_a_lone_window_takes_the_column_to_its_right() {
         let mut tree = WorkspaceTree::bootstrap_demo();

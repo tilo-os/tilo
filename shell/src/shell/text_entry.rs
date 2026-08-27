@@ -221,7 +221,6 @@ mod tests {
         }
     }
 
-    /// Type a string into an empty buffer the way a user would.
     fn typed(s: &str) -> (String, Selection) {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
@@ -325,7 +324,6 @@ mod tests {
         apply(&ch("é"), plain(), &mut buf, &mut sel);
         apply(&ch("漢"), plain(), &mut buf, &mut sel);
         assert_eq!(buf, "é漢");
-        // One backspace removes exactly one character, not one byte.
         apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel);
         assert_eq!(buf, "é");
         assert!(buf.is_char_boundary(sel.cursor));

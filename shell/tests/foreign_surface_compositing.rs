@@ -61,29 +61,20 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 
 /// Paint until the widget tree reaches a steady state.
 ///
-/// Splicing a tab into a live group plays the tile's spawn fade, which
-/// legitimately keeps `needs_animation_frame()` true for a couple of
-/// hundred milliseconds. Tests that assert on the *idle* repaint signal
-/// have to let that settle first, or they measure the fade instead of the
-/// thing they care about.
+/// Splicing a tab plays the tile's spawn fade, which legitimately keeps
+/// `needs_animation_frame()` true for a couple hundred milliseconds —
+/// tests asserting on the *idle* repaint signal have to let that settle
+/// first.
 ///
-/// "Steady" is not the same as "asking for no frames". A group holding a
-/// place for an app that has not drawn yet paints an opening card with a
-/// spinner in it, and a spinner turns for as long as the wait lasts — by
-/// design, so that a slow launch looks like something rather than like
-/// nothing. Every client in this file is exactly that case: it is adopted,
-/// laid out and configured, and only commits a buffer further down, so its
-/// tile is legitimately still opening at this point and
-/// `needs_animation_frame()` never goes false. Waiting for it to is waiting
-/// for the spinner to stop, which it will not do.
-///
-/// So the terminal state is "nothing is animating, or the only thing still
-/// animating is a tab that is still starting". The deadline keeps the
-/// teeth: reaching it means the fade or the pan never finished, which is
-/// the wedge this guard exists to catch. What it cannot see is an
-/// unrelated animation wedged *while* a group is opening — the spinner
-/// hides it. Any test that needs that distinction has to get its client to
-/// present first, which retires the card.
+/// "Steady" is not "asking for no frames": a tile still opening (every
+/// client in this file, until it commits a buffer further down) paints
+/// a spinner, and `needs_animation_frame()` never goes false while it
+/// does — by design, so a slow launch looks like something. So the
+/// terminal state this waits for is "nothing animating, or only a tab
+/// still starting"; the deadline catches a fade or pan that never
+/// finishes, but not an unrelated animation hidden behind the spinner —
+/// a test that needs that distinction has to get its client to present
+/// first, which retires the card.
 fn settle(fb: &mut FrameBuilder) {
     // Always paint once: the first pass is what splices pending tabs into
     // the live tree and lays them out, so it must run even when nothing
