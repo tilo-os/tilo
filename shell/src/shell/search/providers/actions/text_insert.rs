@@ -1,37 +1,23 @@
 //! The exported action that writes into the focused text document.
 //!
-//! Every other row this provider exports moves the chrome around a
-//! document — opens a panel, spawns a tab, silences a banner. This one
-//! changes the document itself, which makes it the first shell action
-//! that has to be *told* something: the text is not derivable from any
-//! state the chrome holds, so it arrives as a bound
+//! Every other row this provider exports moves chrome around a document;
+//! this one changes the document itself, so it has to be *told* the
+//! text — it arrives as a bound
 //! [`ActionArgs`](crate::shell::search::action_api::ActionArgs).
 //!
-//! # Where the edit lands
+//! Lands in the focused tab's **own** record document, reached through
+//! [`crate::shell::tab_documents`] — not the shell's document, which is
+//! the mistake that once made two Notes tabs show each other's text.
 //!
-//! In the focused tab's **own** record document, reached through
-//! [`crate::shell::tab_documents`] — not the shell's document. A tab is
-//! an open thing with a document of its own, and writing into the shared
-//! shell document instead is the exact mistake that once made two Notes
-//! tabs show each other's text.
-//!
-//! # Why it splices
-//!
-//! Through [`CrdtTextBody::splice`], which addresses only the range that
-//! changed. The tempting alternative — read the body, concatenate,
-//! write the whole new string back — costs O(len) Automerge ops per call
-//! and leaves O(len²) tombstones behind over a session, and it converges
-//! badly: two peers appending at once with whole-body writes clobber
-//! each other, where two narrow splices merge. See the module note on
+//! Splices via [`CrdtTextBody::splice`] rather than read-concatenate-
+//! write-back: a whole-body write costs O(len) ops and O(len²)
+//! tombstones per session, and converges badly (two peers appending at
+//! once clobber each other, where two narrow splices merge). See
 //! [`crate::shell::crdt_text`].
 //!
-//! # Offsets are characters
-//!
-//! `at` is a character offset, not a byte offset. A caller driving this
-//! by address cannot see the buffer, so handing it byte offsets into
-//! UTF-8 would make "insert at position 5" a coin flip on any document
-//! containing an accent. The conversion to the byte offset the mirror
-//! wants happens here, against the live text.
+//! `at` is a character offset, not a byte offset — a caller driving
+//! this by address cannot see the buffer, so byte offsets would make
+//! "insert at position 5" a coin flip on any document with an accent.
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::crdt_text::CrdtTextBody;

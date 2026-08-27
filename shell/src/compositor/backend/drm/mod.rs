@@ -1,68 +1,19 @@
 //! DRM/KMS + libseat + udev + libinput backend for running on a TTY
 //! without a parent Wayland/X11 compositor.
 //!
-//! # Structure
+//! The hardware-touching code is deliberately thin; everything that
+//! decides anything lives in a pure module beside it, since a compositor
+//! backend cannot be exercised on the machine it is developed on and
+//! only the parts that don't need a GPU can be proven.
 //!
-//! The hardware-touching code is deliberately thin, and everything that
-//! decides anything lives in a pure module beside it — a compositor
-//! backend cannot be exercised on the machine it is developed on, so the
-//! only parts that can be proven are the ones that do not need a GPU.
-//!
-//! * [`devices`] — KMS node filtering, preferred-mode selection.
-//! * [`seat_diag`] — turning a libseat failure into an actionable
-//!   diagnosis. libseat reports one `ENOSYS` for three different causes.
-//! * [`session`] — the pause/resume state machine, and the *ordered*
-//!   sequence a VT switch or a suspend needs on the way out and back.
-//! * [`hotplug`] — diffing live outputs against what is connected now,
-//!   re-packing the layout, and clamping the pointer into it.
-//! * [`scale`] — per-output scale from the panel's physical size.
-//! * [`input_config`] — libinput device policy from the persisted
-//!   preferences, and the watch that notices them changing.
-//! * [`gestures`] — which gestures are the shell's and which are the
-//!   focused client's, and what the shell's ones mean.
-//! * [`outputs`] — `OutputId` allocation, stable per `(device, connector)`
-//!   so an output survives re-enumeration with its identity intact.
-//! * [`runtime`] — hardware glue: opens the seat, enumerates udev + DRM
-//!   connectors, wires libinput, and performs what the modules above
-//!   decide. Builds the inner calloop loop.
-//! * [`scanout`] — modeset, page flip, hardware cursor, and the card
-//!   handle the loop thread keeps open for hotplug and DRM master.
-//! * [`paint`] — CPU-fallback vello → RGBA bridge for the page-flip
-//!   path. See its module docs for the DMA-BUF follow-up plan.
-//!
-//! # Approach chosen for vello-on-DRM
-//!
-//! **CPU fallback.** Vello renders into a wgpu offscreen texture; we
-//! copy the bytes back into a CPU buffer (`VelloDrmBridge::paint`)
-//! and hand them to the page-flip side. Zero-copy DMA-BUF interop
-//! (`wgpu::hal::vulkan` external memory → smithay
-//! `GlesRenderer::import_dmabuf`) remains the follow-up.
-//!
-//! # Threading
-//!
-//! The scanouts move to the render thread at startup
-//! ([`Backend::take_presenter`]), which is where presentation belongs.
-//! Everything that reconfigures them — hotplug, VT switches, resume —
-//! originates on the loop thread and reaches across through one channel
-//! of [`runtime::ScanoutCommand`]s, drained at the top of each frame. That
-//! keeps the scanouts single-owner and orders every reconfiguration
-//! against the frames around it, so a flip can never be issued into a
-//! scanout that is being torn down.
-//!
-//! # Why `DrmBackend::new` can still fail on a dev machine
-//!
-//! Acquiring a libseat session needs a free seat the caller owns. A
-//! desktop already running a Wayland/X11 compositor holds that seat, and
-//! a shell inside a container is not in a logind session at all. Both
-//! surface as the same `ENOSYS`; [`seat_diag`] tells them apart and says
-//! which one happened.
-//!
-//! # Hardware verification status
-//!
-//! Boot-on-a-real-TTY validation remains a follow-up; the integration
-//! test `drm_backend_boot_smoke` is gated by
-//! `NIRIOS_DRM_HARDWARE_TEST=1` and skipped by default — flip the env
-//! var on a TTY to assert backend construction succeeds.
+//! [`devices`] KMS node/mode selection · [`seat_diag`] disambiguates
+//! libseat's one `ENOSYS` for three causes · [`session`] pause/resume
+//! ordering · [`hotplug`] output diffing/re-layout · [`scale`] per-output
+//! scale · [`input_config`] libinput policy · [`gestures`] shell vs.
+//! client gesture routing · [`outputs`] stable `OutputId` allocation ·
+//! [`runtime`] hardware glue + the inner calloop loop · [`scanout`]
+//! modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA
+//! bridge.
 
 pub mod devices;
 pub mod gestures;
@@ -100,19 +51,14 @@ pub struct DrmBackend {
     /// is known (we can't allocate the offscreen texture without a
     /// size). Lazily constructed in `submit_frame`.
     paint: Option<paint::VelloDrmBridge>,
-    /// Track D2: when `true` the display is DPMS-off / scanout is
-    /// stopped, so [`Backend::submit_frame`] short-circuits (no paint,
-    /// no present) until [`Backend::set_dpms`] turns it back on. Avoids
-    /// racing a frame against the disabled CRTC.
+    /// When `true` the display is DPMS-off / scanout is stopped, so
+    /// [`Backend::submit_frame`] short-circuits (no paint, no present)
+    /// until [`Backend::set_dpms`] turns it back on. Avoids racing a
+    /// frame against the disabled CRTC.
     blanked: bool,
     /// Presentation interval of the fastest connected mode, computed at
-    /// construction.
-    ///
-    /// Cached rather than derived on demand because
-    /// [`Backend::take_presenter`] moves the scanouts to the render
-    /// thread — a `refresh_interval` that read them would start returning
-    /// `None` the moment the split happened, silently dropping the
-    /// compositor back to the 60 Hz fallback on a 144 Hz panel.
+    /// construction and cached — see [`Self::refresh_from`] for why it
+    /// can't be derived on demand.
     refresh: Option<std::time::Duration>,
     /// Reconfiguration channel, held only while this backend still owns
     /// its scanouts inline. Handed to the presenter along with them.
@@ -191,19 +137,16 @@ impl DrmBackend {
 /// # Why this split is safe
 ///
 /// The scanouts are the *only* part of the DRM runtime the frame path
-/// touches (`grep '\.scanouts'` finds them in `submit_frame`,
-/// `set_dpms`, and their construction, nowhere else). Everything the
-/// input path needs stays on the loop thread:
+/// touches. Everything the input path needs stays on the loop thread:
+/// libseat/udev/libinput and the runtime's inner calloop (`poll_events`
+/// still drives them there), and the hardware cursor —
+/// [`CursorPlanes`](super::scanout::CursorPlanes) owns its own dup of
+/// the card fd, so pointer motion keeps moving the KMS cursor plane at
+/// input rate, decoupled from paint.
 ///
-/// * libseat/udev/libinput and the runtime's inner calloop —
-///   `poll_events` still drives them from the loop thread.
-/// * the hardware cursor. [`CursorPlanes`](super::scanout::CursorPlanes)
-///   owns its own dup of the card fd, so pointer motion keeps moving the
-///   KMS cursor plane at input rate, now genuinely decoupled from paint.
-///
-/// The card fds are plain file descriptors and are usable from any
-/// thread; page-flip completions are read here and nowhere else, so no
-/// other thread can steal them.
+/// The card fds are plain file descriptors usable from any thread;
+/// page-flip completions are read here and nowhere else, so no other
+/// thread can steal them.
 pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
@@ -215,10 +158,9 @@ pub struct DrmPresenter {
     paint: Option<paint::VelloDrmBridge>,
     blanked: bool,
     /// True between a session pause and the matching resume. Distinct
-    /// from `blanked`: blanked is "the user's screen should be off",
-    /// paused is "these CRTCs are not ours right now". Presenting under
-    /// either is wrong, but only the second one means the hardware has to
-    /// be rebuilt before presenting can start again.
+    /// from `blanked`: paused means "these CRTCs are not ours right
+    /// now" and requires the hardware to be rebuilt before presenting
+    /// resumes.
     paused: bool,
     /// Reconfiguration commands from the loop thread — hotplug, VT
     /// switches, resume. Drained at the top of every frame so a change
@@ -346,16 +288,16 @@ fn apply_scanout_command(
             outputs: table,
         } => {
             // Dropping a scanout closes its dup of the card fd and
-            // releases the CRTC, which is the whole teardown an unplugged
+            // releases the CRTC — the whole teardown an unplugged
             // display needs.
             //
-            // There is no per-device page-flip source to register or
-            // withdraw alongside it: every scanout on a card dups one
-            // open file description, so *all* crtcs' flip completions
-            // arrive on a single event stream that `render` drains once
-            // and routes by crtc. A newly-modeset output is therefore
-            // already being drained the moment it lands here, and a
-            // removed one takes its pending completion with it.
+            // No per-device page-flip source to register or withdraw:
+            // every scanout on a card dups one open file description, so
+            // *all* crtcs' flip completions arrive on a single event
+            // stream that `render` drains once and routes by crtc. A
+            // newly-modeset output is already being drained the moment
+            // it lands here; a removed one takes its pending completion
+            // with it.
             scanouts.retain(|e| !remove.contains(&e.id));
             scanouts.extend(add);
             // Positions come from the loop thread's re-layout: the
@@ -419,12 +361,12 @@ impl Backend for DrmBackend {
     /// been split off (the compositor takes it at startup); kept so a
     /// caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        // Track D2: while blanked the CRTCs are disabled — painting +
-        // presenting would either be wasted work or re-light the panels
-        // out from under the idle/lock logic. Skip entirely until
-        // `set_dpms(true)` restores scanout. `paused` is the other
-        // reason not to present: the CRTCs belong to another session
-        // until it switches back.
+        // While blanked the CRTCs are disabled — painting + presenting
+        // would either be wasted work or re-light the panels out from
+        // under the idle/lock logic. Skip until `set_dpms(true)`
+        // restores scanout. `paused` is the other reason not to
+        // present: the CRTCs belong to another session until it
+        // switches back.
         if self.blanked || self.paused {
             return;
         }
@@ -436,9 +378,8 @@ impl Backend for DrmBackend {
         }
 
         // The compositor paints one scene spanning the bounding box of
-        // every output; each output then presents its own sub-rect. For a
-        // single output this equals that output's size, so the bridge is
-        // sized exactly as before B3.
+        // every output; each output then presents its own sub-rect. For
+        // a single output this equals that output's size.
         let target_size = combined_geometry(&self.outputs);
         if target_size.0 == 0 || target_size.1 == 0 {
             return;
@@ -464,13 +405,12 @@ impl Backend for DrmBackend {
             }
         }
 
-        // Single-output fast path (Track B1, unchanged): render the scene
-        // and swizzle it straight into the one scanout's back dumb buffer
-        // (XRGB8888) in a single fused pass — no intermediate tight-RGBA
-        // copy — then page-flip (or dirty_framebuffer fallback). The
-        // cursor is only consulted by the software-cursor fallback; the
-        // hardware cursor plane composites itself. This path is
-        // byte-identical to before multi-output landed.
+        // Single-output fast path: render the scene and swizzle it
+        // straight into the one scanout's back dumb buffer (XRGB8888) in
+        // a single fused pass — no intermediate tight-RGBA copy — then
+        // page-flip (or dirty_framebuffer fallback). The cursor is only
+        // consulted by the software-cursor fallback; the hardware cursor
+        // plane composites itself.
         if self.inner.scanouts.len() == 1 {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.inner.dispatch.pointer);
@@ -484,12 +424,12 @@ impl Backend for DrmBackend {
             return;
         }
 
-        // Multi-output path (Track B3). All per-connector scanouts dup the
-        // one card fd, so every crtc's page-flip completion lands on a
-        // single event stream: drain it ONCE (on the primary) and route
+        // Multi-output path: all per-connector scanouts dup the one
+        // card fd, so every crtc's page-flip completion lands on a
+        // single event stream — drain it ONCE (on the primary) and route
         // each completion to its owning scanout by crtc. Draining per
-        // scanout would let the primary swallow its siblings' completions
-        // and wedge their `flip_pending`.
+        // scanout would let the primary swallow its siblings'
+        // completions and wedge their `flip_pending`.
         let completed = self.inner.scanouts[0].scanout.poll_flip_completions();
         for c in &completed {
             for e in self.inner.scanouts.iter_mut() {
@@ -590,27 +530,24 @@ impl Backend for DrmBackend {
     /// (pixel clock over htotal×vtotal) rather than the rounded
     /// `vrefresh`, so a 59.94 Hz panel is paced at 59.94 and not at 60.
     ///
-    /// Multi-output: the compositor paints one scene across every output,
-    /// so there is a single cadence to pick. We pace to the *fastest*
-    /// connected mode — a slower output then simply shows every Nth
-    /// frame, whereas pacing to the slowest would throttle the fast panel
-    /// to the slow one's rate. Per-output cadence needs per-output scene
-    /// submission, which the single-combined-scene model does not have.
+    /// Multi-output: paints one scene across every output, so there is a
+    /// single cadence to pick — the *fastest* connected mode, so a
+    /// slower output shows every Nth frame rather than throttling the
+    /// fast panel to match it.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
         self.refresh
     }
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
         if self.inner.scanouts.is_empty() {
-            // Modeset failed for every connector: there is nothing to
-            // present into and the compositor runs headless-on-DRM. Keep
-            // it on the inline path rather than spawning a thread that
-            // would only ever early-return.
+            // Modeset failed for every connector: nothing to present
+            // into, so the compositor runs headless-on-DRM rather than
+            // spawning a thread that would only ever early-return.
             //
-            // The command channel stays here so a display plugged in later
-            // still reconfigures something — the backend adopts the new
-            // scanouts inline, and the compositor's next `take_presenter`
-            // (there isn't one) is not what makes the display work.
+            // The command channel stays here so a display plugged in
+            // later still reconfigures something — the backend adopts
+            // the new scanouts inline; there's no later
+            // `take_presenter` call to hand them to instead.
             return None;
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
@@ -627,7 +564,7 @@ impl Backend for DrmBackend {
         }))
     }
 
-    /// Track D2: power **every** connected output on / off. Delegates to
+    /// Power **every** connected output on / off. Delegates to
     /// [`scanout::DrmScanout::set_dpms`] (legacy DPMS property + CRTC
     /// toggle) for each scanout and flips the `blanked` gate that
     /// `submit_frame` reads. No scanouts (modeset failed at construction)
@@ -668,9 +605,9 @@ mod tests {
     ///
     /// Building a `ScanoutEntry` needs a modeset connector, so the
     /// scanout-touching half of `Reconfigure` and `Resume` cannot be
-    /// exercised off hardware. What can — and what the black-screen bugs
-    /// actually turned on — is the *gating*: whether the presenter will
-    /// paint at all, and which output table it believes in.
+    /// exercised off hardware. What can be exercised is the *gating*:
+    /// whether the presenter will paint at all, and which output table
+    /// it believes in.
     #[test]
     fn a_pause_stops_the_presenter_and_a_resume_starts_it() {
         let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -810,39 +747,28 @@ mod tests {
         assert_eq!(outs[1].size, (1280, 720));
     }
 
-    /// The legacy Phase 5 implementation latched a "scene discarded"
-    /// `tracing::warn!` in `submit_frame` (gated on a
-    /// `warned_about_vello` boolean field). Phase 5.2 replaced that
-    /// path with `VelloDrmBridge::paint`. We assert the new shape
-    /// directly: the bridge field exists and the legacy latch field
-    /// does not.
+    /// The bridge field must exist and the legacy "scene discarded"
+    /// warn-and-latch field must not, so a future refactor that re-adds
+    /// a fail-silent path has to re-design this test.
     ///
-    /// Verifying via the production type's shape (rather than a
-    /// `tracing` capture) keeps the test fast and dependency-free
-    /// while pinning the contract: any future refactor that re-adds
-    /// a "fail-silent" path needs to also re-design this test.
+    /// Verified via the production type's shape (rather than a
+    /// `tracing` capture) to keep the test fast and dependency-free.
     #[test]
     fn drm_backend_does_not_warn_about_vello_anymore() {
-        // Pull the Debug-derived shape via raw source text — but only
-        // the *struct-definition* line range, so neither the test
-        // body nor doc-comments interfere with the assertion.
-        //
-        // We anchor on the public struct declaration: `pub struct
-        // DrmBackend {` … `}`. The field list between is what's left.
+        // Pull the struct's field list via raw source text, anchored on
+        // `pub struct DrmBackend {` … the first following `}`, so
+        // neither the test body nor doc-comments interfere.
         let src = include_str!("mod.rs");
         let start = src
             .find("pub struct DrmBackend {")
             .expect("struct DrmBackend must exist in mod.rs");
-        // Find the first `}` after start (the struct's closing brace).
         let after = &src[start..];
         let end = after.find("\n}").expect("struct must close") + start;
         let struct_def = &src[start..=end + 1];
-        // The new bridge field must be present.
         assert!(
             struct_def.contains("paint:"),
             "Phase 5.2: DrmBackend struct must carry a `paint:` field for the bridge. Got:\n{struct_def}"
         );
-        // The legacy latch field must be gone.
         assert!(
             !struct_def.contains("warned_about_vello"),
             "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"

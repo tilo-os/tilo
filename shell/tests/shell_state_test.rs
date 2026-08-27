@@ -83,8 +83,8 @@ fn fraction_widths_round_trip_through_persisted_json() {
     );
 }
 
-// Reference the remaining imports so the test file compiles cleanly even before
-// the widget/layout code that exercises them lands in later tasks.
+// Reference the remaining imports so the test file compiles cleanly even
+// before the widget/layout code that exercises them lands.
 #[allow(dead_code)]
 fn _type_refs() {
     let _ = std::marker::PhantomData::<Workspace>;
@@ -118,11 +118,9 @@ fn load_missing_file_returns_default() {
     let _ = std::fs::remove_file(&missing);
     let (t, notice) = load_or_default(&missing);
     // `load_or_default` falls back to `WorkspaceTree::bootstrap_default`
-    // when the persistence file is absent, which (since 1c4cd284a, "a
-    // first boot starts empty instead of inventing a desktop") seeds a
-    // single empty workspace rather than a named Home/Research/Design
-    // trio, so a first boot isn't a claim about someone who never used
-    // the machine.
+    // when the persistence file is absent, which seeds a single empty
+    // workspace rather than a named Home/Research/Design trio, so a
+    // first boot isn't a claim about someone who never used the machine.
     assert_eq!(t.workspaces.len(), 1);
     // A first boot is not a refusal. Reporting one would put an alarming
     // notification on every genuinely new machine.

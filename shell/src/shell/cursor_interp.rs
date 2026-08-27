@@ -43,7 +43,6 @@ struct PeerState {
     /// The sample the cursor was at before the most recent update.
     /// `None` before we've received two samples.
     prev: Option<Sample>,
-    /// The most recent sample.
     latest: Sample,
     /// Optional human label for the cursor's chip.
     label: String,
@@ -70,7 +69,6 @@ impl CursorInterpolator {
         Self::default()
     }
 
-    /// Record a new position sample for `user_id`.
     pub fn push_sample(&mut self, user_id: &str, label: &str, pos: [f32; 2], t: Instant) {
         let sample = Sample { t, pos };
         match self.peers.get_mut(user_id) {
@@ -97,7 +95,6 @@ impl CursorInterpolator {
         }
     }
 
-    /// Number of peers currently being tracked.
     pub fn len(&self) -> usize {
         self.peers.len()
     }

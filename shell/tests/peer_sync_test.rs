@@ -255,8 +255,8 @@ fn invite_token_round_trips() {
     assert_eq!(parsed.room_id, workspace.room.to_string());
 }
 
-/// Phase 4 end-to-end smoke test — A encodes an RGBA gradient, publishes
-/// the NALU bytes as a [`NeighbourMsg::SurfaceFrame`], and B decodes the
+/// End-to-end smoke test — A encodes an RGBA gradient, publishes the
+/// NALU bytes as a [`NeighbourMsg::SurfaceFrame`], and B decodes the
 /// payload back into an image-shaped frame whose dimensions match the
 /// source. This is the cross-actor analogue of
 /// `network::encoder::tests::gradient_round_trip_psnr_at_least_35_db`
@@ -335,7 +335,7 @@ async fn surface_frame_round_trips_through_gossipsub() {
     assert_eq!(frame.height, H);
 }
 
-/// Phase 4 remote-input smoke test — A publishes a `RemoteInput` with a
+/// Remote-input smoke test — A publishes a `RemoteInput` with a
 /// serialised `InputEvent::PointerMotion` payload; B receives it and
 /// recovers the same event after deserialisation. End-to-end proof that
 /// the wire-level vocabulary survives the gossipsub round-trip.

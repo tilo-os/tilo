@@ -241,9 +241,8 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
     Some((app, node.path))
 }
 
-/// The regression this whole change exists for: the global must be
-/// version 4+, because version 3 carries no feedback and therefore no
-/// device, and Mesa cannot initialise EGL without one.
+/// The global must be version 4+: version 3 carries no feedback and
+/// therefore no device, and Mesa cannot initialise EGL without one.
 #[test]
 fn dmabuf_global_is_advertised_with_feedback() {
     let Some((app, _node)) = walk() else {

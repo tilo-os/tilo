@@ -1,18 +1,14 @@
 //! Shell-side notification system — title + body toast cards stacked
 //! top-right of the screen, fading in/out and auto-dismissing.
 //!
-//! This complements (and is richer than) `ui::widget::toast::ToastStack`:
-//! - dual-line (title + body) layout instead of single-line text,
-//! - explicit severity dot (info / warning / error) keyed to
-//!   `theme.tokens.colors.semantic.*`,
-//! - an X-close affordance so the user can dismiss manually,
-//! - real-clock auto-expiry (no need to feed `tick(dt)` each frame).
+//! Richer than `ui::widget::toast::ToastStack`: dual-line layout, a
+//! severity dot keyed to `theme.tokens.colors.semantic.*`, an X-close
+//! affordance, and real-clock auto-expiry.
 //!
-//! State lives on [`ChromeState`]: each subsystem calls
+//! State lives on [`ChromeState`]: subsystems call
 //! [`ChromeState::push_notification`] to enqueue, and the overlay host
-//! mounts a [`NotificationStack`] above the desktop content but below
-//! the permission prompt + modal overlays so a prompt always wins
-//! focus (the spec gates that explicitly).
+//! mounts a [`NotificationStack`] above desktop content but below the
+//! permission prompt + modal overlays so a prompt always wins focus.
 //!
 //! [`ChromeState`]: crate::shell::chrome_state::ChromeState
 
@@ -70,12 +66,9 @@ impl NotificationSeverity {
     }
 }
 
-/// Optional icon-kind hint for a notification. Reserved for future use
-/// (we don't yet have an icon font in the shell render path), but it
-/// rides in the data model now so subsystems can already classify the
-/// notification with the right type — e.g. `Workspace`, `Network`,
-/// `Permission`, `Generic`. The render path treats every kind the
-/// same for now: a severity-tinted dot is shown in lieu of a glyph.
+/// Icon-kind hint for a notification, so subsystems can already classify
+/// it by type. No icon font in the shell render path yet, so every kind
+/// renders the same severity-tinted dot for now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
@@ -90,13 +83,10 @@ pub enum NotificationIconKind {
 /// override via [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 
-/// Effective "never auto-expire" dwell used for `expire_timeout == 0`
-/// notifications and for `critical`-urgency notifications (which the
-/// freedesktop spec says must not time out). We model "persistent" as a
-/// very long finite duration rather than a separate `Option<Duration>`
-/// variant so the expiry / animation arithmetic in [`Notification`] and
-/// [`NotificationStack`] stays a single code path — a day is far longer
-/// than any session and the user can always dismiss the toast by hand.
+/// Effective "never auto-expire" dwell, for `expire_timeout == 0` and for
+/// `critical`-urgency notifications (which the freedesktop spec says must
+/// not time out). A long finite duration rather than `Option<Duration>`
+/// keeps the expiry/animation arithmetic a single code path.
 pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(24 * 3600);
 
 /// In/out animation duration. 220 ms is comfortable on the
@@ -106,15 +96,11 @@ const ANIM_MS: u64 = 220;
 
 /// Put a startup refusal on the screen, and leave it there.
 ///
-/// The compositor can decline to open the session's state file — most often
-/// because the file was written by a newer qOS than this build understands, which
-/// is the ordinary situation after a rollback. It then starts from a bootstrapped
-/// tree, and the person is looking at a desktop that is not theirs.
-///
-/// That has to be said where they are looking. `Error` severity so it is not
-/// mistaken for chatter, [`PERSISTENT_DISMISS`] so it waits for them rather than
-/// sliding away in five seconds, and the file's path in the body so the next step
-/// is obvious.
+/// The compositor can decline to open the session's state file (e.g. after
+/// a rollback, written by a newer qOS) and fall back to a bootstrapped
+/// tree — the person is then looking at a desktop that isn't theirs, so
+/// this uses `Error` severity and [`PERSISTENT_DISMISS`] rather than
+/// letting it slide away in five seconds.
 pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::StateNotice) {
     chrome.borrow_mut().push_notification_full(
         Notification::new(notice.title(), notice.body())
@@ -161,13 +147,10 @@ pub struct Notification {
     pub actions: Vec<(String, String)>,
     /// Show this toast even while Do-Not-Disturb is on.
     ///
-    /// Do-Not-Disturb is a request for quiet, not a request to be kept
-    /// uninformed about the machine's own security state. A handful of
-    /// notifications *are* the outcome of an action the user just took
-    /// with a panic key, and holding one of those back turns "I stopped
-    /// it" into "nothing happened" — the same thing a broken kill switch
-    /// looks like. Reserved for the shell; nothing reachable from D-Bus
-    /// sets it, so an app cannot opt itself out of DND.
+    /// DND is a request for quiet, not to be kept uninformed of the
+    /// machine's own security state — holding back the outcome of a panic
+    /// key turns "I stopped it" into "nothing happened". Reserved for the
+    /// shell; nothing reachable from D-Bus sets it.
     pub bypass_dnd: bool,
 }
 
@@ -318,13 +301,10 @@ const DOT_GAP: f64 = 12.0;
 /// FIFO behaviour as `ui::widget::toast::ToastStack`.
 pub const MAX_NOTIFICATIONS: usize = 6;
 
-/// Maximum number of entries retained in the notification *history*
-/// (the message-log the notification centre reads). Every notification
-/// that leaves the active stack — dismissed, expired, closed, or
-/// evicted by the active cap — is appended here, as is every
-/// notification suppressed while Do-Not-Disturb is on. Bounded so a
-/// long-running session can't grow it without limit; the oldest entry
-/// is dropped from the front once the cap is exceeded.
+/// Maximum entries retained in the notification *history* (the message-log
+/// the notification centre reads). Every notification that leaves the
+/// active stack, plus every one suppressed under DND, is appended here;
+/// bounded so a long-running session can't grow it without limit.
 pub const MAX_HISTORY: usize = 50;
 
 /// Lock-screen redaction label: shown in place of the entire toast stack
@@ -354,11 +334,9 @@ pub struct NotificationStack {
     /// sits in the tree. The stack's own `Rect` is derived from this
     /// each frame in `draw`.
     viewport: Rect,
-    /// Per-toast hit rects, computed each frame in `draw` and consumed
-    /// by `handle_event`. `Vec<(notification_id, full_rect,
-    /// close_rect)>` — clicking the close rect or the full rect
-    /// dismisses by id. Cleared on every `draw` so a stale hit can't
-    /// fire after a notification expires.
+    /// Per-toast hit rects, computed each frame in `draw` and consumed by
+    /// `handle_event`: `(notification_id, full_rect, close_rect)`. Cleared
+    /// every `draw` so a stale hit can't fire after a notification expires.
     hit_rects: Vec<(u64, Rect, Rect)>,
     rect: Rect,
 }
@@ -497,15 +475,12 @@ impl Widget for NotificationStack {
         let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
         let mut y = self.viewport.y0 + EDGE_INSET;
 
-        // Lock-suppression (consistent with Track D2): while the session
-        // is locked, withhold every notification's app name / summary /
-        // body so secrets never render on (or near) the lock screen.
-        // Collapse the whole stack into a single redacted card that shows
-        // only the count, and register no dismiss hit-rects (the toast
-        // can't be acted on while locked). The native compositor already
-        // paints the lock overlay *instead* of the chrome while locked,
-        // so this is belt-and-suspenders for any path that mounts the
-        // stack directly (e.g. hosted mode).
+        // While locked, withhold every notification's app name / summary /
+        // body so secrets never render near the lock screen: collapse the
+        // stack into a single redacted card showing only the count, with
+        // no dismiss hit-rects. Belt-and-suspenders for any path that
+        // mounts the stack directly — the compositor already paints the
+        // lock overlay instead of the chrome while locked.
         if locked {
             let card_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
             let shape = RoundedRect::from_rect(card_rect, radius);
@@ -543,13 +518,10 @@ impl Widget for NotificationStack {
         let mut stack_min_y = f64::INFINITY;
         let mut stack_max_y = f64::NEG_INFINITY;
 
-        // Do-Not-Disturb status pill: OS-owned chrome rendered at the top
-        // of the notification region whenever DND is on, even with no
-        // active toasts. It tells the user *why* banners aren't appearing
-        // and how many notifications were held back into history. Muted
-        // fill so it reads as a status chip, not a dismissible toast; it
-        // registers no hit-rect (toggle DND from the palette / quick
-        // settings, not from here).
+        // DND status pill, shown at the top whenever DND is on (even with
+        // no active toasts) so the user knows why banners aren't
+        // appearing. Muted fill so it reads as a status chip, not a
+        // dismissible toast; no hit-rect (toggle DND from the palette).
         if dnd {
             let pill_h = 30.0;
             let pill_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + pill_h);
@@ -608,13 +580,11 @@ impl Widget for NotificationStack {
             stack_min_y = stack_min_y.min(card_rect.y0);
             stack_max_y = stack_max_y.max(card_rect.y1);
 
-            // One shared card renderer for every toast surface: the desktop
-            // notification and an in-app `ui::ToastStack` toast are the same
-            // painter now (HIG §8 — extend the widget, don't fork it). The
-            // stack still owns *what* to show — D-Bus attribution, severity,
-            // actions, expiry — and the click routing; `ui::widget::toast`
-            // owns the card's look, the severity stripe, and the dismiss
-            // button, and hands back the button rect to hit-test.
+            // One shared card renderer for every toast surface (HIG §8 —
+            // extend the widget, don't fork it): this stack owns *what* to
+            // show — attribution, severity, actions, expiry — and click
+            // routing, while `ui::widget::toast` owns the card's look and
+            // hands back the dismiss button rect to hit-test.
             let hit = ui::widget::toast::paint_card(
                 scene,
                 transform,
@@ -661,16 +631,10 @@ impl Widget for NotificationStack {
             ..
         } = event
         {
-            // We don't have the position on `MouseInput`; the overlay
-            // host already tracks the last cursor and forwards events
-            // to us. For locality, fall back to last-seen via a
-            // separate cursor cache embedded in the host. Here we
-            // need the last cursor position — but `WindowEvent::
-            // MouseInput` doesn't carry it. The overlay host calls
-            // us with the press position via `notify_click_at` (an
-            // inherent method below) when it's our turn, so this
-            // branch is intentionally a no-op for the event-driven
-            // path. The press dispatch lives in `notify_click_at`.
+            // `WindowEvent::MouseInput` doesn't carry a position; the
+            // overlay host calls `notify_click_at` with the resolved
+            // press point instead, so this branch is intentionally a
+            // no-op.
             let _ = scale_factor;
         }
     }
@@ -731,11 +695,9 @@ impl NotificationStack {
     /// duplicate the cursor cache here. Returns `true` if the click
     /// was consumed (i.e. landed on a toast).
     pub fn notify_click_at(&mut self, p: Point) -> bool {
-        // Iterate a copy of the hit rects so we don't hold a borrow
-        // across the chrome mutation below. Clicking the explicit close
-        // (X) glyph always just dismisses; clicking anywhere else on the
-        // card *activates* it — invoking the default/first action (and
-        // emitting `ActionInvoked`) if the notification carries any.
+        // Copy the hit rects so we don't hold a borrow across the chrome
+        // mutation below. The close (X) glyph dismisses; clicking
+        // anywhere else on the card activates it (default/first action).
         let hits = self.hit_rects.clone();
         for (id, full, close) in hits {
             if close.contains(p) {
@@ -847,18 +809,10 @@ mod tests {
         assert_eq!(first_title, "n3");
     }
 
-    /// Changing workspace is not news.
-    ///
-    /// Every successful switch used to raise a toast naming the new
-    /// workspace — a smoke test for the notification system that shipped
-    /// as a feature. Moving between workspaces is one of the most
-    /// frequent things anyone does here, the top bar already names the
-    /// current one, and a banner announcing a change the user just made
-    /// themselves is noise on top of the thing they wanted to look at.
-    ///
-    /// The notification system has real producers (incoming D-Bus
-    /// notifications, a failed app launch, a document opened elsewhere,
-    /// a peer joining) and does not need a synthetic one.
+    /// Changing workspace is not news: it's one of the most frequent
+    /// things anyone does here, the top bar already names the current
+    /// workspace, and a banner about a change the user just made
+    /// themselves is noise on top of what they wanted to look at.
     #[test]
     fn switch_workspace_does_not_push_a_notification() {
         // Use `bootstrap_demo` so we have ≥2 workspaces and a switch
@@ -886,7 +840,7 @@ mod tests {
         );
     }
 
-    // ---------- Track D1: D-Bus bridge wiring ----------
+    // ---------- D-Bus bridge wiring ----------
 
     use crate::notifications::{CloseReason, IncomingNotification, NotificationBridge};
     use crate::portal::PortalCaller;

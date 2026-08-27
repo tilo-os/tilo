@@ -1,5 +1,4 @@
-//! Peer-invite token format — Phase 3 Task 3.3 of
-//! `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+//! Peer-invite token format.
 //!
 //! An invite is a base64-url-encoded JSON blob signed by the inviting
 //! owner's libp2p ed25519 keypair. The receiver decodes it, verifies
@@ -58,16 +57,13 @@ pub struct PeerInviteToken {
     /// The inviter's durable room identity
     /// (`crate::shell::state::RoomId`), rendered as a uuid string.
     ///
-    /// The field that makes an invite an invite *to something*. The
-    /// receiver adopts this as its local workspace's room
+    /// What makes an invite an invite *to something*: the receiver
+    /// adopts this as its local workspace's room
     /// ([`crate::shell::state::WorkspaceTree::set_room`]), so both ends
-    /// address one cluster and the deltas their apps produce actually
-    /// reach each other. Without it the invitee joins a topic and then
-    /// talks past the inviter forever, in a room of one.
-    ///
-    /// Signed along with everything else: an attacker who could rewrite
-    /// this in transit could redirect an invitee into a room of the
-    /// attacker's choosing while the rest of the token still verified.
+    /// address one cluster and their apps' deltas actually reach each
+    /// other. Signed along with everything else — an attacker who
+    /// rewrote it in transit could redirect an invitee into a room of
+    /// their choosing while the rest of the token still verified.
     pub room_id: String,
     /// Inviter's libp2p `PeerId`, rendered as base58 so it round-
     /// trips through `PeerId::from_str` cleanly. Cross-checked
@@ -100,11 +96,10 @@ pub struct PeerInviteToken {
 /// [`tests::canonical_payload_is_stable`] so a future field addition
 /// can't silently break verification on already-issued tokens.
 ///
-/// `room_id` is inside the signature rather than alongside it because
-/// it decides which collaboration cluster the invitee ends up in. A
-/// token that carried it unsigned would let anyone who can touch the
-/// bytes in transit point the invitee at a different room while every
-/// other check still passed.
+/// `room_id` is inside the signature because it decides which
+/// collaboration cluster the invitee ends up in — unsigned, anyone who
+/// could touch the bytes in transit could point the invitee at a
+/// different room while every other check still passed.
 fn canonical_payload(
     workspace_id: u64,
     room_id: &str,
@@ -131,20 +126,18 @@ fn now_unix_seconds() -> u64 {
 /// Issue an invite to `workspace`, signed by `keypair`.
 ///
 /// Takes the whole [`Workspace`] rather than a pair of ids so the
-/// transport topic and the room identity cannot be sourced from two
-/// different workspaces — an invite that named one workspace's topic
-/// and another's room would connect the peers and then route their
-/// deltas nowhere, which is the hardest kind of failure to see.
+/// transport topic and the room identity can't be sourced from two
+/// different workspaces — that would connect the peers and route their
+/// deltas nowhere, the hardest kind of failure to see.
 ///
 /// `expiry_seconds_from_now` is added to the current unix time to form
-/// the absolute expiry. v1 callers pass `3600` (one hour). The owner's
-/// public key is embedded so receivers can verify without round-
-/// tripping through the libp2p DHT.
+/// the absolute expiry; v1 callers pass `3600`. The owner's public key
+/// is embedded so receivers can verify without round-tripping through
+/// the libp2p DHT.
 ///
-/// Returns the base64-url-encoded JSON token, ready to drop on the
-/// clipboard. Refuses a workspace whose room has not been minted:
-/// there is nothing to invite anyone *into* yet, and a token carrying
-/// the nil room would hand the invitee an address that reaches nobody.
+/// Returns the base64-url-encoded JSON token. Refuses a workspace whose
+/// room has not been minted — a token carrying the nil room would hand
+/// the invitee an address that reaches nobody.
 pub fn make_invite_token(
     keypair: &libp2p::identity::Keypair,
     workspace: &Workspace,
@@ -207,10 +200,10 @@ pub fn make_invite_token(
 /// keeping the victim's peer-id, then sign with the substituted key
 /// and pass step 6.
 ///
-/// Step 3 rejects a token that would put the invitee in the nil room.
-/// It is cheap and it is checked before the signature so a validly
-/// signed but meaningless invite is refused rather than accepted into
-/// a room that addresses nobody.
+/// Step 3 rejects a token that would put the invitee in the nil room,
+/// checked before the signature so a validly signed but meaningless
+/// invite is refused rather than accepted into a room that addresses
+/// nobody.
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
@@ -260,25 +253,22 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
 ///
 /// The other half of an invite. Validating a token proves who issued it
 /// and which room they meant; this is what makes the invitee actually
-/// *be* in that room — their local workspace keeps its own id, its own
-/// strips and its own capabilities, and swaps only the identity its
-/// apps collaborate under. Every app launched into it afterwards
-/// announces the inviter's cluster, which is the whole reason a delta
-/// crosses the wire at all.
+/// *be* in that room — their local workspace keeps its own id, strips
+/// and capabilities, and swaps only the identity its apps collaborate
+/// under.
 ///
-/// The change is mirrored into the automerge doc and flushed to disk by
+/// Mirrored into the automerge doc and flushed to disk by
 /// [`WorkspaceTree::set_room`], so the invitee is still in the room
 /// after a restart — an invite you have to re-accept every boot is not
 /// membership.
 ///
-/// Accepting also records **who administers the room**
-/// ([`WorkspaceTree::pin_room_authority`]). The token is what makes that
-/// checkable rather than merely asserted: the room id and the owner's
+/// Also records **who administers the room**
+/// ([`WorkspaceTree::pin_room_authority`]): the room id and the owner's
 /// peer id are both inside the ed25519 signature ([`canonical_payload`]),
 /// so only the holder of the owner's key could have produced a token
-/// binding the two. Afterwards the invitee accepts the room's owner and
-/// capability list from that peer and from nobody else — including from
-/// other guests of the same room, who are in it but do not govern it.
+/// binding the two — the invitee accepts the room's owner and
+/// capability list from that peer and nobody else, including other
+/// guests of the same room who are in it but don't govern it.
 ///
 /// Returns `Err` when the token does not verify or names no workspace
 /// this tree has. Deliberately takes the *token string*, not a parsed
@@ -299,23 +289,18 @@ pub fn accept_invite_into(
     }
     tree.set_room(local, room);
     tree.pin_room_authority(room, PeerOrigin::peer_base58(&token.owner_peer_id));
-    // Someone is now in this room with us, and the chrome has to say so.
-    //
-    // Pointing the workspace at the inviter's room and pinning who
-    // governs it is what makes this machine a member; it left the roster
-    // — the top-bar avatar stack, the wheel-disc presence dots, the
-    // collaborators overlay — untouched, so a session that had genuinely
-    // joined a real person showed an empty stack while a session that
-    // had joined nobody showed the seeded fakes. Exactly backwards.
+    // Someone is now in this room with us, and the chrome has to say so:
+    // the top-bar avatar stack, the wheel-disc presence dots and the
+    // collaborators overlay all read `Workspace::collaborators`.
     //
     // The inviter is recorded under their session handle rather than a
-    // name, because a name is not in the token and inventing one would
-    // be the same failure in a smaller font. What *is* in the token, and
-    // inside its signature, is the owner's libp2p peer id — so the entry
-    // is as verified as the room it joined. The first presence frame
-    // that session publishes carries the name of whoever is sitting at
-    // it, and [`WorkspaceTree::note_peer_present`] replaces this row
-    // with the named one rather than drawing a second avatar.
+    // name — a name is not in the token, and inventing one would be a
+    // fabrication. The owner's libp2p peer id is inside the token's
+    // signature, so this entry is as verified as the room it joined.
+    // The first presence frame that session publishes carries the name
+    // of whoever is sitting at it, and
+    // [`WorkspaceTree::note_peer_present`] replaces this row with the
+    // named one rather than drawing a second avatar.
     if let Ok(peer) = token.owner_peer_id.parse::<libp2p::PeerId>() {
         let session = crate::network::behaviour::peer_liveness_handle(&peer);
         let handle = crate::shell::state::session_handle(session);
@@ -543,10 +528,8 @@ mod tests {
     ///
     /// The chrome renders `Workspace::collaborators` — the avatar stack,
     /// the wheel-disc presence dots, the collaborators overlay all read
-    /// it. Joining a real person's room used to leave it untouched, so a
-    /// session that had genuinely joined somebody showed nobody. The
-    /// entry is the inviter's session handle, derived from the owner
-    /// peer id that is inside the token's signature, so it is exactly as
+    /// it. The entry is the inviter's session handle, derived from the
+    /// owner peer id inside the token's signature, so it is exactly as
     /// verified as the room the invite moved us into.
     #[test]
     fn accepting_an_invite_puts_the_inviter_on_the_roster() {

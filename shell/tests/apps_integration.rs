@@ -1,9 +1,9 @@
-//! Task 15: Spawns the nirios shell in headless mode, embeds a real terminal
-//! and a real file-explorer in tabs, and asserts their `AppWidget` metadata is
+//! Spawns the nirios shell in headless mode, embeds a real terminal and a
+//! real file-explorer in tabs, and asserts their `AppWidget` metadata is
 //! reflected in the live `Shell::workspace_tree()`.
 //!
-//! Task 16 extends this with two render-path integration tests that drive the
-//! apps through (an abbreviated form of) the five-pass pipeline and assert
+//! Also includes two render-path integration tests that drive the apps
+//! through (an abbreviated form of) the five-pass pipeline and assert
 //! visible content: the terminal produces a non-empty first grid line once
 //! the PTY reader delivers bytes, and the file-explorer's initial listing
 //! contains at least one entry with a non-empty name.
@@ -49,12 +49,12 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
     );
 }
 
-// ---- Task 16 ---------------------------------------------------------------
+// ---------------------------------------------------------------------------
 //
 // These tests drive the shell's apps through an abbreviated render pipeline
 // (sync + update, without Vello draw — that would need a GPU) and assert
-// visible content. They rely on three introspection helpers added alongside
-// `Shell::new_with_default_demo_workspace`:
+// visible content, via three introspection helpers guarded behind
+// `cfg(any(test, debug_assertions))`:
 //
 //   * `Shell::tick_for_test()` — runs one sync+update pass over every app
 //     tile against the shell-owned Automerge doc.
@@ -62,9 +62,6 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 //     hosted terminal, or `None` if there is no live terminal tile.
 //   * `Shell::first_file_explorer_entries()` — returns the entry names from
 //     the first hosted file-explorer, in the order the widget displays them.
-//
-// These three helpers are guarded behind `cfg(any(test, debug_assertions))`
-// on the shell side so they only exist in test / debug builds.
 
 #[test]
 fn terminal_tab_emits_a_prompt_within_10_seconds() {

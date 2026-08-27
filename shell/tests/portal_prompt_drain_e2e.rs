@@ -1,13 +1,11 @@
 //! End-to-end for the prompt queue: a portal request that needs the
 //! user's answer gets one, instead of waiting forever.
 //!
-//! `PromptQueueHandle::drain()` had exactly one caller in the tree, and
-//! it was inside `#[cfg(test)]`. In production nothing emptied the
-//! queue, so `flow::resolve` enqueued a `PendingGrant`, awaited its
-//! oneshot, and never woke: the request hung. The "channel closed ≡
-//! deny" defence could not fire either, because the sender was parked
-//! in a `Vec` that stayed alive for the life of the process — so the
-//! failure was an indefinite hang rather than a refusal.
+//! `PromptQueueHandle::drain()` must actually be called in production —
+//! nothing else empties the queue, and an unanswered `PendingGrant`
+//! hangs the D-Bus caller indefinitely rather than closing the channel
+//! (the "channel closed ≡ deny" defence never fires while the sender
+//! sits in a `Vec` for the life of the process).
 //!
 //! `FileChooser` no longer uses the prompt queue at all (the dialog is
 //! the consent), which means the file-chooser tests do not cover this.
@@ -256,10 +254,8 @@ async fn a_session_grant_answers_and_persists() {
     );
 }
 
-/// The compositor with no chrome cannot show a prompt. It must say so by
-/// answering, rather than holding a sender nobody will ever fulfil —
-/// that is the shape of the original bug, and it must not be
-/// reintroduced by a code path that simply has nowhere to draw.
+/// The compositor with no chrome cannot show a prompt. It must say so
+/// by answering, rather than holding a sender nobody will ever fulfil.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);

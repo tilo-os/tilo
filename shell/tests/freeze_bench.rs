@@ -21,10 +21,8 @@ fn ms(f: impl FnOnce()) -> f64 {
 }
 
 fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
-    // Build a one-tab group whose tile is an AppPlaceholder — exactly the
-    // shape the persisted tree carries and that resync feeds to
-    // `to_ui_window_group` when it re-materializes a detached group.
-    // GroupId / TabId are `u64` aliases; literals are fine for a bench.
+    // A one-tab group whose tile is an AppPlaceholder — the shape the
+    // persisted tree carries and resync feeds to `to_ui_window_group`.
     use shell::shell::state::Tab;
     let tab_id: u64 = 9_000_001;
     // Map the ui AppKind back to the shell AppKind the tile expects.

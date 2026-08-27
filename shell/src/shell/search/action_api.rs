@@ -1,53 +1,31 @@
 //! Headless action API — a programmatic, render-free facade over the
 //! [`SearchRegistry`].
 //!
-//! The Ctrl+K palette is one consumer of the registry: it *renders* the
-//! results as rows and fires a callback on Enter. This module is the
-//! other consumer — an automation client (an LLM navigator, an
-//! integration test, a script) that wants to drive the exact same
-//! providers with **no window and no scene**. That separation is the
-//! whole point: an action is not a pixel. The same
-//! [`crate::shell::search::SearchProvider`]s that feed the palette
-//! export their resources here as typed, addressable [`ExportedAction`]s.
+//! The Ctrl+K palette renders results as rows and fires a callback on
+//! Enter. This module is the other consumer of the same
+//! [`crate::shell::search::SearchProvider`]s — an automation client (an
+//! LLM navigator, an integration test, a script) that drives them with
+//! **no window and no scene**, via three explicit steps:
 //!
-//! The flow is three explicit steps, mirroring how a caller reasons:
+//! 1. [`ActionCatalog::enumerate`] — what can I do, given the focused
+//!    app? No callback is exposed, so surveying never accidentally *does*
+//!    anything.
+//! 2. [`ActionCatalog::select`] — resolve a [`ResourceRef`] back to the
+//!    live result, or `None` if it isn't in this snapshot or the caller
+//!    isn't allowed to see it.
+//! 3. [`SelectedAction::invoke`] — run the provider's side-effect; the
+//!    same callback the palette would fire on Enter.
 //!
-//! 1. **enumerate** — [`ActionCatalog::enumerate`] answers "what can I
-//!    do right now, given the focused app?" Each entry is a typed
-//!    descriptor with a stable [`ResourceRef`] — no callback is exposed,
-//!    so "what can I do" never accidentally *does* anything.
-//! 2. **select** — [`ActionCatalog::select`] resolves a [`ResourceRef`]
-//!    back to the live result, or `None` if it isn't in this snapshot
-//!    (or the caller isn't allowed to see it).
-//! 3. **invoke** — [`SelectedAction::invoke`] runs the provider's
-//!    side-effect against the live CRDT + chrome. This is byte-for-byte
-//!    the callback the palette would fire on Enter, minus the palette.
+//! [`ActionCatalog::build`] takes an [`ActionVisibility`] gate, applied at
+//! build time so a hidden resource is invisible to *both* `enumerate` and
+//! `select` — you cannot invoke what you were never shown. Full role/
+//! capability enforcement lives in the permission subsystem; this is the
+//! seam a restricted navigator plugs into.
 //!
-//! ## Permission-awareness
-//!
-//! [`ActionCatalog::build`] takes an [`ActionVisibility`] gate. Full
-//! role/capability enforcement lives in the permission subsystem; this
-//! is the seam that lets a restricted navigator only enumerate — and
-//! only select — what it is allowed to see. The gate is applied at build
-//! time so a hidden resource is invisible to *both* `enumerate` and
-//! `select`: you cannot invoke what you were never shown.
-//!
-//! ## Parameters
-//!
-//! An action may declare typed [`ActionParam`]s, and an invocation
-//! carries [`ActionArgs`] satisfying them. This is the same shape
-//! `docs/action-model-recipe.md` gives an app's own actions — a typed
-//! payload that carries everything the mutation needs — rather than a
-//! second mechanism beside it. Every action has parameters; most
-//! declare none, and for those the vocabulary collapses back to the
-//! nullary call it always was.
-//!
-//! Declaring them is what makes the surface drivable by a caller that
-//! cannot see the screen: enumeration says *what to pass*, so an
-//! argument is never guessed from a label. Binding is strict —
-//! [`ActionArgs::bind`] refuses a missing, unknown or wrong-typed
-//! argument **before** the action runs, so a bad call is a refusal and
-//! never a partial mutation.
+//! An action may declare typed [`ActionParam`]s; [`ActionArgs::bind`]
+//! checks supplied arguments against them before anything runs, so a
+//! caller that cannot see the screen knows what to pass without
+//! guessing, and a bad call is a refusal rather than a partial mutation.
 
 use std::collections::BTreeMap;
 

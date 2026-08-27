@@ -1,11 +1,8 @@
 //! First-login identity onboarding.
 //!
 //! A signing identity appears on a qOS machine the first time someone logs
-//! in. Before this existed, it appeared *silently*: a key was minted, apps
-//! started signing with it, and nothing ever told the person it was theirs,
-//! what it stood behind, or what would happen if the laptop went missing.
-//!
-//! This module is the ceremony that fixes that. It is deliberately three
+//! in. This module is the ceremony that puts a name and a consequence on
+//! it, rather than letting it appear silently. It is deliberately three
 //! short screens and one real decision:
 //!
 //! 1. what the identity is, and what it signs for;

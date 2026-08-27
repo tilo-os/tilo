@@ -301,9 +301,6 @@ mod nvenc_tests {
             hevc.extend_from_slice(&o);
         }
         assert!(!h264.is_empty() && !hevc.is_empty());
-        // A red-frame H.264 stream and a red-frame HEVC stream at the
-        // same resolution / bitrate share only their leading start
-        // code. First NAL header byte must differ.
         let nb_h264 = first_nal_header_byte(&h264).expect("h264 has nal");
         let nb_hevc = first_nal_header_byte(&hevc).expect("hevc has nal");
         assert_ne!(

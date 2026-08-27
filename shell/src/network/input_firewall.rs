@@ -1,48 +1,23 @@
 //! The firewall every remote-input event crosses before it reaches the seat.
 //!
 //! A peer with write access to a shared surface is driving the owner's
-//! physical seat. Without a filter that is a full keyboard and mouse on the
-//! host's machine: a guest could type a TTY-switch chord, move the pointer
-//! anywhere on the output, click through whatever the host has drawn on top,
-//! or hold the input queue open at line rate. The share record says *whether*
-//! a peer may drive a surface; this module says *what* it may drive, *where*,
-//! and *how fast*.
+//! physical seat; this module decides what it may drive, where, and how
+//! fast. Every check refuses when it cannot answer — an unobservable
+//! subject is a denial, never a pass. Order: kill switch, session lock,
+//! physical priority, region, z-order, scrubber, rate limit. The read-only
+//! flag and surface ownership are checked earlier, by the share registry in
+//! [`crate::compositor::state::State::apply_remote_input`].
 //!
-//! Checks, in the order they run. Every one of them refuses when it cannot
-//! answer — an unobservable subject is a denial, never a pass.
+//! Peers send surface-local logical pixels (see
+//! [`crate::shell::peer_view::PeerView`]); the region check is what makes
+//! translating them into global output coordinates safe, since an accepted
+//! event can only ever address the rect it was actually shared.
 //!
-//! | Check | Refuses |
-//! |---|---|
-//! | Kill switch | everything, until the host clears it |
-//! | Session lock | everything, until the host authenticates |
-//! | Physical priority | everything for [`PHYSICAL_PRIORITY_WINDOW`] after any local input |
-//! | Region | a coordinate outside the shared surface's content rect |
-//! | Z-order | a coordinate where that surface is not the topmost thing on screen |
-//! | Scrubber | system chords, and any key while the surface lacks keyboard focus |
-//! | Rate limit | more than [`MAX_EVENTS_PER_SECOND`], or a click burst |
-//!
-//! The read-only flag and surface ownership are checked before this, by the
-//! share registry, in [`crate::compositor::state::State::apply_remote_input`]
-//! — the whole pipeline reads top to bottom there.
-//!
-//! # Coordinates
-//!
-//! A peer sees only the surface it was shared, so it sends **surface-local**
-//! logical pixels (see [`crate::shell::peer_view::PeerView`]). The seat wants
-//! global output coordinates. The region check is what makes that translation
-//! safe: an accepted event is re-emitted with its coordinate moved into the
-//! surface's on-screen rect, so a peer can only ever address points inside
-//! the rectangle it was actually given.
-//!
-//! # Why the shell's own chord table
-//!
-//! The scrubber does not carry its own list of forbidden chords. It asks
-//! [`crate::compositor::client_input::shell_owns_chord`] — the same table that
-//! decides whether the *local* user's keystroke belongs to the shell rather
-//! than to the focused client. A chord the shell grabs for itself is exactly
-//! one a guest must not be able to synthesise, so the two cannot drift. On top
-//! of that table sit the chords the shell never sees because the kernel or the
-//! session takes them first: `Ctrl+Alt+F1..F12` and `Ctrl+Alt+Delete`.
+//! The scrubber asks [`crate::compositor::client_input::shell_owns_chord`]
+//! rather than keeping its own forbidden-chord list — the same table that
+//! gates a *local* keystroke, so the two cannot drift. `Ctrl+Alt+F1..F12`
+//! and `Ctrl+Alt+Delete` never reach the shell; the kernel/session takes
+//! them first.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -1068,7 +1043,6 @@ mod tests {
             ),
             Err(Denial::ClickBurst),
         );
-        // And it lifts.
         assert!(
             fw.review(
                 PEER,
@@ -1247,11 +1221,8 @@ mod production_path {
 
     /// Region: a coordinate outside the rect the guest was actually shown.
     ///
-    /// The tile is 400x300, so `(700, 20)` is off its right-hand side. It
-    /// is nonetheless a real point on the output — under the previous
-    /// code, which injected a peer's surface-local coordinates as if they
-    /// were output-space ones, that is a pointer the guest could park
-    /// anywhere on the host's screen.
+    /// The tile is 400x300, so `(700, 20)` is off its right-hand side but
+    /// still a real point on the output.
     #[test]
     fn a_coordinate_outside_the_shared_region_never_moves_the_host_pointer() {
         let mut state = staged();

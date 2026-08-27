@@ -1,53 +1,21 @@
 //! Frame-loop instrumentation: per-tick phase timings, present pacing and
 //! input-to-present latency.
 //!
-//! The compositor's presentation loop had two diagnostics before this
-//! module: `QOS_PAINT_STATS=1` (a 2-second counter of painted-vs-idled
-//! frames) and `QOS_LOOP_TIMING=1` (an `eprintln!` for any tick over
-//! 100 ms). Both answer "is something catastrophically wrong"; neither
-//! answers "what is the frame-time distribution, and which phase owns
-//! it". This does.
+//! One [`FrameSample`] per loop iteration: `period_us` (real presentation
+//! cadence — what a display would see), per-phase durations, `painted`
+//! (idle ticks do no paint work), and `input_latency_us` (time from
+//! consuming an input to the first painted frame's submit returning;
+//! `present_async` distinguishes input-to-present from input-to-queued).
 //!
-//! # What it records
+//! Entirely env-var driven: `QOS_FRAME_TRACE=path.csv` streams one row per
+//! tick, `QOS_FRAME_SUMMARY=path.json` writes a percentile summary on
+//! clean shutdown, `QOS_FRAME_WARMUP_MS` excludes early samples (first-
+//! frame pipeline compilation) from the summary while still tracing them.
+//! With none set, [`FrameRecorder::disabled`] makes every method a `bool`
+//! branch — no allocation, no extra clock reads.
 //!
-//! One [`FrameSample`] per loop iteration, carrying:
-//!
-//! * `period_us` — wall time since the previous tick started. This is the
-//!   real presentation cadence: it is what a display would see, and the
-//!   number that has to match the panel's refresh interval.
-//! * per-phase durations (input drain, app pump, layout, scene build,
-//!   submit, test-control, client dispatch, sleep).
-//! * `painted` — whether the tick produced a frame at all (the redraw
-//!   gating means idle ticks do no paint work).
-//! * `input_latency_us` — for the first painted frame after an input was
-//!   consumed, the time from consuming that input to the submit
-//!   returning. That is input-to-present for every backend whose submit
-//!   is synchronous, and input-to-queued for a backend that presents
-//!   asynchronously (the sample carries `present_async` so a reader can
-//!   tell the two apart).
-//!
-//! # How it is enabled
-//!
-//! Entirely env-var driven, like every other compositor diagnostic:
-//!
-//! * `QOS_FRAME_TRACE=/path/to.csv` — stream one CSV row per tick.
-//! * `QOS_FRAME_SUMMARY=/path/to.json` — write a percentile summary when
-//!   the recorder is dropped (clean shutdown) and every
-//!   `QOS_FRAME_SUMMARY_SECS` seconds (default: never, on shutdown only).
-//! * `QOS_FRAME_WARMUP_MS` — samples younger than this are recorded in
-//!   the trace but excluded from the summary, so first-frame pipeline
-//!   compilation doesn't swamp the percentiles. Default 1500 ms.
-//!
-//! With none of them set the recorder is [`FrameRecorder::disabled`] and
-//! every method is a branch on a `bool` — no allocation, no clock reads
-//! beyond the ones the loop already does.
-//!
-//! # Why the summariser is pure
-//!
-//! [`summarize`] takes a slice of samples and returns a [`FrameSummary`].
-//! No I/O, no clock, no env. That is what the unit tests below assert
-//! against, and it is the same function the live binary calls — the test
-//! and the production path cannot drift.
+//! [`summarize`] is pure (no I/O, no clock, no env) — the same function
+//! the live binary and the unit tests both call, so they cannot drift.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -726,13 +694,11 @@ mod tests {
     fn summarize_work_subtracts_the_park_that_actually_happened_in_the_period() {
         // `period_us` spans the previous tick's start to this one's, so
         // the park inside it belongs to the *previous* sample. Tick 0
-        // worked 4 ms then parked 12 ms; tick 1 therefore starts 16 ms
-        // later and its period contains tick 0's 12 ms park.
-        //
-        // Subtracting the sample's *own* sleep instead reads tick 1's
-        // work as 16 - 2 = 14 ms, and on a tick that parked longer than
-        // its predecessor it goes negative — which is exactly how this
-        // bug announced itself in a live trace ("work/tick p50 = -0.15ms").
+        // worked 4 ms then parked 12 ms; tick 1 starts 16 ms later and
+        // its period contains tick 0's 12 ms park. Subtracting the
+        // sample's *own* sleep instead reads tick 1's work as 16 - 2 =
+        // 14 ms, going negative on a tick that parked longer than its
+        // predecessor.
         let mut a = sample(0, 0, 0, true);
         a.sleep_us = 12_000;
         let mut b = sample(1, 16_000, 16_000, true);
@@ -751,11 +717,8 @@ mod tests {
 
     #[test]
     fn work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor() {
-        // The failure mode that surfaced the off-by-one: a tick that
-        // parked 16 ms following one that parked 2 ms. `u32` work would
-        // wrap; `saturating_sub` on the wrong operand would report a
-        // nonsense-but-positive number. With the right operand it is just
-        // the real work.
+        // A tick parked 16 ms following one that parked 2 ms: `saturating_sub`
+        // on the wrong operand would report a nonsense-but-positive number.
         let mut a = sample(0, 0, 0, true);
         a.sleep_us = 2_000;
         let mut b = sample(1, 5_000, 5_000, true);

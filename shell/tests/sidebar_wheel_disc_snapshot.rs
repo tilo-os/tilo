@@ -43,11 +43,8 @@ fn goldens_dir() -> PathBuf {
 /// its radius from the slot's *width* and then shows whatever slice of
 /// that circle the slot's *height* reaches, so the height-to-width ratio
 /// decides how many degrees of rim — and therefore how many workspaces —
-/// land on screen. The live shell's sidebar slot is roughly 234 × 690,
-/// a ratio near 2.9; at 400 × 700 with a 352 px disc the harness was
-/// closer to 1.8, which put every neighbour out at the very edge of the
-/// vertical fade and left the golden unable to show the rail it exists to
-/// pin. These numbers keep the ratio and the frame compact.
+/// land on screen. The live shell's sidebar slot is roughly 234 × 690, a
+/// ratio near 2.9; these numbers keep that ratio in a compact frame.
 const CANVAS_W: u32 = 290;
 const CANVAS_H: u32 = 700;
 
@@ -120,11 +117,11 @@ fn render_disc_at(
     let target_visible = CANVAS_W as f64 - 48.0;
     let scaled_diameter = disc.diameter_px * (target_visible / disc.visible_width_px());
     disc = disc.with_diameter(scaled_diameter);
-    // Keep the default 4500 px diameter (post 2026-05-23 redesign). The
-    // disc mounts at the canvas's LEFT edge so the partial-arc design
-    // reads correctly: only the right ~66° of the rim protrudes into the
-    // visible canvas, the rest sits off-screen-left. `align_items:
-    // Center` keeps the sliver vertically centred.
+    // Keep the default 4500 px diameter. The disc mounts at the canvas's
+    // LEFT edge so the partial-arc design reads correctly: only the right
+    // ~66° of the rim protrudes into the visible canvas, the rest sits
+    // off-screen-left. `align_items: Center` keeps the sliver vertically
+    // centred.
 
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -205,13 +202,7 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
 }
 
 
-/// Every theme repaints this widget, and it used to take its rim and lip
-/// from hardcoded white. That happened to look right on the dark desktop
-/// and nowhere else — and the failure it invites is the one this codebase
-/// keeps hitting: a surface that assumes its own background and disappears
-/// when the palette changes underneath it.
-///
-/// High contrast is the sharp case. It grounds everything on pure black,
+/// High contrast is the sharp case: it grounds everything on pure black,
 /// including `surfaces.overlay`, which is the disc body's own hue — so the
 /// body genuinely is black on black there, and the rim is the only thing
 /// left saying the wheel exists. Reading the pixels back is the only way
@@ -266,13 +257,9 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
 /// disc is a slice of something large, so the app must still be plainly
 /// visible beyond the disc's own footprint.
 ///
-/// Where it ends moved. The body used to stop at an inner arc, leaving
-/// the app showing through the left of the slot, and the probe for
-/// "still a slice" looked there. The body is solid now — that hollow
-/// was the thing the owner asked to close — so the surface runs off the
-/// left edge of the footprint instead and the probe moved with it. Both
-/// halves of the original claim are still checked, and the solid fill is
-/// now checked too.
+/// The body is solid, reaching the disc's own centre — no hollow for the
+/// app to show through — so the probe for "still a slice" sits off the
+/// left edge of the footprint instead.
 ///
 /// Sample points are derived from the band the widget actually paints
 /// rather than hardcoded, so tuning the depth moves the probes with it
@@ -301,7 +288,7 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     // The band's vertical middle, where it is at full alpha and widest.
     let row_y = c.y.round() as u32;
     let on_band = ((c.x + (r_in + r_out) / 2.0).round() as u32).min(CANVAS_W - 1);
-    // Well inside where the old inner arc used to cut the body off.
+    // Well inside the inner radius, where a hollow body would show through.
     let inside_arc = ((c.x + r_in - 24.0).round() as u32).min(CANVAS_W - 1);
     assert!(
         (inside_arc as f64) > footprint.x0 + 2.0,
@@ -316,8 +303,8 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
          — the labels painted on it have nothing to read against; see {path:?}"
     );
 
-    // Solid: the body reaches the centre, so a point that used to fall
-    // in the hole is now surface too, and just as opaque.
+    // Solid: the body reaches the centre, so this point is surface too,
+    // and just as opaque.
     let inner = luma(inside_arc, row_y);
     assert!(
         inner < 110,
@@ -350,15 +337,12 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
 /// beyond the rim by design.
 const RIM_SHADOW_CLEARANCE: f64 = 36.0;
 
-/// The body is ONE colour. It used to be a nine-stop radial ramp from
-/// transparent at the inner end to a peak alpha at the rim, and on screen
-/// that is a grey smear that never resolves into an object — the single
-/// thing the owner named when they asked for a flat disc.
+/// The body is one colour: a gradient reads on screen as a grey smear
+/// that never resolves into an object.
 ///
 /// Walks the band's radial run at its vertical middle and requires every
-/// sample to agree. A gradient of any consequence fails; so does a return
-/// to painting the surface as a stack of concentric strokes, which left a
-/// brighter seam wherever two translucent rings overlapped.
+/// sample to agree. A gradient of any consequence fails; so does a ring
+/// fill, which leaves a brighter seam where two translucent rings overlap.
 ///
 /// Rendered on a mid-grey ground so a translucent body has something to
 /// differ against — over black an alpha ramp reads as almost no delta at
@@ -400,9 +384,9 @@ fn the_band_is_filled_flat_with_a_single_colour() {
     let lo = *samples.iter().min().unwrap();
     let hi = *samples.iter().max().unwrap();
 
-    // The old ramp ran from 0 to 168/255 alpha across this run, which on a
-    // mid-grey ground is a spread of well over 80 luma. A flat fill has
-    // only dithering and the sector dividers to account for.
+    // A gradient of any consequence spans well over 80 luma on this
+    // mid-grey ground; a flat fill has only dithering and the sector
+    // dividers to account for.
     assert!(
         hi - lo <= 8,
         "the band is shaded, not flat: luma runs {lo}..{hi} across its radial run \
@@ -411,9 +395,6 @@ fn the_band_is_filled_flat_with_a_single_colour() {
 }
 
 /// The disc is a thing you spin, so its contents have to turn WITH it.
-/// The design this replaced failed exactly there: workspaces were pills
-/// in an upright column and the arc behind them was scenery, so turning
-/// the wheel slid a list and left the disc sitting still.
 ///
 /// A label lying on the surface tips as its sector comes round, and that
 /// is the difference, so that is what this measures. The active label is
@@ -473,12 +454,9 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
 /// Renders the disc under every theme track the shell can be switched
 /// into, and requires the surface to actually change with the theme.
 ///
-/// The disc used to paint six literal Tailwind hex values for its
-/// workspace colours, so the same maroon-tinted pink sector arrived
-/// under the light theme and under high contrast alike — no theme could
-/// reach it. Sampling the active wedge in three themes and requiring
-/// three different answers is what keeps that from coming back: a
-/// hardcoded constant cannot pass a test that asks the theme to move it.
+/// Sampling the active wedge in three themes and requiring three
+/// different answers is the guard against a hardcoded palette: a
+/// constant colour cannot pass a test that asks the theme to move it.
 #[test]
 fn the_disc_takes_its_colours_from_the_theme() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
@@ -527,10 +505,7 @@ fn the_disc_takes_its_colours_from_the_theme() {
         );
 
         // The channel the wedge pushes hardest must be the channel the
-        // theme's own workspace colour leads with. This is the
-        // assertion the hardcoded palette could not pass: it painted
-        // `pink-500`, which leads with red, while every theme's derived
-        // series leads with its accent.
+        // theme's own workspace colour leads with.
         let delta = [lit.0 - unlit.0, lit.1 - unlit.1, lit.2 - unlit.2];
         let lead = |c: [i32; 3]| {
             (0..3).max_by_key(|&i| c[i]).expect("three channels")

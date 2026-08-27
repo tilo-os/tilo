@@ -1,56 +1,33 @@
 //! `org.freedesktop.impl.portal.Print` backend.
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.Print.xml`.
-//!
-//! Two methods:
-//!
-//! - `PreparePrint(handle, app_id, parent_window, title, settings, page_setup, options)
-//!   → (response, results)` — the dialog half. `results` carries the
-//!   settings and page setup the user agreed to, plus a `token` the app
-//!   presents on a later `Print` to say "this is the job you just
-//!   configured".
-//! - `Print(handle, app_id, parent_window, title, fd, options)
-//!   → (response, results)` — the submission half. `fd` is a descriptor
-//!   for the document; `options` may carry the `token`.
+//! `PreparePrint` is the dialog half — a token in its `results` ties a
+//! later `Print` to what the user configured; `Print` is the
+//! submission half, with `fd` naming the document.
 //!
 //! ## Why the portal exists at all
 //!
-//! Printing is the one desktop capability where the naive
-//! implementation hands an untrusted app a *bidirectional socket to a
-//! network daemon running as another user*. `/run/cups/cups.sock` is
-//! not a printer — it is an IPP endpoint that will enumerate
-//! destinations, create and cancel other users' jobs, and, on a
-//! default CUPS install, talk to whatever it has been configured to
-//! browse. Binding it into a sandbox to let an app print a PDF trades
-//! the entire sandbox for one feature.
+//! The naive implementation hands an untrusted app a bidirectional
+//! socket to CUPS — an IPP endpoint that enumerates destinations and
+//! can create or cancel *other users'* jobs, not just "a printer".
+//! Binding it into a sandbox to let an app print a PDF trades the
+//! entire sandbox for one feature.
 //!
-//! So the app never gets the socket. It gets exactly two things:
-//!
-//! 1. a way to hand over **bytes** (a file descriptor), and
-//! 2. a way to ask **the user** to send them somewhere.
-//!
-//! Everything else — which printer exists, which one is selected, what
-//! the job is called, how many copies, whether the submission happens
-//! at all — is decided on this side of the boundary. The app cannot
-//! name a destination that the user's CUPS does not already have, and
-//! cannot speak a word of IPP. The only string of the app's that ever
-//! reaches an argv is the job title, and it is sanitised
-//! ([`sanitise_title`]) before it does.
-//!
-//! Correspondingly, [`Capability::Print`] deliberately has **no arm**
-//! in `SandboxProfile::apply_grants`: granting print permission adds no
-//! bind mount, so no amount of granting causes the CUPS socket to
-//! appear inside the sandbox. That is enforced by construction rather
-//! than by remembering — see `print_grant_never_binds_the_cups_socket`
-//! in `tests/portal_test.rs`.
+//! So the app gets only a file descriptor for bytes and a prompt
+//! asking the user where to send them; everything else — which
+//! printer, whether to submit at all — is decided on this side.
+//! [`Capability::Print`] has **no arm** in `SandboxProfile::apply_grants`
+//! for the same reason: granting it adds no bind mount, so nothing
+//! ever puts the CUPS socket inside the sandbox (enforced by
+//! construction — see `print_grant_never_binds_the_cups_socket` in
+//! `tests/portal_test.rs`).
 //!
 //! ## Consent
 //!
-//! **Both** methods go through [`flow::resolve`]. See the comment on
-//! [`PrintBackend::prepare_print`] for why the discovery call prompts
-//! too — in short, the printer list is itself the disclosure, and an
-//! app that only ever calls `PreparePrint` would otherwise harvest it
-//! without a single prompt ever firing.
+//! **Both** methods go through [`flow::resolve`], including
+//! `PreparePrint`: the printer list is itself the disclosure an app
+//! could otherwise harvest without ever calling `Print`. See
+//! [`PrintBackend::prepare_print`].
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};

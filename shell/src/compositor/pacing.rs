@@ -1,58 +1,17 @@
 //! The compositor's presentation clock.
 //!
-//! # What was wrong
+//! [`FrameClock`] holds the interval the display actually runs at, and
+//! answers two questions: [`FrameClock::due`] — has the next presentation
+//! deadline arrived — and [`FrameClock::budget`] — how long may the loop
+//! park before it must be back for that deadline. The interval comes from
+//! the backend ([`super::backend::Backend::refresh_interval`]); the
+//! headless backend has no display and falls back to [`FALLBACK_INTERVAL`].
 //!
-//! The native loop paced itself with a constant:
-//!
-//! ```text
-//! let frame_period = Duration::from_millis(16);
-//! …do all the work…
-//! event_loop.dispatch(frame_period, &mut state);
-//! ```
-//!
-//! Two separate faults sit in those three lines.
-//!
-//! 1. **The period is a sleep, not a deadline.** `dispatch` parks for up
-//!    to `frame_period` *after* the tick's work is finished, so the real
-//!    cadence is `work + 16 ms`. Measured on the headless backend at
-//!    1600x900 that is 21.9 ms — 45.6 Hz from a loop that believes it is
-//!    running at 60.
-//! 2. **The period is a guess.** 16 ms is neither 60 Hz (16.667 ms) nor
-//!    any other real mode. A 144 Hz panel gets 60-ish fps; a 30 Hz mode
-//!    gets frames it cannot show.
-//!
-//! # What this is
-//!
-//! [`FrameClock`] holds the interval the display actually runs at and
-//! answers two questions:
-//!
-//! * [`FrameClock::due`] — has the next presentation deadline arrived?
-//!   The paint gate consults this so the compositor never presents faster
-//!   than the display can show, even when protocol traffic wakes the loop
-//!   early.
-//! * [`FrameClock::budget`] — how long may the loop park before it must
-//!   be back? That is what the event loop's dispatch timeout becomes, so
-//!   a tick that spent 6 ms working parks for `interval - 6 ms` instead of
-//!   a further whole interval.
-//!
-//! The interval comes from the backend ([`super::backend::Backend::refresh_interval`]):
-//! the DRM backend reports its connector's mode, the winit backend reports
-//! the host monitor's refresh rate, and the headless backend reports
-//! nothing at all — it has no display, so it falls back to
-//! [`FALLBACK_INTERVAL`] and stays entirely decoupled from any display
-//! concept.
-//!
-//! # Phase
-//!
-//! [`FrameClock::note_presented`] re-anchors the deadline series on a real
-//! presentation timestamp. Without it the clock free-runs on its own
-//! notion of the interval and slowly walks out of phase with the panel
-//! (a 60.000 Hz clock against a 59.94 Hz panel drifts a whole frame every
-//! 16 seconds). Deadlines advance in whole intervals from the previous
-//! deadline, so the phase is preserved across a late frame instead of
-//! being reset to "now" — and a frame that ran several intervals long
-//! skips the deadlines it missed rather than queueing a burst of
-//! zero-length budgets to catch up.
+//! [`FrameClock::note_presented`] advances deadlines in whole intervals
+//! from the *previous* deadline rather than resetting to "now", so the
+//! series stays phase-locked to the display instead of drifting frame by
+//! frame; a frame that runs long skips the deadlines it missed instead of
+//! queueing a burst of zero-length budgets to catch up.
 
 use std::time::{Duration, Instant};
 
@@ -223,7 +182,6 @@ impl FrameClock {
         true
     }
 
-    /// Whether the next presentation deadline has arrived.
     pub fn due(&self, now: Instant) -> bool {
         now >= self.next_deadline
     }
@@ -240,30 +198,16 @@ impl FrameClock {
 
     /// How long the loop should park at the bottom of a tick.
     ///
-    /// The question this answers is about the *deadline*, not about
-    /// whether this tick painted:
+    /// This is about the *deadline*, not whether this tick painted:
     ///
     /// * Deadline still ahead — park the remainder of the interval, so
-    ///   the next tick starts on it. This covers a tick that presented
-    ///   (its deadline was just advanced) **and** a tick that woke early
-    ///   and declined to paint.
+    ///   the next tick starts on it. Covers both a tick that just
+    ///   presented and one that woke early and declined to paint.
     /// * Deadline already behind — nothing was presented for it, because
     ///   there was nothing to show or no room in the pipe. Parking on a
     ///   stale deadline would return a zero budget and spin the loop at
-    ///   100% CPU, so park a whole interval: the loop still wakes at
-    ///   display rate to poll input and protocol traffic, it just doesn't
-    ///   render.
-    ///
-    /// Deciding this on "did this tick paint" instead is a real bug, and
-    /// it shipped: a tick woken mid-interval by the render thread
-    /// retiring a frame doesn't paint (it isn't due yet), and would then
-    /// park a *whole* interval measured from that wakeup — overshooting
-    /// the deadline by however far into the interval it happened to wake.
-    /// Measured on a nested run under load, that put 343 of 462
-    /// non-painting ticks to sleep for a full 16.7 ms each, burning 5.73 s
-    /// of an 8.49 s run and stretching the paint period from 16.67 ms to
-    /// 22.88 ms. It was invisible on the headless backend, which has no
-    /// render thread and so nothing to wake it early.
+    ///   100% CPU, so this parks a whole interval instead: the loop still
+    ///   wakes at display rate to poll input, it just doesn't render.
     pub fn park(&self, now: Instant) -> Duration {
         if self.due(now) {
             self.interval
@@ -366,9 +310,6 @@ mod tests {
 
     #[test]
     fn budget_is_the_remainder_of_the_interval_not_a_whole_one() {
-        // This is the bug the whole module exists for. A tick that
-        // started at T and spent 6 ms working must park for
-        // interval - 6 ms, so the next tick starts at T + interval.
         let t0 = Instant::now();
         let mut clock = FrameClock::new(Duration::from_micros(16_667), t0);
         assert!(clock.due(t0), "the first deadline is immediately due");
@@ -400,9 +341,8 @@ mod tests {
     #[test]
     fn deadlines_stay_phase_locked_across_a_late_frame() {
         // Present on time, then present 4 ms late. The next deadline must
-        // still land on the original grid (2 * interval from the start),
-        // not 4 ms after the late presentation — otherwise every late
-        // frame permanently shifts the phase away from the panel.
+        // land on the original grid (2 * interval from the start), not
+        // 4 ms after the late presentation.
         let t0 = Instant::now();
         let interval = Duration::from_micros(10_000);
         let mut clock = FrameClock::new(interval, t0);
@@ -419,10 +359,9 @@ mod tests {
 
     #[test]
     fn a_frame_that_overruns_several_intervals_skips_them_instead_of_bursting() {
-        // A 50 ms stall on a 10 ms clock. The clock must resume at the
-        // next future deadline and report 4 missed ones — not hand out
-        // five consecutive zero-length budgets, which would make the loop
-        // spin painting frames nobody can see.
+        // A 50 ms stall on a 10 ms clock: must resume at the next future
+        // deadline and report 4 missed ones, not hand out five consecutive
+        // zero-length budgets.
         let t0 = Instant::now();
         let interval = Duration::from_micros(10_000);
         let mut clock = FrameClock::new(interval, t0);
@@ -448,9 +387,8 @@ mod tests {
 
     #[test]
     fn due_gates_presentation_between_deadlines() {
-        // Protocol traffic wakes the loop mid-interval. The paint gate
-        // must decline: presenting twice inside one refresh interval is
-        // work the display throws away.
+        // Protocol traffic wakes the loop mid-interval; the paint gate
+        // must decline.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -482,7 +420,6 @@ mod tests {
             !clock.set_interval(Duration::from_micros(6_944)),
             "an unchanged interval must report no change so callers don't log every tick"
         );
-        // From here the series runs at the new rate.
         clock.note_presented(pending);
         assert_eq!(clock.next_deadline(), pending + Duration::from_micros(6_944));
     }
@@ -509,15 +446,9 @@ mod tests {
 
     #[test]
     fn a_wakeup_that_does_not_paint_must_not_push_the_deadline_out() {
-        // The regression this pins shipped and was measured. After
-        // presenting at T the next deadline is T + interval. Something
-        // wakes the loop at T + 2ms — on the threaded path, the render
-        // thread retiring a frame — and it declines to paint because it
-        // isn't due yet. It must park 14.67ms, landing exactly on the
-        // deadline. Parking a whole interval instead lands at T + 18.67ms,
-        // and since every early wakeup does it again the paint period
-        // walks away from the target: measured at 22.88ms against a
-        // 16.67ms goal, with 0% of frames on cadence.
+        // Something wakes the loop at T + 2ms — on the threaded path, the
+        // render thread retiring a frame — and it declines to paint
+        // because it isn't due yet.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -534,7 +465,6 @@ mod tests {
              parking a whole one from the wakeup overshoots the deadline by \
              however far in it woke"
         );
-        // And the landing point is the deadline itself, not past it.
         assert_eq!(
             woken_early + clock.park(woken_early),
             clock.next_deadline(),
@@ -568,11 +498,8 @@ mod tests {
 
     #[test]
     fn repeated_early_wakeups_do_not_accumulate_drift() {
-        // Simulate the nested-under-load pattern: every interval gets one
-        // paint plus a spurious wakeup partway through. The presentation
-        // instants must stay exactly on the grid. Under the shipped bug
-        // each spurious wakeup added its own offset to the next paint, so
-        // this walks off the grid immediately.
+        // Every interval gets one paint plus a spurious wakeup partway
+        // through. The presentation instants must stay exactly on the grid.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -580,13 +507,11 @@ mod tests {
         let mut now = t0;
         let mut presents = Vec::new();
         for i in 0..200u32 {
-            // Paint.
             now += work;
             presents.push(now);
             clock.note_presented(now);
             now += clock.park(now);
-            // A wakeup partway through the next interval that paints
-            // nothing. Vary the offset so this isn't tuned to one phase.
+            // Vary the offset so this isn't tuned to one phase.
             let offset = Duration::from_micros(500 + (i as u64 % 7) * 1_500);
             let spurious = now.min(clock.next_deadline() - Duration::from_micros(1)) + offset;
             if spurious < clock.next_deadline() {
@@ -628,9 +553,7 @@ mod tests {
     fn a_steady_loop_holds_the_target_cadence_over_many_frames() {
         // End-to-end on the production type: simulate 600 ticks of a
         // 5 ms workload on a 144 Hz clock and assert the presentation
-        // instants stay on the 6.944 ms grid. The old fixed-sleep pacing
-        // would land these 5 ms apart from each other's *end*, i.e. at
-        // ~11.9 ms intervals.
+        // instants stay on the 6.944 ms grid.
         let t0 = Instant::now();
         let interval = Duration::from_micros(6_944);
         let mut clock = FrameClock::new(interval, t0);

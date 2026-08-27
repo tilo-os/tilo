@@ -137,13 +137,8 @@ fn workspace_settings_general_edits_name_and_removes_collaborator() {
 
 #[test]
 fn workspace_settings_members_tab_reads_the_real_roster() {
-    // Replaces four tests over `Workspace::roles` +
-    // `Workspace::workspace_files` and the two `DataTable`s built on
-    // them. That vocabulary is gone: nothing consulted it, and both
-    // vectors were empty in every production construction, so the tables
-    // asserted only that a table had columns. What a member may do is
-    // the verb on their membership capability, and that is what the
-    // Members pane renders.
+    // What a member may do is the verb on their membership capability,
+    // and that is what the Members pane renders.
     use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
     use shell::shell::workspace_settings::{WsTab, members_pane_rows};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
@@ -199,9 +194,9 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     assert_eq!(row.subject.id, "Terminal");
     // `capability_allows` phrases a workspace-projected `FsPath` scope as
     // "Edit workspace files" rather than exposing the FUSE mount point
-    // (`WORKSPACE_FILES_PATH`) — HIG §4: no internal/implementation
-    // labels in user-facing chrome. See the doc comment on
-    // `capability_allows` in workspace_settings.rs.
+    // (`WORKSPACE_FILES_PATH`) — no internal/implementation labels in
+    // user-facing chrome. See the doc comment on `capability_allows` in
+    // workspace_settings.rs.
     assert_eq!(row.allows, "Edit workspace files");
     assert_eq!(row.expiry, "Session");
     // The composer is laid out whether or not anything is granted yet.
@@ -294,14 +289,12 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     let colors = chrome.collaborator_colors();
     assert_eq!(colors.len(), 2);
     // Two peers with distinct ids must resolve to distinct hues; otherwise
-    // overlapping avatars collapse into a single indigo blob (gap #9).
+    // overlapping avatars collapse into a single indigo blob.
     assert_ne!(colors[0], colors[1]);
 }
 
-/// Gap #7: the top-bar clock must draw at the Bold (700) weight tier so
-/// it reads as the focal "glance value" on the dark chrome instead of
-/// collapsing onto the fallback font's single weight. Pinning the
-/// widget-level weight contract guards the explicit
+/// The top-bar clock must draw at the Bold (700) weight tier so it reads
+/// as the focal "glance value" on the dark chrome. Pins the explicit
 /// `draw_text_weighted(..., TextWeight::Bold)` swap in the Clock branch
 /// of `TopBarChrome::draw` against accidental reverts to `draw_text`
 /// (which defaults to Regular).
@@ -332,18 +325,9 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
 }
 
 /// The top bar is opaque, and it takes its opacity from the one chrome
-/// constant rather than a number of its own.
-///
-/// This used to pin α = 0.80, honouring "just the alpha split" of the
-/// concept's `bg-black/80 backdrop-blur-xl` on the grounds that vello has
-/// no `backdrop-blur`. That reasoning does not survive contact with the
-/// result: a tint without its blur is not glass but a contrast loss that
-/// changes with whatever the user has open behind it, and measured at
-/// 0.80 a single quick-settings panel's own body ran `#ffffff` over a
-/// document and `#f7f7f7` over the desktop — one surface reading as two.
-/// The palette and the settings modal had already gone opaque for the
-/// same reason (see `palette_surface_is_opaque` below); a 2026-08 report
-/// on the popover's transparency finished the job.
+/// constant rather than a number of its own — a tint without a blur
+/// (which vello has none of) is not glass but a contrast loss that
+/// varies with whatever the user has open behind it.
 ///
 /// Pinned against the toolkit constant rather than a literal, which is
 /// the stronger guard: the bar and the popovers that hang off it are one
@@ -363,11 +347,10 @@ fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
     );
 }
 
-/// The GlobalSearch palette surface is opaque. It used to be tinted at
-/// the concept's `bg-slate-900/70`, but long result rows read as chrome
-/// bleeding through whatever sat underneath, so the palette now paints
-/// solid and leans on the scrim below it for the "page on top of a page"
-/// depth cue instead.
+/// The GlobalSearch palette surface is opaque: a tint reads as chrome
+/// bleeding through long result rows, so the palette paints solid and
+/// leans on the scrim below it for the "page on top of a page" depth
+/// cue instead.
 ///
 /// Same regression-guard contract as the topbar test above: pin the
 /// number the draw path uses, and pin it against
@@ -391,12 +374,10 @@ fn global_search_surface_alpha_is_opaque_and_matches_the_modal_tint() {
     );
 }
 
-/// Gap #5: the top-bar overview button paints lucide `LayoutGrid` via
-/// the shared `ui::icons` module, not the legacy 4-filled-rect
-/// quad. Route the assertion through the `overview_glyph_icon()`
-/// accessor so a future revert (e.g. someone replacing `draw_icon` with
-/// a hand-rolled shape again) flips this test to red without needing a
-/// pixel snapshot harness.
+/// The top-bar overview button paints lucide `LayoutGrid` via the shared
+/// `ui::icons` module, not a hand-rolled quad. Routes the assertion
+/// through the `overview_glyph_icon()` accessor so a future revert
+/// flips this test to red without needing a pixel snapshot harness.
 #[test]
 fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -408,11 +389,10 @@ fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
     );
 }
 
-/// Gap #8: the center-band active dot must read as a focused indicator,
-/// not just a slightly tinted sibling. The concept achieves this with a
-/// saturated indigo fill plus a 1.2×–1.6× scale-up; if the radii ever
-/// converge the three-dot stack collapses back into three identical
-/// circles and the carousel loses its "where are we" affordance.
+/// The center-band active dot must read as a focused indicator, not just
+/// a slightly tinted sibling — if the radii ever converge, the three-dot
+/// stack collapses back into three identical circles and the carousel
+/// loses its "where are we" affordance.
 #[test]
 fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     use shell::shell::topbar_chrome::TopBarChrome;
@@ -462,7 +442,7 @@ fn sidebar_wheel_switches_active_strip() {
     assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[1].id);
     w.on_wheel(1, &mut tree);
     assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
-    // clamped — overscroll not yet committing (T22 adds it)
+    // clamped — overscroll not yet committing
     w.on_wheel(1, &mut tree);
     assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
 }
@@ -582,7 +562,7 @@ fn shell_root_starts_with_every_overlay_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// T28 — shell-level global hotkeys + shell routing
+// Shell-level global hotkeys + shell routing
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -637,16 +617,11 @@ fn toast_fires_on_rename_and_create() {
 fn sidebar_wheel_event_routes_through_shell() {
     use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
-    // Seed the active workspace with a second strip so a +1 wheel can advance
-    // without being clamped. Going through the runtime tree here is fine —
-    // Shell::simulate_sidebar_wheel is the routing under test, not the tree
-    // layout itself.
     let strips_before = shell.active_strip_index();
     shell.simulate_sidebar_wheel(1);
-    // Either the index advanced, or it was already at the last strip and
-    // the clamp held. Both are valid outcomes; the test only asserts that
-    // the shell *routed* the wheel to the sidebar widget without panicking
-    // and without mutating the search/overview flags.
+    // Either the index advanced or the clamp held at the last strip — both
+    // valid. This only asserts the shell *routed* the wheel to the sidebar
+    // widget without panicking or mutating the search/overview flags.
     let _ = strips_before;
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());
@@ -664,7 +639,7 @@ fn tray_gear_toggles_quick_settings_via_shell() {
 }
 
 // ---------------------------------------------------------------------------
-// T31 — Tooltip wiring: topbar workspace-name button tooltip
+// Tooltip wiring: topbar workspace-name button tooltip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -680,7 +655,7 @@ fn topbar_ws_name_tooltip_reveals_after_delay() {
 }
 
 // ---------------------------------------------------------------------------
-// T30 — ContextMenu wiring: right-click on tile → default menu
+// ContextMenu wiring: right-click on tile → default menu
 // ---------------------------------------------------------------------------
 
 #[test]

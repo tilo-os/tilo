@@ -1,5 +1,4 @@
-//! Track D1 — the compositor-owned `org.freedesktop.Notifications` D-Bus
-//! service.
+//! The compositor-owned `org.freedesktop.Notifications` D-Bus service.
 //!
 //! In qOS the desktop *chrome* is owned by the compositor (top bar, the
 //! inline permission-prompt bar, presence, theming), and notifications
@@ -22,18 +21,6 @@
 //! [`crate::portal::PromptQueueHandle`] hands prompts from the async
 //! portal to the synchronous chrome pump.
 //!
-//! Data flows both ways across the bridge:
-//!
-//! * **app → compositor**: `Notify` pushes an [`IncomingNotification`];
-//!   `CloseNotification` pushes a close request. The compositor's
-//!   per-frame pump ([`ChromeState::pump_dbus_notifications`]) drains
-//!   them into the live toast stack.
-//! * **compositor → app**: when a toast expires, is dismissed, or is
-//!   closed, the chrome records a closed/action event on the bridge; the
-//!   [`spawn_signal_emitter`] task drains those and emits the
-//!   `NotificationClosed` / `ActionInvoked` D-Bus signals back to the
-//!   originating app.
-//!
 //! ## Caller attribution
 //!
 //! Each `Notify` call is attributed to the sending app's workspace via
@@ -42,9 +29,6 @@
 //! [`crate::portal::PortalCaller`] (`workspace_id` + `app_id`). The
 //! resolved caller rides along on [`IncomingNotification::caller`] so the
 //! toast can be attributed to the right workspace/app.
-//!
-//! [`ChromeState`]: crate::shell::chrome_state::ChromeState
-//! [`ChromeState::pump_dbus_notifications`]: crate::shell::chrome_state::ChromeState::pump_dbus_notifications
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};

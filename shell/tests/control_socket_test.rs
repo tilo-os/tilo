@@ -1,5 +1,4 @@
-//! Real-input e2e Phase 1b — end-to-end test of the
-//! `QOS_TEST_CONTROL` unix socket.
+//! Real-input e2e test of the `QOS_TEST_CONTROL` unix socket.
 //!
 //! Spawns `quick-desktop --mode native`, sets `QOS_TEST_CONTROL` to
 //! a temp path, waits for the socket-listening line on stderr, then
@@ -85,9 +84,9 @@ fn spawn_with_control() -> (Child, PathBuf) {
     });
 
     // Also drain stdout. `tracing_subscriber` (and wgpu's vulkan layer
-    // when validation is requested) writes to stdout — Phase 4's
-    // `snapshot` doubles the log spam by spinning up a second wgpu
-    // instance for the OffscreenRenderer. Once the pipe fills (Linux
+    // when validation is requested) writes to stdout — `snapshot`
+    // doubles the log spam by spinning up a second wgpu instance for
+    // the OffscreenRenderer. Once the pipe fills (Linux
     // default 64 KiB) the child blocks on write, which freezes the
     // calloop tick that's mid-`write_snapshot_png` — observed as a
     // 30 s `WouldBlock` on the client read. Draining unblocks it.
@@ -206,13 +205,10 @@ fn unknown_command_returns_parse_error() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 2b: `click_at` should execute the planned `CursorMoved` +
-/// button-down + button-up sequence and reply `Ok`. The exact pixel
-/// coordinates don't matter for this test — we only assert the
-/// command round-trips successfully and doesn't error out (Phase 1b
-/// behaviour logged the actions but never executed them, returning
-/// `Ok` for a no-op; Phase 2b returns `Ok` after actually running
-/// them through the host).
+/// `click_at` should execute the planned `CursorMoved` + button-down +
+/// button-up sequence and reply `Ok`. The exact pixel coordinates
+/// don't matter for this test — we only assert the command round-trips
+/// successfully and doesn't error out.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_at_returns_ok_response() {
@@ -233,11 +229,11 @@ fn click_at_returns_ok_response() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 2b: `click_named` for a known widget should resolve via the
-/// registry and execute the click; for an unknown name it should
-/// return `unknown_target`. Picks `wheel_disc` (a stable test_id on
-/// the bootstrap layout) as the known target so the test doesn't
-/// depend on path-key strings that may shift across refactors.
+/// `click_named` for a known widget should resolve via the registry
+/// and execute the click; for an unknown name it should return
+/// `unknown_target`. Picks `wheel_disc` (a stable test_id on the
+/// bootstrap layout) as the known target so the test doesn't depend on
+/// path-key strings that may shift across refactors.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_named_known_target_grows_workspace_registry() {
@@ -285,11 +281,11 @@ fn click_named_known_target_grows_workspace_registry() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 2b: `click_named` for a name that doesn't resolve must return
-/// the `unknown_target` error — same contract as the in-process
+/// `click_named` for a name that doesn't resolve must return the
+/// `unknown_target` error — same contract as the in-process
 /// `dispatch_command` returns. This guarded behaviour is what tells
-/// the harness "your test is targeting a stale widget id" rather
-/// than silently dropping the click on the floor.
+/// the harness "your test is targeting a stale widget id" rather than
+/// silently dropping the click on the floor.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_named_unknown_target_returns_structured_error() {
@@ -313,10 +309,10 @@ fn click_named_unknown_target_returns_structured_error() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 3: a drag command should round-trip without erroring. The
-/// pixel coordinates don't matter for the smoke — we only assert
-/// the planned action sequence (motion, press, N motions, release)
-/// runs end-to-end through the executor.
+/// A drag command should round-trip without erroring. The pixel
+/// coordinates don't matter for the smoke — we only assert the
+/// planned action sequence (motion, press, N motions, release) runs
+/// end-to-end through the executor.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn drag_smoke_completes_round_trip() {
@@ -339,10 +335,10 @@ fn drag_smoke_completes_round_trip() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 3: opening the command palette via Ctrl+K and then typing
-/// "hello" should land the literal text in the palette's query
-/// field. Best-effort — if the chord doesn't open the palette under
-/// the test_control wire (something the wire's contract is meant to
+/// Opening the command palette via Ctrl+K and then typing "hello"
+/// should land the literal text in the palette's query field.
+/// Best-effort — if the chord doesn't open the palette under the
+/// test_control wire (something the wire's contract is meant to
 /// guarantee), we still assert the Type command completed `Ok`.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
@@ -383,11 +379,11 @@ fn type_text_into_palette_when_open() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 4: a `snapshot` command should write a PNG to the requested
-/// path and reply `Ok`. We don't assert pixel content (the
-/// compositor's bootstrap layout drifts over time as widgets evolve);
-/// the contract is "the file exists, starts with the PNG magic, and
-/// is non-trivial in size".
+/// A `snapshot` command should write a PNG to the requested path and
+/// reply `Ok`. We don't assert pixel content (the compositor's
+/// bootstrap layout drifts over time as widgets evolve); the contract
+/// is "the file exists, starts with the PNG magic, and is non-trivial
+/// in size".
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn snapshot_writes_png_at_requested_path() {
@@ -444,9 +440,9 @@ fn snapshot_writes_png_at_requested_path() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 5: `state_dump` should round-trip the live workspace tree +
-/// chrome view. We don't assert on every field (those drift as the
-/// shell evolves) — the contract is "workspace_tree has a non-empty
+/// `state_dump` should round-trip the live workspace tree + chrome
+/// view. We don't assert on every field (those drift as the shell
+/// evolves) — the contract is "workspace_tree has a non-empty
 /// `workspaces` array, chrome has an `overlays` sub-object".
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
@@ -484,9 +480,9 @@ fn state_dump_returns_workspace_id_and_chrome() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Phase 3: a `modifiers` command on its own (no follow-up key) is a
-/// valid no-op — the modifier mask is state, not an event. Must
-/// still respond with `ok`.
+/// A `modifiers` command on its own (no follow-up key) is a valid
+/// no-op — the modifier mask is state, not an event. Must still
+/// respond with `ok`.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn modifiers_alone_returns_ok() {

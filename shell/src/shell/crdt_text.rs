@@ -1,36 +1,20 @@
 //! The plaintext body every CRDT-backed text tile in the shell is built on.
 //!
 //! [`NotesApp`](super::notes_app::NotesApp) and
-//! [`EditorApp`](super::editor_app::EditorApp) render very differently — one
-//! wraps prose, the other tiles discrete lines behind a line-number gutter —
-//! but underneath they are the same thing: a single Automerge `Text` object
-//! under a well-known key, a byte-offset caret over a mirrored `String`, and
-//! a tile that fills its parent. That shared half lives here so the two
-//! surfaces cannot drift apart on the part that has to agree: how an edit
-//! reaches the CRDT.
+//! [`EditorApp`](super::editor_app::EditorApp) render differently but share
+//! this: one Automerge `Text` under a well-known key, a byte-offset caret
+//! over a mirrored `String`, and a tile filling its parent.
 //!
-//! # Why the mirror
+//! `text` mirrors the CRDT because `AutoCommit::text` allocates the whole
+//! document — draw/hit-test read the mirror, only writes touch Automerge.
+//! [`CrdtTextBody::sync`] re-establishes the invariant each frame: the CRDT
+//! is the source of truth, the mirror a cache.
 //!
-//! `text` is a plain `String` kept in step with the CRDT. Reading
-//! `AutoCommit::text` allocates the whole document, so the draw and hit-test
-//! passes read the mirror instead and only the write path touches Automerge.
-//! [`CrdtTextBody::sync`] is what re-establishes the invariant each frame:
-//! the CRDT is the source of truth, the mirror is a cache.
-//!
-//! The caret walkers here are thin wrappers over `ui::text_selection` —
-//! the toolkit already owns "step one scalar left/right", and a second
-//! implementation is exactly the kind of drift this module exists to stop.
-//!
-//! # Why the splices are narrow
-//!
-//! Every write goes through [`CrdtTextBody::splice`], which addresses the
-//! exact char range that changed. The pattern this avoids is
-//! `splice_text(id, 0, len, whole_new_value)` — Automerge keeps every
-//! inserted element as a tombstone, so rewriting the whole body per keystroke
-//! costs O(len) ops and accumulates O(len²) over a typing session. Callers
-//! that only have a *new whole string* rather than a range should reach for
-//! [`ui::doc::splice_text_diffed`] instead, which computes the narrow range
-//! first.
+//! Every write goes through [`CrdtTextBody::splice`], addressing the exact
+//! range that changed — rewriting the whole body per keystroke leaves every
+//! element as a tombstone, O(len) ops per edit and O(len²) over a session.
+//! Callers holding only a new whole string want
+//! [`ui::doc::splice_text_diffed`], which narrows the range first.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -49,14 +33,10 @@ pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 /// Read the text a [`CrdtTextBody`] bound to `key` holds under `root`,
 /// without constructing the widget that owns it.
 ///
-/// This is the read half of [`CrdtTextBody::sync`]'s layout and it lives
-/// beside it deliberately: anything that wants at a text tile's content —
-/// the shell's in-app search, above all — has to look exactly where the
-/// app puts it. A body sits at `<root>/<key>` of **the tab's own
-/// document**, one per record; reach it through
-/// [`crate::shell::tab_documents::tab_body`], which knows which document
-/// a tab is. Reading one body and attributing it to every tab is what
-/// made two Notes tabs show each other's text.
+/// A body sits at `<root>/<key>` of **the tab's own document**, one per
+/// record; reach it through [`crate::shell::tab_documents::tab_body`],
+/// which knows which document a tab is. Reading one body and attributing
+/// it to every tab makes two Notes tabs show each other's text.
 pub fn read_body(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
     match doc.get(root, key) {
         Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
@@ -70,11 +50,9 @@ pub struct CrdtTextBody {
     /// Automerge key under the tile's root. Distinct per app so two text
     /// tiles hosted in the same shell don't write over each other.
     key: &'static str,
-    /// The record whose document this body lives in, once the host has
-    /// said. Part of the presence key and nothing else: the body's
-    /// *content* is addressed by `key` inside that document, but its
-    /// *identity to a peer* has to name the document too, or two tabs of
-    /// one app publish the same caret address.
+    /// The record whose document this body lives in. Part of the presence
+    /// key and nothing else — without it two tabs of one app publish the
+    /// same caret address.
     record: Option<String>,
     /// Mirror of the CRDT text, in step after every [`Self::sync`] and
     /// every [`Self::splice`]. Byte-indexed.
@@ -113,15 +91,11 @@ impl CrdtTextBody {
         self.record = Some(record.as_str().to_string());
     }
 
-    /// Presence key for this body — a widget-level path, so the peer
-    /// caret / selection helpers pick it up.
-    ///
-    /// The path names the record first and the field second, because a
-    /// caret is a position in a *document*: two Notes tabs are two
-    /// documents with a `notes_body` each, and a key that only said
-    /// "notes_body" addressed both of them at once — a peer typing in one
-    /// tab drew a caret in the other. An unhosted body (no record named
-    /// yet) keeps the bare field path.
+    /// Presence key for this body, so the peer caret / selection helpers
+    /// pick it up. Names the record first and the field second, because a
+    /// caret is a position in a *document*: a key saying only "notes_body"
+    /// addresses every Notes tab at once. An unhosted body keeps the bare
+    /// field path.
     pub fn presence_key(&self) -> PresenceKey {
         match &self.record {
             Some(record) => PresenceKey::Widget {
@@ -166,11 +140,9 @@ impl CrdtTextBody {
         }
     }
 
-    /// Replace the byte `range` with `s` in both the mirror and the CRDT,
-    /// splicing only that span. Returns the byte offset just past the
-    /// inserted text, which is where a caret following the edit belongs.
-    ///
-    /// An empty `range` is a pure insert; an empty `s` is a pure delete.
+    /// Replace the byte `range` with `s` in both mirror and CRDT, splicing
+    /// only that span; returns the offset just past the inserted text, where
+    /// a following caret belongs. Empty `range` inserts, empty `s` deletes.
     pub fn splice(
         &mut self,
         state: &mut AutoCommit,
@@ -236,12 +208,9 @@ impl CrdtTextBody {
     }
 }
 
-/// `Widget::build_layout` body for a tile that fills its parent. Both text
-/// apps are full-bleed leaves; the difference is entirely in `draw`.
+/// `Widget::build_layout` body for a tile that fills its parent.
 ///
-/// # Safety-adjacent
-///
-/// `widget` must be the `self` pointer of the caller, which is what makes
+/// `widget` must be the `self` pointer of the caller — that is what makes
 /// the `node_map` entry point back at the right widget during dispatch.
 pub fn full_bleed_leaf(
     taffy: &mut TaffyTree<()>,

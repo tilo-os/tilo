@@ -1,31 +1,12 @@
 //! Per-share observability counters — the OSD overlay's data source.
 //!
-//! [`PeerSurfaceMetrics`] aggregates several signals for each peer
-//! surface (the receive side of a `flatpak_share` session):
-//!
-//! 1. **Frame counters** — how many decoded frames landed, how many were
-//!    dropped because the decoder / paint queue backed up. Backpressure
-//!    on the receive side is drop-oldest: if the caller pushes a new
-//!    frame before `mark_drawn` has cleared the previous one and more
-//!    than `queue_ceiling` frames are pending, the oldest gets dropped
-//!    and [`Self::frames_dropped`] increments. Dropped frames are the
-//!    diagnostic the overlay surfaces when a link is over-subscribed.
-//!
-//! 2. **Latency samples** — a small ring of `(capture_ts_ns,
-//!    present_ts_ns)` deltas so the overlay can render a rolling motion-
-//!    to-photon histogram. The default ring holds the last 128 samples;
-//!    at 60 fps that's ~2.1 s of history, enough to catch a burst-of-
-//!    jitter without unbounded memory.
-//!
-//! 3. **Sender-side encode wall-clock** — a parallel ring of encode
-//!    times measured on the owner. Exposed as p50 / p99 in
-//!    [`PeerSurfaceSnapshot`] so the OSD can render "encode budget"
-//!    separately from "network + decode budget".
-//!
-//! 4. **Chosen backend + capture path** — set once at session start
-//!    ([`Self::set_chosen_encoder`], [`Self::set_capture_path`]) so the
-//!    OSD can label which pipeline is running. The runtime probe writes
-//!    the outcome here.
+//! [`PeerSurfaceMetrics`] aggregates, for each peer surface (the receive
+//! side of a `flatpak_share` session): frame counters (received vs.
+//! dropped under receive-side backpressure, which is drop-oldest); a
+//! rolling ring of motion-to-photon latency samples (128 samples ≈ 2.1 s
+//! at 60 fps); a parallel ring of sender-side encode wall-clock times,
+//! exposed as p50/p99; and the chosen encoder + capture path, set once at
+//! session start.
 //!
 //! Access is [`Clone`] + a single mutex-protected inner so multiple
 //! subsystems (the actor's receive loop, the PeerView paint pass, the
@@ -45,17 +26,13 @@ const ENCODE_WALLCLOCK_CAPACITY: usize = 128;
 /// Which route a captured frame took from the client's `wl_buffer` to
 /// the encoder.
 ///
-/// - `ShmReadback` — the historical path. Costs ~4 ms per 720p frame
-///   because it copies out of the client's SHM pool, swizzles ARGB→RGBA
-///   into a Vec, then hands the Vec to the encoder.
-/// - `DmabufDirect` — zero-copy path. The compositor detects a DMABUF
-///   `wl_buffer`, extracts the fd + strides, and hands them directly to
-///   the encoder (VA-API's `Surface::from_dma_buf`, NVENC's registered
-///   CUDA external memory). Saves the readback + swizzle cost — the
-///   difference shows up as ~3.5 ms in the encode-wallclock ring.
-///
-/// The default is `ShmReadback` — the tracker's fallback path for
-/// clients that ship SHM buffers (Xwayland is the common case).
+/// - `ShmReadback` — copies out of the client's SHM pool and swizzles
+///   ARGB→RGBA into a Vec before handing it to the encoder: ~4 ms per
+///   720p frame. Default fallback (Xwayland is the common case).
+/// - `DmabufDirect` — zero-copy: the compositor extracts the DMABUF fd +
+///   strides and hands them straight to the encoder (VA-API's
+///   `Surface::from_dma_buf`, NVENC's registered CUDA external memory),
+///   saving ~3.5 ms in the encode-wallclock ring.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum CapturePath {
     /// SHM pool readback + CPU-side swizzle.
@@ -104,14 +81,11 @@ struct Inner {
     /// Computed once per session from the `SurfaceStreamStart` handshake:
     /// `offset = receiver_monotonic_ns_at_recv - sender_monotonic_ns_at_send`.
     /// A frame with wire timestamp `ts` was captured on the sender at
-    /// receiver-monotonic time `ts + offset`; motion-to-photon latency
-    /// at the receiver is `receiver_now_ns - (ts + offset)`.
+    /// receiver-monotonic time `ts + offset`.
     ///
-    /// `None` means the handshake either hasn't landed yet or the peer
-    /// is on an older wire format that shipped `ts=0` (see the
-    /// `#[serde(default)]` note on `SurfaceStreamStart::sender_monotonic_ns_at_send`).
-    /// Callers treat "no offset" as "skip this measurement" rather than
-    /// stamping a wrong value.
+    /// `None` means the handshake hasn't landed, or the peer is on an
+    /// older wire format that shipped `ts=0`; callers treat "no offset"
+    /// as "skip this measurement" rather than stamping a wrong value.
     clock_offset_ns: Option<i128>,
 }
 
@@ -272,22 +246,15 @@ impl PeerSurfaceMetrics {
     }
 
     /// Learn the sender→receiver clock offset from a `SurfaceStreamStart`
-    /// handshake.
+    /// handshake, later consumed by [`Self::end_to_end_latency_ns`] to
+    /// translate every per-frame wire `ts` into the receiver's clock
+    /// domain.
     ///
-    /// Called once per session on the receiving side when the shell
-    /// decodes a [`crate::network::NeighbourMsg::SurfaceStreamStart`]
-    /// message. `sender_ns_at_send` is the sender's monotonic reading
-    /// at message construction; `receiver_ns_at_recv` is the receiver's
-    /// reading at message decode. The offset is stashed and later
-    /// consumed by [`Self::end_to_end_latency_ns`] to translate every
-    /// per-frame `ts` on the wire into the receiver's clock domain.
-    ///
-    /// Passing `sender_ns_at_send == 0` signals "the sender didn't
-    /// include the field" (older peers, or the `#[serde(default)]`
-    /// fallback). We clear the offset in that case rather than storing
-    /// a bogus receiver-clock value, so downstream latency queries
-    /// return `None` (which the OSD renders as "—") instead of a
-    /// nonsense number.
+    /// `sender_ns_at_send == 0` signals "the sender didn't include the
+    /// field" (older peers, or the `#[serde(default)]` fallback); the
+    /// offset is cleared in that case rather than storing a bogus value,
+    /// so downstream latency queries return `None` (OSD renders "—")
+    /// instead of a nonsense number.
     pub fn set_clock_offset(&self, sender_ns_at_send: u64, receiver_ns_at_recv: u64) {
         let mut inner = self.inner.lock().expect("metrics mutex");
         if sender_ns_at_send == 0 {

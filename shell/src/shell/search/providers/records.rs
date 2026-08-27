@@ -70,7 +70,6 @@ impl RecordsProvider {
         Self { index }
     }
 
-    /// The index this provider reads and writes.
     pub fn index(&self) -> Rc<RefCell<RoomRecords>> {
         Rc::clone(&self.index)
     }

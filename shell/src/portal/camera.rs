@@ -2,20 +2,14 @@
 //! Camera consent surface.
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.Access.xml`.
-//! Plan: Sandbox Phase 4.3, lines 335-353 (the plan lists
-//! "FileChooser+ScreenCast+Camera"; the host-side portal layout has
-//! Camera reusing `Access.AccessDialog` rather than owning a separate
-//! `impl.portal.Camera` interface).
+//! Camera reuses `Access.AccessDialog` rather than owning a separate
+//! `impl.portal.Camera` interface.
 //!
-//! When `xdg-desktop-portal-camera` receives an `AccessCamera()` call,
-//! it turns around and calls `org.freedesktop.impl.portal.Access.AccessDialog`
+//! When `xdg-desktop-portal-camera` receives an `AccessCamera()` call, it
+//! turns around and calls `org.freedesktop.impl.portal.Access.AccessDialog`
 //! on the configured backend with `subtitle="Allow access to your camera?"`
-//! (or similar localised text). We classify the request as a Camera
-//! capability based on the title/subtitle/options dict — see
-//! [`classify`].
-//!
-//! Methods:
-//! - `AccessDialog(handle, app_id, parent_window, title, subtitle, body, options) → (response, results)`
+//! (or similar localised text). The request is classified as a Camera
+//! capability from the title/subtitle/options dict — see [`classify`].
 
 use std::collections::HashMap;
 
@@ -69,16 +63,14 @@ impl AccessBackend {
 }
 
 /// Pick a [`CapabilityKind`] + [`Capability`] template from the request
-/// metadata. Heuristic: the host portal's `Camera.AccessCamera()` path
-/// passes a fixed `body` (in English: "{app_name} wants access to your
-/// camera"); we match on the substring "camera" to keep the heuristic
-/// stable across locales the portal hasn't translated yet.
+/// metadata. Matches "microphone" / "audio" in the lowercased
+/// title+subtitle+body to route Microphone requests; matching on the
+/// substring rather than a fixed phrase keeps it working across locales
+/// the portal hasn't translated yet.
 ///
-/// Falls back to `Camera` because that's the only consumer the v1 plan
-/// targets — Microphone goes through Pipewire's own ACL (plan §5.3
-/// step 1); RemoteDesktop / Inhibit / Wallpaper aren't on the v1
-/// backend's surface. A more elaborate matcher belongs in the §5.3
-/// follow-up unit if/when we add the Microphone + Background routes.
+/// Falls back to `Camera` — the only consumer this backend's surface
+/// targets, since Microphone goes through Pipewire's own ACL and
+/// RemoteDesktop / Inhibit / Wallpaper aren't handled here.
 pub(super) fn classify(
     title: &str,
     subtitle: &str,
@@ -97,7 +89,6 @@ pub(super) fn classify(
             Capability::Microphone { scope: GRANT_ONCE },
         );
     }
-    // Default = Camera. Matches the only consumer in v1.
     (
         CapabilityKind::Camera,
         Capability::Camera { scope: GRANT_ONCE },
@@ -133,8 +124,8 @@ mod tests {
     #[test]
     fn classify_falls_back_to_camera_on_unknown_text() {
         let opts = HashMap::new();
-        // Plan §4.3 only models Camera + Mic via Access; anything else
-        // we treat as Camera so the prompt + grant model still mediate.
+        // Anything that isn't microphone/audio is treated as Camera, so
+        // the prompt + grant model still mediates.
         let (kind, _cap) = classify("Permission", "", "weird thing", &opts);
         assert_eq!(kind, CapabilityKind::Camera);
     }

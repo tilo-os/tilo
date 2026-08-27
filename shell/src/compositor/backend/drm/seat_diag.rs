@@ -442,8 +442,6 @@ mod tests {
 
     #[test]
     fn the_message_names_the_observed_environment_and_the_vt_remedy() {
-        // The whole point of the diagnosis: the operator reads one message
-        // and knows both what was seen and what to do.
         let e = SeatEnvironment {
             session_id: None,
             seat: None,
@@ -537,8 +535,6 @@ mod tests {
     #[test]
     fn detect_reads_the_real_environment_without_panicking() {
         let live = SeatEnvironment::detect();
-        // Whatever this machine looks like, classification must terminate
-        // with one of the five verdicts rather than panicking.
         let kind = classify(ENOSYS, &live);
         assert!(matches!(
             kind,

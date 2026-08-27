@@ -10,10 +10,6 @@
 //! through the same `dispatch_key` — so production and test paths exercise
 //! identical routing code.
 //!
-//! Added in Plan 3 Task 28 alongside the global-hotkey wiring. Spec:
-//! `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` §10 (global
-//! hotkeys: Cmd+K, Cmd+Tab, Escape).
-//!
 //! `Mods` is hand-rolled as an `u8` bitmask rather than pulled in via
 //! `bitflags` so the shell crate keeps a tight dependency surface (see
 //! `Cargo.toml` — no `bitflags` today).

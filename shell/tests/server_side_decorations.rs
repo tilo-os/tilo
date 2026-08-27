@@ -3,13 +3,12 @@
 //! qOS draws window chrome itself: a tab's title, its controls and the
 //! frame around it belong to the compositor, and an app that draws its
 //! own is drawing a second one inside the first. The wire mechanism for
-//! saying so is `xdg_decoration`, and until this test existed the
-//! compositor advertised no such global — so every toolkit fell back to
-//! decorating itself, which is what a toolkit does when there is nobody
-//! to negotiate with.
+//! saying so is `xdg_decoration` — a toolkit that cannot see the global
+//! falls back to decorating itself, since there is nobody to negotiate
+//! with.
 //!
-//! The cost was not only cosmetic. A client that keeps a title bar keeps
-//! it out of the size the compositor gave it: configured 670x668 it
+//! The cost is not only cosmetic: a client that keeps a title bar keeps
+//! it out of the size the compositor gave it — configured 670x668 it
 //! commits 670x633 and never commits anything else, leaving a 35-pixel
 //! band of empty tab under every window and stranding the presentation
 //! gate, which is waiting for a frame that answers the tab.

@@ -1,7 +1,7 @@
-//! Task 14: Browser stub `AppWidget` living inside the nirios shell.
+//! Browser stub `AppWidget` living inside the nirios shell.
 //!
 //! Explicitly *not* a real browser port — the shell uses this placeholder
-//! tile until/unless Servo is revived. Plan 3 Task 14.
+//! tile until/unless Servo is revived.
 
 use shell::shell::browser_stub::BrowserStubWidget;
 use std::sync::{Arc, Mutex};

@@ -13,7 +13,6 @@ pub struct Size {
     pub height: f32,
 }
 
-// Local Rectangle definition
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 pub struct Rectangle {
     pub x: f32,

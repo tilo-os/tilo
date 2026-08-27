@@ -104,10 +104,9 @@ pub mod offscreen {
             let path = dir.join(format!("{name}.png"));
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !first_paint_seen {
-                // First render_png forces vello's ~30 pipelines to
-                // compile against the live device. Mark AFTER the call
-                // returns so the metric captures the entire cold path,
-                // not just the CPU-side scene build.
+                // Mark AFTER render_png returns so the metric captures
+                // vello's ~30-pipeline cold compile, not just the
+                // CPU-side scene build.
                 qos_startup_metrics::mark("first-paint");
                 first_paint_seen = true;
             }
@@ -258,16 +257,10 @@ pub mod recording {
         action: &scenario::Action,
         sink: &mut RecordingSink<'_>,
     ) {
-        // Run the step through the recording sink itself rather than a
-        // side NullSink. An action that samples an animation curve emits
-        // its whole curve through the sink and is one step to this loop,
-        // so discarding the sink's frames left those videos cutting from
-        // the curve's first state straight to its last. A plain
-        // `Snapshot` now contributes its frame twice — through the sink
-        // and again from the unconditional encode below — which is a
-        // repeated frame in a video and no worse than that.
-        // (`scenario::apply` is private to the module; use `run` with
-        // a one-action scenario instead.)
+        // Runs through the recording sink itself (see `RecordingSink::capture`
+        // for why) rather than a side `NullSink`. `scenario::apply` is
+        // private to the module, so this uses `run` with a one-action
+        // scenario instead.
         let one_off = Scenario {
             name: "_recording_step",
             description: "",

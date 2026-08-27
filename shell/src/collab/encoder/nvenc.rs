@@ -68,12 +68,8 @@ fn find_encoder(name: &str) -> Option<*const ffi::AVCodec> {
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
-/// Probe NVENC availability.
-///
-/// # Method
-/// 1. Check `/dev/nvidia0` (or `/dev/nvidiactl`) presence.
-/// 2. Ask libavcodec if `h264_nvenc` is registered. Missing = the
-///    ffmpeg build wasn't linked against the NVENC SDK.
+/// Probe NVENC availability. See the module doc's "Runtime probe" section
+/// for what each step checks and why.
 pub fn probe(codec: Codec) -> ProbeOutcome {
     let encoder_name = match codec.libav_encoder_name(EncoderKind::NvEnc) {
         Some(name) => name,

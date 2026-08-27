@@ -1,29 +1,18 @@
 //! Off-thread quick-settings reads.
 //!
-//! Opening quick settings used to run seven blocking shell-outs from
-//! inside the paint path, in series, before the popover could show a
-//! single pixel. Measured on a developer machine that was 4.5 s on a cold
-//! open and 230 ms warm — the cold case dominated by
-//! `nmcli device wifi list`, which forces a Wi-Fi scan and is the *only*
-//! one of the seven whose result the root panel never displays.
+//! The panel's seven reads run inline and in series cost 4.5s cold / 230ms
+//! warm, dominated by `nmcli device wifi list`. They happen on a worker
+//! instead: chrome is the OS's own UI, so a stall in it reads as the
+//! machine being broken. The panel opens immediately with the last known
+//! values and updates as readings land.
 //!
-//! Two things are wrong with that shape, and this module fixes both.
+//! Reads are tiered by what the surface shows — the network and device
+//! lists are only visible after a drill-in to Wi-Fi or Bluetooth, so that
+//! scan is dispatched by the drill-in rather than paid for on open.
 //!
-//! **The reads do not belong on the frame.** Chrome is the OS's own UI, so
-//! a stall in it reads as the machine being broken rather than an app
-//! being slow. Reads happen on a worker; the panel opens immediately with
-//! the last known values and updates when a reading lands.
-//!
-//! **The reads were not tiered by what the surface shows.** The root panel
-//! shows brightness, volume, two radio states and a power profile. The
-//! network and device *lists* are only ever visible after the user drills
-//! into Wi-Fi or Bluetooth. Fetching them on open paid the most expensive
-//! read in the set for a list nobody had asked to see, so the scan is now
-//! dispatched by the drill-in that displays it.
-//!
-//! Nothing here touches chrome state. A worker owns no `Rc`, sends plain
-//! data back over a channel, and the frame applies it — which is what
-//! keeps this safe alongside the shell's single-threaded `RefCell` tree.
+//! Nothing here touches chrome state: a worker owns no `Rc` and sends plain
+//! data back over a channel, which is what keeps it safe alongside the
+//! shell's single-threaded `RefCell` tree.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
@@ -65,15 +54,11 @@ pub struct QsRefresh {
     fast_in_flight: bool,
     wifi_in_flight: bool,
     bt_in_flight: bool,
-    /// Whether dispatches actually reach the OS.
-    ///
-    /// Turned off when the host's action dispatcher has been replaced
-    /// (see `ShellOverlayHost::with_qs_actions`): a caller that has
-    /// substituted where quick settings *writes* is not talking to this
-    /// machine, so it must not be reading from it either. Without the
-    /// pairing, a test that seeds a known Wi-Fi list had it replaced
-    /// mid-test by a real `nmcli` scan of whatever network the machine
-    /// running the suite happened to be near.
+    /// Whether dispatches actually reach the OS. Turned off when the host's
+    /// action dispatcher has been replaced (see
+    /// `ShellOverlayHost::with_qs_actions`): a caller that substituted where
+    /// quick settings *writes* must not still be reading from this machine,
+    /// or a seeded Wi-Fi list gets overwritten by a real `nmcli` scan.
     enabled: bool,
 }
 
@@ -96,12 +81,9 @@ impl QsRefresh {
         }
     }
 
-    /// Whether any tier is still outstanding.
-    ///
-    /// The render loop idles unless something says it should not, so this
-    /// feeds `needs_animation_frame`: a reading that lands after the open
-    /// animation has settled still reaches the screen, and the loop goes
-    /// back to sleep as soon as the last tier reports.
+    /// Whether any tier is still outstanding. Feeds `needs_animation_frame`
+    /// so a reading landing after the open animation settles still reaches
+    /// the screen, and the loop sleeps again once the last tier reports.
     pub fn is_in_flight(&self) -> bool {
         self.fast_in_flight || self.wifi_in_flight || self.bt_in_flight
     }

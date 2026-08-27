@@ -171,7 +171,6 @@ impl GpuImporter {
         })
     }
 
-    /// The DRM node this importer's GL context lives on.
     pub fn device(&self) -> &Path {
         &self.device
     }
@@ -294,7 +293,7 @@ pub fn is_opaque_fourcc(code: Fourcc) -> bool {
 }
 
 thread_local! {
-    /// Lazily-built process importer. `Ok(None)` = "not tried yet".
+    /// Lazily-built process importer.
     static IMPORTER: RefCell<Option<Result<GpuImporter, GpuImportError>>> =
         const { RefCell::new(None) };
 }
@@ -381,9 +380,7 @@ mod tests {
 
     /// Every readback allocates a pixel-pack buffer the size of the
     /// whole client image, and hands it back only when someone drains
-    /// the renderer's destruction queue. Nothing used to, so a window
-    /// that kept drawing kept adding whole-window buffers to GTT until
-    /// the machine froze rather than slowed down.
+    /// the renderer's destruction queue.
     ///
     /// So the invariant is about *repetition*: a hundred readbacks must
     /// not cost more than a few. This drives the same
