@@ -46,40 +46,20 @@ impl DragDropManager {
 /// to a drag gesture. Matches macOS / GTK conventions.
 pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
 
-// ---------------------------------------------------------------------------
-// Dragging out of the app
-// ---------------------------------------------------------------------------
+// Dragging out of the app: a drag that leaves the window, for whatever
+// application the pointer is over when the button comes up (everything above
+// is a drag *inside* one process). A toolkit capability rather than an app's,
+// like the clipboard, because it needs the process's own Wayland connection.
+// `App` publishes its window here at startup so any widget can drag.
 //
-// Everything above this line is a drag *inside* one process — a tab moved
-// between groups, a row reordered. This is the other kind: a drag that
-// leaves the window and is delivered to whatever application the pointer
-// is over when the button comes up.
-//
-// It is a toolkit capability rather than an app's, for the same reason
-// the clipboard is: it needs the process's own Wayland connection, which
-// only the toolkit has. `App` publishes its window here at startup and
-// any widget can then start a drag without holding one.
-//
-// ## What crosses, and why it is bytes
-//
-// A receiving qOS app is confined: its own mount namespace, its own
-// `HOME`, and no ambient authority over the sending app's files. Handing
-// it `/home/you/photo.png` would hand it a path that does not resolve
-// there — which is the same reason the file-chooser portal exists rather
-// than a portal that returns paths.
-//
-// So a drag carries **content**. The compositor brokers a pipe between
-// the two clients; this side writes the bytes into it and the receiving
-// toolkit spools them into a file inside the receiver's own runtime dir.
-// No path from this namespace is ever resolved in that one, no capability
-// is granted, and the sandbox is not widened by a drop: the receiver ends
-// up with a copy of exactly the bytes a person dragged onto it, and
-// nothing else.
-//
-// A `text/uri-list` is offered alongside so a receiver that wants a
-// *name* (a file manager showing what it is about to copy) can have one,
-// but it is never the only offer, and a confined receiver is expected to
-// prefer the bytes.
+// A receiving qOS app is confined to its own mount namespace and `HOME`, so
+// handing it a path (`/home/you/photo.png`) would not resolve there — the
+// same reason the file-chooser portal exists rather than one that returns
+// paths. So a drag carries **content**: the compositor brokers a pipe, this
+// side writes bytes into it, and the receiver spools them into its own
+// runtime dir. No path crosses, no capability is granted, and the sandbox is
+// not widened by a drop. A `text/uri-list` is offered alongside for a
+// receiver that wants a name, but never as the only offer.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Weak};
@@ -155,19 +135,14 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
 }
 
 /// Start a drag carrying `paths`, out of this app and into whatever
-/// application the pointer is released over.
-///
-/// Call it from a press-and-move gesture once the pointer has travelled
-/// [`DRAG_START_THRESHOLD_PX`], while the button is still held: the
-/// compositor validates the drag against that implicit grab.
+/// application the pointer is released over. Call from a press-and-move
+/// gesture once the pointer has travelled [`DRAG_START_THRESHOLD_PX`] while
+/// the button is still held, so the compositor can validate the drag against
+/// that implicit grab.
 ///
 /// A single file is offered as both its own content type and a URI list;
-/// several are offered as a URI list alone, because one pipe cannot carry
-/// several files' bytes. Reading happens here, once, at the start of the
-/// gesture — the app has the authority to read what it is showing, and
-/// the receiver never needs any.
-///
-/// Returns whether a drag was actually started.
+/// several are offered as a URI list alone, since one pipe can't carry
+/// several files' bytes. Returns whether a drag was actually started.
 pub fn start_file_drag(paths: &[PathBuf]) -> bool {
     if paths.is_empty() {
         return false;
@@ -200,10 +175,9 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
         slot.as_ref().and_then(Weak::upgrade)
     };
     let Some(window) = window else {
-        // Not an error. The compositor hosts several of these widgets in
-        // its own process, where there is no `App` and no window to drag
-        // from — a drag out of one of those is the host's to promote, and
-        // this reporting "no" is how it learns to.
+        // Not an error: the compositor hosts several of these widgets in its
+        // own process with no `App` and no window; reporting "no" is how it
+        // learns to promote the drag itself.
         tracing::debug!(target: "ui::dnd", "no window publishes a drag in this process");
         return false;
     };

@@ -3,12 +3,11 @@
 //!
 //! `update` is how a widget that mirrors out-of-document state (the
 //! shell's top bar reading the chrome revision, a scrollable ticking
-//! momentum) notices a change between frames. A container that keeps
-//! the trait's default no-op silently freezes every descendant at its
-//! build-time state — the shell's workspace chevrons sat inside a
-//! `Stack` → `Column` chain and never learned the active workspace had
-//! moved. These tests pin the forwarding for each container so that
-//! cannot regress quietly.
+//! momentum) notices a change between frames. A container that keeps the
+//! trait's default no-op silently freezes every descendant at its
+//! build-time state, which is how the shell's workspace chevrons went
+//! stale inside a `Stack` → `Column` chain. These tests pin the
+//! forwarding for each container so that cannot regress quietly.
 
 use std::cell::Cell;
 use std::collections::HashMap;

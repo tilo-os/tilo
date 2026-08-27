@@ -2,9 +2,7 @@
 //! reply) does not fit in one socket read, so it arrives split across
 //! reads. `CollaborationManager::poll` must reassemble it from its
 //! persistent buffer instead of dropping the frame and desyncing the
-//! stream. This is the bug that made two live notes instances fail to
-//! converge while small presence frames went through fine — the test
-//! relay only ever sent tiny payloads, so it was never exercised.
+//! stream.
 
 use std::os::unix::net::UnixListener;
 use std::thread;

@@ -1,24 +1,17 @@
 //! Screen 4 — pair this device with an existing identity.
 //!
-//! Counterpart of screen 3. Shows:
-//! - A 6-box monospace input for the pairing code.
-//! - A textarea fallback for pasting the QR payload JSON (cameras
-//!   aren't available in our test env; we accept the pasted JSON
-//!   instead of running a scanner).
-//! - Status + error banners.
+//! Counterpart of screen 3. Shows a 6-box monospace code input, a textarea
+//! fallback for pasting the QR payload JSON (no camera in the test env, so
+//! a scanner isn't wired up), and status + error banners.
 //!
-//! When the user enters the code + payload combo:
-//! 1. The screen verifies the code matches the payload's derived
-//!    short code (defence against typing the wrong code into the
-//!    right payload).
-//! 2. It decodes the payload, builds its own DKG round-1 + round-2
-//!    contributions, and publishes the round-2 reply onto the
-//!    pairing channel with an HMAC.
-//! 3. The host completes its half; the pairer waits for the host's
-//!    round-2 reply, then adopts the DKG outcome.
+//! On submit: verify the code matches the payload's derived short code
+//! (defence against typing the wrong code into the right payload), decode
+//! the payload and build this device's DKG round-1/round-2 contributions,
+//! publish the round-2 reply with an HMAC, then wait for the host's own
+//! round-2 reply and adopt the DKG outcome.
 //!
-//! The end-to-end test exercises the full state machine via the
-//! in-memory `PairingHandshake`.
+//! The end-to-end test exercises the full state machine via the in-memory
+//! `PairingHandshake`.
 
 use std::collections::HashMap;
 
@@ -43,7 +36,6 @@ use crate::widget::identity_flow::{
     derive_pairing_code, derive_pairing_mac_key, format_pairing_code,
 };
 
-/// Screen 4: pair this device with an existing identity.
 pub struct PairDeviceScreen {
     rect: Rect,
     /// 6-digit code, one box per digit.
@@ -59,8 +51,7 @@ pub struct PairDeviceScreen {
     last_cursor: Point,
     status: String,
     error: Option<String>,
-    /// Whether the screen has completed its half of the DKG. Once
-    /// `true`, the container advances on the next event tick.
+    /// Once `true`, the container advances on the next event tick.
     completed: bool,
 }
 
@@ -91,9 +82,7 @@ impl PairDeviceScreen {
         }
     }
 
-    /// Current code rendered as a 6-character string. Returns
-    /// `"------"` (placeholder dashes) when the user hasn't typed
-    /// anything yet.
+    /// Current code as a 6-character string; `"------"` when unset.
     pub fn code_string(&self) -> String {
         self.code_digits
             .iter()
@@ -101,8 +90,7 @@ impl PairDeviceScreen {
             .collect()
     }
 
-    /// Parse the user-entered code to a u32. Returns `None` if any
-    /// slot is still empty.
+    /// Parse the entered code to a u32; `None` if any slot is still empty.
     pub fn parse_code(&self) -> Option<u32> {
         let mut acc: u32 = 0;
         for c in &self.code_digits {
@@ -135,8 +123,8 @@ impl PairDeviceScreen {
         self.completed
     }
 
-    /// Validate that the typed code matches the payload's derived
-    /// code. Used as a sanity check before launching the DKG.
+    /// Sanity check that the typed code matches the payload's derived
+    /// code, before launching the DKG.
     pub fn validate_code_against_payload(
         code: u32,
         payload: &PairingPayload,
@@ -153,12 +141,9 @@ impl PairDeviceScreen {
         Ok(())
     }
 
-    /// Drive the pairer's half of the DKG.
-    ///
-    /// Builds a fresh share-2 DKG session on this device, exchanges
-    /// the round-1/round-2 packages with the host via the supplied
-    /// `PairingHandshake`, and adopts the resulting threshold
-    /// identity. On success returns the new `ThresholdIdentity`.
+    /// Drive the pairer's half of the DKG: builds a fresh share-2 session
+    /// on this device, exchanges round-1/round-2 packages with the host
+    /// via `PairingHandshake`, and adopts the resulting threshold identity.
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
@@ -167,13 +152,11 @@ impl PairDeviceScreen {
         let nonce = payload.nonce()?;
         let mac_key = derive_pairing_mac_key(&nonce);
         let host_round1 = payload.initiator_round1()?;
-        // Build the pairer's own DKG session (share index 2 in a 2-of-2
-        // group).
+        // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
         let mut rng = OsRng;
         let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let (mut my_session, _my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
-        // Process the host's round-1 → produce our round-2 to send
-        // back.
+        // Process the host's round-1 → produce our round-2 reply.
         let outgoing = my_session.receive_round1(&[host_round1.clone()])?;
         let reply = outgoing
             .into_iter()
@@ -186,9 +169,8 @@ impl PairDeviceScreen {
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
         let mac = compute_pairing_mac(&mac_key, &reply_bytes);
         hs.publish_pairer_reply(&nonce, reply, mac);
-        // For v1 the pairer also needs the host's round-1 contribution
-        // (sent as the host's own round-2 message to the pairer). The
-        // in-memory shim provides it. We block-poll a few times.
+        // The pairer also needs the host's round-1 contribution, sent as the
+        // host's own round-2 message; block-poll the in-memory shim for it.
         let mut host_reply: Option<EnrolmentRound2> = None;
         for _ in 0..16 {
             if let Some((r, _mac)) = hs.take_host_round2(&nonce) {
@@ -200,7 +182,6 @@ impl PairDeviceScreen {
         let host_reply = host_reply.ok_or_else(|| {
             IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
         })?;
-        // Finalise.
         my_session.receive_round2(&[host_reply])?;
         my_identity.adopt_dkg_outcome(my_session)?;
         self.completed = true;
@@ -209,8 +190,7 @@ impl PairDeviceScreen {
     }
 
     /// Companion to `perform_pairing` that *exposes* the round-1 the
-    /// pairer would send (useful for tests that want to inspect the
-    /// wire format).
+    /// pairer would send, for tests that inspect the wire format.
     pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
         let mut rng = OsRng;
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
@@ -265,12 +245,9 @@ impl PairDeviceScreen {
                     }
                     self.error = None;
                     self.status = "Pairing…".to_string();
-                    // Driving the actual pairing handshake from the
-                    // event loop would need access to the
-                    // `PairingHandshake` the shell owns; the screen
-                    // exposes `perform_pairing` for the shell to call
-                    // with the right handle. Click here just nudges
-                    // the user to ensure both fields are filled.
+                    // Driving the handshake needs the `PairingHandshake` the shell
+                    // owns; the screen exposes `perform_pairing` for the shell to
+                    // call. A click here just checks both fields are filled.
                     if self.parse_code().is_none() || self.payload_text.is_empty() {
                         self.error = Some("Enter both the code and the QR payload.".to_string());
                     }
@@ -307,7 +284,6 @@ impl PairDeviceScreen {
                         }
                     }
                 } else {
-                    // Code box editing.
                     match logical_key {
                         Key::Named(NamedKey::Backspace) => {
                             if self.code_focus > 0 {
@@ -445,7 +421,6 @@ impl Widget for PairDeviceScreen {
             transform * Affine::translate((card.x0 + pad, card.y0 + pad + 28.0)),
             None,
         );
-        // Code boxes.
         for (i, r) in self.code_box_rects.iter().enumerate() {
             let focused = self.code_focus == i && !self.payload_focus;
             let border = if focused {
@@ -483,7 +458,6 @@ impl Widget for PairDeviceScreen {
                 None,
             );
         }
-        // Payload textarea.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -521,7 +495,6 @@ impl Widget for PairDeviceScreen {
                 * Affine::translate((self.payload_rect.x0 + 12.0, self.payload_rect.y0 + 12.0)),
             None,
         );
-        // Submit button.
         let bg = if self.submit_hovered {
             theme.bg_active
         } else {

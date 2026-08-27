@@ -162,7 +162,7 @@ impl SlashMenu {
             self.cursor = 0;
             self.rebuild_visible();
             // Pending selection is left intact — the parent may set
-            // visible=false AFTER consuming the kind on Enter, and
+            // visible=false after consuming the kind on Enter, and
             // clearing here would race that read.
         }
     }
@@ -339,13 +339,9 @@ impl SlashMenu {
                 if self.filter.pop().is_some() {
                     self.rebuild_visible();
                 } else {
-                    // Empty filter + Backspace closes the menu (so
-                    // the keystroke can fall through to the editor's
-                    // own delete-of-the-`/` handling). We DON'T set
-                    // visible=false here directly — instead we
-                    // signal close-via-empty-filter by returning
-                    // false, which the parent interprets as a
-                    // "menu wants to close" hint.
+                    // Empty filter + Backspace closes the menu, but returns
+                    // false so the caller lets the keystroke fall through
+                    // to the editor's own delete-of-the-`/` handling.
                     self.set_visible(false);
                     return false;
                 }
@@ -757,9 +753,8 @@ mod tests {
 
     #[test]
     fn filter_h2_then_enter_commits_heading_2() {
-        // The integration scenario from the spec: type `/h2`, Enter,
-        // get Heading(2). The leading `/` is consumed by the editor
-        // before the menu is opened, so the menu only sees `h2`.
+        // Type `/h2`, Enter → Heading(2). The leading `/` is consumed by
+        // the editor before the menu opens, so the menu only sees `h2`.
         let mut m = SlashMenu::new();
         m.set_visible(true);
         m.handle_key(&char_press("h"));

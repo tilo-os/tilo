@@ -32,13 +32,11 @@ impl Stack {
         self
     }
 
-    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this layout behind a permission scope.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -52,9 +50,8 @@ impl Widget for Stack {
         }
     }
 
-    /// Forward the per-frame update pass; every child runs, and a
-    /// change in any of them is a change here. Not short-circuited —
-    /// a child that skipped its pass would miss a frame of state.
+    /// Not short-circuited — a child that skipped its pass would miss a
+    /// frame of state.
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         let mut changed = false;
         for child in &mut self.children {
@@ -69,8 +66,7 @@ impl Widget for Stack {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
             
-        // In a Stack, children are positioned absolutely relative to the stack
-        // We set them to absolute so they all overlap
+        // Absolute so all children overlap.
         for &node in &child_nodes {
             let mut style = taffy.style(node).unwrap().clone();
             style.position = taffy::Position::Absolute;
@@ -82,18 +78,13 @@ impl Widget for Stack {
                 display: taffy::Display::Flex,
                 size: taffy::Size {
                     width: percent(1.0),
-                    // `Dimension::auto()` here was the long-standing default,
-                    // but with every child set to `position: Absolute` the
-                    // stack contributes zero to intrinsic size — and that
-                    // upstream zero made the parent ration percent-based
-                    // descendant heights from 0 rather than from the
-                    // viewport. End effect: a Column with bottom-padding
-                    // got its padding silently dropped. Pinning the stack
-                    // to its parent's height (`percent(1.0)`) makes the
-                    // viewport size flow through to absolute children
-                    // correctly, so e.g. `content_col`'s 24 px bottom
-                    // padding actually reserves 24 px of wallpaper between
-                    // the panel and the screen edge.
+                    // With every child `position: Absolute`, the stack
+                    // contributes zero to intrinsic size, so `Dimension::auto()`
+                    // here made the parent ration percent-based descendant
+                    // heights from 0 rather than the viewport — a Column's
+                    // bottom-padding got silently dropped. Pinning to the
+                    // parent's height makes the viewport size flow through
+                    // to absolute children correctly.
                     height: percent(1.0),
                 },
                 ..Default::default()
@@ -127,7 +118,7 @@ impl Widget for Stack {
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let child_nodes = taffy.children(node_id).unwrap();
-        // Handle in reverse order (top-most first)
+        // Reverse order: top-most first.
         for (child_widget, &child_node) in self.children.iter_mut().rev().zip(child_nodes.iter().rev()) {
             child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
             if *handled {

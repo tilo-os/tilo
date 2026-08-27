@@ -1,21 +1,21 @@
 //! One instruction that changed more than one application, recorded as one
 //! thing a person can undo.
 //!
-//! "Crop the photo and put it in the report" changes two documents, and neither
-//! app's history can undo the other's. [`groups`](crate::history_source::groups)
+//! "Crop the photo and put it in the report" changes two documents, and
+//! neither app's history can undo the other's. [`groups`](crate::history_source::groups)
 //! names a run *within* one document; this is the record above it.
 //!
 //! It lives in the room document — the compositor's, the only one that sees
-//! every app — which cannot materialise the apps' documents, so a record holds
-//! no content, only references. Undoing is
-//! [`revert_run`](crate::history_source::revert::revert_run) against each app's
-//! own document, performed by the app that owns it.
+//! every app — which cannot materialise the apps' documents, so a record
+//! holds no content, only references. Undoing is
+//! [`revert_run`](crate::history_source::revert::revert_run) against each
+//! app's own document, performed by the app that owns it.
 //!
-//! The key is derived from the work, and the records sit at the root, for the
-//! reasons a named range's do: two coordinators recording the same run land on
-//! one map key automerge resolves identically on every peer, and a container
-//! would itself be a thing two writers race to create — losing that race
-//! discards every record inside it.
+//! The key is derived from the work and the records sit at the root: two
+//! coordinators recording the same run land on one map key automerge
+//! resolves identically everywhere, whereas a container would itself be a
+//! thing two writers race to create — losing that race discards every
+//! record inside it.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -64,7 +64,6 @@ pub struct AgentRun {
     /// Actor hex of whoever's work this is. `None` when the recorder did not
     /// say.
     pub by: Option<String>,
-    /// When the run was recorded.
     pub at: SystemTime,
     /// The per-application steps, in the order they happened.
     pub steps: Vec<RunStep>,
@@ -92,13 +91,9 @@ impl AgentRun {
 }
 
 /// Record a run. Returns the document key, which is also [`AgentRun::id`].
-///
 /// The transaction is left open — the caller commits, so the record lands
-/// stamped and attributed like any other edit.
-///
-/// A run with no steps is not recorded: an instruction that changed nothing has
-/// nothing to undo, and a record claiming otherwise would put an undo
-/// affordance on screen that could only ever fail.
+/// stamped and attributed like any other edit. A run with no steps is not
+/// recorded: nothing changed, so there is nothing to offer undo on.
 pub fn record_run(
     doc: &mut AutoCommit,
     label: &str,
@@ -135,10 +130,9 @@ pub fn record_run(
     Some(key)
 }
 
-/// Read every recorded run out of `doc`, oldest key first.
-///
-/// A record that does not parse is skipped rather than guessed at: an undo
-/// affordance pointing at the wrong changes is worse than no affordance.
+/// Read every recorded run out of `doc`, oldest key first. A record that
+/// does not parse is skipped rather than guessed at: an undo affordance
+/// pointing at the wrong changes is worse than no affordance.
 pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
     let mut out = Vec::new();
     for key in doc.keys(automerge::ROOT) {
@@ -203,12 +197,9 @@ pub fn forget_run(doc: &mut AutoCommit, id: &str) -> bool {
     doc.delete(automerge::ROOT, id).is_ok()
 }
 
-/// True when every patch lands inside a run record — the change did nothing but
-/// record bookkeeping.
-///
-/// The history producer filters on this for the same reason it filters group
-/// markers: the run is already on screen as a band, and a "1 field" row under it
-/// is noise. An empty patch set is not a marker.
+/// True when every patch lands inside a run record — the change did nothing
+/// but record bookkeeping, already on screen as a band, so a "1 field" row
+/// under it would be noise. An empty patch set is not a marker.
 pub fn is_run_marker(patches: &[Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|p| match p.path.first() {

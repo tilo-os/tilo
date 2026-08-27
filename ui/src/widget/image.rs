@@ -1,21 +1,16 @@
-//! General-purpose [`Image`] widget for displaying PNG/JPEG content.
+//! General-purpose [`Image`] widget for displaying PNG/JPEG content. Decoded
+//! RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
+//! `scene.fill(..)`. Three fit modes mirror CSS `object-fit`:
+//! [`ImageFit::Fill`] stretches, [`ImageFit::Contain`] letterboxes,
+//! [`ImageFit::Cover`] crops.
 //!
-//! Decoded RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
-//! `scene.fill(..)` — the same call shape `quick-shell`'s desktop backdrop
-//! uses for its tiled noise overlay. Three fit modes mirror CSS
-//! `object-fit`: [`ImageFit::Fill`] stretches, [`ImageFit::Contain`]
-//! letterboxes, [`ImageFit::Cover`] crops.
+//! The `ImageData` is built lazily on first draw and cached (cloning only
+//! bumps the internal `Arc`). A decode failure renders a red border +
+//! "Image failed" text so it surfaces during development instead of
+//! silently painting nothing.
 //!
-//! The peniko::ImageData is built lazily on first draw and cached; subsequent
-//! draws reuse the cached handle (cloning a [`peniko::ImageData`] only bumps
-//! the internal `Arc`). Path-loaded variants that fail to decode render
-//! a red border + "Image failed" text so the failure surfaces during
-//! development rather than silently painting nothing.
-//!
-//! Only PNG decoding is provided in-tree (via the `png` crate already in
-//! the workspace). JPEG support arrives whenever `image` crate
-//! dependency conflicts — the API surface is decoder-agnostic; consumers
-//! can call [`Image::from_rgba`] with bytes they decoded themselves.
+//! Only PNG decoding is provided in-tree. The API is decoder-agnostic —
+//! call [`Image::from_rgba`] with bytes decoded elsewhere for other formats.
 
 use std::path::PathBuf;
 use std::sync::Arc;

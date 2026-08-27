@@ -38,7 +38,6 @@ fn live_text_edit_propagates_through_broker() {
     let _ = a.poll();
     let _ = b.poll();
 
-    // Alice's document with a Text object holding "hello".
     let mut a_doc = AutoCommit::new();
     a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
     let t = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();

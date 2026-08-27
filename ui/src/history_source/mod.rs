@@ -2,43 +2,24 @@
 //!
 //! [`ActivityTimeline`](crate::widget::ActivityTimeline) and
 //! [`HistoryScrubber`](crate::widget::HistoryScrubber) both consume
-//! `Vec<HistoryEntry>` and are deliberately source-agnostic. This module is the
-//! producer: given an `automerge::AutoCommit`, it walks the change graph
-//! through [`qdoc::history::versions`] and emits one [`HistoryEntry`] per
-//! change, with a real author, a real timestamp, a real op class, and a summary
-//! derived from what the change actually did to the document.
+//! `Vec<HistoryEntry>` and are source-agnostic; this module is the producer,
+//! walking the change graph via [`qdoc::history::versions`] to emit one
+//! [`HistoryEntry`] per change with author, timestamp, op class, and a
+//! summary of what changed. It lives in `ui` (not a leaf crate) because
+//! both an app's scrubber and the compositor's room-level timeline need it.
 //!
-//! It lives in `ui` rather than in a leaf crate because both halves of the
-//! system need it and both already depend on `ui`: an app renders the scrubber
-//! over its own document, and the compositor renders the room-level timeline
-//! over the chrome document. Putting it anywhere else would mean a second copy.
+//! Two summary strategies, in order of preference: **structural**, which
+//! materialises each version with [`qdoc::history::materialize_at`] and
+//! diffs snapshots for real per-paragraph insert/delete counts on
+//! documents carrying the `qdoc` schema; and **patch**, the fallback that
+//! reads the change's own patch set via `AutoCommit::diff`, weaker only in
+//! that it can't see qdoc-level concepts like comments or block moves.
+//! Neither path guesses — an indescribable change gets
+//! `"no visible change"` rather than an invented summary.
 //!
-//! # How a summary is derived
-//!
-//! Two strategies, in order of preference:
-//!
-//! 1. **Structural.** When the document carries the `qdoc` schema, each version
-//!    is materialised with [`qdoc::history::materialize_at`] and consecutive
-//!    snapshots are compared with [`qdoc::diff_snapshots`]. That yields real
-//!    per-paragraph insert/delete runs, so a row reads `"+12 -3 chars"` because
-//!    twelve characters were inserted and three deleted — not because a change
-//!    happened to contain fifteen ops.
-//! 2. **Patch.** For any other document (a plain `ui::State`, the compositor's
-//!    chrome doc) the change's own patch set is read with `AutoCommit::diff`
-//!    between the version's bracketing heads. Text splices still give exact
-//!    character counts; map and list edits give element counts. This is weaker
-//!    than the structural path only in that it cannot see qdoc-level concepts
-//!    like comments or block moves.
-//!
-//! Neither path guesses. A change whose effect the producer cannot describe
-//! gets the summary `"no visible change"` rather than an invented one.
-//!
-//! # Addressing a version
-//!
-//! [`HistoryEntry::id`] is the first sixteen bytes of the change hash, so it is
-//! content-addressed and stable across peers — which is what makes
-//! [`heads_for_entry`] able to turn a row the user clicked back into a document
-//! state, and hence into a restore.
+//! [`HistoryEntry::id`] is the first sixteen bytes of the change hash, so
+//! it's content-addressed and stable across peers, letting
+//! [`heads_for_entry`] turn a clicked row back into a document state.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -70,23 +51,16 @@ pub use runs::{
     forget_run, is_run_marker, read_runs, record_run, run_starting_at, AgentRun, RunStep, RUNS_KEY,
 };
 
-/// Default ceiling on how many of the most recent versions are turned into
-/// rows.
-///
-/// The structural path materialises one snapshot per version, so the cost is
-/// linear in versions and in document size. Two hundred rows is well past what
-/// a scrubber track can resolve into distinct ticks at any realistic width, and
-/// keeps a long-lived document's history pane responsive. Raise it with
-/// [`HistorySource::with_max_entries`] when a caller genuinely wants the whole
-/// chain.
+/// The structural path materialises one snapshot per version, so cost is
+/// linear in versions and document size; 200 is well past what a scrubber
+/// track can resolve into distinct ticks at any realistic width. Raise it
+/// with [`HistorySource::with_max_entries`] when a caller genuinely wants
+/// the whole chain.
 pub const DEFAULT_MAX_ENTRIES: usize = 200;
 
-/// Summary text for a change whose effect the producer could not describe.
 /// Deliberately not a guess.
 pub const NO_VISIBLE_CHANGE: &str = "no visible change";
 
-/// Builds [`HistoryEntry`] rows from a live document.
-///
 /// Construct one, hand it an [`AuthorDirectory`] so actor ids resolve to
 /// people, and call [`HistorySource::entries`] whenever the document changes.
 pub struct HistorySource {
@@ -102,8 +76,7 @@ impl Default for HistorySource {
 }
 
 impl HistorySource {
-    /// A producer with an empty author directory — every actor will resolve to
-    /// an unknown participant until something is registered.
+    /// Every actor resolves to an unknown participant until registered.
     pub fn new() -> Self {
         Self {
             authors: AuthorDirectory::new(),
@@ -112,40 +85,34 @@ impl HistorySource {
         }
     }
 
-    /// Builder: install the directory that resolves actor ids to people.
     pub fn with_authors(mut self, authors: AuthorDirectory) -> Self {
         self.authors = authors;
         self
     }
 
-    /// Builder: tag every produced row with this artifact kind.
     pub fn with_artifact_kind(mut self, kind: ArtifactKind) -> Self {
         self.artifact_kind = kind;
         self
     }
 
-    /// Builder: override [`DEFAULT_MAX_ENTRIES`].
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max.max(1);
         self
     }
 
-    /// Mutable access to the directory, so a long-lived producer can learn
-    /// about a peer that joined after it was constructed.
+    /// So a long-lived producer can learn about a peer that joined after
+    /// it was constructed.
     pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
         &mut self.authors
     }
 
-    /// Read-only access to the directory.
     pub fn authors(&self) -> &AuthorDirectory {
         &self.authors
     }
 
-    /// Produce the timeline, oldest first.
-    ///
-    /// The widgets sort for display (the timeline defaults to newest-first, the
-    /// scrubber runs the track left-to-right in causal order), so this returns
-    /// the document's own causal order and lets them decide.
+    /// Widgets sort for display differently (timeline newest-first,
+    /// scrubber left-to-right), so this returns the document's own causal
+    /// order and lets them decide.
     pub fn entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
         let versions = qdoc::history::versions(doc);
         if versions.is_empty() {
@@ -153,12 +120,11 @@ impl HistorySource {
         }
         let start = versions.len().saturating_sub(self.max_entries);
 
-        // Head sets for every version in the window, plus the one before it —
-        // the patch path diffs between consecutive frontiers.
+        // Plus the one before the window — the patch path diffs between
+        // consecutive frontiers.
         let heads = prefix_heads_series(doc, start, versions.len());
 
-        // The structural path needs the snapshot just before the window opens
-        // so the first row in the window still describes a delta.
+        // Needed so the first row in the window still describes a delta.
         let mut prev_snapshot: Option<DocSnapshot> = if start == 0 {
             Some(DocSnapshot::default())
         } else {
@@ -179,23 +145,20 @@ impl HistorySource {
             };
             prev_snapshot = cur_snapshot;
 
-            // The schema genesis is a change, but nobody made it: the containers
-            // are written by a fixed actor so that two independently created
-            // documents merge into one rather than shadowing each other. Listing
-            // it would attribute a revision to a person who does not exist, and
-            // put a row under an author filter that no author matches. Skipped
-            // here rather than in `versions`, which stays positional because
-            // `materialize_at` and `prefix_heads` address a change by its place.
+            // The schema genesis is a change nobody made — its containers are
+            // written by a fixed actor so two independently created documents
+            // merge instead of shadowing each other. Listing it would attribute
+            // a revision to a nonexistent person. Skipped here rather than in
+            // `versions`, which stays positional (`materialize_at` / `prefix_heads`
+            // address a change by its place).
             if qdoc::history::is_schema_genesis(v) {
                 continue;
             }
 
-            // Naming a version — or recording a cross-application run — is a
-            // change like any other, but it is not a row: the name is already
-            // on screen as the band's title, and a "1 field" row directly under
-            // the band it named says nothing. The check runs only for changes
-            // that described nothing else, so the common path pays no extra
-            // diff.
+            // Naming a version (or recording a cross-app run) is a change but
+            // not a row — the name is already on screen as the band's title.
+            // Checked only when there's no other summary, so the common path
+            // pays no extra diff.
             if summary == NO_VISIBLE_CHANGE {
                 let patches = doc.diff(&before, &after);
                 if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
@@ -212,13 +175,10 @@ impl HistorySource {
                 summary,
                 text_delta,
                 // The scrubber re-derives state via `materialize_at` /
-                // `heads_for_entry` rather than by cracking open a payload, so
-                // there is nothing honest to put here yet. Leaving it `None` is
-                // the documented "no per-entry payload" case.
+                // `heads_for_entry` rather than cracking open a payload.
                 diff_payload: None,
-                // Redaction display is projected from the broker's redaction
-                // log, which is keyed by artifact and not reachable from a bare
-                // document. A caller that has one overwrites this field.
+                // Projected from the broker's redaction log, keyed by
+                // artifact and not reachable from a bare document.
                 redaction: None,
             });
         }
@@ -226,18 +186,14 @@ impl HistorySource {
     }
 }
 
-/// Resolve a row the user clicked back to the document heads that row produced.
-///
-/// This is the other half of [`HistorySource::entries`]: the widgets hand back
-/// a [`HistoryEntryId`], and a restore needs a document state. Returns `None`
-/// when the id names no change in this document — which is what happens if the
-/// caller mixes ids from two different artifacts.
+/// The other half of [`HistorySource::entries`]: a restore needs a document
+/// state for the [`HistoryEntryId`] a widget hands back. `None` when the id
+/// names no change in this document — mixed ids from two artifacts.
 pub fn heads_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<Vec<ChangeHash>> {
     let index = version_index_for_entry(doc, id)?;
     Some(qdoc::history::prefix_heads(doc, index))
 }
 
-/// Resolve a row to its index in the document's causal change order.
 pub fn version_index_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<usize> {
     qdoc::history::versions(doc)
         .into_iter()
@@ -245,11 +201,9 @@ pub fn version_index_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Opt
         .map(|v| v.index)
 }
 
-/// First sixteen bytes of a change hash, as the widgets' opaque row id.
-///
-/// The hash is the document's own content address for that change, so two peers
-/// independently building a timeline over the same history agree on the ids —
-/// which is what lets one peer's `[Revert]` mean anything to another.
+/// The hash is the document's own content address, so two peers
+/// independently building a timeline over the same history agree on the
+/// ids — what lets one peer's `[Revert]` mean anything to another.
 pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
     let mut bytes = [0u8; 16];
     let src = change_hash_hex.as_bytes();
@@ -262,13 +216,9 @@ pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
     HistoryEntryId(bytes)
 }
 
-/// A change's recorded wall clock, or the Unix epoch when it carries none.
-///
-/// `qdoc::history::VersionMeta::time_ms` is `0` for a change committed without
-/// a timestamp (plain `AutoCommit::commit`, or a peer that does not stamp). The
-/// epoch is the honest rendering of "we do not know when this happened": it
-/// sorts oldest and it falls outside any real date-range filter, rather than
-/// being quietly filed under today.
+/// `time_ms` is `0` for a change committed without a timestamp. The epoch is
+/// the honest rendering of "we don't know when this happened": it sorts
+/// oldest rather than being quietly filed under today.
 fn timestamp_from_ms(time_ms: i64) -> SystemTime {
     if time_ms <= 0 {
         return UNIX_EPOCH;
@@ -276,10 +226,9 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_millis(time_ms as u64)
 }
 
-/// Head sets for versions `start - 1 ..= end - 1`, computed in one pass.
-///
-/// `qdoc::history::prefix_heads` re-reads the change list per call; a timeline
-/// asks for every version, so this builds the whole series from a single read.
+/// Versions `start - 1 ..= end - 1`, computed in one pass — `prefix_heads`
+/// re-reads the change list per call, so a timeline asking for every
+/// version builds the series from one read instead.
 fn prefix_heads_series(
     doc: &mut AutoCommit,
     start: usize,
@@ -304,16 +253,10 @@ fn prefix_heads_series(
     out
 }
 
-// =====================================================================
-// Summaries
-// =====================================================================
-
-/// Describe the step from `prev` to `cur` using qdoc's structural diff.
-///
-/// The op class follows what actually moved, in the order a reader cares about:
-/// a new comment is a comment even if it also touched text; content edits beat
-/// pure deletions; a reordering with no content change is a move; anything left
-/// is metadata.
+/// The op class follows what actually moved, in the order a reader cares
+/// about: a new comment is a comment even if it also touched text; content
+/// edits beat pure deletions; a reordering with no content change is a
+/// move; anything left is metadata.
 fn structural_summary(
     prev: &DocSnapshot,
     cur: &DocSnapshot,
@@ -348,17 +291,12 @@ fn structural_summary(
     let props = diff.properties.len();
     let comments = cur.comments.len().saturating_sub(prev.comments.len());
     let pure_reorder = blocks_added == 0 && blocks_removed == 0 && block_order_changed(prev, cur);
-    // A change that took blocks away and put nothing back is a deletion, not an
-    // edit — that is what `OpClass::Tombstone` names, and what puts the row
-    // under the timeline's "Deletes" chip. It is checked before the character
-    // counts precisely because a removed block also removes its text, and
-    // "-1 block" is what the reader wants to see, not "-6 chars".
+    // Checked before the character counts: a removed block also removes its
+    // text, and "-1 block" is what the reader wants, not "-6 chars".
     let pure_removal = blocks_removed > 0 && blocks_added == 0 && inserted == 0;
 
-    // The character counts are complete on this path — a removed block
-    // contributes the text it took with it — so every branch can report them,
-    // and a group can aggregate across branches without mixing counted and
-    // uncounted members.
+    // A removed block contributes the text it took with it, so every
+    // branch below can report counted characters without exception.
     let delta = Some((inserted, deleted));
     if comments > 0 {
         let s = if comments == 1 {
@@ -412,8 +350,8 @@ fn structural_summary(
     (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
 }
 
-/// True when both snapshots hold the same set of top-level block ids but in a
-/// different order — a move rather than an edit.
+/// Same set of top-level block ids but a different order — a move rather
+/// than an edit.
 fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     let a: Vec<&str> = prev.blocks.iter().map(|b| b.id.as_str()).collect();
     let b: Vec<&str> = cur.blocks.iter().map(|b| b.id.as_str()).collect();
@@ -427,17 +365,15 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     sa == sb && a != b
 }
 
-/// Describe a change by reading its own patch set. The fallback for documents
-/// that do not carry the qdoc schema.
+/// The fallback for documents that don't carry the qdoc schema.
 fn patch_summary(
     doc: &mut AutoCommit,
     before: &[ChangeHash],
     after: &[ChangeHash],
 ) -> (String, OpClass, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
-    // A change that only named a version, or recorded a run, reports as nothing
-    // visible; the caller recognises that and drops the row rather than showing
-    // "1 field" under the band the name just created.
+    // A change that only named a version or recorded a run reports as
+    // nothing visible, so the caller drops the row.
     if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
         return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
     }

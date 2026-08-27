@@ -246,7 +246,6 @@ fn every_peer_converges_on_the_undo() {
     let (mut report, _intro) = Report::started_by_a_person();
     agent_writes_two_paragraphs(&mut report);
 
-    // Two peers that both have the agent's work.
     let mut bob = report.doc.fork();
     bob.set_actor(ActorId::from("bob".as_bytes()));
 
@@ -255,7 +254,6 @@ fn every_peer_converges_on_the_undo() {
     revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
-    // Alice's undo replicates like any other change.
     bob.merge(&mut report.doc).expect("peers merge");
 
     let cb = qdoc::model::open(&bob, &ROOT).expect("schema");
@@ -551,7 +549,6 @@ fn a_run_is_refused_whole_when_one_application_is_not_open() {
     let untouched = report.body();
     let photo_before = crop(&photo);
 
-    // Only the word processor is open here.
     let mut open: Vec<(String, String, &mut AutoCommit)> = vec![(
         WORD_PROCESSOR.into(),
         "file:/reports/q3.qdoc".into(),
@@ -579,7 +576,6 @@ fn a_run_is_refused_whole_when_one_application_is_not_open() {
 fn the_recorded_run_replicates_and_names_the_same_work_on_another_peer() {
     let (mut room, mut photo, mut report, _run) = one_instruction_two_apps();
 
-    // A second peer syncs the room document.
     let mut peer_room = room.fork();
     peer_room.set_actor(ActorId::from("bob".as_bytes()));
     peer_room.merge(&mut room).expect("rooms merge");
@@ -617,7 +613,6 @@ fn the_recorded_run_replicates_and_names_the_same_work_on_another_peer() {
 fn a_field_somebody_overwrote_afterwards_is_kept() {
     let (_room, mut photo, _report, run) = one_instruction_two_apps();
 
-    // The person adjusts the crop the agent made.
     photo.set_actor(ActorId::from(PERSON.as_bytes()));
     let (_, img) = photo.get(ROOT, "image").unwrap().unwrap();
     photo.put(&img, "crop_w", 1600).unwrap();

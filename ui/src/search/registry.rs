@@ -4,10 +4,9 @@
 
 use super::provider::{fuzzy_score, SearchProvider, SearchResult};
 
-/// Weight applied to a provider's own [`SearchResult::score`] bias relative to
-/// the registry's query-match bonus. High enough that a strongly-pinned result
-/// (favourite / recent) leads for a weak query, low enough that an exact title
-/// match still wins for a strong one.
+/// Weight applied to a provider's own [`SearchResult::score`] bias relative
+/// to the registry's query-match bonus: high enough that a pinned result
+/// leads for a weak query, low enough that an exact title match still wins.
 const PROVIDER_BIAS_WEIGHT: i32 = 4;
 
 /// A ranked bucket of results that share a [`SearchResult::kind`]. The results
@@ -57,13 +56,11 @@ impl SearchRegistry {
         Self { providers: Vec::new() }
     }
 
-    /// Register a provider. Chainable.
     pub fn register(&mut self, provider: Box<dyn SearchProvider>) -> &mut Self {
         self.providers.push(provider);
         self
     }
 
-    /// Register a closure as a provider, labelling it `name`. Chainable.
     pub fn register_fn<F>(&mut self, name: impl Into<String>, f: F) -> &mut Self
     where
         F: Fn(&str) -> Vec<SearchResult> + 'static,
@@ -72,18 +69,17 @@ impl SearchRegistry {
         self
     }
 
-    /// How many providers are registered.
     pub fn provider_count(&self) -> usize {
         self.providers.len()
     }
 
-    /// The registered providers' kind labels, in registration order.
+    /// In registration order.
     pub fn provider_names(&self) -> Vec<&str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    /// The relevance key for one result under `query`: the provider's bias plus
-    /// the query-match bonus against the title (falling back to the subtitle).
+    /// The provider's bias plus the query-match bonus against the title
+    /// (falling back to the subtitle).
     fn rank_key(query: &str, r: &SearchResult) -> i32 {
         let bonus = fuzzy_score(query, &r.title)
             .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
@@ -91,24 +87,19 @@ impl SearchRegistry {
         r.score * PROVIDER_BIAS_WEIGHT + bonus
     }
 
-    /// Query every provider and return one flat, ranked list. Results are sorted
-    /// by descending [`rank_key`](Self::rank_key); ties keep provider
-    /// registration order and each provider's own order (a stable sort), so
-    /// ranking is deterministic.
+    /// Sorted by descending [`rank_key`](Self::rank_key); ties keep provider
+    /// registration order (a stable sort), so ranking is deterministic.
     pub fn query(&self, query: &str) -> Vec<SearchResult> {
         let mut all: Vec<SearchResult> = Vec::new();
         for provider in &self.providers {
             all.extend(provider.search(query));
         }
-        // Descending rank; stable so equal keys keep insertion order.
         all.sort_by(|a, b| Self::rank_key(query, b).cmp(&Self::rank_key(query, a)));
         all
     }
 
-    /// Query every provider and bucket the ranked results by
-    /// [`SearchResult::kind`]. Groups appear in the order their **best** result
-    /// ranks (so the most relevant category leads); within a group, results stay
-    /// in ranked order. This is what the results overlay consumes.
+    /// Groups appear in the order their **best** result ranks; within a
+    /// group, results stay in ranked order.
     pub fn query_grouped(&self, query: &str) -> Vec<SearchGroup> {
         let ranked = self.query(query);
         let mut groups: Vec<SearchGroup> = Vec::new();
@@ -122,9 +113,8 @@ impl SearchRegistry {
         groups
     }
 
-    /// Like [`query_grouped`](Self::query_grouped) but capping each group to
-    /// `per_group_cap` results, so no single busy provider floods the overlay.
-    /// A `per_group_cap` of `0` means uncapped.
+    /// Caps each group to `per_group_cap` results, so no single busy provider
+    /// floods the overlay. `0` means uncapped.
     pub fn query_grouped_capped(&self, query: &str, per_group_cap: usize) -> Vec<SearchGroup> {
         let mut groups = self.query_grouped(query);
         if per_group_cap > 0 {
@@ -167,9 +157,8 @@ mod tests {
     #[test]
     fn ranks_stronger_title_match_first_across_providers() {
         let mut reg = SearchRegistry::new();
-        // A weak match from the first-registered provider…
+        // A weak match from the first-registered provider, an exact-prefix match from the second.
         reg.register_fn("Files", |_q| vec![r("Files", "critical-log.txt", "f:1")]);
-        // …and an exact-prefix match from the second.
         reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
         let out = reg.query("cal");
         assert_eq!(out[0].title, "Calculator", "prefix match outranks scattered, across providers");

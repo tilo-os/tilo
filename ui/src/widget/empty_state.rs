@@ -66,16 +66,11 @@ struct Fit {
 }
 
 impl Fit {
-    /// Shed decorative elements rather than overflow the rect.
-    ///
-    /// A zero-state is not always given a full pane: a docked panel is a couple
-    /// of hundred pixels tall, and centring a stack taller than the rect pushes
-    /// the message out through the bottom edge, where whatever sits below clips
-    /// it mid-sentence. The hero disc is the largest element and the one
-    /// carrying the least information, so it goes first. The message explains
-    /// the state and goes only if the title alone still does not fit. The title
-    /// and the action are never dropped — the first is the whole point and the
-    /// second is the only thing the user can do here.
+    /// Shed decorative elements rather than overflow the rect: the hero disc
+    /// is the largest element and carries the least information, so it goes
+    /// first; the message goes next, only if the title alone still doesn't
+    /// fit. The title and the action are never dropped — the first is the
+    /// whole point and the second is the only thing the user can do here.
     fn choose(height: f64, parts: Parts, m: Metrics) -> Fit {
         let stack = |icon: bool, message: bool| {
             let mut t = m.title_h;
@@ -499,12 +494,9 @@ mod tests {
         }
     }
 
-    /// A zero-state in a short pane must shed elements, not overflow.
-    ///
-    /// A docked panel body is a couple of hundred pixels tall. Centring the
-    /// full stack in it put the message through the bottom edge, where the
-    /// status bar clipped it mid-sentence — which is how the code editor's
-    /// Problems panel shipped its "still indexing" state before this.
+    /// A zero-state in a short pane (a docked panel body, a couple hundred
+    /// pixels tall) must shed elements rather than push the message through
+    /// the bottom edge.
     #[test]
     fn a_short_pane_sheds_the_hero_disc_before_it_overflows() {
         let want = Parts { icon: true, message: true, action: false };

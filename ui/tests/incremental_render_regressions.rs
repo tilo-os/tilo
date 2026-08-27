@@ -1,5 +1,4 @@
-//! Regressions for two bugs hidden by the 2026-05-23 incremental
-//! rendering work:
+//! Regressions for two bugs incremental rendering can reintroduce:
 //!
 //! 1. `Column`/`Row::draw_with_presence` rebuild path must recurse
 //!    into children at `Affine::IDENTITY`; vello's `Scene::append`
@@ -393,7 +392,6 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         r.mark_drawn();
     };
 
-    // Warmup.
     draw(&mut root, &mut scene, &mut text_renderer, &presence);
     let warm_rgba = renderer.render(&scene, bg);
     let warm_pixels = count_non_bg(&warm_rgba, bg);

@@ -39,11 +39,7 @@ const PAGE_RADIUS: f64 = 3.0;
 /// Draw a rounded paper sheet lifted off the desk by `elevation`.
 ///
 /// The lift comes from the shared painter, so a page is raised by the
-/// same material as every other surface. It used to be a solid rounded
-/// rect in an opaque near-black, inflated 1 px sideways and nudged 4-6 px
-/// down: a dark copy of the sheet sticking out from under it, which is a
-/// different thing from a shadow and read as one whenever the desk behind
-/// it was light.
+/// same material as every other surface.
 pub fn draw(
     scene: &mut Scene,
     transform: Affine,

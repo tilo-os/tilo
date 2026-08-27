@@ -1,10 +1,6 @@
-//! Motion tokens — the one shared timing + spring vocabulary the whole
-//! UI (toolkit widgets AND shell chrome) animates against.
-//!
-//! Before this consolidation the shell scattered ~8 near-but-unequal
-//! duration constants (140/180/200/220/250/260/400/420) and never read
-//! these tokens at all. Every animation now maps onto one of three
-//! semantic durations, so same-class gestures share a feel.
+//! Motion tokens — the one shared timing + spring vocabulary the whole UI
+//! (toolkit widgets AND shell chrome) animates against, so same-class
+//! gestures share a feel.
 
 use std::time::Duration;
 
@@ -26,35 +22,29 @@ pub struct SpringPresets {
     /// Mass you can feel (ζ = 1.0, ω = 32 rad/s). For a control that is
     /// meant to read as a physical object rather than a state change.
     ///
-    /// Weight and bounce are opposites, not the same dial. Overshoot
-    /// reads *light* — a thing that springs past its mark and wobbles
-    /// back is a thing with very little inertia. So this is critically
-    /// damped: ζ = exactly 1.0, the boundary where overshoot disappears.
+    /// Weight and bounce are opposites: overshoot reads *light* (a thing
+    /// with very little inertia springs past and wobbles back), so this is
+    /// critically damped — ζ = exactly 1.0, the boundary where overshoot
+    /// disappears.
     ///
-    /// Weight does **not** come from a long settle. That was the first
-    /// tuning here (ω = 14, ~0.5 s) and it did not read as heavy, it
-    /// read as slow — the control had already arrived as far as the eye
-    /// was concerned and was still visibly creeping. Inertia is legible
-    /// while you are *pushing* the thing: the follow-lag under the
-    /// pointer and the detent pull near a stop. Once released it should
-    /// land promptly, so the settle sits at ~0.26 s.
+    /// Weight does **not** come from a long settle: an earlier ω = 14
+    /// (~0.5s) tuning read as slow, not heavy — the control had visually
+    /// arrived and was still creeping. Inertia is legible while you're
+    /// *pushing* (follow-lag, detent pull); once released it should land
+    /// promptly, so the settle sits at ~0.26s.
     pub heavy: SpringParams,
     /// Stiff critical follow (ζ = 1.0, ω = 40 rad/s). For a surface that
     /// trails a dragging pointer instead of being welded to it.
     ///
-    /// Rigid tracking always reads weightless — a thing with mass cannot
-    /// change velocity instantly, so a surface pinned exactly under the
-    /// cursor is telling you it has none. Routing the drag through a
-    /// spring puts a lag between hand and surface that is proportional
-    /// to how fast you are moving, which is precisely how inertia
-    /// presents itself.
+    /// A surface pinned exactly under the cursor reads weightless — mass
+    /// can't change velocity instantly, and routing the drag through a
+    /// spring puts a lag between hand and surface proportional to speed,
+    /// which is how inertia presents itself.
     ///
-    /// The tracking error of a critically damped spring following a
-    /// target at constant speed `v` is `2v/ω`, so ω sets the whole feel
-    /// and it is a narrow window: too soft and the surface is not heavy,
-    /// it is *late*, which reads as the machine being slow. At ω = 40
-    /// an unhurried drag trails by a couple of degrees and a hard yank
-    /// by about half a detent.
+    /// Tracking error of a critically damped spring at constant speed `v`
+    /// is `2v/ω`, so ω sets the whole feel: too soft reads as *late*
+    /// rather than heavy. At ω = 40 an unhurried drag trails by a couple
+    /// of degrees, a hard yank by about half a detent.
     pub tracking: SpringParams,
 }
 
@@ -111,31 +101,26 @@ impl Durations {
 #[derive(Clone, Copy, Debug)]
 pub struct Gesture {
     /// Ceiling on overscroll past an end, as a multiple of the surface's
-    /// reference extent. The pull approaches this and never reaches it.
+    /// reference extent — the pull approaches this and never reaches it.
     ///
-    /// It has to be big enough that first contact with the end is
-    /// legible as give rather than as a stop, and small enough that the
-    /// surface never leaves the region it belongs in. Slightly over one
-    /// extent means you can pull an end clear of where it rests, see
-    /// that there is nothing beyond it, and be unable to pull it further.
+    /// Big enough that first contact reads as give rather than a stop,
+    /// small enough the surface never leaves its region: slightly over
+    /// one extent means you can pull an end clear of where it rests, see
+    /// nothing beyond it, and be unable to pull further.
     pub overscroll_reach_frac: f32,
     /// Peak strength of the corrective pull toward the nearest detent
     /// while dragging, as a fraction of one detent.
     ///
-    /// This is what makes notches *felt* rather than merely landed on:
-    /// under a slow drag the surface is always being tugged toward the
-    /// nearer notch, so crossing between two is a small acceleration
-    /// followed by a small resistance. Zero would be a smooth slide;
-    /// too large and the surface fights the hand and can no longer be
-    /// held between notches at all.
+    /// What makes notches *felt* rather than merely landed on: crossing
+    /// between two is a small acceleration then resistance. Zero would be
+    /// a smooth slide; too large and the surface fights the hand and
+    /// can't be held between notches.
     pub detent_magnet_frac: f32,
     /// How long a release's residual velocity is projected forward when
-    /// choosing where a flick lands.
-    ///
-    /// A flick should carry: the distance travelled after the hand
-    /// leaves is the entire difference between throwing something and
-    /// pushing it. This is the coast time that projection assumes;
-    /// the settle spring then supplies the actual deceleration.
+    /// choosing where a flick lands — the coast time the projection
+    /// assumes; the settle spring supplies the actual deceleration.
+    /// A flick should carry: distance travelled after release is what
+    /// separates throwing something from pushing it.
     pub fling_projection_ms: u32,
 }
 
@@ -143,11 +128,9 @@ impl Default for Gesture {
     fn default() -> Self {
         Self {
             overscroll_reach_frac: 1.2,
-            // Strong enough that the wheel visibly dislikes sitting
-            // between two workspaces. At 0.18 an in-between rest was
-            // comfortable, so the control read as continuous rather than
-            // notched; the pull now dominates the last third of a gap and
-            // the crossing is felt as give-then-catch.
+            // At 0.18 an in-between rest was comfortable (read as
+            // continuous, not notched); at 0.45 the pull dominates the
+            // last third of a gap and crossing feels like give-then-catch.
             detent_magnet_frac: 0.45,
             fling_projection_ms: 110,
         }
@@ -173,18 +156,16 @@ impl Default for Motion {
 
 /// iOS-style overscroll resistance.
 ///
-/// `distance` is how far past the end the input actually asks to go;
-/// the return is how far the surface is allowed to move. `limit` is the
-/// asymptote — the surface approaches it and never arrives.
+/// `distance` is how far past the end the input asks to go; the return is
+/// how far the surface is allowed to move. `limit` is the asymptote — the
+/// surface approaches it and never arrives.
 ///
-/// The curve is `L·d / (d + L)`, which is the algebraic simplification
-/// of the form usually quoted for UIScrollView,
-/// `(1 − 1/(d·c/D + 1))·D/c`, with `L = D/c`. Two properties are what
-/// matter and both are visible in the simplified form: the slope at
-/// `d = 0` is exactly 1, so the first pixel past the end tracks the
-/// finger perfectly and the edge is never a wall; and the slope decays
-/// monotonically toward zero, so resistance builds the whole way and
-/// there is always a little more give and never much.
+/// `L·d / (d + L)` is the algebraic simplification of the form usually
+/// quoted for UIScrollView, `(1 − 1/(d·c/D + 1))·D/c` with `L = D/c`. Two
+/// properties matter, both visible here: slope at `d = 0` is exactly 1 (the
+/// first pixel past the end tracks the finger, the edge is never a wall),
+/// and slope decays monotonically toward zero (resistance builds the whole
+/// way, always a little more give and never much).
 pub fn rubber_band(distance: f32, limit: f32) -> f32 {
     if distance <= 0.0 || limit <= 0.0 {
         return 0.0;
@@ -221,18 +202,13 @@ mod tests {
         (p.stiffness / p.mass).sqrt()
     }
 
-    /// The heavy preset's whole claim is "weight without wobble", and
-    /// wobble is not a matter of taste — it is whether ζ reaches 1.0.
-    /// Anything below and the spring crosses its target and comes back,
-    /// which is the light, bouncy reading this preset exists to avoid.
+    /// "Weight without wobble" means ζ must reach exactly 1.0 — anything
+    /// below and the spring crosses its target, the bouncy reading this
+    /// preset exists to avoid.
     ///
-    /// The settle bound is the other half, and it is measured by
-    /// stepping the real integrator rather than derived from ω, so a
-    /// change to how `Spring` integrates cannot quietly lengthen it.
-    /// An earlier tuning sat at ~0.5 s and was rejected in review as
-    /// slow rather than heavy: past roughly a third of a second the
-    /// control has visually arrived and is still creeping, which reads
-    /// as the machine lagging. Weight has to come from the drag.
+    /// The settle bound is measured by stepping the real integrator rather
+    /// than derived from ω, so a change to how `Spring` integrates can't
+    /// quietly lengthen it.
     #[test]
     fn heavy_is_critically_damped_and_settles_promptly() {
         let p = SpringPresets::default();

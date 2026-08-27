@@ -3,21 +3,20 @@
 //! This module exists for one line: [`RenderContext::new_device`] requests the
 //! device with [`wgpu::MemoryHints::Manual`] instead of the default.
 //!
-//! `vello::util::RenderContext` builds its device with `..Default::default()`,
-//! and that default is `MemoryHints::Performance` — right for a game alone on a
-//! discrete card, wrong for a qOS session, where a dozen clients share one
-//! integrated GPU whose memory is the machine's memory. Measured on an idle
-//! file manager: 488 MB across 459 buffers, of which 448 MB was three
-//! suballocator chunks (256 + 128 + 64 MB) and 20 MB was the application's
-//! content. Thirteen clients paying that is the whole 16 GB GTT window, and a
-//! GPU allocation that can neither be served nor fail takes the box with it —
-//! no OOM, no panic, just a freeze.
+//! `vello::util::RenderContext` defaults to `MemoryHints::Performance` — right
+//! for a game alone on a discrete card, wrong for a qOS session where a dozen
+//! clients share one integrated GPU whose memory is the machine's memory.
+//! Measured on an idle file manager: 488 MB across 459 buffers, of which
+//! 448 MB was three suballocator chunks (256 + 128 + 64 MB) and only 20 MB
+//! was actual content. Thirteen clients paying that is the whole 16 GB GTT
+//! window, and a GPU allocation that can neither be served nor fail takes
+//! the box with it — no OOM, no panic, just a freeze.
 //!
-//! Not a patched vello: `RenderSurface`'s fields are public and `Renderer::new`
-//! takes a plain `&Device`, so only `DeviceHandle` had to be reimplemented, for
-//! its private `adapter` field. vello stays an unmodified dependency, and the
-//! rest of this file is kept close to `vello::util`'s own logic so the two can
-//! be compared when vello moves.
+//! Not a patched vello: `RenderSurface`'s fields are public and
+//! `Renderer::new` takes a plain `&Device`, so only `DeviceHandle` needed
+//! reimplementing, for its private `adapter` field. vello stays unmodified,
+//! and this file stays close to `vello::util`'s own logic so the two can be
+//! compared when vello moves.
 
 use vello::util::RenderSurface;
 use wgpu::{
@@ -124,19 +123,17 @@ impl RenderContext {
                 label: None,
                 required_features: features & maybe_features,
                 required_limits: Limits::default(),
-                // The reason this module exists — see the header for the
-                // default's cost. `MemoryUsage` (8 MB first block, 64 MB
-                // largest) is the right shape and still not enough, because
-                // the block size doubles with every block a process opens
-                // (`min << active_general_blocks`, capped at the maximum): one
-                // idle application held 4 + 8 + 16 + 32 + 64 = 124 MB of
-                // blocks to suballocate ~50 MB of buffers out of.
+                // See the module header for the default's cost. `MemoryUsage`
+                // (8 MB first block, 64 MB largest) is still not enough,
+                // because the block size doubles with every block a process
+                // opens (`min << active_general_blocks`, capped at the
+                // maximum): one idle app held 4+8+16+32+64 = 124 MB of blocks
+                // to suballocate ~50 MB of buffers out of.
                 //
-                // Fixed 4 MB blocks stop the doubling. Anything larger than a
-                // block gets a dedicated allocation of its own exact size
-                // instead (`gpu_allocator`'s `requires_personal_block`), so
-                // big buffers cost what they are and small ones share a block.
-                // 4 MB is the floor wgpu clamps to.
+                // Fixed 4 MB blocks stop the doubling. Anything larger gets a
+                // dedicated allocation of its own exact size instead
+                // (`gpu_allocator`'s `requires_personal_block`), so big
+                // buffers cost what they are. 4 MB is the floor wgpu clamps to.
                 memory_hints: wgpu::MemoryHints::Manual {
                     suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
                 },

@@ -13,15 +13,12 @@
 //! is a second, independently-drifting definition of which URIs are allowed to
 //! become paths the app then reads or writes.
 //!
-//! One such drift was live. A copy mapped URIs with
-//! `uri.strip_prefix("file://")` instead of [`url::Url::to_file_path`], which
-//! turns `file://evil-host/etc/passwd` into the **relative** path
-//! `evil-host/etc/passwd` — silently resolved against the process's working
-//! directory, from a URI that explicitly named a *remote host*. It also
-//! hand-rolled percent-decoding, so escaped filenames round-tripped
-//! differently from the other copies. This module converges on
-//! `Url::to_file_path`, which rejects a foreign host outright and does the
-//! decoding per path segment; see `rejects_a_uri_that_names_a_remote_host`.
+//! One such drift was live: mapping URIs with `uri.strip_prefix("file://")`
+//! instead of [`url::Url::to_file_path`] turns `file://evil-host/etc/passwd`
+//! into the **relative** path `evil-host/etc/passwd` — silently resolved
+//! against the process's working directory, from a URI that explicitly named
+//! a *remote host*. This module converges on `Url::to_file_path`, which
+//! rejects a foreign host outright; see `rejects_a_uri_that_names_a_remote_host`.
 //!
 //! # Threading contract
 //!
@@ -112,7 +109,6 @@ impl FileFilter {
         Self::new("All files").glob("*")
     }
 
-    /// The filter's dropdown label.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -190,12 +186,10 @@ impl PickRequest {
         self.filter(FileFilter::all_files())
     }
 
-    /// The chooser title, as the host dialog will show it.
     pub fn title(&self) -> &str {
         &self.title
     }
 
-    /// Whether this request opens a multi-select chooser.
     pub fn is_multiple(&self) -> bool {
         matches!(self.kind, PickKind::Open { multiple: true })
     }
@@ -214,13 +208,10 @@ impl PickRequest {
         }
     }
 
-    /// Run the chooser on a worker thread and return the receiver the caller
-    /// drains each frame. The UI thread is never blocked: the D-Bus round-trip
-    /// and the host dialog live entirely on the worker.
-    ///
-    /// Use on a request built with [`open`](Self::open) or
-    /// [`save`](Self::save); a multi-select request should go through
-    /// [`send_multiple`](Self::send_multiple) so every pick is delivered.
+    /// The UI thread is never blocked: the D-Bus round-trip and the host
+    /// dialog live entirely on the worker. A multi-select request should go
+    /// through [`send_multiple`](Self::send_multiple) instead, so every pick
+    /// is delivered.
     pub fn send(self) -> PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
         let name = self.thread_name.clone();
@@ -497,10 +488,6 @@ mod tests {
 
     #[test]
     fn rejects_a_uri_that_names_a_remote_host() {
-        // The drift this module was built to end. `strip_prefix("file://")`
-        // maps this to the *relative* path `evil-host.example.com/etc/passwd`,
-        // which the process then resolves against its own working directory —
-        // from a URI that explicitly named a remote host. It must be refused.
         let uri = u("file://evil-host.example.com/etc/passwd");
 
         assert_eq!(to_local_path(&uri), None, "a foreign host is not a local path");
@@ -543,7 +530,6 @@ mod tests {
 
     #[test]
     fn percent_escapes_in_filenames_are_decoded() {
-        // The case the diverged copy hand-rolled: `%20` is a space.
         assert_eq!(
             map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
             PortalOutcome::Opened(PathBuf::from("/home/alice/My Clip.mp4"))
@@ -553,7 +539,6 @@ mod tests {
             map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
             PortalOutcome::Opened(PathBuf::from("/home/alice/été café.mp3"))
         );
-        // Other reserved characters that appear in real filenames.
         assert_eq!(
             map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
             PortalOutcome::Opened(PathBuf::from("/home/alice/a#b?c%d.txt"))
@@ -562,9 +547,7 @@ mod tests {
 
     #[test]
     fn a_plus_in_a_path_stays_a_plus() {
-        // `+` means space only in `application/x-www-form-urlencoded` query
-        // strings. In a path component it is a literal plus, so `my+song.mp3`
-        // must open as `my+song.mp3` and not be mangled into `my song.mp3`.
+        // `+` means space only in query strings, not in a path component.
         assert_eq!(
             map_uri(&[u("file:///home/alice/my+song.mp3")]),
             PortalOutcome::Opened(PathBuf::from("/home/alice/my+song.mp3"))
@@ -573,10 +556,8 @@ mod tests {
 
     #[test]
     fn an_escaped_separator_does_not_become_a_new_path_component() {
-        // `url::Url::to_file_path` decodes each segment and then joins, so a
-        // bare `to_file_path` maps this to `/home/alice/a/b.txt` — one URI
-        // segment silently becoming two path components. What the portal
-        // presented as a file name must stay a file name.
+        // A bare `to_file_path` maps this to `/home/alice/a/b.txt` — one URI
+        // segment silently becoming two path components.
         assert_eq!(
             to_local_path(&u("file:///home/alice/a%2Fb.txt")),
             None,
@@ -590,9 +571,8 @@ mod tests {
 
     #[test]
     fn a_parent_hop_hidden_inside_one_segment_is_rejected() {
-        // A single segment whose *escaped separators* decode into a traversal:
-        // the URI has three segments, the decoded path would have five, and
-        // what the portal presented as one file name would climb two levels.
+        // The URI has three segments, the decoded path would have five: what
+        // the portal presented as one file name would climb two levels.
         for s in [
             "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
             "file:///var/workspace/%2E%2E%2Fetc/shadow",
@@ -606,10 +586,8 @@ mod tests {
     fn a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled() {
         // `%2E%2E` as a whole segment is not an escape hatch: RFC 3986 path
         // normalisation happens when the URI is *parsed*, so the URI's own
-        // path is already `/etc/shadow` and every conforming consumer agrees.
-        // We must therefore return exactly that — no hidden extra component —
-        // and leave whether the app may read it to the sandbox, which is the
-        // layer that owns that question.
+        // path is already `/etc/shadow`. Whether the app may read it is the
+        // sandbox's question, not this module's.
         let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
         assert_eq!(uri.path(), "/etc/shadow", "the URI normalises on parse");
         assert_eq!(to_local_path(&uri), Some(PathBuf::from("/etc/shadow")));
@@ -681,8 +659,6 @@ mod tests {
 
     #[test]
     fn workspace_paths_resolve_through_the_fuse_mount() {
-        // A `/var/workspace/...` pick is an ordinary local path; the FUSE
-        // driver hydrates it on read.
         assert_eq!(
             map_uri(&[u("file:///var/workspace/media/a.mkv")]),
             PortalOutcome::Opened(PathBuf::from("/var/workspace/media/a.mkv"))
@@ -731,8 +707,6 @@ mod tests {
         assert_eq!(s.kind, PickKind::Save { suggested_name: "contacts.vcf".into() });
     }
 
-    /// Without the `portal` feature the picker cannot open, and the caller
-    /// must still receive exactly one outcome rather than hang.
     #[cfg(not(feature = "portal"))]
     #[test]
     fn without_the_feature_a_request_fails_rather_than_hanging() {

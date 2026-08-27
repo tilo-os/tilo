@@ -1,6 +1,5 @@
-//! Lightweight, always-compiled instrumentation for the WebView
-//! pipeline. Off by default at zero cost; enabled by setting
-//! `QOS_WEBVIEW_PROFILE` in the environment.
+//! Lightweight instrumentation for the WebView pipeline. Off by default;
+//! enabled by setting `QOS_WEBVIEW_PROFILE` in the environment.
 //!
 //! What it measures, from the engine thread and the widget:
 //!  * **frame throughput** — inter-frame intervals → frames/sec,
@@ -93,10 +92,9 @@ impl State {
     }
 }
 
-/// Note that an interactive command was just sent. `kind` is a short
-/// static label (`"scroll"`, `"mouse"`, `"key"`). Only the first input
-/// after a paint opens a latency window, so a burst reports the latency
-/// of the burst's leading edge to its first repaint.
+/// `kind` is a short static label (`"scroll"`, `"mouse"`, `"key"`). Only
+/// the first input after a paint opens a latency window, so a burst
+/// reports the leading edge's latency to its first repaint.
 #[inline]
 pub fn record_input(kind: &'static str) {
     if !enabled() {
@@ -148,10 +146,9 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     }
 }
 
-/// Record a draw pass: the widget's rect and the frame dimensions it
-/// painted (`None` = placeholder, no frame yet). A rect whose aspect
-/// ratio diverges from the frame's, or a placeholder appearing after
-/// real frames, points at a layout/caching glitch.
+/// `frame_dims` is `None` for a placeholder (no frame yet). A rect whose
+/// aspect ratio diverges from the frame's, or a placeholder appearing
+/// after real frames, points at a layout/caching glitch.
 pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     if !enabled() {
         return;

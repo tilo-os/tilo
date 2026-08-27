@@ -1,34 +1,17 @@
 //! Shared fullscreen / presentation mechanism.
 //!
-//! One mechanism every app uses to promote content to a borderless full-output
-//! surface, with control over **which** output it lands on and **what view** it
-//! shows there:
+//! A root widget expresses a [`FullscreenRequest`] via
+//! [`crate::widget::Widget::fullscreen_request`]. The App
+//! ([`crate::app::App`]) polls it each frame, runs [`select_output`] over
+//! the live monitors, and drives `winit::window::Window::set_fullscreen` —
+//! a genuine borderless full-output surface, not a maximized window.
+//! [`select_output`] is pure over [`MonitorInfo`] so it's unit-tested
+//! without a live window.
 //!
-//! * A root widget expresses a [`FullscreenRequest`] via
-//!   [`crate::widget::Widget::fullscreen_request`] (the older on/off
-//!   [`crate::widget::Widget::fullscreen_intent`] still works and bridges to
-//!   this — an intent of `Some(true)` becomes a mirror request on the largest
-//!   output).
-//! * The App ([`crate::app::App`]) polls it each frame, enumerates the live
-//!   monitors, runs [`select_output`] to pick the target output, and drives
-//!   `winit::window::Window::set_fullscreen` at that monitor — a genuine
-//!   borderless full-output surface, not a maximized window.
-//! * [`FullscreenTarget::Largest`] is the presentation default: pick the biggest
-//!   monitor (e.g. the projector) so "Present" fills the big screen.
-//!
-//! [`select_output`] is a pure function over [`MonitorInfo`] so the
-//! output-selection contract is unit-tested without a live window (real OS
-//! fullscreen and monitor enumeration can't be exercised headlessly).
-//!
-//! ### Compositor note
-//!
-//! On a host that exposes monitors (a dev GNOME/mutter multi-head, or any
-//! future compositor that advertises `wl_output` globals and honours the
-//! `set_fullscreen(output)` hint), this targets the chosen monitor exactly. The
-//! current qOS compositor advertises no `wl_output` globals and spans one
-//! combined scene, so the enumerated list is empty and the mechanism degrades to
-//! `Borderless(None)` — still a real full-output surface, just compositor-placed.
-//! The selection logic is already correct for the day the compositor honours it.
+//! The current qOS compositor advertises no `wl_output` globals, so the
+//! enumerated list is empty and this degrades to `Borderless(None)` — still
+//! real fullscreen, just compositor-placed. Selection logic is already
+//! correct for when the compositor advertises monitors.
 
 /// Which output an app wants its fullscreen surface promoted onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -51,13 +34,9 @@ pub enum FullscreenTarget {
 pub struct MonitorInfo {
     /// Position of this monitor in the enumerated list.
     pub index: u32,
-    /// Physical width in pixels.
     pub width: u32,
-    /// Physical height in pixels.
     pub height: u32,
-    /// Whether the host flags this as the primary monitor.
     pub primary: bool,
-    /// The monitor's scale factor.
     pub scale: f64,
 }
 
@@ -83,10 +62,7 @@ pub enum FullscreenView {
 /// for the whole duration of a slideshow / immersive playback is correct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FullscreenRequest {
-    /// The output to target.
     pub target: FullscreenTarget,
-    /// Whether the surface shows a distinct view (presentation) or mirrors the
-    /// app window (immersive).
     pub view: FullscreenView,
 }
 
@@ -147,8 +123,8 @@ mod tests {
     #[test]
     fn largest_picks_biggest_area() {
         let mons = vec![
-            mon(0, 1920, 1080, true),  // 2.07M — laptop
-            mon(1, 3840, 2160, false), // 8.29M — the projector / big screen
+            mon(0, 1920, 1080, true),
+            mon(1, 3840, 2160, false),
             mon(2, 1280, 720, false),
         ];
         assert_eq!(

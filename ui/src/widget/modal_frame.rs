@@ -1,19 +1,14 @@
 //! The one modal chrome: scrim, card, title row, close control, action row.
-//!
-//! Not a second modal widget — it is the chrome, factored so that retained
-//! `Widget`s ([`ModalDialog`](super::modal_dialog::ModalDialog)) and
-//! immediate-mode painters (the compositor's overlay host, which owns its own
-//! hit-testing and paints straight into a `Scene`) share one implementation.
-//! Every surface that drew its own card also drew its own buttons, and a
-//! hand-rolled control has no focus ring, no disabled state, no accessible
-//! name and no guarantee that its label can be read.
+//! Factored out (not a second modal widget) so retained `Widget`s
+//! ([`ModalDialog`](super::modal_dialog::ModalDialog)) and immediate-mode
+//! painters (the compositor's overlay host) share one implementation,
+//! rather than each hand-rolling a control with no focus ring or a11y name.
 //!
 //! The action row goes through [`Button::paint`], so a modal button *is* a
-//! `Button`: same states, and the same on-fill label colour the shared
-//! `face_colors` measures rather than assumes.
+//! `Button`.
 //!
-//! The body sits between the two paint calls, because the card has to be under
-//! it while the action row is laid out from the bottom up:
+//! The body sits between the two paint calls, because the card must be
+//! under it while the action row is laid out bottom-up:
 //!
 //! ```ignore
 //! let layout = ModalFrame::layout(viewport, &spec, text_renderer, theme);
@@ -31,13 +26,10 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};
 
-/// Strength of the scrim painted over everything behind the modal.
-///
-/// 0.45 rather than the 0.30 a design tool would specify: vello has no
-/// backdrop blur, so the scrim is the only thing separating the card from the
-/// desktop, and an un-blurred 0.30 lets through enough structure that the card
-/// reads as floating over noise. 0.45 is where an un-blurred scrim reads about
-/// the same as a blurred 0.30.
+/// Strength of the scrim painted over everything behind the modal. 0.45
+/// rather than the 0.30 a design tool would specify: vello has no backdrop
+/// blur, so an un-blurred 0.30 lets through enough structure to read as
+/// floating over noise; 0.45 reads like a blurred 0.30.
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
 /// Widest a modal card is drawn. Past this a single column of text stops being
@@ -54,9 +46,8 @@ pub const MODAL_TITLE_ROW_H: f64 = 52.0;
 pub const MODAL_ACTION_ROW_H: f64 = 56.0;
 /// Padding from the card edge to its content, on every side.
 pub const MODAL_PAD: f64 = 20.0;
-/// Side of the square close-control hit target. The 14-px glyph inside it is
-/// the size an `X` wants to be; 32 is the size a thing you have to hit wants
-/// to be.
+/// Side of the square close-control hit target: 14 px is the size an `X`
+/// wants to be, 32 is the size a thing you must hit wants to be.
 pub const MODAL_CLOSE_SIZE: f64 = 32.0;
 
 /// Height of one action button, matching the compact chrome button height the
@@ -306,11 +297,9 @@ impl ModalFrame {
 
     /// Ink that is legible on the modal card, as `(primary, dim)`.
     ///
-    /// The chrome's own `text_primary` when it clears AA against the card, and
-    /// the contrast-guaranteed on-card ramp when it does not. Taking a fixed
-    /// ramp slot is what went wrong here before: a slot that reads on one
-    /// palette can vanish on another, and a label nobody can read is the same
-    /// defect as a label that is not painted.
+    /// The chrome's own `text_primary` when it clears AA against the card,
+    /// else the contrast-guaranteed on-card ramp — a fixed ramp slot can read
+    /// on one palette and vanish on another.
     pub fn ink(theme: &Theme) -> (Color, Color) {
         let card = Self::card_fill(theme);
         if crate::a11y::contrast_ratio(theme.text_primary, card) >= MODAL_MIN_INK_CONTRAST {
@@ -529,8 +518,7 @@ mod tests {
     }
 
     /// A closable modal always has a close control, and it is a real hit
-    /// target rather than a decorative glyph. The card this replaced had none
-    /// at all, and explained in a sentence that Escape was the way out.
+    /// target rather than a decorative glyph.
     #[test]
     fn a_closable_modal_has_a_close_control_you_can_hit() {
         let spec = ModalSpec::new("Workspace invite").body_height(120.0);
@@ -556,11 +544,9 @@ mod tests {
         }
     }
 
-    /// A modal action reacts. The row has always gone through `Button::paint`,
-    /// so the states existed on the face and were simply never handed over —
-    /// every modal button in the system was a real button frozen at rest. A
-    /// focused one in particular has to draw the ring, because a modal takes
-    /// the keyboard and a keyboard user needs to see where they are in it.
+    /// A modal action reacts. A focused one in particular has to draw the
+    /// ring, because a modal takes the keyboard and a keyboard user needs to
+    /// see where they are in it.
     #[test]
     fn an_action_shows_hover_press_and_focus() {
         let theme = Theme::dark();
@@ -789,8 +775,7 @@ mod tests {
     }
 
     /// The modal's own ink clears AA against the card it is painted on, on
-    /// every theme the OS ships. A previous card took a fixed ramp slot and
-    /// was illegible on one of these palettes.
+    /// every theme the OS ships.
     #[test]
     fn modal_ink_is_legible_on_every_theme() {
         for (name, theme) in themes() {
@@ -809,11 +794,8 @@ mod tests {
     }
 
     /// Every action label is legible on the fill it is painted on, on every
-    /// theme and in every emphasis.
-    ///
-    /// The hand-rolled invite card painted `text_primary` on `accent[5]`.
-    /// This asserts the colour the modal actually paints — what the shared
-    /// face resolves — so it keeps holding when the accent ramp is re-themed.
+    /// theme and in every emphasis — asserted on the colour the shared face
+    /// actually resolves, so it keeps holding when the accent ramp is re-themed.
     #[test]
     fn every_action_label_is_legible_on_its_own_fill() {
         let styles = [
@@ -831,9 +813,7 @@ mod tests {
                     r >= 4.5,
                     "{name}/{emphasis:?}: label contrast is {r:.2}:1 on its fill — AA needs 4.5",
                 );
-                // And never worse than the chrome ink the hand-rolled card
-                // reached for, which is the comparison that says the
-                // measurement earned its keep.
+                // Never worse than plain chrome ink would have been.
                 let naive = contrast_ratio(theme.text_primary, bg);
                 assert!(
                     r >= naive,

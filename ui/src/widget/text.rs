@@ -18,18 +18,12 @@ pub struct Text {
     /// widget caches its rendered scene. Empty for plain, variable-free labels.
     args: Vec<(String, ArgValue)>,
     size: f32,
-    /// Optional explicit colour. `None` (the default) renders with the
-    /// theme's `text_primary`, keeping Text theme-driven; `Some(c)` lets
-    /// callers paint secondary/dim/semantic copy (e.g. the installer's
-    /// per-field helper text in `theme.text_dim`) without hard-coding a
-    /// colour at the call site — they still pass a Theme token.
+    /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
-    /// Optional font-family override. `None` (the default) shapes the label in
-    /// the system sans face; `Some(family)` renders it in an explicit
-    /// [`FontChoice`] — a serif book face or a named installed family —
-    /// resolved through the same cosmic-text font system the renderer uses.
-    /// This is the first-class way to typeset a label in a chosen family (e.g.
-    /// a font-picker row previewing each family in its own face).
+    /// Optional font-family override. `None` shapes the label in the
+    /// system sans face; `Some(family)` renders it in an explicit
+    /// [`FontChoice`], resolved through the renderer's cosmic-text system
+    /// (e.g. a font-picker row previewing each family in its own face).
     family: Option<FontChoice>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
@@ -38,16 +32,14 @@ pub struct Text {
     /// across frames via `Scene::append` so an unchanged Text
     /// widget contributes ~zero shape / emit work per frame.
     cached: Scene,
-    /// Whether the cache content needs to be re-emitted. Flipped
-    /// on when the *size* of `self.rect` changes — pure
-    /// translation (e.g. `Scrollable` offsetting all child rects
-    /// during a scroll) keeps the cache, with the new position
-    /// absorbed by the `Scene::append` transform below.
+    /// Whether the cache content needs to be re-emitted, flipped on when
+    /// the *size* of `self.rect` changes — pure translation (e.g.
+    /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
+    /// the `Scene::append` transform in `draw`.
     dirty: bool,
-    /// Rect the cache was emitted at. We compare *size* against
-    /// the current rect to decide whether to re-emit, and use the
-    /// origin to compute the per-frame translate that lets the
-    /// cached scene follow its widget across the screen without
+    /// Rect the cache was emitted at: size is compared against the
+    /// current rect to decide whether to re-emit, and origin gives the
+    /// per-frame translate so the cache follows its widget without
     /// re-encoding.
     cache_rect: vello::kurbo::Rect,
 }
@@ -103,11 +95,9 @@ impl Text {
         self
     }
 
-    /// Render this label in an explicit [`FontChoice`] family (a serif book
-    /// face, a named installed family, …) instead of the default sans. Both
-    /// the intrinsic measurement and the draw shape in the same family, so a
-    /// label previewing a font in its own face lays out correctly. The family
-    /// is resolved through the renderer's cosmic-text font system.
+    /// Render this label in an explicit [`FontChoice`] instead of the
+    /// default sans. Both measurement and draw shape use the same family,
+    /// so a label previewing a font in its own face lays out correctly.
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.family = Some(family);
         self.dirty = true;
@@ -123,11 +113,9 @@ impl Text {
         }
     }
 
-    /// External-layout assignment for callers that place this label outside the
-    /// taffy tree (an app drawing its own immediate-mode chrome). Mirrors
-    /// [`crate::widget::TextInput::apply_layout_external`]: the caller asserts
-    /// it has done what `apply_layout` would — today, just establishing
-    /// `self.rect`.
+    /// External-layout assignment for callers placing this label outside
+    /// the taffy tree. Mirrors
+    /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
         let size_changed = rect.width() != self.cache_rect.width()
             || rect.height() != self.cache_rect.height();
@@ -137,8 +125,7 @@ impl Text {
         }
     }
 
-    /// Render this text in an explicit colour instead of the theme's
-    /// `text_primary`. Pass a Theme token (e.g. `theme.text_dim` or
+    /// Pass a Theme token (e.g. `theme.text_dim` or
     /// `theme.tokens.colors.semantic.danger`) so the choice still tracks
     /// the active theme.
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
@@ -168,8 +155,8 @@ impl Widget for Text {
                 width: taffy::Dimension::auto(),
                 height: taffy::Dimension::auto(),
             },
-            // flex_shrink: 1.0 is CRITICAL for wrapping. 
-            // It allows Taffy to propose a smaller width than natural_w.
+            // flex_shrink 1.0 lets Taffy propose a smaller width than
+            // natural_w — critical for wrapping.
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
@@ -180,29 +167,27 @@ impl Widget for Text {
 
     fn measure(&mut self, known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
         let label = self.resolved_label();
-        
-        // 1. Determine the maximum width we are allowed to have
+
         let max_w = if let Some(w) = known_dimensions.width {
             Some(w)
         } else {
             match available_space.width {
                 taffy::AvailableSpace::Definite(w) => Some(w),
-                taffy::AvailableSpace::MinContent => Some(0.0), // Force wrap to min-content
-                taffy::AvailableSpace::MaxContent => None,      // Allow infinite width
+                taffy::AvailableSpace::MinContent => Some(0.0), // force wrap to min-content
+                taffy::AvailableSpace::MaxContent => None,      // allow infinite width
             }
         };
 
-        // 2. Measure with that constraint — through the family-aware path when
-        //    an override is set so the reserved box matches the drawn face.
+        // Measure through the family-aware path when an override is set,
+        // so the reserved box matches the drawn face.
         let (w, h) = if let Some(fam) = &self.family {
             text_renderer.measure_font(&label, self.size, max_w, TextWeight::Regular, false, fam)
         } else {
             text_renderer.measure(&label, self.size, max_w)
         };
 
-        // 3. Return the measured size. 
-        // We add a tiny 0.1 epsilon to width to prevent rounding errors in Row/Column
-        // from thinking the text is "just a bit too big" and wrapping it unnecessarily.
+        // Tiny epsilon on width so rounding in Row/Column doesn't read the
+        // text as "just a bit too big" and wrap it unnecessarily.
         taffy::Size { width: w + 0.1, height: h }
     }
 
@@ -214,12 +199,8 @@ impl Widget for Text {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        // `dirty` here only tracks **size** changes — pure
-        // translation is absorbed by the per-frame `Scene::append`
-        // transform computed in `draw`. Without this, scrolling a
-        // 1000-widget tree would invalidate every cache every
-        // frame (every widget's rect shifts by the scroll offset)
-        // and the per-widget cache becomes net-negative.
+        // Without this, scrolling a 1000-widget tree would invalidate every
+        // cache every frame and the per-widget cache goes net-negative.
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         if size_changed {
@@ -258,10 +239,6 @@ impl Widget for Text {
             }
             self.cache_rect = self.rect;
         }
-        // Per-frame translation between cache emit-time origin
-        // and current origin — applied via the append transform
-        // so the cached primitives don't get re-encoded just for
-        // a scroll.
         let dx = self.rect.x0 - self.cache_rect.x0;
         let dy = self.rect.y0 - self.cache_rect.y0;
         scene.append(&self.cached, Some(transform * Affine::translate((dx, dy))));
@@ -271,24 +248,18 @@ impl Widget for Text {
 
     fn name(&self) -> &str { "Text" }
 
-    /// Opt into incremental redraw. Returns true while the cache
-    /// has not been written yet (or has been invalidated by a rect
-    /// change). The App's redraw gate uses this to skip frames
-    /// where no Text widget changed.
+    /// Opt into incremental redraw: true while the cache is unwritten or
+    /// invalidated by a rect change. The App's redraw gate uses this to
+    /// skip frames where no Text widget changed.
     fn needs_redraw(&self) -> bool { self.dirty }
 
-    /// Clears the cache-stale flag after the App has consumed the
-    /// scene. Subsequent frames will re-use `self.cached` until
-    /// the rect changes again.
+    /// Clears the cache-stale flag after the App consumes the scene.
     fn mark_drawn(&mut self) { self.dirty = false; }
 
-    /// Text never changes its own intrinsic size between frames
-    /// (the label is fixed at construction, the size too) — once
-    /// `apply_layout` has set `self.rect` to its non-zero
-    /// resolved value, we report `false` so an unrelated sibling
-    /// reflow doesn't drag a Text re-shape along with it. The
-    /// `Rect::ZERO` sentinel covers "haven't been laid out yet"
-    /// so the first frame still runs `compute_layout`.
+    /// Text's intrinsic size is fixed at construction, so once
+    /// `apply_layout` sets a non-zero `self.rect` this reports `false` —
+    /// an unrelated sibling reflow shouldn't drag a re-shape along.
+    /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
     fn is_layout_dirty(&self) -> bool { self.rect == vello::kurbo::Rect::ZERO }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -428,11 +399,10 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
     }
 
-    /// A label with a font-family override resolves to that family: after the
-    /// label draws once, re-shaping the same string+size+width in the SAME
-    /// named family is a shape-cache hit (the label already shaped it there),
-    /// while the sans default is a distinct miss. This proves the override
-    /// reaches the renderer's family-aware path rather than the sans default.
+    /// A label with a font-family override resolves to that family: after
+    /// it draws once, re-shaping the same string in the SAME named family
+    /// is a shape-cache hit, while the sans default is a distinct miss —
+    /// proving the override reaches the family-aware path.
     #[test]
     fn font_family_override_label_resolves_to_named_family() {
         use crate::presence::PresenceCtx;
