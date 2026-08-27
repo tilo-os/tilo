@@ -28,7 +28,9 @@
 //! fallback is never silently indistinguishable from a live call.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
 
 use crate::plan::{self, Block, Instruction};
 
@@ -66,6 +68,20 @@ pub enum Fallback {
     Timeout,
     /// Transport, HTTP status, a refusal, or an unreadable body.
     Failed(String),
+    /// The service asked to be tried again, was, and stayed busy.
+    ///
+    /// Its own variant rather than a [`Self::Failed`] with a longer sentence:
+    /// one call that was never repeated and four that were both end on the
+    /// floor, and only the second is the service having an outage rather
+    /// than a spike.
+    Exhausted {
+        /// The last failure's own sentence.
+        why: String,
+        /// How many attempts were made, the first one included.
+        attempts: u32,
+        /// How long they took between them, waits and calls together.
+        over: Duration,
+    },
     /// The answer was not an id the app exports. Refused, not acted on.
     OutOfCatalogue(String),
 }
@@ -94,6 +110,10 @@ impl Route {
             Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
             Route::Keywords(Fallback::Timeout) => "the call timed out".to_string(),
             Route::Keywords(Fallback::Failed(e)) => format!("the call failed: {e}"),
+            Route::Keywords(Fallback::Exhausted { why, attempts, over }) => format!(
+                "the call kept failing: {why} ({attempts} attempts over {:.1}s)",
+                over.as_secs_f32()
+            ),
             Route::Keywords(Fallback::OutOfCatalogue(a)) => {
                 format!("answered {a:?}, which the app does not export")
             }
@@ -162,53 +182,365 @@ impl Chooser {
             },
             Err(AskError::Timeout) => fallback(Fallback::Timeout),
             Err(AskError::Failed(e)) => fallback(Fallback::Failed(e)),
+            // Retried and still no answer. The floor decides exactly as it
+            // does for every other unhappy path here — nothing is guessed to
+            // paper over the attempts that were spent.
+            Err(AskError::Busy { why, attempts, over }) => {
+                fallback(Fallback::Exhausted { why, attempts, over })
+            }
         }
     }
 
-    /// One bounded call. The key travels in the header and nowhere else; no
-    /// error path here carries it into a message, a log, or a document.
+    /// One bounded call, retried while the service is asking for that. The
+    /// key travels in the header and nowhere else; no error path here
+    /// carries it into a message, a log, or a document.
     fn ask(&self, key: &str, rest: &str, blocks: &[Block]) -> Result<Answer, AskError> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .build()
-            .map_err(|e| AskError::Failed(e.to_string()))?;
-
+        let began = Instant::now();
+        // Read afresh before every attempt, so a retry spends what the
+        // *conversation's* deadline has left rather than getting a bound of
+        // its own — see [`while_busy`].
+        let remaining = || self.timeout.checked_sub(began.elapsed());
         let body = request_body(rest, blocks);
-        let resp = client
-            .post(ENDPOINT)
-            .header("x-api-key", key)
-            .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| {
-                if e.is_timeout() {
-                    AskError::Timeout
-                } else {
-                    AskError::Failed(strip(&e.to_string()))
-                }
-            })?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| AskError::Failed(strip(&e.to_string())))?;
-        if !status.is_success() {
-            // The body of an error names the problem (bad request, rate
-            // limit) and never contains the key.
-            return Err(AskError::Failed(format!(
-                "http {}: {}",
-                status.as_u16(),
-                first_chars(&text, 200)
-            )));
-        }
+        let text = post(key, &body, &remaining)?;
         parse_answer(&text).map_err(AskError::Failed)
     }
 }
 
+/// Post one request, and post it again while the service is asking for
+/// that. A fresh client per attempt, because the timeout each one runs
+/// under is what is left of the deadline at the moment it goes out.
+fn post(key: &str, body: &Value, remaining: &dyn Fn() -> Option<Duration>) -> Result<String, AskError> {
+    while_busy(&RETRIES, remaining, std::thread::sleep, |left| {
+        let client = reqwest::blocking::Client::builder()
+            // Bounded well below the deadline, and separately from it. A DNS
+            // or TCP stall that ate the whole thing would leave nothing for
+            // a second try, while an answer merely slow to arrive is none of
+            // this timeout's business.
+            .connect_timeout(CONNECT_TIMEOUT.min(left))
+            .timeout(left)
+            .build()
+            .map_err(|e| Attempt {
+                error: AskError::Failed(e.to_string()),
+                // A client that cannot be built is this process, not the
+                // network: building it again builds the same one.
+                again: Again::Never,
+            })?;
+        send(&client, key, body)
+    })
+}
+
+/// Post one Messages request and hand back the body.
+///
+/// One attempt, never more: whether a failure is worth repeating is a
+/// judgement it reports ([`Attempt::again`]) rather than acts on, and
+/// [`while_busy`] is where that judgement is spent against a deadline.
+fn send(client: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<String, Attempt> {
+    let resp = client
+        .post(ENDPOINT)
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION)
+        .header("content-type", "application/json")
+        .json(body)
+        .send()
+        .map_err(|e| {
+            // Asked in this order on purpose. A connection that was never
+            // made is the network rather than the deadline, and worth one
+            // more go; a response that never finished has already spent the
+            // deadline — the client's own timeout *is* what was left of it —
+            // so it is reported as the timeout it is, and the budget check
+            // at the call site declines the retry it would ask for.
+            if e.is_connect() {
+                Attempt {
+                    error: AskError::Failed(strip(&e.to_string())),
+                    again: Again::Soon(None),
+                }
+            } else if e.is_timeout() {
+                Attempt {
+                    error: AskError::Timeout,
+                    again: Again::Soon(None),
+                }
+            } else {
+                Attempt {
+                    error: AskError::Failed(strip(&e.to_string())),
+                    again: Again::Never,
+                }
+            }
+        })?;
+
+    let status = resp.status();
+    // What the service said to wait, if it said anything. Read before the
+    // body, because reading the body is what can fail next.
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let text = resp.text().map_err(|e| Attempt {
+        // A body that stopped arriving is the connection, not the request.
+        error: AskError::Failed(strip(&e.to_string())),
+        again: Again::Soon(None),
+    })?;
+    if !status.is_success() {
+        // The body of an error names the problem (bad request, rate limit)
+        // and never contains the key.
+        return Err(Attempt {
+            error: AskError::Failed(format!(
+                "http {}: {}",
+                status.as_u16(),
+                first_chars(&text, 300)
+            )),
+            again: again_after(status.as_u16(), retry_after.as_deref()),
+        });
+    }
+    Ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// Surviving a busy service
+// ---------------------------------------------------------------------------
+
+/// How long a connection may take to be made before that is the network's
+/// answer. See [`post`] for why it is bounded separately from the deadline.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether a failed request is worth making again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Again {
+    /// Nothing would come of it: the request is wrong, not unlucky, and
+    /// every attempt at it answers identically.
+    Never,
+    /// The service asked to be tried again. `Some` when it said how long to
+    /// wait for.
+    Soon(Option<Duration>),
+}
+
+/// What one attempt at one request came to, when it did not answer.
+struct Attempt {
+    /// The failure, worded as the log would say it.
+    error: AskError,
+    /// Whether making the very same request again could answer differently.
+    again: Again,
+}
+
+/// How a busy service is waited out.
+#[derive(Clone, Copy, Debug)]
+pub struct Retries {
+    /// The most attempts one request gets, the first one included.
+    pub attempts: u32,
+    /// The wait before the first retry. It doubles from there.
+    pub first_wait: Duration,
+    /// The longest the doubling may reach. What the service *asked* for is
+    /// not bounded by this — see [`Retries::wait_before`].
+    pub longest_wait: Duration,
+    /// How much of the deadline must survive a wait for the call that
+    /// follows it to be worth making.
+    pub room_to_answer: Duration,
+}
+
+/// The policy this agent runs under.
+///
+/// Four attempts, waiting 0.5s, then 1s, then 2s: three and a half seconds
+/// of waiting in the worst case, on top of the refusals themselves. An
+/// overloaded API refuses at the front door in a few tens of milliseconds,
+/// so the whole of it lands inside about five seconds — and a service still
+/// saying 529 five seconds later is having an outage rather than a spike,
+/// which is the case the keyword floor exists for.
+///
+/// Every number here is subordinate to the call's own deadline. Retries are
+/// carved out of that deadline and never added to it, so this cannot make
+/// the agent wait longer than it waits today: a policy that can outlast the
+/// call it serves is a hang, not a fix.
+///
+/// No jitter, deliberately. Jitter is for a fleet retrying in lockstep;
+/// there is one agent here, and a delay a test can assert on is worth more
+/// than a spread nothing is contending for.
+pub const RETRIES: Retries = Retries {
+    attempts: 4,
+    first_wait: Duration::from_millis(500),
+    longest_wait: Duration::from_secs(4),
+    // Two round trips of a real conversation come back inside this. Below
+    // it there is no room for an answer, so a retry would only be a slower
+    // way to the same floor.
+    room_to_answer: Duration::from_secs(5),
+};
+
+impl Retries {
+    /// How long to wait before retry number `n`, `1` being the first.
+    ///
+    /// `retry-after` wins outright and is deliberately not clamped by
+    /// [`Self::longest_wait`]: the service is the only party that knows
+    /// when it will have room, and a wait shortened for the look of it
+    /// retries into the same wall. It is still bounded by the deadline at
+    /// the call site, which refuses to start a wait no answer could follow.
+    pub fn wait_before(&self, n: u32, asked_for: Option<Duration>) -> Duration {
+        if let Some(said) = asked_for {
+            return said;
+        }
+        let doubling = 1u32.checked_shl(n.saturating_sub(1)).unwrap_or(u32::MAX);
+        self.first_wait
+            .checked_mul(doubling)
+            .unwrap_or(self.longest_wait)
+            .min(self.longest_wait)
+    }
+}
+
+/// Whether an HTTP status is the service asking to be tried again.
+///
+/// The list is short on purpose. 429 and 529 are it saying it is busy; 408,
+/// 500, 502, 503 and 504 are the far side rather than the request. Anything
+/// not named here is settled — 400, 401, 403 and 404 above all, which
+/// answer identically however often they are sent, so a retry spends the
+/// run's remaining deadline on a certainty.
+fn again_after(status: u16, retry_after: Option<&str>) -> Again {
+    let soon = || Again::Soon(retry_after.and_then(after_seconds));
+    match status {
+        // Busy, not offended: the rate limiter, and the service itself
+        // saying it has no room just now.
+        429 | 529 => soon(),
+        // The far side rather than the request: a gateway, a restart, a
+        // timeout somewhere upstream of the model.
+        408 | 500 | 502 | 503 | 504 => soon(),
+        _ => Again::Never,
+    }
+}
+
+/// `retry-after` as a delay, when it is the seconds form.
+///
+/// The header's other form is an HTTP date, which is not what this API
+/// sends. An unreadable value is no instruction at all, and the backoff
+/// decides rather than a number nobody could read.
+fn after_seconds(v: &str) -> Option<Duration> {
+    Duration::try_from_secs_f64(v.trim().parse::<f64>().ok()?).ok()
+}
+
+/// Make a request, and make it again while the service is asking for that
+/// and the deadline still has room for an answer.
+///
+/// The three things this cannot own during a run are handed in, which is
+/// also what lets the policy be driven by a test rather than inferred from
+/// a run that happened to be unlucky:
+///
+/// * `left` — what remains of the deadline, asked afresh before every
+///   decision. A policy that reads the clock once is not bounded by it.
+/// * `wait` — how the delay is taken.
+/// * `attempt` — the request, told how long it may take.
+///
+/// Giving up hands back the last failure. It becomes [`AskError::Busy`]
+/// only when something was actually retried: a call that was made once and
+/// had no room for a second says exactly what it said before, so a trace
+/// can never claim a patience the run did not have.
+fn while_busy<L, W, A>(policy: &Retries, left: L, mut wait: W, mut attempt: A) -> Result<String, AskError>
+where
+    L: Fn() -> Option<Duration>,
+    W: FnMut(Duration),
+    A: FnMut(Duration) -> Result<String, Attempt>,
+{
+    let began = left();
+    // How long this has taken, read off the same deadline everything else
+    // here is bounded by rather than a second clock of its own.
+    let elapsed = |now: Option<Duration>| match (began, now) {
+        (Some(a), Some(b)) => a.saturating_sub(b),
+        (Some(a), None) => a,
+        _ => Duration::ZERO,
+    };
+
+    let mut made = 0u32;
+    loop {
+        let Some(budget) = left() else {
+            // No room to make the call at all: the deadline is what
+            // stopped this, whatever went before it.
+            return Err(AskError::Timeout);
+        };
+        made += 1;
+        let Attempt { error, again } = match attempt(budget) {
+            Ok(text) => {
+                if made > 1 {
+                    // A retried call that answers is a model decision,
+                    // because it is one — and the run took longer than it
+                    // looks, which is worth saying out loud.
+                    tracing::info!(
+                        attempts = made,
+                        over_ms = elapsed(left()).as_millis() as u64,
+                        "the model answered after being asked again"
+                    );
+                }
+                return Ok(text);
+            }
+            Err(failure) => failure,
+        };
+        let Again::Soon(asked_for) = again else {
+            return Err(error);
+        };
+        // What is handed back when this stops. `made == 1` is not an
+        // exhausted retry; it is a call that was never repeated.
+        let give_up = |error: AskError, made: u32| {
+            if made == 1 {
+                return error;
+            }
+            AskError::Busy {
+                why: error.why(),
+                attempts: made,
+                over: elapsed(left()),
+            }
+        };
+        if made >= policy.attempts {
+            tracing::warn!(
+                attempts = made,
+                over_ms = elapsed(left()).as_millis() as u64,
+                "{}; giving up and deciding on the floor",
+                error.why()
+            );
+            return Err(give_up(error, made));
+        }
+        let waiting = policy.wait_before(made, asked_for);
+        if !left().is_some_and(|l| l >= waiting + policy.room_to_answer) {
+            tracing::warn!(
+                attempts = made,
+                wait_ms = waiting.as_millis() as u64,
+                "{}; no room left in the deadline to ask again",
+                error.why()
+            );
+            return Err(give_up(error, made));
+        }
+        tracing::warn!(
+            attempt = made,
+            of = policy.attempts,
+            wait_ms = waiting.as_millis() as u64,
+            "{}; asking again",
+            error.why()
+        );
+        wait(waiting);
+    }
+}
+
+/// Why a call to the model produced nothing.
 enum AskError {
+    /// It did not answer inside the deadline.
     Timeout,
+    /// Transport, HTTP status, a decline, or an unreadable body.
     Failed(String),
+    /// The service asked to be tried again, was, and stayed busy. Produced
+    /// only by [`while_busy`], and only when a retry actually happened.
+    Busy {
+        /// The last failure's own sentence.
+        why: String,
+        /// How many attempts were made, the first one included.
+        attempts: u32,
+        /// How long they took between them.
+        over: Duration,
+    },
+}
+
+impl AskError {
+    /// The sentence for a log line. Never carries the key: everything that
+    /// reaches here has been through [`strip`].
+    fn why(&self) -> String {
+        match self {
+            AskError::Timeout => "the call timed out".to_string(),
+            AskError::Failed(e) => e.clone(),
+            AskError::Busy { why, .. } => why.clone(),
+        }
+    }
 }
 
 /// The model's answer, before it has been checked against the catalogue.
@@ -426,6 +758,7 @@ fn strip(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
 
     fn block(kind: &str, text: &str) -> Block {
@@ -539,6 +872,260 @@ mod tests {
         assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
         assert!(!d.route.is_live());
         assert_eq!(d.route.label(), "keywords");
+    }
+
+    // -----------------------------------------------------------------------
+    // Surviving a busy service
+    // -----------------------------------------------------------------------
+
+    /// The clock and the wire, owned by the test.
+    ///
+    /// Nothing here stands in for the retry policy: [`while_busy`] is the
+    /// production driver and [`again_after`] the production classification.
+    /// What is injected is only what a test cannot own — the network, and
+    /// the wall clock a real wait would spend.
+    struct Fake {
+        /// What is left of the deadline.
+        left: Duration,
+        /// What one attempt costs on the wire before it answers or fails.
+        per_call: Duration,
+        /// Every wait the policy took, in order.
+        waits: Vec<Duration>,
+        /// How many attempts were made.
+        calls: u32,
+    }
+
+    /// Drive the real policy over `outcomes`, one per attempt, the last of
+    /// them repeated for as long as it keeps being asked.
+    ///
+    /// An `Err` is a status and whatever `retry-after` came with it, turned
+    /// into a verdict by the same function a live response goes through.
+    fn run_retries(
+        left: Duration,
+        outcomes: &[Result<&str, (u16, Option<&str>)>],
+    ) -> (Result<String, AskError>, Fake) {
+        let fake = RefCell::new(Fake {
+            left,
+            per_call: Duration::from_millis(200),
+            waits: Vec::new(),
+            calls: 0,
+        });
+        let out = while_busy(
+            &RETRIES,
+            || {
+                let f = fake.borrow();
+                (!f.left.is_zero()).then_some(f.left)
+            },
+            |d| {
+                let mut f = fake.borrow_mut();
+                f.waits.push(d);
+                f.left = f.left.saturating_sub(d);
+            },
+            |_budget| {
+                let mut f = fake.borrow_mut();
+                let nth = f.calls as usize;
+                f.calls += 1;
+                let per = f.per_call;
+                f.left = f.left.saturating_sub(per);
+                drop(f);
+                match outcomes[nth.min(outcomes.len() - 1)] {
+                    Ok(body) => Ok(body.to_string()),
+                    Err((status, retry_after)) => Err(Attempt {
+                        error: AskError::Failed(format!("http {status}: Overloaded")),
+                        again: again_after(status, retry_after),
+                    }),
+                }
+            },
+        );
+        (out, fake.into_inner())
+    }
+
+    /// **529 is the service asking to be tried again, so it is.**
+    ///
+    /// One overloaded response used to cost a whole run: it landed straight
+    /// on the keyword floor, which cannot express a request that crosses
+    /// two applications. A retried call that succeeds is a model decision,
+    /// because it is one.
+    #[test]
+    fn an_overloaded_service_is_asked_again_and_its_answer_is_the_answer() {
+        let (out, f) = run_retries(
+            Duration::from_secs(75),
+            &[Err((529, None)), Err((529, None)), Ok(r#"{"ok":true}"#)],
+        );
+        assert_eq!(
+            out.map_err(|e| e.why()),
+            Ok(r#"{"ok":true}"#.to_string()),
+            "the answer that came back on the third go is the answer"
+        );
+        assert_eq!(f.calls, 3, "two refusals and then the answer");
+        assert_eq!(
+            f.waits,
+            [Duration::from_millis(500), Duration::from_secs(1)],
+            "backing off between them rather than hammering"
+        );
+    }
+
+    /// **A request that is wrong is not sent again.**
+    ///
+    /// Malformed, unauthorised, forbidden, addressed to nothing: every one
+    /// of them answers identically however often it is asked, and the
+    /// run's remaining deadline is what a retry would spend on that
+    /// certainty.
+    #[test]
+    fn a_request_refused_on_its_merits_is_not_repeated() {
+        for status in [400, 401, 403, 404] {
+            let (out, f) = run_retries(Duration::from_secs(75), &[Err((status, None))]);
+            let why = out.expect_err("a refusal is not an answer").why();
+            assert!(why.contains(&status.to_string()), "{why}");
+            assert_eq!(f.calls, 1, "http {status} was asked once");
+            assert!(f.waits.is_empty(), "and nothing was waited out for it");
+        }
+    }
+
+    /// Only what a busy service sends is worth another go.
+    #[test]
+    fn only_a_transient_status_is_worth_asking_again() {
+        for busy in [408, 429, 500, 502, 503, 504, 529] {
+            assert_eq!(again_after(busy, None), Again::Soon(None), "http {busy}");
+        }
+        for settled in [400, 401, 403, 404, 405, 409, 413, 422, 451] {
+            assert_eq!(again_after(settled, None), Again::Never, "http {settled}");
+        }
+        // What it said to wait, when it said something readable.
+        assert_eq!(
+            again_after(429, Some("2")),
+            Again::Soon(Some(Duration::from_secs(2)))
+        );
+        assert_eq!(
+            again_after(529, Some("0.25")),
+            Again::Soon(Some(Duration::from_millis(250)))
+        );
+        // A date, a negative, or nonsense is no instruction at all, and the
+        // backoff decides rather than a number nobody could read.
+        for unreadable in ["Wed, 21 Oct 2026 07:28:00 GMT", "-1", "soon", ""] {
+            assert_eq!(
+                again_after(503, Some(unreadable)),
+                Again::Soon(None),
+                "{unreadable:?}"
+            );
+        }
+    }
+
+    /// **Bounded by attempts**, and it says how hard it tried.
+    ///
+    /// A service that is still busy on the fourth go is having an outage
+    /// rather than a spike, and the floor is the right answer then — but a
+    /// run that silently took four seconds longer is worse than one that
+    /// says why.
+    #[test]
+    fn a_service_that_stays_busy_reaches_the_floor_and_says_how_hard_it_tried() {
+        let (out, f) = run_retries(Duration::from_secs(75), &[Err((529, None))]);
+        assert_eq!(f.calls, RETRIES.attempts, "the cap, not one more");
+        assert_eq!(
+            f.waits,
+            [
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_secs(2)
+            ],
+            "doubling"
+        );
+        match out.expect_err("it never answered") {
+            AskError::Busy { why, attempts, over } => {
+                assert_eq!(attempts, RETRIES.attempts);
+                assert!(why.contains("529"), "{why}");
+                // Three and a half seconds of waiting and four calls at 200ms.
+                assert_eq!(over, Duration::from_millis(3_500 + 800));
+            }
+            other => panic!("a service that stayed busy is not {}", other.why()),
+        }
+    }
+
+    /// **And bounded by the clock, which is the bound that matters.**
+    ///
+    /// The call already has a deadline and the work never waits on the
+    /// network past it. Retries are carved out of that deadline, never
+    /// added to it: a policy that can outlast the call it serves is a hang,
+    /// not a fix.
+    #[test]
+    fn retrying_never_outlasts_the_conversations_deadline() {
+        let (out, f) = run_retries(Duration::from_secs(8), &[Err((529, None))]);
+        assert!(
+            f.calls < RETRIES.attempts,
+            "the clock stopped it before the count did, but it made {} calls",
+            f.calls
+        );
+        let spent = f.waits.iter().sum::<Duration>() + f.per_call * f.calls;
+        assert!(
+            spent <= Duration::from_secs(8),
+            "{spent:?} spent against an 8s deadline"
+        );
+        assert!(matches!(out, Err(AskError::Busy { .. })));
+    }
+
+    /// With no room for an answer, nothing is retried — and the trace says
+    /// exactly that, because a call that was never repeated must not read
+    /// like one that was.
+    #[test]
+    fn a_deadline_with_no_room_left_retries_nothing_and_claims_nothing() {
+        let (out, f) = run_retries(Duration::from_secs(3), &[Err((529, None))]);
+        assert_eq!(f.calls, 1);
+        assert!(f.waits.is_empty());
+        match out.expect_err("no answer") {
+            AskError::Failed(why) => assert!(why.contains("529"), "{why}"),
+            AskError::Busy { .. } => {
+                panic!("nothing was retried; the trace must not claim it was")
+            }
+            AskError::Timeout => panic!("it was a refusal, not a timeout"),
+        }
+    }
+
+    /// `retry-after` is honoured. The service is the only party that knows
+    /// when it will have room again.
+    #[test]
+    fn a_rate_limit_waits_as_long_as_it_was_told_to() {
+        let (out, f) = run_retries(
+            Duration::from_secs(75),
+            &[Err((429, Some("2"))), Ok(r#"{"ok":true}"#)],
+        );
+        assert!(out.is_ok());
+        assert_eq!(
+            f.waits,
+            [Duration::from_secs(2)],
+            "what it asked for, not the 500ms the backoff would have taken"
+        );
+    }
+
+    /// A `retry-after` longer than the run has left is not slept through.
+    #[test]
+    fn a_wait_that_would_outlast_the_run_is_not_taken() {
+        let (out, f) = run_retries(Duration::from_secs(20), &[Err((429, Some("60")))]);
+        assert_eq!(f.calls, 1);
+        assert!(
+            f.waits.is_empty(),
+            "sleeping past the deadline is a hang, not a retry"
+        );
+        assert!(matches!(out, Err(AskError::Failed(_))));
+    }
+
+    /// A call that was retried and never answered lands on the floor like
+    /// every other unhappy path — and is told apart from one that was
+    /// never attempted at all.
+    #[test]
+    fn an_exhausted_call_is_told_apart_from_one_that_never_happened() {
+        let exhausted = Route::Keywords(Fallback::Exhausted {
+            why: "http 529: Overloaded".into(),
+            attempts: 4,
+            over: Duration::from_millis(4_300),
+        });
+        let never = Route::Keywords(Fallback::NoKey);
+        assert!(!exhausted.is_live(), "the floor decided it");
+        assert_eq!(exhausted.label(), "keywords");
+        assert_ne!(exhausted, never);
+        let said = exhausted.detail();
+        assert!(said.contains("4 attempts"), "{said}");
+        assert!(said.contains("4.3s"), "{said}");
+        assert!(said.contains("529"), "{said}");
     }
 
     #[test]
