@@ -141,18 +141,6 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
     (scene, chrome)
 }
 
-/// Walk a `vello::Scene`'s encoding and return every solid-colour brush
-/// that was emitted into the draw stream, as a tight `(r, g, b, a)`
-/// tuple for ergonomic comparison.
-///
-/// In peniko 0.6 / vello 0.9 the `DrawColor` packed-u32 byte order was
-/// rotated: red lives in the low byte, alpha in the high byte (was the
-/// other way around). Memory order: `[r, g, b, a]` LE.
-///
-/// Premultiplied → unpremultiplied is done losslessly when alpha ==
-/// 0xff, which covers every spec-relevant fill in the shell (we never
-/// pre-blend the indigo accent or the emerald monitor colour against an
-/// alpha < 255 — those compositions happen at the layer level).
 /// How many `u32`s a tag writes into `draw_data`.
 ///
 /// **Not** `DrawTag::info_size()`, which is the size of the *info* buffer
@@ -164,8 +152,7 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
 /// Over-advancing runs the cursor off the end, after which every
 /// remaining colour is silently skipped and a parity test reports "the
 /// widget stopped painting indigo" instead of "the walker lost its
-/// place". That is exactly what happened when `soft_shadow` went from
-/// one image fill to eight.
+/// place".
 ///
 /// `None` means a tag this walker has never measured. Callers must treat
 /// that as "cannot decode" rather than guessing, so a new brush kind
@@ -190,6 +177,13 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     })
 }
 
+/// Walk a `vello::Scene`'s encoding and return every solid-colour brush
+/// emitted into the draw stream, as a tight `(r, g, b, a)` tuple.
+///
+/// In peniko 0.6 / vello 0.9 the `DrawColor` packed-u32 byte order has
+/// red in the low byte, alpha in the high byte: `[r, g, b, a]` LE.
+/// Premultiplied → unpremultiplied is done losslessly here since alpha
+/// == 0xff for every spec-relevant fill in the shell.
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
@@ -1681,12 +1675,9 @@ fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
 /// to reach painted, peer-coloured avatars through
 /// `TopBarChrome::sync_from_tree` and `draw`. The fixture is this test's
 /// own — two people admitted to the active workspace the way a real
-/// arrival admits them — rather than a bootstrap tree's. Borrowing
-/// production's seeded fakes made this test depend on the shell shipping
-/// fabricated participants, and it used to run against
-/// `bootstrap_default` and read as "first boot shows an avatar stack",
-/// which it only ever did because the boot tree invented the people it
-/// was drawing.
+/// arrival admits them — rather than a bootstrap tree's, since borrowing
+/// production's seeded fakes would make this test depend on the shell
+/// shipping fabricated participants.
 ///
 /// Render `TopBarChrome`, scan the encoded scene for the canonical peer
 /// hex (`#ec4899` / Tailwind pink-500 = (236, 72, 153) for alice,
@@ -1807,11 +1798,10 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
 /// cluster must paint **no** avatar.
 ///
 /// An avatar in that cluster is a claim that a specific person is in this
-/// workspace. `bootstrap_default` used to seed a `Collaborator` named
-/// "Alice" onto Home, so a fresh install painted a pink "A" for someone who
-/// does not exist — and, because the tree is the user's workspace document,
-/// wrote her into it. The invented roster is gone; this test is what keeps
-/// it gone.
+/// workspace — a fabricated collaborator on the first-boot tree would
+/// paint a pink avatar for someone who does not exist, and (since the
+/// tree is the user's own workspace document) write them into it. This
+/// test is the regression guard against that.
 ///
 /// Asserted on the production path: `persist::load_or_default` returns
 /// `bootstrap_default` for a machine with no `state.json`, and this renders
@@ -1959,9 +1949,8 @@ fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
     let presence = PresenceCtx::default();
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    // Nothing on that bar may be painted in a peer's colour. The two
-    // canonical demo hues are the ones the shell used to seed, so they
-    // are the exact fills a regression would bring back.
+    // Nothing on that bar may be painted in a peer's colour — these are
+    // the exact fills a fabricated-peer regression would bring back.
     let fills = collect_solid_colors(&scene);
     assert!(
         !contains_color_close(&fills, (236, 72, 153), 8),
@@ -2519,24 +2508,16 @@ mod helper_tests {
 /// The faces the overview puts on a room are the people who can reach it.
 ///
 /// The panel paints an access line ("Shared with Ada") and a stack of
-/// avatars, and both read [`Workspace::roster`] — the people who hold a
-/// live membership capability here. They used to read different sources:
-/// the count came from the roster while the avatars came from
-/// `ws.collaborators`, falling back to the *tree-wide* collaborator list
-/// when the workspace's own was empty. A room could therefore read
-/// "Private to you" directly above two faces, and the fallback put those
-/// same faces on every room in the list.
-///
-/// On a permissions surface that is not a cosmetic mismatch: showing
-/// someone on a room states that they can reach it.
+/// avatars, and both must read [`Workspace::roster`] — the people who
+/// hold a live membership capability here — rather than
+/// `ws.collaborators` or its tree-wide fallback: on a permissions
+/// surface, showing someone on a room states that they can reach it, so
+/// the count and the faces must agree with each other and with reality.
 ///
 /// Asserted against `room_people`, the function the draw pass itself
-/// calls. An earlier version of this test counted avatar-coloured fills
-/// in the rendered scene, which stopped meaning anything the moment
-/// avatars moved to the shared `ui::Avatar` widget with a per-identity
-/// fill — the product was still correct and the proxy had gone stale.
-/// Assert on the production path, not on something that correlates with
-/// it.
+/// calls, rather than by counting avatar-coloured fills in the rendered
+/// scene — a proxy that stops meaning anything the moment the avatar
+/// widget's fill colour changes for unrelated reasons.
 ///
 /// Forbidden modifications (re: the file header covenant):
 /// - Don't assert only that the member case is non-empty; the point is

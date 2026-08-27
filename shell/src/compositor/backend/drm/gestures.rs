@@ -1,11 +1,6 @@
 //! Touchpad gestures, and who gets them.
 //!
-//! libinput reports swipe, pinch and hold gestures on every touchpad. The
-//! DRM event loop used to end its match with `_ => {}`, so all of them —
-//! plus every touch event — were dropped on the floor, while the
-//! compositor advertised `zwp_pointer_gestures_v1` to clients that nothing
-//! ever emitted into.
-//!
+//! libinput reports swipe, pinch and hold gestures on every touchpad.
 //! Two consumers want them, and the split between them is the whole
 //! design decision here:
 //!
@@ -149,7 +144,6 @@ impl GestureTracker {
         self.config
     }
 
-    /// Fingers of the gesture currently in flight.
     pub fn active_fingers(&self) -> Option<u32> {
         self.fingers
     }

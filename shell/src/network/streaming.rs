@@ -1,25 +1,17 @@
-//! Owner-side streaming + peer-side input-replay coordination — Phase 4
-//! Tasks 4.2 and 4.4.
-//!
-//! Two responsibilities live in this module:
+//! Owner-side streaming + peer-side input-replay coordination.
 //!
 //! 1. [`StreamingThrottle`] — a 30-fps throttle for the owner's
-//!    damage-aware encode loop. The compositor calls
-//!    [`StreamingThrottle::should_encode`] on every smithay surface
-//!    commit; the throttle returns `true` at most once per ~33 ms so a
-//!    flood of damage events doesn't burn CPU re-encoding the same
-//!    pixels.
-//! 2. [`ShareRegistry`] — owner-side bookkeeping for "which surfaces are
-//!    shared with which peer, and is the share read-only?". The receive
-//!    side of [`crate::network::NeighbourMsg::RemoteInput`] consults the
-//!    registry through [`ShareRegistry::accept_remote_input`] to drop
-//!    events when the owner has flipped the per-peer `read_only` flag.
+//!    damage-aware encode loop; [`StreamingThrottle::should_encode`] is
+//!    called on every smithay surface commit and returns `true` at most
+//!    once per ~33 ms.
+//! 2. [`ShareRegistry`] — owner-side bookkeeping for which surfaces are
+//!    shared with which peer and whether the share is read-only;
+//!    [`ShareRegistry::accept_remote_input`] gates
+//!    [`crate::network::NeighbourMsg::RemoteInput`] on it.
 //!
-//! `InputEvent` is the wire-format vocabulary peer→owner input traffic
-//! travels in. Its serde bytes ride inside `NeighbourMsg::RemoteInput`'s
-//! `event` field; the owner deserialises and either drops it
-//! (`read_only = true`) or hands it to a [`RemoteInputSink`] which is
-//! the seat-injection trait the compositor's `State` implements.
+//! `InputEvent` is the wire-format vocabulary peer→owner input travels in;
+//! the owner either drops it (`read_only = true`) or hands it to a
+//! [`RemoteInputSink`], the seat-injection trait `State` implements.
 
 use crate::network::encoder::{EncodeError, H264Encoder};
 use crate::network::protocol::{PeerId, SurfaceId};
@@ -27,75 +19,50 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
-/// Damage-aware encode throttle.
-///
-/// Now lives in the standalone [`qos_callstream`] crate (its `throttle`
-/// module) so the compositor's surface streaming and the chat call app
-/// share one copy. Re-exported here under its historical path so
-/// [`encode_tick`] and the flatpak-share session keep compiling
-/// unchanged: one instance per shared surface, `should_encode(now)`
-/// gates the 30-fps cap, `mark_encoded(now)` stamps a successful encode.
+/// Damage-aware encode throttle. Lives in the standalone
+/// [`qos_callstream`] crate (`throttle` module) so surface streaming and
+/// the chat call app share one copy. One instance per shared surface:
+/// `should_encode(now)` gates the 30-fps cap, `mark_encoded(now)` stamps a
+/// successful encode.
 pub use qos_callstream::throttle::StreamingThrottle;
 
 /// Wire-format input event a peer publishes to drive the owner's seat.
+/// Carries pointer motion/button + a single keysym; richer events (touch,
+/// axis, tablet) are a follow-up. Rides inside
+/// [`crate::network::NeighbourMsg::RemoteInput::event`].
 ///
-/// Phase 4 v1 carries pointer motion / button + a single keysym; richer
-/// events (touch, axis, tablet) are a follow-up. The serde representation
-/// rides inside [`crate::network::NeighbourMsg::RemoteInput::event`].
-///
-/// # Keyboard focus semantics
-///
-/// `PointerEnter` and `PointerLeave` are the focus-grab / -release signals
-/// the owner uses to route subsequent [`InputEvent::Key`] events to the
-/// right client. On `PointerEnter { surface }` the owner grabs keyboard
-/// focus onto the peer's virtual seat for `surface`; on `PointerLeave` the
-/// grab releases. Between them, `Key` events flow into the focused client
-/// through the seat's `KeyboardHandle::input`.
-///
-/// # Multi-user typing
+/// `PointerEnter`/`PointerLeave` are the focus-grab/-release signals: on
+/// `PointerEnter { surface }` the owner grabs keyboard focus onto the
+/// peer's virtual seat for `surface`; on `PointerLeave` the grab releases.
 ///
 /// When two peers hold overlapping shares of the same surface and type
-/// concurrently, their keystrokes interleave at the kernel-input level:
-/// whichever `InputEvent::Key` arrives first at the owner wins the
-/// serial-counter mint and is delivered to the focused client first. There
-/// is no session-level lock — `KeyboardHandle::input` is atomic per event,
-/// so a "half-composed" character is not observable, but the resulting
-/// character stream is a race with the network order. Callers that need
-/// deterministic multi-typist behaviour should serialise upstream.
+/// concurrently, keystrokes interleave at the kernel-input level with no
+/// session-level lock — the resulting stream is a race with network order;
+/// callers needing deterministic multi-typist behaviour must serialise
+/// upstream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum InputEvent {
     /// Pointer moved to logical `(x, y)`, **surface-local** to the shared
-    /// surface's content rect: a peer sees only the surface it was given
-    /// and has no way to know where on the owner's output that surface
-    /// sits. [`crate::network::input_firewall`] checks the coordinate
-    /// against that rect and translates it into the owner's output space
-    /// before it reaches the seat.
+    /// surface's content rect — a peer has no way to know where on the
+    /// owner's output that surface sits. [`crate::network::input_firewall`]
+    /// translates it into the owner's output space before it reaches the seat.
     PointerMotion { x: f64, y: f64 },
     /// Mouse button transitioned to `pressed`. `button` mirrors smithay's
     /// libinput-style button codes (e.g. 272 = BTN_LEFT).
     PointerButton { button: u32, pressed: bool },
-    /// Peer's pointer entered `surface`. The owner responds by grabbing
-    /// keyboard focus onto the peer's virtual seat for `surface`, so
-    /// subsequent [`InputEvent::Key`] events land in the right client.
-    ///
-    /// The remote driver emits this once when it acquires the share's
-    /// focus (typically on hover / click into the `PeerView`).
+    /// Peer's pointer entered `surface` — grabs keyboard focus onto the
+    /// peer's virtual seat for `surface`. The remote driver emits this once
+    /// on acquiring the share's focus (hover/click into the `PeerView`).
     PointerEnter { surface: SurfaceIdWire },
-    /// Peer's pointer left `surface`. The owner releases the keyboard
-    /// focus grab for the peer's virtual seat. Subsequent `Key` events
-    /// fall on the floor at the seat level until another `PointerEnter`.
+    /// Peer's pointer left `surface` — releases the keyboard focus grab;
+    /// subsequent `Key` events fall on the floor until another `PointerEnter`.
     PointerLeave { surface: SurfaceIdWire },
-    /// Key press / release. `keysym` is the raw u32 from
-    /// `xkbcommon::xkb::Keysym`; the owner translates back to its local
-    /// keymap before injection.
-    ///
-    /// `modifiers` is a bitfield in xkbcommon's `Mods` layout — Shift=1,
-    /// Ctrl=4, Alt=8, Logo=64, etc. The owner sets the modifier state on
-    /// the seat's keyboard *before* delivering the key, then unsets it on
-    /// key-release, so held modifiers survive across the network. The
-    /// field defaults to `0` (via serde) so the legacy two-field
-    /// `{ keysym, pressed }` payload deserialises with no modifiers set,
-    /// preserving compat with peers on older builds.
+    /// Key press/release. `keysym` is the raw u32 from
+    /// `xkbcommon::xkb::Keysym`; `modifiers` is a bitfield in xkbcommon's
+    /// `Mods` layout (Shift=1, Ctrl=4, Alt=8, Logo=64…) — the owner sets it
+    /// on the seat's keyboard before delivering the key and unsets it on
+    /// release, so held modifiers survive the network. Defaults to `0` via
+    /// serde so the legacy two-field payload still deserialises.
     Key {
         keysym: u32,
         pressed: bool,
@@ -112,21 +79,19 @@ pub type SurfaceIdWire = crate::network::protocol::SurfaceId;
 /// A single decoded `org.freedesktop.impl.portal.RemoteDesktop` `Notify*`
 /// action.
 ///
-/// Unlike [`InputEvent`] — which is the *peer-sync* wire format keyed to a
-/// `(peer, surface)` share — a `RemoteAction` is a *local* portal request:
-/// an app the compositor is hosting asked (via `RemoteDesktop`) to inject
-/// input into whatever surface currently holds seat focus. The portal
-/// backend decodes each `Notify*` D-Bus call into one of these and hands it
-/// to a [`RemoteInputInjector`](crate::portal::RemoteInputInjector); the
-/// compositor's event loop drains them and calls
-/// [`crate::compositor::state::State::apply_remote_desktop_action`], which
-/// drives the real smithay `Seat`.
+/// Unlike [`InputEvent`] (the peer-sync wire format keyed to a
+/// `(peer, surface)` share), a `RemoteAction` is a *local* portal request —
+/// an app the compositor hosts asked (via `RemoteDesktop`) to inject input
+/// into whatever surface holds seat focus. The portal backend decodes each
+/// `Notify*` D-Bus call into one of these and hands it to a
+/// [`RemoteInputInjector`](crate::portal::RemoteInputInjector); the
+/// compositor drains them via
+/// [`crate::compositor::state::State::apply_remote_desktop_action`].
 ///
 /// Coordinate spaces mirror the RemoteDesktop spec: relative motion is a
-/// `(dx, dy)` delta in the stream's logical space; absolute motion is a
-/// point in the stream's logical space. Button / keycode use Linux evdev
-/// codes; `state` is the freedesktop `0 = released, 1 = pressed` convention,
-/// captured here as a `bool`.
+/// `(dx, dy)` delta, absolute motion a point; button/keycode use Linux
+/// evdev codes, and `state` is the freedesktop `0 = released, 1 = pressed`
+/// convention captured as a `bool`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RemoteAction {
     /// Relative pointer motion (`NotifyPointerMotion`).
@@ -161,13 +126,9 @@ pub trait RemoteInputSink {
     fn apply(&mut self, peer: PeerId, surface: SurfaceId, event: InputEvent);
 }
 
-/// Per-share metadata held by the owner.
-///
-/// `read_only` is the flag flipped by the owner's UI when they want a
-/// peer to observe but not drive a shared surface. The default at
-/// construction is `false` — peer-sync mirrors smithay's seat semantics
-/// where the inviter is the host and the invitee has full control until
-/// the host narrows it.
+/// Per-share metadata held by the owner. `read_only` is flipped by the
+/// owner's UI to make a peer observe-only; default `false` — the invitee
+/// has full control until the host narrows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamingShare {
     /// Whether this peer is allowed to inject input. `true` drops every
@@ -228,17 +189,10 @@ impl ShareRegistry {
         }
     }
 
-    /// Decide whether an inbound `RemoteInput` clears the *share* gate:
-    /// there is a record for this `(peer, surface)` pair and the owner has
-    /// not marked it read-only. The drop path covers both "share doesn't
-    /// exist" (peer is making things up) and "share is read-only" (owner
-    /// revoked write access).
-    ///
-    /// This is the first two of the checks a remote event has to pass, not
-    /// all of them — where the event may land, which chords it may carry
-    /// and how fast it may arrive are
-    /// [`crate::network::input_firewall`]'s. The whole sequence is
-    /// [`crate::compositor::state::State::review_remote_input`].
+    /// Decide whether an inbound `RemoteInput` clears the *share* gate: a
+    /// record exists for `(peer, surface)` and the owner hasn't marked it
+    /// read-only. Where the event may land, which chords it may carry, how
+    /// fast it may arrive are [`crate::network::input_firewall`]'s.
     pub fn accept_remote_input(&self, peer: PeerId, surface: SurfaceId) -> bool {
         match self.shares.get(&(peer, surface)) {
             Some(share) => !share.read_only,
@@ -246,12 +200,9 @@ impl ShareRegistry {
         }
     }
 
-    /// Mark every share read-only. The registry side of the kill switch:
-    /// peers keep seeing what they were shown, and stop being able to
-    /// touch it.
-    ///
-    /// Returns how many shares actually lost write access, so the caller
-    /// can report what the panic key did.
+    /// Mark every share read-only — the registry side of the kill switch:
+    /// peers keep seeing what they were shown but stop being able to touch
+    /// it. Returns how many shares actually lost write access.
     pub fn revoke_all_input(&mut self) -> usize {
         let mut revoked = 0;
         for share in self.shares.values_mut() {
@@ -263,18 +214,14 @@ impl ShareRegistry {
         revoked
     }
 
-    /// Route an inbound `InputEvent` to `sink` if — and only as far as —
-    /// the registry permits it. Returns whether the event was applied.
-    ///
-    /// **This is not the injection path.** It applies the share gate and
-    /// nothing else: an event routed through here has not been checked
-    /// against the surface's rect, against what is on top of it, against
-    /// the chord table, or against the peer's rate budget. Anything
-    /// whose sink is the compositor's seat must go through
-    /// [`crate::compositor::state::State::review_remote_input`] instead.
-    /// This exists for sinks that are not the seat — recorders in tests,
-    /// and adapters that only need to know whether a peer holds write
-    /// access.
+    /// Route an inbound `InputEvent` to `sink` if the registry permits it.
+    /// **Not the injection path** — applies only the share gate; an event
+    /// here hasn't been checked against the surface's rect, what's on top
+    /// of it, the chord table, or the peer's rate budget. A sink that is
+    /// the compositor's seat must go through
+    /// [`crate::compositor::state::State::review_remote_input`] instead;
+    /// this exists for non-seat sinks — test recorders, adapters that only
+    /// need to know whether a peer holds write access.
     pub fn route_to<S: RemoteInputSink>(
         &self,
         peer: PeerId,
@@ -290,15 +237,11 @@ impl ShareRegistry {
     }
 }
 
-/// Outcome of a single `encode_tick` call — what the damage-aware loop
-/// did (or didn't do) this iteration.
-///
-/// `Encoded` carries the freshly-encoded Annex-B NALU bytes; the
-/// streaming task hands them straight to
-/// [`crate::network::NeighbourMsg::SurfaceFrame`] for publication. The
-/// other variants are reasons the tick produced no bytes, surfaced as
-/// distinct enum variants so the task can report metrics (encode-skipped
-/// vs. throttled) without poking at the throttle internals.
+/// Outcome of a single `encode_tick` call. `Encoded` carries the
+/// freshly-encoded Annex-B NALU bytes; the other variants are reasons the
+/// tick produced no bytes, as distinct enum variants so the task can
+/// report metrics (encode-skipped vs. throttled) without poking at the
+/// throttle internals.
 #[derive(Debug)]
 pub enum EncodeTickOutcome {
     /// A frame was encoded; carries the NALU payload.
@@ -315,25 +258,15 @@ pub enum EncodeTickOutcome {
     EncodeFailed(EncodeError),
 }
 
-/// Drive one iteration of the owner-side damage-aware encode loop —
-/// Peer-sync Phase 4 v2.
-///
-/// `fetch_frame` is the closure the streaming task supplies; in
-/// production it bottoms out at
+/// Drive one iteration of the owner-side damage-aware encode loop.
+/// `fetch_frame` is supplied by the streaming task; in production it
+/// bottoms out at
 /// [`crate::compositor::surface_readback::SurfaceTracker::take_latest`],
-/// in tests it can return a synthesised RGBA frame. The split lets the
-/// encode loop stay decoupled from the compositor's `State` while
-/// keeping the production wiring single-trait — no
-/// `FrameSource`-style indirection.
+/// in tests it can return a synthesised RGBA frame.
 ///
 /// The throttle is *not* mutated until an encode actually succeeds, so
 /// callers that swallow [`EncodeTickOutcome::EncodeFailed`] don't
 /// accidentally poison the timestamp.
-///
-/// Returns the [`EncodeTickOutcome`] for the caller to ship / drop /
-/// retry. The function does not allocate beyond what
-/// [`H264Encoder::encode`] does internally; the staged RGBA `Vec` from
-/// `fetch_frame` is consumed by `encode`.
 pub fn encode_tick<F>(
     encoder: &mut H264Encoder,
     throttle: &mut StreamingThrottle,
@@ -399,13 +332,11 @@ mod tests {
         ));
     }
 
-    // The `StreamingThrottle` unit tests (30-fps cap, first-call-accepts,
-    // rejects-back-to-back) moved with the type into the `qos_callstream`
-    // crate's `throttle` module.
+    // `StreamingThrottle` unit tests moved with the type into the
+    // `qos_callstream` crate's `throttle` module.
 
-    /// Phase 4 Task 4.4 — required test. A synthesised `RemoteInput`
-    /// reaches the seat when the share is read/write; it's dropped when
-    /// the owner flips `read_only`.
+    /// A synthesised `RemoteInput` reaches the seat when the share is
+    /// read/write; it's dropped when the owner flips `read_only`.
     #[test]
     fn remote_input_blocked_when_read_only() {
         let peer: PeerId = 7;
@@ -474,27 +405,14 @@ mod tests {
         }
     }
 
-    /// Peer-sync Phase 4 v2 — required test. The synthetic-gradient
-    /// round-trip in `encoder::tests::gradient_round_trip_psnr_at_least_35_db`
-    /// proved the encoder works on a fabricated buffer. This test
-    /// wires the real production egress path through a
-    /// [`crate::compositor::surface_readback::SurfaceTracker`]: a
-    /// foreign-surface RGBA frame is deposited into the tracker, the
-    /// `encode_tick` loop drains it via `take_latest` (the same call
-    /// the production streaming task uses), the resulting NALU bytes
-    /// go through the H.264 decoder, and the decoded frame is
-    /// PSNR-compared against the input. Floor is the same 35 dB the
-    /// Phase 4 v1 gradient test asserts.
+    /// Wires the real production egress path through a
+    /// [`crate::compositor::surface_readback::SurfaceTracker`]: a deposited
+    /// RGBA frame is drained via `take_latest` (the same call production
+    /// uses), H.264-decoded, and PSNR-compared against the input (floor: 35 dB).
     ///
-    /// The deposit-side helper
-    /// (`SurfaceTracker::deposit_for_test`) is gated to `#[cfg(test)]`
-    /// because in production the bytes arrive via
-    /// `with_buffer_contents` on a real shm `wl_buffer`. Building a
-    /// real shm buffer requires a live `wayland-server::Display` +
-    /// `wl_shm` pool, which a unit test can't spin up without an
-    /// external client process. The mock keeps the *egress* path
-    /// (`take_latest`) on the same code as production, which is what
-    /// the v2 spec calls out.
+    /// `SurfaceTracker::deposit_for_test` is `#[cfg(test)]`-gated because
+    /// production bytes arrive via a real shm `wl_buffer` a unit test can't
+    /// spin up; the mock keeps the *egress* path on the same code as production.
     #[test]
     fn shared_foreign_surface_round_trips_rgba() {
         use crate::compositor::surface_readback::SurfaceTracker;
@@ -516,16 +434,13 @@ mod tests {
             }
         }
 
-        // Inject into the tracker the same way the compositor's
-        // `commit` handler would — but without the wayland plumbing
-        // (see the doc comment above).
+        // Inject the same way the compositor's commit handler would,
+        // minus the wayland plumbing.
         let mut tracker = SurfaceTracker::new();
         tracker.deposit_for_test(SURFACE, input.clone(), W, H);
 
-        // Production egress path: a single `encode_tick` driven from
-        // a closure that calls `tracker.take_latest(surface)`. The
-        // streaming task in production wires exactly this shape — the
-        // closure is the only knob it needs.
+        // Production egress path — the streaming task wires exactly this
+        // shape; the closure is the only knob it needs.
         let mut encoder = H264Encoder::new(W, H, 30).expect("encoder");
         let mut throttle = StreamingThrottle::new();
         let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
@@ -550,7 +465,7 @@ mod tests {
             "expected NoFrame, got {outcome2:?}"
         );
 
-        // Decode + PSNR check, mirroring the v1 gradient test floor.
+        // Decode + PSNR check against the same floor as the gradient test.
         let mut decoder = H264Decoder::new();
         let frame = decoder.decode(&nalus).expect("decoder yields a frame");
         assert_eq!(frame.width, W);
@@ -587,21 +502,10 @@ mod tests {
         eprintln!("shared-surface PSNR = {psnr:.3} dB");
     }
 
-    /// D-1 regression: `apply_remote_input` used to log the event and
-    /// stamp `last_remote_input`, but never touched the smithay seat
-    /// — Peer-sync Phase 4's input replay was a no-op. The boolean
-    /// `true` return gave callers / earlier tests false confidence
-    /// that the event had been "applied".
-    ///
-    /// Post-fix, `RemoteInputSink::apply` for `State` calls
-    /// `PointerHandle::motion(...)` for `PointerMotion` events (and
-    /// `PointerHandle::button` for buttons). This test asserts the
-    /// pointer's logical location actually reflects the injected
-    /// coordinates — observable through `seat.get_pointer().current_location()`.
-    ///
-    /// Keyboard injection is intentionally deferred (see the module
-    /// comment in `compositor::state`); the audit explicitly allows
-    /// scoping D-1 to pointer events + filing a follow-up.
+    /// `RemoteInputSink::apply` for `State` calls `PointerHandle::motion(...)`
+    /// for `PointerMotion` events; this test asserts the pointer's logical
+    /// location actually reflects the injected coordinates, observable via
+    /// `seat.get_pointer().current_location()`.
     #[test]
     fn apply_remote_input_pointer_motion_reaches_seat() {
         use crate::compositor::state::State;
@@ -609,31 +513,27 @@ mod tests {
         use smithay::reexports::calloop::EventLoop;
         use smithay::reexports::wayland_server::Display;
 
-        // Build a minimal `State` standalone — no listening socket,
-        // no clients. This is the same plumbing `native::run` does at
-        // startup, minus the winit/drm backend.
+        // Minimal standalone `State` — no listening socket, no clients;
+        // same plumbing `native::run` does at startup, minus the winit/drm backend.
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
         let display: Display<State> = Display::new().expect("wayland display");
         let display_handle = display.handle();
         let mut state = State::new(event_loop.handle(), display_handle);
 
-        // Stage the (peer, surface) share so the read-only gate lets
-        // the event through. Without this `apply_remote_input` would
-        // drop on the unknown-share path.
+        // Stage the (peer, surface) share, else `apply_remote_input` drops
+        // on the unknown-share path.
         let peer: PeerId = 42;
         let surface: SurfaceId = 7;
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
         // The shared surface fills the output from its origin, so a
-        // surface-local coordinate and its output-space translation are
-        // the same number and the assertions below read unchanged.
+        // surface-local coordinate matches its output-space translation.
         stage_shared_surface(&mut state, surface);
 
-        // Before injection: pointer is at the seat's default origin
-        // (0, 0). `current_location` returns the last-known location;
-        // a fresh seat starts at the origin.
+        // Fresh seat starts at the origin; current_location returns the
+        // last-known location.
         let initial = state
             .seat
             .get_pointer()
@@ -646,8 +546,6 @@ mod tests {
         );
         assert_eq!(initial.y, 0.0);
 
-        // Now drive a PointerMotion event through the real
-        // production path.
         let routed = state.apply_remote_input(
             peer,
             surface,
@@ -655,10 +553,8 @@ mod tests {
         );
         assert!(routed, "share is read/write, motion must route");
 
-        // The seat's pointer location must now reflect the injected
-        // coordinates — proves the call actually reached the
-        // production `motion()` path, not just stamped
-        // `last_remote_input`.
+        // Proves the call reached the production `motion()` path, not
+        // just stamped `last_remote_input`.
         let after = state
             .seat
             .get_pointer()
@@ -672,8 +568,7 @@ mod tests {
             (after.x, after.y)
         );
 
-        // A second motion shifts the pointer again — the seat is
-        // mutating, not pinned at the first value.
+        // Seat is mutating, not pinned at the first value.
         let _ =
             state.apply_remote_input(peer, surface, InputEvent::PointerMotion { x: 5.0, y: 6.0 });
         let after2 = state.seat.get_pointer().unwrap().current_location();
@@ -681,16 +576,8 @@ mod tests {
     }
 
     /// `InputEvent::Key` must reach the smithay `KeyboardHandle::input`
-    /// path. We can't easily observe a wayland client receiving the
-    /// key without spinning up a real client + surface — instead we
-    /// prove the delivery reaches the *seat*: after a Key event, the
-    /// keyboard's `forwarded_pressed_keys` set includes the keycode.
-    ///
-    /// The compositor's `KeyboardHandle::input` guarded by the
-    /// forwarded-pressed-keys bookkeeping is the same call site
-    /// `network::wayland::WaylandServer::handle_input` uses in
-    /// production — hitting it here proves the peer-input path is no
-    /// longer a no-op.
+    /// path — proven via the keyboard's `forwarded_pressed_keys` set after
+    /// a Key event, the same call site production uses.
     #[test]
     fn apply_remote_input_key_reaches_keyboard() {
         use crate::compositor::state::State;
@@ -709,9 +596,8 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
-        // Staged as the focused surface: the scrubber's focus guard mutes
-        // a guest's keystrokes unless the shared surface is the one the
-        // seat's keyboard is pointed at.
+        // The scrubber's focus guard mutes a guest's keystrokes unless the
+        // shared surface is the one the seat's keyboard is pointed at.
         stage_shared_surface(&mut state, surface);
 
         // Baseline: no keys pressed.
@@ -723,7 +609,6 @@ mod tests {
             );
         }
 
-        // Drive a Key event through the real production path.
         let keysym: u32 = 30; /* A on a US keymap */
         let routed = state.apply_remote_input(
             peer,
@@ -736,10 +621,8 @@ mod tests {
         );
         assert!(routed, "read/write share, key event must route");
 
-        // The seat's keyboard now tracks the injected keycode as
-        // pressed — smithay's `forwarded_pressed_keys` (exposed via
-        // `KeyboardHandle::pressed_keys`) reflects the state after
-        // `KeyboardHandle::input` runs.
+        // smithay's `forwarded_pressed_keys` (via `KeyboardHandle::pressed_keys`)
+        // reflects the state after `KeyboardHandle::input` runs.
         {
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             let pressed = kb.pressed_keys();
@@ -749,8 +632,7 @@ mod tests {
             );
         }
 
-        // Release event mirrors the press: after `Released`, the
-        // pressed set no longer contains the keycode.
+        // After `Released`, the pressed set no longer contains the keycode.
         let _ = state.apply_remote_input(
             peer,
             surface,
@@ -768,17 +650,16 @@ mod tests {
             );
         }
 
-        // Origin tag: `last_remote_input` carries the peer id so the
-        // future per-user "typing" overlay can find it in one place.
+        // `last_remote_input` carries the peer id so a future per-user
+        // "typing" overlay can find it in one place.
         let (last_peer, _, _) = state.last_remote_input.as_ref().expect("event stamped");
         assert_eq!(*last_peer, peer, "origin peer tag lost");
     }
 
-    /// `PointerEnter` auto-grabs the peer's keyboard focus (bookkeeping
-    /// on the peer's `RemoteSeat`). `PointerLeave` releases it. The
-    /// physical seat's `set_focus` flip only fires when a
-    /// `surface_resolver` is installed — headless tests set it to a
-    /// stub, so we assert on the `RemoteSeats` bookkeeping directly.
+    /// `PointerEnter` auto-grabs the peer's keyboard focus (bookkeeping on
+    /// the peer's `RemoteSeat`); `PointerLeave` releases it. The physical
+    /// seat's `set_focus` only fires with a `surface_resolver` installed —
+    /// headless tests stub it, so we assert on `RemoteSeats` directly.
     #[test]
     fn pointer_enter_grabs_and_leave_releases_remote_seat_focus() {
         use crate::compositor::state::State;
@@ -836,15 +717,13 @@ mod tests {
         let mut throttle = StreamingThrottle::new();
         let t0 = Instant::now();
 
-        // First tick encodes.
         let r1 = encode_tick(&mut encoder, &mut throttle, t0, || {
             tracker.take_latest(SURFACE).map(|f| f.rgba)
         });
         assert!(matches!(r1, EncodeTickOutcome::Encoded(_)));
 
-        // Re-deposit immediately. A second tick at t0+1ms must
-        // *not* drain the tracker — the throttle short-circuits
-        // before `fetch_frame` runs.
+        // Re-deposit immediately. A second tick at t0+1ms must *not* drain
+        // the tracker — the throttle short-circuits before `fetch_frame` runs.
         tracker.deposit_for_test(SURFACE, frame, W, H);
         let r2 = encode_tick(
             &mut encoder,
@@ -853,16 +732,13 @@ mod tests {
             || tracker.take_latest(SURFACE).map(|f| f.rgba),
         );
         assert!(matches!(r2, EncodeTickOutcome::Throttled));
-        // Crucially: the tracker slot is still full because the
-        // throttle blocked `take_latest` from running.
+        // Tracker slot is still full — the throttle blocked `take_latest` from running.
         assert!(!tracker.is_empty_for(SURFACE));
     }
 
     /// A RemoteDesktop `NotifyPointerMotionAbsolute` decoded into a
-    /// [`RemoteAction`] must reach the real smithay seat — proven by the
-    /// pointer's logical location, the same observable
-    /// `apply_remote_input_pointer_motion_reaches_seat` uses. This is the
-    /// portal `RemoteDesktop` counterpart of that peer-sync test.
+    /// [`RemoteAction`] must reach the real smithay seat — the portal
+    /// counterpart of the peer-sync pointer-motion test above.
     #[test]
     fn apply_remote_desktop_absolute_motion_reaches_seat() {
         use crate::compositor::state::State;
@@ -935,8 +811,7 @@ mod tests {
 
     /// End-to-end production path: a [`ChannelInjector`] carries a decoded
     /// action to the compositor loop, which drains it into
-    /// `apply_remote_desktop_action` and drives the real seat. This is the
-    /// wiring `serve()` uses for RemoteDesktop in the hosted compositor.
+    /// `apply_remote_desktop_action` and drives the real seat.
     #[test]
     fn remote_desktop_channel_injector_drives_the_seat() {
         use crate::compositor::state::State;
@@ -947,14 +822,14 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let injector = ChannelInjector::new(tx);
-        // The portal `Notify*` handler side: forward the decoded action.
+        // Portal `Notify*` handler side: forward the decoded action.
         assert!(injector.inject(RemoteAction::PointerMotionAbsolute {
             stream: 1,
             x: 77.0,
             y: 88.0,
         }));
 
-        // The compositor-loop side: drain + apply to the live seat.
+        // Compositor-loop side: drain + apply to the live seat.
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
         let display: Display<State> = Display::new().expect("wayland display");

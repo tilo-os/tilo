@@ -1,24 +1,23 @@
 //! `TopBar` — the shell's top-edge chrome row.
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` §5 —
 //! `TopBar = Row([LeftNav, CenterWidgets, RightTray])`.
 //!
-//! T18 owns the **LeftNav** surface:
+//! LeftNav:
 //! - overview toggle button,
 //! - workspace up/down arrows (clamped at the ends of the workspace list),
 //! - workspace-name button that requests the WorkspaceSettings modal.
 //!
-//! T19 adds the CenterWidgets cluster (clock / sparkline / calendar) with
-//! wheel cycling + cooldown. T20 adds the RightTray surface:
+//! CenterWidgets cycles clock / sparkline / calendar on the wheel, with a
+//! cooldown. RightTray holds:
 //! - the visible collaborator avatars (first N entries of
 //!   `tree.collaborators`, with an `overflow_count`-driven `+N` pill),
 //! - the QuickSettings gear button that emits
 //!   [`TopBarOutput::OpenQuickSettings`].
 //!
 //! The state fields for the center cluster — `center`, `last_wheel`,
-//! `cooldown` — are declared up-front so T19/T20 don't need to reshape the
-//! struct mid-plan. The RightTray is stateless at the logical level: it
-//! reads collaborators straight from the borrowed `WorkspaceTree`.
+//! `cooldown` — are declared up-front. The RightTray is stateless at the
+//! logical level: it reads collaborators straight from the borrowed
+//! `WorkspaceTree`.
 //!
 //! The shell root owns the TopBar and forwards its `TopBarOutput` values to
 //! decide when to open popovers/modals (WorkspaceSettings, QuickSettings);
@@ -37,10 +36,10 @@ use crate::shell::system_monitor::{SparkSample, SystemMonitor};
 /// [`WorkspaceTree`].
 ///
 /// `ToggleOverview` does not mutate the tree itself — the outer shell owns
-/// the overview-visible flag — so `emit` simply acknowledges it. Future
-/// tasks can widen this enum (e.g. center-widget cycling keys); existing
-/// callers that match on it will need to add arms explicitly, which is the
-/// desired safety property.
+/// the overview-visible flag — so `emit` simply acknowledges it. Callers
+/// match on this enum exhaustively, so widening it later forces every
+/// existing match arm to be updated explicitly — the desired safety
+/// property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TopBarEvent {
     /// User clicked the overview toggle. Handled by the outer shell.
@@ -60,13 +59,11 @@ pub enum TopBarOutput {
     /// WorkspaceSettings modal for the active workspace.
     OpenWorkspaceSettings,
     /// Click on the RightTray gear — the shell should open the
-    /// QuickSettings popover. Declared here so T20's RightTray test can
-    /// match on it without another enum revision.
+    /// QuickSettings popover.
     OpenQuickSettings,
 }
 
-/// Which cycling widget occupies the center of the TopBar. T18 only ever
-/// renders `Clock`; T19 wires wheel-cycling between the three variants.
+/// Which cycling widget occupies the center of the TopBar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CenterWidget {
     Clock,
@@ -76,12 +73,12 @@ pub enum CenterWidget {
 
 /// The TopBar's logical state. See module docs for the ownership story.
 pub struct TopBar {
-    /// Currently visible center widget. T18 leaves this at `Clock`.
+    /// Currently visible center widget.
     center: CenterWidget,
     /// Timestamp of the last wheel event consumed by the center widget,
-    /// or `None` if no wheel event has been accepted yet. T19 reads this
-    /// to enforce the 200 ms cooldown — the first wheel always passes,
-    /// then subsequent events must wait `cooldown` before cycling again.
+    /// or `None` if no wheel event has been accepted yet. This enforces
+    /// the 200 ms cooldown — the first wheel always passes, then
+    /// subsequent events must wait `cooldown` before cycling again.
     last_wheel: Option<Duration>,
     /// Cooldown window between successive center-widget cycles.
     cooldown: Duration,
@@ -90,8 +87,8 @@ pub struct TopBar {
     /// [`TopBar::set_system_monitor`]; rendering code reads this cache
     /// instead of borrowing the monitor across frames.
     spark_samples: Vec<SparkSample>,
-    /// Hover tooltip for the LeftNav workspace-name button. T31 wires it:
-    /// the shell calls [`TopBar::hover_ws_name`] on pointer enter/leave and
+    /// Hover tooltip for the LeftNav workspace-name button. The shell
+    /// calls [`TopBar::hover_ws_name`] on pointer enter/leave and
     /// [`TopBar::tick`] once per frame; the primitive flips visible once
     /// the accumulated hover crosses its 600 ms reveal delay.
     ws_name_tooltip: Tooltip,
@@ -110,20 +107,20 @@ impl TopBar {
         }
     }
 
-    /// The currently visible center widget. Exposed for T19.
+    /// The currently visible center widget.
     pub fn center_widget(&self) -> CenterWidget {
         self.center
     }
 
-    /// The configured wheel-cycle cooldown. Exposed so T19's tests can
-    /// assert the 200 ms default without reaching into private fields.
+    /// The configured wheel-cycle cooldown. Exposed so tests can assert
+    /// the 200 ms default without reaching into private fields.
     pub fn cooldown(&self) -> Duration {
         self.cooldown
     }
 
     /// Timestamp of the last accepted wheel event, or `Duration::ZERO` if
-    /// no wheel event has ever been accepted. Exposed for T19 tests and
-    /// the shell tick hook.
+    /// no wheel event has ever been accepted. Exposed for tests and the
+    /// shell tick hook.
     pub fn last_wheel(&self) -> Duration {
         self.last_wheel.unwrap_or(Duration::ZERO)
     }
@@ -136,13 +133,9 @@ impl TopBar {
     pub fn emit(&mut self, event: TopBarEvent, tree: &mut WorkspaceTree) {
         match event {
             TopBarEvent::WorkspaceUp => {
-                // `switch_up` is a no-op at index 0, matching the clamp
-                // contract the T18 test expects.
                 tree.switch_up();
             }
             TopBarEvent::WorkspaceDown => {
-                // Same clamp contract — `switch_down` refuses to advance
-                // past the last workspace.
                 tree.switch_down();
             }
             TopBarEvent::ToggleOverview => {
@@ -183,8 +176,7 @@ impl TopBar {
     /// Handle a wheel event over the center-widget cluster. `dir` is a raw
     /// delta — only its sign matters. `now` is the monotonic clock used to
     /// rate-limit cycles; see [`TopBar::cooldown`]. Calls while the
-    /// cooldown is active are silently dropped (no visual feedback — the
-    /// spec §5 calls this "gentle rate-limit").
+    /// cooldown is active are silently dropped (no visual feedback).
     ///
     /// Indexing wraps modulo 3 across `Clock → SystemMonitor → Calendar →
     /// Clock`, so wheel-down advances forward and wheel-up steps back.

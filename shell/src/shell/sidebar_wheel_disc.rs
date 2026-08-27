@@ -1,182 +1,17 @@
-//! `SidebarWheelDisc` — large radial workspace switcher anchored
-//! OFF-SCREEN-LEFT, with only a narrow arc of its right edge protruding
-//! into the visible sidebar column. How many degrees that is falls out of
-//! the slot's height-to-width ratio; on the live sidebar it is around 60°,
-//! which carries the active workspace plus two neighbours each side. Each **workspace** is a spoke; the
-//! user drags vertically to rotate, and a release snaps to the nearest
-//! spoke.
+//! `SidebarWheelDisc` — radial workspace switcher anchored off-screen-left,
+//! with a narrow arc of its rim protruding into the sidebar column. Each
+//! workspace is a spoke; dragging vertically rotates the wheel, and release
+//! snaps to the nearest spoke.
 //!
-//! ## The design
+//! `rotation_deg` is absolute: workspace `i` rests at `-i * spoke_gap_deg()`,
+//! so the list spans `[-(N-1)*gap, 0]` with an end at each side — every drag,
+//! flick, click and scroll writes this one number, and `active_idx` is always
+//! just "which workspace `rotation_deg` is nearest". `draw` instead wants the
+//! *residual* offset from the active sector's rest position
+//! (`SidebarWheelDisc::visual_residual_deg`), so the lit sector doesn't march
+//! down the arc as you switch workspaces.
 //!
-//! The concept prototype (`radial-workspace-switcher/src/App.tsx`)
-//! painted every spoke as a rounded pill card with a vertically-rotated
-//! label. On a narrow column that read as crowded — several cards
-//! overlapping inside the visible arc — and the per-spoke rotation left
-//! the labels at inconsistent angles.
-//!
-//! What replaced it went too far the other way: a quiet ring where the
-//! active workspace got a large name plate and every other workspace was
-//! an unlabelled speck. That inverts what a switcher is for. It told you
-//! where you already were, and about the places you might go it said only
-//! that they existed. The plate and the specks also read as two unrelated
-//! kinds of object rather than one set in two states.
-//!
-//! The current design is a **segmented disc** — the thing you spin:
-//! - The **body** is a flat, *solid* segment: one uniform fill of the
-//!   theme's glass surface running from the rim all the way in to the
-//!   disc's centre. No radial ramp, no concentric strokes, no shading.
-//!   An earlier form graded the body from transparent at its inner end
-//!   to a peak alpha at the rim, which spread a grey smear across half
-//!   the slot and never resolved into an object.
-//! - It is solid rather than a ring. A ring was tried, on the theory
-//!   that a second concentric edge gives the object a silhouette, and
-//!   it does — but a disc segment with a hole punched out of it is not
-//!   a disc segment, and the hole is what you notice. Because the
-//!   centre sits far off-screen to the left, "solid" in practice means
-//!   the fill runs off the left edge of the footprint without ever
-//!   ending, which is exactly the read wanted: a piece of something
-//!   much larger, continuing past what you can see.
-//! - The silhouette therefore comes from the rim and the sector
-//!   dividers alone. Both had to carry more for that: the rim keeps
-//!   its soft-wide + crisp-hairline pair and its outward shadow, and
-//!   the dividers now run the full depth of the segment instead of
-//!   stopping at an inner arc, so the surface is legibly *divided*
-//!   rather than merely tinted.
-//! - The band is divided into **sectors**, one per 15° display slot,
-//!   by radial hairlines. The sectors are what turn: spinning sweeps
-//!   the dividers, the tints and the labels through the slot together,
-//!   so the object visibly rotates rather than having things slide
-//!   along a fixed curve.
-//! - Display slots tile the whole visible sweep and **cycle** through
-//!   the workspaces (the concept's 24 slots for 6 workspaces), so
-//!   there is never a stretch of unsegmented disc rotating past.
-//! - Each sector carries its workspace's glyph and name on a chip laid
-//!   **on the disc**, rotated to its own sector so it lies flat on the
-//!   surface. Every chip sits at the same radius and is the same width,
-//!   so they form a ring; when the wheel turns, the labels tip with it.
-//! - The **active** sector is filled with its workspace's colour, its
-//!   two dividers brighten, and its chip is the same chip one size step
-//!   larger and tinted. One family of things in two states.
-//! - Rim, inner arc and sector dividers are all hairlines derived from
-//!   the theme's foreground, in the same translucent-fill + lit-edge +
-//!   soft-shadow language the window decorations use, so the disc and
-//!   the window chrome read as one system.
-//! - Everything is faded on one vertical curve at the very top and
-//!   bottom of the footprint, so the band runs off the slot rather than
-//!   ending on a straight cut.
-//!
-//! ## What it feels like
-//!
-//! The disc is meant to read as a physical wheel with a finite list of
-//! notches on it, and three things carry that.
-//!
-//! **The indicator steps under your hand.** The lit sector advances the
-//! moment the wheel's rotation crosses a detent boundary, then the next,
-//! for as long as you keep dragging. It used to sit still through the
-//! entire gesture and jump once at the end, which made the drag feel
-//! like it was addressed to nothing — you were turning a wheel that had
-//! no opinion about where it was until you let go. Stepping is a
-//! *display* change only: the workspace tree is still written exactly
-//! once, on release, so the indicator can range over the list freely
-//! without a half-finished gesture switching anybody's workspace.
-//!
-//! **It has weight.** The disc does not track the pointer rigidly — a
-//! thing with mass cannot change velocity instantly, and a surface
-//! welded to the cursor is announcing that it has none. The drag sets a
-//! target and a stiff critically-damped spring chases it, so the rim
-//! trails the hand by an amount proportional to how fast you are moving.
-//! Between notches a magnet pulls toward the nearer one, so crossing
-//! from one to the next is felt as a small give and catch rather than a
-//! smooth slide. A release keeps whatever velocity the wheel had: a
-//! flick coasts several workspaces and decelerates, a slow let-go
-//! settles where it stands. The settle is critically damped, which is
-//! the opposite of bouncy — overshoot reads *light*.
-//!
-//! **The ends are ends.** The workspace list is finite and does not
-//! wrap, so there is a first workspace and a last one. Dragging past
-//! either does not run free and does not hit a wall: resistance builds
-//! along `L·d/(d+L)`, tracking the hand exactly at first contact and
-//! stiffening the whole way out, so you can always pull a little more
-//! and never much more. Releasing returns to the end itself, not to
-//! some detent beyond it. Scroll input hits the same edge with the same
-//! curve — two entry points to one control have to resist alike.
-//!
-//! Note the difference between the *workspace list*, which is finite,
-//! and the *display sectors*, which cycle: the sector fan tiles the
-//! whole visible sweep by repeating workspaces so no unsegmented
-//! stretch of band ever rotates through. That is a painting decision
-//! and it is unaffected by the ends.
-//!
-//! User-facing spec (verbatim, 2026-04-21 + 2026-04-30):
-//! *"No permanent sidebar, but workspaces appear as rotated axes of the
-//! wheel disc, meaning you can go to the left and drag it to move between
-//! workspaces."*
-//!
-//! Pixel-perfect concept reference:
-//! `radial-workspace-switcher/src/App.tsx` (Apache-2.0). Maps:
-//!   - 2000 px disc on a 160 px column → ratio 12.5:1 (radius:column).
-//!     Concept centre at `left:-1840px` from the column-left → cos(θ)=0.84,
-//!     visible arc spans `2·arccos(0.84) ≈ 66°`.
-//!   - 24 display-spokes at 15° increments. We instead render N spokes
-//!     for N workspaces but keep the per-spoke gap at `360°/N` so the
-//!     snap math remains uniform; for `N == 24` it matches the concept.
-//!   - Active spoke icon: 40×40 rounded-12 tile in workspace colour;
-//!     uppercase 18-px label letter-spaced 0.15em, both rotated `-90°`
-//!     so the cluster reads vertically (bottom-to-top on the right side).
-//!   - Inactive spoke: 32×32 rounded-8 white/10 tile, 15-px white/80
-//!     label, cluster opacity 0.30.
-//!   - Static "centre dots": one per real workspace at `(i - (N-1)/2)·2°`
-//!     near the rim, NOT rotating with the wheel. Active dot coloured +
-//!     glowing; inactive are tiny white/20 specks.
-//!   - Atmosphere: 40-px-thick `border-r-white/0.02` band, soft
-//!     `40px 0 120px rgba(0,0,0,0.8)` shadow extending right, plus a
-//!     faint disc fill (`bg-white/0.012`) substituting for backdrop-blur.
-//!
-//! Geometry mapping into our coord system:
-//!   - `radius = visible_width / VISIBLE_RADIUS_FRACTION`.
-//!   - `cx = rect.x0 - radius * (1 - VISIBLE_RADIUS_FRACTION)` — centre
-//!     off-screen-left so the rim's chord at angles
-//!     `±arccos(1 - VISIBLE_RADIUS_FRACTION)` lands on `rect.x0`.
-//!   - `cy = (rect.y0 + rect.y1) / 2` — disc filled vertically by the
-//!     parent slot, so its visible arc spans most of the viewport.
-//!
-//! Interaction model:
-//!   - Press inside the visible arc → capture `drag_from`, and take the
-//!     wheel over wherever it visually is, so grabbing one that is still
-//!     settling catches it mid-flight instead of teleporting it.
-//!   - Vertical motion: `raw = origin + dy * DRAG_FACTOR`
-//!     (`DRAG_FACTOR = 0.15`), resisted past the ends, nudged toward the
-//!     nearest detent, and handed to the follow spring as a target.
-//!   - Click on a non-active spoke (lands inside its cached cluster
-//!     rect) → animate that spoke to active via the settle spring.
-//!   - Release → project the residual velocity forward, land on the
-//!     detent nearest that projection, and settle there; or, if the
-//!     gesture ended past an end, return to the end.
-//!   - Wheel scroll: discrete detents, `WHEEL_DETENT_PX` of scroll per
-//!     workspace. Against an end, where there is no next detent to
-//!     spend on, the same input becomes resisted pull instead.
-//!
-//! ## Coordinates
-//!
-//! `rotation_deg` is **absolute**: workspace `i` rests at `-i * gap`, so
-//! the whole list occupies `[-(N-1)·gap, 0]` and the reachable range has
-//! two ends to run into. Everything that moves the wheel — drag, flick,
-//! click, scroll — is a write to this one number, and `active_idx` is
-//! always just "which workspace is `rotation_deg` nearest", recomputed
-//! whenever it changes.
-//!
-//! `draw`, by contrast, needs the *residual*: the fan is painted around
-//! whichever sector is active, so it wants the offset from that sector's
-//! rest position (`visual_residual_deg`), not the absolute angle. Paint
-//! the absolute angle and the lit sector marches down the arc and off
-//! the bottom of the slot as you switch workspaces.
-//!
-//! Degrees throughout so the detent arithmetic (`rotation_deg / gap`)
-//! stays readable; trig converts to radians at the callsite.
-//!
-//! Drag origin (`drag_from`) and idle-hover cursor cache (`hover_anchor`)
-//! are stored in separate fields so pointer-capture is asserted only
-//! while a press is actually in flight.
+//! Pixel-perfect concept reference: `radial-workspace-switcher/src/App.tsx`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -219,16 +54,10 @@ pub struct SidebarWheelDisc {
     /// Index of the spoke currently "up" — i.e. the workspace the user
     /// would return to if they released without further dragging.
     pub active_idx: usize,
-    /// Where the wheel is being asked to sit, in **absolute** degrees:
-    /// workspace `i` rests at `-i * spoke_gap_deg()`, so the list spans
-    /// `[-(N-1)·gap, 0]` and has an end at each side. Values outside
-    /// that range are resisted overscroll, not positions.
-    ///
-    /// This is the *target*. What is on screen is the settle/follow
-    /// spring's value while one is in flight — see
-    /// [`SidebarWheelDisc::visual_rotation_deg`] — and this again once
-    /// it lands. `draw` wants neither directly: it paints the fan
-    /// around the active sector, so it uses
+    /// Where the wheel is being asked to sit, in **absolute** degrees
+    /// (see module docs). The *target*; the settle/follow spring's value
+    /// is what's on screen while one is in flight — see
+    /// [`SidebarWheelDisc::visual_rotation_deg`] and
     /// [`SidebarWheelDisc::visual_residual_deg`].
     pub rotation_deg: f32,
     /// `Some(origin)` while a drag is in flight; `None` when idle.
@@ -259,11 +88,8 @@ pub struct SidebarWheelDisc {
     /// fills the parent slot vertically.
     pub rect: Rect,
     /// Disc diameter in logical pixels. Drives the geometry math and the
-    /// drag→angle mapping. Default 4500 px — paired with
-    /// `VISIBLE_RADIUS_FRACTION = 0.16` this gives a 360 px-wide visible
-    /// arc, matching the live `SIDEBAR_WIDTH_PX = 360` slot post the
-    /// 2026-05-23 redesign. Math: `visible_width = radius * VISIBLE`,
-    /// so `radius = 360 / 0.16 = 2250`, `diameter = 4500`.
+    /// drag→angle mapping; recomputed from the host slot on layout so
+    /// the visible arc matches `SIDEBAR_WIDTH_PX`.
     pub diameter_px: f64,
     /// Optional shared chrome handle. When present, a snap that lands on
     /// a spoke whose `workspace_id` is known writes the new active
@@ -333,15 +159,11 @@ pub struct SidebarWheelDisc {
     /// disc sits at the left edge of the strip's content and pans with
     /// it.
     ///
-    /// Summoning exists because docking is correct but not always
-    /// reachable: the disc belongs to the workspace, so scrolling right
-    /// through a strip carries it off-screen along with everything else
-    /// to the left. Without a way to call it back you would have to
-    /// scroll the whole strip home just to glance at the workspace list.
-    ///
-    /// The footprint is unchanged — same width, same radius, same arc.
-    /// A summon moves the same object to the pointer; it does not
-    /// reveal more of it.
+    /// Summoning exists because docking isn't always reachable: the disc
+    /// belongs to the workspace, so scrolling right through a strip
+    /// carries it off-screen with everything else. The footprint is
+    /// unchanged — a summon moves the same object to the pointer, it
+    /// doesn't reveal more of it.
     summon_at: Option<Point>,
 }
 
@@ -380,15 +202,11 @@ struct WheelCacheFp {
 
 impl WheelCacheFp {
     /// True when the two fingerprints paint the *same pixels*, possibly
-    /// at a different place on screen. Every field except
-    /// [`Self::origin_px`] participates.
-    ///
-    /// This is the predicate behind the pan fast-path. Because the disc
-    /// now rides the strip's canvas, its origin changes on every frame
-    /// of a horizontal scroll — and re-encoding the full disc (fill,
-    /// rim, every marker, the label, the add-slot) once per frame for
-    /// what is a pure translation is exactly the cost that made
-    /// scrolling feel heavy.
+    /// at a different place on screen — the predicate behind the pan
+    /// fast-path: the disc rides the strip's canvas, so its origin
+    /// changes on every frame of a horizontal scroll, and re-encoding
+    /// the full disc for a pure translation is what made scrolling feel
+    /// heavy.
     fn content_eq(&self, other: &Self) -> bool {
         self.size_px == other.size_px
             && self.rotation_centi_deg == other.rotation_centi_deg
@@ -405,53 +223,29 @@ impl WheelCacheFp {
     }
 }
 
-/// Fraction of the disc's radius that protrudes into the viewport.
-/// Drives the off-screen-centre offset
-/// (`cx = rect.x0 - radius * (1 - VISIBLE)`) and, with the slot's
-/// height, how much of the rim is on screen.
-///
-/// This does NOT change the footprint. The visible width is whatever
-/// the host's slot is; the radius is derived from it, so this constant
-/// only sets how tightly the visible sliver curves — and, as a
-/// consequence, how many degrees of rim fit in the slot's height.
-///
-/// It was 0.16, transcribed from the concept prototype's
-/// 2000-px-disc-on-a-160-px-column. On the real slot that put the
-/// radius near 1460 px, and a 690-px-tall slot spans
-/// `2·asin(345/1460) ≈ 27°` of such a circle — less than the 15°
-/// between two workspaces plus any margin. So the switcher showed the
-/// active workspace and, at best, one neighbour clipping the very
-/// corner: a wheel with nothing on it, and no sense of what you were
-/// about to switch to.
-///
-/// At 0.34 the same slot spans ≈ 60°, which carries the active
-/// workspace plus two neighbours on each side, and the sliver reads as
-/// a gentle arc rather than a straight scratch.
+/// Fraction of the disc's radius that protrudes into the viewport:
+/// `cx = rect.x0 - radius * (1 - VISIBLE)`. Does NOT change the
+/// footprint — the visible width is the host's slot; this only sets
+/// how tightly the visible sliver curves, and so how many degrees of
+/// rim fit in the slot's height.
 pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.14;
 
 /// Fractional vertical inset applied at both the top and bottom of the
-/// taffy-allocated slot. The overlay host allocates the full sidebar
-/// slot height to the disc's taffy node; we trim it here so the visible
-/// footprint reads as deliberately inset from the topbar and floor
-/// rather than running edge-to-edge.
-///
-/// It also buys the band its depth. The band has to bend back toward the
-/// disc's centre to stay inside a tall, narrow slot, so height and depth
-/// trade off directly: at the previous 0.10 the footprint was 3.7 times
-/// taller than it was wide on a 900-px display and the band came out at
-/// 129 px, too shallow to hold a workspace name without truncating it.
-/// 0.16 costs 15% of the disc's height and returns a fifth more depth.
+/// taffy-allocated slot, so the footprint reads as inset from the
+/// topbar and floor rather than edge-to-edge — and it buys the band
+/// depth: the band bends back toward centre to fit a tall narrow slot,
+/// so height and depth trade off. At 0.10 the band came out 129 px, too
+/// shallow for a workspace name; 0.16 costs 15% height for a fifth more
+/// depth.
 pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.16;
 
 /// Concept's `DRAG_FACTOR` from `App.tsx:41` — degrees of rotation per
 /// pixel of vertical drag.
 const DRAG_FACTOR: f32 = 0.15;
 
-/// Angular spacing between adjacent spokes. Concept's `ANGLE_STEP =
-/// 360°/24 = 15°` (App.tsx:20, where `DISPLAY_WORKSPACES.length = 24`
-/// because the 6 workspaces are repeated 4×). We use the same step so
-/// the visual cadence matches; for `N < 24` the wheel cycles `N` per
-/// `15° · N` of rotation.
+/// Angular spacing between adjacent spokes; for `N` workspaces less
+/// than the concept's 24 display-spokes, the wheel cycles `N` per
+/// `SPOKE_ANGLE_STEP_DEG · N` of rotation.
 const SPOKE_ANGLE_STEP_DEG: f32 = 5.5;
 
 /// How many sectors span the visible band when there are at least this
@@ -465,9 +259,9 @@ const SECTORS_ACROSS_BAND: usize = 5;
 /// The floor is a safety property, not a taste one: [`slot_reach`]
 /// divides the visible sweep by the gap, so a gap approaching zero asks
 /// for an unbounded number of slots. A degenerate band — a few pixels
-/// tall, which any transient layout can produce — drove the gap to
-/// nearly nothing and the slot loop to billions of iterations, which
-/// presents as the process wedging at full CPU with nothing drawn.
+/// tall, which any transient layout can produce — drives the gap to
+/// nearly nothing and the slot loop to billions of iterations: the
+/// process wedges at full CPU with nothing drawn.
 const MIN_SPOKE_GAP_DEG: f32 = 1.5;
 const MAX_SPOKE_GAP_DEG: f32 = 90.0;
 
@@ -477,53 +271,17 @@ const MAX_SPOKE_GAP_DEG: f32 = 90.0;
 const MAX_SLOT_REACH: i32 = 64;
 
 /// Pixels of accumulated wheel scroll required to advance one
-/// workspace. The wheel uses *discrete detents*: scroll input
-/// accumulates as raw pixels and every `WHEEL_DETENT_PX` worth of
-/// movement triggers a `click_to_spoke` animation to the next
-/// workspace. Away from the ends there is no free-running mid-detent
-/// rotation — the wheel either sits at a workspace or is animating
-/// between two — which reads as "attracted" (always lands on a
-/// workspace, never drifts mid-state).
-///
-/// Against an end the model inverts: there is no next workspace to
-/// animate to, so the input becomes resisted overscroll instead and
-/// the wheel does move continuously. That is the one place where
-/// swallowing the scroll would be worse than moving, because a dead
-/// control at an end is indistinguishable from a broken one.
-///
-/// History: the previous continuous-rotation model combined with the
-/// quadratic accumulator bug produced the "maddening speed" of
-/// 2026-05-25, and a then-attempted fix (factor 0.006 linear) made
-/// the wheel feel locked because tiny rotations rounded to the same
-/// detent on snap so no visible motion occurred. Discrete detents
-/// sidestep both failure modes at once.
-///
-/// At ~16 px per mouse-wheel click this is 3 clicks per workspace,
-/// and roughly one trackpad flick.
-///
-/// This was 120 px — eight wheel clicks to move one workspace, which
-/// its own tuning note described as "deliberate but not slow". Eight
-/// clicks is not deliberate, it is a stuck control: the first several
-/// clicks produce no visible response at all, because the detent model
-/// has no mid-detent rotation to show progress with. The user reads
-/// that dead zone as the switcher ignoring them.
-///
-/// The two historical failure modes this constant is guarding against
-/// are both narrower than that note implies. The 2026-05-25 "maddening
-/// speed" came from a quadratic accumulator, not from the threshold;
-/// and the "wheel feels locked" regression came from continuous
-/// free-running rotation whose sub-degree steps rounded to the same
-/// detent on snap, so nothing moved. Neither is reachable from here:
-/// accumulation is linear, and every crossing animates through
-/// `click_to_spoke`. So the threshold is free to be responsive.
+/// workspace. Away from the ends this is a discrete detent — the wheel
+/// always lands on a workspace, never drifts mid-state. Against an end,
+/// where there is no next detent to spend the scroll on, the same
+/// input becomes resisted overscroll instead, so the control never
+/// reads as dead.
 const WHEEL_DETENT_PX: f32 = 48.0;
 
-/// Idle gap after which any sub-detent residual `wheel_accumulator`
-/// is cleared. Without this, a partial swipe (say 80 px / 120 px)
-/// would carry over into the next scroll burst and cause a workspace
-/// switch from a movement the user didn't realise was queued. 250 ms
-/// is long enough that a continuous flick isn't broken into separate
-/// gestures, short enough that an obvious pause feels deliberate.
+/// Idle gap after which any sub-detent residual `wheel_accumulator` is
+/// cleared, so a partial swipe doesn't carry into the next scroll burst
+/// and trigger an unintended switch. 250 ms outlasts a continuous flick
+/// but reads a pause as deliberate.
 const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 
 /// Where the disc's vertical fade reaches full strength, as a fraction of
@@ -531,11 +289,7 @@ const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 /// paints is faded on this curve, so the whole object dissolves together
 /// instead of some parts out-living others.
 ///
-/// It was 0.22 — nearly half the footprint's height was a ramp, which is
-/// most of why the body read as a graded smear rather than as a surface.
-/// At 0.13 the band is flat across the three quarters of its run you
-/// actually look at and only dissolves where it leaves the slot. It also
-/// has to stay above `1 - BAND_TANGENT_FRACTION` so the tail the inner
+/// Has to stay above `1 - BAND_TANGENT_FRACTION` so the tail the inner
 /// arc gets clipped in is already fading by the time the clip bites.
 const FADE_IN_STOP: f32 = 0.13;
 
@@ -552,22 +306,13 @@ const BAND_LEFT_INSET: f64 = 12.0;
 /// How far down the footprint the band's inner arc is allowed to come
 /// closest to the left edge, as a fraction of half the footprint height.
 ///
-/// The band's depth and the height it spans trade off against each other:
-/// the arc has to bend back toward the centre to stay inside a tall,
-/// narrow slot, and every pixel of height costs depth. Sizing the band so
-/// the arc passes exactly through the footprint's corners spends the
-/// whole budget on height and leaves the band too shallow to carry a
-/// workspace name — at 1600x900 it came out at 109 px, which truncated
-/// "Research" to "Res…".
-///
-/// Pulling the tangent point in buys that depth back. Past it the arc
-/// does drift into the clip, but only across the last few per cent of
-/// the footprint, where [`FADE_IN_STOP`] has already taken the band well
-/// down on its way to nothing — so the cut has almost nothing to cut.
-/// The two constants have to be read together: the clip begins at
-/// `(1 - BAND_TANGENT_FRACTION) / 2` of the footprint's height, and that
-/// has to stay a small fraction of `FADE_IN_STOP`.
-/// `band_clip_starts_where_the_fade_has_already_taken_hold` pins it.
+/// Trades band depth against height: sizing so the arc passes exactly
+/// through the footprint's corners spends the whole budget on height,
+/// leaving the band too shallow for a name (at 1600x900, 109 px —
+/// "Research" truncated to "Res…"). Pulling the tangent point in buys
+/// depth back; the arc drifts into the clip only across the last few
+/// per cent, where [`FADE_IN_STOP`] has already faded the band nearly
+/// to nothing, so read this together with `FADE_IN_STOP`.
 const BAND_TANGENT_FRACTION: f64 = 0.93;
 
 /// Clearance between the rim and the outer end of a sector's label, and
@@ -584,16 +329,14 @@ const LABEL_INNER_INSET: f64 = 12.0;
 const LABEL_MIN_W: f64 = 62.0;
 
 /// Height of an inactive sector's chip; the active sector's is
-/// [`SECTOR_CHIP_H_ACTIVE`]. One step apart, so the set reads as one
-/// family of things in two states rather than as two kinds of object.
+/// [`SECTOR_CHIP_H_ACTIVE`], one step larger so the set reads as one
+/// family in two states.
 ///
-/// Sized against the slot it sits in, not in the abstract. A slot is
-/// the arc a workspace owns, and it has to stay short enough that three
-/// of them fit the screen height at once; that caps it near 330 px. A
-/// 32 px chip inside that read as a small tag adrift in a large empty
-/// wedge — the sector looked unoccupied rather than substantial. The
-/// fix is the chip, not the slot: widening the slot to give the chip
-/// room is what pushes the third workspace off screen.
+/// Sized against the slot, not in the abstract: a slot caps near 330 px
+/// so three fit the screen height at once, and a small chip inside that
+/// reads as a tag adrift in an empty wedge. Fix the chip, not the slot
+/// — widening the slot to fit a bigger chip pushes the third workspace
+/// off screen.
 const SECTOR_CHIP_H: f64 = 48.0;
 
 /// Height of the active sector's chip. See [`SECTOR_CHIP_H`].
@@ -607,20 +350,12 @@ const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
 
 /// The same fill where the body beneath it is fully opaque.
 ///
-/// The wedge is a wash *over* the body, so how much of it reaches the
-/// eye depends on what the body is made of. Most themes give the disc a
-/// translucent glass fill, and 17% of a colour over that reads clearly.
-/// The high-contrast track makes every surface fully opaque black,
-/// where the identical 17% is barely a colour at all — and that is the
-/// one track where a state indicator failing to indicate is least
-/// acceptable.
-///
-/// So the strength is interpolated on the body's own opacity rather
-/// than switched on which theme is loaded: the widget never has to be
-/// told, and any future theme with a solid surface gets the right
-/// answer for the same reason. The label on top is the theme's primary
-/// text — near-white on the opaque track — and holds its own against
-/// the stronger wash easily.
+/// The wedge is a wash *over* the body: 17% reads clearly on the usual
+/// translucent glass fill, but is barely a colour on the high-contrast
+/// track's fully opaque surface — the one track where a state indicator
+/// failing to indicate is least acceptable. Interpolated on the body's
+/// own opacity rather than switched per theme, so any future
+/// solid-surface theme gets the right answer for free.
 const ACTIVE_WEDGE_ALPHA_ON_OPAQUE: f32 = 0.55;
 
 
@@ -636,22 +371,17 @@ const ADD_BAND_FRACTION: f64 = 0.92;
 /// of the footprint's corner.
 const SWEEP_SLOP_DEG: f64 = 8.0;
 
-/// Per-spoke palette. Maps a workspace's *index* in the tree to one of
-/// six concept colours (`pink-500`, `blue-500`, `amber-500`,
-/// `emerald-500`, `purple-500`, `zinc-400` — see
-/// `radial-workspace-switcher/src/App.tsx:10-17`). Wraps modulo for
-/// trees with more than six workspaces.
 impl SidebarWheelDisc {
-    /// Visible width — `radius * VISIBLE_RADIUS_FRACTION`. For the
-    /// default 1200 px diameter (radius 600), this is 96 px,
-    /// matching the live `SIDEBAR_WIDTH_PX`.
+    /// Visible width — `radius * VISIBLE_RADIUS_FRACTION`, matching the
+    /// live `SIDEBAR_WIDTH_PX` slot.
     pub fn visible_width_px(&self) -> f64 {
         (self.diameter_px / 2.0) * VISIBLE_RADIUS_FRACTION
     }
 
-    /// Construct a fresh disc with the given spoke labels. Starts at
-    /// `active_idx = 0`, `rotation_deg = 0.0`, default 1200 px diameter
-    /// (gives a 96 px visible-arc width — paired with the host slot).
+    /// Construct a fresh disc with the given spoke labels, at rest
+    /// (`active_idx = 0`, `rotation_deg = 0.0`). `diameter_px` starts at
+    /// a placeholder and is recomputed from the host slot on first
+    /// layout — see `update`.
     pub fn new(spokes: Vec<SpokeLabel>) -> Self {
         Self {
             spokes,
@@ -713,7 +443,7 @@ impl SidebarWheelDisc {
     }
 
     /// Override the disc diameter (rare — tests use this to validate
-    /// layout math without binding to the 240 px default).
+    /// layout math without depending on the placeholder default).
     pub fn with_diameter(mut self, d: f64) -> Self {
         self.diameter_px = d;
         self
@@ -736,19 +466,11 @@ impl SidebarWheelDisc {
     /// Which workspace, if any, occupies each visible slot, indexed by
     /// `k + slots` for `k` in `-slots..=slots`.
     ///
-    /// Sectors wrap around the active one so the disc stays balanced
-    /// either side of it; laying them out by raw index difference put
-    /// every other workspace below the active one and left the whole
-    /// upper arc empty.
-    ///
-    /// Wrapping alone is not enough, because the sweep can hold more
-    /// slots than there are workspaces — at which point the naive wrap
-    /// drew a second copy of a workspace that no click could reach, and
-    /// the disc appeared to hold six entries when it held three. So a
-    /// workspace is claimed at most once, nearest slot first, and any
-    /// surplus slot stays empty. Both properties matter: balance is what
-    /// makes the disc read as a wheel, uniqueness is what keeps a sector
-    /// meaning one workspace.
+    /// Sectors wrap around the active one so the disc stays balanced on
+    /// both sides. Wrapping alone isn't enough when the sweep holds more
+    /// slots than workspaces — the naive wrap draws a second copy of a
+    /// workspace no click can reach — so each workspace is claimed at
+    /// most once, nearest slot first, and any surplus slot stays empty.
     fn slot_indices(&self, slots: i32) -> Vec<Option<usize>> {
         let n = self.spokes.len();
         let mut out = vec![None; (slots * 2 + 1).max(0) as usize];
@@ -775,18 +497,11 @@ impl SidebarWheelDisc {
     /// Degrees between adjacent spokes, derived from the band the disc
     /// was actually laid out into.
     ///
-    /// This was a fixed angle, and a fixed angle cannot be right at more
-    /// than one window size: the arc length a degree buys grows with the
-    /// radius, and the radius is derived from the slot's width. The same
-    /// constant that put three workspaces on a tall band put one on a
-    /// short one — a switcher showing only the workspace you are already
-    /// in — and tuning it for the short band made the sectors on the
-    /// tall one too small to read as objects.
-    ///
-    /// So the band's own angular height is divided instead. Up to
-    /// [`SECTORS_ACROSS_BAND`] sectors span it, fewer when there are
-    /// fewer workspaces, which is what keeps two workspaces reading as
-    /// two halves of a wheel rather than two chips adrift on one.
+    /// A fixed angle can't be right at more than one window size — arc
+    /// length per degree grows with radius, which is derived from the
+    /// slot's width — so the band's own angular height is divided
+    /// instead, across up to [`SECTORS_ACROSS_BAND`] sectors (fewer when
+    /// there are fewer workspaces).
     pub fn spoke_gap_deg(&self) -> f32 {
         let n = self.spokes.len();
         // Single-workspace disc is treated as 360° to avoid the wheel
@@ -878,16 +593,12 @@ impl SidebarWheelDisc {
     /// Corrective pull toward the nearest detent, for a wheel currently
     /// at `rot`.
     ///
-    /// A sine of the sub-detent phase, which gives the three properties
-    /// a notch needs: zero exactly on a detent (so a resting wheel is
-    /// not pushed off it), zero exactly between two (so the midpoint is
-    /// a real if unstable balance and the user can hold the wheel
-    /// there), and steepest a quarter of the way in either direction,
-    /// which is what turns crossing a boundary into a give-then-catch
-    /// instead of a slide.
-    ///
-    /// Suppressed past the ends: out there the only force that should
-    /// be acting is the rubber band pulling back in.
+    /// A sine of the sub-detent phase: zero exactly on a detent (a
+    /// resting wheel isn't pushed off it), zero exactly between two (a
+    /// real, if unstable, balance point), steepest a quarter-way in
+    /// either direction (crossing a boundary feels like a give-then-catch
+    /// rather than a slide). Suppressed past the ends, where the rubber
+    /// band is the only force that should be pulling back in.
     fn detent_magnet(&self, rot: f32) -> f32 {
         let (lo, hi) = self.rotation_bounds();
         if rot > hi || rot < lo {
@@ -938,15 +649,12 @@ impl SidebarWheelDisc {
     /// Ease to `to` with the heavy settle spring, keeping the value and
     /// velocity of any spring already running.
     ///
-    /// The velocity is the whole point at release: it is what the hand
-    /// left behind, and carrying it into a heavier spring is what makes
-    /// a flick coast and decelerate instead of snapping.
-    /// `from_hint` is where the wheel visibly is *before* the caller
-    /// moved the target, and it is load-bearing whenever no spring
-    /// survives from the previous phase: seeding a fresh spring from the
-    /// already-updated `rotation_deg` would start it on its destination,
-    /// so it would report settled immediately and the whole settle would
-    /// happen in one invisible frame.
+    /// Velocity carries into the heavier spring so a flick coasts and
+    /// decelerates instead of snapping. `from_hint` — the wheel's visible
+    /// position before the caller moved the target — is load-bearing
+    /// whenever no spring survives the previous phase: seeding a fresh
+    /// spring from the already-updated `rotation_deg` would start it on
+    /// its destination and report settled in one invisible frame.
     fn aim_settle_spring(&mut self, from_hint: f32, to: f32) {
         let params = SpringPresets::default().heavy;
         match self.rotation_spring.as_mut() {
@@ -966,9 +674,8 @@ impl SidebarWheelDisc {
     /// Logical centre of the disc in screen coordinates. The centre sits
     /// `radius * (1 - VISIBLE_RADIUS_FRACTION)` pixels LEFT of `rect.x0`,
     /// so the rim crosses the footprint's left edge at
-    /// `±arccos(1 - VISIBLE_RADIUS_FRACTION)` from due-east — about ±49°
-    /// at the current fraction, with the slot's height deciding how much
-    /// of that is actually on screen.
+    /// `±arccos(1 - VISIBLE_RADIUS_FRACTION)` from due-east, with the
+    /// slot's height deciding how much of that arc is actually on screen.
     fn center(&self) -> Point {
         let radius = self.diameter_px / 2.0;
         let cx = self.rect.x0 - radius * (1.0 - VISIBLE_RADIUS_FRACTION);
@@ -978,17 +685,10 @@ impl SidebarWheelDisc {
 
     /// The workspace's identifying colour, derived from the theme.
     ///
-    /// The disc used to index six literal Tailwind hexes here, which
-    /// meant the first workspace arrived as `pink-500` under every
-    /// theme — at the active wedge's 17% alpha over a dark glass fill,
-    /// a muddy maroon that no theme could reach and nobody chose.
-    /// Theming in qOS belongs to the user, and a constant in a widget
-    /// is the one place they cannot reach.
-    ///
-    /// [`ui::tokens::Colors::categorical`] grows the series from the
-    /// theme's own accent instead, so each theme gets workspace colours
-    /// in its own register while adjacent ones stay a plain 60° of hue
-    /// apart.
+    /// Theming in qOS belongs to the user, so this can't be a literal
+    /// hardcoded palette — [`ui::tokens::Colors::categorical`] grows the
+    /// series from the theme's own accent, keeping adjacent workspaces a
+    /// plain 60° of hue apart.
     fn spoke_color(&self, idx: usize, colors: &ui::tokens::Colors) -> Color {
         colors.categorical(idx)
     }
@@ -996,22 +696,15 @@ impl SidebarWheelDisc {
     /// How large a size step the active sector's chip gets, given the
     /// width the band actually has for it.
     ///
-    /// The chip's width is fixed by geometry — it spans the readable
-    /// depth of the band, and cannot be widened inward because a chip
-    /// reaching further in swings out through the footprint's left edge
-    /// once its sector rotates off centre. So at the full step a long
-    /// name simply did not fit and got an ellipsis: the live shell's own
-    /// default workspace rendered as `Resear…`, in the one surface whose
-    /// entire job is telling you where you are and where you can go.
+    /// The chip's width is fixed by geometry and can't widen inward — a
+    /// chip reaching further in swings out through the footprint's left
+    /// edge once its sector rotates off centre. At the full step a long
+    /// name doesn't fit and gets truncated (the live shell's default
+    /// workspace rendered as `Resear…`), so this takes the largest step
+    /// the name does fit in instead, keeping active/inactive chips one
+    /// family in two states rather than trading the name away for size.
     ///
-    /// Taking the largest step the name does fit in keeps the active and
-    /// inactive chips reading as one family in two states — the step
-    /// just gets smaller for a long name — and never trades a
-    /// workspace's name away for a size difference that is decoration.
-    ///
-    /// Returns [`SECTOR_CHIP_H`] when even the inactive size overflows;
-    /// there is nothing better available then, and the chip's own
-    /// truncation takes over.
+    /// Returns [`SECTOR_CHIP_H`] when even the inactive size overflows.
     fn active_chip_height(
         &self,
         idx: usize,
@@ -1068,13 +761,11 @@ impl SidebarWheelDisc {
     /// The workspace the wheel has **committed** to: where it is headed
     /// and what has been written through to the tree.
     ///
-    /// Distinct from [`SidebarWheelDisc::active_idx`], which is the
-    /// *indicator* and tracks wherever the disc visibly is at this
-    /// instant. The two are equal at rest and differ for exactly as long
-    /// as a gesture or its settle is in flight — which is the whole
-    /// point of the split: the highlight is free to step across the list
-    /// under the user's hand while the workspace tree is written once,
-    /// at the end, with the answer.
+    /// Distinct from [`SidebarWheelDisc::active_idx`], the *indicator*
+    /// that tracks wherever the disc visibly is. The two are equal at
+    /// rest and differ only while a gesture or its settle is in flight —
+    /// the highlight steps across the list under the user's hand while
+    /// the tree is written once, at the end.
     pub fn selected_idx(&self) -> usize {
         self.idx_at_rotation(self.rotation_deg)
     }
@@ -1083,14 +774,13 @@ impl SidebarWheelDisc {
     /// rest position — what `draw` turns the fan by.
     ///
     /// The fan is built outward from the active sector, so it needs the
-    /// offset from that sector's home, not the absolute angle. Feeding
-    /// it the absolute angle instead is what would send the lit sector
-    /// marching one notch further down the arc with every workspace you
-    /// switch to, until it left the slot entirely.
+    /// offset from that sector's home; feeding it the absolute angle
+    /// instead would send the lit sector marching one notch further down
+    /// the arc with every workspace switched, until it left the slot.
     ///
-    /// At rest this is zero. During a gesture it ranges over roughly
-    /// ±half a detent before the indicator steps and it wraps back, and
-    /// further than that only when the wheel is being held past an end.
+    /// At rest this is zero; during a gesture it ranges roughly ±half a
+    /// detent before the indicator steps and wraps back, further only
+    /// when held past an end.
     pub fn visual_residual_deg(&self) -> f32 {
         self.visual_rotation_deg() - self.rotation_for_idx(self.active_idx)
     }
@@ -1177,16 +867,6 @@ fn polar(c: Point, r: f64, angle: f64) -> Point {
     Point::new(c.x + r * angle.cos(), c.y + r * angle.sin())
 }
 
-/// Closed path for the slice of ring between radii `r_in`/`r_out` and
-/// angles `a0`/`a1`.
-///
-/// The arcs are walked as polylines rather than built from `kurbo::Arc`
-/// so the two ends join into ONE closed subpath — a shape with a single
-/// winding, which is what lets it be filled flat with no seam where the
-/// two boundaries meet. Step count is chosen so the chord error stays
-/// far below a pixel at the radii this widget uses: the sweep is at most
-/// a few tens of degrees, so 96 steps put the sagitta under 0.05 px even
-/// on a 2000-px disc.
 /// A **solid** segment of the disc: the pie from the centre out to
 /// `r_out` between `a0` and `a1`.
 ///
@@ -1205,6 +885,15 @@ fn disc_segment(c: Point, r_out: f64, a0: f64, a1: f64) -> BezPath {
     path
 }
 
+/// Closed path for the slice of ring between radii `r_in`/`r_out` and
+/// angles `a0`/`a1`.
+///
+/// The arcs are walked as polylines rather than built from `kurbo::Arc`
+/// so the two ends join into ONE closed subpath — a single winding,
+/// filled flat with no seam where the boundaries meet. Step count keeps
+/// the chord error far below a pixel: the sweep is at most a few tens
+/// of degrees, so 96 steps put the sagitta under 0.05 px even on a
+/// 2000-px disc.
 fn annular_segment(c: Point, r_in: f64, r_out: f64, a0: f64, a1: f64) -> BezPath {
     const STEPS: usize = 96;
     let mut path = BezPath::new();
@@ -1221,17 +910,13 @@ fn annular_segment(c: Point, r_in: f64, r_out: f64, a0: f64, a1: f64) -> BezPath
 }
 
 /// Map a workspace label to its lucide glyph. Mirrors `WORKSPACES` in
-/// `radial-workspace-switcher/src/App.tsx` for the concept's six ids,
-/// then extends the table with `Home` — the one workspace
-/// `WorkspaceTree::bootstrap_default` starts a machine with — and
-/// `Research`, so a first-boot spoke and the demo tree's spokes paint a
-/// recognisable glyph instead of falling through to the generic `Layers`
-/// default. Inputs are expected
-/// to already be lower-cased by the caller; matches are exact ASCII so
-/// upstream label-rename ripples here as a missed default. `dev` and
-/// `development` both resolve to `Code` (the concept's id is `dev` but
-/// the visible label is "Development"). Anything unknown falls back to
-/// `Layers`, matching the concept's default tile glyph.
+/// `radial-workspace-switcher/src/App.tsx`, extended with `Home` (the
+/// first-boot workspace) and `Research` (the demo tree) so those spokes
+/// get a recognisable glyph instead of the generic `Layers` fallback.
+/// Inputs are expected lower-cased; matches are exact ASCII, so an
+/// upstream label rename here silently falls back to `Layers`.
+/// `dev`/`development` both resolve to `Code` (concept id vs display
+/// label).
 fn spoke_icon_for_label(label: &str) -> Icon {
     match label {
         "design" => Icon::PenTool,
@@ -1240,23 +925,11 @@ fn spoke_icon_for_label(label: &str) -> Icon {
         "analytics" => Icon::BarChart,
         "concept" => Icon::Layers,
         "settings" => Icon::Settings,
-        // `Home` is the first-boot workspace; `Research` comes from the
-        // demo tree. `Home` paints lucide's house glyph; `Research` borrows the
-        // magnifier (Lucide's `search`) since it's the closest semantic
-        // match in the existing icon set.
         "home" => Icon::Home,
         "research" => Icon::Search,
         _ => Icon::Layers,
     }
 }
-
-// (Helpers `cluster_label_tail_screen_x` and `build_label_text` lived
-// here in the prior pill-card design — every spoke had a rotated cluster
-// whose label could overrun the left column edge, so we measured the
-// rotated tail and truncated. The 2026-05-23 quiet-ring redesign drops
-// per-spoke labels entirely (only the active spoke gets an upright
-// horizontal label, drawn in screen space inside the panel) so neither
-// helper is needed any more.)
 
 impl Widget for SidebarWheelDisc {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -1297,15 +970,12 @@ impl Widget for SidebarWheelDisc {
         }
         let l = taffy.layout(node).unwrap();
         // `rect` is the visible footprint inside the sidebar column.
-        // The disc's logical centre lives off-screen-left of `rect.x0`
-        // and only the right ~66° arc paints inside this rect. The
-        // hit-testing in `handle_event` uses `hit_visible_arc` so clicks
-        // in the rect's corners (outside the arc) don't grab the wheel.
+        // The disc's logical centre lives off-screen-left of `rect.x0`;
+        // hit-testing (`hit_visible_arc`) excludes the rect's corners
+        // that the arc doesn't actually cover.
         //
-        // 2026-05-23: trim the slot vertically by `SLOT_VERTICAL_INSET_FRAC`
-        // at both ends so the wheel reads as roughly 10%–90% of the
-        // available sidebar height. Without this trim the disc runs
-        // edge-to-edge inside the column and looks like a sliver.
+        // Trimmed vertically by `SLOT_VERTICAL_INSET_FRAC` at both ends
+        // so the wheel reads as inset rather than edge-to-edge.
         let x0 = origin.x + l.location.x as f64;
         let y0_raw = origin.y + l.location.y as f64;
         let h_raw = l.size.height as f64;
@@ -1314,21 +984,14 @@ impl Widget for SidebarWheelDisc {
         let y0 = y0_raw + inset_v;
         let y1 = y0_raw + h_raw - inset_v;
         self.rect = match self.summon_at {
-            // Docked: the slot's own box, which the host has already
-            // shifted by the active strip's pan.
+            // Docked: the slot's own box, already shifted by the active
+            // strip's pan.
             None => Rect::new(x0, y0, x0 + w, y1),
-            // Summoned: same width and height, re-placed around the
-            // pointer. The rim's rightmost point is exactly `rect.x1`
-            // (the disc centre sits `radius * (1 - VISIBLE)` to the
-            // left of `rect.x0`), and the active marker rides that
-            // point — so putting `x1` on the pointer puts the marker
-            // under it. Vertically the disc is centred on the pointer
-            // for the same reason.
-            //
-            // Both axes are then clamped back inside the slot's band so
-            // a summon near an edge slides into view instead of hanging
-            // off it. The size never changes, so the clamp can only
-            // move the disc, never grow or crop it.
+            // Summoned: same size, re-placed so the rim's rightmost
+            // point (`rect.x1`, where the active marker rides) sits
+            // under the pointer, centred vertically on it. Clamped back
+            // inside the slot's band so a summon near an edge slides
+            // into view instead of hanging off it.
             Some(p) => {
                 let slot_top = y0_raw;
                 let slot_bottom = y0_raw + h_raw;
@@ -1338,35 +1001,23 @@ impl Widget for SidebarWheelDisc {
                 Rect::new(x1 - w, top, x1, top + height)
             }
         };
-        // Keep the disc's curvature locked to the live rect width — the
-        // host (overlay_host) overrides the sidebar slot to a viewport-
-        // driven width, so the visible-arc width changes on resize. We
-        // recompute `diameter_px` from rect.width() / VISIBLE so the
-        // visual arc-fraction stays identical regardless of how wide
-        // the slot ends up. Constructor / `with_diameter` callers
-        // remain useful for early frames (before the first layout pass
-        // runs) and for unit tests that hand-build the disc with a
-        // synthetic rect.
+        // The host overrides the sidebar slot to a viewport-driven
+        // width, so recompute `diameter_px` from rect.width() / VISIBLE
+        // on every layout pass, keeping the visual arc-fraction fixed
+        // regardless of slot width.
         let rw = self.rect.width();
         if rw > 1.0 {
             self.diameter_px = rw / VISIBLE_RADIUS_FRACTION * 2.0;
         }
-        // Re-anchor the wheel on the workspace it is showing.
+        // Re-anchor the wheel on the workspace it is showing: the gap
+        // this pass just recomputed changes what workspace the stored
+        // `rotation_deg` names, so anchor to the index instead — the
+        // thing that actually has to survive a resize.
         //
-        // `rotation_deg` is an angle, but the angle a workspace sits at
-        // depends on the gap, and the gap is derived from the geometry
-        // this pass just changed. So the same stored rotation names a
-        // different workspace before and after a resize — the disc would
-        // silently slide onto a neighbour, or land between two. Anchored
-        // to the index instead, which is the thing that actually has to
-        // survive a resize.
-        //
-        // Only while the disc is at rest. This runs on every layout
-        // pass, so re-anchoring during a gesture or a settle would keep
-        // pulling the target back onto whichever workspace the indicator
-        // has reached so far — the drag would give ground as you made
-        // it, and a settle would never reach the workspace it was aimed
-        // at.
+        // Only while at rest: re-anchoring mid-gesture or mid-settle
+        // would keep pulling the target back onto wherever the
+        // indicator has reached, so a drag would give ground as you
+        // made it and a settle would never arrive.
         let at_rest = self.drag_from.is_none()
             && self
                 .rotation_spring
@@ -1389,40 +1040,23 @@ impl Widget for SidebarWheelDisc {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Cache fast-path. The disc paints a *lot* per frame — eight
-        // shadow bands, the full-disc fill, the rim band stroke, the
-        // hairline stroke, every visible spoke's cluster (tile + glyph
-        // + label, each with a `Affine::rotate` per spoke), plus the
-        // "+" add-workspace slot. At rest (no rotation animation), all
-        // of those are identical frame-to-frame.
-        //
-        // We fingerprint every input that affects the painted pixels —
-        // rect, rotation (centi-degree bucket so the spring's 60-Hz
-        // sub-degree steps still invalidate), active index, spoke
-        // labels, diameter — and replay the cached scene with the
-        // caller's transform on a hit. During an animation every
-        // frame still rebuilds; once the spring settles back to
-        // `rotation_deg`, subsequent frames take the fast path.
-        //
-        // `spoke_hit_rects` and `plus_rect` live in member fields
-        // already; the prior cache-miss draw populated them at the
-        // same rotation/rect, so a cache hit implies they're still
-        // valid.
+        // Cache fast-path: the disc paints a lot per frame (shadow
+        // bands, disc fill, rim strokes, every spoke's cluster, the
+        // add-workspace slot) and at rest none of it changes
+        // frame-to-frame. Fingerprint every input that affects the
+        // painted pixels and replay the cached scene on a hit; during
+        // an animation every frame still rebuilds. `spoke_hit_rects`
+        // and `plus_rect` are valid on a hit because the prior
+        // cache-miss draw populated them at the same rotation/rect.
         let fp = self.current_fingerprint();
-        // Two fast paths, both requiring a previously recorded scene.
-        //
-        // 1. Identical fingerprint — replay verbatim. The at-rest case.
-        //
-        // 2. Same content at a new origin — the disc rides the strip's
-        //    canvas, so a horizontal pan moves it without changing a
-        //    single painted pixel. Replay under a translation instead
-        //    of re-encoding. The cached geometry was recorded in
-        //    absolute coordinates, so the delta is measured from the
-        //    origin it was recorded at, NOT from the last frame's.
-        //    The cached hit rects were recorded in those same absolute
-        //    coordinates, so they are re-derived from the delta too —
-        //    otherwise a click after a pan would test against where
-        //    the markers used to be.
+        // Two fast paths, both requiring a previously recorded scene:
+        // (1) identical fingerprint — replay verbatim; (2) same content
+        // at a new origin — the disc rides the strip's canvas, so a pan
+        // moves it without changing a painted pixel, replayed under a
+        // translation instead. The delta is measured from the origin
+        // the scene was recorded at, not the last frame's, and hit
+        // rects are re-derived from the same delta so a click after a
+        // pan doesn't test against stale positions.
         if fp.is_populated() && self.cached_fp.is_populated() {
             if fp == self.cached_fp {
                 out_scene.append(&self.cached_scene, Some(out_transform));
@@ -1462,87 +1096,55 @@ impl Widget for SidebarWheelDisc {
         let cy = c.y;
 
         // ---- Geometry ---------------------------------------------------
-        // The visible object is an annular BAND, not a whole disc: a
-        // constant-depth ring between an inner arc and the rim. The
-        // depth is the largest that keeps the inner arc inside the
-        // footprint everywhere it is on screen — place it any deeper
-        // and the arc runs out through the footprint's left edge and
-        // the band ends on a straight vertical cut instead of a curve.
-        //
-        // `theta_lim` is where the rim itself leaves through the top and
-        // bottom edges; at exactly that angle the inner arc is tangent
-        // to the left edge, and both are inside the vertical fade by
-        // then anyway.
+        // The visible object is an annular BAND: a constant-depth ring
+        // between an inner arc and the rim, as deep as it can be while
+        // keeping the inner arc inside the footprint everywhere it's on
+        // screen — any deeper and it runs out through the left edge on
+        // a straight cut instead of a curve.
         let half_h = self.rect.height() / 2.0;
         let r_out = radius;
-        // The inner arc has to clear the footprint's left edge over its
-        // OWN sweep, which runs further than the rim's: the rim exits
-        // through the top and bottom edges at `theta_lim`, but the inner
-        // arc is still climbing at that angle and only reaches the same
-        // height further round. Sizing the band off `theta_lim` therefore
-        // let the arc drift left of the edge for the last quarter of its
-        // run, where the clip turned it into a straight vertical cut with
-        // the vertical fade nowhere near it yet.
-        //
+        // The inner arc's sweep runs further than the rim's — the rim
+        // exits top/bottom at `theta_lim`, but the arc is still
+        // climbing there and only matches that height further round.
         // `sqrt(d^2 + half_h^2)` is the radius whose arc passes exactly
-        // through the footprint's two left-hand corners, so the band is
-        // as deep as it can be while ending on a curve everywhere.
+        // through the footprint's left-hand corners — as deep as the
+        // band can be while still ending on a curve.
         let d_left = (self.rect.x0 - cx + BAND_LEFT_INSET).max(1.0);
-        // The body reaches the centre, so there is no inner radius to
-        // derive it from any more. `r_ref` is the same radius the inner
-        // arc used to sit at, kept as a pure *layout* reference: it is
-        // where the labels and the add-workspace button live, and
-        // holding it fixed is what keeps the solid fill from moving
-        // anything else on the disc.
+        // The body reaches the centre, so there's no inner radius to
+        // derive from — `r_ref` is kept as a pure layout reference
+        // (where labels and the add-workspace button live) so the solid
+        // fill doesn't move anything else on the disc.
         let tangent_dy = half_h * BAND_TANGENT_FRACTION;
         let r_ref = (d_left * d_left + tangent_dy * tangent_dy)
             .sqrt()
             .clamp(4.0, r_out - 12.0);
-        // How far round the disc has to be built for the footprint to be
-        // covered. A radial at angle θ crosses the footprint's left edge
-        // `d_left` from the centre at a height of `d_left·tan θ`, so
-        // `atan(half_h / d_left)` is the angle whose radial passes
-        // exactly through the footprint's corner and nothing beyond it
-        // can show. Plus the usual slop so a divider entering the slot
-        // is already drawn when its leading edge appears.
-        //
-        // Derived from the footprint rather than from a radius, now that
-        // the fill has no inner one — and numerically the same sweep the
-        // inner arc used to give, so no sector count changes.
+        // How far round the disc must be built for the footprint to be
+        // covered: a radial at angle θ crosses the left edge at height
+        // `d_left·tan θ`, so `atan(half_h / d_left)` is the angle whose
+        // radial passes exactly through the footprint's corner, plus
+        // slop so an entering divider is already drawn.
         let sweep = (half_h / d_left).atan() + SWEEP_SLOP_DEG.to_radians();
 
         // ---- Pass 1: the band -------------------------------------------
-        // Body, edges and the shadow that lifts the wheel off whatever is
-        // behind it are ONE isolated group. Everything inside paints at
-        // full strength; a single mask at the end fades the whole group
-        // out towards the top and bottom of the footprint.
-        //
-        // The fade is what lets the band be a slice. The footprint is far
-        // taller than the piece of ring that would close inside it, so the
-        // band enters through the top edge and leaves through the bottom
-        // one — it never meets itself on screen. Any hard clip would
-        // therefore end it on a straight horizontal cut in open wallpaper,
-        // which instantly reads as a bug. By the time the clip bites there
-        // is nothing left to cut.
+        // Body, edges and the drop shadow are ONE isolated group, painted
+        // at full strength, faded out top/bottom by a single mask at the
+        // end — the fade is what lets the band read as a slice rather
+        // than end on a hard horizontal cut where it enters/leaves the
+        // tall footprint.
         //
         // The horizontal clip IS load-bearing: an unclipped ring would
-        // sweep back around off-screen-left and reappear nowhere useful.
-        // It runs a little past the footprint's right edge so the rim's
+        // sweep back around off-screen-left and reappear nowhere useful;
+        // it runs a little past the footprint's right edge so the rim's
         // outward shadow has somewhere to land.
         //
-        // The fill is FLAT. One colour, the theme's own glass surface —
-        // the same token the modal surfaces use, so the wheel is made of
-        // the same material as the rest of the chrome. The body used to
-        // be a nine-stop radial ramp from transparent to a peak alpha at
-        // the rim; on screen that is a grey smear that never resolves
-        // into an object, and it is the single thing that made the disc
-        // look unfinished.
+        // The fill is FLAT — one colour, the theme's own glass surface,
+        // the same token the modal surfaces use, so the wheel reads as
+        // the same material as the rest of the chrome.
         let body_hue = colors.surfaces.glass;
-        // Edges are "light catching a rim", so they track the theme's
-        // foreground rather than a hardcoded white — otherwise the wheel
-        // is a white-on-white scratch under the light theme and loses its
-        // only structural line under high contrast, where the white-tinted
-        // border tokens collapse to near-invisible.
+        // Edges track the theme's foreground rather than a hardcoded
+        // white — a hardcoded white is a scratch under the light theme
+        // and vanishes under high contrast, where white-tinted border
+        // tokens collapse to near-invisible.
         let edge_hue = colors.text_primary;
         let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
         let group_clip = Rect::new(
@@ -1577,14 +1179,12 @@ impl Widget for SidebarWheelDisc {
             &group_clip,
         );
 
-        // Shadow just OUTSIDE the rim, so it follows the arc — the same
-        // soft multi-ring falloff the window-decoration pills use, bent
-        // around a circle. Painted first so the band sits on top of it.
-        // Tinted from the theme's own elevation token rather than from a
-        // literal black, so a theme that lifts surfaces differently — or
-        // suppresses shadows entirely, as high contrast does by putting
-        // everything on pure black behind a white rim — gets its own
-        // answer here instead of this one.
+        // Shadow just outside the rim, bent around a circle — same soft
+        // multi-ring falloff as the window-decoration pills. Painted
+        // first so the band sits on top. Tinted from the theme's
+        // elevation token rather than a literal black, so a theme that
+        // suppresses shadows (high contrast, pure black behind a white
+        // rim) gets its own answer.
         let shadow_hue = tokens.elevation.glass_outer.color;
         for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
             scene.stroke(
@@ -1621,20 +1221,15 @@ impl Widget for SidebarWheelDisc {
         let mut hit_claim = vec![f64::INFINITY; self.spokes.len()];
 
         // The add-workspace button's box is settled before any sector is
-        // placed, so labels can be kept out of it.
-        // Placed by how far down the band it sits rather than by how far
-        // up from the footprint's floor: the floor is inside the vertical
-        // fade, and a button pinned to it ended up hanging under the band
-        // on bare wallpaper — the exact complaint that moved this
-        // affordance twice before.
+        // placed, so labels can be kept out of it. Placed by how far
+        // down the band it sits rather than up from the footprint's
+        // floor — the floor is inside the vertical fade, which would
+        // leave the button hanging under the band on bare wallpaper.
         let add_cy = cy + half_h * ADD_BAND_FRACTION;
         let add_dy = add_cy - cy;
-        // Tucked against the band's INNER arc rather than floating in the
-        // middle of it. Labels run the band's full radial depth, so a
-        // button parked mid-band sits squarely in the path of whichever
-        // one sweeps over it, and the sector that loses its name is the
-        // one thing a switcher cannot afford to drop. At the inner edge
-        // the two rarely meet at all.
+        // Tucked against the band's inner arc rather than mid-band:
+        // labels run the band's full radial depth, so a button parked
+        // mid-band sits in the path of whichever sector sweeps over it.
         let add_span_in = (r_ref * r_ref - add_dy * add_dy).max(0.0).sqrt();
         let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
         self.plus_rect = Rect::from_center_size(
@@ -1688,9 +1283,9 @@ impl Widget for SidebarWheelDisc {
                 let base = self.spoke_color(idx, colors);
 
                 // Active sector: the wedge itself is lit in the
-                // workspace's colour. This is what replaces the old
-                // name-plate — the *sector* is the selection, so the
-                // thing that turns is also the thing that shows state.
+                // workspace's colour — the sector is the selection, so
+                // the thing that turns is also the thing that shows
+                // state.
                 if is_active {
                     let wedge = disc_segment(c, r_out, a0, a1);
                     scene.fill(
@@ -1711,11 +1306,9 @@ impl Widget for SidebarWheelDisc {
                     transform,
                     edge(div_a),
                     None,
-                    // From the centre, not from an inner arc: with the
-                    // body solid, a divider that stopped part-way would
-                    // leave the surface tinted but undivided over the
-                    // rest of its depth. Everything left of the
-                    // footprint is clipped away regardless.
+                    // From the centre, not an inner arc: with the body
+                    // solid, a divider stopping part-way would leave the
+                    // surface tinted but undivided over the rest.
                     &Line::new(c, polar(c, r_out, a0)),
                 );
                 // The active sector also owns its upper bound, so the lit
@@ -1732,11 +1325,10 @@ impl Widget for SidebarWheelDisc {
             }
         }
 
-        // The rim — the body's one lit edge, and with the inner arc gone
-        // it is carrying the silhouette on its own, so it keeps the full
-        // window-decoration language: a soft wide stroke reading as
-        // light on a bevel, then a crisp hairline that gives the edge a
-        // definite position, then an inset glow.
+        // The rim is the body's one lit edge, carrying the silhouette on
+        // its own — full window-decoration language: soft wide stroke
+        // reading as light on a bevel, crisp hairline for a definite
+        // position, then an inset glow.
         let rim = Circle::new((cx, cy), r_out);
         scene.stroke(&Stroke::new(5.0), transform, edge(26), None, &rim);
         scene.stroke(&Stroke::new(1.5), transform, edge(140), None, &rim);
@@ -1763,26 +1355,18 @@ impl Widget for SidebarWheelDisc {
         scene.pop_layer();
 
         // ---- Pass 3: the sector labels ----------------------------------
-        // Each label is a chip laid ON the disc: built in the sector's own
-        // frame (a horizontal box on the due-east radius) and then rotated
-        // about the disc's centre to its sector. Every chip is therefore
-        // at the same radius and the same width — a ring of labels that
-        // tips with the wheel.
-        //
-        // Rotating the label with its sector is the point. An upright
-        // label beside a turning disc reads as a list that happens to sit
-        // near a curve; a label that tips reads as paint on the surface.
+        // Each label is a chip laid ON the disc: built in the sector's
+        // own frame then rotated about the disc's centre to its sector,
+        // so every chip sits at the same radius and width — a ring of
+        // labels that tips with the wheel, reading as paint on the
+        // surface rather than a list parked near a curve.
         let chip_x1 = cx + r_out - LABEL_RIM_GAP;
         let chip_x0 = cx + r_ref + LABEL_INNER_INSET;
         let chip_w = chip_x1 - chip_x0;
         // A band too shallow to carry names is a reason to drop the
-        // names, not the sectors. This gate used to wrap the whole loop,
-        // so on a narrow disc every label, every presence dot and every
-        // click target went with them: the switcher rendered as an empty
-        // curve with an add button, and nothing on it could be clicked.
-        // The sectors are still drawn and still hit-tested; they fall
-        // back to their icon, which is what the chip does with an empty
-        // name anyway.
+        // names, not the sectors — sectors stay drawn and hit-tested,
+        // falling back to their icon (what the chip does with an empty
+        // name anyway).
         let names_fit = chip_w >= LABEL_MIN_W;
         if !self.spokes.is_empty() {
             let n = self.spokes.len();
@@ -1810,24 +1394,8 @@ impl Widget for SidebarWheelDisc {
                     continue;
                 }
 
-                // The active sector's chip is a size step larger — but
-                // only as large a step as its own name has room for.
-                //
-                // The chip's width is fixed by geometry: it spans the
-                // readable depth of the band, and it cannot be widened
-                // inward because a chip reaching further in swings out
-                // through the footprint's left edge once its sector
-                // rotates off centre. So a long name at the full step
-                // simply did not fit, and got an ellipsis: the live
-                // shell's own default workspace rendered as `Resear…`
-                // in the one place whose entire job is telling you where
-                // you are and where you can go.
-                //
-                // Taking the largest step the name does fit in keeps the
-                // active/inactive pair reading as one family in two
-                // states — the step just gets smaller for a long name —
-                // and never truncates a workspace's name for a size
-                // difference that is decoration.
+                // The active sector's chip is a size step larger, up to
+                // what its name fits — see `active_chip_height`.
                 let lead = ChipLead::Glyph(self.spoke_icon(idx));
                 let row_h = if is_active {
                     self.active_chip_height(idx, chip_w, theme, text_renderer)
@@ -1840,16 +1408,14 @@ impl Widget for SidebarWheelDisc {
                 // Where the chip actually lands once rotated. Used for the
                 // click target and to keep labels off the add button.
                 let placed = rotate.transform_rect_bbox(chip);
-                // Does this label actually run into the add button?
-                //
-                // Answered in the label's OWN frame — the button's centre
-                // rotated back onto the due-east radius, tested against
-                // the unrotated chip grown by the button's radius. The
-                // axis-aligned bounding box of a rotated chip is far
-                // bigger than the chip: at 15° a 160-px label's box picks
-                // up 30 px of empty corner at each end, which was enough
-                // to report a clash with a button the label passes 30 px
-                // clear of, and cost the bottom sector its name.
+                // Does this label run into the add button? Answered in
+                // the label's OWN frame — the button centre rotated back
+                // onto the due-east radius, tested against the unrotated
+                // chip grown by the button radius. The rotated chip's
+                // axis-aligned bbox is far bigger than the chip itself
+                // (at 15° a 160-px label picks up ~30 px of empty corner
+                // each end), which would falsely clash with a button the
+                // label passes clear of.
                 let local = rotate.inverse() * self.plus_rect.center();
                 let reach = ADD_BUTTON_D / 2.0 + 4.0;
                 let clash = local.x >= chip.x0 - reach
@@ -1860,27 +1426,22 @@ impl Widget for SidebarWheelDisc {
                     continue;
                 }
 
-                // The sector is the container, so the label does not
-                // bring a pill of its own — a pill inside a lit wedge is a
-                // box inside a box, and it was the pill that made the old
-                // rail read as a list parked next to a curve.
+                // The sector is the container, so the label brings no
+                // pill of its own — a pill inside a lit wedge is a box
+                // inside a box.
                 //
-                // The active label is the theme's primary text and a
-                // size step larger; the rest take its secondary text.
-                // Colouring the active label with its workspace's own hue
-                // put it on a wedge of that same hue, which is the worst
-                // place for it — the identity is already carried by the
-                // wedge, and the name's only job there is to be the most
-                // legible thing in the sector.
+                // The active label is primary text, a size step larger;
+                // others take secondary text. Colouring the active label
+                // with its own workspace hue put it on a wedge of that
+                // same hue — the worst place for it, since identity is
+                // already carried by the wedge.
                 let style = if is_active {
                     ChipStyle::bare(None)
                 } else {
-                    // Quiet, but how quiet is the palette's call, not
-                    // ours. Dimming the primary text colour by a fixed
-                    // factor is exactly wrong under high contrast, where
-                    // the whole point is that nothing fades: that palette
-                    // deliberately puts `text_dim` at near-white so
-                    // secondary copy still clears AAA on black.
+                    // Quiet, but how quiet is the palette's call: dimming
+                    // primary text by a fixed factor is wrong under high
+                    // contrast, where secondary copy is deliberately kept
+                    // near-white to clear AAA on black.
                     ChipStyle::bare(Some(colors.text_dim))
                 }
                 .with_alpha(fade_a);
@@ -1944,13 +1505,10 @@ impl Widget for SidebarWheelDisc {
 
         // ---- Pass 4: the add-workspace button ---------------------------
         // A round glass button seated on the band at the bottom of the
-        // footprint, in the same material as the rim: translucent fill,
-        // hairline edge. It does NOT rotate, and that is deliberate — it
-        // is not a workspace, it is the control that makes one, so a spot
-        // on the wheel would carry it out of reach every time the wheel
-        // turned. It sits on the band rather than floating on bare
-        // wallpaper, which is what the flat fill buys: there is now a real
-        // surface underneath it everywhere it can land.
+        // footprint, in the same material as the rim. It does NOT
+        // rotate — it isn't a workspace, it's the control that makes
+        // one, so a spot on the wheel would carry it out of reach every
+        // turn.
         let add_fade = row_fade(self.plus_rect.center().y).max(0.55);
         let add_circle = Circle::new(self.plus_rect.center(), ADD_BUTTON_D / 2.0);
         scene.fill(
@@ -2057,12 +1615,10 @@ impl Widget for SidebarWheelDisc {
                     ),
                 };
                 if self.hit_visible_arc(anchor) {
-                    // Take the wheel over wherever it visually is. If a
-                    // settle was still running, grabbing it should catch
-                    // it mid-flight the way a hand on a spinning wheel
-                    // does — anchoring on `rotation_deg` instead would
-                    // teleport the disc to the settle's destination the
-                    // instant you touched it.
+                    // Take the wheel over wherever it visually is: if a
+                    // settle was running, grabbing it catches it
+                    // mid-flight rather than teleporting to the settle's
+                    // destination.
                     let caught = self.visual_rotation_deg();
                     self.rotation_deg = caught;
                     self.drag_rotation_origin = caught;
@@ -2130,21 +1686,12 @@ impl Widget for SidebarWheelDisc {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
-                // Discrete-detent model. Accumulate raw pixels of
-                // scroll. Every `WHEEL_DETENT_PX` worth in either
-                // direction triggers a workspace advance via the
-                // shared `click_to_spoke` animation (so the visual is
-                // an actual spring settle, not a teleport). Away from
-                // the ends there is NO mid-detent rotation — the wheel
-                // either rests on a workspace or is animating to the
-                // next one.
-                //
-                // At an end that model has nothing to offer: there is
-                // no next workspace, so every pixel would vanish and
-                // the control would go dead exactly where the user most
-                // needs to be told something. So the unspendable
-                // portion is diverted into the same resisted pull a
-                // rim-drag gets there.
+                // Discrete-detent model: every `WHEEL_DETENT_PX` worth
+                // of accumulated scroll triggers a workspace advance via
+                // `click_to_spoke`, so the visual is a spring settle,
+                // not a teleport. At an end, where there's no next
+                // workspace, the unspendable portion is diverted into
+                // the same resisted pull a rim-drag gets.
                 self.wheel_accumulator += dy;
                 self.wheel_last_event = Some(Instant::now());
                 let n = self.spokes.len();
@@ -2152,15 +1699,14 @@ impl Widget for SidebarWheelDisc {
                     while self.wheel_accumulator.abs() >= WHEEL_DETENT_PX {
                         let dir: i32 = if self.wheel_accumulator < 0.0 { 1 } else { -1 };
                         let target = self.active_idx as i32 + dir;
-                        // Drain toward zero. `dir` is the direction of
-                        // *travel*, which is the opposite sign to the
+                        // Drain toward zero: `dir` is the direction of
+                        // *travel*, the opposite sign to the
                         // accumulator, so spending a detent ADDS one
-                        // detent's worth back. Subtracting it instead —
-                        // as this did — drives the accumulator further
-                        // from zero on every pass, and the loop that
-                        // waits for it to fall under the threshold never
-                        // ends. Any scroll of a full detent or more hung
-                        // the compositor on the spot.
+                        // detent's worth back. Subtracting instead drives
+                        // the accumulator further from zero every pass,
+                        // and the loop waiting for it to fall under the
+                        // threshold never ends — any scroll of a full
+                        // detent or more hangs the compositor.
                         self.wheel_accumulator += dir as f32 * WHEEL_DETENT_PX;
                         if (0..n as i32).contains(&target) {
                             self.click_to_spoke(target as usize);
@@ -2182,17 +1728,15 @@ impl Widget for SidebarWheelDisc {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the redraw pump running while a post-release snap is
-        // easing, while a wheel-scroll snap-back is pending, OR while
-        // a finger-drag is in flight.
+        // easing, a wheel-scroll snap-back is pending, or a drag is in
+        // flight.
         //
-        // The drag arm is what makes the rim track the pointer. A drag
-        // is a stream of `CursorMoved`, and the host's incremental
-        // gate skips the redraw on a pointer move unless something in
-        // the tree reports work to do. Without this arm the rim's
-        // `rotation_deg` advanced on every move but no frame was ever
-        // requested, so the wheel sat still under the finger and only
-        // jumped once the button came back up — the whole gesture read
-        // as unresponsive rather than as dragging a physical wheel.
+        // The drag arm makes the rim track the pointer: a drag is a
+        // stream of `CursorMoved`, and the host's incremental gate skips
+        // the redraw on a pointer move unless something reports work to
+        // do. Without it `rotation_deg` advances every move but no
+        // frame is requested, so the wheel sits still under the finger
+        // and jumps once released.
         let spring_active = self
             .rotation_spring
             .as_ref()
@@ -2267,14 +1811,13 @@ impl Widget for SidebarWheelDisc {
         self.rect
     }
 
-    /// The disc reports clean once the cache has been populated. Animation-
-    /// driven invalidation comes through [`Widget::needs_animation_frame`]
-    /// (`App` pumps redraws on its own while the spring or wheel snap-
-    /// timeout is in flight) and the fingerprint check inside `draw`
-    /// detects the rotation delta on each pumped frame.
+    /// The disc reports clean once the cache has been populated.
+    /// Animation-driven invalidation comes through
+    /// [`Widget::needs_animation_frame`]; the fingerprint check inside
+    /// `draw` detects the rotation delta on each pumped frame.
     ///
     /// Without this override the default leaf impl returns `true` every
-    /// frame, defeating the App's "skip the redraw on a hover-only
+    /// frame, defeating the host's "skip redraw on hover-only
     /// CursorMoved" gate.
     fn needs_redraw(&self) -> bool {
         // Dirty exactly when the next paint would differ from the one
@@ -2282,29 +1825,17 @@ impl Widget for SidebarWheelDisc {
         // cached one. A fresh widget has an unpopulated cache and so
         // reports dirty until the first paint.
         //
-        // The previous implementation reported clean unconditionally
-        // once anything had been drawn, on the theory that animation
-        // would be pumped through `needs_animation_frame`. That holds
-        // for the snap spring, but not for the two states driven
-        // straight off pointer input: a rim drag, and the strip pan
-        // that carries the disc along the canvas. Both mutate what the
-        // disc would paint from inside a `CursorMoved`, which is the
-        // one event class the host declines to repaint on unless the
-        // tree reports dirty — so the wheel stopped tracking the input
-        // that was moving it.
-        // A spring in flight is dirty by definition: it will have moved
-        // by the time the next paint happens, even if this frame's
-        // fingerprint still matches the last one.
-        //
-        // That is not a hypothetical. It is exactly the state the FIRST
-        // frame of a drag is in, now that the rim follows the pointer
-        // through a spring rather than being welded to it: the target
-        // has moved but the spring has not been stepped yet, so the
-        // visible rotation — and with it the fingerprint — is still
-        // last frame's. Reporting clean there deadlocks the whole
-        // gesture, because the host skips the repaint, the repaint is
-        // what pumps `update`, and `update` is the only thing that
-        // would have moved the spring.
+        // `needs_animation_frame` alone isn't enough: a rim drag and the
+        // strip pan mutate what the disc paints from inside a
+        // `CursorMoved`, the one event class the host declines to
+        // repaint on unless the tree reports dirty. A spring in flight
+        // is also dirty by definition — it will have moved by the next
+        // paint even if this frame's fingerprint still matches. That
+        // matters on a drag's first frame: the target has moved but the
+        // spring hasn't stepped yet, so reporting clean there deadlocks
+        // the gesture — the host skips the repaint, and the repaint is
+        // the only thing that pumps `update`, which is the only thing
+        // that moves the spring.
         let spring_in_flight = self
             .rotation_spring
             .as_ref()
@@ -2332,10 +1863,9 @@ impl SidebarWheelDisc {
     ///
     /// Called on the pan fast-path, where the scene is replayed under a
     /// translation rather than re-encoded. `spoke_hit_rects` and
-    /// `plus_rect` are absolute-coordinate caches populated by the last
-    /// full paint, so without this a click after a pan would resolve
-    /// against the markers' old screen positions — the wheel would look
-    /// right and click wrong.
+    /// `plus_rect` are absolute-coordinate caches, so without this a
+    /// click after a pan would resolve against the markers' old screen
+    /// positions.
     fn retarget_hit_rects(&mut self, target_origin_px: (i64, i64)) {
         let dx = (target_origin_px.0 - self.hit_rects_origin_px.0) as f64;
         let dy = (target_origin_px.1 - self.hit_rects_origin_px.1) as f64;
@@ -2360,12 +1890,9 @@ impl SidebarWheelDisc {
     /// snap math without synthesising a full winit event sequence.
     ///
     /// Sign convention: dragging *down* (positive dy) gives
-    /// `rotation_deg > 0`. The nearest snap offset is negative (we
-    /// round to the nearest multiple of `spoke_gap`, which for a small
-    /// positive drag is 0 and for a larger one is the next multiple).
-    /// `active_idx` advances by `-nearest_offset` so dragging down
-    /// brings spoke `+1` into view — matching the user's mental model
-    /// of "pull the wheel down to reveal the next workspace below".
+    /// `rotation_deg > 0`; `active_idx` advances by `-nearest_offset` so
+    /// dragging down brings spoke `+1` into view, matching "pull the
+    /// wheel down to reveal the next workspace below".
     pub fn snap_to_nearest(&mut self) {
         let idx = self.idx_at_rotation(self.rotation_deg);
         self.commit_to_idx(idx);
@@ -2375,11 +1902,7 @@ impl SidebarWheelDisc {
     /// and write it through to the tree.
     ///
     /// Because the rotation is absolute, this is idempotent — running it
-    /// twice on an unmoved wheel lands on the same workspace. The
-    /// previous relative form advanced `active_idx` by however many
-    /// detents `rotation_deg` was from zero and then *left the rotation
-    /// there*, so a second snap re-applied the same shift, and the
-    /// selection walked further from the wheel with every gesture.
+    /// twice on an unmoved wheel lands on the same workspace.
     fn commit_to_idx(&mut self, idx: usize) {
         let idx = idx.min(self.spokes.len().saturating_sub(1));
         self.rotation_deg = self.rotation_for_idx(idx);
@@ -2390,20 +1913,14 @@ impl SidebarWheelDisc {
 
     /// Decide where a released drag ends up, and start it on its way.
     ///
-    /// Three cases, in the order they are asked:
-    ///   - let go past an end → back to the end, because there is
-    ///     nothing out there to land on;
-    ///   - let go moving → project the velocity forward over
-    ///     `fling_projection_ms` and take the detent nearest that, so a
-    ///     flick crosses several workspaces;
-    ///   - let go still → the projection collapses to the current
-    ///     position and this is just "nearest detent".
+    /// Three cases: let go past an end → back to the end; let go moving
+    /// → project the velocity forward over `fling_projection_ms` and
+    /// take the nearest detent, so a flick crosses several workspaces;
+    /// let go still → the projection collapses to "nearest detent".
     ///
-    /// The velocity comes straight off the follow spring, which has been
-    /// tracking the pointer all gesture: no separate velocity estimator,
-    /// and it decays on its own if the user stops before letting go —
-    /// which is what makes "drag, pause, release" land where it looks
-    /// like it should instead of flinging.
+    /// The velocity comes straight off the follow spring, which has
+    /// been tracking the pointer all gesture — no separate estimator —
+    /// and decays on its own if the user pauses before releasing.
     fn settle_after_drag(&mut self) {
         // Where the rim actually is, captured before anything below
         // moves the target out from under it.
@@ -2420,14 +1937,11 @@ impl SidebarWheelDisc {
         } else if self.drag_raw_deg < lo {
             lo
         } else {
-            // Project from where the gesture *ended* — `rotation_deg`,
-            // the drag target — rather than from where the rim has got
-            // to. The rim trails by the follow lag, and choosing the
-            // destination from the trailing position would quietly hand
-            // back part of every drag: you would pull the wheel a full
-            // notch, let go, and watch it settle back to the one you
-            // started on. The lag is meant to be visible, not to be
-            // subtracted from the gesture.
+            // Project from where the gesture *ended* (`rotation_deg`),
+            // not where the rim has trailed to — choosing the trailing
+            // position would quietly hand back part of every drag,
+            // since the lag is meant to be visible, not subtracted from
+            // the gesture.
             let coast_s = Gesture::default().fling_projection_ms as f32 / 1000.0;
             let projected = self.rotation_deg + velocity * coast_s;
             self.rotation_for_idx(self.idx_at_rotation(projected))
@@ -2477,11 +1991,10 @@ impl SidebarWheelDisc {
     /// `target_idx` becomes the active spoke, and let the settle spring
     /// carry it there.
     ///
-    /// No shortest-path-around-the-back any more: the list has ends, so
-    /// there is exactly one way from here to there and it is the direct
-    /// one. That is also what the sectors show — a click on a workspace
-    /// two above you should turn the wheel two notches up, not most of a
-    /// revolution down.
+    /// No shortest-path-around-the-back: the list has ends, so there's
+    /// exactly one way from here to there. That's also what the sectors
+    /// show — a click two workspaces up should turn the wheel two
+    /// notches up, not most of a revolution down.
     pub fn click_to_spoke(&mut self, target_idx: usize) {
         if target_idx >= self.spokes.len() || target_idx == self.active_idx {
             return;
@@ -2502,10 +2015,8 @@ impl SidebarWheelDisc {
     /// indicator from where that left the disc.
     ///
     /// Split out of [`Widget::update`] so the only thing `update` adds
-    /// is reading the wall clock. Tests drive this directly with a fixed
-    /// dt — a tight loop's real dt collapses to nearly zero, so a test
-    /// that went through `update` would be measuring the clock rather
-    /// than the spring — and are still exercising the production path.
+    /// is reading the wall clock — tests drive this directly with a
+    /// fixed dt, still exercising the production path.
     fn advance(&mut self, dt: f32) -> bool {
         let keep = self.tick_rotation_spring(dt);
         // The indicator steps off the *visible* rotation, so it has to
@@ -2542,13 +2053,12 @@ impl SidebarWheelDisc {
     /// Replay the current settle from its start and hold it `elapsed`
     /// in, so an offscreen frame can capture a moving wheel.
     ///
-    /// Returns whether there was a settle to sample. What renders is the
-    /// production spring — the same `Spring`, the same constants, the
-    /// same integrator — advanced at the same fixed 60 Hz step the live
-    /// loop uses, not a reconstruction of the curve. Mirrors the reveal
-    /// and make-space sampling hooks: a still cannot show weight, and a
-    /// render costs more wall time than the settle lasts, so stepping
-    /// real frames only ever catches the endpoints.
+    /// Returns whether there was a settle to sample. Steps the same
+    /// production `Spring` — same constants, same integrator — at the
+    /// same fixed 60 Hz the live loop uses, rather than reconstructing
+    /// the curve: a still can't show weight, and rendering costs more
+    /// wall time than the settle lasts, so real frames only ever catch
+    /// the endpoints.
     pub fn hold_rotation_at(&mut self, elapsed: Duration) -> bool {
         let Some(origin) = self.settle_origin.clone() else {
             return false;
@@ -2567,13 +2077,11 @@ impl SidebarWheelDisc {
     /// The annulus the disc's **labels and add-button** occupy, as
     /// `(inner, outer)` about [`SidebarWheelDisc::disc_centre`].
     ///
-    /// This is *not* the extent of the painted surface. The body is a
-    /// solid segment reaching the centre; what this bounds is the
-    /// readable ring near the rim where a workspace name fits, which is
-    /// derived rather than configured — see [`BAND_TANGENT_FRACTION`].
-    /// Exposed so callers that need to know where the labels actually
-    /// land (the snapshot tests sample it, the add button is placed
-    /// against it) do not re-derive the expression and drift out of step.
+    /// Not the extent of the painted surface — the body is a solid
+    /// segment reaching the centre; this bounds the readable ring near
+    /// the rim where a name fits, derived rather than configured (see
+    /// [`BAND_TANGENT_FRACTION`]). Exposed so callers needing this
+    /// (snapshot tests, the add button) don't re-derive it and drift.
     pub fn label_band_radii(&self) -> (f64, f64) {
         let radius = self.diameter_px / 2.0;
         let c = self.center();
@@ -2641,11 +2149,9 @@ impl SidebarWheelDisc {
         };
         let mut state = chrome.borrow_mut();
         if state.tree().active == WorkspaceId(id) {
-            // Already there. Bumping anyway makes the rest of the shell
-            // re-sync against a tree that did not change — and every
-            // gesture that ends where it started does exactly that: a
-            // pull against an end, a drag that comes back, a release
-            // inside the detent it began in.
+            // Already there. Bumping anyway re-syncs the rest of the
+            // shell against a tree that didn't change — every gesture
+            // that ends where it started does exactly that.
             return;
         }
         state.tree_mut().set_active(WorkspaceId(id));
@@ -2796,13 +2302,6 @@ mod tests {
     /// relative to the active one, so the workspace above Home is
     /// nothing at all — the overscroll rubber-band at either end is what
     /// reports the edge to the hand.
-    ///
-    /// This replaced a ring: slots used to wrap, so from the first
-    /// workspace the arc above filled with the last ones. That balanced
-    /// the disc at the cost of drawing a workspace twice whenever the
-    /// sweep held more slots than there are workspaces, and neither copy
-    /// could be reached. Every workspace must still be placed and
-    /// legible; what changed is where they sit, not whether they appear.
     #[test]
     fn sectors_sit_at_their_real_index_relative_to_the_active_one() {
         // From the middle: one neighbour each side.
@@ -2839,8 +2338,7 @@ mod tests {
         // Uniqueness, on the production slot assignment rather than on
         // the rects it produces: a rect map is keyed by workspace, so a
         // workspace drawn twice would overwrite itself and leave no
-        // trace. This is the check the rendered disc failed — three
-        // workspaces reading as six, half of them unclickable.
+        // trace.
         for slots in 1..=6 {
             let assigned: Vec<usize> =
                 d.slot_indices(slots).into_iter().flatten().collect();
@@ -2924,15 +2422,6 @@ mod tests {
 
     /// Every workspace stays on the disc, and stays clickable, at every
     /// size the sidebar can take.
-    ///
-    /// Two separate faults blanked it. The angular step between sectors
-    /// was a fixed number of degrees, but the arc length a degree buys
-    /// scales with the radius, which is derived from the slot's width —
-    /// so one constant put three workspaces on a tall band and a single
-    /// one on a short band, leaving a switcher that showed only the
-    /// workspace you were already in. And a band too narrow for a name
-    /// dropped the entire label pass, taking every sector's click target
-    /// with it: an empty curve with an add button on it.
     #[test]
     fn every_workspace_stays_on_the_disc_at_every_size() {
         for w in [140.0_f64, 180.0, 234.0, 320.0] {
@@ -2959,15 +2448,14 @@ mod tests {
         }
     }
 
-    /// The add-workspace button does not rotate, so a sector label sweeps
-    /// past it on every turn of the wheel. The button has to stay usable
-    /// throughout — a control the wheel can bury is what drove this
-    /// affordance off the rim and then off the disc entirely.
+    /// The add-workspace button does not rotate, so a sector label
+    /// sweeps past it on every turn of the wheel; the button has to
+    /// stay usable throughout.
     ///
     /// Drives the real press path at every position a label passes
     /// through between detents, rather than comparing rectangles: the
-    /// press handler resolves the button before it resolves a sector, and
-    /// that ordering is the thing that has to hold.
+    /// press handler resolves the button before it resolves a sector,
+    /// and that ordering is the thing that has to hold.
     #[test]
     fn the_add_button_stays_pressable_at_every_rotation() {
         use crate::shell::chrome_state::ChromeState;
@@ -3007,10 +2495,8 @@ mod tests {
         }
     }
 
-    /// The add button has to sit ON the band, at every rotation. Pinned to
-    /// the footprint's floor it hung underneath, on bare wallpaper, which
-    /// is what moved this affordance twice before — the fix was a surface
-    /// to sit on, not another spot to float in.
+    /// The add button has to sit ON the band, at every rotation, not
+    /// hang underneath it on bare wallpaper.
     #[test]
     fn the_add_button_sits_on_the_band() {
         let mut d = mk(&["Home", "Research", "Design"]);
@@ -3040,16 +2526,12 @@ mod tests {
     }
 
     /// A label may only be withheld when it genuinely has nowhere to go.
-    /// The collision test used to run on the axis-aligned bounding box of
-    /// the rotated label, which picks up a wedge of empty corner at each
-    /// end — enough to report a clash with a button the label passes
-    /// well clear of, so the bottom sector silently lost its name.
     ///
     /// Driven from the middle workspace so all three sectors are on the
-    /// band and any missing name is a withheld one. From the first
-    /// workspace the sectors all run downward and the last of them is
-    /// off the band outright, which is a legitimate reason to have no
-    /// label and would mask the case this guards.
+    /// band and any missing name is a withheld one — from the first
+    /// workspace the last sector is off the band outright, which is a
+    /// legitimate reason to have no label and would mask the case this
+    /// guards.
     #[test]
     fn a_sector_keeps_its_name_when_it_only_passes_near_the_add_button() {
         let mut d = mk(&["Home", "Research", "Design"]).with_active_idx(1);
@@ -3072,14 +2554,11 @@ mod tests {
     /// The band's inner arc bends back toward the disc's centre faster
     /// than the footprint's left edge does, so past a point it leaves
     /// through that edge and the clip turns the curve into a straight
-    /// vertical cut. That is survivable only while the vertical fade has
-    /// already taken the band down — a crisp cut through a surface at full
-    /// strength is the "someone drew a box" failure the curve exists to
-    /// avoid.
+    /// vertical cut — survivable only while the vertical fade has
+    /// already taken the band down.
     ///
-    /// Asserts on the two production constants that decide it rather than
-    /// on a rendered pixel, because the relationship is what has to hold:
-    /// change either one alone and this fails.
+    /// Asserts on the two production constants that decide it rather
+    /// than on a rendered pixel: change either one alone and this fails.
     #[test]
     fn band_clip_starts_where_the_fade_has_already_taken_hold() {
         // Fraction of the footprint's height between its edge and the
@@ -3098,10 +2577,9 @@ mod tests {
     }
 
     /// Display slots have to cover the whole visible sweep, not just the
-    /// workspaces. Indexing sectors off the workspace list left a stretch
-    /// of unsegmented band rotating through whenever there were fewer
-    /// workspaces than the sweep had room for — a wheel with a bald patch,
-    /// which is the one thing that stops it reading as a wheel.
+    /// workspaces — indexing sectors off the workspace list would leave
+    /// a stretch of unsegmented band rotating through whenever there
+    /// are fewer workspaces than the sweep has room for.
     #[test]
     fn sector_slots_cover_the_whole_sweep() {
         for sweep_deg in [20.0_f64, 31.0, 38.0, 44.0] {
@@ -3328,11 +2806,8 @@ mod tests {
     /// Default workspace labels (`Home` / `Research` / `Design`) seeded
     /// by `WorkspaceTree::bootstrap_demo` must each map to a
     /// distinctive lucide glyph rather than falling through to the
-    /// generic `Layers` default. Without this guard `Home` and
-    /// `Research` both painted the layered-stripes glyph in
-    /// `target/inspect/desktop.png`, making the active spoke unreadable.
-    /// Also pins the public `spoke_icon` API to confirm it lower-cases
-    /// the label before resolving.
+    /// generic `Layers` default. Also pins the public `spoke_icon` API
+    /// to confirm it lower-cases the label before resolving.
     #[test]
     fn default_workspace_labels_resolve_to_distinct_glyphs() {
         assert_eq!(spoke_icon_for_label("home"), Icon::Home);
@@ -3348,8 +2823,8 @@ mod tests {
 
     /// Hover into the visible arc without pressing must NOT make the
     /// disc claim pointer capture — capture is reserved for an
-    /// actually-in-flight drag (B-3 / 3-B). The hover anchor is cached
-    /// for the next press's hit-test in a separate field.
+    /// actually-in-flight drag. The hover anchor is cached for the next
+    /// press's hit-test in a separate field.
     #[test]
     fn hover_does_not_capture_pointer() {
         let mut d = mk(&["Home", "Research", "Design"]);
@@ -3375,8 +2850,7 @@ mod tests {
     }
 
     /// Press inside the disc, then release: pointer capture must clear
-    /// so the next idle hover doesn't continue to swallow events
-    /// (B-3 / 3-B).
+    /// so the next idle hover doesn't continue to swallow events.
     #[test]
     fn press_then_release_clears_pointer_capture() {
         let mut d = mk(&["Home", "Research", "Design"]);
@@ -3429,11 +2903,10 @@ mod tests {
         // With DRAG_FACTOR = 0.15 and a 15° gap, a `15/0.15 = 100 px`
         // drag is exactly one gap. Add a margin to land cleanly past.
         //
-        // Dragged UPWARD, because the list no longer wraps: the disc
-        // starts on workspace 0, which is the first one, and pulling
-        // down from there is pulling against the top end rather than
-        // travelling to a neighbour. Up is where the rest of the list
-        // is.
+        // Dragged UPWARD: the disc starts on workspace 0, the first
+        // one, so pulling down from there pulls against the top end
+        // rather than travelling to a neighbour — up is where the rest
+        // of the list is.
         let drag_dy = (gap / DRAG_FACTOR) as f64 + 30.0;
         pump(&mut d, cursor_event(cx, start_y - drag_dy));
         assert!(d.rotation_deg < 0.0);
@@ -3599,11 +3072,9 @@ mod tests {
     fn snap_animates_rotation_over_multiple_ticks() {
         // Drag to roughly three-quarters of a gap: far enough that the
         // nearest spoke is the next one, short enough that the wheel is
-        // still visibly between two, which is what guarantees
-        // `pre_snap_deg != snapped_deg` and a non-trivial spring
-        // animation. Derived from the gap rather than hardcoded, so
-        // retuning the geometry keeps the drag in the same relative
-        // place instead of silently landing on a spoke.
+        // still visibly between two — non-trivial spring animation.
+        // Derived from the gap rather than hardcoded, so retuning the
+        // geometry keeps the drag in the same relative place.
         let mut d = mk(&["A", "B", "C", "D"]);
         let gap = d.spoke_gap_deg() as f64;
         assert!(gap > 0.0, "degenerate gap {gap}");
@@ -3618,10 +3089,9 @@ mod tests {
         let pre_snap_deg = d.rotation_deg;
         assert!(pre_snap_deg < 0.0);
         // Let the follow spring actually reach the drag target before
-        // letting go. The rim trails the pointer now, so "where the
-        // wheel is when you release" is only a meaningful quantity once
-        // some frames have run — releasing on the same tick as the move
-        // means the wheel genuinely never got anywhere.
+        // releasing — the rim trails the pointer now, so "where the
+        // wheel is when you release" only means something once some
+        // frames have run.
         for _ in 0..30 {
             d.tick_rotation_spring(1.0 / 60.0);
         }
@@ -3661,9 +3131,8 @@ mod tests {
         // crossing and needs roughly ωt ≈ 7 to land inside
         // `is_settled`'s 0.1° / 0.1 °/s window. 180 frames (~3 s) is
         // well over that with headroom for the integrator's step bias.
-        // Drive the spring with a deterministic 1/60 s dt (production
-        // uses real wall-clock dt via `update`; the test pumps the
-        // extracted stepper so a tight loop doesn't collapse to ~0 dt).
+        // Deterministic 1/60 s dt: production uses real wall-clock dt
+        // via `update`; the test pumps the extracted stepper instead.
         for _ in 0..180 {
             d.tick_rotation_spring(1.0 / 60.0);
         }
@@ -3731,13 +3200,9 @@ mod tests {
         let initial_active = tree.active;
         let chrome = ChromeState::new(tree);
 
-        // Lay out and paint for real, then click whatever the paint pass
-        // decided the add row's box is. Synthesising the rect here instead
-        // — which this test used to do, to "decouple from the draw-time
-        // arithmetic" — meant it went on passing while the production
-        // geometry moved underneath it, so it proved the press handler
-        // works and nothing at all about the affordance being reachable.
-        // `draw` needs no GPU: it encodes into a `Scene`.
+        // Lay out and paint for real, then click whatever the paint
+        // pass decided the add row's box is — `draw` needs no GPU, it
+        // encodes into a `Scene`.
         let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
             text: "Home".into(),
             workspace_id: None,
@@ -3780,20 +3245,18 @@ mod tests {
             "plus-press must activate the newly-created workspace"
         );
         // Drag must not start from a plus-slot press — the press path
-        // returns early before the drag-anchor block. This guards against
-        // the "press-on-plus also grabs the rotation" regression.
+        // returns early before the drag-anchor block.
         assert!(
             d.drag_from.is_none(),
             "plus-press must not start a rotation drag"
         );
     }
 
-    /// Closes wheel-disc-design known-gap #3: each spoke should render
-    /// one presence dot per peer currently registered on its workspace
-    /// key (up to 3). Seeds two peers on workspace 77, builds a disc with
-    /// a single spoke keyed to that workspace, and asserts the helper
-    /// reports exactly 2 dots — matching the `presence.peers_on(...)`
-    /// count for that spoke's `PresenceKey::Workspace`.
+    /// Each spoke should render one presence dot per peer currently
+    /// registered on its workspace key (up to 3). Seeds two peers on
+    /// workspace 77 and asserts the helper reports exactly 2 dots,
+    /// matching `presence.peers_on(...)` for that spoke's
+    /// `PresenceKey::Workspace`.
     #[test]
     fn disc_renders_dot_per_seeded_peer_on_workspace() {
         use ui::permissions::UserId;
@@ -3826,11 +3289,9 @@ mod tests {
         );
     }
 
-    /// Partial-arc redesign: the disc's logical centre must sit
-    /// OFF-SCREEN-LEFT so only the right portion of the rim protrudes
-    /// into the visible sidebar column. The 2026-05-01 radial-rebuild
-    /// tightens the ratio to `VISIBLE_RADIUS_FRACTION = 0.16` so the
-    /// formula is `cx = rect.x0 - radius * (1 - VISIBLE_RADIUS_FRACTION)`.
+    /// The disc's logical centre must sit OFF-SCREEN-LEFT so only the
+    /// right portion of the rim protrudes into the visible sidebar
+    /// column: `cx = rect.x0 - radius * (1 - VISIBLE_RADIUS_FRACTION)`.
     #[test]
     fn disc_anchors_left_of_viewport_so_only_arc_intrudes() {
         let mut disc = SidebarWheelDisc::new(labels(&["A", "B", "C"]));
@@ -3884,9 +3345,7 @@ mod tests {
         );
     }
 
-    /// Visible arc cap. The user-spec invariant is "at most 120°" — the
-    /// 2026-05-01 radial-rebuild tightens this further to ~66° to match
-    /// the reference concept's `2000:160` ratio.
+    /// Visible arc cap. The user-spec invariant is "at most 120°".
     #[test]
     fn disc_visible_arc_matches_concept_ratio() {
         let disc = mk(&["A", "B", "C"]);
@@ -3918,9 +3377,7 @@ mod tests {
 
     /// A press whose anchor lands LEFT of the viewport edge (i.e.
     /// outside `self.rect`) must NOT start a drag — the off-screen part
-    /// of the disc isn't grabbable. Mirrors the user-spec invariant
-    /// "should be actually to left of the leftmost window group" by
-    /// guaranteeing the disc never claims clicks beyond its visible arc.
+    /// of the disc isn't grabbable.
     #[test]
     fn disc_hit_test_rejects_clicks_left_of_viewport_edge() {
         let mut d = mk(&["Home", "Research", "Design"]);
@@ -3950,10 +3407,8 @@ mod tests {
         );
     }
 
-    /// Closes wheel-disc-design known-gap #3 (cap branch): the disc caps
-    /// the per-spoke dot cluster at 3 even when more peers are registered,
-    /// matching the concept's wheel-card design. Seeds 5 peers on the
-    /// same workspace and asserts the helper reports exactly 3.
+    /// The disc caps the per-spoke dot cluster at 3 even when more
+    /// peers are registered, matching the concept's wheel-card design.
     #[test]
     fn disc_caps_presence_dots_at_three_per_spoke() {
         use ui::permissions::UserId;
@@ -3979,14 +3434,13 @@ mod tests {
         );
     }
 
-    /// Click-to-spoke (concept's `handleClickItem`) — calling
     // -----------------------------------------------------------------
     // How it feels, in numbers.
     //
-    // A still cannot show weight and neither can a video on its own —
-    // these pin the quantities the recordings and the sampled frames
-    // only illustrate. All of them drive `advance`, which is `update`
-    // minus the wall-clock read, at a fixed 60 Hz.
+    // A still can't show weight, and neither can a video on its own —
+    // these tests pin the quantities the recordings only illustrate,
+    // driving `advance` (`update` minus the wall-clock read) at a
+    // fixed 60 Hz.
     // -----------------------------------------------------------------
 
     /// Frames of production motion at 60 Hz.
@@ -4003,13 +3457,11 @@ mod tests {
         frames(d, settle_frames);
     }
 
-    /// The complaint this whole change starts from: the highlight used
-    /// to sit still for the entire gesture and jump once at the end.
-    ///
     /// Walks a single continuous drag across three detents and records
-    /// the indicator at every frame. Requires it to visit each workspace
-    /// in turn — never skipping one, never running backwards — and to
-    /// change hands within half a detent of the boundary each time.
+    /// the indicator at every frame. Requires it to visit each
+    /// workspace in turn — never skipping one, never running backwards
+    /// — and to change hands within half a detent of the boundary each
+    /// time.
     #[test]
     fn the_indicator_steps_one_workspace_at_a_time_during_a_drag() {
         let mut d = mk(&["A", "B", "C", "D", "E"]);
@@ -4265,9 +3717,8 @@ mod tests {
         );
     }
 
-    /// The last workspace is an end too, and it is the one a wrapping
-    /// list used to hide: scrolling off the bottom quietly reappeared at
-    /// the top.
+    /// The last workspace is an end too: scrolling off the bottom must
+    /// not wrap back to the top.
     #[test]
     fn the_last_workspace_is_an_end_and_the_list_does_not_wrap() {
         let mut d = mk(&["A", "B", "C"]);
@@ -4347,12 +3798,10 @@ mod tests {
     }
 
     /// The active workspace's own name must never be the thing that
-    /// gets thrown away to make room for a font size.
-    ///
-    /// `Research` is one of the three workspaces the shell boots with,
-    /// and at the full active size step it did not fit the band on a
-    /// 900-px-tall display: the switcher showed `Resear…` for the
-    /// workspace you were standing in.
+    /// gets thrown away to make room for a font size — `Research` did
+    /// not fit the band at the full active step on a 900-px-tall
+    /// display, showing `Resear…` for the workspace you were standing
+    /// in.
     #[test]
     fn the_active_workspace_name_is_never_truncated_to_fit_its_size_step() {
         let mut d = mk(&["Home", "Research", "Design"]);

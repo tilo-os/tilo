@@ -1,17 +1,11 @@
-//! Smithay `State` struct — Phase 2 of the real Wayland compositor plan.
+//! Smithay `State` struct: the single value threaded through the calloop
+//! event loop, following smithay's "one big state" convention — it owns
+//! every protocol global (compositor, xdg-shell, shm, seat, output), and
+//! each Wayland protocol attaches via the corresponding `delegate_*!`
+//! macro, which expands into `Dispatch` / `GlobalDispatch` impls routing
+//! messages to the matching `*Handler` trait.
 //!
-//! Smithay follows a "one big state" convention: a single `State` struct owns
-//! every protocol global (compositor, xdg-shell, shm, seat, output) and is
-//! threaded through the calloop event loop. Each Wayland protocol attaches to
-//! the state via the corresponding `delegate_*!` macro, which expands into
-//! `Dispatch` / `GlobalDispatch` impls that route messages to the matching
-//! `*Handler` trait.
-//!
-//! Phase 2 only sets up the type plumbing — `compile-only`. Actual rendering,
-//! seat input forwarding and surface management happen in Phase 4+.
-//!
-//! References: smithay 0.7 `examples/minimal.rs` and `examples/compositor.rs`,
-//! and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` Phase 2.
+//! References: smithay 0.7 `examples/minimal.rs` and `examples/compositor.rs`.
 //!
 //! ## Module layout
 //!
@@ -174,13 +168,9 @@ impl SessionLockHooks {
 /// This is the single value the calloop event loop hands to every callback,
 /// so every Wayland global gets unsynchronised mutable access without `Rc` /
 /// `Arc` plumbing.
-///
-/// Future phases will add: a `Space` for window placement, a renderer handle,
-/// the cluster/sandbox model, libp2p collaboration plumbing, etc. For Phase 2
-/// we only need the protocol-globals and the loop / display handles.
 pub struct State {
-    /// Calloop loop handle — used in later phases to register input devices,
-    /// session signals, libinput sources, etc.
+    /// Calloop loop handle — for registering input devices, session
+    /// signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
     /// `wayland-server` display handle. Cloneable; used to insert new clients
     /// when the listening socket accepts a connection.
@@ -256,7 +246,7 @@ pub struct State {
     /// integration tests can all read the *decision* rather than
     /// re-deriving it.
     pub dmabuf_device: Result<RenderNode, ProbeError>,
-    /// `wl_seat` collection. Phase 2 doesn't add a seat yet; phase 4 will.
+    /// `wl_seat` collection.
     pub seat_state: SeatState<Self>,
     /// Clipboard, primary selection and drag-and-drop.
     ///
@@ -265,16 +255,16 @@ pub struct State {
     /// round trip. See [`crate::compositor::selection`] — in particular for
     /// why the two data-control globals are gated to privileged clients.
     pub selection: SelectionState,
-    /// `wl_output` + xdg-output manager. Phase 2 advertises the manager
-    /// global so xdg-output-aware clients (e.g. Mutter's wl-roots tools) can
-    /// bind without erroring; concrete outputs are added in phase 4.
+    /// `wl_output` + xdg-output manager. Advertises the manager global so
+    /// xdg-output-aware clients (e.g. Mutter's wl-roots tools) can bind
+    /// without erroring; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
-    /// Persisted workspace tree. Phase 6 of the compositor plan adopts
-    /// foreign-client toplevels into this tree as
+    /// Persisted workspace tree. Foreign-client toplevels are adopted
+    /// into this tree as
     /// [`crate::shell::state::TileContent::Foreign`] tabs (see
     /// [`crate::compositor::tab_binding::adopt_toplevel`]).
     pub workspace_tree: WorkspaceTree,
-    /// Peer-sync share registry — Phase 4 Task 4.4. Tracks which peers
+    /// Peer-sync share registry. Tracks which peers
     /// have been granted streaming + input access to which surfaces, and
     /// the per-peer `read_only` flag. Inbound
     /// [`crate::network::NeighbourMsg::RemoteInput`] events are filtered
@@ -298,7 +288,7 @@ pub struct State {
     /// event is otherwise invisible, and "nothing happened" is exactly
     /// what a broken filter also looks like.
     pub last_remote_input_denial: Option<(MsgPeerId, SurfaceId, Denial)>,
-    /// Per-foreign-surface RGBA staging — Peer-sync Phase 4 v2. The
+    /// Per-foreign-surface RGBA staging. The
     /// compositor's [`CompositorHandler::commit`] hook calls
     /// [`SurfaceTracker::on_commit`] for every committed surface whose
     /// id is listed in
@@ -310,15 +300,13 @@ pub struct State {
     /// already registered. Constructed in [`State::new`] alongside
     /// the rest of the protocol globals. Peer-sync's
     /// [`Self::apply_remote_input`] injects pointer motion / button
-    /// events into this seat (D-1 fix) so remote-input traffic
-    /// actually drives the local seat instead of being logged and
-    /// discarded.
+    /// events into this seat so remote-input traffic actually drives
+    /// the local seat instead of being logged and discarded.
     ///
     /// Keyboard injection is staged behind a follow-up: smithay's
     /// keyboard handle needs a configured keymap, and the v1 path
-    /// can ship without it. Pointer motion/button covers the
-    /// foreign-tab remote-control use case the Phase 4 spec calls
-    /// out.
+    /// can ship without it. Pointer motion/button is what the
+    /// foreign-tab remote-control use case needs.
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials. Smithay's input handles
     /// require fresh `Serial`s per event; we maintain one per state
@@ -450,9 +438,7 @@ impl State {
     /// Build a fresh `State` with all protocol globals registered.
     ///
     /// Each `*::new::<Self>` / `*::new_with_xdg_output::<Self>` call advertises
-    /// the corresponding Wayland global on the display. The actual `wl_seat`
-    /// is *not* created yet — that happens in phase 4 when input plumbing
-    /// arrives.
+    /// the corresponding Wayland global on the display.
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
@@ -545,21 +531,17 @@ impl State {
             }
         };
 
-        // D-1 fix: register a real seat with a pointer device so
+        // Register a real seat with a pointer device so
         // `apply_remote_input` has something to inject into. The seat
         // name matches the wayland.rs sibling so multi-binary apps see
-        // a consistent identifier. Keyboard injection ships in the
-        // follow-up — registering the device here would force a keymap
-        // load (`add_keyboard(Default::default(), 200, 25)`) we
-        // intentionally defer.
+        // a consistent identifier.
         let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
         seat.add_pointer();
-        // W7 text injection: a keyboard on the seat is required for the
-        // on-screen keyboard's `virtual-keyboard-v1` client (and any future
-        // `input-method`/`text-input` IME) to deliver keys to the focused
-        // surface. Default xkb config; 200ms repeat delay, 25/s rate. Guarded
+        // A keyboard on the seat is required for the on-screen keyboard's
+        // `virtual-keyboard-v1` client (and any future `input-method`/
+        // `text-input` IME) to deliver keys to the focused surface. Guarded
         // so a keymap-load failure degrades gracefully instead of panicking.
-        // Keyboard auto-repeat comes from the persisted `input.key_repeat`
+        // Auto-repeat comes from the persisted `input.key_repeat`
         // preference rather than a hard-coded pair, so the Settings
         // control the compositor never read now reaches the seat.
         let (repeat_delay, repeat_rate) =
@@ -577,7 +559,7 @@ impl State {
         // stream, but a client that wants real multi-touch needs the seat
         // to advertise `wl_touch`.
         seat.add_touch();
-        // W7: advertise the virtual-keyboard manager global so the OSK can
+        // Advertise the virtual-keyboard manager global so the OSK can
         // inject text. Keys flow through the seat keyboard above to the
         // focused surface; the global self-registers in the display.
         VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
@@ -1410,12 +1392,8 @@ pub fn surface_id(surface: &WlSurface) -> u64 {
 }
 
 // -----------------------------------------------------------------------------
-// Handler trait impls — Phase 2 stubs.
+// Handler trait impls.
 // -----------------------------------------------------------------------------
-//
-// All of these are deliberately minimal. Behaviour beyond "compile and accept
-// connections" lands in Phase 4 (input + rendering) and Phase 5 (cluster
-// integration). Until then, surfaces commit into thin air.
 
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -1450,12 +1428,12 @@ impl CompositorHandler for State {
             });
         });
 
-        // Phase 4 v2 — pull the surface's most-recent buffer into the
+        // Pull the surface's most-recent buffer into the
         // [`SurfaceTracker`] iff the surface is registered as shared on
         // any workspace in [`WorkspaceTree`]. Most surfaces aren't
         // shared, so the lookup short-circuits at the
         // `is_surface_shared` check before we ever touch the buffer
-        // state. Heavy renderer hooks land in a Phase 4 follow-up.
+        // state.
         let surface_id = crate::compositor::state::surface_id(surface);
         let is_shared = self
             .workspace_tree
@@ -1701,8 +1679,8 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        // Phase 6 Task 6.2 — remove the matching `Foreign` tab so the
-        // chrome stops advertising a destroyed surface.
+        // Remove the matching `Foreign` tab so the chrome stops
+        // advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         // If the destroyed surface held the output fullscreen, drop the
         // transient promotion so the layout restores rather than staying
@@ -1713,7 +1691,7 @@ impl XdgShellHandler for State {
             self.fullscreen_group = None;
         }
         let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
-        // C-7 fix: drop the tracker's per-surface buffer slot. The
+        // Drop the tracker's per-surface buffer slot. The
         // commit path's `BufferAssignment::Removed` branch already
         // forgets the slot when a client `attach(NULL)`s before
         // destroying its toplevel, but a destroy without that prior
@@ -1734,13 +1712,12 @@ impl XdgShellHandler for State {
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        // Phase 7 Task 7.2 — clients call `xdg_toplevel::set_app_id`
-        // *after* `xdg_surface::get_toplevel` fires `new_toplevel`, so
-        // the tab was initially adopted with a synthetic
-        // `anon-<surface_id>` placeholder. Re-read the now-populated
-        // app-id from the surface data and rewrite the tab in-place so
-        // the chrome (and the Phase 7 integration test) see the real
-        // app-id.
+        // Clients call `xdg_toplevel::set_app_id` *after*
+        // `xdg_surface::get_toplevel` fires `new_toplevel`, so the tab was
+        // initially adopted with a synthetic `anon-<surface_id>`
+        // placeholder. Re-read the now-populated app-id from the surface
+        // data and rewrite the tab in-place so the chrome (and the
+        // integration test) see the real app-id.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let new_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -1765,7 +1742,7 @@ impl XdgShellHandler for State {
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs land in phase 4 alongside the seat plumbing.
+        // Popup grabs aren't wired up yet.
     }
 
     fn reposition_request(
@@ -1785,8 +1762,7 @@ impl XdgShellHandler for State {
     /// `Fullscreen` state plus the full output size so its own surface fills
     /// the screen. The `_wl_output` hint is ignored: this compositor spans one
     /// combined scene across all outputs, so fullscreen always targets the
-    /// single presentation surface (see the multi-output note in
-    /// `plan/compositor.md`).
+    /// single presentation surface.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _wl_output: Option<WlOutput>) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         self.fullscreen_group = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);

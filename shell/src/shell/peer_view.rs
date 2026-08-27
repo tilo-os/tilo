@@ -1,29 +1,23 @@
-//! Peer-side foreign-surface view — Phase 4 Task 4.3.
+//! Peer-side foreign-surface view.
 //!
 //! `PeerView` is the receive-side counterpart to the owner's encode loop in
-//! [`crate::network::streaming`]. It owns one
-//! [`crate::network::H264Decoder`] and paints the most recently decoded
-//! RGBA frame as a vello image draw, blitted into the widget's content
-//! rect.
+//! [`crate::network::streaming`]. It owns one [`crate::network::H264Decoder`]
+//! and paints the most recently decoded RGBA frame as a vello image draw,
+//! blitted into the widget's content rect.
 //!
-//! When the peer subscribes to a foreign tab and a
-//! [`crate::network::NeighbourMsg::SurfaceFrame`] arrives over the
-//! workspace's gossipsub topic, the actor's event loop calls
-//! [`PeerView::push_encoded`] which decodes synchronously and stashes the
-//! latest frame as a `peniko::ImageData`. The next `draw` pass blits it. Older
-//! frames are dropped — there's no queue, mirroring the encode side's
-//! "encode or drop" memory contract.
+//! When a [`crate::network::NeighbourMsg::SurfaceFrame`] arrives over the
+//! workspace's gossipsub topic, [`PeerView::push_encoded`] decodes it
+//! synchronously and stashes the latest frame; the next `draw` pass blits
+//! it. Older frames are dropped — no queue, mirroring the encode side's
+//! "encode or drop" contract.
 //!
-//! ## Input replay
-//!
-//! Phase 4 Task 4.4 — pointer and keyboard events on a `PeerView` get
-//! recorded into an internal queue via [`PeerView::record_pointer_motion`]
-//! / [`PeerView::record_pointer_button`] / [`PeerView::record_key`]. The
+//! Pointer and keyboard events on a `PeerView` get recorded into an
+//! internal queue via [`PeerView::record_pointer_motion`] /
+//! [`PeerView::record_pointer_button`] / [`PeerView::record_key`]. The
 //! shell's per-frame tick drains [`PeerView::take_pending_inputs`] and
 //! ships each `InputEvent` over gossipsub as a
-//! [`crate::network::NeighbourMsg::RemoteInput`]. The owner's compositor
-//! then routes them through the [`crate::network::streaming::ShareRegistry`]
-//! before applying.
+//! [`crate::network::NeighbourMsg::RemoteInput`], routed on the owner side
+//! through the [`crate::network::streaming::ShareRegistry`].
 
 use std::collections::HashMap;
 
@@ -46,58 +40,45 @@ use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 
-/// Ceiling on the receive-side decode queue depth. `push_encoded_with_latency`
-/// enforces this via `frames_pending`; once the caller has more than
-/// [`PENDING_CEILING`] undrawn frames buffered, further pushes drop the
-/// oldest and bump the metrics counter.
-///
-/// Two is the minimum useful ceiling — one paint-in-flight and one
-/// staged for the next frame. Raising it lets the peer burn through a
-/// bandwidth burst but at the cost of latency (each pending frame adds
-/// one frame-time of delay). The compositor's existing "encode or drop"
-/// contract on the owner side means the peer should almost never
-/// backlog under steady state.
+/// Ceiling on the receive-side decode queue depth; once undrawn frames
+/// exceed this, further pushes drop the oldest and bump the metrics
+/// counter. Two is the minimum useful ceiling — one paint-in-flight, one
+/// staged for the next frame. Raising it trades latency for burst
+/// tolerance; the owner's "encode or drop" contract means the peer should
+/// almost never backlog under steady state.
 pub(crate) const PENDING_CEILING: u32 = 2;
 
-/// Outcome of a `push_encoded_with_latency` call. Returned so the
-/// caller (the actor's `NeighbourMsg::SurfaceFrame` handler) can log
-/// or surface drops in structured tracing.
+/// Outcome of a `push_encoded_with_latency` call, for structured logging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushOutcome {
-    /// The frame decoded and became the new latest. Its motion-to-photon
-    /// latency was recorded on the shared [`PeerSurfaceMetrics`].
+    /// Decoded and became the new latest frame; latency recorded on the
+    /// shared [`PeerSurfaceMetrics`].
     Decoded,
-    /// The frame decoded but the pending-queue ceiling was hit; the
-    /// oldest was dropped. `frames_dropped` on the shared metrics
-    /// incremented.
+    /// Decoded, but the pending-queue ceiling was hit and the oldest
+    /// frame was dropped; `frames_dropped` incremented.
     DroppedOldest,
-    /// The decoder rejected the payload (typically a corrupt NALU or a
-    /// mid-stream keyframe that hasn't arrived yet). Nothing recorded.
+    /// The decoder rejected the payload (corrupt NALU, or a mid-stream
+    /// keyframe not yet arrived). Nothing recorded.
     DecodeFailed,
 }
 
-/// Peer-side widget rendering one shared surface.
-///
-/// Holds the decoder, the latest decoded frame as a peniko image (ready
-/// to blit), and the pending-input queue. Constructed by the chrome when
-/// a foreign tab is bound to a peer-shared surface; lives for the
-/// lifetime of the tab.
+/// Peer-side widget rendering one shared surface: the decoder, the latest
+/// decoded frame as a peniko image, and the pending-input queue.
+/// Constructed by the chrome when a foreign tab is bound to a peer-shared
+/// surface; lives for the tab's lifetime.
 pub struct PeerView {
-    /// Cached title string returned by `AppWidget::app_title` — the trait
-    /// signature requires a `&str`, so we materialise the format string
+    /// Cached title string returned by `AppWidget::app_title` — materialised
     /// once at construction rather than per-frame.
     title: String,
     /// Surface id the owner uses to address this share. Echoed back in
     /// `RemoteInput` so the owner can route input to the right surface.
     surface_id: SurfaceId,
     /// Local peer id (the *viewer*) — the value the owner sees as the
-    /// `peer` field on `RemoteInput`. Wired through from the shell at
-    /// construction.
+    /// `peer` field on `RemoteInput`.
     local_peer: PeerId,
     /// Active decoder — H.264 for SDR, HEVC Main10 for HDR. Chosen at
     /// construction from `SurfaceStreamStart.codec`; SDR default so
-    /// legacy peers that call [`Self::new`] without a codec label
-    /// still work.
+    /// legacy peers that call [`Self::new`] without a codec label still work.
     decoder: VideoDecoder,
     /// Most recent decoded frame, ready to paint. `None` until the first
     /// successful decode.
@@ -114,40 +95,27 @@ pub struct PeerView {
     pending_inputs: Vec<InputEvent>,
     /// Layout rect computed by taffy.
     rect: Rect,
-    /// True when the view needs to repaint — set in [`Self::push_encoded`]
-    /// on every new decoded frame, cleared by `mark_drawn` after the App
-    /// composes the frame. Without this flag the default leaf
-    /// [`Widget::needs_redraw`] returns `true` every frame, defeating
-    /// the App's redraw-only-when-dirty gate so pointer-move events over
-    /// a peer surface used to schedule unnecessary repaints.
-    ///
-    /// Starts `true` so the very first frame paints the "Awaiting peer
-    /// surface…" placeholder.
+    /// True when the view needs to repaint — set on every new decoded
+    /// frame, cleared by `mark_drawn`. Without this, the default leaf
+    /// [`Widget::needs_redraw`] would return `true` every frame, defeating
+    /// the App's redraw-only-when-dirty gate. Starts `true` so the first
+    /// frame paints the placeholder.
     dirty: bool,
-    /// Shared observability counters. Cheap `Arc` clone; every push /
-    /// drop updates the same inner state so the OSD overlay + the e2e
-    /// test can read the counters without touching the widget.
-    ///
-    /// Constructed lazily with `PeerSurfaceMetrics::default()` when the
-    /// widget is built via `PeerView::new`; callers that want to share
-    /// the handle up-front use `PeerView::new_with_metrics`.
+    /// Shared observability counters (cheap `Arc` clone) — the OSD overlay
+    /// and the e2e test can read them without touching the widget. Callers
+    /// that want a shared handle up front use `PeerView::new_with_metrics`.
     metrics: PeerSurfaceMetrics,
-    /// Number of decoded frames the shell has *not yet* pulled through
-    /// the paint loop. Bumped on every accepted decode; cleared to zero
-    /// on `mark_drawn` (which the App calls after the composition pass
-    /// consumes the frame). Once this exceeds
-    /// [`PENDING_CEILING`], the next `push_encoded_with_latency` drops
-    /// the oldest — the widget effectively skips the previous decode
-    /// and picks up the new one, keeping motion-to-photon bounded even
-    /// when the peer is CPU-starved.
+    /// Decoded frames the shell hasn't yet pulled through the paint loop.
+    /// Bumped on every accepted decode, cleared on `mark_drawn`. Once this
+    /// exceeds [`PENDING_CEILING`], the next push drops the oldest,
+    /// keeping motion-to-photon bounded even when the peer is CPU-starved.
     frames_pending: u32,
 }
 
 impl PeerView {
-    /// Construct a new peer view for `surface_id` owned by the remote
-    /// peer; the viewer's own peer id is `local_peer`. A fresh metrics
-    /// handle is created — callers who want to share metrics with the
-    /// OSD overlay should use [`Self::new_with_metrics`].
+    /// Construct a new peer view for `surface_id` owned by the remote peer;
+    /// the viewer's own peer id is `local_peer`. A fresh metrics handle is
+    /// created — see [`Self::new_with_metrics`] to share one instead.
     pub fn new(surface_id: SurfaceId, local_peer: PeerId) -> Self {
         Self::new_with_metrics(surface_id, local_peer, PeerSurfaceMetrics::default())
     }
@@ -176,13 +144,11 @@ impl PeerView {
         }
     }
 
-    /// Codec-aware constructor. Picks the decoder based on the wire
-    /// label from `SurfaceStreamStart.codec` — `"h264"` for SDR,
-    /// `"hevc-main10"` for HDR — and captures the tone-map config
-    /// derived from the stream's HDR static metadata. On unknown /
-    /// unsupported codec labels the peer view falls back to SDR so the
-    /// caller can still show the placeholder + a diagnostic in the
-    /// OSD, rather than the entire share silently vanishing.
+    /// Codec-aware constructor: picks the decoder from
+    /// `SurfaceStreamStart.codec` (`"h264"` SDR, `"hevc-main10"` HDR) and
+    /// captures the tone-map config from the stream's HDR static metadata.
+    /// Unknown/unsupported labels fall back to SDR so the caller can show a
+    /// placeholder + OSD diagnostic rather than the share silently vanishing.
     pub fn new_for_stream(
         surface_id: SurfaceId,
         local_peer: PeerId,
@@ -200,32 +166,25 @@ impl PeerView {
             );
             VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
         });
-        // Route the SDR/HDR composition decision through the canonical
-        // output colour pipeline so the receive path uses the same logic
-        // as local composition. The stream's colorimetry follows the
-        // codec: HEVC Main10 carries HDR (PQ / BT.2020); H.264 is SDR
-        // BT.709. The tone-mapper only runs on an HDR stream bound for a
-        // non-HDR output; every other quadrant (SDR passthrough, the
-        // SDR→HDR encode, and HLG↔PQ transcode) leaves the CPU tone-map
-        // disabled.
+        // Route the SDR/HDR decision through the canonical output colour
+        // pipeline so receive matches local composition — the tone-mapper
+        // only runs on HDR-into-non-HDR-output.
         let stream_colorimetry = if matches!(decoder, VideoDecoder::H264(_)) {
             Colorimetry::sdr_bt709()
         } else {
             Colorimetry::hdr10()
         };
         let output_state = OutputColorState::from_display(display_caps);
-        // The stream's mastering peak, when signalled — same derivation as
-        // `HdrTonemapConfig::from_metadata`, but fed to the pipeline so it
-        // sizes tone-map compression against the real source peak.
+        // Mastering peak, when signalled — same derivation as
+        // `HdrTonemapConfig::from_metadata`, fed here so the pipeline sizes
+        // tone-map compression against the real source peak.
         let source_peak = hdr_static_metadata
             .map(|m| m.mastering.max_display_mastering_luminance as f32 / 10_000.0)
             .filter(|nits| nits.is_finite() && *nits > 0.0);
         let hdr_tonemap = match plan_surface_op(stream_colorimetry, &output_state, source_peak) {
             SurfaceColorOp::TonemapHdrToSdr { config } => Some(config),
-            // Passthrough (SDR→SDR, or HDR→HDR on a PQ-capable display),
-            // MapSdrToHdr (an SDR surface lifted into the HDR container on
-            // a PQ output — the `hdr_output_encode.wgsl` path), and the
-            // HLG↔PQ transcode all upload without a HDR→SDR CPU tone-map.
+            // Passthrough, MapSdrToHdr (the `hdr_output_encode.wgsl` path),
+            // and the HLG↔PQ transcode all upload without a CPU tone-map.
             SurfaceColorOp::Passthrough
             | SurfaceColorOp::MapSdrToHdr
             | SurfaceColorOp::TranscodeHdrTransfer => None,
@@ -275,12 +234,10 @@ impl PeerView {
         self.local_peer
     }
 
-    /// Push a NALU byte payload through the decoder. Drops failed
-    /// decodes silently (the next frame typically recovers). On success,
-    /// stashes the frame and invalidates the cached `peniko::ImageData` so
-    /// the next `draw` rebuilds it.
-    ///
-    /// Returns `true` if a new frame was decoded.
+    /// Push a NALU byte payload through the decoder. Drops failed decodes
+    /// silently (the next frame typically recovers); on success, stashes
+    /// the frame and invalidates the cached `peniko::ImageData`. Returns
+    /// `true` if a new frame was decoded.
     pub fn push_encoded(&mut self, nalus: &[u8]) -> bool {
         matches!(
             self.push_encoded_with_latency(nalus, None),
@@ -288,24 +245,13 @@ impl PeerView {
         )
     }
 
-    /// Push a NALU payload + record backpressure / latency in the
-    /// shared metrics.
-    ///
-    /// `latency_ns` is the caller-computed motion-to-photon delta —
-    /// `receiver_now_ns - NeighbourMsg::SurfaceFrame::ts` in the
-    /// session's monotonic clock domain. On a two-host WAN link the
-    /// clock domains differ; the session's start handshake carries the
-    /// offset (a follow-up variant of `SurfaceStreamStart`) and the
-    /// actor's receive loop is the natural place to apply it. Pass
-    /// `None` when latency isn't being tracked — the metrics ring
-    /// records a zero-latency sample for that frame so the counter
-    /// still ticks.
-    ///
-    /// Drop-oldest semantics: if the receive-side pending-queue depth
-    /// is already at [`PENDING_CEILING`] when a new frame lands, the
-    /// previous latest is dropped and `frames_dropped` increments. The
-    /// new frame still becomes `latest` — the "drop" is on the paint
-    /// side, not the decoder side.
+    /// Push a NALU payload and record backpressure/latency in the shared
+    /// metrics. `latency_ns` is the caller-computed motion-to-photon
+    /// delta; pass `None` when latency isn't tracked (a zero-latency
+    /// sample is recorded so the counter still ticks). Drop-oldest: if the
+    /// pending-queue depth is already at [`PENDING_CEILING`], the previous
+    /// latest is dropped (`frames_dropped` increments) but the new frame
+    /// still becomes `latest` — the drop is on the paint side, not the decoder.
     #[tracing::instrument(level = "trace", skip(self, nalus), fields(nalu_bytes = nalus.len()))]
     pub fn push_encoded_with_latency(
         &mut self,
@@ -328,8 +274,6 @@ impl PeerView {
         self.cached_image = None;
         self.dirty = true;
 
-        // Record latency (or a zero placeholder) so the frames_received
-        // counter always advances when a payload decodes.
         self.metrics.record_received(latency_ns.unwrap_or(0));
 
         if dropped {
@@ -364,14 +308,10 @@ impl PeerView {
             .push(InputEvent::PointerButton { button, pressed });
     }
 
-    /// Record a key press / release.
-    ///
-    /// `modifiers` is the xkbcommon-style bitfield (Shift=1, Ctrl=4,
-    /// Alt=8, Logo=64). Callers that don't need modifier bookkeeping can
-    /// pass `0`; the owner's `KeyboardHandle::input` picks up modifier
-    /// state from the running keycode stream, so an explicit `0` here
-    /// still delivers the key correctly as long as the peer sends the
-    /// modifier-key press/release events in order.
+    /// Record a key press/release. `modifiers` is the xkbcommon-style
+    /// bitfield (Shift=1, Ctrl=4, Alt=8, Logo=64); callers that don't
+    /// track modifiers can pass `0` since the owner's keycode stream
+    /// recovers state itself.
     pub fn record_key(&mut self, keysym: u32, pressed: bool, modifiers: u32) {
         self.pending_inputs.push(InputEvent::Key {
             keysym,
@@ -380,11 +320,9 @@ impl PeerView {
         });
     }
 
-    /// Compat shim: record a key without modifier metadata (defaults to
-    /// `modifiers = 0`). Kept so existing call sites that pre-date the
-    /// modifier field on `InputEvent::Key` don't need a mechanical
-    /// rewrite; new call sites should prefer [`Self::record_key`]
-    /// directly.
+    /// Compat shim: records a key without modifier metadata. Existing call
+    /// sites keep working without a rewrite; new call sites should prefer
+    /// [`Self::record_key`] directly.
     pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
         self.record_key(keysym, pressed, 0);
     }
@@ -395,23 +333,10 @@ impl PeerView {
         std::mem::take(&mut self.pending_inputs)
     }
 
-    /// Rebuild the cached `peniko::ImageData` from `latest` if needed.
-    /// Cheap when `cached_image` is already populated. On rebuild:
-    ///
-    /// - SDR RGBA frames → straight blob upload (unchanged fast path).
-    /// - HDR P010 frames + no HDR display → CPU-side tone-map
-    ///   ([`tonemap_p010_to_rgba8`]) into a fresh RGBA blob so the
-    ///   existing vello blit still shows a reasonable SDR
-    ///   approximation. Preserves 10-bit precision through the
-    ///   compression curve — only the last step (writing to
-    ///   `Rgba8UnormSrgb`) drops back to 8 bit.
-    /// - HDR P010 frames + HDR display → same tone-map for now; the
-    ///   direct `Rgb10a2Unorm` passthrough path is the Wayland
-    ///   `color-management-v1` follow-on and slots in at
-    ///   [`PeerView::new_for_stream`]'s `hdr_tonemap = None` branch.
-    ///   Until then, tone-mapping HDR content on an HDR display just
-    ///   compresses to display peak — visually indistinguishable from
-    ///   the SDR fallback until the real path is wired.
+    /// Rebuild the cached `peniko::ImageData` from `latest` if needed
+    /// (cheap no-op once populated). SDR RGBA frames upload straight
+    /// through; HDR P010 frames are CPU tone-mapped
+    /// ([`tonemap_p010_to_rgba8`]) into RGBA regardless of display HDR support.
     fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
         if self.cached_image.is_none() {
             if let Some(frame) = &self.latest {
@@ -480,10 +405,8 @@ impl Widget for PeerView {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Rect changed → the placement matrix in `draw` changes too;
-        // schedule a repaint. Use exact equality here because taffy
-        // produces integer-valued logical pixels and identical-input
-        // layout passes return identical rects.
+        // Rect changed → the placement matrix in `draw` changes too. Exact
+        // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {
             self.dirty = true;
         }
@@ -499,9 +422,8 @@ impl Widget for PeerView {
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // Background — fall through to the raised surface so an empty /
-        // pre-first-frame view still looks intentional rather than a
-        // hole in the chrome.
+        // Fall through to the raised surface so a pre-first-frame view
+        // still looks intentional rather than a hole in the chrome.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -510,7 +432,6 @@ impl Widget for PeerView {
             &self.rect,
         );
 
-        // We need the rect first; do the actual blit after.
         let rect = self.rect;
 
         if let Some(image) = self.ensure_image() {
@@ -525,9 +446,6 @@ impl Widget for PeerView {
                 scene.draw_image(image, transform * placement);
             }
         } else {
-            // Placeholder text — "waiting for first frame" so the test
-            // harness and the user both see this is an intentional empty
-            // state.
             let label = "Awaiting peer surface…";
             let size = tokens.typography.scale.base;
             let (lw, lh) = text_renderer.measure(label, size, None);
@@ -556,9 +474,8 @@ impl Widget for PeerView {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Real winit→`InputEvent` translation lives at the shell level so
-        // we can resolve surface-local coordinates from `self.rect` and
-        // the cursor position. The shell calls `record_*` directly.
+        // Real winit→`InputEvent` translation lives at the shell level,
+        // which calls `record_*` directly.
     }
 
     fn name(&self) -> &str {
@@ -569,20 +486,16 @@ impl Widget for PeerView {
         self.rect
     }
 
-    /// PeerView's painted pixels change only on (a) new decoded frame
-    /// (set by `push_encoded`), (b) layout rect change (set by
-    /// `apply_layout`). Hover / focus do nothing visually — the
-    /// surface is a passive blit of the latest H.264 frame. Override
-    /// so the App's CursorMoved redraw gate can skip frames over a
-    /// peer surface that hasn't received new H.264 NALUs.
+    /// PeerView's pixels change only on a new decoded frame or a layout
+    /// rect change; hover/focus do nothing visually. Overridden so the
+    /// App's CursorMoved redraw gate can skip frames over an idle peer
+    /// surface.
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        // Drawing a frame clears the pending-queue depth — the paint
-        // pass has caught up with every accepted decode.
         self.frames_pending = 0;
     }
 
@@ -597,8 +510,7 @@ impl Widget for PeerView {
 impl AppWidget for PeerView {
     fn app_kind(&self) -> AppKind {
         // No dedicated `Peer` variant yet; `Settings` is the catch-all
-        // glyph the shell already uses for foreign tabs in
-        // `shell::to_ui_kind`. The icon is mostly cosmetic on a peer view.
+        // glyph the shell uses for foreign tabs in `shell::to_ui_kind`.
         AppKind::Settings
     }
 
@@ -622,9 +534,8 @@ mod tests {
     use super::*;
     use crate::network::encoder::H264Encoder;
 
-    /// Synthesise a deterministic RGBA gradient — mirrors the helper
-    /// inside the encoder tests so we don't have to commit a binary
-    /// fixture for the round-trip.
+    /// Synthesise a deterministic RGBA gradient so the round-trip needs
+    /// no binary fixture.
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {
@@ -640,9 +551,9 @@ mod tests {
         out
     }
 
-    /// Phase 4 Task 4.3 — required test. Encode a frame via the encoder,
-    /// push the NALU bytes through `PeerView::push_encoded`, then draw
-    /// and confirm a `DrawTag::IMAGE` lands in the scene's encoding.
+    /// Encode a frame via the encoder, push the NALU bytes through
+    /// `PeerView::push_encoded`, then draw and confirm a `DrawTag::IMAGE`
+    /// lands in the scene's encoding.
     #[test]
     fn decoded_frame_paints_image_into_scene() {
         use vello_encoding::DrawTag;
@@ -655,7 +566,6 @@ mod tests {
         let mut view = PeerView::new(42, 7);
         let progressed = view.push_encoded(&nalus);
         assert!(progressed, "decoder produced no frame from encoder output");
-        // Sanity — the latest frame matches the source dimensions.
         let latest = view.latest_frame().expect("frame stashed");
         assert_eq!(latest.width, W);
         assert_eq!(latest.height, H);
@@ -664,8 +574,7 @@ mod tests {
             "H.264 decoder should yield RGBA pixels"
         );
 
-        // Layout a 100×100 rect at origin so the image has somewhere to
-        // blit.
+        // 100×100 rect at origin so the image has somewhere to blit.
         view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
         let mut scene = Scene::new();
@@ -674,7 +583,6 @@ mod tests {
         let presence = PresenceCtx::default();
         view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        // Walk the encoded draw tags for an IMAGE tag.
         let enc_ref = scene.encoding();
         let has_image = enc_ref.draw_tags.iter().any(|t| *t == DrawTag::IMAGE);
         assert!(
@@ -777,21 +685,14 @@ mod tests {
         );
     }
 
-    /// A stream-start label the receiver cannot honour must never cost
-    /// the viewer the share.
-    ///
-    /// This is the promise the codec plumbing actually makes, and it is
-    /// the one worth pinning: a peer can announce a codec this build
-    /// does not know (a newer sender), or one it knows but whose backend
-    /// is absent at runtime. The `"hevc-main10"` case is not
-    /// hypothetical — Fedora's `libavcodec-free`, which qOS images ship,
-    /// is built `--disable-decoder='h264,hevc,vc1,vvc'`, so
-    /// `HevcDecoder::new` fails on a stock image even though
-    /// `hdr-decode` is compiled in.
-    ///
-    /// Both labels are driven through the real constructor, and the
-    /// resulting view is made to decode a real H.264 frame, because
-    /// "constructed something" is not the same as "the share works".
+    /// A stream-start label the receiver cannot honour must never cost the
+    /// viewer the share. Not hypothetical: Fedora's `libavcodec-free`
+    /// (which qOS images ship) is built
+    /// `--disable-decoder='h264,hevc,vc1,vvc'`, so `HevcDecoder::new`
+    /// fails on a stock image even with `hdr-decode` compiled in. Both
+    /// labels are driven through the real constructor, and the resulting
+    /// view is made to decode a real frame — "constructed something" isn't
+    /// the same as "the share works".
     #[test]
     fn an_unsupported_stream_label_still_yields_a_working_peer_view() {
         const W: u32 = 64;
@@ -801,9 +702,8 @@ mod tests {
         let nalus = enc.encode(&rgba).expect("encode");
         let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
 
-        // "av1" is unknown in every build, so this arm of the fallback is
-        // exercised on every host, with no dependency on what libavcodec
-        // was compiled with.
+        // "av1" is unknown in every build, so this fallback arm is
+        // exercised regardless of what libavcodec was compiled with.
         let mut unknown = PeerView::new_for_stream(
             42,
             7,
@@ -821,10 +721,8 @@ mod tests {
             "the fallback decoder has to actually decode the SDR stream"
         );
 
-        // "hevc-main10" is known, and resolves to whichever of the two
-        // legal outcomes this host allows. Either way the view is usable:
-        // when the HEVC backend is missing it degrades to H.264 exactly
-        // like the unknown label, and when it is present it runs HDR.
+        // "hevc-main10" is known, resolving to whichever of the two legal
+        // outcomes this host allows; either way the view is usable.
         let mut hevc = PeerView::new_for_stream(
             43,
             7,
@@ -834,18 +732,14 @@ mod tests {
             None,
         );
         if matches!(hevc.decoder, VideoDecoder::H264(_)) {
-            // Degraded path — this is what a stock qOS image does. Prove
-            // it decodes, so the viewer sees the share rather than a
-            // dead surface.
+            // Degraded path — what a stock qOS image does.
             assert!(
                 hevc.push_encoded(&nalus),
                 "the degraded HEVC view must still decode the SDR stream \
                  the sender is really emitting"
             );
         } else {
-            // Host has a real HEVC decoder, so the view is on the HDR
-            // path. It must have got there because the backend genuinely
-            // builds, not because something mislabelled itself.
+            // Real HEVC decoder — the backend genuinely builds.
             assert!(
                 VideoDecoder::for_wire_codec("hevc-main10").is_ok(),
                 "the HDR path is only reachable when the backend builds"

@@ -39,7 +39,6 @@ pub const KEY_FINISH: &str = "onboarding.finish";
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 
-/// The ceremony widget.
 pub struct OnboardingView {
     flow: Onboarding,
     minter: Minter,

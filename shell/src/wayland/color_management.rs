@@ -1,43 +1,25 @@
 //! `color-management-v1` staging protocol — server-side dispatch.
 //!
-//! smithay 0.7 ships no ready-made handler for the freedesktop
-//! `color-management-v1` staging protocol, so we implement the whole
-//! thing manually with `wayland-server` `Dispatch` / `GlobalDispatch`
-//! traits and register the protocol via `delegate_dispatch!` /
-//! `delegate_global_dispatch!` at the bottom of this module.
+//! smithay 0.7 ships no ready-made handler for this freedesktop staging
+//! protocol, so the whole thing is implemented manually with
+//! `wayland-server` `Dispatch` / `GlobalDispatch`, registered via
+//! `delegate_dispatch!` / `delegate_global_dispatch!` at the bottom.
 //!
-//! # Scope of the v1 implementation
+//! Advertises the *parametric* creator path only — primaries, transfer
+//! function, optional mastering-display/luminance hints, then `create`
+//! for an immutable `wp_image_description_v1` attached via
+//! `wp_color_management_surface_v1`. Deliberately unimplemented: ICC
+//! creators and Windows-scRGB (`unsupported_feature` error — the
+//! parametric path already unblocks HDR clients like `mpv --hdr`), and
+//! `get_information` on our own descriptions (`no_information` — they're
+//! surface-attach-only, not for round-tripping; feedback-surface
+//! descriptions do get info).
 //!
-//! The compositor advertises the *parametric* creator path only — a
-//! client builds an image description by naming a set of primaries, a
-//! transfer function, optional mastering-display and luminance
-//! hints, and finally calls `create` to get back an immutable
-//! `wp_image_description_v1`. That description then attaches to a
-//! `wl_surface` through `wp_color_management_surface_v1`.
-//!
-//! What is deliberately *not* implemented in v1:
-//!
-//! - ICC-based image descriptions (`create_icc_creator`) — the request
-//!   is answered with the `unsupported_feature` protocol error. Adding
-//!   it means parsing an ICC profile blob; the parametric path is
-//!   enough to unblock HDR clients like `mpv --hdr` and the browsers.
-//! - Windows-scRGB (`create_windows_scrgb`) — same treatment.
-//! - `get_information` on any of our own image descriptions — we
-//!   raise `no_information` because the descriptions we hand out are
-//!   only used for the surface-attach path, not for round-tripping
-//!   through the client. Feedback-surface descriptions do get info.
-//!
-//! # Per-surface state
-//!
-//! Attaching an image description to a surface is a double-buffered
-//! operation per the spec — `wp_color_management_surface_v1.set_image_description`
-//! marks the pending state, `wl_surface.commit` applies it. To keep
-//! the change surface-local rather than smuggled through the compositor
-//! state, we stash the pending + current values inside
-//! `SurfaceData::data_map` under [`ColorManagementSurfaceData`]. The
-//! commit hook in [`crate::compositor::state::State`] flips pending
-//! → current; the flatpak-share encoder + the wgpu/vello backend
-//! read the current value.
+//! Per-surface attach is double-buffered per spec (pending on
+//! `set_image_description`, applied on `wl_surface.commit`); the pending
+//! + current values live in `SurfaceData::data_map` under
+//! [`ColorManagementSurfaceData`], flipped by the commit hook in
+//! [`crate::compositor::state::State`].
 
 use std::sync::{Arc, Mutex};
 
@@ -457,11 +439,8 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     output: WlOutput,
     /// Colorimetry the compositor tells clients this output actually
@@ -508,11 +487,8 @@ impl ColorManagementOutputData {
 /// which surface to mutate.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceUserData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     surface: WlSurface,
 }
@@ -528,11 +504,8 @@ impl ColorManagementSurfaceUserData {
 /// back the compositor's preferred description.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceFeedbackData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     surface: WlSurface,
 }

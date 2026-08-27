@@ -1,21 +1,16 @@
-//! Workspace-drop handling — port of the concept's `DesktopView.tsx`
-//! `handleDrop` path (lines 187–205).
+//! Workspace-drop handling.
 //!
 //! When a file or folder is dragged from the file explorer (or any
 //! source that emits `application/x-os-item`) and released onto the
-//! workspace area, the concept opens an appropriate app in the active
-//! strip:
+//! workspace area:
 //!
 //! - Folders → Files app.
 //! - Files whose extension is in `{js,ts,tsx,json,md,css,html}` → Editor.
 //! - Anything else → Files.
 //!
-//! This module exposes the two pieces needed for parity: a pure
-//! `decide_app_for_drop` selector and an `apply_workspace_drop` helper
-//! that splices a new `Tab` into the active workspace's first strip's
-//! first window group. Both are unit-testable without a winit event
-//! pump, so the behaviour can be locked in before the
-//! `WindowEvent::DroppedFile` wiring lands in `main.rs`.
+//! `decide_app_for_drop` is a pure selector; `apply_workspace_drop`
+//! splices a new `Tab` into the active workspace's first strip's first
+//! window group. Both are unit-testable without a winit event pump.
 
 use std::path::Path;
 
@@ -66,13 +61,12 @@ impl DraggedItem {
     }
 }
 
-/// Extensions the concept's `DesktopView.tsx` routes to the Editor
-/// (line 199). Kept as a sorted `&[&str]` because the list is small and
-/// exhaustive — a lookup-table or regex would be overkill.
+/// Extensions routed to the Editor. Kept as a sorted `&[&str]` because
+/// the list is small and exhaustive — a lookup-table or regex would be
+/// overkill.
 pub const EDITOR_EXTENSIONS: &[&str] = &["css", "html", "js", "json", "md", "ts", "tsx"];
 
 /// Pure app-selector — given a dragged item, pick which app to open.
-/// Mirrors `DesktopView.tsx:195-204`.
 pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     if item.is_folder {
         return AppKind::FileExplorer;
@@ -129,9 +123,9 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
             maximized: false,
         });
     }
-    // Unit D: mirror the cache append into the automerge doc so peers
-    // observe the new tab on the next sync round. No-op if the active
-    // workspace isn't seeded into the doc.
+    // Mirror the cache append into the automerge doc so peers observe the
+    // new tab on the next sync round. No-op if the active workspace isn't
+    // seeded into the doc.
     tree.doc_append_tab_to_first_group_of_active_workspace(tab_id, doc_title, doc_tile_blob);
     Some(tab_id)
 }
@@ -200,7 +194,7 @@ pub fn apply_workspace_drop_at_from_path(
 /// while the persisted vocabulary carries `FileExplorer` and the
 /// open-ended `Other(String)` bucket — so we fold the `"Editor"` variant
 /// onto `UiAppKind::Settings` as a temporary parking spot until an
-/// `Editor` variant lands on the UI enum (spec §7 follow-up).
+/// `Editor` variant lands on the UI enum.
 fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
     match kind {
         AppKind::Terminal => UiAppKind::Terminal,
@@ -273,9 +267,8 @@ pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> 
 /// reworks of the module don't have to re-add the import.
 fn _use_runtime_strip(_s: &RuntimeStrip) {}
 
-/// Pick a tab label for a dropped item. Mirrors the concept's
-/// `onOpenApp` defaults: folders get "Files — <name>", code files keep
-/// their filename, others get "Files — <name>" too.
+/// Pick a tab label for a dropped item: folders get "Files — <name>",
+/// code files keep their filename, others get "Files — <name>" too.
 fn tab_label_for(item: &DraggedItem, kind: &AppKind) -> String {
     match kind {
         AppKind::Other(s) if s == "Editor" => item.name.clone(),

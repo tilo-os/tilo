@@ -1,14 +1,10 @@
-//! Notes provider — walks every Notes-kind tab across every
-//! workspace/strip/group and matches the query against tab title +
-//! Automerge body text.
+//! Notes provider — walks every Notes-kind tab and matches the query against
+//! tab title + Automerge body text; Enter focuses the tab. Runs
+//! synchronously against `chrome.tree()`, since notes live in the same
+//! Automerge doc the palette callback already holds.
 //!
-//! Enter on a result focuses the tab (switches workspace, strip, group,
-//! and active tab pointer). No side-thread — notes live in the same
-//! Automerge doc the palette callback already gets, so the match runs
-//! synchronously against `chrome.tree()`.
-//!
-//! The walk, the scoring and the body read are shared with the Editor
-//! (see [`super::text_app`]); this module is the Notes flavour of it.
+//! Walk, scoring and body read are shared with the Editor (see
+//! [`super::text_app`]).
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::notes_app::BODY_KEY;
@@ -107,11 +103,9 @@ mod tests {
         Arc::new(RwLock::new(tree))
     }
 
-    /// Seed the body the way the *app* does: construct the real
-    /// [`NotesApp`] and let its `sync` write into the document the tab
-    /// holds — its own record, which is where a hosted Notes tab's body
-    /// lives. A hand-rolled seed, or one written to some other document,
-    /// is what let the provider read from a path nothing ever wrote to.
+    /// Seed the body the way the *app* does — a real [`NotesApp`] whose
+    /// `sync` writes into the tab's own record. A hand-rolled seed can write
+    /// somewhere the provider never reads, making the test prove nothing.
     fn seed_note_body(chrome: &ChromeState, tab_id: u64, body: &str) {
         let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
         let store = chrome.records();
@@ -168,13 +162,8 @@ mod tests {
         );
     }
 
-    /// The reported bug in the words it was reported in, against the note
-    /// body that was reported with. (The shell no longer seeds that text
-    /// on first boot — a note opens empty — so the body is written here
-    /// rather than assumed.) `nir` matches nothing else about the tab —
-    /// not its title, not its label. The
-    /// provider looked for the body under a per-tab map keyed by the tab
-    /// id, a shape the tile wiring never creates, so this found nothing.
+    /// `nir` matches nothing else about the tab, isolating a body-only
+    /// match. Notes open empty, so the body is written here, not assumed.
     #[test]
     fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
         let handle = tree_with_note_tab(7, "Notes");

@@ -49,7 +49,7 @@ fn test_wayland_handshake_fixed() {
 
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
-            // FIX: Must dispatch clients manually if not using a source
+            // Must dispatch clients manually if not using a source.
             let _ = display.dispatch_clients(&mut server_state);
             let _ = display.flush_clients();
 
@@ -65,7 +65,6 @@ fn test_wayland_handshake_fixed() {
     let container = Container::new("/tmp");
     let tab_id = Uuid::new_v4();
 
-    // We use WAYLAND_DEBUG=1 to verify
     let mut cmd = container.build_command("alacritty -e true", &socket_name);
     cmd.env("WAYLAND_DEBUG", "1");
     let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);

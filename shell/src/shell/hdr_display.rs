@@ -1,33 +1,13 @@
-//! Display-capability probe for the receive-side PeerView.
+//! Display-capability probe for the receive-side PeerView: can this output
+//! show PQ pixels natively? If yes the tone-mapper is bypassed for
+//! passthrough; otherwise it runs on decode.
 //!
-//! The compositor asks "can this output show PQ pixels natively?" per
-//! monitor before wiring a PeerView; if yes, the shell's Wayland
-//! `color-management-v1` extension (a follow-up) negotiates PQ
-//! passthrough with the DRM connector and the tone-mapper is
-//! bypassed. Otherwise the tone-mapper runs on decode.
+//! Answers whether the wgpu adapter exposes an HDR-capable presentation
+//! format, what luminance the display sustains (best-effort from
+//! EDID/Vulkan metadata), and which transfer functions can be delivered.
 //!
-//! # Probe strategy
-//!
-//! We answer three questions:
-//!
-//! 1. **Does the wgpu adapter expose an HDR-capable format for
-//!    presentation?** — `Rgb10a2Unorm` and `Rgba16Float` on the
-//!    surface's `TextureFormat` list. The latter is scRGB-ish, the
-//!    former is a HDR10 candidate.
-//! 2. **What luminance can the display sustain?** — best-effort from
-//!    the EDID HDR static block on DRM/KMS or the Vulkan
-//!    `VK_EXT_hdr_metadata` extension on native-Wayland. Falls back
-//!    to conservative defaults when unknown.
-//! 3. **Which transfer functions can the compositor deliver?** — PQ
-//!    (HDR10) vs HLG. Determined by the same wgpu format list + the
-//!    Wayland compositor's advertised colour-management support.
-//!
-//! Wrong-negative (reporting SDR when the display is HDR-capable)
-//! just costs quality on an actual HDR panel — the tone-mapper
-//! degrades to no-op-ish on 100-nit content. Wrong-positive
-//! (reporting HDR when it isn't) would send PQ pixels to an SDR
-//! panel and look wrong (mostly clipped to black). The default
-//! stance is therefore SDR — every uncertain path returns
+//! A wrong negative only costs quality; a wrong positive sends PQ pixels to
+//! an SDR panel and clips to black. Every uncertain path therefore returns
 //! [`DisplayCapabilities::sdr_default`].
 
 /// What the compositor can deliver to the panel connected to this
@@ -36,30 +16,24 @@
 /// between tone-map and passthrough.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DisplayCapabilities {
-    /// Peak sustainable luminance in cd/m². SDR panels report 100;
-    /// entry-level HDR panels (HDR400) 400; HDR1000 panels 1000+.
-    /// Used by the compositor to pick the tone-map target when
-    /// tone-mapping IS needed (a "bright SDR" panel wants less
-    /// aggressive compression than a "dim SDR" panel).
+    /// Peak sustainable luminance in cd/m² — SDR 100, HDR400 400, HDR1000
+    /// 1000+. Sets the tone-map target: a bright panel wants less
+    /// aggressive compression than a dim one.
     pub max_luminance_nits: f32,
-    /// The compositor can output PQ (SMPTE ST 2084) transfer through
-    /// the DRM connector or Vulkan swapchain. True → passthrough
-    /// path; false → tone-map to SDR.
+    /// PQ (SMPTE ST 2084) can be driven out through the DRM connector or
+    /// Vulkan swapchain: true → passthrough, false → tone-map to SDR.
     pub supports_pq_output: bool,
     /// The compositor can output HLG. Independent of PQ — some
     /// broadcast HDR TVs prefer HLG.
     pub supports_hlg_output: bool,
-    /// The panel covers (approximately) the BT.2020 gamut. If false
-    /// and PQ is on, the gamut-mapping step still runs even in the
-    /// "HDR display" path so out-of-gamut colours get compressed
-    /// toward the display's real chromaticities.
+    /// Panel approximately covers BT.2020. When false and PQ is on,
+    /// gamut-mapping still runs in the HDR path so out-of-gamut colours
+    /// compress toward the display's real chromaticities.
     pub bt2020_gamut: bool,
 }
 
 impl DisplayCapabilities {
-    /// Conservative SDR default — everything the tone-mapper needs to
-    /// pick the "just make it look OK on a regular monitor" path.
-    /// Returned on any probe failure.
+    /// Conservative SDR default, returned on any probe failure.
     pub const fn sdr_default() -> Self {
         Self {
             max_luminance_nits: 100.0,
@@ -69,9 +43,8 @@ impl DisplayCapabilities {
         }
     }
 
-    /// HDR10 baseline — 1000 cd/m², PQ, BT.2020. What we assert when
-    /// the probe finds `Rgb10a2Unorm` + explicit HDR metadata
-    /// support.
+    /// HDR10 baseline — 1000 cd/m², PQ, BT.2020 — asserted when the probe
+    /// finds `Rgb10a2Unorm` plus explicit HDR metadata support.
     pub const fn hdr10_baseline() -> Self {
         Self {
             max_luminance_nits: 1000.0,
@@ -88,27 +61,11 @@ impl Default for DisplayCapabilities {
     }
 }
 
-/// Probe a wgpu adapter + surface for HDR capabilities. Returns SDR
-/// defaults on any error path so callers never accidentally send PQ
-/// pixels to an SDR display.
-///
-/// The probe:
-/// 1. Queries `surface.get_capabilities(adapter)` for the format
-///    list. `Rgb10a2Unorm` or `Rgba16Float` presence signals the
-///    swapchain can carry HDR pixel data.
-/// 2. On DRM/KMS (Linux native compositor path), a caller-supplied
-///    EDID hint from the connector's HDR static metadata block would
-///    tell us the panel's real peak. Not wired here — the compositor
-///    passes the value through a follow-on
-///    `ColorimetryHint` on top of this probe.
-/// 3. Vulkan-side HDR metadata extension check goes through the
-///    adapter's `get_info().backend`. On the Vulkan backend we can
-///    ask for `VK_EXT_hdr_metadata`; on other backends we assume no.
-///
-/// The probe is intentionally read-only — no allocations, no
-/// resource creation, just format-list inspection. Safe to call
-/// from the shell's per-frame path if the compositor ever wants to
-/// re-probe after hotplug.
+/// Probe a wgpu adapter + surface for HDR capabilities, returning SDR
+/// defaults on any error path so callers never send PQ pixels to an SDR
+/// display. Read-only format-list inspection, safe to re-probe after
+/// hotplug. EDID HDR static metadata is not read here; the compositor
+/// supplies that peak separately.
 pub fn detect_hdr_display(
     adapter: &vello::wgpu::Adapter,
     surface: &vello::wgpu::Surface,
@@ -128,20 +85,14 @@ pub fn detect_hdr_display(
     }
 
     let backend = adapter.get_info().backend;
-    // Vulkan is the only backend on which we currently trust the
-    // HDR metadata plumbing to actually reach the panel — Vulkan
-    // + KMS supports the `VK_EXT_hdr_metadata` handshake, other
-    // backends (GL, DX12, Metal in the compositor) route through
-    // shims that don't. Conservative default: if we're not on
-    // Vulkan, refuse to claim PQ passthrough regardless of format
-    // availability.
+    // Vulkan + KMS is the only backend with the `VK_EXT_hdr_metadata`
+    // handshake; others route through shims without it, so no PQ passthrough
+    // regardless of format availability.
     let backend_supports_hdr = matches!(backend, vello::wgpu::Backend::Vulkan);
     if !backend_supports_hdr {
         return DisplayCapabilities {
-            // Format is present, so at least the swapchain could
-            // carry HDR — bump max luminance modestly so the
-            // tone-mapper has slightly more headroom on a "bright
-            // SDR" monitor.
+            // Format is present, so bump max luminance modestly for
+            // headroom on a "bright SDR" monitor.
             max_luminance_nits: 200.0,
             supports_pq_output: false,
             supports_hlg_output: false,
@@ -166,10 +117,8 @@ pub fn preferred_hdr_swapchain_format(
     if !caps.supports_pq_output {
         return None;
     }
-    // Rgb10a2Unorm is the standard HDR10-carrying swapchain format
-    // when we've decided passthrough is safe. Rgba16Float is only
-    // preferred when the display asks for it and the compositor is
-    // running a scRGB-style intermediate — rare for us today.
+    // Rgb10a2Unorm is the standard HDR10-carrying swapchain format;
+    // Rgba16Float only suits an scRGB-style intermediate, rare here.
     if caps.max_luminance_nits >= 800.0 {
         Some(vello::wgpu::TextureFormat::Rgba16Float)
     } else {
@@ -200,9 +149,6 @@ mod tests {
     fn preferred_swapchain_format_picks_rgb10a2_on_hdr10_baseline() {
         let caps = DisplayCapabilities::hdr10_baseline();
         let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 should pick a format");
-        // 1000-nit tips over into Rgba16Float per the branching in
-        // preferred_hdr_swapchain_format — either is valid HDR10;
-        // downstream just needs to accept it.
         assert!(
             matches!(
                 fmt,

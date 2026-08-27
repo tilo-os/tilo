@@ -1,36 +1,20 @@
 //! Deliver local keyboard / pointer input to foreign Wayland clients.
 //!
-//! The compositor draws its own chrome (top bar, tab strip, wheel disc,
-//! palette, overlays) and, since the shell is not a Wayland client, that
-//! chrome consumes winit events directly through
-//! [`crate::compositor::frame::FrameBuilder::dispatch_event`]. A foreign
-//! `xdg_toplevel` adopted into a tab is a *real* client though: it only
-//! ever sees input that the compositor explicitly pushes into the
-//! `wl_seat`.
+//! The compositor draws its own chrome through
+//! [`crate::compositor::frame::FrameBuilder::dispatch_event`], but a foreign
+//! `xdg_toplevel` adopted into a tab only ever sees input this module
+//! explicitly pushes into the `wl_seat`. It owns the surface registry
+//! (protocol id -> `WlSurface`), focus arbitration between chrome and
+//! client, and translation of winit events into the evdev keycodes and
+//! surface-local coordinates smithay expects. Chrome always wins focus: an
+//! open overlay, a compositor chord, or a pointer outside every tile rect
+//! all keep input on the shell side.
 //!
-//! This module is that push. It owns three things:
-//!
-//! 1. **The surface registry** — `surface protocol id -> WlSurface`, filled
-//!    from [`smithay::wayland::shell::xdg::XdgShellHandler::new_toplevel`]
-//!    and drained on destroy. Without it there is no way back from the
-//!    `u64` the workspace tree stores to the protocol object the seat
-//!    needs.
-//! 2. **Focus arbitration** — which side (shell chrome or a client
-//!    surface) currently owns the keyboard, and which surface the pointer
-//!    is over. Chrome always wins: an open overlay / palette, a
-//!    compositor chord, or a pointer position outside every tile rect all
-//!    keep input on the shell side.
-//! 3. **Event translation** — winit `WindowEvent`s into the evdev
-//!    keycodes, surface-local coordinates, button codes and axis frames
-//!    smithay's `KeyboardHandle` / `PointerHandle` expect, with a fresh
-//!    serial and a monotonic timestamp per event.
-//!
-//! Geometry note: a foreign toplevel is mounted as the sole tab of its
-//! own window group, so the group's laid-out *tile* rect (everything
-//! below the tab bar) is exactly the surface's on-screen rectangle. That
-//! rect's origin is what smithay subtracts from the global pointer
-//! location to produce surface-local coordinates — see
-//! [`crate::shell::overlay_host::ShellOverlayHost::active_tile_rect`].
+//! Geometry: a foreign toplevel is the sole tab of its own window group, so
+//! the group's laid-out tile rect is exactly the surface's on-screen
+//! rectangle — smithay subtracts that origin to get surface-local
+//! coordinates (see
+//! [`crate::shell::overlay_host::ShellOverlayHost::active_tile_rect`]).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -77,9 +61,8 @@ const BTN_SIDE: u32 = 0x113;
 const BTN_EXTRA: u32 = 0x114;
 
 /// Scroll distance, in surface-local units, that one notch of a discrete
-/// wheel maps to. Matches the value every mainstream compositor sends so
-/// clients that scale `wl_pointer.axis` by a fixed factor behave the same
-/// here as they do under Mutter / KWin / niri.
+/// wheel maps to. Matches the value mainstream compositors send so clients
+/// scaling `wl_pointer.axis` by a fixed factor behave consistently.
 const WHEEL_STEP: f64 = 15.0;
 
 /// Which side of the compositor owns the pointer for the duration of an
@@ -116,21 +99,11 @@ pub struct ClientInput {
     /// Surface the pointer is currently inside (and therefore focused on
     /// at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
-    /// Last known cursor position in global (output) coordinates, or
-    /// `None` until the pointer has actually been somewhere.
-    ///
-    /// The distinction is not bookkeeping. Peer presence is published
-    /// level-triggered from the frame loop, so whatever this says is
-    /// announced to the room on every pass. A plain `(0.0, 0.0)` here
-    /// is indistinguishable from a pointer resting in the top-left
-    /// corner, and a session that has never had one moved through it
-    /// would therefore put a cursor on every peer's screen for
-    /// somebody who is not there — permanently, for a session that
-    /// never moves a mouse at all.
-    ///
-    /// Written in exactly one place: the `CursorMoved` arm of
-    /// [`route_input`], which every source of motion goes through — a
-    /// real seat, the test-control socket, a peer's injected input.
+    /// Last known cursor position in global coordinates; `None` until the
+    /// pointer has actually moved. `Option` rather than `(0.0, 0.0)` because
+    /// presence is published level-triggered, so a default would be
+    /// indistinguishable from a pointer at the top-left corner and would put
+    /// a cursor on every peer's screen for a session that never moved a mouse.
     cursor: Option<(f64, f64)>,
     /// Implicit pointer grab owner, latched on the first button press and
     /// released when the last button comes up. Without this a drag that
@@ -150,13 +123,11 @@ pub struct ClientInput {
     pending_renames: Vec<(u64, String)>,
     /// Where each mirrored surface ended up: `surface id -> (strip, group)`.
     placements: HashMap<u64, (StripId, GroupId)>,
-    /// evdev codes whose *press* was forwarded to a client. A release is
-    /// forwarded if and only if its press was, which keeps two things in
-    /// step: a client never sees a release for a key it never saw pressed
-    /// (a shell chord), and smithay's `forwarded_pressed_keys` never keeps
-    /// a phantom entry that every later focus `enter` would replay (a key
-    /// pressed with a client focused and released after an overlay took
-    /// the keyboard).
+    /// evdev codes whose *press* was forwarded to a client. A release
+    /// forwards iff its press did — a client never sees a release for a
+    /// key it never saw pressed (a shell chord), and smithay's
+    /// `forwarded_pressed_keys` never keeps a phantom entry a later focus
+    /// `enter` would replay.
     forwarded_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a
     /// touchpad's stream of small pixel deltas fires one discrete jump
@@ -167,12 +138,8 @@ pub struct ClientInput {
 
 /// Resolve where an Alt+Shift wheel jump of `steps` windows lands. A
 /// "window" is a tab: the walk flattens the active strip's groups into
-/// their tabs in strip order, so from the boot state's single
-/// four-tab group (Notes, Files, Terminal, Browser) one step right of
-/// Notes is Files, and past a group's last tab the walk continues into
-/// the next group. Clamped at the strip's ends. `None` when there is
-/// nothing to do — no workspace, no windows, or the walk is already
-/// clamped at the edge it is pushing against.
+/// their tabs in strip order and clamps at the strip's ends. `None` when
+/// there is nothing to do — no workspace, no windows, or already clamped.
 ///
 /// Pure tree walk, split from the event plumbing so tests can pin the
 /// navigation against a bare [`WorkspaceTree`].
@@ -189,7 +156,6 @@ pub(crate) fn step_active_window(
         .copied()
         .and_then(|id| ws.strips.iter().find(|s| s.id == id))
         .or_else(|| ws.strips.first())?;
-    // Every window along the strip, flattened in visual order.
     let windows: Vec<(GroupId, u64)> = strip
         .window_groups
         .iter()
@@ -198,8 +164,8 @@ pub(crate) fn step_active_window(
     if windows.is_empty() {
         return None;
     }
-    // Current position: the focused group's active tab (with the same
-    // first-group fallback focus resolution uses everywhere else).
+    // Current position: the focused group's active tab (same first-group
+    // fallback used everywhere else).
     let cur_group = tree
         .active_group_for(strip.id)
         .and_then(|g| strip.window_groups.iter().find(|wg| wg.id == g))
@@ -232,9 +198,6 @@ impl ClientInput {
             .push(PendingAdoption { surface_id, app_id });
     }
 
-    /// Record a destroyed foreign toplevel. Drops the surface handle
-    /// immediately (so no further input can be routed to it) and queues
-    /// the chrome-side tab removal.
     /// Drop any queued adoption / removal / rename bookkeeping.
     ///
     /// The rendered tab tree is mirrored by a diff of the protocol tree
@@ -247,6 +210,9 @@ impl ClientInput {
         self.pending_renames.clear();
     }
 
+    /// Record a destroyed foreign toplevel. Drops the surface handle
+    /// immediately (so no further input can be routed to it) and queues
+    /// the chrome-side tab removal.
     pub fn unregister_toplevel(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
         self.pending_adoptions
@@ -314,23 +280,17 @@ impl ClientInput {
     }
 
     /// Last cursor position the router observed, in global coordinates.
-    ///
-    /// Falls back to the origin, because the hit-testing and drag
-    /// callers want a point rather than a question: there is nowhere
-    /// else for them to look. Use [`Self::pointer_position`] wherever
-    /// "has never been anywhere" is a different answer from "is at the
-    /// origin" — publishing this session's pointer to its peers is.
+    /// Falls back to the origin for hit-testing/drag callers that want a
+    /// point rather than a question. Use [`Self::pointer_position`]
+    /// wherever "has never been anywhere" must be distinguished from "is
+    /// at the origin" — publishing this session's pointer to peers is.
     pub fn cursor(&self) -> (f64, f64) {
         self.cursor.unwrap_or_default()
     }
 
-    /// Where the pointer is, or `None` if it has never been anywhere.
-    ///
-    /// The honest form of [`Self::cursor`], for the one caller that
-    /// must tell the two apart. A pointer is for pointing at something,
-    /// so a session that has never moved one has nothing to say about
-    /// where it is — and saying the origin instead is a cursor painted
-    /// where nobody is.
+    /// Where the pointer is, or `None` if it has never been anywhere — the
+    /// honest form of [`Self::cursor`], for the one caller that must tell
+    /// the two apart.
     pub fn pointer_position(&self) -> Option<(f64, f64)> {
         self.cursor
     }
@@ -340,13 +300,12 @@ impl ClientInput {
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 // ---------------------------------------------------------------------
 
-/// Resolve the foreign surface hosted by the *focused* tab: the active tab
-/// of the active group of the active strip of the active workspace.
-/// Returns `None` when that tab holds shell-owned content (a native app,
-/// a stub) or when the tree is empty.
+/// Resolve the foreign surface hosted by the *focused* tab (active tab of
+/// the active group of the active strip of the active workspace). `None`
+/// when that tab holds shell-owned content or the tree is empty.
 ///
-/// This is the keyboard-focus rule: keyboard input follows the active tab,
-/// so switching tabs / groups / workspaces moves the seat focus with it.
+/// This is the keyboard-focus rule: input follows the active tab, so
+/// switching tabs/groups/workspaces moves seat focus with it.
 pub fn active_foreign_surface(tree: &WorkspaceTree) -> Option<u64> {
     let ws = tree.active_workspace()?;
     let strip = match tree.active_strip.get(&ws.id) {
@@ -390,10 +349,9 @@ pub struct TileHit {
 /// active workspace, using the live laid-out rects from the widget tree.
 ///
 /// Chrome keeps priority implicitly: the tile rect is the tab's *content*
-/// area, so the top bar, the tab strip, the sidebar wheel and the inter-group
-/// gutters are all outside it and never resolve to a client. Overlays that
-/// paint *over* a tile (palette, overview, quick settings, …) are excluded by
-/// the caller via [`chrome_captures_input`].
+/// area, so the top bar, tab strip, sidebar wheel, and inter-group gutters
+/// are all outside it. Overlays painting *over* a tile are excluded by the
+/// caller via [`chrome_captures_input`].
 pub fn foreign_tile_at(
     tree: &WorkspaceTree,
     host: &ShellOverlayHost,
@@ -405,16 +363,12 @@ pub fn foreign_tile_at(
         .find(|hit| hit.rect.contains(p))
 }
 
-/// Every foreign tile currently on screen, in the compositor's own
-/// front-to-back order — the order [`foreign_tile_at`] resolves ties in,
-/// so the first entry whose rect contains a point is what local input
-/// would be routed to.
-///
-/// Exposed because remote input has to answer the same question
-/// ("what is actually on top at this point?") from a different thread of
-/// control, and answering it from a second traversal is how a
-/// clickjacking check ends up disagreeing with where the click really
-/// lands. See [`crate::network::input_firewall`].
+/// Every foreign tile currently on screen, in front-to-back order — the
+/// order [`foreign_tile_at`] resolves ties in. Exposed because remote
+/// input must answer the same "what's on top here?" question from a
+/// different thread; a second traversal risks a clickjacking check
+/// disagreeing with where the click really lands (see
+/// [`crate::network::input_firewall`]).
 pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
     let Some(ws) = tree.active_workspace() else {
         return Vec::new();
@@ -445,10 +399,9 @@ pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileH
     out
 }
 
-/// Surface-local coordinates for a global `point` inside `rect`.
-///
-/// Smithay does this subtraction itself when handed the focus origin, but
-/// the translation is the load-bearing part of pointer routing so it is
+/// Surface-local coordinates for a global `point` inside `rect`. Smithay
+/// does this subtraction itself when handed the focus origin, but the
+/// translation is the load-bearing part of pointer routing so it is
 /// exposed (and asserted on) separately.
 pub fn surface_local(point: (f64, f64), rect: Rect) -> (f64, f64) {
     (point.0 - rect.x0, point.1 - rect.y0)
@@ -473,18 +426,14 @@ fn is_modifier_key(key: &Key) -> bool {
     )
 }
 
-/// Fold a bare modifier key press / release into `modifiers`.
+/// Fold a bare modifier key press / release into `modifiers`, returning
+/// `true` when the mask changed.
 ///
-/// winit reports modifier state through a *separate* `ModifiersChanged`
-/// event, so a backend that only synthesises `KeyboardInput` (the DRM
-/// libinput bridge before its own mask update, the headless test-control
-/// socket) would leave the running mask stale — and a stale mask means
-/// [`is_shell_chord`] misses `Ctrl+K` and hands it to the client instead.
-/// Deriving the mask from the key stream as well closes that hole.
-///
-/// Returns `true` when the mask changed. A backend that *does* emit
-/// `ModifiersChanged` already agrees with the key stream, so this is a
-/// no-op there and the richer left/right state winit tracks is preserved.
+/// winit reports modifier state through a separate `ModifiersChanged`
+/// event, so a backend that only synthesises `KeyboardInput` would leave
+/// the mask stale — and a stale mask makes [`is_shell_chord`] miss `Ctrl+K`
+/// and hand it to the client. Deriving from the key stream too closes that;
+/// it is a no-op for backends that do emit `ModifiersChanged`.
 pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
     use winit::keyboard::ModifiersState;
     let bit = match &key.logical_key {
@@ -579,15 +528,11 @@ impl From<&Modifiers> for ChordMods {
     }
 }
 
-/// The shell's chord table, expressed once.
-///
-/// Covers the shell's whole chord set: every `Super` chord (Super is the
-/// compositor modifier — `Super+L` lock, `Super+K` / `Super+Space` search,
-/// `Super+Tab` overview, `Super+Arrow` workspace switch, `Super+Esc` the
-/// remote-input kill switch), `Ctrl+K` / `Alt+Space` search, `Ctrl+Tab`
-/// overview, `Ctrl+Arrow` workspace switch, and `Escape` *only while an
-/// overlay is open* (an unconditional Escape grab would break every modal
-/// editor running as a client).
+/// The shell's chord table, expressed once: every `Super` chord (Super is
+/// the compositor modifier), `Ctrl+K` / `Alt+Space`, `Ctrl+Tab`,
+/// `Ctrl+Arrow`, and `Escape` *only while an overlay is open* — an
+/// unconditional Escape grab would break every modal editor running as a
+/// client.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
         return false;
@@ -763,13 +708,8 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
 /// The unshifted key a character sits on, and whether Shift reaches it.
 ///
 /// A keycode names a *position*, not a character: 39 is `;` or `:` purely
-/// by whether Shift is held when it is pressed. Letters were always
-/// handled that way — `evdev_from_char` lowercased before its lookup —
-/// but the shifted punctuation marks had no entry at all, so
-/// `evdev_from_char(':')` answered `None` and the key was never
-/// delivered to any client: not typed wrong, simply dropped.
-///
-/// US positions, which is the layout the headless session loads.
+/// by whether Shift is held. US positions, the layout the headless session
+/// loads.
 pub(crate) fn unshifted(c: char) -> (char, bool) {
     let pair = match c {
         '!' => '1',
@@ -925,13 +865,10 @@ pub fn evdev_button(button: MouseButton) -> Option<u32> {
     })
 }
 
-/// Translate a winit scroll delta into the `(value, v120)` pair per axis
-/// that `wl_pointer.axis` / `axis_value120` carry.
-///
-/// Winit reports "up / left" as positive; Wayland reports "down / right" as
-/// positive, so both components are negated. Discrete wheels also carry a
-/// `v120` step count (120 units = one notch) that clients use for
-/// stepped scrolling.
+/// Translate a winit scroll delta into the `(value, v120)` pair
+/// `wl_pointer.axis`/`axis_value120` carry. Winit reports "up/left" as
+/// positive; Wayland reports "down/right" as positive, so both components
+/// are negated. Discrete wheels also carry a `v120` step count (120 = one notch).
 pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) {
     match delta {
         MouseScrollDelta::LineDelta(h, v) => (
@@ -954,16 +891,12 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
-    // The portal's file chooser, for the same reason as the peer-sync
-    // card below. It is modal — drawn over a scrim, above every other
-    // overlay — but "drawn above" and "receives the click" are separate
-    // things, and this predicate is the one that decides the second.
-    // Without it, a chooser raised over a focused window was painted
-    // full-screen while every click in it hit-tested through to the app
-    // underneath: an app could ask for a file, the dialog would appear,
-    // and neither the row nor Open nor Escape could be reached with a
-    // mouse or a keyboard. The app asks, the OS chooses — but only if
-    // the OS is the one being clicked.
+    // The portal's file chooser, for the same reason as the peer-sync card
+    // below: it's modal and drawn over a scrim, but "drawn above" and
+    // "receives the click" are separate things. Without this, a chooser
+    // raised over a focused window painted full-screen while every click
+    // hit-tested through to the app underneath — unreachable with mouse or
+    // keyboard.
     if fb.host().file_picker().is_some() {
         return true;
     }
@@ -974,15 +907,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         || chrome.overlays.collaborators
         || chrome.overlays.room_activity
         // The peer-sync card, on the same two fields the overlay host
-        // paints it from. Its handler runs before every other overlay
-        // and its doc comment says every key belongs to it while it is
-        // up — but that only holds for events that reach the overlay
-        // host at all, and this predicate is what decides whether they
-        // do. Without it a card raised over a focused client sent its
-        // Escape to the client instead, so the card could not be
-        // dismissed: it sat over the middle of the screen for the rest
-        // of the session with a live invite token legible on it, and
-        // every later window opened behind it.
+        // paints it from — its handler runs before every other overlay,
+        // but this predicate is what actually decides whether an event
+        // reaches it. Without it, a card raised over a focused client sent
+        // its Escape to the client instead, undismissable, with a live
+        // invite token exposed for the rest of the session.
         || chrome.peer_sync_invite_token.is_some()
         || chrome.peer_sync_connect_input.is_some()
         || chrome.peer_sync_invite_name.is_some()
@@ -1032,11 +961,10 @@ impl State {
         };
         let serial = mint_serial(self);
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
-        // Clipboard and primary selection follow the keyboard, in that order:
-        // smithay refuses `set_selection` from a client that does not hold
-        // keyboard focus, and only offers the current selection to the focused
-        // client. Moving one without the other would leave a focused window
-        // able to type but unable to paste.
+        // Clipboard/primary selection follow the keyboard: smithay refuses
+        // `set_selection` from a client without keyboard focus, so moving
+        // one without the other would leave a focused window able to type
+        // but unable to paste.
         let selection_client = target
             .as_ref()
             .and_then(|(_, surface)| surface.client());
@@ -1044,24 +972,16 @@ impl State {
         keyboard.set_focus(self, target.map(|(_, s)| s), serial);
     }
 
-    /// Push one key press / release through the seat, forwarding it to the
-    /// focused client only when `forward` is set.
+    /// Push one key press/release through the seat, forwarding to the focused
+    /// client only when `forward` is set; `true` when it reached a client.
     ///
-    /// **Every** key the compositor sees goes through here, including the
-    /// ones the shell keeps for itself. Smithay's xkb state machine derives
-    /// modifier state from the keycode stream it is fed, so skipping the
-    /// shell's own keys would desynchronise it: a `Ctrl` press delivered to
-    /// a client followed by a `Ctrl` release swallowed by an open overlay
-    /// leaves the seat believing `Ctrl` is still held, and the next focus
-    /// `enter` reports a phantom modifier. `FilterResult::Intercept`
-    /// advances the state without emitting anything on the wire, which is
-    /// exactly the distinction needed.
-    ///
-    /// `keycode` is an evdev code; smithay wants the xkb form (evdev + 8)
-    /// and subtracts the offset again on the wire, so the client receives
-    /// exactly the code the kernel produced.
-    ///
-    /// Returns `true` only when the event actually reached a client.
+    /// **Every** key goes through here, including ones the shell keeps:
+    /// smithay's xkb state machine derives modifier state from the keycode
+    /// stream, so skipping them desynchronises it (a `Ctrl` press delivered,
+    /// its release swallowed, leaves the seat believing `Ctrl` is held).
+    /// `FilterResult::Intercept` advances the state without emitting on the
+    /// wire. `keycode` is evdev; smithay wants xkb form (evdev + 8) and
+    /// subtracts it again on the wire.
     pub fn deliver_client_key(&mut self, keycode: u32, pressed: bool, forward: bool) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -1091,13 +1011,11 @@ impl State {
         forward && has_focus && intercepted.is_none()
     }
 
-    /// Move the seat pointer to `global` and focus it on `target`.
-    ///
-    /// `target` is `(surface id, tile origin)`. Smithay subtracts the
-    /// origin from the global location to produce the surface-local
-    /// coordinates the client sees, and derives the `enter` / `leave` /
-    /// `motion` sequence from the focus transition — passing `None` is
-    /// therefore how the pointer *leaves* a client.
+    /// Move the seat pointer to `global` and focus it on `target`
+    /// (`(surface id, tile origin)`). Smithay subtracts the origin to
+    /// produce surface-local coordinates and derives the `enter`/`leave`/
+    /// `motion` sequence from the focus transition — passing `None` is how
+    /// the pointer *leaves* a client.
     pub fn forward_client_pointer_motion(
         &mut self,
         global: (f64, f64),
@@ -1199,14 +1117,10 @@ impl State {
     }
 
     /// Forward one touchpad gesture to the focused client over
-    /// `zwp_pointer_gestures_v1`.
-    ///
-    /// The compositor has advertised that global since the protocol
-    /// plumbing landed and never emitted a single event into it, so a
-    /// client that bound it and waited for a pinch waited forever. Only
-    /// gestures the shell did *not* claim reach here — the finger-count
-    /// split is made in [`crate::compositor::backend::drm::gestures`], one
-    /// place, so a gesture can never be handled twice.
+    /// `zwp_pointer_gestures_v1`. Only gestures the shell did *not* claim
+    /// reach here — the finger-count split happens once, in
+    /// [`crate::compositor::backend::drm::gestures`], so a gesture can
+    /// never be handled twice.
     pub fn forward_client_gesture(&mut self, gesture: BackendGestureEvent) {
         if self.client_input.pointer_focus.is_none() {
             return;
@@ -1290,12 +1204,10 @@ impl State {
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
-    ///
     /// `target` is `(surface id, tile origin)` for a `Down` that landed
-    /// inside a client tile — smithay subtracts the origin to produce
-    /// surface-local coordinates, exactly as for the pointer. Touch focus
-    /// is set on `down` only (the protocol says so), so `Motion` carries
-    /// the target purely for drag-target resolution.
+    /// inside a client tile — smithay subtracts the origin as for the
+    /// pointer. Touch focus is set on `down` only (per protocol), so
+    /// `Motion` carries the target purely for drag-target resolution.
     pub fn forward_client_touch(
         &mut self,
         touch: BackendTouchEvent,
@@ -1348,11 +1260,9 @@ impl State {
     }
 }
 
-/// Which client (if any) a touch point should be delivered to.
-///
-/// Only a `Down` establishes touch focus, so only a `Down` resolves a
-/// target; the rest of the sequence belongs to whatever the down landed
-/// on and smithay tracks that itself.
+/// Which client (if any) a touch point should be delivered to. Only a
+/// `Down` establishes touch focus, so only a `Down` resolves a target; the
+/// rest of the sequence belongs to whatever the down landed on.
 pub fn touch_target(
     state: &State,
     fb: &FrameBuilder,
@@ -1375,16 +1285,11 @@ pub fn touch_target(
 // ---------------------------------------------------------------------
 
 /// Mirror foreign toplevels adopted at the protocol layer into the shell
-/// chrome's workspace tree, and reap the tabs of destroyed ones.
+/// chrome's workspace tree, and reap the tabs of destroyed ones; `true`
+/// when the tree changed.
 ///
-/// Each foreign toplevel becomes its own window group in the active
-/// strip — that is what gives it a tab pill, a laid-out tile rect (which
-/// the pointer router needs), and a place in the active-group rotation
-/// (which the keyboard router needs). The chrome's per-frame
-/// `resync_strips_from_tree` diff splices the new group into the live
-/// widget row on the next relayout.
-///
-/// Returns `true` when the tree changed.
+/// Each becomes its own window group in the active strip, giving it a tab
+/// pill, a laid-out tile rect, and a place in the active-group rotation.
 pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
     let adoptions = std::mem::take(&mut state.client_input.pending_adoptions);
     let removals = std::mem::take(&mut state.client_input.pending_removals);
@@ -1436,10 +1341,8 @@ pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
 
 /// Splice a foreign toplevel into the active workspace as its own window
 /// group, and make it the active group of its strip so keyboard focus
-/// follows the newly-mapped window.
-///
-/// Returns the `(strip, group)` it landed in, or `None` when the active
-/// workspace has no strip to land in.
+/// follows the newly-mapped window. Returns the `(strip, group)` it landed
+/// in, or `None` when the active workspace has no strip to land in.
 fn insert_foreign_group(
     tree: &mut WorkspaceTree,
     surface_id: u64,
@@ -1566,11 +1469,9 @@ fn foreign_tab_title(app_id: &str) -> String {
 }
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab.
-///
-/// Called every tick: chrome capture (open overlay / palette / prompt)
-/// drops client focus outright; otherwise focus follows the active tab, so
-/// switching tabs, groups or workspaces moves the keyboard with it and a
-/// closed window releases it.
+/// Called every tick: chrome capture (open overlay/palette/prompt) drops
+/// client focus outright; otherwise focus follows the active tab, so
+/// switching tabs/groups/workspaces moves the keyboard with it.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let target = if chrome_captures_input(fb) {
         None
@@ -1582,25 +1483,17 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     state.set_client_keyboard_focus(target);
 }
 
-/// Tell the remote-input firewall what is on screen.
-///
-/// Called every tick, immediately after [`sync_keyboard_focus`], so a
-/// remote event is judged against the screen the local user is actually
-/// looking at — including which surface holds the keyboard, which is what
-/// mutes a guest's keystrokes the instant the host focuses something
-/// private.
+/// Tell the remote-input firewall what is on screen. Called every tick,
+/// immediately after [`sync_keyboard_focus`], so a remote event is judged
+/// against what the local user is looking at.
 ///
 /// The tile list comes from [`foreign_tiles`], the same enumeration
-/// [`foreign_tile_at`] resolves local clicks with. That shared traversal
-/// is the point: a clickjacking check that walked the tree separately
-/// would eventually disagree with where a click really lands, and the
-/// disagreement would be the hole.
+/// [`foreign_tile_at`] resolves local clicks with — a separate traversal
+/// risks disagreeing with where a click really lands.
 ///
-/// `session_locked` has to be passed in because the lock surface is not
-/// part of the tiled tree: the tiles underneath it are still laid out
-/// and still topmost as far as the tree is concerned, so without this
-/// the firewall would clear a guest's click on a window the local user
-/// cannot reach without a password.
+/// `session_locked` must be passed in because the lock surface isn't part
+/// of the tiled tree: without it the firewall would pass a guest's click
+/// through to a window the local user can't reach without a password.
 pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
     let tiles: Vec<(u64, Rect)> = {
         let chrome = fb.chrome();
@@ -1625,21 +1518,14 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
 
 /// Stop every peer from driving this seat, and say so on screen.
 ///
-/// The action half of the `Super+Esc` kill switch; the backend loop
-/// recognises the chord and calls this. Split out from that loop so the
-/// behaviour can be driven from a test — the loop itself is a `-> !`
-/// function that cannot be.
+/// Action half of the `Super+Esc` kill switch, split out from the backend
+/// loop (a `-> !` function) so it can be driven from a test. Returns how
+/// many shares lost write access.
 ///
-/// The confirmation is not decoration. Someone reaches for this key
-/// because a pointer is moving on their screen and they did not move it;
-/// what they need next is to know it stopped. So the toast is pushed
-/// with [`Notification::bypassing_dnd`] — Do-Not-Disturb is a request
-/// for quiet, and silently swallowing the answer to a panic key makes a
-/// working kill switch indistinguishable from a broken one — and it is
-/// persistent, because the stop is: nothing lifts it but the host.
-///
-/// Returns how many shares lost write access, which is what the toast
-/// counts.
+/// The confirmation toast bypasses Do-Not-Disturb
+/// ([`Notification::bypassing_dnd`]) and is persistent: silently swallowing
+/// the answer to a panic key would make a working kill switch
+/// indistinguishable from a broken one, and nothing lifts the stop but the host.
 pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
     let revoked = state.engage_remote_input_kill_switch();
     fb.with_chrome(|chrome| {
@@ -1661,25 +1547,22 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
     revoked
 }
 
-/// Route one backend input event.
+/// Route one backend input event. Returns `true` when the event was
+/// consumed by a client surface and must **not** also be dispatched into
+/// the shell chrome; `false` for everything the shell owns (chrome
+/// chords, overlay-captured input, any pointer outside a client tile).
 ///
-/// Returns `true` when the event was consumed by a client surface and must
-/// **not** also be dispatched into the shell chrome. Returns `false` for
-/// everything the shell owns — chrome chords, overlay-captured input, and
-/// any pointer position outside a client tile.
-///
-/// Compositor chords are checked before any forwarding, so a focused client
-/// can never swallow `Super+L`, the search palette, or workspace switching.
+/// Compositor chords are checked before any forwarding, so a focused
+/// client can never swallow `Super+L`, the search palette, or workspace switching.
 pub fn route_input(
     state: &mut State,
     fb: &mut FrameBuilder,
     event: &WindowEvent,
     modifiers: &Modifiers,
 ) -> bool {
-    // The host touching their own keyboard or mouse takes priority over
-    // every remote peer for the next half second. Stamped here because
-    // this is the one function both the live backend loop and the
-    // test-control socket push local input through.
+    // The host's own input takes priority over every remote peer for the
+    // next half second; stamped here since both the live backend loop and
+    // the test-control socket push local input through this one function.
     state
         .remote_input_firewall
         .note_local_input(std::time::Instant::now());
@@ -1687,11 +1570,10 @@ pub fn route_input(
     match event {
         WindowEvent::CursorMoved { position, .. } => {
             state.client_input.cursor = Some((position.x, position.y));
-            // A motion over a client tile is withheld from the chrome's own
-            // event dispatch below (it belongs to the client, not the
-            // shell), so without telling the chrome here its idea of the
-            // pointer freezes at wherever it last crossed the desktop —
-            // and every later press is hit-tested against that stale spot.
+            // Withheld from the chrome's own dispatch below (belongs to the
+            // client), so without this the chrome's pointer idea freezes at
+            // its last chrome-side position and every later press
+            // hit-tests against a stale spot.
             fb.host_mut()
                 .note_pointer(vello::kurbo::Point::new(position.x, position.y));
             let hit = current_pointer_target(state, fb, captured);
@@ -1763,25 +1645,16 @@ pub fn route_input(
             consumed && !chrome_drag
         }
         WindowEvent::MouseWheel { delta, .. } => {
-            // Niri parity: an Alt-modified wheel is a compositor
-            // navigation gesture, grabbed before client forwarding like
-            // every shell chord, so it works with the cursor over a
-            // client window too — and reported as consumed either way
-            // so the chrome never double-handles the same event.
-            //
-            //   Alt+wheel        → switch workspace (Niri's
-            //                      `Mod+WheelScrollDown → focus-workspace-down`)
+            // Alt-modified wheel is a compositor navigation gesture (Niri
+            // parity), grabbed before client forwarding like every shell
+            // chord, and reported as consumed either way:
+            //   Alt+wheel        → switch workspace
             //   Alt+Shift+wheel  → jump focus to the neighbouring group
-            //                      of the active strip (Niri's
-            //                      `Mod+Shift+WheelScrollDown → focus-column-right`)
             let mods = modifiers.state();
             if mods.alt_key() && !mods.control_key() && !mods.super_key() {
                 let detents = wheel_jump_detents(delta);
                 let steps = state.client_input.jump_wheel.push(detents, Instant::now());
-                // Diagnostic for gesture-feel reports: shows exactly what
-                // the host session delivers per wheel event (LineDelta
-                // notches vs touchpad/hi-res pixel fractions) and how
-                // many jumps it produced. `RUST_LOG=shell=debug`.
+                // Diagnostic for gesture-feel reports. `RUST_LOG=shell=debug`.
                 tracing::debug!(
                     target: "shell::wheel_jump",
                     ?delta,
@@ -1792,20 +1665,14 @@ pub fn route_input(
                 );
                 if steps != 0 {
                     if mods.shift_key() {
-                        // Same primitive Super+Left/Right and a
-                        // horizontal scroll run — one implementation of
-                        // "next window along the strip", so the three
-                        // cannot disagree about where the next one is.
-                        // The per-tick reconciler slides the strip to
-                        // whatever it lands on.
+                        // Same primitive as Super+Left/Right — one
+                        // implementation of "next window along the strip".
                         if fb.host_mut().step_focus_along_strip(steps) {
                             sync_keyboard_focus(state, fb);
                         }
                     } else {
-                        // Wheel-down (positive detents) rotates DOWN the
-                        // workspace wheel, one workspace per detent.
-                        // `switch_workspace` stops at the wheel's end,
-                        // so the loop breaks rather than spinning.
+                        // Positive detents rotate DOWN the workspace wheel;
+                        // `switch_workspace` stops at the wheel's end.
                         let dir = steps.signum();
                         fb.with_chrome(|chrome| {
                             for _ in 0..steps.unsigned_abs().min(4) {
@@ -1829,10 +1696,9 @@ pub fn route_input(
             let Some(code) = evdev_keycode(key) else {
                 return false;
             };
-            // Anything the shell has up that Escape would dismiss. The
-            // summoned workspace wheel counts: it is dismissed with
-            // Escape, so the key has to reach the shell rather than the
-            // focused client while it is showing.
+            // Anything the shell has up that Escape would dismiss — the
+            // summoned workspace wheel counts, since it dismisses with
+            // Escape and the key must reach the shell, not a focused client.
             let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
             let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
             let forward = if pressed {
@@ -1856,16 +1722,12 @@ pub fn route_input(
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.
-///
-/// Called every tick. Files publishes what it is carrying
-/// (`file_explorer::external_drag`); the moment that drag — still an
-/// in-process gesture under the chrome's implicit grab — has the pointer
-/// over a foreign tile, the compositor claims it, starts smithay's
-/// server-side drag offering the file, and delivers the enter. From then
-/// on `current_pointer_target` hit-tests normally so the client under the
+/// Called every tick: once the chrome's in-process drag gesture has the
+/// pointer over a foreign tile, the compositor claims it, starts smithay's
+/// server-side drag offering the file, and delivers the enter. From then on
+/// `current_pointer_target` hit-tests normally so the client under the
 /// pointer receives `wl_data_device` enter/motion/drop, and the release is
-/// the drop. Files learns it was handed off and does not act on the
-/// release itself.
+/// the drop — Files does not act on the release itself.
 pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
     if state.selection.chrome_drag.is_some() || state.selection.dnd_active {
         return;
@@ -1959,13 +1821,11 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
         // A grab owned by the chrome keeps the client out of the loop even
         // when the cursor wanders across a tile mid-drag.
         Some(PointerOwner::Chrome) => None,
-        // A drag-and-drop is the one held-button gesture that is *supposed*
-        // to leave the surface it started on: the drop target only learns
-        // about the drag when the pointer is reported over it. Pinning focus
-        // to the source, which is right for every other implicit grab, means
-        // no `wl_data_device.enter` ever reaches another client and nothing
-        // can be dropped anywhere. So while a client drag is in flight the
-        // pointer hit-tests normally.
+        // Drag-and-drop is the one held-button gesture that's *supposed* to
+        // leave the surface it started on — pinning focus to the source
+        // (right for every other implicit grab) means no
+        // `wl_data_device.enter` ever reaches another client, so while a
+        // client drag is in flight the pointer hit-tests normally.
         Some(PointerOwner::Client(_)) if state.selection.dnd_active => {
             if captured {
                 return None;
@@ -2041,12 +1901,9 @@ mod tests {
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 
     /// Every printable ASCII character resolves to a key on the board.
-    ///
-    /// The table used to cover the unshifted positions only and answered
-    /// `None` for every shifted punctuation mark — not typed wrongly,
-    /// simply never delivered. Asserted over the whole printable range
-    /// rather than the characters someone thought of, because the one
-    /// that mattered (`:`) was exactly the one nobody had.
+    /// Asserted over the whole printable range rather than a handful of
+    /// examples, since a missing shifted-punctuation entry is exactly the
+    /// kind of gap a hand-picked list would miss.
     #[test]
     fn every_printable_ascii_character_names_a_key() {
         let missing: Vec<char> = (0x20u8..0x7f)
@@ -2185,9 +2042,8 @@ mod tests {
 
     #[test]
     fn step_active_window_walks_tabs_within_a_group() {
-        // The boot-state shape: ONE group holding several windows as
-        // tabs. One step right of the first window is the second — the
-        // "Notes → Files" case the gesture is for.
+        // ONE group holding several windows as tabs — one step right of
+        // the first is the second.
         let tabs: Vec<Tab> = ["Notes", "Files", "Terminal"]
             .iter()
             .map(|name| Tab {
@@ -2288,10 +2144,8 @@ mod tests {
         assert_eq!(acc.push(0.9, t0), 0);
         assert_eq!(acc.push(-0.9, t0 + Duration::from_millis(50)), 0);
         // SLOW deliberate scrolling still gets there: fractional detents
-        // separated by long pauses must keep accumulating — a hi-res
-        // wheel notching at 1 Hz is not a new gesture each notch. This
-        // was the live "jump works once, then I can not scroll further"
-        // bug: a quiet-time decay wiped the balance between notches.
+        // separated by long pauses must keep accumulating — a hi-res wheel
+        // notching at 1 Hz is not a new gesture each notch.
         let mut acc = WheelJumpAccum::default();
         assert_eq!(acc.push(0.4, t0), 0);
         assert_eq!(acc.push(0.4, t0 + Duration::from_secs(1)), 0);
@@ -2589,25 +2443,11 @@ mod tests {
         assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
     }
 
-    /// The geometry contract the pointer router depends on: a foreign
-    /// toplevel mirrored into the chrome's tree becomes a live window
-    /// group whose *tile* rect is laid out, hit-testable, and translates
-    /// a global cursor into surface-local coordinates. Runs against the
-    /// real `FrameBuilder` (the same one the compositor paints with), so
     /// The peer-sync card must take the keyboard away from a focused
-    /// client, or it cannot be dismissed.
-    ///
-    /// Its handler runs before every other overlay and claims that while
-    /// it is up every key belongs to it — but a key only reaches the
-    /// overlay host when this predicate says the chrome has taken input.
-    /// It did not name the card, so a card raised over a focused client
-    /// delivered its Escape to the client: the card stayed on screen for
-    /// the rest of the session, showing a live invite token, with every
-    /// window that opened afterwards drawn behind it.
-    ///
-    /// Asserted on `chrome_captures_input` itself — the function the
-    /// delivery path actually consults — for both fields the card is
-    /// painted from, since the connect prompt sets the other one.
+    /// client, or it cannot be dismissed — a key only reaches its handler
+    /// when `chrome_captures_input` says the chrome has taken input.
+    /// Asserted on `chrome_captures_input` itself, for both fields the
+    /// card is painted from.
     #[test]
     fn the_peer_sync_card_takes_input_from_a_focused_client() {
         for field in ["invite_token", "connect_input"] {
@@ -2638,22 +2478,12 @@ mod tests {
         }
     }
 
-    /// The portal's file chooser is modal, so it must hold input while
-    /// it is up.
-    ///
-    /// The same failure as the peer-sync card above, found the same way
-    /// and worth pinning for the same reason: the dialog was painted
-    /// full-screen over a scrim while `chrome_captures_input` said
-    /// nothing was up, so every click in it hit-tested straight through
-    /// to the app underneath. An app could ask for a file, the dialog
-    /// would appear, and neither a row nor Open nor Escape could be
-    /// reached with a mouse or a keyboard — the chooser was a picture of
-    /// a chooser.
-    ///
-    /// Asserted on `chrome_captures_input` itself, with the dialog
-    /// mounted the way the compositor mounts one (a request through the
-    /// portal's own queue, drained by `pump_file_picker`), so this
-    /// cannot pass against a dialog that production would never raise.
+    /// The portal's file chooser is modal, so it must hold input while it
+    /// is up — the same contract as the peer-sync card above. Asserted on
+    /// `chrome_captures_input` with the dialog mounted the way the
+    /// compositor mounts one (through the portal's queue, drained by
+    /// `pump_file_picker`), so this can't pass against a dialog production
+    /// would never raise.
     #[test]
     fn the_file_chooser_takes_input_from_a_focused_client() {
         use crate::portal::FilePickerSpawner as _;
@@ -2706,7 +2536,11 @@ mod tests {
         );
     }
 
-    /// a regression in the tree→widget resync or in
+    /// The geometry contract the pointer router depends on: a foreign
+    /// toplevel mirrored into the chrome's tree becomes a live window
+    /// group whose *tile* rect is laid out, hit-testable, and translates a
+    /// global cursor into surface-local coordinates. Runs against the real
+    /// `FrameBuilder`, so a regression in the tree→widget resync or in
     /// `ShellOverlayHost::active_tile_rect` fails here.
     #[test]
     fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
@@ -2764,13 +2598,10 @@ mod tests {
         );
     }
 
-    /// The remote-input firewall's z-order check and local pointer
-    /// routing must never disagree about what is on top, because the
-    /// disagreement *is* the clickjacking hole: a point local input would
-    /// deliver to one surface, the firewall would clear for another.
-    ///
-    /// They share [`foreign_tiles`], so this asserts the property that
-    /// sharing is supposed to buy, on the real laid-out tree.
+    /// The remote-input firewall's z-order check and local pointer routing
+    /// must never disagree about what is on top — the disagreement *is*
+    /// the clickjacking hole. They share [`foreign_tiles`], so this
+    /// asserts the property that sharing is supposed to buy.
     #[test]
     fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
         use crate::network::input_firewall::ShellView;
@@ -2803,13 +2634,10 @@ mod tests {
             false,
         );
 
-        // Probe each tile's inside and the pixels just past each of its
-        // edges: a hit-test discrepancy shows up at a boundary long
-        // before it shows up in the middle. Derived from the rects the
-        // layout actually produced rather than from fixed screen
-        // coordinates, because a strip that scrolls a group out of the
-        // viewport would otherwise turn this into a sweep over empty
-        // space that agrees on `None` everywhere and proves nothing.
+        // Probe each tile's inside and just past each edge — a hit-test
+        // discrepancy shows up at a boundary first. Derived from the
+        // layout's actual rects, not fixed coordinates, so a scrolled-out
+        // group doesn't turn this into a no-op sweep.
         let mut probes: Vec<(f64, f64)> = Vec::new();
         for hit in &tiles {
             let r = hit.rect;
@@ -2824,9 +2652,9 @@ mod tests {
                 (c.x, r.y1 + 0.5),
             ]);
         }
-        // Plus a coarse sweep of the whole output, which is mostly
-        // chrome: every one of those has to resolve to nothing on both
-        // sides, or the firewall would clear a click on the top bar.
+        // Coarse sweep of the whole output (mostly chrome): every one must
+        // resolve to nothing on both sides, or the firewall would clear a
+        // click on the top bar.
         for gx in 0..80 {
             for gy in 0..45 {
                 probes.push((gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0));
@@ -2857,13 +2685,11 @@ mod tests {
     }
 
     /// A tab is a place input can land only while the compositor still
-    /// holds the client's surface. A tab left in the tree after its
-    /// toplevel went away is a rectangle with nothing behind it, and
-    /// publishing it would hand a guest a coordinate the local user
-    /// cannot even click on.
-    ///
-    /// Drives the real publisher against the real laid-out tree, then
-    /// asks the firewall the question a peer's event asks.
+    /// holds the client's surface — one left in the tree after its
+    /// toplevel went away is a rectangle nothing is behind, and
+    /// publishing it would hand a guest a coordinate the local user can't
+    /// even click on. Drives the real publisher against the real laid-out
+    /// tree, then asks the firewall the question a peer's event asks.
     #[test]
     fn a_tab_whose_surface_the_compositor_does_not_hold_is_not_published() {
         use crate::network::input_firewall::Denial;
@@ -2941,21 +2767,11 @@ mod tests {
         assert!(state.remote_input_firewall.view().session_locked());
     }
 
-    /// A `State` with a live seat, one peer holding write access to
-    /// `surface`, and that surface on screen with the keyboard.
-    /// A session nobody has pointed at holds no pointer position, and
-    /// holds one the instant a real motion is routed through.
-    ///
-    /// Both halves of the production path in one place: `route_input`
-    /// is the only writer of this field, and `pointer_position` is what
-    /// the frame loop publishes to the room from. They are asserted
-    /// together because the two accessors disagree *by design* —
-    /// `cursor()` answers the origin for a pointer that has never been
-    /// anywhere, since the hit-testing callers need a point and have
-    /// nowhere else to get one. The origin is also a perfectly good
-    /// place to point, so that answer is safe to route input with and
-    /// unsafe to broadcast: publishing it announced a cursor, in the
-    /// corner of every peer's screen, for somebody who was not there.
+    /// A session nobody has pointed at holds no pointer position, and holds
+    /// one the instant a real motion is routed through. The two accessors
+    /// disagree by design: `cursor()` answers the origin (hit-testing needs
+    /// a point), `pointer_position` answers `None` — publishing the origin
+    /// would announce a cursor for somebody who isn't there.
     #[test]
     fn a_pointer_that_has_never_moved_has_no_position() {
         let mut state = state_sharing(9_000_101);
@@ -2992,18 +2808,11 @@ mod tests {
     }
 
     /// Routing a motion tells the chrome where the pointer went, whether
-    /// or not the chrome is the one that gets to read the event.
-    ///
-    /// The chrome hit-tests a press against the last position it was
-    /// given, because `MouseInput` carries none of its own. Motion over a
-    /// client window is withheld from the chrome's own event dispatch, so
-    /// without this its idea of the pointer froze at wherever it last
-    /// crossed the desktop — and every press made inside a window after
-    /// that was measured against a stale spot.
-    ///
-    /// Asserted through `route_input`, the one function every source of
-    /// motion in this compositor goes through, and on
-    /// `fb.host().pointer_position()` — what the chrome actually reads.
+    /// or not the chrome is the one that gets to read the event — the
+    /// chrome hit-tests a press against the last position it was given,
+    /// since `MouseInput` carries none of its own. Motion over a client
+    /// window is withheld from the chrome's own dispatch, so without this
+    /// its pointer idea would freeze at its last chrome-side position.
     #[test]
     fn routing_a_motion_keeps_the_chrome_pointer_current() {
         let mut state = state_sharing(9_000_103);
@@ -3047,6 +2856,8 @@ mod tests {
         );
     }
 
+    /// A `State` with a live seat, one peer holding write access to
+    /// `surface`, and that surface on screen with the keyboard.
     fn state_sharing(surface: u64) -> crate::compositor::state::State {
         use crate::network::input_firewall::ShellView;
         use crate::network::streaming::StreamingShare;
@@ -3123,10 +2934,9 @@ mod tests {
         );
     }
 
-    /// Do-Not-Disturb is a request for quiet, not a request to be kept
-    /// uninformed about the machine's own security state. A suppressed
-    /// confirmation makes a working kill switch look exactly like a
-    /// broken one.
+    /// Do-Not-Disturb is a request for quiet, not to be kept uninformed
+    /// about the machine's own security state — a suppressed confirmation
+    /// makes a working kill switch look like a broken one.
     #[test]
     fn the_kill_switch_confirmation_is_shown_under_do_not_disturb() {
         let mut fb = FrameBuilder::new((1600, 900));

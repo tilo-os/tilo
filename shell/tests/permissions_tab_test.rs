@@ -227,10 +227,8 @@ fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
 
 #[test]
 fn the_permissions_pill_is_painted_on_a_workspace_with_no_grants() {
-    // The tab used to be filtered out of the strip until a grant already
-    // existed, which meant the only way to create the first grant was a
-    // portal prompt — a host could not grant anything proactively. The
-    // pill must be on screen for an empty workspace.
+    // The pill must be on screen for an empty workspace, so a host can
+    // grant proactively rather than only in response to a portal prompt.
     let tree = tree_with_grants(vec![]);
     let (host, chrome, _scene) = render_at_tab(&tree, WsTab::General);
     {
@@ -316,7 +314,7 @@ fn permissions_tab_renders_one_row_per_capability() {
 }
 
 // =====================================================================
-// Granting — the affordance the panel previously had no equivalent of
+// Granting
 // =====================================================================
 
 #[test]

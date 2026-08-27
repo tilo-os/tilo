@@ -1,88 +1,24 @@
 //! Presentation off the input thread.
 //!
-//! # The problem
+//! Blocking GPU submit (measured 5.6 ms p50 / 10.4 ms p99 on the headless
+//! backend, against 0.1 ms to build a scene) used to share a thread with
+//! input, so no keystroke was read while it waited. The seam is the
+//! finished [`vello::Scene`], not the widget tree: `ui` widgets mutate the
+//! Automerge document directly, so sharing it across threads would need a
+//! frame-long lock and reintroduce the stall.
 //!
-//! Everything used to happen on one thread: backend input polling,
-//! widget dispatch, the CRDT pump, layout, scene building, GPU submit and
-//! present. The submit is by far the largest phase — measured at 5.6 ms
-//! p50 / 10.4 ms p99 on the headless backend, against 0.1 ms for building
-//! the scene — and it is a *blocking* wait on the GPU (`device.poll`
-//! in the winit backend, a full render + readback in the DRM one). While
-//! it runs, no keystroke is read.
+//! [`PresentPipe`] admits [`QUEUE_DEPTH`] frames beyond the one
+//! presenting; when full, the logic thread refuses to build a frame
+//! rather than discard a queued one, which would decouple queue length
+//! from the display and grow latency without bound while looking busy.
 //!
-//! # Where the seam has to go
-//!
-//! Not at the widget tree. `ui` widgets mutate the Automerge document
-//! directly inside `handle_event`, and the draw pass reads that same
-//! document, so the document cannot be shared across threads without a
-//! lock held for the whole frame — which would reintroduce the stall it
-//! was meant to remove.
-//!
-//! The seam goes one step later, at the finished frame. `paint()` returns
-//! an owned [`vello::Scene`]: a self-contained encoding of the frame with
-//! no borrow of the document, the widget tree, or the text renderer. That
-//! is what crosses the thread boundary. The logic thread keeps sole
-//! ownership of the CRDT and the widget tree exactly as before; the
-//! render thread only ever sees finished scenes.
-//!
-//! ```text
-//!   logic thread                       render thread
-//!   ─────────────────────────────      ────────────────────────────
-//!   input → widgets → AutoCommit
-//!   layout
-//!   paint() ──► Scene ─── channel ───► Presenter::present
-//!   (next frame's input …)                GPU submit / page flip
-//! ```
-//!
-//! # Depth, and the latency it buys or costs
-//!
-//! [`PresentPipe`] admits [`QUEUE_DEPTH`] frames beyond the one being
-//! presented. At depth 1 that is two CPU-side frames in flight: the
-//! render thread works on frame N while the logic thread builds N+1.
-//!
-//! When the pipe is full the logic thread **does not build a frame at
-//! all** — [`PresentPipe::has_capacity`] returns false and the paint gate
-//! declines. The alternative (build it anyway and discard the older
-//! queued frame) would waste the build and, worse, decouple the queue
-//! length from the display: a compositor that keeps accepting frames it
-//! cannot present grows latency without bound while looking busy. Refusing
-//! to build caps the input-to-photon path at two frame intervals, and the
-//! refused tick still services input and protocol traffic — the loop stays
-//! responsive, it just doesn't render a frame nobody could see.
-//!
-//! Deeper queues trade latency for throughput. Two frames is the shallowest
-//! depth that lets CPU and GPU overlap at all, and a compositor is a
-//! latency-first workload: a desktop that renders 200 fps at four frames
-//! of lag feels worse than one that renders 144 fps at two.
-//!
-//! # If a presenter panics
-//!
-//! The render thread unwinds, its `finished` flag is set on the way out,
-//! and the channel's receiver drops. The next [`PresentPipe::submit`]
-//! sees a closed channel, returns `false`, and the loop logs and reverts
-//! to `present_pipe = None` — presentation stops, but the compositor
-//! keeps serving its clients and holding its protocol state. Losing the
-//! display is bad; taking the session (and every client's unsaved work)
-//! with it would be worse.
-//!
-//! Note that neither production presenter can panic on a poisoned lock,
-//! because neither takes a lock at all: [`super::backend::winit::WinitPresenter`]
-//! makes only wgpu calls, and `DrmPresenter` only touches scanouts it
-//! solely owns. The `Arc<Mutex<RenderContext>>` in `ui::offscreen` — the
-//! one shared GPU lock in the process — is reached only by the headless
-//! backend, which deliberately has no presenter. The scene arriving here
-//! is already built, so nothing on this thread reaches back into the
-//! frame builder, the CRDT, or the foreign-surface store.
-//!
-//! # What stays synchronous
-//!
-//! The headless backend. Its `submit_frame` renders into an offscreen
-//! texture whose bytes the test-control `snapshot` command reads back
-//! immediately afterwards; making it asynchronous would make every
-//! headless harness racy. It returns `None` from
-//! [`super::backend::Backend::take_presenter`] and the loop keeps calling
-//! `submit_frame` inline. This is deliberate: the headless path must not
-//! acquire a threading model it doesn't need.
+//! A presenter panic unwinds the render thread; the next
+//! [`PresentPipe::submit`] then sees a closed channel and the loop drops
+//! to no presenter, so a lost display doesn't take the session (and
+//! clients' unsaved work) with it. The headless backend stays
+//! synchronous — its `submit_frame` output is read back immediately by
+//! the test-control `snapshot` command, so async would make every
+//! headless test racy.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -164,13 +100,11 @@ impl PresentPipe {
     /// `perf`/`top` output and in a backtrace.
     ///
     /// `on_retire` is called on the render thread each time a frame
-    /// finishes presenting. The loop uses it to wake its event loop: when
-    /// the pipe is full the paint gate declines and the loop parks, and
-    /// without a wakeup it would sleep out the whole frame interval even
-    /// though capacity came back microseconds later. On a GPU-bound frame
-    /// that halves throughput — measured as a 33.3 ms paint period (every
-    /// other deadline) on a nested run whose render thread was keeping up
-    /// far better than that.
+    /// finishes presenting, so the loop can wake up: without it, a parked
+    /// loop would sleep out the whole frame interval even though capacity
+    /// came back microseconds later — measured as a 33.3 ms paint period
+    /// (every other deadline) on a render thread keeping up far better
+    /// than that.
     pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
@@ -263,23 +197,15 @@ impl PresentPipe {
         let _ = self.tx.send(PresentMsg::Dpms(on));
     }
 
-    /// Stop the render thread and wait for the frame in flight to finish.
-    /// Called on shutdown so a half-presented frame doesn't outlive the
-    /// device it was rendering into.
     /// Stop the render thread and wait — for at most [`SHUTDOWN_GRACE`] —
     /// for the frame in flight to finish.
     ///
-    /// The wait is bounded because the thing being waited on is a GPU. A
-    /// bare `join` here is a deadlock waiting for a driver to hang: the
-    /// render thread is blocked inside `present`, `join` blocks the
-    /// caller, and neither ever returns. That is not hypothetical — it is
-    /// exactly how a deliberate-breakage run of the queue bound wedged,
-    /// hanging for ten minutes instead of reporting a failure, because
-    /// `Drop` ran `join` while the test still held the presenter blocked.
-    ///
-    /// If the thread doesn't finish in time we detach it and say so. A
-    /// leaked thread on the way out of a process is a far better outcome
-    /// than a compositor that will not exit.
+    /// The wait is bounded because the thing being waited on is a GPU: a
+    /// bare `join` here would deadlock if a driver hangs, since the render
+    /// thread stays blocked inside `present` and neither side ever
+    /// returns. If the thread doesn't finish in time we detach it instead
+    /// — a leaked thread on process exit beats a compositor that won't
+    /// exit.
     pub fn shutdown(&mut self) {
         self.shutdown_with_grace(SHUTDOWN_GRACE);
     }
@@ -287,13 +213,9 @@ impl PresentPipe {
     /// [`Self::shutdown`] with an explicit grace period.
     ///
     /// Exists so the test that deliberately wedges a presenter can use a
-    /// short grace. With both on the same constant, "the `present` test
-    /// module took exactly `SHUTDOWN_GRACE`" is ambiguous — the tests run
-    /// in parallel, so one test on the timeout path and five on it look
-    /// identical from the outside. Parameterising it means the clean path
-    /// is the only thing that can produce a fast module, and any test
-    /// that regresses onto the timeout path shows up as a two-second
-    /// outlier against neighbours that finish instantly.
+    /// short grace instead of [`SHUTDOWN_GRACE`] — otherwise a test that
+    /// regresses onto the timeout path is indistinguishable, from the
+    /// outside, from one running clean.
     pub fn shutdown_with_grace(&mut self, grace: Duration) {
         let Some(handle) = self.handle.take() else {
             return;
@@ -349,14 +271,10 @@ mod tests {
     }
 
     impl Presenter for Blocking {
-        // Every lock here recovers from poisoning rather than panicking.
-        // A test that fails while holding the gate poisons it, and a
-        // presenter that then panicked would print a second, unrelated
-        // `PoisonError` backtrace underneath the real assertion failure —
-        // a red herring in exactly the output someone is reading to
-        // understand why the test failed. The state behind these locks is
-        // a counter and two Vecs; there is no invariant for a poisoned
-        // lock to be protecting.
+        // Every lock here recovers from poisoning rather than panicking —
+        // a failing test that poisons the gate shouldn't also print an
+        // unrelated `PoisonError` backtrace over the real assertion
+        // failure. No invariant here for a poisoned lock to protect.
         fn present(&mut self, _scene: &Scene, _output: OutputId) {
             let _held = self.gate.lock().unwrap_or_else(|e| e.into_inner());
             self.seen.fetch_add(1, Ordering::Release);
@@ -382,15 +300,12 @@ mod tests {
         PresentPipe::spawn(p, Box::new(|| {}))
     }
 
-    // Note on declaration order in the gate-holding tests below: each
-    // spawns the pipe *before* taking the gate, so the guard drops first
-    // and the render thread is released before `shutdown` waits on it.
-    // That ordering is not what makes them correct —
-    // `PresentPipe::shutdown` is bounded, so the other order returns after
-    // the grace period with a detach warning rather than hanging. The
-    // ordering is here so these tests exercise the clean shutdown path
-    // instead of paying `SHUTDOWN_GRACE` on every teardown, which would be
-    // slow and would hide a regression in the fast path.
+    // Declaration order in the gate-holding tests below: each spawns the
+    // pipe *before* taking the gate, so locals drop in reverse order and
+    // the render thread is released before `shutdown` waits on it — the
+    // other order still works (`shutdown` is bounded) but pays
+    // `SHUTDOWN_GRACE` on every teardown instead of exercising the clean
+    // path.
 
     fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -434,10 +349,7 @@ mod tests {
         // and assert the submitting thread returns anyway — if `submit`
         // blocked, this call would not return until the gate is released.
         let gate = Arc::new(Mutex::new(()));
-        // Spawn *before* taking the gate: locals drop in reverse
-        // declaration order, so `held` must be declared after `pipe` to be
-        // released before `shutdown` waits on the render thread. The other
-        // order deadlocks on any assertion failure.
+        // See the declaration-order note above.
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
@@ -465,10 +377,7 @@ mod tests {
         // frames forever and the input-to-photon path would grow without
         // bound.
         let gate = Arc::new(Mutex::new(()));
-        // Spawn *before* taking the gate: locals drop in reverse
-        // declaration order, so `held` must be declared after `pipe` to be
-        // released before `shutdown` waits on the render thread. The other
-        // order deadlocks on any assertion failure.
+        // See the declaration-order note above.
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
@@ -606,15 +515,10 @@ mod tests {
 
     #[test]
     fn shutdown_returns_even_when_the_presenter_never_finishes() {
-        // The failure this guards against is not hypothetical: a
-        // deliberate-breakage run of the queue bound hung for ten minutes
-        // instead of reporting a failed assertion, because `Drop` ran a
-        // bare `join` on a render thread blocked inside `present`. The
-        // same shape is a compositor that will not exit when its GPU
-        // driver wedges.
-        //
-        // Hold the presenter forever and assert `shutdown` still returns,
-        // within a bound comfortably above SHUTDOWN_GRACE.
+        // Guards against the shape of a compositor that will not exit
+        // when its GPU driver wedges: hold the presenter forever and
+        // assert `shutdown` still returns, within a bound comfortably
+        // above SHUTDOWN_GRACE.
         let gate = Arc::new(Mutex::new(()));
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),

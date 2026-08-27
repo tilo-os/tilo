@@ -106,10 +106,6 @@ impl ContentLightLevel {
     }
 }
 
-/// The full HDR10 static-metadata payload — everything the receiver
-/// needs to render the content in the sender's intended luminance
-/// intent.
-///
 /// Attached to the wire as an optional field of
 /// [`crate::network::NeighbourMsg::SurfaceStreamStart`]; SEI messages
 /// carrying the same data are inserted in-band by the encoder.

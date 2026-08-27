@@ -1,42 +1,19 @@
-//! Phase 7 Task 7.2 — end-to-end Wayland integration test for the native
-//! compositor.
+//! End-to-end Wayland integration test for the native compositor: spawns
+//! `quick-desktop --mode native --backend winit`, scrapes the listening
+//! socket out of its stderr (the `listening on "wayland-N"` line is a
+//! stable contract of `compositor::native::run`), drives a raw
+//! `wayland-client` toplevel with a unique app-id, and asserts the
+//! compositor's `WorkspaceTree` adopts then reaps the matching foreign tab
+//! — observed through the `NIRIOS_TEST_STATE_DUMP` introspection hook.
 //!
-//! The test:
-//!
-//! 1. Spawns `quick-desktop --mode native --backend winit` as a child
-//!    process (with `WAYLAND_DISPLAY` unset so smithay's
-//!    `ListeningSocketSource::new_auto` picks a fresh `wayland-N`).
-//! 2. Scrapes the listening socket name out of the child's stderr — the
-//!    `nirios compositor listening on "wayland-N"` line is contractually
-//!    stable (see `compositor::native::run`).
-//! 3. Connects a raw `wayland-client` to that socket, walks the registry,
-//!    binds `wl_compositor` + `xdg_wm_base`, creates a single `wl_surface`
-//!    + `xdg_surface` + `xdg_toplevel`, sets a unique app-id, and commits.
-//! 4. Asserts the compositor's `WorkspaceTree` ends up containing a
-//!    foreign tab with the unique app-id (the assertion is driven through
-//!    the `NIRIOS_TEST_STATE_DUMP` env-var-temp-file introspection hook
-//!    added to `native::run`).
-//! 5. Tears the client down. Asserts the matching tab is reaped.
-//!
-//! ## Why `#[ignore]` by default
-//!
-//! The native compositor uses `winit` to open a host window which in turn
-//! requires a running Wayland or X11 display server. Fully headless CI
-//! (no `WAYLAND_DISPLAY`/`DISPLAY` and no virtual framebuffer) cannot
-//! satisfy that today — winit's backend init will panic.
-//!
-//! To run the test interactively:
+//! `#[ignore]` by default: winit needs a real Wayland or X11 display, which
+//! fully headless CI cannot supply, so its backend init would panic.
+//! Un-ignoring in CI is gated on a virtual display server in the runner image.
 //!
 //! ```text
 //! cargo build -p quick-desktop
 //! cargo test -p quick-desktop --test compositor_test -- --ignored
 //! ```
-//!
-//! It works inside `my-distrobox` because the distrobox shares the host
-//! Wayland session and the binary is reachable at
-//! `target/debug/quick-desktop`. CI un-ignore is gated on adding a
-//! virtual display server to the runner image (tracked in the Phase 7
-//! plan section).
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -49,22 +26,13 @@ use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-/// Drains the compositor's `WorkspaceTree` JSON dump and walks it
-/// untyped (via `serde_json::Value`) looking for a `TileContent::Foreign`
-/// tab whose `app_id` matches.
+/// Walks the compositor's `WorkspaceTree` JSON dump untyped, looking for a
+/// `TileContent::Foreign` tab whose `app_id` matches. `None` when the file
+/// is unreadable or not JSON.
 ///
-/// Walking untyped sidesteps the need to mirror every `TileContent`
-/// variant (`AppPlaceholder`, `Stub`, `Foreign`) in this test file —
-/// externally-tagged enums + `#[serde(other)]` only catches unit
-/// variants, so a strongly-typed mirror would have to enumerate every
-/// variant the production code adds. The untyped walk is also robust
-/// against new fields appearing in any tile shape (the chrome's
-/// `AppPlaceholder` may grow new keys without forcing this test to bump
-/// in lockstep).
-///
-/// Returns `Some(true)` if the dump parsed and contained a matching
-/// tab, `Some(false)` if the dump parsed but had no match, `None` if
-/// the file is unreadable or not JSON.
+/// Untyped because a strongly-typed mirror would have to enumerate every
+/// `TileContent` variant the production code adds — `#[serde(other)]` only
+/// catches unit variants — and would break whenever a tile shape grows a field.
 fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<bool> {
     let bytes = std::fs::read(dump_path).ok()?;
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -116,9 +84,7 @@ fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool 
 /// Spawn the compositor child + wait for the "listening on …" line.
 /// Returns (child handle, socket name like `wayland-3`).
 fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
-    // The compositor binary is built by `cargo test`'s pre-build step
-    // (Cargo always rebuilds the package's binaries before running its
-    // integration tests). The exact path is `target/debug/quick-desktop`
+    // Built by `cargo test`'s pre-build step, at `target/debug/quick-desktop`
     // relative to CARGO_MANIFEST_DIR's parent.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().expect("workspace root").to_path_buf();
@@ -143,9 +109,8 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
         .spawn()
         .expect("spawn quick-desktop");
 
-    // Stream stderr on a worker thread so we can both forward it to the
-    // test logs (helpful when debugging failures) and scan for the
-    // "listening on" marker. The first line matching the contract wins.
+    // Stream stderr on a worker thread so it reaches the test logs and is
+    // scanned for the "listening on" marker; first matching line wins.
     let stderr = child.stderr.take().expect("child stderr piped");
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -187,9 +152,7 @@ fn extract_socket_name(line: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
-// -----------------------------------------------------------------------------
 // Minimal wayland-client app — registry walks, then drives the toplevel.
-// -----------------------------------------------------------------------------
 
 struct TestClient {
     compositor: Option<wl_compositor::WlCompositor>,
@@ -302,9 +265,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
     }
 }
 
-/// Drive the wayland queue until both required globals are bound, or
-/// until `timeout` elapses (in which case the function returns whatever
-/// it has — the caller asserts and reports the failure).
+/// Drive the queue until both globals are bound or `timeout` elapses,
+/// returning whatever it has so the caller reports the failure.
 fn round_trip_until_bound(
     conn: &Connection,
     queue: &mut EventQueue<TestClient>,
@@ -328,9 +290,7 @@ fn native_compositor_adopts_and_reaps_foreign_tab() {
 
     let (mut child, socket_name) = spawn_compositor(&dump_path);
 
-    // Run the rest in a `defer-kill` closure so a panic in the client
-    // path still tears the compositor down before the test framework
-    // reports.
+    // Closure so a panic in the client path still tears the compositor down.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_client_assertions(&socket_name, &dump_path);
     }));
@@ -378,8 +338,8 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     surface.commit();
     let _ = conn.flush();
     // Roundtrip so the server processes get_toplevel + set_app_id + commit
-    // and fires both `new_toplevel` and `app_id_changed`. We poll the
-    // state dump separately below, this just unsticks the request queue.
+    // and fires `new_toplevel` / `app_id_changed`; this only unsticks the
+    // request queue, the state dump is polled below.
     for _ in 0..10 {
         let _ = conn.roundtrip();
         let _ = queue.dispatch_pending(&mut client);
@@ -388,20 +348,15 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     // 4. Poll the state dump until the foreign tab with our app-id
     // appears, or 3s elapses.
     let adopted = poll_for(Duration::from_secs(3), || {
-        // Re-pump the wayland queue inside the poll so that any
-        // outstanding events the server needs to process (configure
-        // ack, set_app_id, …) get drained while we wait. Without this
-        // the test would block on the file system alone and the
-        // compositor's loop has nothing to drive it after the initial
-        // burst.
+        // Re-pump inside the poll: without it the test blocks on the file
+        // system alone and nothing drives the compositor's loop after the
+        // initial burst.
         let _ = conn.roundtrip();
         let _ = queue.dispatch_pending(&mut client);
         dump_has_foreign_app_id(dump_path, &app_id)
     });
     if !adopted {
-        // On failure, echo the dump's contents (if any) so CI logs make
-        // the actual shell-state shape visible — the panic message
-        // alone doesn't help diagnose why adoption didn't fire.
+        // Echo the dump on failure so CI logs show the actual shell-state shape.
         match std::fs::read_to_string(dump_path) {
             Ok(s) => eprintln!("dump contents at failure:\n{s}"),
             Err(e) => eprintln!("dump unreadable at failure: {e}"),
@@ -413,18 +368,16 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
         dump_path.display()
     );
 
-    // 5. Tear the client down. `wayland-client` proxies do *not*
-    // auto-send destroy requests on drop — we need explicit `.destroy()`
-    // calls so smithay's `XdgShellHandler::toplevel_destroyed` fires.
-    // The xdg-shell spec requires destroying the role objects in
-    // reverse-creation order (toplevel → xdg_surface → surface).
+    // 5. Tear the client down. `wayland-client` proxies do not auto-send
+    // destroy on drop, so explicit `.destroy()` calls are what fire
+    // smithay's `toplevel_destroyed`. xdg-shell requires reverse-creation
+    // order (toplevel → xdg_surface → surface).
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
     let _ = conn.flush();
-    // Drive the queue once so the destroy requests reach the server
-    // before we drop the connection (the server's per-frame
-    // `dispatch_clients` does the rest).
+    // Drive the queue once so the destroys reach the server before the
+    // connection drops.
     let _ = conn.roundtrip();
     drop(queue);
     drop(conn);
