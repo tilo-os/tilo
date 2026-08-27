@@ -512,11 +512,9 @@ impl Shell {
     /// that case).
     #[cfg(any(test, debug_assertions))]
     pub fn active_strip_index(&self) -> usize {
-        // The runtime tree doesn't carry a per-workspace active-strip map
-        // yet (that lives on `state::WorkspaceTree`), so for now we return
-        // `0` as the stable "first strip" index. Tests only need the value
-        // to be well-defined; callers that want the live selection use the
-        // `state` tree path.
+        // No per-workspace active-strip map on the runtime tree yet (that
+        // lives on `state::WorkspaceTree`) — `0` is a stable placeholder;
+        // callers wanting the live selection use the `state` tree path.
         let _ = self;
         0
     }

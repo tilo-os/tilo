@@ -1,11 +1,4 @@
-//! Real-input e2e test control surface.
-//!
-//! The compositor exposes an opt-in JSON control protocol when launched
-//! with `QOS_TEST_CONTROL=/run/user/N/nirios-test-N.sock`. This module
-//! holds the pure-logic command/response types and dispatcher, kept
-//! separate from the socket transport so the dispatcher can grow its
-//! command set — and be tested against every command shape and error
-//! path — without touching transport code or spawning a process.
+//! Real-input e2e test control protocol (`QOS_TEST_CONTROL=/run/user/N/nirios-test-N.sock`): pure command/response types + dispatcher, kept separate from the socket transport.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,12 +8,7 @@ use vello::kurbo::Rect;
 
 use crate::shell::search::action_api::ArgValue;
 
-/// Which pointer button a [`Command::PointerButton`] means.
-///
-/// Spelled out rather than passed as a number: `3` is the right button in
-/// X11's numbering, `BTN_RIGHT` is `0x111` in evdev's, and winit calls it
-/// `MouseButton::Right`. A harness should not have to know which of those
-/// this end speaks.
+/// Which pointer button a [`Command::PointerButton`] means — spelled out because X11, evdev and winit each number buttons differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PointerButtonKind {
@@ -30,23 +18,17 @@ pub enum PointerButtonKind {
     Middle,
 }
 
-/// Top-level command envelope. Tag is `op`; remaining fields are
-/// per-variant.
+/// Top-level command envelope. Tag is `op`; remaining fields are per-variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Command {
-    /// Drain the host's widget registry. Same shape as
-    /// `ShellDriver::widget_registry()`, reachable over a unix socket.
+    /// Drain the host's widget registry. Same shape as `ShellDriver::widget_registry()`, reachable over a unix socket.
     ListTargets,
     /// Synthesise a left click at raw `(x, y)`.
     ClickAt { x: f64, y: f64 },
-    /// Resolve `name` against the widget registry, then `click_at` its
-    /// centre. `unknown_target` if the name doesn't resolve or the rect
-    /// has zero area (not yet laid out).
+    /// Resolve `name` against the widget registry, then `click_at` its centre. `unknown_target` if unresolved or zero-area (not yet laid out).
     ClickNamed { name: String },
-    /// Press at `(x_from, y_from)`, interpolate `steps` (default 8)
-    /// `CursorMoved`s inclusive of both endpoints, release at
-    /// `(x_to, y_to)`.
+    /// Press at `(x_from, y_from)`, interpolate `steps` (default 8) `CursorMoved`s inclusive of both endpoints, release at `(x_to, y_to)`.
     Drag {
         x_from: f64,
         y_from: f64,
@@ -54,74 +36,43 @@ pub enum Command {
         y_to: f64,
         steps: Option<u32>,
     },
-    /// Per-surface frame counters for every foreign toplevel the
-    /// compositor is tracking. Read-only. Lets a harness distinguish an
-    /// app that painted from one still showing the first-frame
-    /// placeholder without guessing from a screenshot.
+    /// Per-surface frame counters for every tracked foreign toplevel. Read-only; lets a harness tell a painted app from one still showing the first-frame placeholder.
     ForeignFrames,
-    /// Inject a single key press + release. `key` is a winit-style name
-    /// or a single character; unknown names return a `parse_error`.
+    /// Inject a key press + release. `key` is a winit-style name or a single character; unknown names return `parse_error`.
     Key { key: String },
-    /// Press `key` and hold it. Pairs with [`Command::KeyUp`]. Same key
-    /// names as [`Command::Key`], plus the bare modifiers `"Shift"`,
-    /// `"Control"`, `"Alt"` and `"Super"` — holding a real modifier
-    /// keycode across another keystroke is the only way to drive the
-    /// seat's xkb modifier state the way hardware does.
+    /// Press `key` and hold it (pairs with [`Command::KeyUp`]). Also accepts the bare modifiers `"Shift"`, `"Control"`, `"Alt"`, `"Super"` — holding a real modifier keycode across another keystroke is the only way to drive xkb modifier state like hardware does.
     KeyDown { key: String },
     /// Release a key held by [`Command::KeyDown`].
     KeyUp { key: String },
-    /// Scroll `(dx, dy)` wheel notches at the current cursor position.
-    /// Positive `dy` scrolls up, matching winit's `LineDelta` sign
-    /// convention (the compositor inverts it for the Wayland axis
-    /// convention when forwarding to a client).
+    /// Scroll `(dx, dy)` wheel notches at the current cursor position. Positive `dy` scrolls up (winit's `LineDelta` convention; inverted for Wayland when forwarding to a client).
     Scroll { dx: f32, dy: f32 },
-    /// Inject a press + release pair for each character in `text`.
-    /// Empty string emits no actions and returns `Ok`.
+    /// Inject a press + release pair for each character in `text`. Empty string is a no-op returning `Ok`.
     Type { text: String },
-    /// Update the modifier mask carried into subsequent keyboard events
-    /// until the next `Modifiers` command. Emits a single `SetModifiers`
-    /// planned action rather than a winit `ModifiersChanged` event,
-    /// since the host's chord handlers read the mask straight off
-    /// `TestControlCtx::modifiers`.
+    /// Update the modifier mask carried into subsequent keyboard events until the next `Modifiers` command. Emits a single `SetModifiers` planned action, since the host's chord handlers read the mask straight off `TestControlCtx::modifiers`.
     Modifiers {
         ctrl: bool,
         shift: bool,
         alt: bool,
         logo: bool,
     },
-    /// Re-paint the current scene into a fresh `OffscreenRenderer` and
-    /// write the resulting PNG to `path`. Only an empty `path` is
-    /// pre-validated (`invalid_path`); other I/O errors are logged by
-    /// the executor without failing the dispatcher's `Ok`.
+    /// Re-paint the current scene into a fresh `OffscreenRenderer` and write the PNG to `path`. Only an empty `path` is pre-validated (`invalid_path`); other I/O errors are logged, not surfaced.
     Snapshot { path: String },
-    /// Read-only snapshot of the live [`shell::state::WorkspaceTree`]
-    /// plus a structured view of [`ChromeState`]. Returns
-    /// [`Response::State`] with both blobs as opaque `serde_json::Value`
-    /// so future fields surface without a wire break.
+    /// Read-only snapshot of the live [`shell::state::WorkspaceTree`] plus [`ChromeState`], both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
-    /// Grant a capability on the active workspace, on behalf of the user
-    /// sitting at this session, through `Workspace::grant_as` — the
-    /// production authority check, so a grantor who neither owns the
-    /// room nor holds `Admin` over it is refused, not worked around.
+    /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
     ///
-    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope`
-    /// is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`;
-    /// `verb` is one of read / comment / write / invite / admin.
+    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`; `verb` is read / comment / write / invite / admin.
     Grant {
         subject: String,
         scope: String,
         verb: String,
-        /// Stable capability id, so a later `revoke` can name it. One
-        /// is minted when omitted.
+        /// Stable capability id so a later `revoke` can name it; minted when omitted.
         #[serde(default)]
         id: Option<String>,
     },
-    /// Revoke the capability `id` on the active workspace, through
-    /// `Workspace::revoke_as` — same authority check as `grant`.
+    /// Revoke capability `id` on the active workspace, through `Workspace::revoke_as` — same authority check as `grant`.
     Revoke { id: String },
-    /// Ask the in-app action gate (`shell::actions::check_action`)
-    /// whether `actor` may invoke `app`'s `action`, against the live
-    /// workspace.
+    /// Ask `shell::actions::check_action` whether `actor` may invoke `app`'s `action`, against the live workspace.
     CheckAction {
         actor: String,
         app: String,
@@ -130,72 +81,39 @@ pub enum Command {
         #[serde(default)]
         destructive: bool,
     },
-    /// Record that the next window announcing `app_id` should open in
-    /// its own window group rather than as a tab in the focused one, via
-    /// `shell::launcher::set_pending_placement` — the production
-    /// placement path. A harness needs this because two client windows
-    /// are only both visible when in separate groups, which is the
-    /// precondition for dragging anything between them.
+    /// Route the next window announcing `app_id` into its own group rather than a tab, via `shell::launcher::set_pending_placement` — needed because dragging between two client windows requires them in separate groups.
     PlaceNextWindow { app_id: String },
-    /// Move the pointer to `(x, y)` without pressing anything.
-    ///
-    /// [`Command::ClickAt`] and [`Command::Drag`] bundle press and release
-    /// together, which cannot express a drag-and-drop: the source client has
-    /// to be *holding* the button when it calls `start_drag`, and the drop
-    /// only happens on a release that arrives after the pointer has moved
-    /// over another client. These two ops decompose that.
+    /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
-    /// Give every window group in the active strip the same share of it,
-    /// in permille. A group takes about three quarters of its strip by
-    /// default, so two never fit on screen together without this.
+    /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
     SetGroupWidth { permille: u16 },
-    /// Press or release a pointer button at the current position.
-    /// `button` defaults to the left one. The right button exists so a
-    /// harness can drive the "select, right-click, say something about
-    /// it" gesture this desktop leans on.
+    /// Press or release a pointer button at the current position. `button` defaults to the left one; the right button drives the "select, right-click" gesture this desktop leans on.
     PointerButton {
         pressed: bool,
         #[serde(default)]
         button: PointerButtonKind,
     },
-    /// Copy `text` from **in-process chrome**, through the same
-    /// `ui::text_selection::clipboard_copy` every hosted widget calls —
-    /// lands on the process's real clipboard backend and is published as
-    /// a real Wayland selection on the next tick.
+    /// Copy `text` from in-process chrome, through `ui::text_selection::clipboard_copy` — lands on the real clipboard backend and is published as a Wayland selection on the next tick.
     ClipboardCopy {
         text: String,
         /// `true` targets the primary selection instead of the clipboard.
         #[serde(default)]
         primary: bool,
     },
-    /// Paste from in-process chrome, through
-    /// `ui::text_selection::clipboard_paste`. Returns
-    /// [`Response::Clipboard`] with the text the hosted widgets would
-    /// receive, or `null` when the selection is empty.
+    /// Paste from in-process chrome, through `ui::text_selection::clipboard_paste`. Returns [`Response::Clipboard`] with the text, or `null` when empty.
     ClipboardPaste {
         /// `true` reads the primary selection instead of the clipboard.
         #[serde(default)]
         primary: bool,
     },
-    /// Enumerate the actions and resources the shell exports right now,
-    /// through the same provider registry that feeds the Ctrl+K palette.
-    /// Read-only by construction — no invoke handles in the reply, so
-    /// surveying can never fire a side-effect. An empty `query` lists
-    /// every provider's default set.
+    /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults.
     ActionsEnumerate {
         #[serde(default)]
         query: String,
     },
-    /// Invoke one enumerated action by its stable `(provider, id)`
-    /// address, with no window, no scene and no synthetic input.
+    /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
-    /// The address is resolved against a freshly built catalogue before
-    /// anything runs, so an unknown or hidden id is refused rather than
-    /// silently ignored. `args` is checked against the resolved action's
-    /// parameters; a missing, unknown or wrong-typed argument is
-    /// `invalid_arguments`, deliberately distinct from `unknown_action` —
-    /// "that address isn't there" and "that address is wrong" are fixed
-    /// differently. Omitting `args` is the nullary call.
+    /// The address is resolved against a fresh catalogue first, so an unknown or hidden id is `unknown_action`, not silently ignored. `args` is checked against the resolved parameters; a bad argument is `invalid_arguments`, deliberately distinct — "address is wrong" vs. "arguments are wrong" are fixed differently. Omitting `args` is the nullary call.
     ActionsInvoke {
         provider: String,
         id: String,
@@ -204,46 +122,32 @@ pub enum Command {
     },
 }
 
-/// Top-level response envelope. Either an `ok` payload (per-command
-/// shape) or a structured `err`.
+/// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
-    /// `list_targets` response — sorted by key for deterministic output
-    /// (HashMap iteration order would otherwise leak into test
-    /// assertions).
+    /// `list_targets` response, sorted by key for deterministic output (`HashMap` order would otherwise leak into test assertions).
     Targets(Vec<TargetEntry>),
-    /// Successful command with no payload. Carries the post-action frame
-    /// counter so clients can poll for state changes against a known
-    /// frame number rather than wall time. Currently always `0`.
+    /// Successful command with no payload. Carries the post-action frame counter (currently always `0`) so clients can poll against a known frame number.
     Ok { frame: u64 },
-    /// Structured error. `code` is a stable machine-readable string;
-    /// `message` is human prose for log output.
+    /// Structured error: `code` is stable and machine-readable, `message` is human prose for logs.
     Err { code: String, message: String },
-    /// `foreign_frames` response — one entry per tracked foreign
-    /// surface, opaque `serde_json::Value` so the shape can grow.
+    /// `foreign_frames` response — one opaque entry per tracked foreign surface.
     ForeignFrames { frames: serde_json::Value },
-    /// `state_dump` response — the persisted [`WorkspaceTree`] +
-    /// structured [`ChromeState`] view, both opaque `serde_json::Value`.
+    /// `state_dump` response — persisted [`WorkspaceTree`] + [`ChromeState`], both opaque.
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
-        /// The peers this session would paint, straight off the
-        /// `PresenceCtx` the overlay reads.
+        /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
     },
-    /// Answer to a capability query or administration command
-    /// (`grant`, `revoke`, `check_action`). Opaque JSON so the shape
-    /// can grow without a wire break.
+    /// Answer to a capability query or admin command (`grant`, `revoke`, `check_action`). Opaque JSON so the shape can grow.
     Answer(serde_json::Value),
-    /// `clipboard_paste` response — what in-process chrome reads off the
-    /// selection right now. `None` when nothing has been copied, which is
-    /// distinct from `Some("")`: a client may own an empty selection.
+    /// `clipboard_paste` response. `None` means nothing has been copied — distinct from `Some("")`, an owned empty selection.
     Clipboard { text: Option<String> },
 }
 
-/// One entry in a `list_targets` response. `rect` is `(x, y, w, h)` in
-/// the compositor's own coordinate space.
+/// One `list_targets` entry. `rect` is `(x, y, w, h)` in the compositor's coordinate space.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetEntry {
     pub name: String,
@@ -259,50 +163,28 @@ impl TargetEntry {
     }
 }
 
-/// Trait the compositor's main loop implements to provide live state
-/// to the dispatcher. Tests pass mock implementations that return
-/// canned data; the real binary passes a closure that walks the
-/// current `FrameBuilder`'s host.
+/// Trait the compositor's main loop implements to give the dispatcher live state. Tests pass mocks with canned data; the real binary passes a closure walking the current `FrameBuilder`'s host.
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted [`WorkspaceTree`] — same shape
-    /// `NIRIOS_TEST_STATE_DUMP` writes to disk on every frame tick.
-    /// Default `Null` so mock fixtures that only care about
-    /// `widget_registry` don't have to spell out a tree they never
-    /// inspect; the compositor's real impl overrides this.
+    /// JSON view of the persisted [`WorkspaceTree`] — same shape `NIRIOS_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
     fn workspace_tree_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// JSON view of [`ChromeState`] (`overlays`, `search_scope`,
-    /// `ws_settings_tab`, `revision`, `editing_workspace_name`). Default
-    /// `Null` so fixtures that don't exercise `state_dump` stay terse.
+    /// JSON view of [`ChromeState`] (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
     fn chrome_state_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// The peers this session would paint right now, read from the
-    /// same `PresenceCtx` the overlay draws from — exposed because "no
-    /// peer arrived" and "a peer arrived and was not drawn" otherwise
-    /// produce the same picture, and a harness needs to tell those
-    /// apart. Default `Null` so mock fixtures stay terse.
+    /// The peers this session would paint right now, off the same `PresenceCtx` the overlay draws from — exposed because "no peer arrived" and "a peer arrived and wasn't drawn" otherwise look identical. Defaults to `Null`.
     fn peers_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// Per-surface frame ground truth: whether each foreign toplevel has
-    /// ever presented. The placeholder tile (app-id over a flat card)
-    /// is near-identical between apps and, for one that legitimately
-    /// starts empty, near-identical to a real first frame — `frame_seq
-    /// > 0` is the fact a harness needs instead of guessing from
-    /// pixels. Default is an empty list.
+    /// Per-surface ground truth of whether each foreign toplevel has ever presented. The placeholder tile is near-identical between apps and, for a legitimately-empty one, near-identical to a real first frame — `frame_seq > 0` is the fact a harness needs instead of guessing from pixels. Defaults to an empty list.
     fn foreign_frames_json(&self) -> serde_json::Value {
         serde_json::Value::Array(Vec::new())
     }
 
-    /// Grant a capability on the active workspace on behalf of the
-    /// local user, via `Workspace::grant_as`. Default impl refuses: a
-    /// `ControlState` with no live tree has nothing to administer, and
-    /// answering anything else would let a harness think it had proved
-    /// something about authority.
+    /// Grant a capability on the active workspace via `Workspace::grant_as`. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
     fn grant_capability(
         &self,
         _subject: &str,
@@ -313,8 +195,7 @@ pub trait ControlState {
         Err("no live workspace on this control state".to_string())
     }
 
-    /// Revoke a capability by id on the active workspace, via
-    /// `Workspace::revoke_as`.
+    /// Revoke a capability by id on the active workspace, via `Workspace::revoke_as`.
     fn revoke_capability(&self, _id: &str) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
     }
@@ -331,20 +212,12 @@ pub trait ControlState {
         Err("no live workspace on this control state".to_string())
     }
 
-    /// Enumerate the exported action surface for `query` as JSON.
-    /// Default impl refuses, same reasoning as the capability methods:
-    /// an empty list would let a harness read "this shell exports
-    /// nothing" out of "this fixture cannot answer", and those must not
-    /// share a wire shape.
+    /// Enumerate the exported action surface for `query` as JSON. Default impl refuses, same reasoning as the capability methods: "exports nothing" and "cannot answer" must not share a wire shape.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
     }
 
-    /// Resolve `(provider, id)` against a freshly built catalogue and
-    /// report what it addresses, without invoking it — the validation
-    /// half of `actions_invoke`, so the transport can refuse with a
-    /// structured error instead of planning an invocation that silently
-    /// does nothing.
+    /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
     fn resolve_action(
         &self,
         _provider: &str,
@@ -359,10 +232,7 @@ pub trait ControlState {
 
 /// A refused invocation, carrying the code the wire should report.
 ///
-/// A plain string would collapse "that address does not exist for you"
-/// into "you passed the wrong arguments", and those are corrected
-/// differently: the first means look again at what you may see, the
-/// second means look again at what this action declared.
+/// A plain string would collapse "address doesn't exist for you" into "wrong arguments" — those are corrected differently, one by looking again at what you may see, the other at what the action declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionRefusal {
     pub code: &'static str,
@@ -370,9 +240,7 @@ pub struct ActionRefusal {
 }
 
 impl ActionRefusal {
-    /// The address names nothing this caller can see. Deliberately the
-    /// same answer for "no such action" and "hidden from you", so
-    /// probing cannot map what it may not see.
+    /// The address names nothing this caller can see — deliberately the same answer for "no such action" and "hidden from you", so probing can't map what it may not see.
     pub fn unknown(message: impl Into<String>) -> Self {
         Self {
             code: "unknown_action",
@@ -388,8 +256,7 @@ impl ActionRefusal {
         }
     }
 
-    /// The address and arguments are both good, and the action could
-    /// still not do its job.
+    /// The address and arguments are both good, and the action still could not do its job.
     pub fn failed(message: impl Into<String>) -> Self {
         Self {
             code: "action_failed",
@@ -398,11 +265,7 @@ impl ActionRefusal {
     }
 }
 
-/// Translate one JSON argument object into the action vocabulary's
-/// values. Kept at the transport rather than inside the action API so
-/// the catalogue never learns a wire format. JSON shapes with no
-/// parameter type — null, arrays, objects, non-integer numbers — are
-/// refused here by name rather than coerced.
+/// Translate one JSON argument object into the action vocabulary's values. Kept at the transport, not the action API, so the catalogue never learns a wire format. JSON shapes with no parameter type (null, arrays, objects, non-integer numbers) are refused by name.
 pub fn arg_values_from_json(
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
@@ -435,62 +298,34 @@ pub fn arg_values_from_json(
     Ok(out)
 }
 
-/// Side-effect actions the transport layer must execute after a
-/// `dispatch_command` call to fulfil the command. Pure values; no
-/// I/O. The transport synthesises `winit::WindowEvent`s from these
-/// and dispatches them through the shell's `host_and_taffy_mut`
-/// path — same wire as `WinitBackend` and `ShellDriver`.
+/// Side-effect actions the transport must execute after a `dispatch_command` call. Pure values, no I/O — the transport synthesises `winit::WindowEvent`s from these through `host_and_taffy_mut`, the same wire as `WinitBackend`/`ShellDriver`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedAction {
     /// Move the cursor to `(x, y)` in compositor coordinates.
     CursorMoved { x: f64, y: f64 },
-    /// Inject a left mouse button event. `pressed=true` is button-down,
-    /// `false` is button-up.
+    /// Inject a left mouse button event: `pressed=true` is down, `false` is up.
     MouseLeftButton { pressed: bool },
-    /// Press or release a pointer button that is not the left one. Kept
-    /// separate from [`Self::MouseLeftButton`] rather than folded into
-    /// it, since a dozen call sites here and in `native.rs` only ever
-    /// plan `Left` and widening all of them for a case that never
-    /// varies is churn nothing needs.
+    /// Press or release a pointer button other than left. Kept separate from [`Self::MouseLeftButton`] since call sites here and in `native.rs` only ever plan `Left`, and widening both for an unused case is churn.
     MousePointerButton {
         pressed: bool,
         button: PointerButtonKind,
     },
-    /// Inject a keyboard press or release for `key`. The transport
-    /// translates `KeyTag` to `winit::keyboard::Key` and synthesises
-    /// a `WindowEvent::KeyboardInput`.
+    /// Inject a keyboard press or release for `key`. The transport maps `KeyTag` to `winit::keyboard::Key` and synthesises a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
-    /// Inject a discrete wheel scroll of `(dx, dy)` notches at the
-    /// current cursor position. The transport synthesises a
-    /// `WindowEvent::MouseWheel` carrying a `LineDelta`, the same shape
-    /// winit reports for a mouse wheel.
+    /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
     MouseWheel { dx: f32, dy: f32 },
-    /// Update the modifier mask carried by the executor. Modifiers are
-    /// state, not events — the transport mutates
-    /// `TestControlCtx::modifiers` directly rather than dispatching a
-    /// `WindowEvent::ModifiersChanged`, since the host's chord handlers
-    /// read the snapshot inline.
+    /// Update the modifier mask carried by the executor. Modifiers are state, not events — mutated on `TestControlCtx::modifiers` directly rather than via `WindowEvent::ModifiersChanged`, since chord handlers read the snapshot inline.
     SetModifiers {
         ctrl: bool,
         shift: bool,
         alt: bool,
         logo: bool,
     },
-    /// Re-paint the current scene off-screen and write the RGBA buffer
-    /// to `path` as a PNG. Failures are logged via `eprintln!` rather
-    /// than propagated to the wire response.
+    /// Re-paint the current scene off-screen and write the RGBA buffer to `path` as a PNG. Failures are logged via `eprintln!`, not propagated to the wire response.
     Snapshot { path: PathBuf },
-    /// Give every live window group the same share of its strip, in
-    /// permille. Applied against the widget tree because that is where
-    /// the laid-out width lives.
+    /// Give every live window group the same share of its strip, in permille. Applied to the widget tree, where the laid-out width lives.
     SetGroupWidth { permille: u16 },
-    /// Run one already-validated action against the live CRDT. Carried
-    /// as a planned action rather than executed inside
-    /// `dispatch_command`, since invoking mutates the document and the
-    /// dispatch layer only ever holds it immutably. The executor
-    /// re-resolves the address against a fresh catalogue and re-checks
-    /// `args` against it, because the document — and which action the
-    /// address now names — may have moved on since planning.
+    /// Run one already-validated action against the live CRDT. Carried as a planned action rather than executed inside `dispatch_command`, since invoking mutates the document and dispatch only ever holds it immutably. The executor re-resolves the address and re-checks `args` against a fresh catalogue, since the document may have moved on since planning.
     InvokeAction {
         provider: String,
         id: String,
@@ -498,26 +333,16 @@ pub enum PlannedAction {
     },
 }
 
-/// Wire-friendly key identifier. Mirrors the subset of
-/// `winit::keyboard::Key` the test surface supports. `Named` covers
-/// the chord keys the compositor's chrome handles; `Char` covers
-/// literal input characters.
-///
-/// Extensions to this enum are additive — add a `NamedKeyTag` variant
-/// + parser branch + winit-mapping branch in `execute_planned_action`.
+/// Wire-friendly key identifier mirroring the subset of `winit::keyboard::Key` the test surface supports. `Named` covers the chrome's chord keys; `Char` covers literal input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyTag {
     /// One of the well-known winit `NamedKey`s.
     Named(NamedKeyTag),
-    /// A single character (typically ASCII printable, but any
-    /// `char` is permitted — the executor wraps it in
-    /// `winit::keyboard::Key::Character`).
+    /// A single character (typically ASCII printable, but any `char` is permitted — wrapped in `winit::keyboard::Key::Character`).
     Char(char),
 }
 
-/// Wire-friendly `NamedKey`. One variant per supported winit
-/// `NamedKey` — the parser's string-table and the executor's
-/// winit-mapping live in lockstep with this enum.
+/// Wire-friendly `NamedKey`. One variant per supported winit `NamedKey`; the parser's string-table and executor's mapping stay in lockstep with this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKeyTag {
     Enter,
@@ -534,21 +359,14 @@ pub enum NamedKeyTag {
     PageUp,
     PageDown,
     Space,
-    /// Bare modifier keys. Reachable only through `key_down` / `key_up`
-    /// (a `key` press+release pair would release the modifier before the
-    /// next key arrives), which is what lets a harness hold a real
-    /// modifier across another keystroke — the same shape hardware
-    /// produces, and the only way to exercise the seat's xkb modifier
-    /// tracking end-to-end.
+    /// Bare modifier keys, reachable only through `key_down`/`key_up` (a `key` press+release pair would release the modifier before the next key arrives) — the only way to hold a real modifier across a keystroke, matching hardware/xkb.
     Shift,
     Control,
     Alt,
     Super,
 }
 
-/// Parse a `key` field (from a `Key`/`Type` command) into a [`KeyTag`].
-/// Returns `None` if the string is empty, multi-character but doesn't
-/// match a `NamedKeyTag`, or otherwise unrepresentable.
+/// Parse a `key` field (from `Key`/`Type`) into a [`KeyTag`]. `None` if empty, unmatched, or otherwise unrepresentable.
 pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
     match key {
         "Enter" => Some(KeyTag::Named(NamedKeyTag::Enter)),
@@ -570,10 +388,7 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
         "Alt" => Some(KeyTag::Named(NamedKeyTag::Alt)),
         "Super" => Some(KeyTag::Named(NamedKeyTag::Super)),
         other => {
-            // Single character (any `char`, including multibyte) — map to
-            // `KeyTag::Char`. Multi-character strings that didn't match a
-            // named-key are rejected so typos like "enter" or "escpe"
-            // surface as `parse_error` rather than silently typed.
+            // Multi-character strings that don't match a named key are rejected — so typos like "enter" or "escpe" surface as `parse_error` rather than being typed silently.
             let mut chars = other.chars();
             let first = chars.next()?;
             if chars.next().is_some() {
@@ -587,11 +402,7 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
 
 /// Dispatch a single command against the live compositor state.
 ///
-/// Returns `(response, actions)`. Read-only commands return an empty
-/// action list; mutating commands return the [`PlannedAction`]s the
-/// transport must execute before writing the response — this split
-/// keeps the dispatcher pure (no I/O, no `&mut` shell state) while
-/// still encoding "do X then reply Y" in one round-trip.
+/// Returns `(response, actions)`: read-only commands return no actions; mutating commands return the [`PlannedAction`]s the transport must run before replying — keeps the dispatcher pure (no I/O, no `&mut` state).
 pub fn dispatch_command<S: ControlState>(
     cmd: &Command,
     state: &S,
@@ -657,8 +468,7 @@ pub fn dispatch_command<S: ControlState>(
             actions.push(PlannedAction::MouseLeftButton { pressed: true });
             let n = steps as f64;
             for s in 0..steps {
-                // steps==1 lands a single motion at x_from (matches the
-                // press location) rather than dividing by zero.
+                // steps==1 lands a single motion at x_from, avoiding divide-by-zero.
                 let t = if steps == 1 {
                     0.0
                 } else {
@@ -714,21 +524,12 @@ pub fn dispatch_command<S: ControlState>(
             }
         }
         Command::Type { text } => {
-            // A `KeyTag::Char` reaches a Wayland client as a bare evdev
-            // keycode, which carries no case: 35 is `h` or `H` purely by
-            // whether Shift is held at the time, so Shift must bracket
-            // it the way real hardware would. Chrome's own widgets read
-            // the synthesised event's `text` field and show the capital
-            // regardless, so this bug is invisible there — a focused
-            // client silently receives the lowercase letter instead,
-            // and a scripted `type` of "Hello" lands as "hello".
+            // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
             let mut actions = Vec::with_capacity(text.chars().count() * 2);
             for c in text.chars() {
                 let tag = KeyTag::Char(c);
                 let shift = KeyTag::Named(NamedKeyTag::Shift);
-                // Shifted punctuation needs the same bracket as letters:
-                // both reach the client as a keyboard position, not a
-                // character. See `client_input::unshifted`.
+                // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
                 let (_, shifted) = crate::compositor::client_input::unshifted(c);
                 if shifted {
                     actions.push(PlannedAction::KeyboardKey {
@@ -768,10 +569,7 @@ pub fn dispatch_command<S: ControlState>(
             }],
         ),
         Command::Snapshot { path } => {
-            // Pre-validate empty paths — `File::create("")` would fail
-            // with a confusing `ENOENT`, and the harness wants a stable
-            // `invalid_path` code it can branch on. Other path issues
-            // surface from the executor as `eprintln!` logs.
+            // Pre-validate empty paths: `File::create("")` fails with a confusing `ENOENT`, and the harness wants a stable `invalid_path` code. Other path issues surface from the executor as `eprintln!` logs.
             if path.is_empty() {
                 (
                     Response::Err {
@@ -903,10 +701,7 @@ pub fn dispatch_command<S: ControlState>(
     }
 }
 
-/// Wrap a capability-op result in the wire envelope. A refusal is an
-/// [`Response::Err`], not an `Answer` carrying `allowed: false` — a
-/// harness that conflated them would read a refused *grant* as a
-/// successful one that happened to deny.
+/// Wrap a capability-op result in the wire envelope. A refusal is a [`Response::Err`], not an `Answer` with `allowed: false` — conflating them would read a refused *grant* as a successful deny.
 fn answer_or_err(result: Result<serde_json::Value, String>, code: &str) -> Response {
     match result {
         Ok(value) => Response::Answer(value),
@@ -930,12 +725,7 @@ pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
     }
 }
 
-/// Parse a scope string against the room `room_key` stands for.
-///
-/// `room_key` is the workspace's own id as a string — the same key
-/// `Workspace::set_owner` and `Workspace::role_of` use for
-/// `Scope::Room`, so a scope written here matches the ones the
-/// compositor writes itself.
+/// Parse a scope string against the room `room_key` names. `room_key` is the workspace's own id, the same key `Workspace::set_owner`/`role_of` use for `Scope::Room`, so a scope written here matches what the compositor writes.
 pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
     use crate::shell::state::Scope;
     match s {
@@ -976,10 +766,7 @@ pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
     }
 }
 
-/// Parse a single JSON line into a [`Command`]. Returns a structured
-/// [`Response::Err`] on parse failure rather than bubbling up a
-/// `serde_json::Error` — the transport layer should be transparent
-/// about parse failures so clients see machine-readable error codes.
+/// Parse a single JSON line into a [`Command`]. Returns a structured [`Response::Err`] on parse failure rather than bubbling a `serde_json::Error`, so clients see machine-readable error codes.
 pub fn parse_command(line: &str) -> Result<Command, Response> {
     serde_json::from_str::<Command>(line.trim()).map_err(|e| Response::Err {
         code: "parse_error".to_string(),
@@ -987,8 +774,7 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
     })
 }
 
-/// Serialise a response to a single JSON line. The newline is implicit
-/// (the transport adds it).
+/// Serialise a response to a single JSON line (the transport adds the newline).
 pub fn serialise_response(resp: &Response) -> String {
     serde_json::to_string(resp).expect("serialise Response")
 }
@@ -1251,8 +1037,7 @@ mod tests {
             &state,
         );
         assert!(matches!(resp, Response::Ok { .. }));
-        // Intermediates use approximate equality to dodge f64 round-off;
-        // only the endpoints are exact integers.
+        // Intermediates use approximate equality to dodge f64 round-off; endpoints are exact integers.
         assert_eq!(actions.len(), 7);
         assert_eq!(actions[0], PlannedAction::CursorMoved { x: 0.0, y: 0.0 });
         assert_eq!(actions[1], PlannedAction::MouseLeftButton { pressed: true });
@@ -1387,9 +1172,7 @@ mod tests {
         );
     }
 
-    /// Asserts the exact action sequence, not just a count — a missing
-    /// Shift bracket is invisible to chrome (which reads the `text`
-    /// field) and only shows up on the delivered key stream.
+    /// Asserts the exact action sequence, not just a count — a missing Shift bracket is invisible to chrome (reads `text`) and only shows up on the delivered key stream.
     #[test]
     fn typing_a_capital_holds_shift_around_it() {
         let state = StaticState::new(&[]);
@@ -1756,9 +1539,7 @@ mod tests {
         }
     }
 
-    /// If enumeration could ever produce a `PlannedAction`, a caller
-    /// surveying the surface would be mutating the session just by
-    /// looking at it.
+    /// If enumeration could produce a `PlannedAction`, surveying the surface would mutate the session just by looking at it.
     #[test]
     fn enumerate_answers_without_planning_any_side_effect() {
         let (resp, actions) = dispatch_command(
@@ -1827,9 +1608,7 @@ mod tests {
         assert_eq!(args["at"], 3);
     }
 
-    /// The refusal code matters: `unknown_action` would send the caller
-    /// looking for an address that is in fact perfectly good, and the
-    /// two mistakes are corrected differently.
+    /// The refusal code matters: `unknown_action` would send the caller looking for an address that's actually fine — the two mistakes are corrected differently.
     #[test]
     fn a_missing_required_argument_is_refused_under_its_own_code() {
         let (resp, actions) =
@@ -1848,8 +1627,7 @@ mod tests {
         );
     }
 
-    /// Refused rather than coerced — guessing at the caller's intent is
-    /// how it ends up believing an edit happened that did not.
+    /// Refused rather than coerced — guessing at intent is how a caller ends up believing an edit happened that didn't.
     #[test]
     fn a_wrong_typed_argument_is_refused_not_coerced() {
         let (resp, actions) = dispatch_command(
@@ -1864,9 +1642,7 @@ mod tests {
         assert!(message.contains("text") && message.contains("integer"), "{message}");
     }
 
-    /// Silently dropping it is the worst option: the caller believes it
-    /// asked for something, the reply says `ok`, and the difference is
-    /// invisible to anything that cannot see the screen.
+    /// Silently dropping it is worst: the caller believes it asked for something, gets `ok`, and the difference is invisible without eyes on the screen.
     #[test]
     fn an_unknown_argument_is_refused_not_silently_ignored() {
         let (resp, actions) = dispatch_command(
@@ -1900,8 +1676,7 @@ mod tests {
         }
     }
 
-    /// Arguments are checked against the action the *address* resolves
-    /// to, not the one the caller intended.
+    /// Arguments are checked against the action the *address* resolves to, not the one the caller intended.
     #[test]
     fn arguments_meant_for_another_action_are_refused() {
         let (resp, actions) = dispatch_command(
@@ -1915,9 +1690,7 @@ mod tests {
         assert_eq!(code, "invalid_arguments");
     }
 
-    /// Something driving the shell without being able to see it cannot
-    /// tell "it ran and changed nothing" from "it never ran" unless the
-    /// wire says so.
+    /// Something driving the shell without seeing it can't tell "ran and changed nothing" from "never ran" unless the wire says so.
     #[test]
     fn unknown_address_is_refused_and_plans_nothing() {
         let (resp, actions) = dispatch_command(

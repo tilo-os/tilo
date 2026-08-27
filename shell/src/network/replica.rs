@@ -1,32 +1,20 @@
-//! Glue between the in-process [`Hub`] and the [`WorkspaceTree`]'s
-//! automerge sync API. A [`WorkspaceTreeReplica`] wraps a tree + a peer id +
-//! a list of "outbound" deliveries (tests can drain) and implements
-//! [`TopicSubscriber`] so a [`Hub`] can fan messages to it.
+//! Glue between the in-process [`Hub`] and the [`WorkspaceTree`]'s automerge
+//! sync API: a [`WorkspaceTreeReplica`] wraps a tree + peer id + a queue of
+//! outbound deliveries, and implements [`TopicSubscriber`] so a [`Hub`] can
+//! fan messages to it.
 //!
-//! # Replication is per room
+//! Replication is per room — a peer invited to one workspace gets nothing
+//! of any other, since [`WorkspaceTree::export_room_changes_since`] never
+//! exports anything else in the first place.
 //!
-//! A peer invited to one workspace is in one room, and is not entitled to
-//! any other on this machine — not its name, room id, owner, or capability
-//! set. So the unit of replication is a room, and the document a peer
-//! receives is that room's own
-//! ([`WorkspaceTree::export_room_changes_since`]); the tree-wide document is
-//! never exported here. That's stronger than "the export is filtered" —
-//! there's no filter to get wrong, because the document handed over never
-//! contained anything else.
-//!
-//! Protocol behaviour:
-//!   - `SyncReq { since, room }` naming a room this machine is in → reply
-//!     `SyncResp { changes, room }` with that room's changes since `since`,
-//!     queued in `pending_outgoing` for the caller to broadcast via
-//!     [`Hub::broadcast`].
-//!   - `SyncReq` naming a room this machine is not in → no reply; nothing
-//!     is said about whether the room exists.
-//!   - `SyncReq` naming no room — the kick the transport broadcasts on
-//!     peer-join, before it knows what anyone is in — exports nothing and
-//!     instead makes this replica name its own rooms, one `SyncReq` each.
-//!   - `SyncResp { changes, room }` → `tree.apply_room_changes(room, …)`,
-//!     which refuses a room this machine is not in before storing anything.
-//!   - All other variants are ignored at this layer.
+//! Protocol: `SyncReq{since,room}` for a room we're in → `SyncResp` with
+//! that room's changes, queued in `pending_outgoing` for
+//! [`Hub::broadcast`]. `SyncReq` for a room we're not in → no reply, not
+//! even that it's unknown. `SyncReq` naming no room (the transport's
+//! peer-join kick) → exports nothing, instead requests each of our own
+//! rooms individually. `SyncResp{changes,room}` →
+//! `tree.apply_room_changes`, which refuses a room we're not in before
+//! storing anything. Other variants are ignored here.
 //!
 //! [`Hub`]: crate::network::hub::Hub
 //! [`Hub::broadcast`]: crate::network::hub::Hub::broadcast
@@ -42,43 +30,32 @@ use crate::shell::state::{PeerOrigin, RoomId};
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 
-/// Replica-side glue: owns a (shared) [`WorkspaceTree`] **handle**, a
-/// peer id, and a FIFO queue of messages to be broadcast on its behalf.
+/// Replica-side glue: a (shared) [`WorkspaceTree`] **handle**, a peer id,
+/// and a FIFO queue of messages to broadcast on its behalf.
 ///
-/// The tree is held behind a [`WorkspaceTreeHandle`]
-/// (`Arc<parking_lot::RwLock<WorkspaceTree>>`) shared with the shell
-/// chrome and the portal's grant store, so an `apply_changes` call lands
-/// on the same tree the chrome reads from and the Permissions tab observes
-/// immediately.
-///
-/// `pending_outgoing` stays under `std::sync::Mutex` — drivers drain it
-/// from arbitrary threads and there's no read-heavy workload to motivate
-/// `RwLock`.
+/// The tree is a [`WorkspaceTreeHandle`]
+/// (`Arc<parking_lot::RwLock<WorkspaceTree>>`) shared with the shell chrome
+/// and the portal's grant store, so `apply_changes` is visible to both
+/// immediately. `pending_outgoing` uses `std::sync::Mutex` — drained from
+/// arbitrary threads, no read-heavy workload to motivate `RwLock`.
 ///
 /// [`Hub`]: crate::network::hub::Hub
 pub struct WorkspaceTreeReplica {
     pub id: u64,
     pub tree: WorkspaceTreeHandle,
     pub pending_outgoing: Arc<Mutex<Vec<NeighbourMsg>>>,
-    /// Transport identity this replica's messages arrive under. Only
-    /// meaningful when driven through a [`Hub`] — live wiring calls
-    /// [`Self::handle_from`] with the authenticated `PeerId` directly and
-    /// never consults this. A hub-driven replica standing in for a peer
-    /// sets it so the receiving side sees the identity the invite named.
+    /// Transport identity this replica's messages arrive under — only
+    /// meaningful when driven through a [`Hub`]; live wiring calls
+    /// [`Self::handle_from`] with the authenticated `PeerId` directly instead.
     ///
     /// [`Hub`]: crate::network::hub::Hub
     pub origin: PeerOrigin,
-    /// Who has actually taken part in each room's document — "has this
-    /// peer *joined*", distinct from "has this peer been invited". An
-    /// invitation is written by the room's authority; taking part is
-    /// observed here: a peer that asks this room for its changes, or
-    /// answers with them, is a participant.
-    ///
-    /// Keyed off [`PeerOrigin::liveness_handle`] — the identity the
-    /// transport authenticated, not anything the message claimed — so a
-    /// peer cannot put itself in here by saying it is here.
-    ///
-    /// Session-scoped and never persisted.
+    /// Who has actually *joined* each room's document, distinct from who was
+    /// invited — a peer that asks this room for its changes, or answers with
+    /// them, is a participant. Keyed off [`PeerOrigin::liveness_handle`], the
+    /// transport-authenticated identity rather than anything the message
+    /// claimed, so a peer can't put itself in here by saying it is here.
+    /// Session-scoped, never persisted.
     pub participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
 }
 
@@ -93,9 +70,8 @@ impl WorkspaceTreeReplica {
         }
     }
 
-    /// Record that `from` has taken part in `room`'s document. No-op for
-    /// an origin with no peer id behind it — an in-process hub subscriber
-    /// or a local replay is not somebody who joined.
+    /// Record that `from` has taken part in `room`'s document; a no-op for an
+    /// origin with no peer id (in-process hub subscriber or local replay).
     fn note_participant(&mut self, room: RoomId, from: &PeerOrigin) {
         let Some(handle) = from.liveness_handle() else {
             return;
@@ -115,19 +91,17 @@ impl WorkspaceTreeReplica {
     }
 
     /// Stash one `SyncReq` per room this machine is in, each carrying that
-    /// room's current heads. Asked room by room — a request naming several
-    /// rooms would merge their answers into one document with no way to
-    /// tell which room anything belonged to.
+    /// room's current heads — asked room by room so an answer can't merge
+    /// several rooms into one undifferentiated document.
     pub fn request_sync(&self) {
         let mut tree = self.tree.write();
         let rooms = tree.rooms();
         let mut msgs = Vec::with_capacity(rooms.len());
         for room in rooms {
             let heads = tree.room_heads(room);
-            // Structurally infallible (`ChangeHash` has no enum/float to
-            // fail on); `unwrap_or_default()` is defence in depth. The
-            // `vec![]` fallback reads as "send everything in this room" —
-            // wasteful, not corrupting, and can't widen past the room it names.
+            // Structurally infallible (`ChangeHash` has no enum/float to fail on);
+            // `unwrap_or_default()`'s `vec![]` fallback reads as "send everything in
+            // this room" — wasteful, not corrupting, and can't widen past the room it names.
             let since = serde_json::to_vec(&heads).unwrap_or_else(|err| {
                 tracing::error!(
                     ?err,
@@ -146,8 +120,7 @@ impl WorkspaceTreeReplica {
         self.pending_outgoing.lock().unwrap().extend(msgs);
     }
 
-    /// Drain pending outbound messages so a test (or a Hub-driver) can
-    /// broadcast them. Stable order: FIFO insertion.
+    /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
         std::mem::take(&mut *self.pending_outgoing.lock().unwrap())
     }
@@ -169,21 +142,17 @@ impl TopicSubscriber for WorkspaceTreeReplica {
 
 impl WorkspaceTreeReplica {
     /// [`TopicSubscriber::handle`] under the name the live transport
-    /// authenticated, which is what an authority decision may rest on.
-    ///
-    /// The room-replication path decides whether a payload may rewrite a
-    /// room's governance, turning on **who** the bytes came from. The
-    /// `u64` the hub passes can't carry that — in production it's a
-    /// `DefaultHasher` digest, fine for echo-suppression, not for an
-    /// equality check an attacker can aim at. Live wiring calls this with
-    /// the peer's own identity ([`PeerOrigin::peer`]).
+    /// authenticated, which an authority decision may rest on: the
+    /// room-replication path decides whether a payload may rewrite a room's
+    /// governance based on **who** sent it, and the hub's `u64` id (a
+    /// `DefaultHasher` digest in production) isn't safe for that. Live wiring
+    /// calls this with the peer's own identity ([`PeerOrigin::peer`]).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
             NeighbourMsg::SyncReq { since, room } => {
-                // A roomless request is the transport's peer-join kick,
-                // not a request for everything — answering with a
-                // document would be the leak this path exists to close.
+                // A roomless request is the transport's peer-join kick, not a request for
+                // everything — answering with a document would be the leak this closes.
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
                     self.request_sync();
                     return;
@@ -193,14 +162,12 @@ impl WorkspaceTreeReplica {
                 let mut tree = self.tree.write();
                 let exported = tree.export_room_changes_since(room_id, &since_heads);
                 drop(tree);
-                // `None` = not in that room. No reply — a peer learns
-                // nothing about a room it named, not even that it's unknown here.
+                // `None` = not in that room. No reply — a peer learns nothing about a room it named, not even that it's unknown here.
                 let Some(changes) = exported else {
                     return;
                 };
-                // Recorded after "not in that room" (so asking about a room
-                // we lack doesn't count) and before "nothing to send" (so an
-                // up-to-date guest still counts as a participant).
+                // Recorded after "not in that room" (so asking about an absent room
+                // doesn't count) and before "nothing to send" (an up-to-date guest still counts as a participant).
                 self.note_participant(room_id, sender);
                 if changes.is_empty() {
                     return;
@@ -214,12 +181,9 @@ impl WorkspaceTreeReplica {
                     });
             }
             NeighbourMsg::SyncResp { changes, room } => {
-                // Failures log via `tracing::error!` rather than propagate —
-                // the connection stays alive. `apply_room_changes` folds the
-                // merged room into the cached workspace, so every subsystem
-                // reading the shared handle observes it. A response naming a
-                // room we're not in is refused there, before anything is
-                // stored — never held, not held and then ignored.
+                // Failures log via `tracing::error!` rather than propagate; the connection
+                // stays alive. `apply_room_changes` refuses a room we're not in before
+                // storing anything, then folds an accepted room into the shared tree.
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
                     tracing::warn!(
                         target: "shell::network::replica",
@@ -240,8 +204,7 @@ impl WorkspaceTreeReplica {
                     );
                     return;
                 }
-                // Recorded only once accepted — a refused document must not
-                // leave a participant behind it.
+                // Recorded only once accepted — a refused document must not leave a participant behind it.
                 self.note_participant(room_id, sender);
             }
             _ => {}
@@ -251,10 +214,10 @@ impl WorkspaceTreeReplica {
 
 #[cfg(test)]
 mod tests {
-    //! Two-replica convergence over a [`Hub`]. The hub owns its subscribers
-    //! (via `Box<dyn TopicSubscriber>`), so to keep a handle after attach we
-    //! wrap each replica in `Arc<Mutex<_>>` and attach a thin proxy that
-    //! forwards `TopicSubscriber` calls — the same pattern `hub.rs`'s tests use.
+    //! Two-replica convergence over a [`Hub`]. The hub owns its subscribers, so
+    //! to keep a handle after attach we wrap each replica in `Arc<Mutex<_>>`
+    //! and attach a thin proxy forwarding `TopicSubscriber` calls, the same
+    //! pattern `hub.rs`'s tests use.
     //!
     //! [`Hub`]: crate::network::hub::Hub
     use super::*;
@@ -262,8 +225,7 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue};
 
     /// Proxy that forwards `TopicSubscriber` calls into a shared replica
-    /// behind `Arc<Mutex<_>>`. Mirrors the `ArcSub` helper in
-    /// `hub.rs`'s tests but specialised for `WorkspaceTreeReplica`.
+    /// behind `Arc<Mutex<_>>` — mirrors `hub.rs`'s `ArcSub` test helper.
     struct ArcReplica(Arc<Mutex<WorkspaceTreeReplica>>);
 
     impl TopicSubscriber for ArcReplica {
@@ -279,23 +241,15 @@ mod tests {
     }
 
 
-    // =====================================================================
-    // The claim under test: a peer invited to room A holds nothing
-    // belonging to room B.
-    //
-    // "Holds" is read off the guest's own state after a real sync round —
-    // `holdings` walks the guest's cache, tree document (materialised and
-    // raw change bytes), and every room document, and the room-B
-    // assertions are that room B's name, id, owner, and capability appear
-    // in none of it.
-    // =====================================================================
+    // The claim under test: a peer invited to room A holds nothing of room B.
+    // `holdings` walks the guest's cache, tree document (materialised heads
+    // and raw change bytes), and every room document for room B's name, id, owner, or capability.
 
     use crate::network::invite::{accept_invite_into, make_invite_token};
     use crate::shell::state::WorkspaceId;
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 
-    /// Room A's distinguishing strings. Chosen so a substring search
-    /// cannot match them by accident.
+    /// Room A's distinguishing strings, chosen so a substring search can't match them by accident.
     const ROOM_A_NAME: &str = "Design review";
     const ROOM_A_OWNER: &str = "alice-owns-room-a";
     const ROOM_A_PATH: &str = "/home/user/room-a-notes";
@@ -304,10 +258,8 @@ mod tests {
     const ROOM_B_OWNER: &str = "bob-owns-room-b";
     const ROOM_B_PATH: &str = "/srv/room-b-secrets";
 
-    /// A host with two rooms: one it will invite a guest into, one it
-    /// won't. Both are fully furnished — named, owned, carrying a
-    /// capability — so "nothing of room B" is a claim with something to be
-    /// false about. Returns the tree plus the two local workspace handles.
+    /// A host with two rooms, one it invites a guest into and one it doesn't,
+    /// both fully furnished — so "nothing of room B" has something to be false about.
     fn host_with_two_rooms() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let mut tree = WorkspaceTree::default();
         let a = tree.append_empty_workspace(ROOM_A_NAME);
@@ -343,11 +295,8 @@ mod tests {
         (tree, a, b)
     }
 
-    /// Everything a tree holds, flattened into one string to search. Three
-    /// sources, because a leak could land in any of them: the cache (what
-    /// the shell reads and persists), the tree document (materialised at
-    /// current heads *and* every change's raw bytes, so an overwritten
-    /// value is still caught), and every room document.
+    /// Everything a tree holds, flattened into one searchable string: the
+    /// cache, the tree document (current heads and every change's raw bytes), and every room document.
     fn holdings(tree: &mut WorkspaceTree) -> String {
         let mut out = serde_json::to_string(&*tree).expect("the cache serialises");
         dump_doc(&mut tree.doc, &mut out);
@@ -403,16 +352,14 @@ mod tests {
         }
     }
 
-    /// Run one full sync round between two replicas over a [`Hub`]:
-    /// `initiator` asks, the other answers, the answer comes back.
+    /// Run one full sync round between two replicas over a [`Hub`]: `initiator` asks, the other answers, the answer comes back.
     fn sync_round(
         hub: &mut Hub,
         initiator: &Arc<Mutex<WorkspaceTreeReplica>>,
         others: &[&Arc<Mutex<WorkspaceTreeReplica>>],
     ) {
-        // Queues are drained into a local binding before the hub is
-        // pumped — `Hub::broadcast` asks each subscriber for its id, which
-        // would re-enter a still-live `lock()` temporary's mutex.
+        // Queues are drained into a local binding before the hub is pumped —
+        // `Hub::broadcast` asks each subscriber for its id, which would re-enter a still-live `lock()` temporary's mutex.
         initiator.lock().unwrap().request_sync();
         let from = initiator.lock().unwrap().id();
         let outbound = initiator.lock().unwrap().drain_outgoing();
@@ -428,21 +375,17 @@ mod tests {
         }
     }
 
-    /// **The negative.** A guest invited to room A must hold nothing of
-    /// room B — not its name, room id, owner, or capabilities.
-    ///
-    /// The invite is minted and accepted through the production path
+    /// **The negative.** A guest invited to room A must hold nothing of room
+    /// B. The invite is minted/accepted through the production path
     /// (`make_invite_token`/`accept_invite_into`), the round runs through
-    /// `WorkspaceTreeReplica::handle` over a `Hub`, and the assertions read
-    /// the guest's own state afterwards.
+    /// `WorkspaceTreeReplica::handle` over a `Hub`, and assertions read the guest's own state afterwards.
     #[test]
     fn a_guest_invited_to_one_room_holds_nothing_of_another() {
         let (host_tree, host_a, host_b) = host_with_two_rooms();
         let room_a = host_tree.room_of(host_a).expect("room A");
         let room_b = host_tree.room_of(host_b).expect("room B");
 
-        // The guest: its own machine, its own workspace, its own room —
-        // until it accepts the invite.
+        // The guest: its own machine, its own workspace, its own room — until it accepts the invite.
         let mut guest_tree = WorkspaceTree::default();
         let guest_ws = guest_tree.append_empty_workspace("My workspace");
 
@@ -462,11 +405,8 @@ mod tests {
             accept_invite_into(&mut guest_tree, guest_ws, &token).expect("the guest accepts it");
         assert_eq!(joined, room_a, "the invite names room A");
 
-        // The host replica delivers under the identity its own invite
-        // named — what the guest pinned as room A's governance authority
-        // on accept, and why the round below is answered: a guest takes a
-        // room's owner and capabilities from the peer whose signature
-        // admitted it.
+        // The host replica delivers under the identity its own invite named — a
+        // guest takes a room's owner/capabilities from the peer whose signature admitted it.
         let host = Arc::new(Mutex::new(
             WorkspaceTreeReplica::new(1, host_tree.shared()).with_origin(PeerOrigin::peer(
                 &owner_key.public().to_peer_id(),
@@ -488,8 +428,7 @@ mod tests {
             holdings(&mut tree)
         };
 
-        // Asserted first, so a regression is reported as the field that
-        // leaked rather than as some downstream symptom.
+        // Asserted first, so a regression is reported as the field that leaked rather than a downstream symptom.
         assert_absent(&held, ROOM_B_NAME, "room B's name");
         assert_absent(&held, &room_b.to_string(), "room B's room id");
         assert_absent(&held, ROOM_B_OWNER, "room B's owner");
@@ -501,8 +440,7 @@ mod tests {
             "the guest has one workspace — its own, now in room A",
         );
 
-        // Positive control — without it, a guest that received nothing at
-        // all would satisfy every assertion above.
+        // Positive control — without it, a guest that received nothing at all would satisfy every assertion above.
         assert!(
             held.contains(ROOM_A_NAME),
             "the guest must receive room A's name"
@@ -528,9 +466,8 @@ mod tests {
         let _ = room_a;
     }
 
-    /// Fail naming the leaked field, with the surrounding bytes of the
-    /// guest's own state as evidence — a whole dump would bury which of
-    /// the four assertions tripped.
+    /// Fail naming the leaked field, with the surrounding bytes of the guest's
+    /// own state as evidence — a whole dump would bury which assertion tripped.
     fn assert_absent(held: &str, needle: &str, what: &str) {
         let Some(at) = held.find(needle) else {
             return;
@@ -547,9 +484,7 @@ mod tests {
         );
     }
 
-    /// The other direction of the same boundary: a request naming a room
-    /// this machine is not in is answered with nothing at all, rather than
-    /// with whatever the machine happens to have.
+    /// The other direction: a request naming a room this machine is not in gets nothing back, not whatever the machine happens to have.
     #[test]
     fn a_request_for_a_room_we_are_not_in_is_not_answered() {
         let (host_tree, _a, _b) = host_with_two_rooms();
@@ -570,10 +505,8 @@ mod tests {
         );
     }
 
-    /// The transport's peer-join kick names no room, because the
-    /// transport does not hold the tree. It must not be read as "send me
-    /// everything": it exports nothing, and instead makes this replica
-    /// name its own rooms so the round can proceed room by room.
+    /// The transport's peer-join kick names no room; it must not be read as
+    /// "send everything" — it exports nothing and makes this replica request its own rooms individually.
     #[test]
     fn a_roomless_request_exports_nothing_and_names_our_rooms() {
         let (host_tree, a, b) = host_with_two_rooms();
@@ -607,10 +540,8 @@ mod tests {
         assert_eq!(named.len(), 2, "one request per room, no more: {named:?}");
     }
 
-    /// The write-authority check on the live message path: a guest in room
-    /// A publishes a `SyncResp` for room A carrying its own owner and
-    /// grant. The host administers room A, so what it holds afterwards
-    /// must be what it granted.
+    /// The write-authority check on the live path: a guest in room A
+    /// publishes a `SyncResp` carrying its own owner/grant; what the host holds afterwards must match what it granted.
     #[test]
     fn a_syncresp_that_would_rewrite_our_rooms_governance_is_not_taken() {
         const ROGUE_OWNER: &str = "guest-claiming-room-a";
@@ -621,8 +552,7 @@ mod tests {
         let host_handle = host_tree.shared();
         let mut host = WorkspaceTreeReplica::new(1, host_handle.clone());
 
-        // A guest whose own state says it governs room A, and which
-        // therefore projects its owner and grants into it.
+        // A guest whose own state says it governs room A, and which therefore projects its owner and grants into it.
         let mut guest = WorkspaceTree::default();
         let guest_ws = guest.append_empty_workspace("Mine");
         assert!(guest.set_room(guest_ws, room_a), "the guest joins room A");
@@ -681,8 +611,7 @@ mod tests {
                 .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_PATH)),
             "the guest's grant entered the host's capability list",
         );
-        // Nowhere in what the host now holds — including the room
-        // document it will hand to the next peer that asks.
+        // Nowhere in what the host now holds — including the room document it will hand to the next peer that asks.
         let held = holdings(&mut tree);
         assert!(
             !held.contains(ROGUE_OWNER) && !held.contains(ROGUE_PATH),
@@ -691,9 +620,8 @@ mod tests {
         );
     }
 
-    /// A response is merged into the room its envelope names, and the
-    /// payload has to agree. A host that answered a request for room A
-    /// with room B's document must not have that document accepted.
+    /// A response is merged into the room its envelope names, and the payload
+    /// has to agree — a host answering room A's request with room B's document must not have that accepted.
     #[test]
     fn a_response_whose_payload_names_another_room_is_refused() {
         let (mut host_tree, _a, b) = host_with_two_rooms();
@@ -721,9 +649,7 @@ mod tests {
         );
     }
 
-    /// Two replicas in the same room converge on that room's state after
-    /// one round through the hub — the general convergence property the
-    /// per-room path has to keep.
+    /// Two replicas in the same room converge on that room's state after one round through the hub.
     #[test]
     fn two_replicas_converge_after_one_round_via_hub() {
         let (host_tree, a, _b) = host_with_two_rooms();
@@ -736,9 +662,8 @@ mod tests {
         let tree_a = host_tree.shared();
         let tree_b = guest_tree.shared();
 
-        // Heads diverge before the round: A has a document for the room, B
-        // has none. A's is projected lazily, so force it here — the
-        // precondition is about state, not when the projection runs.
+        // Heads diverge before the round: A has a document for the room, B has
+        // none. A's is projected lazily, so force it here — the precondition is about state, not when projection runs.
         tree_a.write().sync_room_doc(room_a);
         assert!(
             !tree_a.write().room_heads(room_a).is_empty(),
@@ -777,13 +702,9 @@ mod tests {
         );
     }
 
-    /// What arrived has to be *announceable*, not just present. The
-    /// guest's tree holding a peer's changes isn't the same as the guest
-    /// *seeing* them: the shell splices its widget tree only when the
-    /// chrome revision moves, and ingest runs on the network thread, which
-    /// can't touch the chrome. Without a mark the frame loop reads, a
-    /// replicated window sits in the tree — readable, provably there —
-    /// while the screen stays empty.
+    /// What arrived has to be *announceable*, not just present: the shell
+    /// splices its widget tree only when the chrome revision moves, and
+    /// ingest runs on the network thread, which can't touch the chrome directly.
     #[test]
     fn a_round_that_lands_content_is_announced_to_the_frame_loop() {
         let (host_tree, a, _b) = host_with_two_rooms();
@@ -806,8 +727,7 @@ mod tests {
         hub.attach(Box::new(ArcReplica(rep_b.clone())));
         sync_round(&mut hub, &rep_b, &[&rep_a]);
 
-        // Precondition: the round actually delivered something, else the
-        // epoch assertion below could pass vacuously.
+        // Precondition: the round actually delivered something, else the epoch assertion below could pass vacuously.
         assert_eq!(
             tree_a.write().room_heads(room_a),
             tree_b.write().room_heads(room_a),
@@ -821,8 +741,7 @@ mod tests {
     }
 
     /// A round that delivered nothing must not claim otherwise — an epoch
-    /// that ticks on every quiet sync would repaint the whole shell at
-    /// gossip rate and make the signal useless.
+    /// ticking on every quiet sync would repaint the whole shell at gossip rate and make the signal useless.
     #[test]
     fn a_round_that_lands_nothing_is_not_announced() {
         let (host_tree, a, _b) = host_with_two_rooms();
@@ -888,13 +807,8 @@ mod tests {
         );
     }
 
-    /// `request_sync` serialises local heads via `serde_json::to_vec`;
-    /// `unwrap_or_default()` silently turns a serialise failure into a
-    /// "since: []" full-sync request — wasteful, not catastrophic, and it
-    /// cannot widen past the room it names. Pins the success path so a
-    /// refactor to the error handling can't regress to a panic on finite
-    /// payloads. (The failure mode isn't tested: `Vec<ChangeHash>` has no
-    /// realistic way to fail `serde_json::to_vec`.)
+    /// `request_sync`'s `unwrap_or_default()` turns a `serde_json` failure
+    /// into a "since: []" full-sync request — wasteful, not catastrophic; pins the success path against a regression to panic.
     #[test]
     fn request_sync_unwrap_is_safe_for_finite_payloads() {
         let mut tree = WorkspaceTree::default();
@@ -918,9 +832,7 @@ mod tests {
         }
     }
 
-    /// A machine in no room asks for nothing — there is nothing it could
-    /// be caught up on, and a request naming no room is not a request for
-    /// everything.
+    /// A machine in no room asks for nothing — a request naming no room is not a request for everything.
     #[test]
     fn a_machine_in_no_room_requests_nothing() {
         let rep = WorkspaceTreeReplica::new(99, WorkspaceTree::default().shared());
@@ -928,10 +840,8 @@ mod tests {
         assert!(rep.drain_outgoing().is_empty());
     }
 
-    /// Verifies `handle()` returns cleanly (doesn't panic, doesn't
-    /// propagate) on a malformed `SyncResp` — production logs via
-    /// `tracing::error!`, but the observable effect at this layer is "the
-    /// function returns instead of corrupting the document".
+    /// Verifies `handle()` returns cleanly (no panic/propagation) on a
+    /// malformed `SyncResp` — production logs via `tracing::error!` instead.
     #[test]
     fn apply_changes_failure_is_logged() {
         let mut tree = WorkspaceTree::default();
@@ -943,8 +853,7 @@ mod tests {
         // Snapshot pre-state to prove the room was *not* mutated by the failed apply.
         let heads_before = handle.write().room_heads(room);
 
-        // Bogus byte vec — `Change::try_from(&[..])` fails before any
-        // mutation lands, so `apply_room_changes` returns `Err`.
+        // Bogus byte vec — `Change::try_from(&[..])` fails before any mutation lands, so `apply_room_changes` returns `Err`.
         let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
         rep.handle(
             &PeerOrigin::hub(7),
@@ -954,8 +863,7 @@ mod tests {
             },
         );
 
-        // Didn't panic (we got here); room must not have been mutated —
-        // heads stay identical.
+        // Didn't panic (we got here); room must not have been mutated — heads stay identical.
         let heads_after = handle.write().room_heads(room);
         assert_eq!(
             heads_before, heads_after,
@@ -987,25 +895,20 @@ mod tests {
         );
     }
 
-    /// A workspace appended via the shell chrome's `add_workspace` (or any
-    /// mutating helper through `tree_mut()`) must be visible to the
-    /// peer-sync replica's export — they share the same
-    /// `WorkspaceTreeHandle`, so the mutation reaches the room the peer
-    /// asks about.
+    /// A workspace appended via the shell chrome's `add_workspace` must be
+    /// visible to the peer-sync replica's export — they share the same `WorkspaceTreeHandle`.
     #[test]
     fn workspace_added_via_chrome_is_visible_in_peer_sync_export() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTreeHandleExt;
 
         // Construct via the handle so chrome + replica share the same
-        // `Arc<RwLock<WorkspaceTree>>`; it starts empty so the first
-        // chrome mutation drives every subsequent change.
+        // `Arc<RwLock<WorkspaceTree>>`; starts empty so every chrome mutation is captured.
         let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
         let replica = WorkspaceTreeReplica::new(42, handle.clone());
         let chrome = ChromeState::new_with_handle(handle.clone());
 
-        // Production path the wheel-disc's "+" slot hits; mints the new
-        // workspace's room.
+        // Production path the wheel-disc's "+" slot hits; mints the new workspace's room.
         chrome.borrow_mut().add_workspace("New");
         let room = {
             let tree = handle.read();
@@ -1029,12 +932,9 @@ mod tests {
         );
     }
 
-    /// Taking part in a room's document is what "joined" means, observed
-    /// here because this is the last place that still knows who the bytes
-    /// came from. Three claims: a peer asking about a room this machine is
-    /// in has joined it; a peer asking about a room this machine doesn't
-    /// have has joined nothing; and an origin with no peer id (an
-    /// in-process hub subscriber) never arrived over a wire at all.
+    /// Taking part in a room's document is what "joined" means: a peer asking
+    /// about a room this machine is in has joined it, asking about one it
+    /// doesn't have joins nothing, and an origin with no peer id never arrived over a wire at all.
     #[test]
     fn asking_a_room_for_its_changes_is_what_joining_it_looks_like() {
         let mut tree = WorkspaceTree::default();
@@ -1055,9 +955,7 @@ mod tests {
             "nobody has asked about this room yet",
         );
 
-        // A room this machine is not in — answering nothing is tested
-        // elsewhere; the claim here is that it also leaves no trace of a
-        // participant behind.
+        // A room this machine is not in — answering nothing is tested elsewhere; this also leaves no trace of a participant.
         let elsewhere = RoomId::new();
         rep.handle_from(
             &PeerOrigin::peer(&guest),
@@ -1072,8 +970,7 @@ mod tests {
              joined nothing here",
         );
 
-        // An in-process subscriber has no peer id, so there's nobody to
-        // record, and nothing mistakable for a person who turned up on the network.
+        // An in-process subscriber has no peer id, so there's nobody to record — nothing mistakable for someone who turned up on the network.
         rep.handle_from(
             &PeerOrigin::hub(9),
             &NeighbourMsg::SyncReq {

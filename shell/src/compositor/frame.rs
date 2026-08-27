@@ -1,17 +1,14 @@
 //! Per-frame scene builder shared between `bin/shots` and the native
-//! compositor. Both consumers need the same steps: build a
-//! `ShellOverlayHost` + `Chrome` from a `WorkspaceTree`, maintain a
-//! `TaffyTree` keyed by widget pointers, run layout
-//! (`compute_layout_with_measure` → `apply_layout`), and draw into a
-//! fresh `vello::Scene`.
+//! compositor. Both build a `ShellOverlayHost` + `Chrome` from a
+//! `WorkspaceTree`, maintain a `TaffyTree` keyed by widget pointers, run
+//! layout (`compute_layout_with_measure` → `apply_layout`), and draw
+//! into a fresh `vello::Scene`.
 //!
-//! `bin/shots`'s [`ShellDriver`] (in `bin/shots/driver.rs`) wraps a
-//! [`FrameBuilder`] and adds what scenarios need on top: a winit
-//! `Modifiers` snapshot, a focus cursor, the cached last-cursor point,
-//! and click/drag/key synthesis. The native compositor
-//! (`compositor::native::run`) only needs the layout-and-paint core, so
-//! both code paths render through the same builder and their pixel
-//! output is byte-identical.
+//! `bin/shots`'s [`ShellDriver`] wraps a [`FrameBuilder`] and adds a
+//! winit `Modifiers` snapshot, a focus cursor, the cached last-cursor
+//! point, and click/drag/key synthesis. The native compositor only needs
+//! the layout-and-paint core, so both paths render through the same
+//! builder and their pixel output is byte-identical.
 
 use std::collections::HashMap;
 
@@ -36,45 +33,38 @@ use crate::shell::overlay_host::OutputGeometry;
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
 ///
-/// Owning this struct gives the caller the ability to mutate chrome
-/// state (overlays, palette query, ws-settings tab) and re-paint —
-/// nothing more. Input dispatch, scenario stepping and scene catalogues
-/// stay in `bin/shots/driver.rs` because the compositor doesn't need
-/// them: the compositor receives input through the smithay seat layer
-/// and translates it into mutations on the same `Chrome`.
+/// Owning this gives the caller the ability to mutate chrome state and
+/// re-paint — nothing more. Input dispatch, scenario stepping and scene
+/// catalogues stay in `bin/shots/driver.rs`; the compositor gets input
+/// through the smithay seat layer and translates it into mutations on
+/// the same `Chrome` instead.
 pub struct FrameBuilder {
     host: ShellOverlayHost,
     chrome: Chrome,
-    /// The [`WorkspaceTree::room_epoch`] this builder has already
-    /// reacted to. Compared each frame by
-    /// [`Self::pump_room_contents`].
+    /// The [`WorkspaceTree::room_epoch`] this builder has already reacted
+    /// to; compared each frame by [`Self::pump_room_contents`].
     last_room_epoch: u64,
     taffy: TaffyTree<()>,
-    /// Widget-pointer map captured during `build_layout` — kept alive
-    /// so the measure closure inside `compute_layout_with_measure` can
-    /// re-borrow each frame.
+    /// Widget-pointer map captured during `build_layout`, kept alive so the
+    /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
-    /// Inner node — the host's own root child. Used as the target of
-    /// `apply_layout` so the host's rect tree is rooted at the
-    /// viewport origin.
+    /// Inner node — the host's own root child, target of `apply_layout` so
+    /// the host's rect tree roots at the viewport origin.
     host_node: Option<NodeId>,
-    /// Outer node — a viewport-sized wrapper that gives `compute_layout`
-    /// an explicit root size. Taffy needs a definite extent; the host
-    /// itself is `percent(1.0)` so we wrap it.
+    /// Outer node — a viewport-sized wrapper giving `compute_layout` an
+    /// explicit root size (Taffy needs a definite extent; the host itself is
+    /// `percent(1.0)`).
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
     viewport: (f64, f64),
-    /// The displays behind `viewport`, when the caller knows them. The
-    /// viewport is the *bounding box* of every output, so on a multi-monitor
-    /// desktop it is not a display anyone actually has — a window group
-    /// sized as a fraction of it would span both monitors. `None` means "one
-    /// display, the size of the viewport", which is true for winit, headless
-    /// and every single-output DRM setup.
+    /// The displays behind `viewport`, when known. The viewport is the
+    /// *bounding box* of every output, so on multi-monitor it isn't a
+    /// display anyone has — a group sized as a fraction of it would span
+    /// both monitors. `None` means "one display, the size of the viewport".
     outputs: Option<Vec<OutputGeometry>>,
-    /// Live peer presence for this session. Persistent rather than
-    /// rebuilt per paint — a cursor is *somewhere* between the frames
-    /// that move it, so a fresh-each-paint context would show no peers.
+    /// Live peer presence for this session. Persistent rather than rebuilt
+    /// per paint — a cursor is *somewhere* between the frames that move it.
     presence: PresenceCtx,
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
@@ -88,18 +78,16 @@ impl FrameBuilder {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
-    /// Build a frame builder around an explicit `WorkspaceTree` —
-    /// used by `bin/shots`'s `window` pre-roll path (which loads tree
-    /// state from disk first).
+    /// Build a frame builder around an explicit `WorkspaceTree` — used by
+    /// `bin/shots`'s `window` pre-roll path (loads tree state from disk first).
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
 
     /// Optional theme override for offscreen `shots` capture:
-    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset (production) keeps the
-    /// dark default, so this is a no-op off the shots harness. Lets a
-    /// theme-driven chrome change be proven in light + high-contrast, not just
-    /// dark — the renderers under `apps/*` grew the same hook.
+    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset keeps the dark
+    /// default — lets a theme-driven chrome change be proven in light +
+    /// high-contrast, not just dark.
     fn shots_theme_override() -> Option<Theme> {
         let raw = std::env::var("QOS_SHOTS_THEME").ok()?;
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -110,13 +98,13 @@ impl FrameBuilder {
         }
     }
 
-    /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`],
-    /// with the peer-sync palette rows on or off.
+    /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`], with
+    /// the peer-sync palette rows on or off.
     ///
-    /// The compositor needs this rather than [`Self::with_tree`]
-    /// because peer-sync writes into the same tree the chrome reads:
-    /// a replica applying a peer's change and the strip that paints it
-    /// have to be looking at one `Arc<RwLock<_>>`, not two copies.
+    /// The compositor needs this rather than [`Self::with_tree`] because
+    /// peer-sync writes into the same tree the chrome reads: a replica
+    /// applying a peer's change and the strip that paints it must look at
+    /// one `Arc<RwLock<_>>`, not two copies.
     pub fn with_handle(
         tree: crate::shell::state::WorkspaceTreeHandle,
         enable_peer_sync: bool,
@@ -132,10 +120,8 @@ impl FrameBuilder {
     }
 
     /// As [`Self::with_handle`], but keeping each open tab's document in
-    /// `records` — the session's own store, so a note typed into a tab is
-    /// still there after a restart. Everything else keeps the in-memory
-    /// default, because a probe or a `--shots` run must leave nothing
-    /// behind.
+    /// `records` (the session's own store) rather than the in-memory
+    /// default a probe or `--shots` run uses.
     pub fn with_handle_and_records(
         tree: crate::shell::state::WorkspaceTreeHandle,
         enable_peer_sync: bool,
@@ -152,14 +138,10 @@ impl FrameBuilder {
         )
     }
 
-    /// Attach a running status poller to a freshly-built host.
-    ///
-    /// Only the two real-session constructors above go through here. The
-    /// test / `--shots` constructors deliberately do not: a tray driven by
-    /// the rendering machine's own battery and Wi-Fi would make every
-    /// golden image a function of which laptop produced it. Without a
-    /// bridge the readings stay `None` and the tray draws nothing, which
-    /// is both deterministic and honest.
+    /// Attach a running status poller to a freshly-built host. Only the two
+    /// real-session constructors go through here — a `--shots` tray driven
+    /// by the rendering machine's own battery/Wi-Fi would make every golden
+    /// image depend on which laptop produced it.
     fn with_live_status(parts: (ShellOverlayHost, Chrome)) -> (ShellOverlayHost, Chrome) {
         let (host, chrome) = parts;
         let bridge = crate::shell::status::StatusBridge::new();
@@ -185,11 +167,9 @@ impl FrameBuilder {
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
             presence: {
-                // The broker fans every local app's frames to the whole
-                // room including this subscription, so without excluding
-                // our own identity the owner would see a presence pill
-                // floating over their own window (`room_roster` applies
-                // the same rule).
+                // The broker fans every local app's frame to the whole room
+                // including this subscription, so excluding our own identity avoids
+                // the owner seeing a presence pill over their own window.
                 let mut ctx = PresenceCtx::default();
                 ctx.set_own_identity([crate::shell::state::local_user_id()]);
                 ctx
@@ -202,8 +182,7 @@ impl FrameBuilder {
     }
 
     /// The displays to resolve window-group widths against: whatever the
-    /// compositor last reported, else a single display the size of the
-    /// viewport.
+    /// compositor last reported, else a single display the size of the viewport.
     fn effective_outputs(&self) -> Vec<OutputGeometry> {
         self.outputs.clone().unwrap_or_else(|| {
             vec![OutputGeometry {
@@ -214,10 +193,9 @@ impl FrameBuilder {
         })
     }
 
-    /// Tell the frame builder which displays it is painting across, so a
-    /// group's width is a fraction of its own monitor rather than of the
-    /// combined desktop. Called by the compositor at startup and on every
-    /// output hotplug / mode change.
+    /// Tell the frame builder which displays it's painting across, so a
+    /// group's width is a fraction of its own monitor rather than the
+    /// combined desktop. Called at startup and on hotplug/mode change.
     pub fn set_output_geometry(&mut self, outputs: Vec<OutputGeometry>) {
         if self.outputs.as_deref() != Some(outputs.as_slice()) {
             self.outputs = Some(outputs);
@@ -253,18 +231,14 @@ impl FrameBuilder {
         self.root_node = Some(root);
     }
 
-    /// Run compute_layout + apply_layout against the current tree. The
-    /// host's animation state is preserved because we don't rebuild
-    /// the taffy tree — only the layout pass re-runs.
-    ///
-    /// If the host reports `take_structure_dirty()` the taffy tree is
-    /// rebuilt first so the new structure participates in layout. This
-    /// mirrors `App::handle_window_event`'s post-event sweep.
+    /// Run compute_layout + apply_layout against the current tree. Animation
+    /// state is preserved since the taffy tree isn't rebuilt — only layout
+    /// re-runs, unless `take_structure_dirty()` says otherwise, in which
+    /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
-        // Apply the compositor's live fullscreen state to the strip rows first.
-        // This flags the owning row structurally dirty on a real change, so the
-        // `take_structure_dirty` check below rebuilds the taffy tree and the
-        // full-output collapse (or its restore) takes effect this frame.
+        // Apply the compositor's live fullscreen state to the strip rows
+        // first, flagging the owning row dirty so the structure-dirty check
+        // below rebuilds and the collapse (or restore) takes this frame.
         self.host.sync_fullscreen_from_chrome();
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
@@ -272,11 +246,10 @@ impl FrameBuilder {
         let (w, h) = self.viewport;
         let outer = self.root_node.expect("rebuild_layout_tree first");
         let child = self.host_node.expect("rebuild_layout_tree first");
-        // Borrowed rather than cloned: the closure only needs read access,
-        // and the borrow is disjoint from `self.taffy` / `self.text_renderer`
-        // (separate fields), so the borrow checker allows it. Cloning the
-        // 50-100 entry widget-ptr map every relayout was a visible cost
-        // on a continuous resize.
+        // Borrowed rather than cloned — the closure only needs read access
+        // and the borrow is disjoint from `self.taffy`/`self.text_renderer`.
+        // Cloning the 50-100 entry widget-ptr map every relayout was a
+        // visible cost on continuous resize.
         let measure_map: &HashMap<NodeId, *mut dyn Widget> = &self.node_map;
         let tr = &mut self.text_renderer;
         self.taffy
@@ -298,14 +271,10 @@ impl FrameBuilder {
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
     }
 
-    /// Run the widget tree's per-frame state pump: `sync` (pull external state
-    /// into the CRDT) then `update` (advance widget-local state). Returns
-    /// `true` when something changed and the frame should be repainted.
-    ///
-    /// `ui::App::run` does this every frame for standalone apps; the
-    /// compositor's frame loop needs it too, or a hosted app that depends
-    /// on this pump (e.g. the terminal draining its PTY into the grid)
-    /// never advances.
+    /// Run the widget tree's per-frame pump (`sync` then `update`).
+    /// Returns `true` when something changed and the frame should repaint.
+    /// The compositor's frame loop needs this too, or a hosted app that
+    /// depends on it (e.g. the terminal draining its PTY) never advances.
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         self.replicate_room_records();
         self.pump_room_contents();
@@ -313,29 +282,22 @@ impl FrameBuilder {
         self.host.update(doc, root)
     }
 
-    /// Turn "a peer's changes landed in the tree" into "the widget tree
-    /// is rebuilt". Returns whether it had to.
-    ///
-    /// `ShellOverlayHost::resync_strips_from_tree` splices groups and tabs
-    /// into the widget tree, gated on the chrome revision, and returns
-    /// immediately when it hasn't moved. Peer-sync writes the tree from
-    /// the network thread, which cannot touch the chrome, so this bumps
-    /// it whenever the room epoch (or a pending peer-window decision) has
-    /// moved.
-    ///
-    /// Cheap on a quiet frame: one `u64` read under the tree's read
-    /// lock, compared against the last one seen.
+    /// Turn "a peer's changes landed in the tree" into "the widget tree is
+    /// rebuilt". `resync_strips_from_tree` splices groups/tabs, gated on the
+    /// chrome revision; peer-sync writes the tree from the network thread,
+    /// which can't touch the chrome, so this bumps the revision whenever the
+    /// room epoch (or a pending peer-window decision) has moved. Cheap on a
+    /// quiet frame — one `u64` read under the tree's read lock.
     fn pump_room_contents(&mut self) -> bool {
         let epoch = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
             tree.room_epoch()
         };
-        // Peer windows are examined on the rounds after an arrival as
-        // well as on the arrival itself: `peer_windows::examine` starts at
-        // most one launch per app per pass, so a room that gained several
-        // windows of one app at once needs more than one look. Checked
-        // before the epoch gate for that reason.
+        // Peer windows are examined on rounds after an arrival too, not just
+        // the arrival itself: `peer_windows::examine` starts at most one
+        // launch per app per pass, so several windows at once need more than
+        // one look.
         let owed = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
@@ -356,28 +318,22 @@ impl FrameBuilder {
         true
     }
 
-    /// Hand the rooms' record indexes to the peer-replication path, and
-    /// fold in whatever peers have brought into the rooms this session
-    /// is in.
+    /// Hand the rooms' record indexes to the peer-replication path, and fold
+    /// in whatever peers brought into the rooms this session is in.
     ///
-    /// Here rather than in the frame-tick closure because this is the
-    /// only per-frame place that holds **both** sides: the index lives on
-    /// the overlay host behind an `Rc<RefCell<_>>`, the tree behind an
-    /// `Arc<RwLock<_>>`, and `ui::App::set_frame_tick` requires a `Send +
-    /// Sync` closure that an `Rc` cannot enter.
+    /// Here rather than in the frame-tick closure because this is the only
+    /// per-frame place holding **both** sides: the index lives behind an
+    /// `Rc<RefCell<_>>`, the tree behind an `Arc<RwLock<_>>`, and
+    /// `ui::App::set_frame_tick` requires `Send + Sync`, which an `Rc` can't enter.
     ///
-    /// Cheap on a frame where nothing moved:
-    /// [`RoomRecords::replicate_with`] compares a generation counter
-    /// before it reads any document, and the inbound queue is an empty
-    /// `Vec` in the common case. The chrome is only bumped when something
-    /// actually arrived, so a quiet session does not repaint on account
-    /// of this.
+    /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
+    /// generation counter before reading any document, and the chrome only
+    /// bumps when something actually arrived.
     fn replicate_room_records(&mut self) {
         let index = self.host.room_records();
 
         // Anything an exported action asked to bring here, first — so a
-        // reference made this frame is published in the same pass rather
-        // than waiting for the next one.
+        // reference made this frame publishes in the same pass.
         let requested = self.chrome.borrow_mut().take_record_requests();
         if !requested.is_empty() {
             // Bound in a block: `tree()` hands back a guard borrowed from
@@ -409,9 +365,8 @@ impl FrameBuilder {
         }
     }
 
-    /// Render the current frame into a fresh Vello scene. Caller is
-    /// responsible for handing it to a renderer (offscreen / live /
-    /// compositor backend).
+    /// Render the current frame into a fresh Vello scene. Caller hands it to
+    /// a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
         let mut scene = Scene::new();
         self.host.draw(
@@ -435,14 +390,11 @@ impl FrameBuilder {
         self.peer_presence.as_ref()
     }
 
-    /// Fold everything peers have sent since the last frame into the
-    /// presence the next paint will read, then restate who is in the
-    /// room on screen. Returns whether either changed — a peer moved,
-    /// or the room's people did — both of which are reasons to repaint.
-    ///
-    /// The roster refresh runs whether or not the fold found anything:
-    /// somebody who joined and has not moved their pointer publishes
-    /// nothing, and they are in the room all the same.
+    /// Fold everything peers sent since the last frame into the presence the
+    /// next paint reads, then restate who is in the room. Returns whether
+    /// either changed. The roster refresh runs regardless of whether the
+    /// fold found anything — someone who joined but hasn't moved their
+    /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
@@ -458,17 +410,14 @@ impl FrameBuilder {
     }
 
     /// Convenience for the offscreen scene-set path: `relayout` then
-    /// `paint`. Used when state mutations between scenes can change
-    /// structural layout (overlay reservations).
+    /// `paint`, for when state mutations between scenes can change layout.
     pub fn paint_settled(&mut self) -> Scene {
         self.relayout();
         let scene = self.paint();
-        // A draw can discover that the layout it was handed is not the
-        // one it needs: the palette's filter band grows a row when the
-        // kind chips wrap, and only the paint knows how wide the labels
-        // measure. A live session settles that on the very next frame —
-        // a single-frame capture has no next frame, so settle here, or
-        // every screenshot shows a state the user never sees.
+        // A draw can discover the layout it was handed isn't the one it
+        // needs (the palette's filter band grows a row when kind chips
+        // wrap, only paint knows label width). A live session settles this
+        // next frame; a single-frame capture has none, so settle here.
         if self.host.structure_dirty() {
             self.relayout();
             return self.paint();
@@ -489,12 +438,10 @@ impl FrameBuilder {
         self.chrome.borrow()
     }
 
-    /// Promote a window group to full-output (a surface that requested
-    /// `xdg_toplevel.set_fullscreen`), or clear the fullscreen state with
-    /// `None`. The compositor calls this from its `XdgShellHandler`
-    /// fullscreen/unfullscreen path each time the request set changes; the next
-    /// `relayout` collapses the layout to that group (top bar + sidebar + other
-    /// strips suppressed) and a later `None` restores the exact prior tiling.
+    /// Promote a window group to full-output (a surface requesting
+    /// `xdg_toplevel.set_fullscreen`), or clear it with `None`. The next
+    /// `relayout` collapses the layout to that group (top bar + sidebar +
+    /// other strips suppressed); a later `None` restores the exact prior tiling.
     pub fn set_fullscreen(&mut self, group: Option<u64>) {
         self.with_chrome(|st| st.set_fullscreen_group(group));
     }
@@ -514,22 +461,17 @@ impl FrameBuilder {
         &self.host
     }
 
-    /// Whether the widget tree has an animation in flight (overlay
-    /// transitions, spring settles, spawn/close fades, the wheel disc,
-    /// …). The native render loop uses this to decide whether the next
-    /// frame needs repainting, so it can idle instead of burning a core
-    /// repainting an unchanged scene.
+    /// Whether the widget tree has an animation in flight. The native render
+    /// loop uses this to decide whether the next frame needs repainting, so
+    /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
         self.host.needs_animation_frame()
     }
 
-    /// Whether any tab is still holding a place for an app that has not
-    /// drawn yet. See [`ShellOverlayHost::any_tile_opening`].
-    ///
-    /// The opening card's spinner keeps [`Self::needs_animation_frame`]
-    /// true for as long as the wait lasts, so a caller waiting for the
-    /// tree to go quiet has to know the difference between "a window is
-    /// still starting" and "an animation is wedged".
+    /// Whether any tab is still holding a place for an app that hasn't drawn
+    /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
+    /// true for the wait's duration, so a caller waiting for quiet has to
+    /// distinguish "still starting" from "animation wedged".
     pub fn any_tile_opening(&mut self) -> bool {
         self.host.any_tile_opening()
     }
@@ -546,8 +488,7 @@ impl FrameBuilder {
     }
 
     /// On-screen rectangle of the tile currently painting the foreign
-    /// wayland surface `surface_id`, or `None` when no visible tile hosts
-    /// it. See [`ShellOverlayHost::foreign_surface_rect`].
+    /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
         self.host.foreign_surface_rect(surface_id)
     }
@@ -560,9 +501,8 @@ impl FrameBuilder {
         self.viewport
     }
 
-    /// Inner node id (the host's root child). Required by the input
-    /// dispatch path inside `bin/shots`'s `ShellDriver` — the compositor
-    /// path doesn't currently need this.
+    /// Inner node id (host's root child). Required by the input dispatch
+    /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
     pub fn host_node(&self) -> NodeId {
         self.host_node.expect("rebuild_layout_tree first")
     }
@@ -572,45 +512,35 @@ impl FrameBuilder {
         &self.taffy
     }
 
-    /// Mutable access to the text renderer. Required by the input
-    /// dispatch / scenario step paths inside `bin/shots`'s
-    /// `ShellDriver` — the compositor path doesn't currently need
-    /// this either.
+    /// Mutable access to the text renderer, for the input dispatch /
+    /// scenario step paths in `bin/shots`'s `ShellDriver`.
     pub fn text_renderer_mut(&mut self) -> &mut TextRenderer {
         &mut self.text_renderer
     }
 
-    /// Resize the viewport. Triggers a structural rebuild on the next
-    /// `relayout` because the wrapper root node carries an explicit
-    /// extent. Used by the compositor's `BackendEvent::OutputResized`
-    /// handler.
+    /// Resize the viewport, triggering a structural rebuild on the next
+    /// `relayout` (the wrapper root node carries an explicit extent). Used
+    /// by the compositor's `BackendEvent::OutputResized` handler.
     pub fn set_viewport(&mut self, viewport: (u32, u32)) {
         self.viewport = (viewport.0 as f64, viewport.1 as f64);
         self.rebuild_layout_tree();
     }
 
-    /// Split the host out from the taffy tree as disjoint borrows.
-    /// `ShellOverlayHost::handle_event` needs `&mut self` *plus* a
-    /// `&TaffyTree`, both of which live inside `FrameBuilder` —
-    /// callers that go through accessor methods can't satisfy the
-    /// borrow checker without this helper.
+    /// Split the host out from the taffy tree as disjoint borrows —
+    /// `ShellOverlayHost::handle_event` needs `&mut self` *plus* `&TaffyTree`,
+    /// both inside `FrameBuilder`, which accessor methods alone can't satisfy.
     pub fn host_and_taffy_mut(&mut self) -> (&mut ShellOverlayHost, &TaffyTree<()>) {
         (&mut self.host, &self.taffy)
     }
 
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
-    /// pipeline. Returns whether the event was consumed.
+    /// pipeline. Returns whether it was consumed.
     ///
-    /// The compositor's `Modifiers`, `AutoCommit` doc, `ObjId`, and
-    /// focus cursor live outside the FrameBuilder (each consumer
-    /// owns its own — `ShellDriver` for in-process scenarios,
-    /// `native::run` for the live compositor) — they're passed in
-    /// rather than stored here so the FrameBuilder stays a pure
-    /// layout/paint core shared by both.
-    ///
-    /// Both `ShellDriver::dispatch` and the compositor's
-    /// `pump_test_control_conn` route through this one method so
-    /// the wire to the host is shared in one place.
+    /// The compositor's `Modifiers`, `AutoCommit` doc, `ObjId` and focus
+    /// cursor live outside the FrameBuilder — each consumer owns its own —
+    /// passed in rather than stored, so the FrameBuilder stays a pure
+    /// layout/paint core shared by both. Both `ShellDriver::dispatch` and
+    /// the compositor's `pump_test_control_conn` route through this one method.
     pub fn dispatch_event(
         &mut self,
         event: &WindowEvent,
@@ -621,9 +551,8 @@ impl FrameBuilder {
     ) -> bool {
         let mut handled = false;
         let child = self.host_node();
-        // Snapshot the focus going in so we can detect any new target
-        // set by the host's `handle_event`. Mirrors what
-        // `ui::App::window_event` does at the production seam.
+        // Snapshot the focus going in to detect any new target set by the
+        // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
         let mut focus_target: Option<NodeId> = None;
         {
@@ -640,12 +569,10 @@ impl FrameBuilder {
                 taffy,
             );
         }
-        // Apply the requested focus change: drop old widget's focus,
-        // raise new widget's focus. Without this step, clicking on a
-        // focusable widget like NotesApp would set `focus_target` but
-        // the widget itself would never see `set_focus(true)` — its
-        // `is_focused()` stays `false` and rendering keeps showing the
-        // unfocused state ("Click to edit" instead of editing chrome).
+        // Apply the requested focus change: drop old widget's focus, raise
+        // new widget's. Without this, clicking a focusable widget would set
+        // `focus_target` but the widget itself would never see
+        // `set_focus(true)`, leaving rendering in the unfocused state.
         if let Some(new_id) = focus_target {
             if prior_focus != Some(new_id) {
                 if let Some(old_id) = prior_focus {
@@ -667,16 +594,13 @@ impl FrameBuilder {
     }
 
     /// Snapshot of every addressable widget in the live tree, keyed by
-    /// either its opt-in `test_id` or a stable path
-    /// (`Parent/Child[index]`). Same shape `ShellDriver::widget_registry`
-    /// uses for in-process scenarios; lifted into `FrameBuilder` so the
-    /// out-of-process control protocol (`compositor::test_control`) can
+    /// either its opt-in `test_id` or a stable path (`Parent/Child[index]`).
+    /// Lifted into `FrameBuilder` so the out-of-process control protocol can
     /// reach the same data without going through the shots binary.
     ///
-    /// Walked fresh on every call — there's no hidden cache. Callers
-    /// that need the registry across multiple actions should re-fetch
-    /// after each frame's `paint`/`relayout` (layout can shift rects
-    /// between frames).
+    /// Walked fresh on every call — no hidden cache. Callers needing the
+    /// registry across multiple actions should re-fetch after each frame's
+    /// `paint`/`relayout`.
     pub fn widget_registry(&self) -> HashMap<String, vello::kurbo::Rect> {
         let mut out = HashMap::new();
         let mut sibling_counts: HashMap<String, usize> = HashMap::new();
@@ -685,17 +609,15 @@ impl FrameBuilder {
         out
     }
 
-    /// Register the chrome affordances that are painted by the overlay
-    /// host rather than by a child widget, so they can be clicked by
-    /// name: the overview's add-workspace tile and workspace cards, the
-    /// workspace-settings tab pills and name field, the Permissions
-    /// tab's Revoke buttons, the connect prompt's buttons. These are
-    /// drawn straight into the scene and hit-tested from cached rects,
-    /// so a tree walk cannot see them — kept here so both `ShellDriver`
-    /// and the out-of-process control protocol read the same list.
+    /// Register the chrome affordances painted by the overlay host rather
+    /// than a child widget (overview's add-workspace tile, workspace cards,
+    /// settings tab pills, Permissions tab's Revoke buttons, connect
+    /// prompt's buttons), so they're clickable by name. These are drawn
+    /// straight into the scene and hit-tested from cached rects, so a tree
+    /// walk can't see them.
     ///
-    /// Zero-area rects are skipped, which is what makes a name mean
-    /// "on screen now" rather than clickable at the origin while hidden.
+    /// Zero-area rects are skipped, so a name means "on screen now" rather
+    /// than clickable at the origin while hidden.
     fn register_chrome_rects(&self, out: &mut HashMap<String, vello::kurbo::Rect>) {
         use crate::shell::chrome_state::WsTab;
         let host = &self.host;
@@ -722,9 +644,9 @@ impl FrameBuilder {
         for (idx, rect) in host.overview_row_rects_for_tests().into_iter().enumerate() {
             put(format!("overview_card[{idx}]"), rect);
         }
-        // Revoke buttons are addressable both by position (stable for a
-        // harness that just wants "the first one") and by the capability
-        // id they revoke (stable across reordering).
+        // Revoke buttons are addressable both by position (stable for "the
+        // first one") and by the capability id they revoke (stable across
+        // reordering).
         for (index, (cap_id, rect)) in host.permissions_revoke_rects().iter().enumerate() {
             put(format!("permissions_revoke[{index}]"), *rect);
             put(format!("permissions_revoke[{cap_id}]"), *rect);
@@ -752,11 +674,10 @@ impl FrameBuilder {
         for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
             put(format!("peer_sync_{which}"), rect);
         }
-        // The collaborator dropdown's own controls. Named so a scenario
-        // clicks the button a person clicks, rather than invoking the
-        // action behind it — a click proves the control is painted,
-        // hit-testable and wired, and an invocation proves only the
-        // third of those.
+        // The collaborator dropdown's own controls, named so a scenario
+        // clicks the button a person clicks rather than invoking the action
+        // behind it — a click proves the control is wired, an invocation
+        // only proves the action.
         let (collab_invite, collab_join) = host.collaborators_action_rects_for_tests();
         put("collab_invite".into(), collab_invite);
         put("collab_join".into(), collab_join);
@@ -767,19 +688,15 @@ impl FrameBuilder {
     }
 }
 
-/// Depth-first walk of the widget tree. Registers each visited node:
-///   - if `test_id()` returns `Some(id)`, `id -> rect` (highest priority
-///     — overrides any path-based key).
-///   - the path-based key `Parent/.../Self[sibling_index]`, so
-///     un-tagged widgets stay addressable.
-///   - a bare-name form (`Parent/Self`) for the first sibling of a
-///     given name.
+/// Depth-first walk of the widget tree, registering each visited node:
+/// `test_id() -> rect` (highest priority) if set; the path-based key
+/// `Parent/.../Self[sibling_index]` for un-tagged widgets; a bare-name
+/// form (`Parent/Self`) for the first sibling of a given name.
 ///
-/// `sibling_counts` is a parent-scoped counter map keyed by
-/// `parent_path::name`. Children of the same parent that share a name
-/// get deterministic `[0]`, `[1]`, ... suffixes. The shots `ShellDriver`
-/// uses this exact walk too — exposed `pub` here so both consumers
-/// share one implementation.
+/// `sibling_counts` is a parent-scoped counter map so children sharing a
+/// name get deterministic `[0]`, `[1]`, ... suffixes. The shots
+/// `ShellDriver` uses this exact walk too — exposed `pub` so both share
+/// one implementation.
 pub fn walk_widget(
     w: &dyn ui::widget::Widget,
     parent_path: &str,
@@ -808,8 +725,8 @@ pub fn walk_widget(
     if let Some(id) = w.test_id() {
         out.insert(id.to_string(), w.get_rect());
     }
-    // Affordances the widget paints itself, addressable by name. Skipping
-    // zero-area entries is what makes a name mean "on screen now".
+    // Affordances the widget paints itself. Skipping zero-area entries
+    // is what makes a name mean "on screen now".
     for (name, rect) in w.test_rects() {
         if rect.area() > 0.0 {
             out.insert(format!("{path}/{name}"), rect);
@@ -826,9 +743,9 @@ pub fn walk_widget(
 mod tests {
     use super::*;
 
-    /// Smoke: a fresh builder produces a non-empty Vello scene at
-    /// 1600x900. The exact byte-count would change with any rendering
-    /// tweak, so we only assert the scene encoded *something*.
+    /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
+    /// The exact byte-count would change with any rendering tweak, so we
+    /// only assert the scene encoded *something*.
     #[test]
     fn frame_builder_paints_non_empty_scene() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -849,12 +766,10 @@ mod tests {
         assert!(fb.chrome().overlays.overview);
     }
 
-    /// A window that arrived from a peer has to reach the widget tree,
-    /// not just the workspace tree: peer-sync writes the tree from the
-    /// network thread, which cannot itself bump the chrome revision that
-    /// `ShellOverlayHost::resync_strips_from_tree` gates its rebuild on.
-    /// Drives the real ingest (`apply_room_changes`) and the real
-    /// per-frame pump, so it fails if that signal is dropped again.
+    /// A window from a peer must reach the widget tree, not just the
+    /// workspace tree: peer-sync writes the tree from the network thread,
+    /// which can't bump the chrome revision `resync_strips_from_tree` gates
+    /// its rebuild on. Drives the real ingest and per-frame pump.
     #[test]
     fn a_peers_changes_landing_make_the_frame_rebuild() {
         use crate::shell::state::PeerOrigin;
@@ -944,13 +859,10 @@ mod tests {
         assert!(!scene.encoding().is_empty());
     }
 
-    /// The top bar's workspace chevrons follow the *live* active
-    /// workspace, not the one the bar was built on: the bar refreshes
-    /// `workspace_index` in `Widget::update` when the chrome revision
-    /// bumps, reached through the `Stack` → `Column` it sits in. Drives
-    /// the real per-frame path (`pump_apps` → paint) and reads the
-    /// chevron state the way a scenario would — by whether the
-    /// `_enabled` name resolves in the registry.
+    /// The top bar's workspace chevrons follow the *live* active workspace:
+    /// the bar refreshes `workspace_index` in `Widget::update` when the
+    /// chrome revision bumps. Drives the real per-frame path (`pump_apps` →
+    /// paint) and reads chevron state the way a scenario would.
     #[test]
     fn topbar_workspace_chevrons_track_the_live_active_workspace() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -1028,12 +940,11 @@ mod tests {
         );
     }
 
-    /// Look up a widget's rect in a `widget_registry` snapshot by its *last*
-    /// path segment (`.../TopBarChrome[0]` → `TopBarChrome`). The registry
-    /// keys are full paths, so an exact-key lookup on a nested widget would
-    /// miss; this matches the leaf name (with any `[idx]` suffix stripped).
-    /// The widgets asserted on here (top bar, the single active strip row) are
-    /// unique in the rendered tree, so the first match is deterministic.
+    /// Look up a widget's rect by its *last* path segment
+    /// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
+    /// paths, so an exact-key lookup on a nested widget would miss. The
+    /// widgets asserted on here are unique in the rendered tree, so the
+    /// first match is deterministic.
     #[cfg(test)]
     fn rect_named(reg: &HashMap<String, vello::kurbo::Rect>, name: &str) -> vello::kurbo::Rect {
         reg.iter()
@@ -1054,12 +965,11 @@ mod tests {
             })
     }
 
-    /// A group promoted to fullscreen absorbs the whole output — the top bar
-    /// collapses and the strip's rect rises to the top of the output and spans
-    /// its width — and clearing it restores the exact prior layout. This is the
-    /// compositor-scene half of the "fullscreen enters / exits and restores the
-    /// tiling" contract, driven through the real `FrameBuilder::set_fullscreen`
-    /// → `ChromeState` → overlay-host path.
+    /// A group promoted to fullscreen absorbs the whole output (top bar
+    /// collapses, the strip's rect rises and spans the width), and clearing
+    /// it restores the exact prior layout — the compositor-scene half of the
+    /// fullscreen contract, driven through the real
+    /// `FrameBuilder::set_fullscreen` → `ChromeState` → overlay-host path.
     #[test]
     fn set_fullscreen_promotes_group_and_restores_on_exit() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -1134,9 +1044,9 @@ mod tests {
         );
     }
 
-    /// A fullscreen id that the rendered tree does NOT host must be a safe
-    /// no-op — it must not blank the shell by hiding every strip. (The live
-    /// client tree and the rendered tree are not yet unified.)
+    /// A fullscreen id the rendered tree does NOT host must be a safe
+    /// no-op — must not blank the shell by hiding every strip (the live
+    /// client tree and rendered tree aren't yet unified).
     #[test]
     fn set_fullscreen_with_unknown_group_does_not_blank_shell() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -1164,10 +1074,9 @@ mod tests {
         );
     }
 
-    /// `widget_registry` is idempotent — two consecutive calls (no
-    /// layout / chrome mutation between them) return the same set of
-    /// keys mapped to the same rects; the walker may not mutate
-    /// anything.
+    /// `widget_registry` is idempotent — two consecutive calls with no
+    /// layout/chrome mutation between return the same keys mapped to the
+    /// same rects; the walker may not mutate anything.
     #[test]
     fn widget_registry_is_idempotent_between_calls() {
         let mut fb = FrameBuilder::new((1600, 900));

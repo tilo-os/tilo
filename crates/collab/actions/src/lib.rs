@@ -1,43 +1,46 @@
 //! # qOS ACTION model
 //!
-//! The state layer behind Ctrl+K and cross-peer collaboration: a serializable,
-//! **replayable** unit of CRDT mutation.
+//! The state layer behind Ctrl+K and cross-peer collaboration: a
+//! serializable, **replayable** unit of CRDT mutation.
 //!
 //! ## Play locally, replay anywhere
 //!
 //! An [`Action`] is a *value* that deterministically mutates a CRDT
-//! [`Doc`](action::Doc). It is applied to the local replica and its
-//! [`ActionEnvelope`] is replicated; a peer that starts from the same state
-//! [`replay`](executor::replay)s it and lands on the **identical** document.
-//! Determinism comes from the [executor](executor) pinning the Automerge actor
-//! id (from the action's [`ActionId`]) and commit timestamp on every apply, so
-//! the resulting change is content-addressed identical on origin and peers.
+//! [`Doc`](action::Doc). Applied to the local replica, its
+//! [`ActionEnvelope`] is replicated; a peer starting from the same state
+//! [`replay`](executor::replay)s it and lands on the **identical**
+//! document — the [executor](executor) pins the Automerge actor id (from
+//! the action's [`ActionId`]) and commit timestamp on every apply, so
+//! the resulting change is content-addressed identical everywhere.
 //!
-//! Actions are strictly **not presentation**. Anything local-only — rendering,
-//! scroll, selection — never becomes an action; only shared-CRDT mutations do.
+//! Actions are strictly **not presentation** — anything local-only
+//! (rendering, scroll, selection) never becomes an action; only
+//! shared-CRDT mutations do.
 //!
 //! ## Resources
 //!
-//! An app publishes the tree of [`Resource`]s it currently has open (a video →
-//! its comments; a book → its annotations) via [`ResourceProvider`]. Each
-//! resource exports [`ActionSpec`]s. The palette lists them; choosing one
+//! An app publishes the tree of [`Resource`]s it currently has open (a
+//! video → its comments; a book → its annotations) via
+//! [`ResourceProvider`]. Each resource exports [`ActionSpec`]s; the
+//! palette lists them, and choosing one
 //! [`dispatch`](executor::dispatch)es the underlying action.
 //!
 //! ## The door
 //!
-//! A resource tree is only useful to the app that built it until someone else
-//! can reach it. [`door`] is that reach: [`door::survey`] turns a live tree into
-//! inert, stably-addressed descriptors and [`door::invoke`] performs one of them
-//! attributed to the caller, so another session acts on an app without the app
-//! growing a remote-control surface of its own.
+//! A resource tree is only useful to the app that built it until someone
+//! else can reach it. [`door`] is that reach: [`door::survey`] turns a
+//! live tree into inert, stably-addressed descriptors, and
+//! [`door::invoke`] performs one attributed to the caller — so another
+//! session acts on an app without the app growing a remote-control
+//! surface of its own.
 //!
 //! ## Execution locus
 //!
-//! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this client
-//! applies + replicates; peers replay) or `ServerPreferred` (route to a host).
-//! [`dispatch`](executor::dispatch) honors it against an
-//! [`ActionTransport`](executor::ActionTransport), falling back to local
-//! execution when no host answers.
+//! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this
+//! client applies + replicates; peers replay) or `ServerPreferred`
+//! (route to a host). [`dispatch`](executor::dispatch) honours it
+//! against an [`ActionTransport`](executor::ActionTransport), falling
+//! back to local execution when no host answers.
 
 pub mod action;
 pub mod door;
@@ -66,8 +69,8 @@ mod tests {
     use automerge::{AutoCommit, ReadDoc, ScalarValue, ROOT};
     use serde::{Deserialize, Serialize};
 
-    /// A real action: set a scalar under a key, and (for lists) append. Mutates
-    /// only via the passed doc, no wall-clock / RNG — the determinism contract.
+    /// A real action: set a scalar under a key, and (for lists) append.
+    /// Mutates only via the passed doc, no wall-clock/RNG — the determinism contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum Counter {
         Put { key: String, value: i64 },
@@ -109,8 +112,8 @@ mod tests {
         r
     }
 
-    /// Seed two independent replicas that share history (so a replayed change
-    /// has identical deps), each with its OWN actor for normal edits.
+    /// Seed two independent replicas that share history (so a replayed
+    /// change has identical deps), each with its OWN actor for normal edits.
     fn two_replicas() -> (AutoCommit, AutoCommit) {
         let mut a = AutoCommit::new();
         a.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
@@ -121,8 +124,8 @@ mod tests {
     }
 
     /// THE HEADLINE TEST. An action applied on replica A, replicated, and
-    /// replayed on replica B (starting from the same state) yields the
-    /// **identical** document — same head hashes, not merely the same values.
+    /// replayed on replica B (from the same state) yields the **identical**
+    /// document — same head hashes, not merely the same values.
     #[test]
     fn action_replays_to_identical_doc_on_peer() {
         let (mut a, mut b) = two_replicas();
@@ -152,10 +155,10 @@ mod tests {
         assert_eq!(bv.to_i64(), av.to_i64());
     }
 
-    /// The replayed change is content-addressed *identical* to the change the
-    /// origin produced, so if the replicas later exchange native Automerge
-    /// changes (ordinary CRDT sync) the duplicate dedupes instead of
-    /// double-applying. This is why pinning actor + time on every apply matters.
+    /// The replayed change is content-addressed *identical* to the origin's,
+    /// so if the replicas later exchange native Automerge changes (ordinary
+    /// CRDT sync) the duplicate dedupes instead of double-applying — why
+    /// pinning actor + time on every apply matters.
     #[test]
     fn replayed_change_dedupes_against_native_automerge_merge() {
         let (mut a, mut b) = two_replicas();
@@ -177,7 +180,7 @@ mod tests {
         let heads_after_replay = b.get_heads();
 
         // Now B *also* receives A's native Automerge change via ordinary CRDT
-        // sync. Because it is the same content-addressed change B already
+        // sync. Since it's the same content-addressed change B already
         // replayed, the merge is a no-op: no second append.
         let a_bytes = a.save();
         let mut a_native = AutoCommit::load(&a_bytes).unwrap();
@@ -209,7 +212,7 @@ mod tests {
         assert_eq!(a.get(&ROOT, "likes").unwrap().unwrap().0.to_i64(), Some(1));
     }
 
-    /// A transport that speaks for a reachable host. Proves the
+    /// A transport that speaks for a reachable host, proving the
     /// `ServerPreferred` plumbing is real: when a host accepts, the action is
     /// NOT applied to the local doc (the host will execute + broadcast).
     struct HostTransport {
