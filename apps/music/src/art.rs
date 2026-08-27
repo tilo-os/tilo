@@ -47,7 +47,7 @@ fn hsl(h: f32, s: f32, l: f32) -> Color {
 pub fn art_colors(seed: &str) -> (Color, Color) {
     let h = hash_str(seed);
     let hue = (h % 360) as f32;
-    let hue2 = (hue + 40.0 + (h >> 8 % 40) as f32).rem_euclid(360.0);
+    let hue2 = (hue + 40.0 + ((h >> 8) % 40) as f32).rem_euclid(360.0);
     let base = hsl(hue, 0.55, 0.42);
     let accent = hsl(hue2, 0.62, 0.58);
     (base, accent)

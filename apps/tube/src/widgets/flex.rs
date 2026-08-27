@@ -65,7 +65,7 @@ impl Len {
     fn dim(self) -> Dimension {
         match self {
             Len::Auto => Dimension::auto(),
-            Len::Fill => percent(1.0),
+            Len::Fill => percent(1.0_f32),
             Len::Px(p) => length(p),
             Len::Pct(p) => percent(p),
         }
@@ -389,10 +389,10 @@ impl Widget for Flex {
             // in-flow siblings.
             inset: if self.overlay || self.float {
                 taffy::Rect {
-                    left: length(0.0),
-                    right: length(0.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
                 }
             } else {
                 taffy::Rect::auto()
@@ -415,7 +415,7 @@ impl Widget for Flex {
             // right-edge gutter. Empty (no-op) in flex/block mode.
             grid_template_columns: self
                 .grid_min_col
-                .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0))])])
+                .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0_f32))])])
                 .unwrap_or_default(),
             gap: taffy::Size {
                 width: length(self.gap),
@@ -442,7 +442,7 @@ impl Widget for Flex {
             flex_grow: self.grow,
             flex_shrink: self.shrink,
             flex_basis: if self.grow > 0.0 {
-                length(0.0)
+                length(0.0_f32)
             } else {
                 taffy::Dimension::auto()
             },
@@ -680,10 +680,13 @@ impl Widget for Flex {
         self.children.iter().any(|c| c.is_layout_dirty())
     }
     fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |a, d| a || d)
+        // Not `.any()`: every child's dirty flag must be taken, not just the
+        // first that's set, so this must not short-circuit.
+        let mut dirty = false;
+        for c in &mut self.children {
+            dirty |= c.take_structure_dirty();
+        }
+        dirty
     }
 
     fn name(&self) -> &str {

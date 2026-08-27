@@ -1122,8 +1122,6 @@ mod tests {
 
     #[test]
     fn a_manifest_allowlist_is_enforced_instead_of_being_dropped() {
-        // Maps declares five endpoints. Before the gate this parsed to
-        // `mode != "off"` and became unrestricted access.
         let maps = v(&[
             "tile.openstreetmap.org",
             "nominatim.openstreetmap.org",

@@ -46,6 +46,15 @@ pub struct Thumbnail {
     dirty: bool,
 }
 
+/// Everything about a corner pill's look and placement, apart from its text.
+struct PillSpec {
+    size: f32,
+    bg: Color,
+    fg: Color,
+    anchor: Point,
+    right_align: bool,
+}
+
 impl Thumbnail {
     pub fn new(seed: &str, duration: u32) -> Self {
         Self {
@@ -108,12 +117,9 @@ impl Thumbnail {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         text: &str,
-        size: f32,
-        bg: Color,
-        fg: Color,
-        anchor: Point,
-        right_align: bool,
+        spec: PillSpec,
     ) {
+        let PillSpec { size, bg, fg, anchor, right_align } = spec;
         let (tw, _) = text_renderer.measure(text, size, None);
         let padx = 6.0;
         let pad_y = 3.0;
@@ -202,11 +208,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 "LIVE",
-                11.0,
-                Color::from_rgb8(0xcc, 0x00, 0x00),
-                Color::WHITE,
-                Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
-                true,
+                PillSpec {
+                    size: 11.0,
+                    bg: Color::from_rgb8(0xcc, 0x00, 0x00),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
+                    right_align: true,
+                },
             );
         } else {
             self.pill(
@@ -214,11 +222,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 &duration_hms(self.duration),
-                11.0,
-                Color::from_rgba8(0, 0, 0, 200),
-                Color::WHITE,
-                Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
-                true,
+                PillSpec {
+                    size: 11.0,
+                    bg: Color::from_rgba8(0, 0, 0, 200),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
+                    right_align: true,
+                },
             );
         }
 
@@ -229,11 +239,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 "DeArrow",
-                10.0,
-                Color::from_rgb8(0x9b, 0x59, 0xb6),
-                Color::WHITE,
-                Point::new(self.rect.x0 + 8.0, self.rect.y0 + 8.0),
-                false,
+                PillSpec {
+                    size: 10.0,
+                    bg: Color::from_rgb8(0x9b, 0x59, 0xb6),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x0 + 8.0, self.rect.y0 + 8.0),
+                    right_align: false,
+                },
             );
         }
 
@@ -278,13 +290,13 @@ impl Widget for Thumbnail {
         // Lazily resolve the real thumbnail. Once we have it, stop touching the
         // store; a freshly-decoded image flips `dirty` so the next frame repaints
         // it — no structural rebuild.
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -297,7 +309,7 @@ impl Widget for Thumbnail {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.height),
                 },
                 flex_shrink: 0.0,

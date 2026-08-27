@@ -1158,10 +1158,10 @@ impl MusicApp {
     /// position persists on the next real event.
     fn auto_advance(&mut self) {
         self.advance(true);
-        if self.pb.playing {
-            if let Some(id) = self.pb.current.clone() {
-                self.start_stream(id);
-            }
+        if self.pb.playing
+            && let Some(id) = self.pb.current.clone()
+        {
+            self.start_stream(id);
         }
     }
 
@@ -1359,10 +1359,10 @@ impl MusicApp {
         let current_id = self.pb.queue.get(self.pb.queue_index).cloned();
         let item = self.pb.queue.remove(from);
         self.pb.queue.insert(to, item);
-        if let Some(cur) = current_id {
-            if let Some(pos) = self.pb.queue.iter().position(|t| *t == cur) {
-                self.pb.queue_index = pos;
-            }
+        if let Some(cur) = current_id
+            && let Some(pos) = self.pb.queue.iter().position(|t| *t == cur)
+        {
+            self.pb.queue_index = pos;
         }
     }
 
@@ -1423,7 +1423,7 @@ impl MusicApp {
                 },
                 &[node],
             )
-            .unwrap();
+            .expect("a single freshly-created taffy node always attaches to a fresh tree");
         let _ = taffy.compute_layout(
             root,
             Size {
@@ -1461,7 +1461,7 @@ impl MusicApp {
         let (submit, cancel) = {
             let Some(nd) = self.name_dialog.as_mut() else { return };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let node = taffy.new_leaf(Style::default()).expect("a leaf on a fresh taffy tree");
             let mut ft = None;
             nd.dialog.handle_event(
                 event, scale_factor, modifiers, state, &automerge::ROOT, handled, &mut ft, node,
@@ -2882,24 +2882,25 @@ impl MusicApp {
         let Some(next) = self.next_queued_track() else { return false };
         // Prefetch lyrics for the next track (into the shared cache) unless we
         // already have them.
-        if !self.lyrics_cache.contains_key(&next) && self.lyrics_pending_for.as_deref() != Some(next.as_str()) {
-            if let Some(track) = self.lib.track(&next).cloned() {
-                if let Some(l) = lyrics::bundled::for_track(&next) {
-                    self.lyrics_cache.insert(next.clone(), (l.lines, l.synced));
-                } else {
-                    let meta = TrackMeta {
-                        track_id: next.clone(),
-                        title: track.title.clone(),
-                        artist: self.lib.artist_name(&track.artist_id).to_string(),
-                        album: self.lib.album_title(&track.album_id).to_string(),
-                        duration_s: track.duration_s,
-                    };
-                    self.lyrics_worker.get_or_insert_with(LyricsWorker::new).request(meta);
-                }
-                // Warm the next track's album metadata + cover.
-                let album_id = track.album_id.clone();
-                self.ensure_album(&album_id);
+        if !self.lyrics_cache.contains_key(&next)
+            && self.lyrics_pending_for.as_deref() != Some(next.as_str())
+            && let Some(track) = self.lib.track(&next).cloned()
+        {
+            if let Some(l) = lyrics::bundled::for_track(&next) {
+                self.lyrics_cache.insert(next.clone(), (l.lines, l.synced));
+            } else {
+                let meta = TrackMeta {
+                    track_id: next.clone(),
+                    title: track.title.clone(),
+                    artist: self.lib.artist_name(&track.artist_id).to_string(),
+                    album: self.lib.album_title(&track.album_id).to_string(),
+                    duration_s: track.duration_s,
+                };
+                self.lyrics_worker.get_or_insert_with(LyricsWorker::new).request(meta);
             }
+            // Warm the next track's album metadata + cover.
+            let album_id = track.album_id.clone();
+            self.ensure_album(&album_id);
         }
         true
     }
@@ -2916,12 +2917,11 @@ impl MusicApp {
         static NOCACHE: OnceLock<bool> = OnceLock::new();
         let nocache = *NOCACHE
             .get_or_init(|| std::env::var("QOS_MUSIC_NOCACHE").map(|v| !v.is_empty()).unwrap_or(false));
-        if !nocache {
-            if let Some((cached_q, res)) = &self.search_cache {
-                if cached_q == q {
-                    return res.clone();
-                }
-            }
+        if !nocache
+            && let Some((cached_q, res)) = &self.search_cache
+            && cached_q == q
+        {
+            return res.clone();
         }
         let res = self.lib.search(q);
         self.search_cache = Some((q.to_string(), res.clone()));
@@ -2962,6 +2962,10 @@ fn fill_rrect(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) 
     scene.fill(Fill::NonZero, t, color, None, &rrect(r, radius));
 }
 
+// The params are independent geometry/style values a caller picks per call
+// (position, size, color, weight, wrap width); a struct would just relocate
+// them across 90+ call sites in `app/render.rs` without reducing complexity.
+#[allow(clippy::too_many_arguments)]
 fn draw_text(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -3034,7 +3038,6 @@ fn is_live_playlist_id(id: &str) -> bool {
 }
 
 /// Build a [`TrackHit`] for a hermetic shot from sample-library-shaped fields.
-#[allow(clippy::too_many_arguments)]
 fn sample_hit(video_id: &str, title: &str, artist: &str, artist_id: &str, album_id: &str, album: &str, dur: u32) -> TrackHit {
     TrackHit {
         video_id: video_id.into(),
@@ -3431,7 +3434,7 @@ mod tests {
         // tk_g1 seeds as already-cached; put it in a streamable state first so
         // the click genuinely starts a download (not a "remove offline" toggle).
         doc::set_cache(&mut doc, "tk_g1", CacheState::Streamed);
-        app.lib = doc::load_library(&mut doc);
+        app.lib = doc::load_library(&doc);
         assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Streamed);
         // Start the download through the real action path.
         app.dispatch(Action::ToggleDownload("tk_g1".into()), &mut doc);
@@ -3663,8 +3666,6 @@ mod tests {
         for label in ["Play", "Play next", "Add to queue", "Add to playlist\u{2026}", "Go to album", "Go to artist", "Like"] {
             assert!(menu_index(&app, label).is_some(), "menu has {label}");
         }
-        // The old "Add to library" row was a duplicate of the Like toggle
-        // (same Action::ToggleLike) — it must not reappear as a separate row.
         assert!(menu_index(&app, "Add to library").is_none(), "no duplicate library row");
     }
 
@@ -3775,10 +3776,10 @@ mod tests {
 
     #[test]
     fn offline_home_fetch_reports_unavailable_and_stops_the_skeleton() {
-        // The real default startup: an empty library, network allowed. There is
-        // no live backend in this build, so the worker's offline backend cannot
-        // serve Home — and the app must settle on its honest empty state rather
-        // than shimmer a loading skeleton (and spin frames) forever.
+        // The real default startup: an empty library, network allowed. Whatever
+        // backend the worker binds to (offline sample, or live with no network
+        // reachable here) cannot serve Home, and the app must settle on its
+        // honest empty state rather than shimmer a loading skeleton forever.
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
@@ -3947,11 +3948,12 @@ mod tests {
         let mut ids = Vec::new();
         for _ in 0..800 {
             app.drain_worker();
-            if let Some((q, r)) = &app.live_results {
-                if q == "aurora runaway" && !r.is_empty() {
-                    ids = r.clone();
-                    break;
-                }
+            if let Some((q, r)) = &app.live_results
+                && q == "aurora runaway"
+                && !r.is_empty()
+            {
+                ids = r.clone();
+                break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -3979,11 +3981,11 @@ mod tests {
         };
         for _ in 0..2000 {
             app.drain_worker();
-            if let Some(uri) = app.audio.current_uri() {
-                if is_streamable(uri) {
-                    loaded_url = Some(uri.to_string());
-                    break;
-                }
+            if let Some(uri) = app.audio.current_uri()
+                && is_streamable(uri)
+            {
+                loaded_url = Some(uri.to_string());
+                break;
             }
             if app.resolve_in_flight == 0 && app.audio.current_uri().is_none() {
                 break; // resolve finished without a URL — fail below
@@ -4144,11 +4146,11 @@ mod tests {
         let mut ids = Vec::new();
         for _ in 0..1000 {
             app.drain_worker();
-            if let Some((_, r)) = &app.live_results {
-                if !r.is_empty() {
-                    ids = r.clone();
-                    break;
-                }
+            if let Some((_, r)) = &app.live_results
+                && !r.is_empty()
+            {
+                ids = r.clone();
+                break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4979,8 +4981,6 @@ mod tests {
             (200.0..=520.0).contains(&title_col),
             "title column is bounded, not stretched across the row (was {title_col})"
         );
-        // Regression guard: the album is pulled well left of the old
-        // right-hugging position (`right - 320`) that left the cavern.
         assert!(
             cols.album_x < right - 380.0,
             "album is not bunched against the right edge (album {})",

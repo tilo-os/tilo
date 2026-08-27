@@ -1,68 +1,45 @@
 //! Per-identity workspace ACL — the filesystem enforcement point.
 //!
-//! The coherence architecture (`docs/coherence-architecture.md` §2)
-//! makes the FUSE driver *the* enforcement point for file access:
+//! The FUSE driver is *the* enforcement point for file access: every
+//! open/read/write is checked against the workspace ACL keyed on
+//! **identity** (a 32-byte public key, [`qos_user_identity`]'s key space),
+//! not Unix mode bits, which stay a compatibility veneer. [`QuickFS`](crate::QuickFS)
+//! is bound to one identity per mount and, once an ACL is attached, checks
+//! every access against it.
 //!
-//! > Every open/read/write is checked against the workspace ACL keyed on
-//! > *identity*, not archaic mode bits. Unix mode bits are a
-//! > **synthesized compatibility veneer** … the app runs as the user,
-//! > the *fs* enforces per-identity policy.
-//!
-//! This module is that ACL. It maps an **identity** (a 32-byte public
-//! key — the same key space as [`qos_user_identity`] device/user keys)
-//! to the paths it may read and/or write. [`QuickFS`](crate::QuickFS)
-//! is bound to one identity per mount (the session's identity) and, when
-//! an ACL is attached, checks every `open`/`read`/`write` against it.
-//!
-//! **Fail closed.** An identity has an access on a path only if some
-//! entry explicitly grants it. No matching entry ⇒ denied. A mount with
-//! *no* ACL attached keeps the pre-existing behaviour (the Unix veneer
-//! only) so unshared single-user mounts are unaffected — the ACL is the
-//! opt-in enforcement layer, and once attached it is authoritative.
+//! **Fail closed.** An identity has access only if some entry explicitly
+//! grants it; no matching entry means denied. A mount with no ACL attached
+//! keeps the Unix-veneer-only behaviour, so unshared single-user mounts are
+//! unaffected — the ACL is opt-in, and once attached it is authoritative.
 //!
 //! # Capabilities are the source of truth
 //!
-//! The system's one permission vocabulary is
-//! [`collab_types::CapOverride`] — `(subject × scope × verb)` plus an
-//! expiry. [`WorkspaceAcl::from_capabilities`] binds a capability list
-//! to a mount, and from then on every `permits` call for that identity
-//! is answered by [`collab_types::decide_capability`] itself. Nothing is
-//! re-derived here: path containment is [`collab_types::path_covers`],
-//! expiry is [`collab_types::Expiry`], and the deny-bias (a `Restrict`
-//! beats a `Grant`) is the capability model's, not a second copy of it.
-//! A path readable through the fs but not through the compositor — or
-//! the reverse — would be a bug, so there is exactly one implementation.
+//! The system's one permission vocabulary is [`collab_types::CapOverride`]
+//! — `(subject × scope × verb)` plus an expiry. [`WorkspaceAcl::from_capabilities`]
+//! binds a capability list to a mount, and every `permits` call for that
+//! identity from then on is answered by [`collab_types::decide_capability`]
+//! itself: path containment, expiry and deny-bias are the capability
+//! model's, never re-derived here, so a path readable through the fs but
+//! not through the compositor (or the reverse) can't happen from drift.
 //!
-//! The [`AclEntry`] list remains for direct, capability-free grants
-//! (tests and callers that already hold a resolved answer). Entries are
-//! unconditional: they union with, and cannot be narrowed by, a bound
-//! capability list.
+//! [`AclEntry`] remains for direct, capability-free grants (tests and
+//! callers that already hold a resolved answer). Entries union with, and
+//! cannot be narrowed by, a bound capability list.
 //!
 //! # Visibility: a denial is an absence
 //!
 //! [`WorkspaceAcl::permits`] answers "may this identity do this?".
-//! [`WorkspaceAcl::visible`] answers the different question the
-//! filesystem needs first: **is this path part of the view this identity
-//! sees at all?**
-//!
-//! A path is in the view if the identity may read it, or if it is an
-//! ancestor of something the identity may read — an ancestor has to
-//! exist or the grant beneath it is unreachable. Everything else is
-//! absent, and [`crate::QuickFS`] reports it as absent rather than as
-//! refused: it does not appear in a directory listing, and a lookup for
-//! it answers `ENOENT`.
-//!
-//! The distinction matters because `EACCES` is a state most software
-//! handles by crashing or by nagging the user, while "the directory
-//! contains these three files" is a state every program handles
-//! correctly. Presenting a denial as an absence turns the permission
-//! system into something applications cannot argue with, and stops
-//! training users to click through prompts.
+//! [`WorkspaceAcl::visible`] answers what the filesystem needs first: is
+//! this path part of the view this identity sees at all? A path is in the
+//! view if the identity may read it, or is an ancestor of something it may
+//! read (the ancestor has to exist or the grant beneath it is
+//! unreachable). Everything else is absent — [`crate::QuickFS`] omits it
+//! from a directory listing and answers `ENOENT`, not `EACCES`, because an
+//! absence is a state every program already handles correctly.
 //!
 //! Ancestor visibility is decided by asking the *real* decision function
 //! about the granted path itself, so a `Restrict` that removes a grant
-//! also removes the visibility of the directories that led to it. There
-//! is no second, more permissive notion of "readable" here.
+//! also removes the visibility of the directories that led to it.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -119,17 +96,12 @@ struct CapBinding {
     actor: Actor,
     /// The capabilities, verbatim — grants, restrictions and expiries.
     caps: Vec<CapOverride>,
-    /// The instant capability expiry is evaluated at.
-    ///
-    /// `None` ⇒ read the system clock on every check, so an
-    /// [`collab_types::Expiry::AtUnix`] actually expires part-way through
-    /// a long-lived mount. `Some(t)` ⇒ evaluate every check at `t`,
-    /// which makes a decision reproducible (and is what tests use).
-    ///
-    /// Note this is *not* `decide_capability`'s `now: None`, which skips
-    /// expiry evaluation entirely — that is right for the wire validator
-    /// (two peers share no clock) and wrong here, where skipping it would
-    /// silently make every expired capability immortal.
+    /// The instant capability expiry is evaluated at. `None` reads the
+    /// system clock on every check, so an [`collab_types::Expiry::AtUnix`]
+    /// actually expires mid-mount; `Some(t)` pins every check to `t`, for
+    /// reproducible tests. Distinct from `decide_capability`'s `now: None`,
+    /// which skips expiry entirely (right for the wire validator, wrong
+    /// here — it would make every expired capability immortal).
     fixed_now: Option<u64>,
 }
 
@@ -140,11 +112,9 @@ impl CapBinding {
     }
 
     /// [`Self::permits`] asked on behalf of `actor` rather than the actor this
-    /// binding was created for.
-    ///
-    /// The capability list is the *workspace's* — it names every subject the
-    /// workspace has granted anything to — so asking it about somebody else is
-    /// reading the same list, not inventing a second policy.
+    /// binding was created for — the capability list is the *workspace's*,
+    /// so asking about somebody else is reading the same list, not
+    /// inventing a second policy.
     fn permits_as(&self, actor: &Actor, path: &str, access: Access) -> bool {
         let required = match access {
             Access::Read => Verb::Read,
@@ -159,13 +129,10 @@ impl CapBinding {
         ) == CapDecision::Allow
     }
 
-    /// The paths this binding's *grants* nominate for reading.
-    ///
-    /// Candidates only — a nomination is not a decision. They are the
-    /// paths worth asking [`Self::permits`] about when deciding whether
-    /// some ancestor directory has to exist, which is why a `Restrict`
-    /// is not consulted here: it can never introduce a path, only take
-    /// one away, and it takes it away in `permits`.
+    /// The paths this binding's *grants* nominate for reading. Candidates
+    /// only, worth asking [`Self::permits`] about when deciding whether an
+    /// ancestor directory has to exist — a `Restrict` is not consulted
+    /// here since it can only take a path away, and it does that in `permits`.
     fn read_nominations(&self) -> impl Iterator<Item = &str> {
         self.read_nominations_for(&self.actor)
     }
@@ -187,11 +154,9 @@ impl CapBinding {
 }
 
 /// The actor a **remote** identity is evaluated as: its own person principal
-/// and nothing else.
-///
-/// The principals a mount proves for *itself* — the rooms it is in, the app it
-/// runs as, a bearer token it presented — are statements about this machine.
-/// Lending them to whoever dials in would let any peer inherit the mount's
+/// and nothing else. The principals a mount proves for itself (rooms, app
+/// identity, bearer tokens) are statements about this machine — lending
+/// them to whoever dials in would let any peer inherit the mount's
 /// authority, so a peer is only ever the key it authenticated with.
 fn peer_actor(peer: &IdentityKey) -> Actor {
     let key = Ed25519PublicKey(*peer);
@@ -232,26 +197,24 @@ pub struct WorkspaceAcl {
 impl WorkspaceAcl {
     /// Bind `identity`'s capabilities to this ACL.
     ///
-    /// `caps` is the workspace's whole capability list — pass it
-    /// unfiltered. Capabilities whose subject does not cover the actor,
-    /// whose scope is not a [`collab_types::Scope::FsPath`], or which
-    /// have expired are ignored by the decision itself; pre-filtering
-    /// here would only risk dropping a `Restrict` that must still bite.
+    /// `caps` is the workspace's whole capability list, passed unfiltered:
+    /// capabilities that don't cover the actor, aren't an
+    /// [`collab_types::Scope::FsPath`], or have expired are ignored by the
+    /// decision itself — pre-filtering here would risk dropping a
+    /// `Restrict` that must still bite.
     ///
-    /// `subject_principals` are the principals the mount can prove it is
-    /// *besides* its own person id (the rooms it is in, the app it runs
-    /// as, any bearer token it presented). The person principal derived
-    /// from `identity` is always included.
+    /// `subject_principals` are principals the mount can prove besides its
+    /// own person id (rooms, app identity, bearer tokens); the person
+    /// principal derived from `identity` is always included.
     ///
-    /// `now` is seconds since the Unix epoch: `None` uses the live system
-    /// clock at each check (the production choice — expiries must bite
-    /// during a long mount), `Some(t)` pins every check to `t`.
+    /// `now` is seconds since the Unix epoch: `None` uses the live clock
+    /// (expiries must bite during a long mount), `Some(t)` pins every
+    /// check to `t`.
     ///
-    /// The actor deliberately holds **no role**. A role never authorises
-    /// a path — [`collab_types::role_base_applies`] returns `false` for
-    /// [`collab_types::ResourceRef::FsPath`], so even an Owner reaches
-    /// the filesystem only through an explicit capability. Handing the
-    /// actor a role here would be inert at best and misleading at worst.
+    /// The actor deliberately holds **no role**: a role never authorises a
+    /// path ([`collab_types::role_base_applies`] returns `false` for
+    /// [`collab_types::ResourceRef::FsPath`]), so even an Owner reaches the
+    /// filesystem only through an explicit capability.
     pub fn from_capabilities(
         identity: IdentityKey,
         caps: &[CapOverride],
@@ -263,11 +226,10 @@ impl WorkspaceAcl {
         acl
     }
 
-    /// Bind another identity's capabilities into an existing ACL.
-    ///
-    /// Each binding answers only for its own identity, so binding several
-    /// is safe — but note [`crate::QuickFS`] serves a single identity per
-    /// mount, so only one binding is ever consulted by a live mount.
+    /// Bind another identity's capabilities into an existing ACL. Each
+    /// binding answers only for its own identity, so binding several is
+    /// safe — though [`crate::QuickFS`] serves a single identity per mount,
+    /// so only one binding is ever consulted by a live mount.
     pub fn bind_capabilities(
         &mut self,
         identity: IdentityKey,
@@ -353,16 +315,12 @@ impl WorkspaceAcl {
             .collect()
     }
 
-    /// Does `identity` hold `access` on `path`?
-    ///
-    /// Fail-closed: returns `true` only if a direct entry for this
-    /// identity whose prefix covers `path` grants the requested access,
-    /// or a bound capability list decides
-    /// [`collab_types::CapDecision::Allow`] for it.
-    ///
+    /// Does `identity` hold `access` on `path`? Fail-closed: `true` only if
+    /// a direct entry whose prefix covers `path` grants the access, or a
+    /// bound capability list decides [`collab_types::CapDecision::Allow`].
     /// Path containment is [`collab_types::path_covers`] on both routes —
     /// the same function the capability model matches
-    /// [`collab_types::Scope::FsPath`] with. There is no second prefix
+    /// [`collab_types::Scope::FsPath`] with, so there's no second prefix
     /// rule to drift out of step with.
     pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
         let direct = self.entries.iter().any(|e| {
@@ -380,14 +338,13 @@ impl WorkspaceAcl {
                 .any(|b| &b.identity == identity && b.permits(path, access))
     }
 
-    /// Does the **remote** identity `peer` hold `access` on `path`?
-    ///
-    /// The network counterpart of [`Self::permits`], which answers only for
-    /// the identity this mount bound and so says `false` for every peer —
-    /// fail-closed, but it also refuses everyone. Same list, same
-    /// [`collab_types::decide_capability`], same deny-bias; only the actor
-    /// differs, and for a peer it is [`peer_actor`]. A binding *for* the peer
-    /// keeps its own actor, so a mount asking about itself gets one answer
+    /// Does the **remote** identity `peer` hold `access` on `path`? The
+    /// network counterpart of [`Self::permits`] (which says `false` for
+    /// every peer, since it only answers for the mount's own identity).
+    /// Same list, same [`collab_types::decide_capability`], same
+    /// deny-bias; only the actor differs, and for a peer it is
+    /// [`peer_actor`] — unless a binding exists *for* that peer, which
+    /// keeps its own actor so a mount asking about itself gets one answer
     /// either way.
     pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
         let direct = self.entries.iter().any(|e| {
@@ -407,17 +364,13 @@ impl WorkspaceAcl {
         }
     }
 
-    /// Does `peer` hold a read grant on *anything* in this workspace?
-    ///
-    /// The admission question, and deliberately the coarsest one: it is what
-    /// the sync and content planes can answer before they know which path a
-    /// request will turn out to concern. A peer that reads nothing here is a
-    /// stranger, and a stranger is served nothing at all — not the namespace
-    /// document, not a blob.
-    ///
-    /// A grant is only a candidate until the decision function confirms it, so
-    /// a `Restrict` that empties a peer's grants makes this `false` as surely
-    /// as never granting anything did.
+    /// Does `peer` hold a read grant on *anything* in this workspace? The
+    /// admission question, deliberately the coarsest one: it's what the
+    /// sync and content planes can answer before they know which path a
+    /// request will concern. A peer that reads nothing here is a stranger,
+    /// served nothing at all — not the namespace document, not a blob. A
+    /// `Restrict` that empties a peer's grants makes this `false` just as
+    /// surely as never granting anything did.
     pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
         let direct = self.entries.iter().any(|e| &e.identity == peer && e.read);
         direct || {
@@ -430,22 +383,17 @@ impl WorkspaceAcl {
         }
     }
 
-    /// Is `path` part of the view `identity` sees?
-    ///
-    /// True when the identity may read `path`, or when `path` is an
-    /// ancestor of a path it may read — a granted subtree that cannot be
-    /// walked to is not granted at all. False for everything else, and
-    /// "false" is what [`crate::QuickFS`] turns into `ENOENT` and into an
-    /// omitted directory entry.
-    ///
-    /// The mount root is always visible. An identity that holds nothing
-    /// therefore sees an ordinary empty directory — the state every
-    /// program already handles — rather than a mount that errors.
+    /// Is `path` part of the view `identity` sees? True when the identity
+    /// may read `path`, or `path` is an ancestor of a path it may read (a
+    /// granted subtree that can't be walked to isn't granted at all).
+    /// False for everything else — [`crate::QuickFS`] turns that into
+    /// `ENOENT` and an omitted directory entry. The mount root is always
+    /// visible, so an identity holding nothing sees an empty directory
+    /// rather than an erroring mount.
     ///
     /// Ancestry is decided against the *granted* paths, each re-checked
-    /// through [`Self::permits`]. A `Restrict` that removes the grant
-    /// removes the ancestors with it, so a restriction cannot leave
-    /// behind a trail of empty directories pointing at what it hid.
+    /// through [`Self::permits`], so a `Restrict` that removes a grant
+    /// removes its ancestors' visibility too.
     pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
         if path == "/" {
             return true;
@@ -470,21 +418,15 @@ impl WorkspaceAcl {
     }
 }
 
-/// The ACL a live mount enforces, in a form that can be replaced while
-/// the mount is up.
-///
-/// A [`WorkspaceAcl`] is a snapshot of a decision. Handing that snapshot
-/// to [`crate::QuickFS`] by value made the mount's policy fixed at mount
-/// time: a capability granted (or revoked) a minute later did not reach
-/// the filesystem until the next remount, so the recorded grant and the
-/// enforced grant disagreed for as long as the mount lived. That is the
-/// same class of bug the capability model exists to prevent, only with
-/// the drift in time rather than in vocabulary.
-///
-/// So the mount holds a handle, and whoever owns the policy source —
-/// [`crate::CapabilityFile`] in production — swaps the contents under it.
-/// Reads take the lock per access; a `RwLock` read is uncontended in the
-/// steady state and is dwarfed by the FUSE round-trip it sits inside.
+/// The ACL a live mount enforces, in a form that can be replaced while the
+/// mount is up. Handing a [`WorkspaceAcl`] snapshot to [`crate::QuickFS`]
+/// by value would fix the mount's policy at mount time — a capability
+/// granted or revoked later wouldn't reach the filesystem until remount,
+/// the same class of drift bug the capability model exists to prevent. So
+/// the mount holds a handle, and whoever owns the policy source
+/// ([`crate::CapabilityFile`] in production) swaps the contents under it;
+/// a `RwLock` read is uncontended in the steady state and dwarfed by the
+/// FUSE round-trip it sits inside.
 #[derive(Clone, Debug)]
 pub struct AclHandle(Arc<RwLock<WorkspaceAcl>>);
 
@@ -516,11 +458,9 @@ impl AclHandle {
     }
 
     /// Does `peer` read anything here, per the ACL bound *right now*?
-    /// Delegates to [`WorkspaceAcl::reads_anything`].
-    ///
-    /// Read live rather than captured at connect time so a revocation reaches
-    /// the network plane on the next request, the same way it already reaches
-    /// the FUSE plane on the next `open`.
+    /// Delegates to [`WorkspaceAcl::reads_anything`]. Read live rather than
+    /// captured at connect time so a revocation reaches the network plane
+    /// on the next request, same as it already reaches FUSE on the next `open`.
     pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
         match self.0.read() {
             Ok(acl) => acl.reads_anything(peer),
@@ -529,13 +469,10 @@ impl AclHandle {
     }
 
     /// Is `path` part of the view `identity` sees, per the ACL bound
-    /// *right now*? Delegates to [`WorkspaceAcl::visible`].
-    ///
-    /// Visibility has to be read through the same live handle as
-    /// [`Self::permits`], not from a snapshot taken at mount time: a
-    /// revocation that stops permitting a path but keeps listing it turns
-    /// denial back into a signal, which is exactly what deciding both
-    /// against one bound ACL prevents.
+    /// *right now*? Delegates to [`WorkspaceAcl::visible`]. Must read
+    /// through the same live handle as [`Self::permits`], not a snapshot —
+    /// otherwise a revocation could stop permitting a path while still
+    /// listing it, turning denial back into a signal.
     pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
         // Fail closed on a poisoned lock, as `permits` does — an
         // unvouched-for ACL must hide, not reveal.
@@ -760,17 +697,11 @@ mod tests {
         assert!(!acl.visible(&ALICE, "/w/docs"));
     }
 
-    // A `Restrict` narrows what may be done, never what may be seen:
-    // every verb implies `Read`, so no restriction can take reading away
-    // (see `decide_actor`). A restricted subtree therefore stays in the
-    // view and becomes read-only.
-    //
-    // The consequence is worth stating, because it is what makes the
-    // filtered view safe to write into: **inside a writable subtree,
-    // nothing is hidden.** A capability cannot produce a name that is
-    // absent from the listing but present in the tree, so an app that
-    // holds write on a directory cannot discover a hidden sibling by
-    // trying to create it.
+    // A `Restrict` narrows what may be done, never what may be seen: every
+    // verb implies `Read`, so a restricted subtree stays visible and
+    // becomes read-only. That's what makes the filtered view safe to
+    // write into — inside a writable subtree, nothing is hidden, so an
+    // app can't discover a hidden sibling by trying to create it.
     #[test]
     fn a_restriction_narrows_writing_without_hiding_anything() {
         use collab_types::{Effect, Scope, Subject, Verb};

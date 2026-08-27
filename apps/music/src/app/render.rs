@@ -4,6 +4,12 @@
 //! (large) rendering surface. Everything here draws straight into the Vello
 //! scene and registers click `Hit`s for the event handler.
 
+// Draw helpers take independent geometry/style parameters (rect, color, text,
+// weight, …) a caller picks per call site; grouping them into a struct would
+// relocate the same fields across this file's ~90+ call sites without
+// reducing complexity.
+#![allow(clippy::too_many_arguments)]
+
 use super::*;
 
 use vello::kurbo::Shape;
@@ -297,13 +303,15 @@ impl Widget for MusicApp {
                 },
                 ..Default::default()
             })
-            .unwrap();
+            .expect("a leaf on a fresh taffy tree");
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy
+            .layout(node)
+            .expect("apply_layout runs against the same tree + node build_layout returned");
         self.rect = Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
@@ -619,7 +627,7 @@ fn frac_in(r: Rect, x: f64) -> f64 {
 }
 
 impl MusicApp {
-    pub(crate) fn hit_test(&self, p: Point) -> Option<Action> {
+    pub(super) fn hit_test(&self, p: Point) -> Option<Action> {
         for h in self.hits.iter().rev() {
             if h.rect.contains(p) {
                 return Some(h.action.clone());
@@ -641,7 +649,7 @@ impl MusicApp {
         state: &mut AutoCommit,
     ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.new_leaf(Style::default()).expect("a leaf on a fresh taffy tree");
         let mut handled = false;
         let mut focus_target = None;
         self.search_input.handle_event(
@@ -658,8 +666,6 @@ impl MusicApp {
         handled
     }
 
-    /// Whether the current detail view is a real (live) artist/album page whose
-    /// content hasn't landed yet — so its loading skeleton must keep animating.
     /// Whether the Home page is genuinely still loading — a fetch is in flight
     /// and hasn't come back (nor failed). The single source of truth for the
     /// Home skeleton *and* the animation loop, so a failed/offline fetch stops
@@ -668,6 +674,8 @@ impl MusicApp {
         self.home_requested && self.home.is_none() && !self.home_failed
     }
 
+    /// Whether the current detail view is a real (live) artist/album page whose
+    /// content hasn't landed yet — so its loading skeleton must keep animating.
     fn detail_loading(&self) -> bool {
         match &self.view {
             View::Artist(id) => is_live_id(id) && !self.artist_pages.contains_key(id) && !self.lib.artists.contains_key(id) && !self.failed_pages.contains(id),
@@ -828,10 +836,10 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        if let Some((_, at)) = &self.toast {
-            if at.elapsed().as_secs_f32() > 2.6 {
-                self.toast = None;
-            }
+        if let Some((_, at)) = &self.toast
+            && at.elapsed().as_secs_f32() > 2.6
+        {
+            self.toast = None;
         }
 
         // Advance the adaptive sidebar drawer: tick eases the reveal off a real
@@ -1037,7 +1045,6 @@ impl MusicApp {
         scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn nav_row(
         &mut self,
         scene: &mut Scene,
@@ -1185,8 +1192,7 @@ impl MusicApp {
         y += 46.0;
 
         // Real YouTube-Music content when it has landed.
-        if self.home.is_some() {
-            let home = self.home.take().unwrap();
+        if let Some(home) = self.home.take() {
             for section in &home.sections {
                 y = self.section_label(scene, t, tr, c, body, y, &section.title);
                 y = self.draw_home_section(scene, t, tr, c, body, y, section);
@@ -1278,7 +1284,7 @@ impl MusicApp {
 
         // Subtext, wrapped + centred to a comfortable measure.
         let sub = "Search for a song, album or artist. Everything you play collects here — in sync across your devices.";
-        let maxw = (body.width() - 56.0).min(440.0).max(180.0);
+        let maxw = (body.width() - 56.0).clamp(180.0, 440.0);
         let mut cur = String::new();
         let mut lines: Vec<String> = Vec::new();
         for w in sub.split_whitespace() {
@@ -1524,13 +1530,11 @@ impl MusicApp {
 
     // ---- track table ------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
     /// The unified track-row table used by album, Liked Songs, Downloads **and**
     /// playlist detail — so every list shares one row look: the now-playing
     /// equalizer, like + download controls, and duration. Passing
     /// `playlist = Some(id)` additionally binds the right-click menu to that
     /// playlist and shows reorder (up/down) + remove affordances on hover.
-    #[allow(clippy::too_many_arguments)]
     fn draw_track_table(
         &mut self,
         scene: &mut Scene,
@@ -1618,22 +1622,22 @@ impl MusicApp {
                 }
 
                 // Playlist reorder (up/down) + remove, on hover only.
-                if let Some(pl) = playlist {
-                    if hovered {
-                        if i > 0 {
-                            let uc = Point::new(pl_up_x, y + row_h / 2.0);
-                            let uh = self.push_hit(square_around(uc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i - 1 });
-                            draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
-                        }
-                        if i + 1 < n {
-                            let dc = Point::new(pl_dn_x, y + row_h / 2.0);
-                            let dh = self.push_hit(square_around(dc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i + 1 });
-                            draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
-                        }
-                        let rc = Point::new(pl_rm_x, y + row_h / 2.0);
-                        let rh = self.push_hit(square_around(rc, 24.0), Action::RemoveFromPlaylist { playlist: pl.to_string(), track: tk.id.clone() });
-                        draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
+                if let Some(pl) = playlist
+                    && hovered
+                {
+                    if i > 0 {
+                        let uc = Point::new(pl_up_x, y + row_h / 2.0);
+                        let uh = self.push_hit(square_around(uc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i - 1 });
+                        draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
                     }
+                    if i + 1 < n {
+                        let dc = Point::new(pl_dn_x, y + row_h / 2.0);
+                        let dh = self.push_hit(square_around(dc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i + 1 });
+                        draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
+                    }
+                    let rc = Point::new(pl_rm_x, y + row_h / 2.0);
+                    let rh = self.push_hit(square_around(rc, 24.0), Action::RemoveFromPlaylist { playlist: pl.to_string(), track: tk.id.clone() });
+                    draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
                 }
 
                 // Like toggle (heart) just left of the download control.
@@ -1706,13 +1710,11 @@ impl MusicApp {
         y
     }
 
-    /// Track rows for a playlist detail: like the standard table but each row
-    /// carries reorder (up/down) + remove affordances bound to the playlist,
-    /// and a right-click opens the track context menu in this playlist's
-    /// context.
-    #[allow(clippy::too_many_arguments)]
     // ---- detail pages -----------------------------------------------------
 
+    /// The shared header for an album/artist/playlist detail page: cover or
+    /// avatar, kind label, title, subtitle, and the Play/Shuffle + optional
+    /// library/follow buttons.
     fn draw_detail_header(
         &mut self,
         scene: &mut Scene,
@@ -1933,7 +1935,7 @@ impl MusicApp {
             let genre = ar.map(|a| a.genre.clone()).unwrap_or_default();
             let listeners = ar.map(|a| a.monthly_listeners).unwrap_or(0);
             let mut top: Vec<&crate::model::Track> = self.lib.tracks.values().filter(|tk| tk.artist_id == id).collect();
-            top.sort_by(|a, b| b.plays.cmp(&a.plays));
+            top.sort_by_key(|tk| std::cmp::Reverse(tk.plays));
             let top_ids: Vec<String> = top.iter().take(5).map(|tk| tk.id.clone()).collect();
             let albums = self.gather_albums_for_artist(id);
             (name, genre, listeners, top_ids, albums)
@@ -2204,7 +2206,7 @@ impl MusicApp {
         if let Some(cur) = self.pb.current.clone() {
             draw_text(tr, scene, t, "Now playing", body.x0 + pad, y, 15.0, c.dim, TextWeight::Semibold, None);
             y += 28.0;
-            let row = self.gather_tracks(&[cur.clone()]);
+            let row = self.gather_tracks(std::slice::from_ref(&cur));
             if let Some(tk) = row.first() {
                 let rr = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
                 fill_rrect(scene, t, rr, 10.0, c.accent.multiply_alpha(0.12));
@@ -2230,7 +2232,6 @@ impl MusicApp {
         y2
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_track_rows_with_offset(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, rows: &[TrackDisp], full_queue: &[String], offset: usize) -> f64 {
         let pad = 28.0;
         let left = body.x0 + pad;
@@ -2567,50 +2568,50 @@ impl MusicApp {
     /// (so offline / `--shots` still surface songs, albums, artists & playlists).
     fn gather_search_results(&mut self, q: &str) -> SearchResultsView {
         // Live bundle takes precedence when it's for this exact query.
-        if let Some((bq, bundle)) = &self.live_bundle {
-            if bq.trim() == q {
-                let songs: Vec<String> = bundle
-                    .tracks
-                    .iter()
-                    .map(|h| format!("yt:{}", h.video_id))
-                    .collect();
-                let albums: Vec<AlbumDisp> = bundle
-                    .albums
-                    .iter()
-                    .map(|a| AlbumDisp {
-                        id: a.id.clone(),
-                        title: a.title.clone(),
-                        artist: a.artist.clone(),
-                        year: a.year,
-                        queue: Vec::new(),
-                    })
-                    .collect();
-                let artists: Vec<ArtistDisp> = bundle
-                    .artists
-                    .iter()
-                    .map(|a| ArtistDisp {
-                        id: a.id.clone(),
-                        name: a.name.clone(),
-                        genre: if a.subscriber_count > 0 {
-                            format!("{} subscribers", ui::format::compact_count(a.subscriber_count))
-                        } else {
-                            "Artist".into()
-                        },
-                        listeners: a.subscriber_count,
-                    })
-                    .collect();
-                let playlists: Vec<ResultPlaylist> = bundle
-                    .playlists
-                    .iter()
-                    .map(|p| ResultPlaylist {
-                        id: p.id.clone(),
-                        title: p.title.clone(),
-                        subtitle: p.subtitle.clone(),
-                    })
-                    .collect();
-                let top = bundle.top.as_ref().map(|t| self.hero_of(t));
-                return SearchResultsView { songs, albums, artists, playlists, top, live: true };
-            }
+        if let Some((bq, bundle)) = &self.live_bundle
+            && bq.trim() == q
+        {
+            let songs: Vec<String> = bundle
+                .tracks
+                .iter()
+                .map(|h| format!("yt:{}", h.video_id))
+                .collect();
+            let albums: Vec<AlbumDisp> = bundle
+                .albums
+                .iter()
+                .map(|a| AlbumDisp {
+                    id: a.id.clone(),
+                    title: a.title.clone(),
+                    artist: a.artist.clone(),
+                    year: a.year,
+                    queue: Vec::new(),
+                })
+                .collect();
+            let artists: Vec<ArtistDisp> = bundle
+                .artists
+                .iter()
+                .map(|a| ArtistDisp {
+                    id: a.id.clone(),
+                    name: a.name.clone(),
+                    genre: if a.subscriber_count > 0 {
+                        format!("{} subscribers", ui::format::compact_count(a.subscriber_count))
+                    } else {
+                        "Artist".into()
+                    },
+                    listeners: a.subscriber_count,
+                })
+                .collect();
+            let playlists: Vec<ResultPlaylist> = bundle
+                .playlists
+                .iter()
+                .map(|p| ResultPlaylist {
+                    id: p.id.clone(),
+                    title: p.title.clone(),
+                    subtitle: p.subtitle.clone(),
+                })
+                .collect();
+            let top = bundle.top.as_ref().map(|t| self.hero_of(t));
+            return SearchResultsView { songs, albums, artists, playlists, top, live: true };
         }
 
         // Local fallback: the sample library search (tracks/albums/artists) plus

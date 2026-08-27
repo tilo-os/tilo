@@ -156,10 +156,10 @@ fn avc_config_from_moov(data: &[u8], moov: (usize, usize)) -> Option<H264Config>
                 // VisualSampleEntry has a fixed 78-byte prefix before its child
                 // boxes (SampleEntry 8 + VisualSampleEntry 70).
                 let children = (entry.payload.0 + 78, entry.payload.1);
-                if let Some(avcc) = child(data, children, b"avcC") {
-                    if let Some(cfg) = parse_avcc(data.get(avcc.0..avcc.1)?) {
-                        return Some(cfg);
-                    }
+                if let Some(avcc) = child(data, children, b"avcC")
+                    && let Some(cfg) = parse_avcc(data.get(avcc.0..avcc.1)?)
+                {
+                    return Some(cfg);
                 }
             }
         }

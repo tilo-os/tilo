@@ -12,8 +12,8 @@
 //! decoded RGBA frames, while `playbin` routes any **audio** to the system sink
 //! automatically. Frames are pulled on the worker's playback thread — never the
 //! UI thread — and handed to the UI as toolkit-free `RGBA8` bytes
-//! ([`crate::api::DecodedFrame`]), exactly like the old decoder did, so the
-//! [`crate::widgets::VideoSurface`] paint path is unchanged.
+//! ([`crate::api::DecodedFrame`]), the same shape [`crate::playback`] produces,
+//! so the [`crate::widgets::VideoSurface`] paint path is unchanged.
 //!
 //! The appsink runs with `sync=true`, so pulled frames are already paced to the
 //! stream's presentation timestamps (real-time playback) — no hand-rolled

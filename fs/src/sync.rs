@@ -103,12 +103,10 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
     Ok((endpoint, lookup))
 }
 
-/// Bind an endpoint under a freshly-generated key.
-///
-/// **The node id is different on every call**, so nothing durable may be
-/// keyed on it: authorship recorded under it is anonymous, and an access
-/// grant naming it is dead as soon as the process exits. Only for tests and
-/// throwaway probes — a real mount binds with
+/// Bind an endpoint under a freshly-generated key. **The node id is
+/// different on every call**, so nothing durable may be keyed on it: an
+/// access grant naming it is dead as soon as the process exits. Only for
+/// tests and throwaway probes — a real mount binds with
 /// [`bind_endpoint_with_key`] so its identity is the device's.
 pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
@@ -163,14 +161,10 @@ pub async fn sync_with_peer(
 }
 
 /// The policy the network planes serve through, or `None` for an unenforced
-/// mount.
-///
-/// `None` is the same opt-out [`crate::QuickFS`] already has: a mount brought
-/// up without `--acl` states no policy, and inventing one here would deny a
-/// single-user workspace its own devices. `fs.service` passes `--acl`.
-///
-/// The handle is live, so a revocation lands on the next connection rather
-/// than at the next remount.
+/// mount — the same opt-out [`crate::QuickFS`] has: a mount without `--acl`
+/// states no policy, and inventing one here would deny a single-user
+/// workspace its own devices (`fs.service` passes `--acl`). The handle is
+/// live, so a revocation lands on the next connection, not the next remount.
 pub type PeerPolicy = Option<AclHandle>;
 
 /// Does `peer` hold a read grant on *anything* in this workspace?
@@ -191,16 +185,13 @@ fn identity_of(id: iroh::EndpointId) -> IdentityKey {
     *id.as_bytes()
 }
 
-/// Serves the current namespace document to bootstrapping peers.
-///
-/// The document is the whole workspace's metadata, so who may fetch it is an
-/// access-control decision and not a transport detail. Denial is an absence,
-/// exactly as on the FUSE path: a stranger cannot tell a refusal from a host
-/// that is not serving.
-///
-/// Admission is all-or-nothing — an admitted peer receives the entire
-/// document, naming paths it cannot read. Serving a per-peer projection is a
-/// change to what the CRDT replicates, not a check that belongs here.
+/// Serves the current namespace document to bootstrapping peers. Who may
+/// fetch it is an access-control decision, not a transport detail — denial
+/// is an absence, exactly as on the FUSE path: a stranger cannot tell a
+/// refusal from a host that is not serving. Admission is all-or-nothing:
+/// an admitted peer receives the entire document, naming paths it cannot
+/// read; a per-peer projection would be a change to what the CRDT
+/// replicates, not a check that belongs here.
 #[derive(Clone)]
 struct SyncProtocol {
     namespace: Arc<Mutex<Namespace>>,
@@ -215,24 +206,22 @@ impl std::fmt::Debug for SyncProtocol {
 
 impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        // Decided before a stream is accepted: the noise handshake has already
-        // bound this connection to a key, so the caller's identity is known
-        // here and is the only thing worth deciding on.
+        // Decided before a stream is accepted: the noise handshake already
+        // bound this connection to a key, so the caller's identity is known.
         let peer = identity_of(connection.remote_id());
         if !peer_may_read_anything(&self.policy, &peer) {
             eprintln!(
                 "qos-fs-sync: refusing {} — it reads nothing in this workspace",
                 connection.remote_id()
             );
-            // No frame, no error code, no mode byte read: the peer sees a
-            // connection that closed, which is what a host that is not hosting
-            // would also give it.
+            // No frame, no error code: the peer sees a closed connection,
+            // same as a host that isn't hosting would give it.
             connection.close(0u32.into(), b"");
             return Ok(());
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
-        // Bound the exchange so a client that opens a stream but never sends
-        // (or never closes) can't leak an accept task / connection forever.
+        // Bounded so a client that opens a stream but never sends/closes
+        // can't leak an accept task or connection forever.
         let exchange = async {
             let mut mode = [0u8; 1];
             recv.read_exact(&mut mode).await.map_err(AcceptError::from_err)?;
@@ -278,11 +267,9 @@ impl ProtocolHandler for SyncProtocol {
 }
 
 /// The connect-time verdict for a blob-plane caller, and the identity to
-/// remember for the requests that ride the connection.
-///
-/// A `None` endpoint id means the transport could not name the caller: refuse,
-/// because an unnamed caller cannot be checked and serving it would be serving
-/// whoever happens to arrive that way.
+/// remember for the requests that ride the connection. A `None` endpoint id
+/// means the transport couldn't name the caller: refuse, since an unnamed
+/// caller can't be checked and serving it would serve whoever arrives that way.
 fn admit_blob_caller(
     policy: &PeerPolicy,
     endpoint_id: Option<iroh::EndpointId>,
@@ -302,19 +289,15 @@ fn admit_blob_caller(
 }
 
 /// Build the request interceptor iroh-blobs consults before it serves
-/// anything, or `None` for an unenforced mount.
-///
-/// `BlobsProtocol::new(store, None)` serves every blob in the store to anyone
-/// who knows its hash. The [`EventSender`](iroh_blobs::provider::events::EventSender)
-/// is the protocol's only interception point, so an identity check has to go
-/// here; nothing later still knows who is asking.
-///
-/// Only the connect event names the peer — a request event carries a
-/// connection id — so the identity is recorded at connect and looked up per
-/// request. Pushes are refused outright: this is a *read* plane, content
-/// arrives through the FUSE write path where the write side of the capability
-/// model is enforced, and a store that accepted pushed blobs would be taking
-/// writes past it.
+/// anything, or `None` for an unenforced mount. `BlobsProtocol::new(store,
+/// None)` serves every blob to anyone who knows its hash, and the
+/// [`EventSender`](iroh_blobs::provider::events::EventSender) is the
+/// protocol's only interception point, so the identity check has to go
+/// here — nothing later still knows who is asking. Only the connect event
+/// names the peer (a request event carries just a connection id), so
+/// identity is recorded at connect and looked up per request. Pushes are
+/// refused outright: this is a *read* plane, content arrives through the
+/// FUSE write path where the capability model's write side is enforced.
 fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventSender> {
     use iroh_blobs::provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
@@ -604,9 +587,9 @@ async fn pump_loop(
     }
 }
 
-/// Periodic anti-entropy + conflict resolution. Pulls each known peer's full
-/// document and merges it (recovering from dropped gossip or a mid-join
-/// window), then materializes conflict copies for any concurrent content edits.
+/// Periodic anti-entropy + conflict resolution: pulls each known peer's
+/// changes to recover from dropped gossip or a mid-join window, then
+/// materializes conflict copies for concurrent content edits.
 async fn reconcile_loop(
     endpoint: Endpoint,
     namespace: Arc<Mutex<Namespace>>,
