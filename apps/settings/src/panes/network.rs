@@ -62,10 +62,9 @@ fn password_key(ssid: &str) -> String {
 
 /// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
 /// bar level. These are the same MDI `wifi-strength-*` family the sidebar's
-/// Network icon draws, so they render as real signal arcs. The previous
-/// Unicode block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and
-/// fell back to a `.notdef` tofu box, which read as broken and conveyed no
-/// signal level.
+/// Network icon draws, so they render as real signal arcs. Unicode
+/// block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and fall
+/// back to a `.notdef` tofu box — do not substitute those here.
 fn wifi_signal_glyph(signal: u8) -> &'static str {
     match signal {
         0 => "\u{f092b}", // wifi-strength-outline (no bars)
@@ -196,7 +195,7 @@ impl Default for NetworkPane {
 
 impl NetworkPane {
     pub fn new() -> Self {
-        let lister: NetworkLister = Arc::new(|| os_actions::list_wifi_networks());
+        let lister: NetworkLister = Arc::new(os_actions::list_wifi_networks);
         let networks = lister().unwrap_or_default();
         let initial_wifi = os_actions::get_wifi().unwrap_or(true);
         let wired = os_actions::get_wired().unwrap_or_default();
@@ -236,7 +235,7 @@ impl NetworkPane {
             networks,
             wired: WiredInfo::default(),
             vpns: Vec::new(),
-            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
+            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             needs_seed: true,
@@ -259,7 +258,7 @@ impl NetworkPane {
             networks,
             wired: WiredInfo::default(),
             vpns: Vec::new(),
-            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
+            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
             needs_seed: true,
@@ -504,14 +503,12 @@ impl Widget for NetworkPane {
                     WIFI_ENABLED_KEY,
                     automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
                 );
-            } else {
+            } else if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY)
+                && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            {
                 // Adopt the existing value so the dispatcher-change guard
                 // doesn't re-fire `set_wifi` on the first post-rebuild sync.
-                if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY) {
-                    if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                        self.last_wifi_enabled = *b;
-                    }
-                }
+                self.last_wifi_enabled = *b;
             }
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             // Seed the expansion mirror from the field so a pre-expanded
@@ -534,16 +531,14 @@ impl Widget for NetworkPane {
         }
 
         // Wi-Fi toggle.
-        if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    if *b != self.last_wifi_enabled {
-                        self.last_wifi_enabled = *b;
-                        if let Err(e) = self.dispatcher.set_wifi(*b) {
-                            warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
-                        }
-                    }
-                }
+        if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_wifi_enabled
+        {
+            self.last_wifi_enabled = *b;
+            if let Err(e) = self.dispatcher.set_wifi(*b) {
+                warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
             }
         }
 
@@ -652,12 +647,11 @@ impl Widget for NetworkPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -686,22 +680,21 @@ impl Widget for NetworkPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

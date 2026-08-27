@@ -300,24 +300,23 @@ impl Widget for SettingsApp {
         // In `--shots` there is no event loop to type into the field, so a
         // pre-seeded query (via `with_search_shot`) is spliced into the object
         // once so the field visibly shows the query it filtered by.
-        if !self.search_query.is_empty() {
-            if let Ok(existing) = state.text(&search_obj) {
-                if existing.is_empty() {
-                    let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
-                }
-            }
+        if !self.search_query.is_empty()
+            && let Ok(existing) = state.text(&search_obj)
+            && existing.is_empty()
+        {
+            let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
         }
 
         // Search query: the header's search field writes `settings.search`.
         // A changed value updates the filter and swaps the shell's (filtered)
         // nav list, then flags a rebuild. The field re-reads the same key on
         // its own `sync`, so the query text survives the rebuild.
-        if let Some(q) = read_search(state, path) {
-            if q != self.search_query {
-                self.search_query = q;
-                self.structure_dirty = true;
-                self.refresh_shell_children();
-            }
+        if let Some(q) = read_search(state, path)
+            && q != self.search_query
+        {
+            self.search_query = q;
+            self.structure_dirty = true;
+            self.refresh_shell_children();
         }
 
         if let Some(shell) = &mut self.shell {
@@ -336,7 +335,7 @@ impl Widget for SettingsApp {
         if self.shell.is_none() {
             self.shell = Some(self.build_shell());
         }
-        let shell = self.shell.as_mut().unwrap();
+        let shell = self.shell.as_mut().expect("just set above");
         let shell_node = shell.build_layout(taffy, theme, node_map);
 
         let style = taffy::Style {
@@ -366,10 +365,10 @@ impl Widget for SettingsApp {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
-        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell) {
-            if let Some(&shell_node) = children.first() {
-                shell.apply_layout(taffy, shell_node, origin);
-            }
+        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
+            && let Some(&shell_node) = children.first()
+        {
+            shell.apply_layout(taffy, shell_node, origin);
         }
     }
 
@@ -412,13 +411,13 @@ impl Widget for SettingsApp {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell) {
-            if let Some(&shell_node) = children.first() {
-                shell.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, shell_node,
-                    taffy,
-                );
-            }
+        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell)
+            && let Some(&shell_node) = children.first()
+        {
+            shell.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, shell_node,
+                taffy,
+            );
         }
     }
 
