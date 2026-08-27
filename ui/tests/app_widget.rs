@@ -67,6 +67,5 @@ fn app_widget_is_object_safe_and_upcasts_to_widget() {
 
 #[test]
 fn app_kind_covers_spec_variants() {
-    // Must match spec §7 exactly.
     let _ = [AppKind::Terminal, AppKind::Files, AppKind::Editor, AppKind::Browser, AppKind::Settings];
 }

@@ -4,22 +4,18 @@
 //! [`DocumentViewport`]).
 //!
 //! Each widget owns its own **track geometry** (bars live on different
-//! edges / insets and leave different corners free) and its own
-//! **authoritative offset**; this module turns a `(track, metrics,
-//! cursor)` triple into a thumb rect, a drag delta, or a page step so
-//! the *behaviour* stays byte-for-byte identical everywhere:
+//! edges/insets) and its own **authoritative offset**; this module turns a
+//! `(track, metrics, cursor)` triple into a thumb rect, a drag delta, or a
+//! page step so the *behaviour* stays byte-for-byte identical everywhere —
+//! pressing the thumb anchors `(cursor, offset)` and a subsequent move maps
+//! the cursor delta onto the content range (clamped to `[0, max_scroll]`);
+//! pressing the track pages the view by [`PAGE_FRACTION`] of a viewport;
+//! hover reports whether the pointer is over the thumb so the owner can
+//! brighten it.
 //!
-//! - **Thumb drag** — pressing the thumb anchors `(cursor, offset)`; a
-//!   subsequent move maps the cursor delta onto the content range so the
-//!   content tracks the thumb (clamped to `[0, max_scroll]`).
-//! - **Track paging** — pressing the track above/left (or below/right) of
-//!   the thumb pages the view by [`PAGE_FRACTION`] of a viewport.
-//! - **Hover** — reports whether the pointer is over the thumb so the
-//!   owner can brighten it.
-//!
-//! The model holds only ephemeral interaction state (a drag anchor +
-//! hover flag). It is deliberately axis-scoped: a widget that scrolls on
-//! both axes owns two [`Scrollbar`]s.
+//! The model holds only ephemeral interaction state (a drag anchor + hover
+//! flag) and is deliberately axis-scoped: a widget that scrolls on both
+//! axes owns two [`Scrollbar`]s.
 //!
 //! [`Scrollable`]: crate::widget::Scrollable
 //! [`DataTable`]: crate::widget::data_table::DataTable

@@ -1,29 +1,20 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers.
 //!
-//! Inspectors across the system apps (font size, line spacing, opacity,
-//! margins, …) all show the same control: a number you can nudge with
-//! `−` / `+` buttons *or* click and type directly, always parsed,
-//! validated and clamped to a range. Before this widget every app
-//! hand-rolled it; `NumberInput` is the shared primitive they drop in.
+//! A number you can nudge with `−`/`+` buttons or click and type
+//! directly; always parsed, validated and clamped to a range. Before this
+//! widget every inspector (font size, line spacing, opacity, margins, …)
+//! hand-rolled it.
 //!
-//! Composition: two stepper buttons flank an embedded local-mode
-//! [`TextInput`] that holds the editable text. Clicking the field focuses
-//! it (with the value pre-selected, so the first keystroke replaces it);
-//! typing edits freely; pressing **Enter**, clicking a stepper, clicking
-//! outside the field, or blurring the widget **commits** — the text is
-//! parsed (leading number, so a trailing unit like `px` is tolerated),
-//! clamped to `[min, max]`, and written back. Invalid text reverts to the
-//! last good value.
+//! Two stepper buttons flank an embedded local-mode [`TextInput`].
+//! Clicking the field focuses and pre-selects it; **Enter**, a stepper
+//! click, a click outside, or blur all **commit** — parsing the leading
+//! number (tolerating a trailing unit like `px`), clamping to
+//! `[min, max]`, and reverting invalid text to the last good value.
 //!
-//! Integration seams, mirroring the rest of the toolkit:
-//!   * [`value`](NumberInput::value) — read the current number.
-//!   * [`take_changed`](NumberInput::take_changed) — poll for a committed
-//!     user change (retained-mode apps), draining the record.
-//!   * [`set_value`](NumberInput::set_value) — push a value in
-//!     programmatically (no change reported — the app is the source).
-//!   * [`with_on_change_path`](NumberInput::with_on_change_path) — optional
-//!     CRDT binding: the committed value is stored as an Automerge `F64`
-//!     and re-read on `sync`, exactly like [`Slider`](crate::widget::Slider).
+//! [`take_changed`](NumberInput::take_changed) polls a committed user
+//! change; [`set_value`](NumberInput::set_value) pushes one in silently;
+//! [`with_on_change_path`](NumberInput::with_on_change_path) optionally
+//! binds the value to a CRDT `F64`, like [`Slider`](crate::widget::Slider).
 
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
 use vello::Scene;
@@ -235,12 +226,10 @@ impl NumberInput {
         self.value.round() as i64
     }
 
-    /// Push a value in programmatically (e.g. an inspector re-pointing the
-    /// field at a newly-selected object's property). Clamps and re-formats
-    /// the display, but does NOT report a change through
-    /// [`take_changed`](NumberInput::take_changed) or write the CRDT — the
-    /// app is the source here, not the user. Mirrors
-    /// [`TextInput::set_text`](crate::widget::TextInput::set_text).
+    /// Push a value in programmatically. Clamps and re-formats the
+    /// display, but does NOT report a change through
+    /// [`take_changed`](NumberInput::take_changed) or write the CRDT.
+    /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
     pub fn set_value(&mut self, v: f64) {
         self.value = v.clamp(self.min, self.max);
         self.sync_field();
@@ -281,13 +270,12 @@ impl NumberInput {
         self.field.set_text(&t);
     }
 
-    /// Commit whatever is currently typed in the field: parse the leading
-    /// number, clamp, and adopt it. Records a change (and a pending CRDT
-    /// write) only when the value actually moved. Always re-syncs the
-    /// display so invalid / out-of-range text snaps back to the canonical
-    /// value. Does NOT itself touch the CRDT (no `state` here); the caller
-    /// flushes via [`flush_crdt`](NumberInput::flush_crdt) or the next
-    /// `sync`.
+    /// Commit whatever is typed: parse the leading number, clamp, adopt
+    /// it. Records a change (and pending CRDT write) only when the value
+    /// actually moved; always re-syncs the display so invalid/out-of-range
+    /// text snaps back. Does not touch the CRDT itself (no `state` here)
+    /// — the caller flushes via [`flush_crdt`](NumberInput::flush_crdt) or
+    /// the next `sync`.
     fn commit_local(&mut self) {
         if let Some(parsed) = parse_leading_number(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
@@ -314,11 +302,9 @@ impl NumberInput {
         self.sync_field();
     }
 
-    /// Position the control at an externally-computed `rect`, without a taffy
-    /// node. Lets a host that lays itself out imperatively (e.g. a slides / docs
-    /// inspector row) drop a `NumberInput` in and drive it directly — the
-    /// mirror of [`TextInput::apply_layout_external`]. Computes the same stepper
-    /// + field sub-rects `apply_layout` does.
+    /// Position the control at an externally-computed `rect`, without a
+    /// taffy node — the mirror of [`TextInput::apply_layout_external`].
+    /// Computes the same sub-rects `apply_layout` does.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
@@ -577,11 +563,9 @@ impl Widget for NumberInput {
     fn set_focus(&mut self, focused: bool) {
         if focused {
             // Route focus into the embedded field so it's immediately
-            // editable — whether it arrived via a click in the field, a
-            // stepper press, or keyboard Tab. A *click in the field*
-            // additionally pre-selects the value so the first keystroke
-            // replaces it (standard numeric-field UX); focus arriving any
-            // other way leaves the caret where it is.
+            // editable, however it arrived. A click in the field also
+            // pre-selects the value so the first keystroke replaces it;
+            // focus arriving any other way leaves the caret where it is.
             let via_field_click = self.field_focus_pending;
             self.field_focus_pending = false;
             self.is_focused = true;

@@ -177,7 +177,6 @@ impl Chart {
         self
     }
 
-    /// Replace the series after construction.
     pub fn set_series(&mut self, series: Vec<Series>) {
         self.series = series;
     }
@@ -429,7 +428,6 @@ impl Sparkline {
         self
     }
 
-    /// Replace the data after construction.
     pub fn set_data(&mut self, data: Vec<f32>) {
         self.data = data;
     }

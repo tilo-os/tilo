@@ -3,18 +3,15 @@ use vello::peniko::Color;
 /// One step of the elevation ramp — a complete description of a drop
 /// shadow, and the **only** description a surface is allowed to use.
 ///
-/// - `offset_y` — how far the shadow sits below the surface. Held at a
-///   quarter of `blur` all the way up the ramp. An offset that is large
-///   against the blur makes the lower edge far denser than the sides, and
-///   the shadow stops reading as depth and starts reading as a dark bar
-///   parked under one edge.
-/// - `blur` — a CSS-style blur radius. [`crate::surface::shadow`] halves
-///   it to get the Gaussian's standard deviation, so the falloff dies out
-///   about `1.25 * blur` past the surface's own outline.
-/// - `color` — hue **and strength**. The alpha is the shadow's opacity and
-///   it is honoured. It is not a decorative field for a painter to drop on
-///   the floor: doing exactly that is how the quick-settings panel came to
-///   render a 43 %-black token as a 100 %-black smear.
+/// - `offset_y` — how far the shadow sits below the surface, held at a
+///   quarter of `blur` all the way up the ramp; larger and the shadow
+///   reads as a dark bar under one edge rather than depth.
+/// - `blur` — a CSS-style blur radius; [`crate::surface::shadow`] halves
+///   it for the Gaussian's standard deviation, so falloff dies out about
+///   `1.25 * blur` past the surface's outline.
+/// - `color` — hue **and strength**. Alpha is honoured, not decorative:
+///   dropping it is how the quick-settings panel once rendered a
+///   43%-black token as a 100%-black smear.
 #[derive(Clone, Copy, Debug)]
 pub struct Shadow { pub offset_y: f32, pub blur: f32, pub color: Color }
 
@@ -25,26 +22,17 @@ impl Default for Elevation {
     fn default() -> Self {
         let c = |a: u8| Color::from_rgba8(0, 0, 0, a);
         Self {
-            // The ramp is `blur` doubling-ish with `offset_y = blur / 4`
-            // and an alpha that grows far more slowly than the blur does.
+            // `blur` roughly doubles each rung with `offset_y = blur / 4` — a
+            // third-of-blur offset would shove the falloff almost entirely
+            // to the bottom, seven times denser there than beside.
             //
-            // Both of those are corrections. The ramp used to reach
-            // `{ offset_y: 8, blur: 24, alpha: 110 }` at `e4`, and a panel
-            // wearing it put a 24 px skirt around itself that was seven
-            // times denser under its bottom edge than beside it — the
-            // offset was a third of the blur, so the falloff was shoved
-            // almost entirely to one side. A shadow reads as depth only
-            // while it is close to even; past that it reads as a
-            // rectangle drawn slightly wrong.
-            //
-            // Alpha is deliberately low. A drop shadow is a secondary cue
-            // here: a floating surface is separated first by its own
-            // ground (`chrome::shell::panel_ground`) and its edge
-            // (`chrome::shell::panel_border`), and on the high-contrast
-            // palette — black chrome on a black desktop — a black shadow
-            // contributes nothing at all and the edge is doing the entire
-            // job. Elevation that has to be *strong* to work is elevation
-            // compensating for a surface that does not separate.
+            // Alpha grows far more slowly than blur and stays low: a
+            // floating surface is separated first by its own ground
+            // (`panel_ground`) and edge (`panel_border`) — on the
+            // high-contrast palette a black shadow on a black desktop
+            // contributes nothing, the edge does the job. Elevation that
+            // must be *strong* to work is compensating for a surface that
+            // doesn't separate.
             e0: Shadow { offset_y: 0.0, blur: 0.0, color: c(0) },
             e1: Shadow { offset_y: 1.0, blur: 4.0, color: c(24) },
             e2: Shadow { offset_y: 2.0, blur: 8.0, color: c(32) },
@@ -63,14 +51,7 @@ impl Default for Elevation {
 mod tests {
     use super::*;
 
-    /// Every rung of the drop-shadow ramp keeps `offset_y` at a quarter of
-    /// `blur`.
-    ///
-    /// This is the invariant that keeps a shadow even. When the offset
-    /// grows relative to the blur, the Gaussian slides off one side: the
-    /// bottom edge darkens, the top edge disappears, and the surface
-    /// stops looking lifted and starts looking like it has a bar under
-    /// it. Pinned so a future retune has to move both numbers together.
+    /// Pinned so a future retune has to move `offset_y` and `blur` together.
     #[test]
     fn offset_stays_a_quarter_of_blur() {
         let e = Elevation::default();
@@ -86,15 +67,9 @@ mod tests {
         }
     }
 
-    /// The ramp rises monotonically in both blur and opacity, and stays
-    /// subtle at the top.
-    ///
-    /// The ceiling is the point. `e4` is what a floating panel wears, and
-    /// a panel is separated by its ground and its edge before a shadow is
-    /// consulted at all. An `e4` alpha above ~0.25 is the regime the
-    /// 2026-08 report called "way, way too large"; the value that drew
-    /// that report composited at 1.0 because the painter discarded this
-    /// field entirely.
+    /// The ramp rises monotonically in blur and opacity, staying subtle at
+    /// the top — `e4`'s alpha above ~0.25 is the regression this guards
+    /// against: a painter discarding the alpha field entirely composites at 1.0.
     #[test]
     fn ramp_rises_and_stays_subtle() {
         let e = Elevation::default();

@@ -1,15 +1,8 @@
 //! Heuristic Caps-Lock detection.
 //!
-//! **What winit provides.** winit 0.30's [`winit::event::Modifiers`] (and the
-//! underlying `ModifiersState`) only report the *held* modifier keys —
-//! `SHIFT`, `CONTROL`, `ALT` and `SUPER`. There is deliberately **no**
-//! lock-state bit: `ModifiersState` cannot tell you whether Caps Lock (or
-//! Num Lock) is currently engaged. Winit treats lock keys as ordinary keys
-//! and folds their effect into the resolved character, so the only signal
-//! available to a cross-platform app is the *character that was produced*.
-//!
-//! **The heuristic.** We infer the lock state from each typed letter and the
-//! Shift state that accompanied it:
+//! winit's `ModifiersState` reports only held modifiers (SHIFT/CONTROL/ALT/
+//! SUPER) — no lock-state bit, so Caps Lock can't be read directly. We infer
+//! it from each typed letter and the Shift state that produced it:
 //!
 //! | typed letter | Shift held | conclusion      |
 //! |--------------|------------|-----------------|
@@ -18,11 +11,8 @@
 //! | lower (`a`)  | yes        | Caps Lock **on**  (Shift inverts the lock) |
 //! | lower (`a`)  | no         | Caps Lock **off** |
 //!
-//! Non-alphabetic input (digits, punctuation, whitespace) carries no Caps
-//! Lock signal and leaves the estimate unchanged. This is the standard
-//! approach login screens use when the windowing layer can't report the
-//! lock directly; it's correct the moment the user types their first
-//! letter, which on a password field is immediately.
+//! Non-alphabetic input leaves the estimate unchanged. Standard approach for
+//! login screens; correct from the user's first typed letter.
 
 /// A running estimate of whether Caps Lock is engaged, inferred from typed
 /// letters. Cheap to copy and to keep alive; update it by feeding each typed
@@ -48,22 +38,14 @@ impl CapsLockEstimate {
         self.on
     }
 
-    /// Fold a single typed character (and whether Shift was held when it was
-    /// produced) into the estimate. Returns the updated [`on`](Self::on)
-    /// state. Non-ASCII-alphabetic characters leave the estimate unchanged
-    /// (and return the prior state).
-    ///
-    /// Only the *first* char of a key's text matters for the signal, but
-    /// callers may pass each char; the result is order-independent for a
-    /// run typed under one Shift state.
+    /// Returns the updated [`on`](Self::on) state; non-ASCII-alphabetic
+    /// characters leave it unchanged. Result is order-independent for a
+    /// run typed under one Shift state, so callers may pass every char.
     pub fn observe(&mut self, ch: char, shift: bool) -> bool {
+        // See the module-level truth table.
         if ch.is_ascii_uppercase() {
-            // An uppercase glyph with Shift up means the lock supplied the
-            // case; with Shift down the Shift supplied it (lock off).
             self.on = !shift;
         } else if ch.is_ascii_lowercase() {
-            // A lowercase glyph while Shift is held means the lock is on and
-            // Shift inverted it; lowercase with Shift up means lock off.
             self.on = shift;
         }
         self.on
@@ -98,7 +80,6 @@ mod tests {
     #[test]
     fn uppercase_with_shift_means_off() {
         let mut c = CapsLockEstimate::new();
-        // Seed "on", then prove a Shift+upper clears it.
         c.observe('A', false);
         assert!(c.on());
         assert!(!c.observe('B', true));
@@ -107,7 +88,6 @@ mod tests {
 
     #[test]
     fn lowercase_with_shift_means_on() {
-        // Caps Lock on + Shift held yields a lowercase glyph.
         let mut c = CapsLockEstimate::new();
         assert!(c.observe('a', true));
         assert!(c.on());
@@ -116,8 +96,8 @@ mod tests {
     #[test]
     fn lowercase_without_shift_means_off() {
         let mut c = CapsLockEstimate::new();
-        c.observe('A', false); // on
-        assert!(!c.observe('b', false)); // normal typing clears it
+        c.observe('A', false);
+        assert!(!c.observe('b', false));
         assert!(!c.on());
     }
 
@@ -126,7 +106,6 @@ mod tests {
         let mut c = CapsLockEstimate::new();
         c.observe('A', false);
         assert!(c.on(), "precondition: on");
-        // Digits / punctuation / space carry no signal.
         for ch in ['1', '!', ' ', '-', '\n'] {
             assert!(c.observe(ch, false), "non-alpha must not flip {ch:?}");
         }
@@ -136,9 +115,9 @@ mod tests {
     #[test]
     fn observe_text_folds_a_run() {
         let mut c = CapsLockEstimate::new();
-        c.observe_text("HELLO", false); // all-caps, no shift => on
+        c.observe_text("HELLO", false);
         assert!(c.on());
-        c.observe_text("world", false); // normal => off
+        c.observe_text("world", false);
         assert!(!c.on());
     }
 }

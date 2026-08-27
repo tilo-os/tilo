@@ -1,18 +1,10 @@
 //! `TreeView` — hierarchical list. One row per visible node, indented by
-//! depth; branch nodes carry an expand/collapse glyph that toggles their
-//! children's visibility. Selection and focus are tracked separately so
-//! arrow-key navigation can move the focus ring without committing a
-//! selection until the user explicitly chooses (Enter or click on the row
-//! label, vs. clicking the disclosure glyph).
+//! depth; branch nodes carry an expand/collapse glyph. Selection and focus
+//! are tracked separately so arrow-key navigation can move the focus ring
+//! without committing a selection until the user explicitly chooses.
 //!
-//! Spec: `docs/superpowers/plans/2026-05-22-quick-ui-widget-expansion.md`
-//! Unit 15.
-//!
-//! State lives entirely on the widget — the tree is a static `TreeNode<T>`
-//! shape owned by the caller and the per-row UI state (which IDs are
-//! expanded, which is selected/focused) is ephemeral display sugar. The
-//! `on_select` callback is the canonical way to persist the user's choice
-//! into a CRDT slot owned by the caller.
+//! Expand/select/focus state lives on the widget; `on_select` is how the
+//! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,14 +22,8 @@ use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::Widget;
 
-/// Stable identifier for a node in the source tree. Callers assign these
-/// so the `on_select` callback can be matched against the source data
-/// without the widget needing to know about the caller's identity scheme.
 pub type NodeId = u64;
 
-/// One node in the source tree. Leaves carry an empty `children` vec;
-/// branches carry one or more children. `data` is opaque payload that
-/// the caller stores on each node; the widget never inspects it.
 pub struct TreeNode<T> {
     pub id: NodeId,
     pub label: String,
@@ -46,7 +32,6 @@ pub struct TreeNode<T> {
 }
 
 impl<T> TreeNode<T> {
-    /// Construct a leaf — no children, can never be expanded.
     pub fn leaf(id: NodeId, label: impl Into<String>, data: T) -> Self {
         Self {
             id,
@@ -56,9 +41,8 @@ impl<T> TreeNode<T> {
         }
     }
 
-    /// Construct a branch with the given children. A branch with zero
-    /// children is permitted (e.g. an empty folder) and still renders
-    /// the disclosure glyph so the caller can populate it later.
+    /// A branch with zero children still renders the disclosure glyph,
+    /// so callers can populate it (e.g. an empty folder) later.
     pub fn branch(
         id: NodeId,
         label: impl Into<String>,
@@ -73,9 +57,6 @@ impl<T> TreeNode<T> {
         }
     }
 
-    /// True iff this node has at least one direct child. Used by the
-    /// draw pass to decide whether to paint the disclosure glyph and by
-    /// `handle_event` to filter ArrowRight/Left toggles.
     fn is_branch(&self) -> bool {
         !self.children.is_empty()
     }
@@ -87,27 +68,16 @@ pub struct TreeView<T> {
     selected: Option<NodeId>,
     focused: Option<NodeId>,
     on_select: Option<Box<dyn FnMut(NodeId)>>,
-    /// Per-visible-row hit rects populated in `apply_layout`. Each entry
-    /// is `(id, full_row_rect)` — the disclosure glyph occupies the left
-    /// portion of the row; clicks inside that sub-rect trigger
-    /// `toggle_expand` instead of `select`.
+    /// Full-row rects; the left `DISCLOSURE_WIDTH` sub-rect toggles
+    /// expand instead of selecting.
     row_rects: Vec<(NodeId, Rect)>,
     rect: Rect,
     is_focused: bool,
-    /// Last logical pointer position observed by `handle_event`. Used to
-    /// hit-test the next `MouseInput::Pressed`. `None` until the first
-    /// `CursorMoved` arrives.
     last_cursor: Option<Point>,
 }
 
-/// Width of the disclosure glyph hit area on the left of each branch
-/// row. Picked to match the default `▶`/`▼` glyph metrics at the theme
-/// `sm` text scale plus a small padding margin. Also used as the
-/// horizontal indent unit for the click hit-test (the draw pass uses
-/// `theme.tokens.spacing.s4 == 16.0` which matches).
+/// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
 const DISCLOSURE_WIDTH: f64 = 16.0;
-/// Vertical height of each row in px. The text baseline sits centred in
-/// this band at the theme's `sm` scale.
 const ROW_HEIGHT: f64 = 22.0;
 
 impl<T> TreeView<T> {
@@ -125,24 +95,15 @@ impl<T> TreeView<T> {
         }
     }
 
-    /// Install a callback that fires whenever a row is selected — either
-    /// by click or by the public `select` API. The callback receives the
-    /// `NodeId` of the row.
     pub fn on_select<F: FnMut(NodeId) + 'static>(mut self, f: F) -> Self {
         self.on_select = Some(Box::new(f));
         self
     }
 
-    /// True iff `id` is currently expanded. Leaves always return `false`
-    /// because they're never added to the expanded set.
     pub fn is_expanded(&self, id: NodeId) -> bool {
         self.expanded.contains(&id)
     }
 
-    /// Flip the expanded state for `id`. Has no effect on leaves —
-    /// expanding a leaf would be a no-op anyway since `visible_rows`
-    /// only descends into nodes that *have* children, but we still
-    /// keep the set tight by refusing to insert non-branch ids.
     pub fn toggle_expand(&mut self, id: NodeId) {
         if !Self::find_node(&self.root, id)
             .map(TreeNode::is_branch)
@@ -155,10 +116,8 @@ impl<T> TreeView<T> {
         }
     }
 
-    /// Mark `id` as the selected row and fire `on_select`. The widget
-    /// does *not* check that `id` is currently visible — collapsing a
-    /// parent doesn't clear the selection, so the caller can rely on
-    /// `selected()` reflecting their last explicit choice.
+    /// Does not require `id` to be visible: collapsing a parent doesn't
+    /// clear the selection.
     pub fn select(&mut self, id: NodeId) {
         self.selected = Some(id);
         if let Some(cb) = self.on_select.as_mut() {
@@ -174,10 +133,8 @@ impl<T> TreeView<T> {
         self.focused
     }
 
-    /// Snapshot of the currently visible rows, in draw order. Each
-    /// entry is `(id, label, depth)`; depth is 0 for the root, 1 for
-    /// its children, etc. A node is visible if every ancestor in its
-    /// chain is in the expanded set (the root is always visible).
+    /// `(id, label, depth)`, depth 0 = root; a node is visible only if
+    /// every ancestor is in the expanded set.
     pub fn visible_rows(&self) -> Vec<(NodeId, &str, usize)> {
         let mut out = Vec::new();
         Self::collect_visible(&self.root, 0, &self.expanded, &mut out);
@@ -198,8 +155,6 @@ impl<T> TreeView<T> {
         }
     }
 
-    /// Walk the tree looking for the node whose id matches. Returns
-    /// `None` for unknown ids.
     fn find_node(node: &TreeNode<T>, id: NodeId) -> Option<&TreeNode<T>> {
         if node.id == id {
             return Some(node);
@@ -212,9 +167,6 @@ impl<T> TreeView<T> {
         None
     }
 
-    /// Index of `id` in the current visible-rows list, or `None` if
-    /// it's not visible. Used by ArrowDown/Up to step through the
-    /// flattened view.
     fn visible_index_of(&self, id: NodeId) -> Option<usize> {
         self.visible_rows().iter().position(|(nid, _, _)| *nid == id)
     }
@@ -257,8 +209,6 @@ impl<T: 'static> Widget for TreeView<T> {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        // Lay out one full-width row per visible node so click hit-tests
-        // can address every row by id.
         let rows = self.visible_rows();
         self.row_rects = rows
             .iter()
@@ -284,7 +234,6 @@ impl<T: 'static> Widget for TreeView<T> {
         let indent_px = tokens.spacing.s4 as f64;
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
 
-        // Background fill so the rows blend with the shell surface.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -294,8 +243,7 @@ impl<T: 'static> Widget for TreeView<T> {
         );
 
         let rows = self.visible_rows();
-        // Pre-compute branch-status lookup to avoid walking the tree
-        // per row inside the loop.
+        // Avoids a per-row tree walk inside the loop below.
         let mut is_branch_map: HashMap<NodeId, bool> = HashMap::new();
         for (id, _, _) in &rows {
             if let Some(n) = Self::find_node(&self.root, *id) {
@@ -386,10 +334,8 @@ impl<T: 'static> Widget for TreeView<T> {
             } => {
                 let Some(pt) = self.last_cursor else { return };
                 let rows = self.visible_rows();
-                // Collect (id, depth) before mutating self via `select`/
-                // `toggle_expand` — the visible_rows borrow holds a
-                // shared reference into `self.root.label` which would
-                // conflict with the mutation below.
+                // Snapshot before mutating via select/toggle_expand below:
+                // `rows` borrows `self.root` and would conflict otherwise.
                 let snapshots: Vec<(NodeId, usize)> =
                     rows.iter().map(|(id, _, depth)| (*id, *depth)).collect();
                 for (i, (id, depth)) in snapshots.iter().enumerate() {
@@ -481,11 +427,9 @@ impl<T: 'static> Widget for TreeView<T> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Rows are drawn (not child widgets), so the Tree is the single
-        // accessible container. We surface the *selected* row's label as
-        // `value` so an AT announces the current choice. Labels are runtime
-        // strings (host-provided node names), not FTL keys → no `i18n!` wrap.
-        // No intrinsic label on the tree → name None.
+        // Rows are drawn, not child widgets, so the Tree is the single
+        // accessible container. Labels are runtime strings (host-provided
+        // node names), not FTL keys, so no `i18n!` wrap.
         let value = self
             .selected
             .and_then(|id| Self::find_node(&self.root, id))
@@ -498,8 +442,6 @@ impl<T: 'static> Widget for TreeView<T> {
                 disabled: !self.is_enabled(),
                 ..Default::default()
             });
-        // Surface the selected row's ordinal among the visible rows and its
-        // depth, so the reader can say "3 of 7, level 2".
         if let Some(sel) = self.selected {
             let rows = self.visible_rows();
             if let Some(idx) = rows.iter().position(|(id, _, _)| *id == sel) {
@@ -590,7 +532,6 @@ mod tests {
     #[test]
     fn tree_view_expand_node_shows_children() {
         let mut view = TreeView::new(sample_tree());
-        // Pre-condition: only the root is visible.
         let rows = view.visible_rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, 1);
@@ -610,17 +551,12 @@ mod tests {
         let mut view = TreeView::new(sample_tree()).on_select(move |id| {
             *captured_clone.borrow_mut() = Some(id);
         });
-        // Expand the root so child rows lay out.
         view.toggle_expand(1);
 
-        // Drive layout: we wrap the leaf in a parent with a fixed width
-        // *and* set the leaf's container to fill that width via the
-        // build_layout result. Taffy's `auto` width on a leaf inside a
-        // block container will collapse to zero with `MAX_CONTENT` —
-        // mirror the host's behaviour by giving the parent a fixed
-        // width and then patching `view.rect` to span the parent's
-        // width manually before `apply_layout` runs. The simplest path
-        // is to override `view.rect` and `view.row_rects` after layout.
+        // Taffy's `auto` width on a leaf inside a block container collapses
+        // to zero under `MAX_CONTENT`, so wrap it in a fixed-width parent
+        // and patch `view.rect`/`row_rects` manually rather than trust
+        // `apply_layout`'s width.
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -640,11 +576,6 @@ mod tests {
             .compute_layout(root_taffy, taffy::Size::MAX_CONTENT)
             .unwrap();
         view.apply_layout(&taffy, node, Point::ZERO);
-        // Patch the host rect/row_rects so the click hit-test has a
-        // non-zero-width target. `apply_layout` may collapse `auto`
-        // width to 0 depending on the parent's available space — the
-        // production caller would always supply a fixed parent width,
-        // but the test wraps the leaf directly so we widen it here.
         view.rect = Rect::new(0.0, 0.0, 200.0, view.visible_rows().len() as f64 * ROW_HEIGHT);
         view.row_rects = view
             .visible_rows()
@@ -657,8 +588,6 @@ mod tests {
             })
             .collect();
 
-        // The second visible row is child1 (id = 2). Click in its label
-        // region (past the depth-1 indent + disclosure column).
         assert!(view.row_rects.len() >= 2);
         let (target_id, target_rect) = view.row_rects[1];
         assert_eq!(target_id, 2);
@@ -679,7 +608,6 @@ mod tests {
     #[test]
     fn tree_view_arrow_right_expands_focused_node() {
         let mut view = TreeView::new(sample_tree());
-        // Focus the root branch and ensure it's collapsed.
         view.focused = Some(1);
         assert!(!view.is_expanded(1));
 
@@ -692,7 +620,6 @@ mod tests {
     fn tree_view_arrow_down_moves_focus_to_next_visible_row() {
         let mut view = TreeView::new(sample_tree());
         view.toggle_expand(1);
-        // Focus the first visible row.
         view.focused = Some(1);
 
         dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));

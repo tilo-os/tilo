@@ -129,9 +129,6 @@ impl Widget for Checkbox {
             scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
         }
         let box_color = if self.is_checked {
-            // Checked = active fill, not hover — concept uses indigo-500
-            // (`bg-indigo-500`) for the on-state and reserves indigo-600
-            // for the hover shade.
             theme.accent_primary
         } else if self.is_hovered {
             theme.bg_hover
@@ -141,7 +138,6 @@ impl Widget for Checkbox {
 
         let box_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
 
-        // Draw Box
         scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
 
         let stroke_color = if self.is_focused {
@@ -152,7 +148,6 @@ impl Widget for Checkbox {
 
         scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &box_shape);
 
-        // Draw Checkmark
         if self.is_checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(self.rect.x0 + 6.0, self.rect.y0 + 12.0));
@@ -193,7 +188,6 @@ impl Widget for Checkbox {
                 if self.is_hovered && *element_state == ElementState::Pressed {
                     *handled = true;
                     *focus_target = Some(node_id);
-                    // CRDT Mutation
                     let new_val = !self.is_checked;
                     let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
                     // Update the local cache now so accessibility() reflects the

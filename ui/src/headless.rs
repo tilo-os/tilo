@@ -1,22 +1,13 @@
 //! Driving a `ui` app without a display.
 //!
-//! `--shots` already renders an app's cold-start frame offscreen, but it
-//! builds a throwaway `State` and never delivers input, so it cannot answer
-//! the question this module exists for: *does a change the user makes
-//! survive a restart?* Answering that needs the real widget tree, the real
-//! event dispatch, and the app's real persisted document — and no window.
+//! `--shots` renders a cold-start frame offscreen but never delivers input,
+//! so it can't answer *does a change survive a restart?* [`Driver`] does:
+//! it stands up the app's real widget tree over a Taffy layout at a fixed
+//! viewport and feeds it the same `WindowEvent`s winit would, through the
+//! same [`Widget::handle_event`](crate::widget::Widget::handle_event) the
+//! live app uses — nothing stubbed, including CRDT mutations.
 //!
-//! [`Driver`] provides exactly that. It stands up the app's root widget over
-//! a Taffy tree at a fixed viewport, then feeds it the same `WindowEvent`
-//! values winit would deliver, through the same
-//! [`Widget::handle_event`](crate::widget::Widget::handle_event) the live app
-//! uses. Nothing is stubbed: a click here follows the identical path to a
-//! click on real hardware, including the CRDT mutations widgets perform on
-//! the way.
-//!
-//! # Using it from an app
-//!
-//! Apps opt in with one line in `main`, next to their `--shots` handling:
+//! Apps opt in with one line in `main`, next to `--shots`:
 //!
 //! ```ignore
 //! if let Some(spec) = ui::headless::spec_from_args(&args) {
@@ -24,17 +15,16 @@
 //! }
 //! ```
 //!
-//! which gives the binary a `--headless-drive '<json>'` flag:
+//! which adds a `--headless-drive '<json>'` flag:
 //!
 //! ```text
 //! ebook --headless-drive '{"actions":[{"click_named":"library_item[0]"}]}'
 //! ebook --headless-drive '{"dump":"/tmp/after.json"}'
 //! ```
 //!
-//! The first process makes a change and exits (flushing its store); the
-//! second loads the store and writes the document out as JSON. Comparing the
-//! two dumps is the whole persistence proof, and it is made against the
-//! app's real document rather than a harness's idea of one.
+//! The first process changes state and exits (flushing its store); the
+//! second loads the store and dumps the document as JSON. Diffing the two
+//! dumps is the persistence proof, against the app's real document.
 
 use std::collections::HashMap;
 
@@ -102,21 +92,17 @@ pub struct Driver {
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
-    /// Records this driver has open, when the app under test uses them.
-    ///
-    /// Present so a headless run edits the same documents the live app does:
-    /// without it a record-aware app would be driven against its room index
-    /// instead of the record it has checked out, and the harness would be
-    /// testing something the user never runs.
+    /// Records this driver has open, when the app under test uses them —
+    /// without this a record-aware app would be driven against its room
+    /// index instead of the record it checked out, testing something the
+    /// user never runs.
     records: Option<crate::record::RecordSet>,
     room_index: Option<automerge::AutoCommit>,
-    /// The taffy node of the widget that currently holds keyboard focus, or
-    /// `None`. Mirrors [`crate::app::App::focused_node`]: the driver manages
-    /// focus itself (Tab / directional / focus-on-click) because focus is an
-    /// App-level responsibility, not something the root widget's
-    /// `handle_event` does. Remapped across every `relayout` by scanning for
-    /// the widget whose `is_focused()` is still set (widget instances survive
-    /// a relayout; their taffy ids do not).
+    /// The taffy node holding keyboard focus, or `None`. Mirrors
+    /// [`crate::app::App::focused_node`] — focus is App-level, not
+    /// something the root widget's `handle_event` does. Remapped across
+    /// every `relayout` by scanning for `is_focused()`: widget instances
+    /// survive a relayout, their taffy ids do not.
     focused: Option<NodeId>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
@@ -195,17 +181,14 @@ impl Driver {
         }
     }
 
-    /// Re-run the app's frame: pull state from the CRDT, rebuild the Taffy
-    /// tree, compute and apply layout, and draw. Called after every action so
-    /// the next one sees where things actually moved to.
+    /// Re-run the app's frame: sync from the CRDT, rebuild Taffy, apply
+    /// layout, and draw. Called after every action so the next one sees
+    /// where things actually moved.
     ///
-    /// The draw pass is not decoration. Many widgets record the rectangles
-    /// they hit-test pointer input against *while drawing* — a click is
-    /// resolved against where the widget last painted itself. Skipping the
-    /// draw leaves those rects empty and every click silently misses, which
-    /// is exactly the kind of quietly-passing test this harness must not
-    /// produce. Nothing is rasterised: the `Scene` is encoded on the CPU and
-    /// thrown away, so no GPU or display is involved.
+    /// The draw pass isn't decoration: many widgets record their hit-test
+    /// rects while drawing, so skipping it would leave every click silently
+    /// missing — exactly the false-pass this harness must avoid. Nothing is
+    /// rasterised; the `Scene` is encoded on the CPU and discarded.
     pub fn relayout(&mut self) {
         // Records first, as `ui::App` does: an action that opened a document
         // must be editing that document by the time the next frame syncs.
@@ -287,11 +270,8 @@ impl Driver {
         }
 
         // The taffy tree was rebuilt, so the previous `focused` NodeId is
-        // stale. The widget *instances* survive (a relayout rebuilds layout,
-        // not widgets), and the focused one still reports `is_focused()`, so
-        // recover the current node by scanning the fresh node map. This keeps
-        // Tab focus + keystroke routing stable across the relayout every
-        // action triggers.
+        // stale; recover it by scanning the fresh node map for whichever
+        // widget still reports `is_focused()`.
         self.focused = self.node_map.iter().find_map(|(&n, &p)| {
             // SAFETY: same node_map contract the measure closure uses — the
             // pointers alias `self.root`, which is live and not otherwise
@@ -299,20 +279,17 @@ impl Driver {
             unsafe { (*p).is_focused() }.then_some(n)
         });
 
-        // One `relayout` is one rendered frame. Commit it (folding in any
-        // `handle_event` time banked by a preceding `send`) so the harness
-        // sees a per-frame sample. The passes ran contiguously here, so the
-        // frame total is taken as their sum.
+        // One `relayout` is one rendered frame; commit it, folding in any
+        // `handle_event` time banked by a preceding `send`.
         if let Some(p) = self.profiler.as_mut() {
             p.commit_frame_summed();
         }
     }
 
     /// The keyboard-focusable widgets in tree order — the same DFS
-    /// `crate::app::App::update_focusable_order` walks (a node is included
-    /// when `is_focusable() && is_enabled()`), so a Tab that reaches a widget
-    /// here reaches it in the live app too. Focus-trap (modal) confinement is
-    /// not modelled; a harness that needs it can filter the result.
+    /// `crate::app::App::update_focusable_order` walks, so a Tab that
+    /// reaches a widget here reaches it in the live app too. Focus-trap
+    /// (modal) confinement is not modelled.
     pub fn focus_order(&self) -> Vec<NodeId> {
         let mut order = Vec::new();
         collect_focus_order(self.child_node, self.root.as_ref(), &self.taffy, &mut order);
@@ -449,15 +426,13 @@ impl Driver {
             // Banked; folded into the frame the following `relayout` commits.
             p.record_since(crate::profiling::Pass::HandleEvent, t_event);
         }
-        // Mirror the App: a widget that claimed focus during dispatch (a
-        // click on a field / button) becomes the focused node, so subsequent
-        // keystrokes route to it.
+        // Mirror the App: a widget that claimed focus during dispatch
+        // becomes the focused node, so subsequent keystrokes route to it.
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
         // Mirror the App's idle tick: a widget that asked for a commit gets
-        // one, so undo boundaries and any commit-time CRDT writes happen the
-        // way they do live.
+        // one, so undo boundaries and commit-time CRDT writes happen live.
         if self.root.needs_commit() {
             self.state.commit_action(None, None);
             self.root.on_commit();
@@ -526,10 +501,8 @@ impl Driver {
     }
 
     /// Send one vertical wheel scroll of `(dx, dy)` line-deltas through the
-    /// production event path (`MouseWheel { LineDelta }`), then relayout — the
-    /// same three-step frame a real notch produces. Used by the perf harness's
-    /// scroll scenarios. Content scrollables handle the wheel regardless of
-    /// pointer position, so no prior cursor move is needed.
+    /// production event path. Content scrollables handle the wheel
+    /// regardless of pointer position, so no prior cursor move is needed.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         self.send(WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
@@ -672,10 +645,9 @@ fn collect_targets(
 /// Build a `WindowEvent::KeyboardInput` winit itself would have delivered.
 ///
 /// `KeyEvent::platform_specific` is `pub(crate)` in winit, so the struct
-/// cannot be built field-by-field from outside that crate. Zero-initialising
-/// and then overwriting every field we care about is the workaround the
-/// compositor's own driver already uses (`shell/src/bin/shots/driver.rs`);
-/// the zeroed platform payload is inert on the read paths widgets take.
+/// can't be built field-by-field from outside that crate. Zero-initialising
+/// and overwriting every field we care about is the same workaround the
+/// compositor's own driver uses (`shell/src/bin/shots/driver.rs`).
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
     // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
     // which on Linux is a plain `Option`-shaped struct for which an
@@ -822,11 +794,8 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
         );
         return 3;
     }
-    // An app whose root names a record keeps its content in that record's own
-    // document, so the driver has to hold the same record set the live app
-    // does — otherwise the run would edit the room index and prove nothing
-    // about what the user sees. An app that names no record is unaffected: the
-    // set stays empty and the live document is the package's, as before.
+    // An app whose root names a record must be driven against that record's
+    // document, not the room index — see `records` on `Driver`.
     let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
     if driver.root_record_intent().is_some() {
         let (room, _) = crate::persist::open(manifest_id);

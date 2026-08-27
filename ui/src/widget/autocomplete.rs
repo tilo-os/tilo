@@ -1,37 +1,24 @@
 //! `Autocomplete` — a text field with a suggestion dropdown that floats below
 //! it.
 //!
-//! This is the shared, reusable "type-ahead" primitive: a real
-//! [`TextInput`] (so it inherits selection, clipboard, IME, caret navigation
-//! and theming for free — never a hand-rolled `String` buffer, per
-//! `ui/HIG.md` §8) with a **suggestion popover** drawn in the overlay pass so
-//! it composites *above* sibling content instead of being clipped by it.
+//! A real [`TextInput`] (so it inherits selection, clipboard, IME, caret
+//! navigation and theming for free, per `ui/HIG.md` §8) with a suggestion
+//! popover drawn in the overlay pass so it composites above sibling content.
 //!
-//! Any app attaches a **suggestion source** — a closure `Fn(&str) ->
-//! Vec<Suggestion>` via [`with_suggester`](Autocomplete::with_suggester), or a
-//! reactively-computed list via [`set_suggestions`](Autocomplete::set_suggestions).
-//! The completions recompute whenever the typed text changes.
+//! Any app attaches a suggestion source — a closure via
+//! [`with_suggester`](Autocomplete::with_suggester), or a reactively-computed
+//! list via [`set_suggestions`](Autocomplete::set_suggestions) — and
+//! completions recompute whenever the typed text changes.
 //!
-//! ## Interaction
+//! Typing opens the dropdown; Down/Up move the highlight; Enter accepts (the
+//! highlighted suggestion, or the typed text); Tab completes to the
+//! highlight without accepting; Esc or an outside click cancels — the
+//! outside click is not consumed, so it still reaches the host. The
+//! outcome is polled once via [`take_outcome`](Autocomplete::take_outcome),
+//! rising-edge like [`TextInput::take_dirty`].
 //!
-//! * **Type** — recomputes suggestions and opens the dropdown.
-//! * **Down / Up** — move the highlight through the list (opening it if closed).
-//! * **Enter** — accept: the highlighted suggestion's value if one is
-//!   highlighted, else the current typed text. Reports [`AutocompleteOutcome::Accepted`].
-//! * **Tab** — *complete* the field to the highlighted (or first) suggestion
-//!   without accepting, so the user can keep drilling down.
-//! * **Click a row** — accept that suggestion.
-//! * **Esc** — cancel, reporting [`AutocompleteOutcome::Cancelled`].
-//! * **Click outside** — cancel (not consumed, so the click still reaches the
-//!   host).
-//!
-//! The outcome is polled once via [`take_outcome`](Autocomplete::take_outcome)
-//! (rising-edge, like [`TextInput::take_dirty`]): the host reads it after each
-//! event to learn whether — and how — the edit ended.
-//!
-//! The editable path bar in the file manager is the canonical consumer, but the
-//! widget knows nothing about paths: the suggestion source is entirely the
-//! host's.
+//! The editable path bar in the file manager is the canonical consumer, but
+//! the widget knows nothing about paths.
 
 use std::collections::HashMap;
 
@@ -104,8 +91,7 @@ pub enum AutocompleteOutcome {
 pub type Suggester = Box<dyn Fn(&str) -> Vec<Suggestion>>;
 
 const ROW_H: f64 = 32.0;
-/// Height of the single non-interactive status row shown (loading / "no
-/// matches") when a reactive host has opened the dropdown with no suggestions.
+/// Height of the single non-interactive status row (loading / "no matches").
 const STATUS_ROW_H: f64 = 34.0;
 const DROPDOWN_GAP: f64 = 6.0;
 const ROW_PAD_X: f64 = 12.0;
@@ -124,8 +110,8 @@ pub struct Autocomplete {
     /// Mouse-hovered row, for the hover veneer.
     hover: Option<usize>,
     open: bool,
-    /// A loading / "no matches" line shown in the dropdown when a reactive
-    /// host has opened it but has no rows yet. `None` renders nothing.
+    /// Loading / "no matches" line for a reactive host with no rows yet.
+    /// `None` renders nothing.
     status: Option<String>,
     max_visible: usize,
     rect: Rect,
@@ -167,7 +153,6 @@ impl Autocomplete {
         self
     }
 
-    /// Attach a suggestion source computed from the current text.
     pub fn with_suggester<F>(mut self, f: F) -> Self
     where
         F: Fn(&str) -> Vec<Suggestion> + 'static,
@@ -176,7 +161,6 @@ impl Autocomplete {
         self
     }
 
-    /// Attach / replace the suggestion source after construction.
     pub fn set_suggester<F>(&mut self, f: F)
     where
         F: Fn(&str) -> Vec<Suggestion> + 'static,
@@ -184,16 +168,14 @@ impl Autocomplete {
         self.suggester = Some(Box::new(f));
     }
 
-    /// The most rows shown before the list scrolls its content (it clips, it
-    /// does not grow without bound).
+    /// Rows beyond this clip rather than growing the panel without bound.
     pub fn with_max_visible(mut self, n: usize) -> Self {
         self.max_visible = n.max(1);
         self
     }
 
-    /// Directly set the visible suggestions (for hosts that compute them
-    /// reactively rather than through a [`Suggester`]). Re-clamps the highlight
-    /// and clears any status line once real rows are available.
+    /// For hosts that compute suggestions reactively rather than through a
+    /// [`Suggester`]. Re-clamps the highlight and clears any status line.
     pub fn set_suggestions(&mut self, suggestions: Vec<Suggestion>) {
         self.suggestions = suggestions;
         if !self.suggestions.is_empty() {
@@ -206,22 +188,21 @@ impl Autocomplete {
         }
     }
 
-    /// Force the dropdown open. Reactive/async hosts call this after filling
-    /// suggestions or a status line that arrived *after* the keystroke which
-    /// requested them (a keystroke with no rows leaves the dropdown closed).
+    /// For reactive/async hosts filling suggestions or a status line that
+    /// arrived *after* the keystroke that requested them (which otherwise
+    /// leaves the dropdown closed).
     pub fn open(&mut self) {
         self.open = true;
     }
 
-    /// Set a loading / "no matches" line shown in the dropdown while there are
-    /// no suggestions to list. `None` clears it. Pair with [`open`](Autocomplete::open).
+    /// `None` clears it. Pair with [`open`](Autocomplete::open).
     pub fn set_status(&mut self, status: Option<String>) {
         self.status = status;
     }
 
-    /// Set the suggestions and, when the field is actively being edited, open
-    /// the dropdown to show them (for reactive/async hosts that receive results
-    /// after a round-trip). Closes the panel when the list is empty.
+    /// Opens the dropdown when the field is actively being edited (for
+    /// reactive/async hosts receiving results after a round-trip). Closes
+    /// it when the list is empty.
     pub fn set_suggestions_open(&mut self, suggestions: Vec<Suggestion>) {
         self.set_suggestions(suggestions);
         if self.is_editing() {
@@ -229,7 +210,6 @@ impl Autocomplete {
         }
     }
 
-    /// The current field text.
     pub fn text(&self) -> &str {
         self.input.value()
     }
@@ -239,20 +219,10 @@ impl Autocomplete {
         self.input.set_text(s);
     }
 
-    /// Enter edit mode: focus the field and recompute suggestions / open the
-    /// dropdown.
-    ///
-    /// On the genuine **transition into editing** the whole value is selected,
-    /// so the first keystroke replaces a pre-seeded value (e.g. the path bar's
-    /// current path). Crucially this select-all runs **only** on that
-    /// transition: a redundant `begin_edit` while the field is *already* being
-    /// edited leaves the caret and selection untouched. Re-selecting here was
-    /// the "first letter swallowed" bug — a focus/refresh path calling
-    /// `begin_edit` again after the user typed one character would re-select
-    /// that character, and the next keystroke would overwrite it, so the first
-    /// letter silently vanished. An empty field selects nothing either way, so
-    /// a freshly-focused empty search box always inserts normally with no
-    /// spurious selection.
+    /// Select-all runs **only** on the genuine transition into editing —
+    /// never on a redundant call while already focused (a focus/refresh
+    /// path can trigger that mid-edit), which would let the next keystroke
+    /// overwrite what the user just typed, silently dropping a character.
     pub fn begin_edit(&mut self) {
         let entering = !self.input.is_focused();
         self.input.set_focus(true);
@@ -265,28 +235,24 @@ impl Autocomplete {
         self.highlight = None;
     }
 
-    /// Whether the field currently holds focus (is in an active edit).
     pub fn is_editing(&self) -> bool {
         self.input.is_focused()
     }
 
-    /// Whether the suggestion dropdown is currently shown.
     pub fn is_open(&self) -> bool {
         self.open && !self.suggestions.is_empty()
     }
 
-    /// The suggestions currently offered.
     pub fn suggestions(&self) -> &[Suggestion] {
         &self.suggestions
     }
 
-    /// The keyboard-highlighted suggestion, if one is armed.
     pub fn highlighted(&self) -> Option<&Suggestion> {
         self.highlight.and_then(|i| self.suggestions.get(i))
     }
 
-    /// Pre-arm the keyboard highlight on a row (clamped to range; `None`
-    /// clears). Reactive hosts use this to highlight the top match by default.
+    /// Clamped to range; `None` clears. Reactive hosts use this to
+    /// highlight the top match by default.
     pub fn set_highlight(&mut self, index: Option<usize>) {
         self.highlight = index.filter(|&i| i < self.suggestions.len());
     }
@@ -303,8 +269,7 @@ impl Autocomplete {
         std::mem::replace(&mut self.outcome, AutocompleteOutcome::None)
     }
 
-    /// Place the widget (and its embedded field) at `rect` without a taffy pass
-    /// — for hosts embedding the field in their own immediate-mode chrome.
+    /// For hosts embedding the field in their own immediate-mode chrome.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         self.input.apply_layout_external(rect);
@@ -338,8 +303,7 @@ impl Autocomplete {
         self.outcome = AutocompleteOutcome::Cancelled;
     }
 
-    /// Complete the field to the highlighted (or first) suggestion, keeping the
-    /// edit open so the user can drill further.
+    /// Keeps the edit open so the user can drill further.
     fn complete_to_highlight(&mut self) {
         let idx = self.highlight.or(if self.suggestions.is_empty() { None } else { Some(0) });
         if let Some(i) = idx {
@@ -376,8 +340,7 @@ impl Autocomplete {
         self.highlight = Some(next);
     }
 
-    /// The dropdown panel rect (below the field), or `None` when it should not
-    /// show. Shows for either real suggestion rows or a lone status line.
+    /// `None` when it should not show. Shows for real rows or a status line.
     fn dropdown_rect(&self) -> Option<Rect> {
         if !self.open || (self.suggestions.is_empty() && self.status.is_none()) {
             return None;
@@ -524,10 +487,9 @@ impl Widget for Autocomplete {
             }
             let on_accent = tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
             let text_color = if armed { on_accent } else { tokens.colors.text_primary };
-            // The detail column is the quieter tier. Softening it used to be
-            // done by dropping the white to 80% alpha, which on a bright accent
-            // takes an already-marginal label below anything legible. Soften
-            // toward the fill instead, then hold it to the floor.
+            // 80% white alpha on a bright accent drops an already-marginal
+            // label below legible, so soften toward the fill instead, held
+            // to the contrast floor.
             let dim_color = if armed {
                 tokens.colors.ink_on_any(
                     &[accent],
@@ -628,8 +590,7 @@ impl Widget for Autocomplete {
                     *handled = true;
                 }
                 _ => {
-                    // A real keystroke: forward to the field, then recompute if
-                    // the text changed.
+                    // Forward to the field, then recompute if the text changed.
                     self.input.handle_event(
                         event, scale_factor, modifiers, state, root, handled, focus_target,
                         node_id, taffy,
@@ -802,19 +763,12 @@ mod tests {
         handled
     }
 
-    // ---- reproduction: first-letter swallow --------------------------------
-
     #[test]
     fn freshly_focused_empty_field_keeps_every_letter() {
-        // The reported bug: the first typed letter is swallowed. Root cause to
-        // check: a spurious selection at focus that the first char replaces, so
-        // the second char overwrites it — net first-letter loss.
         let mut ac = Autocomplete::new();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
         drive(&mut ac, &char_key("a"));
-        // After the very first char there must be NO active selection, or the
-        // next char would replace it.
         assert_eq!(ac.input.selection_range_public(), None, "no selection after first char");
         drive(&mut ac, &char_key("b"));
         drive(&mut ac, &char_key("c"));
@@ -823,7 +777,6 @@ mod tests {
 
     #[test]
     fn begin_edit_on_empty_field_arms_no_selection() {
-        // Focusing an empty field must not leave a whole-field selection armed.
         let mut ac = Autocomplete::new();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
@@ -832,17 +785,11 @@ mod tests {
 
     #[test]
     fn redundant_begin_edit_does_not_reselect_typed_text() {
-        // The exact "first letter swallowed" symptom: a focus/refresh path calls
-        // begin_edit AGAIN after the user has typed one character. It must not
-        // re-select that character — otherwise the next keystroke replaces it and
-        // the first letter is lost.
         let mut ac = suggester_paths();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
         drive(&mut ac, &char_key("a")); // field now holds "a"
         assert_eq!(ac.text(), "a");
-        // A redundant begin_edit while already editing must be inert w.r.t. the
-        // selection (no whole-field re-select of the typed "a").
         ac.begin_edit();
         assert_eq!(ac.input.selection_range_public(), None, "typed text is not re-selected");
         drive(&mut ac, &char_key("l"));
@@ -851,9 +798,8 @@ mod tests {
 
     #[test]
     fn begin_edit_still_selects_a_preseeded_value_for_replace() {
-        // The intended replace-on-type for a pre-filled field (the path bar seeds
-        // the current path) is preserved: a genuine fresh entry selects all, so
-        // the first keystroke replaces the seed.
+        // A genuine fresh entry into a pre-filled field (the path bar seeds
+        // the current path) still selects all.
         let mut ac = Autocomplete::new();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.set_text("/home/user");
@@ -896,7 +842,6 @@ mod tests {
         assert_eq!(ac.highlighted().unwrap().value, "alpha");
         assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
         assert_eq!(ac.highlighted().unwrap().value, "album");
-        // Enter accepts the highlighted suggestion.
         assert!(drive(&mut ac, &named(NamedKey::Enter)));
         assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("album".into()));
         assert_eq!(ac.text(), "album", "accepted value loaded into the field");
@@ -977,8 +922,7 @@ mod tests {
 
     #[test]
     fn status_line_keeps_the_dropdown_open_with_no_rows() {
-        // A reactive host (async suggestions) shows an honest loading / empty
-        // line in the shared overlay while it has no rows to list yet.
+        // A reactive host shows a loading line while it has no rows yet.
         let mut ac = Autocomplete::new();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
@@ -987,7 +931,6 @@ mod tests {
         ac.open();
         let panel = ac.dropdown_rect().expect("status keeps the dropdown open");
         assert!(panel.height() > 0.0);
-        // A lone status line offers no selectable rows.
         assert!(ac.highlighted().is_none());
         assert!(ac.row_at(panel.center()).is_none(), "the status line is not a row");
     }
@@ -1004,7 +947,6 @@ mod tests {
         ac.open();
         assert!(ac.is_open());
         assert_eq!(ac.suggestions().len(), 2);
-        // Arrow-key navigation now works over the reactively-supplied rows.
         drive(&mut ac, &named(NamedKey::ArrowDown));
         assert_eq!(ac.highlighted().unwrap().value, "Paris");
         drive(&mut ac, &named(NamedKey::ArrowDown));

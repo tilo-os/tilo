@@ -1,41 +1,25 @@
 //! Localized XDG user directories.
 //!
-//! Resolves the user's real, *localized* home + standard folders from the
-//! environment (honouring `~/.config/user-dirs.dirs` via the `dirs` crate), so
-//! a German desktop yields `~/Dokumente`, `~/Bilder`, `~/Musik` — never
-//! hard-coded English names.
-//!
-//! This is shared so every surface that shows a "Places" list — the file
-//! manager's Favourites sidebar, a file picker's shortcuts — derives the same
-//! real names from **one** place, instead of each re-hardcoding English
-//! strings (which was the bug: a sidebar listing English *Documents* beside
-//! the machine's own *Dokumente*). Key the icon and any persisted identity off
-//! the [`UserDir`] *kind*, not the (localized) label, so the evocative glyph
-//! survives both localization and a path-only persistence round-trip.
+//! Resolves the user's real, localized home + standard folders (via `dirs`,
+//! honouring `~/.config/user-dirs.dirs`) so a German desktop yields `~/Dokumente`,
+//! not hard-coded English names. Shared by every "Places" list so they don't each
+//! re-hardcode English strings. Key any persisted identity off [`UserDir`] *kind*,
+//! not the localized label — the label doesn't survive a path-only round-trip.
 
 use std::path::{Path, PathBuf};
 
-/// The user's real home, when this process is confined and has been
-/// granted it.
-///
-/// Set by the launcher (`crates/packaging/launcher/src/sandbox.rs`) only
-/// when the capability plan bound a path containing it — so its presence
-/// means "you can read this", not merely "this is where it would be".
-/// Absent for an unconfined process, whose `HOME` is already the user's.
+/// Set by the launcher only when the capability plan bound a path containing it —
+/// presence means "you can read this", not merely "this is where it would be".
 pub fn user_home_override() -> Option<PathBuf> {
     let raw = std::env::var_os("QOS_USER_HOME")?;
     if raw.is_empty() {
         return None;
     }
     let path = PathBuf::from(raw);
-    // A path that is not there is not an answer. Falling through to
-    // `HOME` is better than opening on a directory that does not exist.
+    // Fall through to `HOME` rather than open on a directory that doesn't exist.
     path.is_dir().then_some(path)
 }
 
-/// One of the standard XDG user directories, independent of its localized
-/// name. An app keys an icon / label / persisted identity off the *kind* so it
-/// survives localization (a German *Bilder* is still [`UserDir::Pictures`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UserDir {
     Home,
@@ -48,9 +32,7 @@ pub enum UserDir {
 }
 
 impl UserDir {
-    /// The standard content dirs (everything but Home/Desktop) in the
-    /// conventional sidebar order. Home and Desktop are excluded because
-    /// callers place them explicitly (Home is usually specially styled).
+    /// Home and Desktop are excluded — callers place those explicitly.
     pub const CONTENT: [UserDir; 5] = [
         UserDir::Documents,
         UserDir::Downloads,
@@ -59,10 +41,8 @@ impl UserDir {
         UserDir::Videos,
     ];
 
-    /// The conventional English fallback folder name, used only when the
-    /// platform / `user-dirs.dirs` doesn't define this directory (so a "Places"
-    /// list is never missing a standard entry). The *resolved* localized path
-    /// is always preferred over this.
+    /// Used only when `user-dirs.dirs` doesn't define this directory; the
+    /// resolved localized path is always preferred over this.
     pub fn fallback_name(self) -> &'static str {
         match self {
             UserDir::Home => "Home",
@@ -76,10 +56,8 @@ impl UserDir {
     }
 }
 
-/// The user's resolved, localized XDG user directories. Each is `None` when the
-/// platform / `user-dirs.dirs` doesn't define it. Resolve once at startup via
-/// [`UserDirs::from_system`]; tests inject an explicit set so classification +
-/// labels are deterministic regardless of the build machine's locale.
+/// Resolve once at startup via [`UserDirs::from_system`]; tests inject an explicit
+/// set so classification + labels are deterministic regardless of build-machine locale.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UserDirs {
     pub home: Option<PathBuf>,
@@ -92,16 +70,9 @@ pub struct UserDirs {
 }
 
 impl UserDirs {
-    /// Read the real, localized XDG user directories from the environment. The
-    /// `dirs` crate honours `~/.config/user-dirs.dirs`, so on a German desktop
-    /// `documents` resolves to `~/Dokumente`, `pictures` to `~/Bilder`, etc.
     pub fn from_system() -> Self {
-        // A confined app's `HOME` is its own per-app directory, so
-        // `dirs::home_dir()` answers with a folder that has none of the
-        // user's files in it. `QOS_USER_HOME` is set by the launcher only
-        // when a capability has actually bound the user's home, so when
-        // it is present it names a directory this process can really
-        // read, and the standard folders resolve underneath it.
+        // A confined app's `HOME` is its own per-app directory with none of the
+        // user's files, so prefer `QOS_USER_HOME` when the launcher bound it.
         if let Some(home) = user_home_override() {
             return Self::under(home);
         }
@@ -116,15 +87,10 @@ impl UserDirs {
         }
     }
 
-    /// The standard folders under an explicit `home`.
-    ///
-    /// Used when the user's home is not this process's `HOME`. The names
-    /// are the conventional English ones rather than the localized ones:
-    /// `user-dirs.dirs` lives in the user's own config directory, which a
-    /// confined app cannot read, so a localized name cannot be resolved
-    /// here. A folder is only listed if it exists, so a German home
-    /// contributes its real folders through [`Self::content_places`]
-    /// rather than a wrong English guess.
+    /// Used when `home` is not this process's `HOME`. Names are conventional
+    /// English, not localized: `user-dirs.dirs` lives in the user's own config
+    /// directory, which a confined app cannot read. A folder is listed only if
+    /// it exists.
     fn under(home: PathBuf) -> Self {
         let sub = |name: &str| {
             let p = home.join(name);
@@ -141,7 +107,6 @@ impl UserDirs {
         }
     }
 
-    /// The resolved path for `dir`, if the environment defines it.
     pub fn path(&self, dir: UserDir) -> Option<&Path> {
         let p = match dir {
             UserDir::Home => &self.home,
@@ -155,9 +120,7 @@ impl UserDirs {
         p.as_deref()
     }
 
-    /// The localized display label for `dir`: the resolved directory's own
-    /// (localized) file name — `~/Dokumente` → `"Dokumente"` — falling back to
-    /// the conventional English name when the directory isn't resolved.
+    /// The resolved directory's own file name — `~/Dokumente` → `"Dokumente"`.
     pub fn label(&self, dir: UserDir) -> String {
         self.path(dir)
             .and_then(|p| p.file_name())
@@ -165,9 +128,7 @@ impl UserDirs {
             .unwrap_or_else(|| dir.fallback_name().to_string())
     }
 
-    /// Classify `path` as one of the standard user dirs (matching the resolved
-    /// localized path), else `None`. Home wins over Desktop wins over the
-    /// content dirs when they coincide.
+    /// Home wins over Desktop wins over the content dirs when paths coincide.
     pub fn classify(&self, path: &Path) -> Option<UserDir> {
         for kind in [
             UserDir::Home,
@@ -185,11 +146,9 @@ impl UserDirs {
         None
     }
 
-    /// The standard content places `(kind, localized label, path)` in the
-    /// conventional order, resolving each against the localized directory (or
-    /// the conventional `home/<English>` fallback so the list is never missing
-    /// a standard entry). Home/Desktop are excluded — a caller adds those
-    /// explicitly. This is the reusable list a "Places" sidebar renders.
+    /// `(kind, localized label, path)`, falling back to `home/<English>` so the
+    /// list is never missing a standard entry. Home/Desktop are excluded — a
+    /// caller adds those explicitly.
     pub fn content_places(&self, home: &Path) -> Vec<(UserDir, String, PathBuf)> {
         UserDir::CONTENT
             .iter()
@@ -212,7 +171,6 @@ impl UserDirs {
 mod tests {
     use super::*;
 
-    /// A German-localized set of XDG user dirs under `/home/u`.
     fn german() -> UserDirs {
         UserDirs {
             home: Some(PathBuf::from("/home/u")),
@@ -231,7 +189,6 @@ mod tests {
         let places = dirs.content_places(Path::new("/home/u"));
         let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
         assert_eq!(labels, ["Dokumente", "Downloads", "Bilder", "Musik", "Videos"]);
-        // The Documents place points at the localized directory, keyed by kind.
         let (kind, _, path) = &places[0];
         assert_eq!(*kind, UserDir::Documents);
         assert_eq!(path, &PathBuf::from("/home/u/Dokumente"));
@@ -239,8 +196,6 @@ mod tests {
 
     #[test]
     fn content_places_fall_back_to_english_when_unresolved() {
-        // No resolved dirs → the list is still complete, using conventional
-        // English subfolders of home so a sidebar is never missing an entry.
         let places = UserDirs::default().content_places(Path::new("/home/u"));
         let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
         assert_eq!(labels, ["Documents", "Downloads", "Pictures", "Music", "Videos"]);
@@ -260,7 +215,6 @@ mod tests {
         let dirs = german();
         assert_eq!(dirs.label(UserDir::Documents), "Dokumente");
         assert_eq!(dirs.label(UserDir::Pictures), "Bilder");
-        // Unresolved dir → conventional English fallback.
         assert_eq!(UserDirs::default().label(UserDir::Music), "Music");
     }
 }

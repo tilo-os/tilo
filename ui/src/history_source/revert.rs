@@ -1,19 +1,19 @@
-//! Undoing somebody else's work: a contiguous run of changes, addressed by what
-//! it is rather than by where it sits on a local stack.
+//! Undoing somebody else's work: a contiguous run of changes, addressed by
+//! what it is rather than by where it sits on a local stack.
 //!
-//! [`UndoLog`](crate::state::UndoLog) only holds actions *this* process handled
-//! — a peer's change arrives through `State::load_incremental`, which
-//! re-baselines without pushing — so "undo what the agent just did" finds
-//! nothing there. A run is addressed instead by content-addressed
-//! [`HistoryEntryId`], so a peer that only ever received those changes can undo
-//! them. The inverse is written *forward* through
-//! [`write_patches`](crate::state::write_patches), never cut out of the graph,
-//! so the original keeps its author and the undo is itself undoable.
+//! [`UndoLog`](crate::state::UndoLog) only holds actions *this* process
+//! handled — a peer's change re-baselines without pushing — so "undo what
+//! the agent just did" finds nothing there. A run is addressed instead by
+//! content-addressed [`HistoryEntryId`], so a peer that only ever received
+//! those changes can undo them. The inverse is written *forward* through
+//! [`write_patches`](crate::state::write_patches), never cut out of the
+//! graph, so the original keeps its author and the undo is itself undoable.
 //!
-//! Not wholesale: inverting a splice deletes everything in the span, including
-//! what somebody typed there afterwards. So a [`Slot`] written since the run is
-//! left alone and reported in [`RevertOutcome::kept`], and a caller must consult
-//! [`RevertOutcome::is_complete`] before saying "undone".
+//! Not wholesale: inverting a splice deletes everything in the span,
+//! including what somebody typed there afterwards. So a [`Slot`] written
+//! since the run is left alone and reported in [`RevertOutcome::kept`], and
+//! a caller must consult [`RevertOutcome::is_complete`] before saying
+//! "undone".
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,7 +40,6 @@ impl ChangeRun {
         Self { start, end }
     }
 
-    /// A run of exactly one change.
     pub fn single(only: HistoryEntryId) -> Self {
         Self {
             start: only,
@@ -58,8 +57,7 @@ impl ChangeRun {
 /// document anybody is still working in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
-    /// One text object — the unit people write prose into, and the case where
-    /// an undo would eat somebody's words.
+    /// One text object — the case where an undo would eat somebody's words.
     Text(ObjId),
     /// One key of one map. Two writers on the same key is a plain overwrite.
     Field(ObjId, String),
@@ -129,12 +127,9 @@ pub enum RevertError {
     Inverted,
 }
 
-/// Resolve a run to the head sets bracketing it, and how many changes it
-/// covers.
-///
-/// Both head sets are prefix frontiers of the document's own causal order, so
-/// they are valid arguments to `AutoCommit::diff` and mean the same thing on
-/// every peer holding the same changes.
+/// Both returned head sets are prefix frontiers of the document's own causal
+/// order, so they are valid arguments to `AutoCommit::diff` and mean the
+/// same thing on every peer holding the same changes.
 pub fn run_bounds(
     doc: &mut AutoCommit,
     run: &ChangeRun,
@@ -168,11 +163,9 @@ pub fn run_bounds(
     Ok((before, after, i1 - i0 + 1))
 }
 
-/// The slot a patch wrote to, or `None` when the patch is structural.
-///
 /// Structural sequence work returns `None` on purpose: `write_patches`
-/// re-anchors those positions through cursors, so a concurrent insert elsewhere
-/// in the same list is already handled and is not a reason to refuse.
+/// re-anchors those positions through cursors, so a concurrent insert
+/// elsewhere in the same list is already handled and is not a reason to refuse.
 fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
     let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
     match &p.action {
@@ -193,12 +186,11 @@ fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
     }
 }
 
-/// Index of the first change that comes *after* the run bracketed by `after`.
+/// Index of the first change after the run bracketed by `after`.
 ///
-/// Found by walking prefix frontiers rather than comparing hashes, because the
-/// run's last change need not be the only head of that prefix — with two
-/// collaborators a prefix can have several concurrent frontiers, and the
-/// frontier set is what identifies the position.
+/// Found by walking prefix frontiers rather than comparing hashes, because
+/// the run's last change need not be the only head of that prefix — with
+/// two collaborators a prefix can have several concurrent frontiers.
 fn first_index_after(doc: &mut AutoCommit, after: &[ChangeHash], total: usize) -> usize {
     let after_set: HashSet<ChangeHash> = after.iter().copied().collect();
     for i in 0..total {
@@ -239,18 +231,16 @@ fn objects_created(forward: &[Patch]) -> HashSet<ObjId> {
     out
 }
 
-/// Slots written by changes that landed after `after`, mapped to the actor that
-/// wrote them.
+/// Slots written by changes that landed after `after`, mapped to the actor
+/// that wrote them.
 ///
 /// Walked change by change rather than as one aggregate diff, because the
-/// aggregate cannot say *who* — and "kept, because Alice edited it" is the whole
-/// value of the report. Changes by `by` itself are skipped: a later change by
-/// the author being undone is that author's own business, not somebody building
-/// on their work.
-///
-/// A later change landing anywhere inside an object from `created` — the object
-/// or a descendant, which `Patch::path` makes visible — protects that whole
-/// object, because the inverse would delete it outright.
+/// aggregate cannot say *who* — and "kept, because Alice edited it" is the
+/// whole value of the report. Changes by `by` itself are skipped: a later
+/// change by the author being undone is their own business, not somebody
+/// building on it. A later change landing anywhere inside an object from
+/// `created` (visible via `Patch::path`) protects that whole object, since
+/// the inverse would delete it outright.
 fn later_writers(
     doc: &mut AutoCommit,
     after: &[ChangeHash],
@@ -282,9 +272,8 @@ fn later_writers(
             if let Some(s) = slot_of(doc, p) {
                 out.entry(s).or_insert_with(|| v.actor_hex.clone());
             }
-            // Every created ancestor is protected, not just the innermost one:
-            // the inverse deletes the *outermost* container (the paragraph in
-            // the content list), so protecting only the text object inside it
+            // Every created ancestor is protected: the inverse deletes the
+            // *outermost* container, so protecting only the innermost object
             // would let the whole paragraph go anyway.
             for o in std::iter::once(&p.obj).chain(p.path.iter().map(|(o, _)| o)) {
                 if created.contains(o) {
@@ -315,13 +304,11 @@ fn blocked_container(
     Some((slot, actor))
 }
 
-/// Split a patch set into what may be written and what must be kept.
-///
-/// Two kinds of hold-back, and they are different questions: a patch writing to
-/// a [`Slot`] somebody has edited since would overwrite their edit; a patch
-/// *removing a container* the run created that somebody has since written
-/// inside would delete their work outright. A multi-element removal is split so
-/// the elements nobody touched still go.
+/// Two kinds of hold-back: a patch writing to a [`Slot`] somebody has
+/// edited since would overwrite their edit; a patch *removing a container*
+/// the run created that somebody has since written inside would delete
+/// their work outright. A multi-element removal is split so the elements
+/// nobody touched still go.
 fn classify(
     doc: &AutoCommit,
     inverse: Vec<Patch>,
@@ -448,16 +435,12 @@ pub fn plan_revert(
 
 /// Undo a run of changes by writing its inverse forward into `doc`.
 ///
-/// `by` is the actor hex whose run this is; later changes under that same actor
-/// are not treated as somebody building on it. `authors` names the people whose
-/// later edits held part of the run back.
+/// `by` is the actor hex whose run this is; later changes under that same
+/// actor are not treated as somebody building on it.
 ///
 /// The transaction is left **open**: the caller commits, so the undo lands
 /// stamped and attributed under whoever asked for it, exactly like a typed
 /// edit. A caller that forgets to commit has written nothing.
-///
-/// Check [`RevertOutcome::is_complete`] before telling anyone the work was
-/// undone.
 pub fn revert_run(
     doc: &mut AutoCommit,
     run: &ChangeRun,
@@ -485,16 +468,14 @@ pub fn revert_run(
 /// The contiguous run of changes authored by `actor_hex`, ending at the
 /// document's newest change by that actor.
 ///
-/// How "undo what the agent just did" finds its target in a document nobody
-/// recorded a run for: the agent commits under one stable actor, so its work is
-/// a maximal run of consecutive changes under that actor. A run found this way
-/// stops at the first change by anybody else, so it never silently swallows a
-/// collaborator's work into the band being undone.
+/// How "undo what the agent just did" finds its target when nobody recorded
+/// a run: the agent commits under one stable actor, so its work is a
+/// maximal run of consecutive changes under that actor, stopping at the
+/// first change by anybody else.
 pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun> {
     let versions = qdoc::history::versions(doc);
-    // The schema genesis is written by a fixed actor nobody is, so it is never
-    // part of anybody's run — and inverting it would take the document's
-    // containers with it.
+    // Schema genesis is written by a fixed actor nobody is, so inverting it
+    // would take the document's containers with it.
     let mine = |v: &qdoc::VersionMeta| {
         !qdoc::history::is_schema_genesis(v) && v.actor_hex.eq_ignore_ascii_case(actor_hex)
     };

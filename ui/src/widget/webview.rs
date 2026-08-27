@@ -42,11 +42,9 @@ pub struct WebView {
     scale_factor: f32,
     focused: bool,
     last_mouse: Point,
-    /// Physical size last sent as a `Resize`, to avoid spamming the
-    /// engine on every layout pass.
+    /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
-    /// Cached vello image wrapping the engine's latest frame, keyed by
-    /// the frame buffer's allocation pointer + dimensions.
+    /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
     cached_key: (usize, u32, u32),
     test_id: String,
@@ -67,34 +65,32 @@ impl WebView {
         }
     }
 
-    /// Override the e2e test identifier (default `"webview"`). Needed
-    /// only when one tree hosts several web views.
+    /// Override the e2e test identifier (default `"webview"`), for a tree
+    /// hosting several web views.
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
         self
     }
 
-    /// Place the view at an explicit logical rect (and scale factor) without
-    /// going through a taffy layout pass. Used by hosts that embed the view
-    /// inside their own immediate-mode drawing (e.g. an email reader rendering
-    /// an HTML body inline) rather than as a first-class node in the widget
-    /// tree. Sends a `Resize` to the engine when the physical size changes,
-    /// exactly like [`Widget::apply_layout`].
+    /// Place the view at an explicit logical rect without going through a
+    /// taffy layout pass — for hosts that embed the view inside their own
+    /// immediate-mode drawing (e.g. an email reader rendering an HTML body
+    /// inline) rather than as a first-class widget-tree node. Sends a
+    /// `Resize` when the physical size changes, like [`Widget::apply_layout`].
     pub fn set_viewport(&mut self, rect: Rect, scale_factor: f32) {
         self.rect = rect;
         self.scale_factor = scale_factor;
         self.send_resize_if_needed();
     }
 
-    /// The engine handle this view drives — so a host can send it commands
-    /// (Navigate to an email's sandboxed `data:` document, install a content
-    /// filter) directly.
+    /// The engine handle this view drives, so a host can send it commands
+    /// (Navigate to an email's sandboxed `data:` document, install a
+    /// content filter) directly.
     pub fn engine(&self) -> &SharedEngine {
         &self.engine
     }
 
-    /// Engine-space (physical, view-relative) coordinates for a
-    /// logical toolkit-space point.
+    /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
             ((p.x - self.rect.x0) * self.scale_factor as f64) as f32,
@@ -116,9 +112,9 @@ impl WebView {
         });
     }
 
-    /// Map a winit logical key to the engine's key model. Pure so tests
-    /// can pin the table without synthesising `winit::KeyEvent`s (whose
-    /// platform fields cannot be constructed portably).
+    /// Map a winit logical key to the engine's key model. Pure so tests can
+    /// pin the table without synthesising `winit::KeyEvent`s (whose
+    /// platform fields aren't portably constructible).
     fn map_key(key: &WKey) -> Option<KeyInput> {
         match key {
             WKey::Character(c) => Some(KeyInput::Character(c.to_string())),
@@ -189,8 +185,7 @@ impl Widget for WebView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Base fill: placeholder before the first frame, letterbox
-        // backing afterwards.
+        // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -236,9 +231,8 @@ impl Widget for WebView {
             if iw == 0 || ih == 0 {
                 return;
             }
-            // The engine renders at physical resolution for our logical
-            // rect — scale down so hi-DPI frames map 1:1 to device
-            // pixels.
+            // The engine renders at physical resolution for our logical rect
+            // — scale down so hi-DPI frames map 1:1 to device pixels.
             let sx = self.rect.width() / iw as f64;
             let sy = self.rect.height() / ih as f64;
             let brush_transform =
@@ -270,8 +264,7 @@ impl Widget for WebView {
     ) {
         if (self.scale_factor as f64 - scale_factor).abs() > f64::EPSILON {
             self.scale_factor = scale_factor as f32;
-            // Force a resize with the new factor; sending eagerly keeps
-            // engine DPI in step even without a re-layout.
+            // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
         }
@@ -316,8 +309,7 @@ impl Widget for WebView {
                         });
                         *handled = true;
                     }
-                    // Mouse side buttons drive history, as in every
-                    // desktop browser.
+                    // Mouse side buttons drive history, as in every desktop browser.
                     winit::event::MouseButton::Back => {
                         if down {
                             self.engine.send(WebViewCommand::GoBack);
@@ -401,7 +393,7 @@ impl Widget for WebView {
     }
 
     /// Two-finger swipe / edge-pull → browser-style history navigation.
-    /// Overriding this here makes every embedder of the WebView component
+    /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
     fn on_nav_gesture(
         &mut self,

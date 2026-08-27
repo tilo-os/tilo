@@ -18,8 +18,7 @@ const HEADER_BAND_PX: u32 = 24;
 #[derive(Default)]
 struct Inner {
     history: Vec<String>,
-    /// Index into `history` of the current entry; `history.is_empty()`
-    /// means nothing loaded yet.
+    /// `history.is_empty()` means nothing loaded yet.
     index: usize,
     width: u32,
     height: u32,
@@ -28,7 +27,6 @@ struct Inner {
     commands: Vec<WebViewCommand>,
 }
 
-/// See module docs.
 pub struct TestEngine {
     inner: Mutex<Inner>,
     frames: FrameSlot,
@@ -52,7 +50,6 @@ impl TestEngine {
         self.inner.lock().unwrap().commands.clone()
     }
 
-    /// URL of the currently "loaded" page, if any.
     pub fn current_uri(&self) -> Option<String> {
         let inner = self.inner.lock().unwrap();
         inner.history.get(inner.index).cloned()
@@ -199,8 +196,7 @@ mod tests {
         let frame = engine.frames().lock().unwrap().clone().expect("frame rendered");
         assert_eq!((frame.width, frame.height), (800, 600));
         let [r, g, b] = TestEngine::page_color("https://example.org");
-        // The first pixel sits in the darker header band; a pixel below
-        // the band carries the page colour.
+        // First pixel is in the header band; below it is the page colour.
         let below = (HEADER_BAND_PX * frame.width * 4) as usize;
         assert_eq!(&frame.rgba[below..below + 4], &[r, g, b, 0xFF]);
         assert_eq!(&frame.rgba[0..4], &[r / 2, g / 2, b / 2, 0xFF]);

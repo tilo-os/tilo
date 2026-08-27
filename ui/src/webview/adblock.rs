@@ -15,17 +15,14 @@
 use adblock::FilterSet;
 use adblock::lists::ParseOptions;
 
-/// Result of compiling one or more filter lists.
 pub struct CompiledFilter {
-    /// JSON array of WebKit content-blocker rules, ready for
-    /// `WebViewCommand::SetContentFilter` /
+    /// Ready for `WebViewCommand::SetContentFilter` /
     /// `webkit_user_content_filter_store_save()`.
     pub json: std::sync::Arc<String>,
-    /// Number of content-blocker rules emitted.
     pub rule_count: usize,
-    /// Filters that had no content-blocker equivalent and were skipped
-    /// (WebKit's declarative format cannot express every EasyList
-    /// construct — scriptlets, some regex filters, `$redirect`, …).
+    /// Filters with no content-blocker equivalent (WebKit's declarative
+    /// format cannot express every EasyList construct — scriptlets, some
+    /// regex filters, `$redirect`, …).
     pub skipped: usize,
 }
 
@@ -39,12 +36,11 @@ pub enum AdblockError {
     Serialise(#[from] serde_json::Error),
 }
 
-/// Compile filter-list text(s) into WebKit content-blocker JSON.
 pub fn compile_filter_lists<'a>(
     lists: impl IntoIterator<Item = &'a str>,
 ) -> Result<CompiledFilter, AdblockError> {
     // `true` = keep the parsed filters' debug info — the content-blocking
-    // conversion refuses to run without it (it needs the raw filter text).
+    // conversion refuses to run without it (needs the raw filter text).
     let mut set = FilterSet::new(true);
     for list in lists {
         set.add_filter_list(list, ParseOptions::default());
@@ -66,27 +62,20 @@ pub fn compile_filter_lists<'a>(
 
 /// WebKit rejects a single content-rule list over this many rules with
 /// "Too many rules in JSON array". Its documented cap is higher, but a
-/// conservative split keeps every chunk comfortably valid and still lets
-/// us ship the full multi-list rule set across several filters.
+/// conservative split keeps every chunk comfortably valid.
 pub const MAX_RULES_PER_FILTER: usize = 25_000;
 
-/// A rule set compiled into one *or more* content-blocker JSON blobs.
 /// The full EasyList + uBlock + AdGuard set is far larger than WebKit's
 /// per-list rule cap, so it must be installed as several content filters
 /// rather than one giant array (which WebKit refuses to compile).
 pub struct ChunkedFilter {
-    /// Each element is a JSON array of at most [`MAX_RULES_PER_FILTER`]
+    /// Each element a JSON array of at most [`MAX_RULES_PER_FILTER`]
     /// rules — install each as its own WebKit content filter.
     pub chunks: Vec<std::sync::Arc<String>>,
-    /// Total rules across all chunks.
     pub rule_count: usize,
-    /// Filters with no content-blocker equivalent (see [`CompiledFilter`]).
     pub skipped: usize,
 }
 
-/// Compile filter-list text(s) into content-blocker JSON split into
-/// chunks of at most `max_rules_per_chunk` rules, so each chunk stays
-/// within WebKit's per-list limit.
 pub fn compile_filter_lists_chunked<'a>(
     lists: impl IntoIterator<Item = &'a str>,
     max_rules_per_chunk: usize,
@@ -136,7 +125,6 @@ example.org##.sponsored
         let rules = parsed.as_array().expect("JSON array of rules");
         assert_eq!(rules.len(), compiled.rule_count);
 
-        // A blocking rule for ads.example.com exists…
         assert!(
             rules.iter().any(|r| {
                 r["action"]["type"] == "block"
@@ -147,7 +135,6 @@ example.org##.sponsored
             "expected a block rule for ads.example.com in {}",
             compiled.json
         );
-        // …and the cosmetic filter becomes a css-display-none rule.
         assert!(
             rules.iter().any(|r| {
                 r["action"]["type"] == "css-display-none"
@@ -169,9 +156,6 @@ example.org##.sponsored
 
     #[test]
     fn chunking_splits_rules_across_multiple_filters() {
-        // The fixture yields several rules; a tiny cap must split them into
-        // more than one chunk, each a valid JSON array, together covering
-        // exactly the full rule count.
         let compiled =
             compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
         assert!(compiled.rule_count >= 3);

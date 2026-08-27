@@ -1,26 +1,16 @@
-//! `PageSidebar` — a shared, reorderable page/slide preview rail.
+//! `PageSidebar` — a shared, reorderable page/slide preview rail: the PDF
+//! reader's page rail and the presentation editor's slide rail both drive
+//! this one widget. It owns the list geometry, scroll, drag-to-reorder
+//! (via [`DragController`]), a right-click menu, and an optional "add"
+//! affordance, emitting [`PageSidebarEvent`]s the host applies to its model.
 //!
-//! A single implementation of the vertical thumbnail sidebar used by every
-//! document app that has an ordered stack of pages: the PDF reader's page
-//! rail and the presentation editor's slide rail both drive this one widget.
-//! It owns the list geometry, the scroll offset, drag-to-reorder (via the
-//! shared [`DragController`]), a right-click context menu (duplicate / move /
-//! delete) and an optional bottom "add" affordance, and it emits
-//! [`PageSidebarEvent`]s the host applies to its own document model — a
-//! reorder or delete flags the host that a save is needed.
+//! The widget does **not** know how to paint a page or slide — the host
+//! passes a thumbnail-draw closure — but draws everything else (frame,
+//! selection ring, index number, reflow gap, drag ghost, scrollbar, menu).
 //!
-//! The widget does **not** know how to paint a page or a slide: the host
-//! passes a thumbnail-draw closure, so the same rail renders PDF page bitmaps
-//! for one app and vector slides for another. Everything else — the framed
-//! slot, the selection ring, the index number, the live reflow gap, the
-//! floating drag ghost, the scrollbar and the menu — is drawn here, once.
-//!
-//! Like [`crate::widget::page_palette::PageJumpPalette`] the app chrome that
-//! hosts this is imperative (a single full-window widget drawing into a
-//! `Scene`), so the primary API is the imperative [`PageSidebar::begin_frame`]
-//! / [`PageSidebar::render`] / pointer-event methods the host calls from its
-//! own draw + event handlers. The [`Widget`] impl is a thin shim so the rail
-//! is still addressable by the e2e harness.
+//! The host is imperative (draws into a `Scene` each frame), so the primary
+//! API is [`PageSidebar::begin_frame`] / [`render`](Self::render) / pointer-
+//! event methods; the [`Widget`] impl is a thin shim for the e2e harness.
 
 use std::collections::HashMap;
 
@@ -38,8 +28,7 @@ use crate::widget::drag::{DragController, ListMetrics};
 use crate::widget::Widget;
 
 /// Something the host should do to its page/slide model in response to a
-/// sidebar interaction. The host applies it to its own document (usually a
-/// CRDT) and flags that a save is needed for the ordering-changing variants.
+/// sidebar interaction. The ordering-changing variants flag that a save is needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageSidebarEvent {
     /// Make page `index` the current one (a plain click).
@@ -48,9 +37,8 @@ pub enum PageSidebarEvent {
     /// "move up/down" menu action). Semantics match `Vec::remove(from)` then
     /// `Vec::insert(to, _)`.
     Reorder { from: usize, to: usize },
-    /// Duplicate the page at `index`, inserting the copy right after it.
+    /// Inserting the copy right after `index`.
     Duplicate(usize),
-    /// Remove the page at `index`.
     Delete(usize),
     /// The bottom "add" affordance was activated (import / new slide).
     Add,
@@ -58,8 +46,8 @@ pub enum PageSidebarEvent {
 
 /// Move the item at `from` to final index `to` in `v`, matching the
 /// `(from, to)` a [`DragController`] commit yields. A no-op when either index
-/// is out of range or they are equal. Shared by every adopter so the reorder
-/// applied to the model is identical to the reflow the rail previewed.
+/// is out of range or they are equal. Shared so the reorder applied to the
+/// model is identical to the reflow the rail previewed.
 pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
     if from == to || from >= v.len() || to >= v.len() {
         return;
@@ -78,7 +66,6 @@ pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
     v.insert(index + 1, copy);
 }
 
-/// One row of the context menu.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuAction {
     Duplicate,
@@ -106,7 +93,6 @@ const MENU_W: f64 = 184.0;
 const MENU_ROW_H: f64 = 30.0;
 const MENU_SEP_H: f64 = 8.0;
 
-/// A reorderable vertical page/slide preview rail.
 pub struct PageSidebar {
     // ---- configuration ----
     /// Thumbnail height as a multiple of its width (`page_h / page_w`).
@@ -182,8 +168,7 @@ impl PageSidebar {
         self
     }
 
-    /// Whether the widget paints its own panel + header (default true). Set
-    /// false when the host already draws the panel chrome around the list.
+    /// Set false when the host already draws the panel chrome around the list.
     pub fn with_panel(mut self, draw_panel: bool) -> Self {
         self.draw_panel = draw_panel;
         self
@@ -215,8 +200,8 @@ impl PageSidebar {
         self.menu.is_some()
     }
 
-    /// Maximum scroll offset for the current frame's geometry (0 when the whole
-    /// list fits). Hosts that keep their own scroll figure mirror this.
+    /// Maximum scroll offset for the current frame's geometry (0 when the
+    /// whole list fits).
     pub fn max_scroll(&self) -> f64 {
         self.max_scroll
     }
@@ -233,7 +218,6 @@ impl PageSidebar {
         self.drag.from_index()
     }
 
-    /// Drain the events produced since the last call.
     pub fn take_events(&mut self) -> Vec<PageSidebarEvent> {
         std::mem::take(&mut self.pending)
     }
@@ -273,8 +257,7 @@ impl PageSidebar {
             Rect::ZERO
         };
 
-        // Keep the drag gap pinned to the ghost even as the list scrolls under
-        // a held drag.
+        // Keep the drag gap pinned to the ghost as the list scrolls.
         self.drag.sync_insertion(&self.list_metrics());
     }
 
@@ -295,7 +278,6 @@ impl PageSidebar {
         (0..self.count).map(|i| (i, self.thumb_rect(i))).collect()
     }
 
-    /// Scroll so thumbnail `i` is fully within the viewport.
     pub fn scroll_to(&mut self, i: usize) {
         if self.count == 0 {
             return;
@@ -482,7 +464,6 @@ impl PageSidebar {
             scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
             let divider = Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1));
             scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &divider);
-            // Header label.
             tr.draw_text_weighted(
                 scene,
                 &self.header,
@@ -514,7 +495,6 @@ impl PageSidebar {
         }
         scene.pop_layer();
 
-        // Floating ghost of the grabbed thumbnail, tracking the cursor.
         if let (Some(from), Some(ghost)) = (
             drag_from,
             self.drag.ghost_rect_sized(
@@ -536,7 +516,6 @@ impl PageSidebar {
             scene.pop_layer();
         }
 
-        // Scrollbar.
         if self.max_scroll > 0.0 {
             let view_h = (self.list_vp.height() - 2.0 * PAD).max(1.0);
             let content_h = view_h + self.max_scroll;
@@ -592,10 +571,8 @@ impl PageSidebar {
         let c = &theme.tokens.colors;
         let is_current = i == self.current;
 
-        // Host paints the page/slide content.
         thumb(scene, tr, base, i, rect);
 
-        // Selection / idle ring.
         let (ring, w) = if is_current {
             (theme.accent_primary, 2.5)
         } else {
@@ -603,7 +580,7 @@ impl PageSidebar {
         };
         scene.stroke(&Stroke::new(w), base, ring, None, &RoundedRect::from_rect(rect, 6.0));
 
-        // Index number, right-aligned in the left gutter, vertically centred.
+        // Right-aligned in the left gutter, vertically centred.
         let label = format!("{}", i + 1);
         let size = 11.0f32;
         let (lw, lh) = tr.measure(&label, size, None);
@@ -633,7 +610,6 @@ impl PageSidebar {
         let rr = RoundedRect::from_rect(r, 7.0);
         scene.fill(Fill::NonZero, base, bg, None, &rr);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
-        // "+  label", centred.
         let label = format!("+  {}", self.add_label);
         let size = 12.0f32;
         let (tw, th) = tr.measure(&label, size, None);
@@ -654,7 +630,6 @@ impl PageSidebar {
         let Some(menu) = self.menu.as_ref() else { return };
         let c = &theme.tokens.colors;
         let rr = RoundedRect::from_rect(menu.rect, 8.0);
-        // Drop shadow.
         scene.fill(
             Fill::NonZero,
             base,
@@ -774,11 +749,9 @@ mod tests {
         let s = rail(4);
         let rects = s.thumb_rects();
         assert_eq!(rects.len(), 4);
-        // Portrait: each thumbnail is taller than it is wide.
         for (_, r) in &rects {
             assert!(r.height() > r.width(), "portrait pages are taller than wide");
         }
-        // Stacked top-to-bottom with a positive gap.
         assert!(rects[1].1.y0 > rects[0].1.y1, "slot 1 sits below slot 0");
     }
 
@@ -794,7 +767,6 @@ mod tests {
     fn drag_reorder_emits_reorder_on_release() {
         let mut s = rail(4);
         let rects = s.thumb_rects();
-        // Grab slot 0 at its centre, drag down past slot 3, release.
         s.on_press(rects[0].1.center());
         assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(0)]);
         let far_down = Point::new(rects[3].1.center().x, rects[3].1.center().y + 400.0);
@@ -820,17 +792,14 @@ mod tests {
     fn right_click_menu_duplicate_and_delete() {
         let mut s = rail(4);
         let rects = s.thumb_rects();
-        // Right-click slot 1 → selects it and opens the menu.
         assert!(s.on_right_press(rects[1].1.center()));
         assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(1)]);
         assert!(s.menu_open());
-        // Click "Duplicate" (first row).
         let dup_row = s.menu.as_ref().unwrap().items[0].1.center();
         assert!(s.on_press(dup_row));
         assert_eq!(s.take_events(), vec![PageSidebarEvent::Duplicate(1)]);
         assert!(!s.menu_open(), "picking a row closes the menu");
 
-        // Now the delete row on a fresh menu.
         s.on_right_press(rects[2].1.center());
         s.take_events();
         let menu = s.menu.as_ref().unwrap();
@@ -882,7 +851,6 @@ mod tests {
         assert!(s.max_scroll > 0.0);
         assert!(s.on_wheel(120.0));
         assert!(s.scroll() > 0.0);
-        // Clamp at the top.
         s.set_scroll(0.0);
         assert!(!s.on_wheel(-50.0), "already at the top");
         assert_eq!(s.scroll(), 0.0);

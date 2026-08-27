@@ -1,17 +1,10 @@
-//! Reusable *chrome* — the framed UI around content.
-//!
-//! Two layers live here, and they are not the same thing:
-//!
-//! - **Application chrome** ([`page`], [`status_bar`], [`toolbar`]) — the
-//!   frame an app draws around its own content. Themed draw + hit-test
-//!   helpers: the app owns the button specs and click handling, the
-//!   toolkit owns the look.
-//! - **Shell chrome** ([`shell`]) — the vocabulary the *OS* paints in,
-//!   around and between apps: the top bar, window decorations, the
-//!   workspace disc, quick settings, the collaborator surfaces. See
-//!   `ui/HIG.md` §9.
-//!
-//! Both exist so a surface does not have to invent its own appearance.
+//! Reusable *chrome* — the framed UI around content. Two layers, not the
+//! same thing: **application chrome** ([`page`], [`status_bar`],
+//! [`toolbar`]) is the frame an app draws around its own content (the app
+//! owns button specs and click handling, the toolkit owns the look);
+//! **shell chrome** ([`shell`]) is the vocabulary the *OS* paints in
+//! around and between apps — top bar, window decorations, workspace disc,
+//! quick settings, collaborator surfaces (see `ui/HIG.md` §9).
 
 pub mod page;
 pub mod shell;

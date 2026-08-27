@@ -26,10 +26,8 @@ use crate::widget::Widget;
 
 /// Alpha of a gauge's background track against the border colour.
 const TRACK_ALPHA: u8 = 150;
-/// Height of a [`BarGauge`]'s track in logical pixels.
 const BAR_TRACK_H: f64 = 8.0;
 
-/// Replace a colour's alpha with `a`, keeping RGB.
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
@@ -50,8 +48,6 @@ impl Default for GaugeThresholds {
 }
 
 impl GaugeThresholds {
-    /// Resolve the fill colour for `frac` against `theme`'s semantic ramp.
-    /// `>= danger` ⇒ danger, `>= warning` ⇒ warning, else success.
     pub fn color(&self, theme: &Theme, frac: f32) -> Color {
         let s = &theme.tokens.colors.semantic;
         if frac >= self.danger {
@@ -73,8 +69,6 @@ enum Fillcolor {
     Fixed(Color),
 }
 
-/// Circular arc gauge — a round-capped arc over a faint track, sweeping
-/// clockwise from 12 o'clock, with an optional centred big/small label.
 pub struct RingGauge {
     frac: f32,
     fill: Fillcolor,
@@ -88,8 +82,7 @@ pub struct RingGauge {
 }
 
 impl RingGauge {
-    /// Construct a ring gauge for `frac` (clamped to `0..1`). Defaults to
-    /// threshold colouring, no label, 96 px, and a radius-derived thickness.
+    /// `frac` is clamped to `0..1`.
     pub fn new(frac: f32) -> Self {
         Self {
             frac: frac.clamp(0.0, 1.0),
@@ -102,33 +95,31 @@ impl RingGauge {
         }
     }
 
-    /// Builder: centred labels — `big` (prominent, bold) over `small`
-    /// (dim caption). Either may be empty.
+    /// `big` (prominent, bold) over `small` (dim caption). Either may be
+    /// empty.
     pub fn with_label(mut self, big: impl Into<String>, small: impl Into<String>) -> Self {
         self.big = big.into();
         self.small = small.into();
         self
     }
 
-    /// Builder: custom threshold bands.
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
-    /// Builder: a fixed fill colour, bypassing the threshold bands.
+    /// Bypasses the threshold bands.
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
-    /// Builder: box edge length in logical pixels.
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
-    /// Builder: explicit arc thickness (otherwise `radius * 0.16`).
+    /// Otherwise `radius * 0.16`.
     pub fn with_thickness(mut self, thickness: f64) -> Self {
         self.thickness = thickness;
         self
@@ -146,8 +137,6 @@ impl RingGauge {
         }
     }
 
-    /// Immediate-mode draw: paint a ring gauge into `scene` centred at
-    /// `center` with the given `radius`/`thickness`/`frac` and `color`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_at(
         scene: &mut Scene,
@@ -165,7 +154,6 @@ impl RingGauge {
         if radius <= 0.0 {
             return;
         }
-        // Faint full-circle track.
         let track = Circle::new(center, radius);
         scene.stroke(
             &Stroke::new(thickness),
@@ -175,7 +163,6 @@ impl RingGauge {
             &track,
         );
 
-        // Remaining arc, clockwise from 12 o'clock.
         let frac = frac.clamp(0.0, 1.0) as f64;
         if frac > 0.0 {
             let arc = Arc::new(center, (radius, radius), -FRAC_PI_2, frac * TAU, 0.0);
@@ -183,7 +170,6 @@ impl RingGauge {
             scene.stroke(&stroke, transform, color, None, &arc);
         }
 
-        // Centred labels.
         let tokens = &theme.tokens;
         if !big.is_empty() {
             let size = tokens.typography.scale.xl;
@@ -310,10 +296,10 @@ impl Widget for RingGauge {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // A read-only meter: expose the 0..1 fraction as a percentage so an AT
-        // announces "42 percent". The dim caption (`small`) names it; when no
-        // caption is set the prominent (`big`) readout stands in as the name.
-        // Labels are host-provided display strings, not FTL keys → no `i18n!`.
+        // Expose the 0..1 fraction as a percentage so an AT announces "42
+        // percent". The dim caption (`small`) names it, falling back to the
+        // prominent (`big`) readout. Both are host display strings, not FTL
+        // keys → no `i18n!`.
         let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
         let name = if !self.small.is_empty() {
             Some(self.small.clone())
@@ -346,8 +332,7 @@ pub struct BarGauge {
 }
 
 impl BarGauge {
-    /// Construct a bar gauge for `frac` (clamped to `0..1`). Defaults to
-    /// threshold colouring, no label/value, 32 px tall.
+    /// `frac` is clamped to `0..1`.
     pub fn new(frac: f32) -> Self {
         Self {
             frac: frac.clamp(0.0, 1.0),
@@ -359,26 +344,23 @@ impl BarGauge {
         }
     }
 
-    /// Builder: the top-left label and right-aligned value readout.
     pub fn with_label(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.label = label.into();
         self.value = value.into();
         self
     }
 
-    /// Builder: custom threshold bands.
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
-    /// Builder: a fixed fill colour, bypassing the threshold bands.
+    /// Bypasses the threshold bands.
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
-    /// Builder: intrinsic height in logical pixels.
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
         self
@@ -396,7 +378,6 @@ impl BarGauge {
         }
     }
 
-    /// Immediate-mode draw of a bar gauge into `scene` at `rect`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_at(
         scene: &mut Scene,
@@ -413,7 +394,6 @@ impl BarGauge {
             return;
         }
         let tokens = &theme.tokens;
-        // Label + value row above the track.
         if !label.is_empty() {
             text_renderer.draw_text_weighted(
                 scene,
@@ -437,7 +417,6 @@ impl BarGauge {
             );
         }
 
-        // Track along the bottom of the rect.
         let track = Rect::new(rect.x0, rect.y1 - BAR_TRACK_H, rect.x1, rect.y1);
         let radius = BAR_TRACK_H / 2.0;
         scene.fill(
@@ -448,7 +427,6 @@ impl BarGauge {
             &RoundedRect::from_rect(track, radius),
         );
 
-        // Fill, left-anchored, proportional to frac.
         let frac = frac.clamp(0.0, 1.0) as f64;
         if frac > 0.0 {
             let fill = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
@@ -541,10 +519,9 @@ impl Widget for BarGauge {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // A read-only meter. `label` names it; the caller's `value` readout is
-        // the human-facing value string when present (e.g. "3.2 GB"), else the
-        // fraction rendered as a percentage. Both are display strings, not FTL
-        // keys → no `i18n!`.
+        // `label` names it; `value` is the caller's readout when present
+        // (e.g. "3.2 GB"), else the fraction as a percentage. Both are
+        // display strings, not FTL keys → no `i18n!`.
         let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
         let value = if self.value.is_empty() {
             format!("{pct}%")

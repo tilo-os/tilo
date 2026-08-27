@@ -87,7 +87,6 @@ fn paint_stat_tile(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    // Card surface.
     let card = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
     scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
     scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &card);
@@ -99,7 +98,6 @@ fn paint_stat_tile(
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
-    // Caption.
     text_renderer.draw_text(
         scene,
         caption,
@@ -109,7 +107,6 @@ fn paint_stat_tile(
         None,
     );
 
-    // Top-right icon.
     if let Some(icon) = icon {
         let ir = Rect::from_center_size(
             Point::new(rect.x1 - PAD - ICON_D / 2.0, rect.y0 + PAD + ICON_D / 2.0),
@@ -120,7 +117,6 @@ fn paint_stat_tile(
 
     y += caption_size as f64 + 6.0;
 
-    // Value.
     text_renderer.draw_text(
         scene,
         value,
@@ -131,7 +127,6 @@ fn paint_stat_tile(
     );
     y += value_size as f64 + 6.0;
 
-    // Delta line.
     if let Some((delta_text, trend)) = delta {
         let col = trend.color(theme);
         let mut dx = x;
@@ -162,7 +157,6 @@ pub struct StatTile {
 }
 
 impl StatTile {
-    /// Construct a tile with a caption and value string.
     pub fn new(caption: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             caption: caption.into(),
@@ -174,32 +168,28 @@ impl StatTile {
         }
     }
 
-    /// Add a small icon in the tile's top-right corner.
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Tint the value with a colour (e.g. a load/health semantic colour).
     /// Defaults to `theme.text_primary` when unset.
     pub fn with_value_color(mut self, color: Color) -> Self {
         self.value_color = Some(color);
         self
     }
 
-    /// Add a delta/trend line under the value (e.g. `("12%", Trend::Up)`).
+    /// E.g. `("12%", Trend::Up)`.
     pub fn with_delta(mut self, text: impl Into<String>, trend: Trend) -> Self {
         self.delta = Some((text.into(), trend));
         self
     }
 
-    /// The value colour this tile paints with, given `theme`.
     pub fn value_color(&self, theme: &Theme) -> Color {
         self.value_color.unwrap_or(theme.text_primary)
     }
 
-    /// Immediate-mode paint of a stat tile filling `rect`, for apps that render
-    /// straight to a `Scene`.
+    /// For apps that render straight to a `Scene`.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         scene: &mut Scene,
@@ -229,7 +219,7 @@ impl Widget for StatTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let h = tile_height(self.delta.is_some(), theme) as f32;
-        // Grow to share a row evenly, but keep the fixed content height.
+        // Grows to share a row evenly, but keeps the fixed content height.
         let node = taffy
             .new_leaf(Style {
                 flex_grow: 1.0,
@@ -307,8 +297,8 @@ impl Widget for StatTile {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // "CPU: 42%" — caption is the name, value is the value. The delta, if
-        // present, joins the value so a reader announces the trend too.
+        // Delta, if present, joins the value so a reader announces the
+        // trend too.
         let value = match &self.delta {
             Some((d, _)) => format!("{} ({})", self.value, d),
             None => self.value.clone(),

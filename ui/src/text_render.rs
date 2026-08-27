@@ -8,13 +8,9 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::{Color, FontData as Font, StyleRef};
 
-/// Concept-aligned named weight tiers for shell chrome.
-///
-/// Tailwind's `font-medium` / `font-semibold` / `font-bold` map 1:1 to
-/// [`cosmic_text::fontdb::Weight`]'s numeric constants. We expose them as an
-/// enum so widget call sites read declaratively (e.g.
-/// `draw_text_weighted(..., TextWeight::Bold)`) rather than passing raw u16s
-/// around. See visual-gap #7 in `docs/nirios/visual-gaps.md`.
+/// Named weight tiers mapping 1:1 to [`cosmic_text::fontdb::Weight`]'s
+/// numeric constants (Tailwind's font-medium/semibold/bold), so call sites
+/// read declaratively instead of passing raw u16s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextWeight {
     /// 400 — body / subtitle / explanatory text. Default.
@@ -28,7 +24,6 @@ pub enum TextWeight {
 }
 
 impl TextWeight {
-    /// Numeric OpenType weight (400 / 500 / 600 / 700).
     pub const fn to_u16(self) -> u16 {
         match self {
             TextWeight::Regular => 400,
@@ -38,8 +33,6 @@ impl TextWeight {
         }
     }
 
-    /// Matching [`cosmic_text::fontdb::Weight`] constant to feed to
-    /// [`cosmic_text::Attrs::weight`].
     pub const fn to_cosmic_weight(self) -> Weight {
         Weight(self.to_u16())
     }
@@ -52,10 +45,8 @@ impl Default for TextWeight {
 }
 
 /// A font family to shape with. The three generic classes resolve to the
-/// system's default face for that class (via cosmic-text / fontconfig); `Named`
-/// targets a specific installed family by name (e.g. a serif book face the user
-/// picked from the font list). This is what lets apps render body text in a
-/// chosen serif or custom font rather than only sans/mono.
+/// system's default face for that class; `Named` targets a specific
+/// installed family by name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FontChoice {
     SansSerif,
@@ -99,11 +90,9 @@ impl FontChoice {
     }
 }
 
-/// Hashable cache key for measured-text results. `max_width` is
-/// encoded as a `u32` bit-pattern so `f32` (which isn't `Hash`)
-/// participates in the key without surprise NaN collisions —
-/// callers either pass a sane finite max width or no max at all,
-/// so the bit-pattern is unique-per-input.
+/// Hashable cache key for measured-text results. `max_width` is encoded as a
+/// `u32` bit-pattern so `f32` (not `Hash`) can participate; callers pass a
+/// sane finite width or no max, so the bit-pattern is unique-per-input.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct MeasureKey {
     text_hash: u64,
@@ -113,19 +102,15 @@ struct MeasureKey {
     generation: u64,
 }
 
-/// Maximum entries the text-measure cache holds before it starts
-/// evicting on insertion. 4096 entries × ~64 bytes ≈ 256 KB —
-/// enough for every static label in a several-hundred-widget tree
-/// to survive across frames, small enough that we don't bloat
-/// process RSS when the user types many distinct strings.
+/// Entries before the cache starts evicting on insertion. 4096 x ~64 bytes ~=
+/// 256 KB — enough for every static label in a several-hundred-widget tree.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 
-/// Hashable cache key for a fully shaped + positioned run of text.
-/// Mirrors [`MeasureKey`] but adds the two style bits (`italic`,
-/// `monospace`) because they change glyph selection and therefore the
-/// positions. Colour and transform are deliberately NOT part of the key
-/// — they're applied at paint time, so a theme recolour or a widget
-/// moving on screen reuses the same cached glyph geometry.
+/// Hashable cache key for a fully shaped + positioned run of text. Mirrors
+/// [`MeasureKey`] but adds `italic`/`monospace` since they change glyph
+/// selection. Colour and transform are deliberately NOT part of the key —
+/// they're applied at paint time, so a theme recolour or a moving widget
+/// reuses the same cached glyph geometry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct ShapeKey {
     text_hash: u64,
@@ -138,21 +123,17 @@ struct ShapeKey {
 }
 
 /// One contiguous span of glyphs sharing a single font face, already
-/// positioned in the text block's local coordinate space (x = advance,
-/// y = baseline). Painting is then just `scene.draw_glyphs` with the
-/// caller's colour + transform — no reshaping.
+/// positioned in the text block's local coordinate space. Painting is then
+/// just `scene.draw_glyphs` with the caller's colour + transform.
 #[derive(Clone)]
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
     glyphs: Vec<vello::Glyph>,
 }
 
-/// Upper bound on distinct shaped runs retained across frames. Each
-/// entry is a `Vec<GlyphRun>` holding `vello::Glyph` (12 bytes each);
-/// even a tree with a few hundred distinct labels stays well under a
-/// megabyte. Static chrome + button labels warm this once and every
-/// subsequent frame is a pure `Arc` clone instead of a cosmic-text
-/// shape — the dominant per-frame draw cost before this cache existed.
+/// Upper bound on distinct shaped runs retained across frames. Static
+/// chrome labels warm this once; every subsequent frame is a pure `Arc`
+/// clone instead of a cosmic-text shape.
 const SHAPE_CACHE_LIMIT: usize = 4096;
 
 pub struct TextRenderer {
@@ -160,35 +141,24 @@ pub struct TextRenderer {
     pub swash_cache: SwashCache,
     font_cache: HashMap<cosmic_text::fontdb::ID, Font>,
     /// `(text, size, max_width, weight)` → measured `(width, height)`.
-    /// The same `measure_weighted` call is the dominant cost in
-    /// `widget::*::draw` (see the 2026-05-23 perf plan: the cosmic-
-    /// text re-shape per frame is ~7.5 ms in debug across a 50-
-    /// widget tree). Most widgets re-measure the same static
-    /// strings every frame; caching the result drops that to a
-    /// hash lookup.
+    /// Uncached cosmic-text re-shape per frame measured ~7.5ms in debug
+    /// across a 50-widget tree; most widgets re-measure the same static
+    /// strings every frame, so caching drops that to a hash lookup.
     measure_cache: HashMap<MeasureKey, (f32, f32)>,
-    /// Generation counter — bumped by [`Self::bump_generation`]
-    /// when the user changes locale or hot-swaps a font. Cache
-    /// entries from prior generations stay in the map but never
-    /// match a lookup (since the generation is part of the key);
-    /// they're aged out when the cache hits its limit.
+    /// Bumped by [`Self::bump_generation`] when locale or fonts change.
+    /// Entries from prior generations never match a lookup (generation is
+    /// part of the key); they age out when the cache hits its limit.
     generation: u64,
-    /// Hits / misses counter — for the `cache_stats` accessor.
-    /// Useful in tests + benches; doesn't affect runtime behaviour.
     hits: u64,
     misses: u64,
-    /// `(text, size, max_width, weight, style)` → shaped + positioned
-    /// glyph runs. This is the payload of the DRAW path: before it
-    /// existed, every `draw_text*` call reshaped its string through
-    /// cosmic-text on every single frame even when nothing changed. An
-    /// `Arc` value lets a lookup hand the runs back to the paint loop
-    /// without cloning the glyph vecs and without holding a borrow on
-    /// the cache while `font_cache` is touched.
+    /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
+    /// runs. An `Arc` value lets a lookup hand the runs back to the paint
+    /// loop without cloning the glyph vecs or holding a borrow on the cache
+    /// while `font_cache` is touched.
     shape_cache: HashMap<ShapeKey, Arc<Vec<GlyphRun>>>,
-    /// Shape-cache hit / miss counters + accumulated shaping time.
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`QUICK_UI_PERF`) can attribute how much of the draw phase was
-    /// spent inside cosmic-text vs. Vello encoding.
+    /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
+    /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,
     shape_ns: u128,
@@ -212,10 +182,8 @@ impl TextRenderer {
     }
 
     /// Take-and-reset the per-frame shape-cache stats:
-    /// `(hits, misses, nanoseconds_spent_shaping)`. The frame profiler
-    /// calls this once per frame so each line reports only that frame's
-    /// shaping work. Returns zeros on an all-cached frame — the goal
-    /// state for static content.
+    /// `(hits, misses, nanoseconds_spent_shaping)`, so each call reports only
+    /// that frame's shaping work.
     pub fn take_shape_stats(&mut self) -> (u64, u64, u128) {
         let out = (self.shape_hits, self.shape_misses, self.shape_ns);
         self.shape_hits = 0;
@@ -224,29 +192,23 @@ impl TextRenderer {
         out
     }
 
-    /// Hit / miss snapshot of the measure cache. Useful for
-    /// benchmarks asserting "the static-label widgets warmed the
+    /// Useful for benchmarks asserting "the static-label widgets warmed the
     /// cache and subsequent frames are pure hits".
     pub fn cache_stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
     }
 
-    /// Invalidate every cached measurement. Call this when the
-    /// font set or active locale changes; cosmic-text will shape
-    /// glyphs differently after either swap, so stale numbers
+    /// Call this when the font set or active locale changes; cosmic-text
+    /// will shape glyphs differently after either swap, so stale numbers
     /// would let widgets compute wrong layouts.
     pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
-        // Shaped glyph geometry depends on the same font set + locale,
-        // so it must die alongside the measurements. Entries key on
-        // `generation` too, so stale ones would never match anyway; the
-        // explicit clear reclaims their memory immediately.
+        // Entries key on `generation` so stale ones would never match
+        // anyway; the explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
     }
 
-    /// Internal: hash-based key lookup → cached measurement.
-    /// Returns `None` on miss. Mutates hit / miss counters.
     fn measure_lookup(&mut self, key: MeasureKey) -> Option<(f32, f32)> {
         if let Some(v) = self.measure_cache.get(&key).copied() {
             self.hits += 1;
@@ -256,11 +218,9 @@ impl TextRenderer {
         None
     }
 
-    /// Internal: write a cache entry, evicting at random when the
-    /// table is full. Random eviction is cheap and good enough —
-    /// most missed entries are one-off animated values (Spinner
-    /// dots, scrubbing slider value) that we don't care about
-    /// keeping anyway.
+    /// Evicts at random when the table is full — cheap and good enough since
+    /// most missed entries are one-off animated values (Spinner dots,
+    /// scrubbing slider value) that aren't worth keeping anyway.
     fn measure_insert(&mut self, key: MeasureKey, value: (f32, f32)) {
         if self.measure_cache.len() >= MEASURE_CACHE_LIMIT {
             if let Some(victim) = self.measure_cache.keys().next().copied() {
@@ -290,7 +250,7 @@ impl TextRenderer {
 
     /// Same as [`TextRenderer::measure`] but respects a typographic weight.
     /// Heavier weights generally advance wider, so measurements must use
-    /// the same weight the draw path will render with (visual-gap #7).
+    /// the same weight the draw path will render with.
     pub fn measure_weighted(
         &mut self,
         text: &str,
@@ -313,7 +273,6 @@ impl TextRenderer {
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
 
         buffer.set_size(max_width, None);
-        // Explicitly set wrap mode. Word wrap is standard for UI labels.
         buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
@@ -329,15 +288,10 @@ impl TextRenderer {
         result
     }
 
-    /// Truncate `text` to fit within `max_width` logical pixels on a
-    /// single line, appending an ellipsis (`…`) when anything was dropped.
-    ///
-    /// Returns `text` unchanged when it already fits. When even the
-    /// ellipsis alone doesn't fit, returns the ellipsis (callers that
-    /// reserve at least a few px get a sensible glyph rather than empty).
-    /// Measurement uses [`TextWeight::Regular`]; pair with
-    /// [`Self::elide_to_width_weighted`] when the draw weight differs so the
-    /// fit calculation matches the rendered advance.
+    /// Truncate `text` to fit within `max_width` on a single line, appending
+    /// an ellipsis when anything was dropped; returns just the ellipsis when
+    /// even that doesn't fit. Measures with [`TextWeight::Regular`]; pair
+    /// with [`Self::elide_to_width_weighted`] when the draw weight differs.
     pub fn elide_to_width(&mut self, text: &str, size: f32, max_width: f32) -> String {
         self.elide_to_width_weighted(text, size, max_width, TextWeight::Regular)
     }
@@ -359,18 +313,14 @@ impl TextRenderer {
             return text.to_string();
         }
         const ELLIPSIS: char = '\u{2026}';
-        // If the ellipsis alone is wider than the budget, we still return
-        // it — a single glyph reads better than an empty slot, and callers
-        // that truly have no room won't have called us with text anyway.
+        // A single glyph reads better than an empty slot when even the
+        // ellipsis doesn't fit.
         let (ell_w, _) = self.measure_weighted("\u{2026}", size, None, weight);
         if ell_w > max_width {
             return ELLIPSIS.to_string();
         }
         let budget = max_width - ell_w;
-        // Grow a prefix char-by-char while it fits the remaining budget.
-        // Linear in char count — fine for the short labels (filenames,
-        // titles, legend entries) elision targets. Each step re-measures
-        // the candidate prefix, which hits the measure cache after warmup.
+        // Linear in char count — fine for the short labels this targets.
         let mut best = String::new();
         let mut candidate = String::new();
         for ch in text.chars() {
@@ -390,14 +340,10 @@ impl TextRenderer {
         best
     }
 
-    /// Word-wrap `text` to `max_width` and clamp the result to at most
-    /// `max_lines` lines, eliding the last kept line with an ellipsis when
-    /// content overflows. Returns the kept lines as a `Vec<String>`,
-    /// already wrapped — draw each entry on its own baseline at
-    /// `line_height = size * 1.25`.
-    ///
-    /// `max_lines == 0` returns an empty vec. A single-line clamp
-    /// (`max_lines == 1`) degenerates to [`Self::elide_to_width`].
+    /// Word-wraps `text` to `max_width` and clamps to at most `max_lines`
+    /// lines, eliding the last kept line when content overflows. Draw each
+    /// returned line on its own baseline at `line_height = size * 1.25`.
+    /// `max_lines == 1` degenerates to [`Self::elide_to_width`].
     pub fn clamp_to_lines(
         &mut self,
         text: &str,
@@ -415,9 +361,8 @@ impl TextRenderer {
         if wrapped.len() <= max_lines {
             return wrapped;
         }
-        // Overflow: keep the first `max_lines - 1` whole lines, then merge
-        // the remaining text onto the final line and elide it so the reader
-        // sees the truncation marker.
+        // Keep the first `max_lines - 1` whole lines, then merge the rest
+        // onto the final line and elide it as the truncation marker.
         let mut kept: Vec<String> = wrapped[..max_lines - 1].to_vec();
         let remainder: String = wrapped[max_lines - 1..].join(" ");
         kept.push(self.elide_to_width(&remainder, size, max_width));
@@ -425,9 +370,8 @@ impl TextRenderer {
     }
 
     /// Greedy word-wrap of `text` at `max_width`. A word longer than the
-    /// budget is placed on its own line (no mid-word breaking — the
-    /// per-line elision in [`Self::clamp_to_lines`] handles overlong
-    /// single words). Internal helper for the clamp; exposed for tests.
+    /// budget is placed on its own line (no mid-word breaking — the per-line
+    /// elision in [`Self::clamp_to_lines`] handles overlong single words).
     pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -463,17 +407,9 @@ impl TextRenderer {
         self.draw_text_weighted(scene, text, size, color, transform, max_width, TextWeight::Regular)
     }
 
-    /// Draw `text` with explicit weight + italic + optional monospace
-    /// family override. Used by [`crate::widget::RichTextLine`] to
-    /// paint inline-mark spans (bold / italic / code) with the right
-    /// glyph styling.
-    ///
-    /// `monospace = true` switches the font family to the system's
-    /// `Family::Monospace` so inline code reads as code without the
-    /// caller needing to manage a custom font db. Width is consistent
-    /// because cosmic-text picks one face for the whole call —
-    /// callers wanting accurate measurement should pair with
-    /// [`Self::measure_styled`].
+    /// Draw `text` with explicit weight + italic + optional monospace family
+    /// override, used by [`crate::widget::RichTextLine`] to paint inline-mark
+    /// spans. Pair with [`Self::measure_styled`] for accurate measurement.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_text_styled(
         &mut self,
@@ -493,9 +429,8 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, size, color, transform);
     }
 
-    /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a named
-    /// installed family / …) with a weight and italic flag. This is how an app
-    /// renders body text in a chosen book face rather than only sans/mono.
+    /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a
+    /// named installed family / …) with a weight and italic flag.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_text_font(
         &mut self,
@@ -514,9 +449,9 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, size, color, transform);
     }
 
-    /// Measure `text` shaped in an explicit [`FontChoice`]. Uncached (the family
-    /// varies enough that it isn't worth a key); callers measure during a
-    /// cached layout pass, so this runs only when a layout actually recomputes.
+    /// Measure `text` shaped in an explicit [`FontChoice`]. Uncached (the
+    /// family varies enough that it isn't worth a key); callers measure
+    /// during a cached layout pass, so this runs only when it recomputes.
     #[allow(clippy::too_many_arguments)]
     pub fn measure_font(
         &mut self,
@@ -550,10 +485,8 @@ impl TextRenderer {
         (width, lines as f32 * line_height)
     }
 
-    /// Distinct family names of installed faces, sorted — the pool an app's
-    /// font picker offers so a reader can choose any system family (including
-    /// serif book faces). De-duplicated across weights/styles of the same
-    /// family.
+    /// Distinct family names of installed faces, sorted and de-duplicated
+    /// across weights/styles — the pool an app's font picker offers.
     pub fn system_families(&self) -> Vec<String> {
         use std::collections::BTreeSet;
         let mut set: BTreeSet<String> = BTreeSet::new();
@@ -568,12 +501,8 @@ impl TextRenderer {
         set.into_iter().collect()
     }
 
-    /// Measure `text` with style attributes. Mirrors
-    /// [`Self::draw_text_styled`]; used by [`crate::widget::RichTextLine`]
-    /// to compute per-segment advances when painting inline-mark spans.
-    /// NOT cached — these calls are rare (one per segment per frame)
-    /// and the cache key would need to include the italic/mono flags
-    /// too, which isn't worth the complication right now.
+    /// Measure `text` with style attributes. Mirrors [`Self::draw_text_styled`].
+    /// NOT cached — these calls are rare (one per segment per frame).
     pub fn measure_styled(
         &mut self,
         text: &str,
@@ -614,9 +543,7 @@ impl TextRenderer {
     }
 
     /// Same as [`TextRenderer::draw_text`] but takes an explicit typographic
-    /// [`TextWeight`]. Use this for chrome labels that need to lift off the
-    /// body (e.g. top-bar clock at [`TextWeight::Bold`], tab titles at
-    /// [`TextWeight::Semibold`]). See visual-gap #7.
+    /// [`TextWeight`], for chrome labels that need to lift off the body.
     pub fn draw_text_weighted(
         &mut self,
         scene: &mut Scene,
@@ -632,12 +559,8 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, size, color, transform);
     }
 
-    /// Shape `text` under the given size / wrap-width / weight / style
-    /// into positioned [`GlyphRun`]s, caching the result. On a hit this
-    /// is an `Arc` clone (refcount bump); on a miss it runs cosmic-text
-    /// once and stores the geometry. The dominant win of the draw path:
-    /// static labels shape once and stay shaped until their text, size,
-    /// width, weight, style, or the font generation changes.
+    /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
+    /// hit this is an `Arc` clone; on a miss it runs cosmic-text once.
     fn shaped_runs(
         &mut self,
         text: &str,
@@ -679,9 +602,8 @@ impl TextRenderer {
         buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        // Flatten the layout into per-face contiguous runs, baking the
-        // baseline (`line_y + glyph.y`) into each glyph so paint is a
-        // pure transform + colour with no per-glyph arithmetic.
+        // Flatten into per-face contiguous runs, baking the baseline into
+        // each glyph so paint is a pure transform + colour, no arithmetic.
         let mut runs: Vec<GlyphRun> = Vec::new();
         for run in buffer.layout_runs() {
             let mut current_face: Option<cosmic_text::fontdb::ID> = None;
@@ -718,9 +640,8 @@ impl TextRenderer {
         arc
     }
 
-    /// Paint pre-shaped [`GlyphRun`]s with a single `color` at
-    /// `transform`. The per-face Vello font handle is resolved from
-    /// `font_cache` (loaded lazily, once per face for the process).
+    /// The per-face Vello font handle is resolved from `font_cache`
+    /// (loaded lazily, once per face for the process).
     fn paint_runs(
         &mut self,
         scene: &mut Scene,
@@ -743,9 +664,8 @@ impl TextRenderer {
         }
     }
 
-    /// Resolve (loading + caching once per face) the Vello font handle
-    /// for a cosmic-text face id. Returns a clone — `FontData` is a
-    /// cheap `Arc`-backed handle, so this doesn't copy glyph outlines.
+    /// Returns a clone — `FontData` is a cheap `Arc`-backed handle, so this
+    /// doesn't copy glyph outlines.
     fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID) -> Font {
         self.font_cache
             .entry(face_id)
@@ -766,9 +686,8 @@ impl TextRenderer {
             .clone()
     }
 
-    /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text) in a
-    /// single `color`, including its underline decorations. The companion of
-    /// [`Self::draw_text`] for rich, hit-testable text.
+    /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text)
+    /// in a single `color`, including its underline decorations.
     pub fn draw_rich(
         &mut self,
         scene: &mut Scene,
@@ -781,8 +700,7 @@ impl TextRenderer {
             c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b())).unwrap_or(color)
         };
 
-        // 1. Highlight bands — paint behind glyphs so the ink reads on top.
-        //    One fill per (contiguous) run-segment on each visual line.
+        // Highlight bands paint behind glyphs so the ink reads on top.
         for &(s, e, [br, bg, bb]) in &layout.backgrounds {
             let band = Color::from_rgb8(br, bg, bb);
             for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
@@ -791,9 +709,8 @@ impl TextRenderer {
             }
         }
 
-        // 2. Glyphs. We batch by (face, colour, size, baseline-shift) so a
-        //    super/subscript run — shaped smaller and drawn with a vertical
-        //    offset — flushes as its own batch with the right size & y.
+        // Glyphs batch by (face, colour, size, baseline-shift) so a
+        // super/subscript run flushes as its own batch with the right size & y.
         for run in layout.buffer.layout_runs() {
             let mut face: Option<cosmic_text::fontdb::ID> = None;
             let mut cur_color: Option<cosmic_text::Color> = None;
@@ -878,11 +795,8 @@ impl TextRenderer {
 mod tests {
     use super::*;
 
-    /// Visual-gap #7: the named weight tiers must resolve to Tailwind's
-    /// numeric OpenType weights so chrome call sites can ask for
-    /// `TextWeight::Bold` and trust they will get a `Weight(700)` handoff
-    /// to cosmic-text. Any drift here would silently collapse every
-    /// chrome label back onto the fallback font's single weight.
+    /// A drift here would silently collapse every chrome label onto the
+    /// fallback weight.
     #[test]
     fn named_weights_resolve_to_tailwind_numeric_values() {
         assert_eq!(TextWeight::Regular.to_u16(), 400);
@@ -891,15 +805,13 @@ mod tests {
         assert_eq!(TextWeight::Bold.to_u16(), 700);
         assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
         assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
-        // Default must be Regular so existing call sites that go through
-        // the legacy `draw_text` wrapper keep their 400-weight behaviour.
+        // Default must be Regular so call sites through `draw_text` keep
+        // their 400-weight behaviour.
         assert_eq!(TextWeight::default(), TextWeight::Regular);
     }
 
-    /// Measuring the same string twice should hit the cache the
-    /// second time — the dominant payoff of Unit 4. Without this,
-    /// every widget's `draw` pays a full cosmic-text shape per
-    /// frame.
+    /// Measuring the same string twice should hit the cache the second time
+    /// — without this, every widget's `draw` pays a full cosmic-text shape.
     #[test]
     fn measure_cache_returns_hit_on_second_call() {
         let mut tr = TextRenderer::new();
@@ -916,8 +828,6 @@ mod tests {
         assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
     }
 
-    /// A different `size` is a different cache entry — the cached
-    /// (width, height) at one size is no good for another.
     #[test]
     fn measure_cache_keys_on_size() {
         let mut tr = TextRenderer::new();
@@ -929,10 +839,8 @@ mod tests {
         assert_eq!(misses, 2);
     }
 
-    /// A highlighted run must add a real fill to the draw output. We render
-    /// the same text twice — once with a background span, once without — and
-    /// assert the highlighted scene encodes strictly more paths (the extra
-    /// path is the highlight band `draw_rich` fills before the glyphs).
+    /// A highlighted run must add a real fill: the highlighted scene must
+    /// encode strictly more paths than the plain one.
     #[test]
     fn background_span_emits_an_extra_fill_in_the_scene() {
         use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -963,21 +871,16 @@ mod tests {
         );
     }
 
-    /// Text that already fits is returned verbatim — no ellipsis is
-    /// appended and the budget check uses the real measured width.
     #[test]
     fn elide_returns_text_unchanged_when_it_fits() {
         let mut tr = TextRenderer::new();
         let s = "short";
         let (w, _) = tr.measure(s, 14.0, None);
-        // Give a budget comfortably above the measured width.
         let out = tr.elide_to_width(s, 14.0, w + 50.0);
         assert_eq!(out, s, "fitting text must be returned unchanged");
         assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
     }
 
-    /// Text wider than the budget is truncated and ends with the ellipsis
-    /// glyph, and the truncated string measures within the budget.
     #[test]
     fn elide_truncates_and_appends_ellipsis() {
         let mut tr = TextRenderer::new();
@@ -994,8 +897,7 @@ mod tests {
         );
     }
 
-    /// A zero/empty budget yields an empty string; empty input yields
-    /// empty output. Defensive edge cases callers rely on.
+    /// A zero/empty budget yields empty output; so does empty input.
     #[test]
     fn elide_edge_cases() {
         let mut tr = TextRenderer::new();
@@ -1003,8 +905,6 @@ mod tests {
         assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
     }
 
-    /// A multi-line clamp keeps at most `max_lines` lines, and when the
-    /// content overflows the final kept line carries the ellipsis.
     #[test]
     fn clamp_to_lines_caps_line_count_and_elides_last() {
         let mut tr = TextRenderer::new();
@@ -1022,8 +922,6 @@ mod tests {
         );
     }
 
-    /// `max_lines == 1` degenerates to single-line elision; `max_lines == 0`
-    /// returns nothing.
     #[test]
     fn clamp_to_lines_degenerate_cases() {
         let mut tr = TextRenderer::new();
@@ -1033,8 +931,6 @@ mod tests {
         assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
     }
 
-    /// Short content that fits within `max_lines` is returned wrapped but
-    /// un-elided.
     #[test]
     fn clamp_to_lines_no_overflow_keeps_all() {
         let mut tr = TextRenderer::new();
@@ -1043,9 +939,8 @@ mod tests {
         assert!(!lines[0].ends_with('\u{2026}'));
     }
 
-    /// The DRAW path caches shaped glyph geometry: drawing the same
-    /// string twice shapes it once. This is the fix for the per-frame
-    /// re-shape that dominated draw time.
+    /// The DRAW path caches shaped glyph geometry: drawing the same string
+    /// twice shapes it once.
     #[test]
     fn shape_cache_reshapes_once_for_repeated_draw() {
         let mut tr = TextRenderer::new();
@@ -1056,8 +951,7 @@ mod tests {
         let (_h, m1, _ns1) = tr.take_shape_stats();
         assert_eq!(m1, 1, "first draw must shape once (miss)");
 
-        // Redraw the same label 5 more times — as a widget tree does
-        // every frame. Every one must be a cache hit; zero reshapes.
+        // Every redraw must be a cache hit; zero reshapes.
         for _ in 0..5 {
             tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
         }
@@ -1067,9 +961,8 @@ mod tests {
         assert_eq!(ns, 0, "no shaping time on an all-hit frame");
     }
 
-    /// Colour is NOT part of the shape key — a theme recolour of the
-    /// same label reuses the cached glyph geometry. Guards the design
-    /// choice that makes theme switches free of reshaping.
+    /// Colour is NOT part of the shape key — a theme recolour of the same
+    /// label reuses the cached glyph geometry, making theme switches free.
     #[test]
     fn shape_cache_reuses_geometry_across_recolor() {
         let mut tr = TextRenderer::new();
@@ -1118,10 +1011,8 @@ mod tests {
         assert_eq!(m, 1, "draw after bump must reshape");
     }
 
-    /// Real font-family support: the generic families resolve to installed
-    /// faces and shape to positive advances, a named installed family shapes,
-    /// and two different families are distinct shape-cache entries (so a serif
-    /// body render doesn't collide with the sans measurement).
+    /// Two different families must be distinct shape-cache entries (so
+    /// serif doesn't collide with sans).
     #[test]
     fn font_choice_families_resolve_and_shape() {
         let mut tr = TextRenderer::new();

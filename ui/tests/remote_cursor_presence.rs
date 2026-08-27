@@ -1,9 +1,7 @@
 //! Integration test proving that real peer cursor motion (delivered
 //! through a `CollabEvent::RemoteCursorMoved` event) lands in
-//! `PresenceCtx::remote_cursors` — which is the source the shell's
-//! `RemoteCursorOverlay` actually renders from. Closes the
-//! "Presence over real socket" gap where the overlay was wired to a
-//! vec nothing was writing to.
+//! `PresenceCtx::remote_cursors` — the source the shell's
+//! `RemoteCursorOverlay` actually renders from.
 
 use ui::app::App;
 use ui::collaboration::CollabEvent;
