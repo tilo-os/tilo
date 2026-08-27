@@ -1,50 +1,19 @@
-//! AccessKit bridge.
-//!
-//! This module turns the toolkit's per-widget semantic model
-//! ([`crate::a11y::AccessNode`], exposed via
+//! AccessKit bridge: turns the toolkit's per-widget semantic model
+//! ([`crate::a11y::AccessNode`], from
 //! [`Widget::accessibility`](crate::widget::Widget::accessibility)) into an
-//! [`accesskit::TreeUpdate`]. That `TreeUpdate` is what
-//! [`accesskit_winit::Adapter`] hands to `accesskit_unix`, which publishes it
-//! over **AT-SPI2** so standard assistive technologies (Orca, braille via
-//! BrlTTY) read every `ui` app with zero qOS-specific knowledge.
+//! [`accesskit::TreeUpdate`], published over AT-SPI2.
 //!
-//! ## Design
+//! [`build_tree_update`] is a pure function of `(root_widget, node_map,
+//! focused)`: a depth-first walk that emits one node per widget returning
+//! `Some(AccessNode)`, and collapses presentational widgets (`None`) by
+//! reparenting their accessible children onto the nearest ancestor —
+//! mirroring ARIA `role="presentation"`. Being pure and keyed off the same
+//! `node_map` the `App` maintains makes it unit-testable without a live
+//! AT-SPI bus.
 //!
-//! The single load-bearing entry point is [`build_tree_update`] — a **pure
-//! function** of `(root_widget, node_map, focused)`. It performs a depth-first
-//! walk of the widget tree, and for every widget that returns
-//! `Some(AccessNode)` it emits one `accesskit::Node`. Presentational widgets
-//! (those returning `None` from `accessibility()`) are **collapsed**: their
-//! accessible children are reparented onto the nearest accessible ancestor,
-//! exactly mirroring ARIA `role="presentation"`. This keeps the exported tree
-//! free of "group, group, group" noise from layout-only `Row`/`Column`/
-//! `Container`/`Stack`/`Spacer` widgets.
-//!
-//! Because it is pure and takes the widget tree + the same `node_map`
-//! (`taffy::NodeId -> *mut dyn Widget`) the `App` already maintains, it is
-//! **unit-testable without a live AT-SPI bus or a winit window** — the tests at
-//! the bottom build a small tree and assert on roles, hierarchy, focus, bounds,
-//! and an action round-trip.
-//!
-//! ## Stable ids
-//!
-//! AccessKit needs a stable [`accesskit::NodeId`] per node so incremental
-//! updates and focus events line up frame-to-frame. We derive each node's id
-//! **deterministically from the `taffy::NodeId`** found in the `node_map` (a
-//! `u64`), wrapped in our own newtype so the *root* id is reserved. When a
-//! widget has no taffy node (rare — only widgets that were never laid out), we
-//! fall back to a structural walk index, which is also stable for a fixed tree
-//! shape.
-//!
-//! ## Coordinate space
-//!
-//! [`Widget::get_rect`](crate::widget::Widget::get_rect) returns **logical**
-//! coordinates (the `App` applies the scale-factor transform at composite
-//! time). AccessKit wants bounds in the tree container's coordinate space; we
-//! emit logical coords and let the adapter/`set_root_window_bounds` carry the
-//! window placement. `build_tree_update` takes an optional `scale` so a caller
-//! that wants physical pixels can pass the window scale factor; the default
-//! (`1.0`) keeps logical coords, which is what the unit tests assert on.
+//! Each node's [`accesskit::NodeId`] is derived deterministically from its
+//! `taffy::NodeId` (see [`widget_node_id`]) so ids stay stable frame to
+//! frame; widgets with no taffy node fall back to a structural walk index.
 
 use std::collections::HashMap;
 
@@ -57,22 +26,15 @@ use taffy::NodeId as TaffyNodeId;
 use crate::a11y::{AccessNode, Action, Role};
 use crate::widget::Widget;
 
-/// The AccessKit id of the synthetic window/root node. Reserved so no widget
-/// can collide with it: widget ids are derived from their (non-zero in
-/// practice, but we offset regardless) taffy node id + 1, and the structural
-/// fallback ids are large offsets — see [`widget_node_id`].
+/// Reserved so no widget can collide with it: widget ids are offset by +1
+/// from their taffy node id, and structural fallback ids are large offsets
+/// — see [`widget_node_id`].
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
 
-/// Map our compact [`a11y::Role`](Role) onto AccessKit's far richer role set.
-/// We keep the toolkit surface small and map liberally:
-/// e.g. our [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
-/// our [`Role::ToggleButton`] becomes a [`AkRole::Button`] carrying the
-/// `toggled` state. Heading depth rides along as the AccessKit heading level
-/// (set by the caller, not here, since `AkRole::Heading` carries no level in
-/// the enum itself).
+/// E.g. [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
+/// [`Role::ToggleButton`] becomes [`AkRole::Button`] carrying `toggled` state.
 pub fn map_role(role: Role) -> AkRole {
     match role {
-        // Structural / containers
         Role::Window => AkRole::Window,
         Role::Dialog => AkRole::Dialog,
         Role::Group => AkRole::Group,
@@ -91,10 +53,9 @@ pub fn map_role(role: Role) -> AkRole {
         Role::Menu => AkRole::Menu,
         Role::MenuItem => AkRole::MenuItem,
 
-        // Controls
         Role::Button => AkRole::Button,
-        // No dedicated "toggle button" role; a Button with `toggled` state is
-        // the AccessKit idiom (the state is applied in `apply_state`).
+        // No dedicated "toggle button" role; a Button with `toggled` state
+        // (applied in `apply_state`) is the AccessKit idiom.
         Role::ToggleButton => AkRole::Button,
         Role::Checkbox => AkRole::CheckBox,
         Role::RadioButton => AkRole::RadioButton,
@@ -106,12 +67,10 @@ pub fn map_role(role: Role) -> AkRole {
         Role::MultilineTextInput => AkRole::MultilineTextInput,
         Role::Link => AkRole::Link,
         Role::ProgressBar => AkRole::ProgressIndicator,
-        // A spinner is an indeterminate progress indicator (busy flag applied
-        // in `apply_state`).
+        // Indeterminate progress indicator; busy flag applied in `apply_state`.
         Role::Spinner => AkRole::ProgressIndicator,
         Role::Tooltip => AkRole::Tooltip,
 
-        // Content
         Role::Image => AkRole::Image,
         Role::Label => AkRole::Label,
         Role::StaticText => AkRole::Label,
@@ -123,12 +82,9 @@ pub fn map_role(role: Role) -> AkRole {
     }
 }
 
-/// Map our [`a11y::Action`](Action) onto an [`accesskit::Action`]. Our
-/// `ToggleCheck` has no dedicated AccessKit verb — toggling a checkbox/switch
-/// is a `Click` at the platform level — so it maps to [`AkAction::Click`].
-/// `SetValue`/`SetSelection` carry a payload in our enum; that payload travels
-/// in the `ActionData` on the round trip ([`accesskit_action_to_ours`]), so the
-/// forward map here just names the verb.
+/// `ToggleCheck` has no dedicated verb — toggling is a `Click` at the
+/// platform level. `SetValue`/`SetSelection` payloads travel in `ActionData`
+/// on the round trip ([`accesskit_action_to_ours`]).
 pub fn map_action(action: &Action) -> AkAction {
     match action {
         Action::Activate => AkAction::Click,
@@ -145,11 +101,8 @@ pub fn map_action(action: &Action) -> AkAction {
     }
 }
 
-/// Inverse of [`map_action`] for an incoming
-/// [`accesskit::ActionRequest`](accesskit::ActionRequest): turn the AccessKit
-/// verb (+ optional [`accesskit::ActionData`]) back into our [`Action`] so the
-/// `App` can dispatch it via [`Widget::perform_action`]. Returns `None` for
-/// AccessKit actions we don't model (scroll-by-direction, custom actions, …).
+/// Inverse of [`map_action`]. `None` for actions we don't model
+/// (scroll-by-direction, custom actions, …).
 pub fn accesskit_action_to_ours(
     action: AkAction,
     data: Option<&accesskit::ActionData>,
@@ -179,11 +132,9 @@ pub fn accesskit_action_to_ours(
     })
 }
 
-/// Derive the stable AccessKit id for a widget. Preference order:
-///   1. its `taffy::NodeId` (a `u64`) offset by 1 so it can never be
-///      [`ROOT_ID`] (taffy ids start at 0);
-///   2. a structural walk index offset into a high range, for widgets that
-///      were never laid out (no entry in `node_map`).
+/// Prefers `taffy_id` (offset by 1 so it can never be [`ROOT_ID`], since
+/// taffy ids start at 0); falls back to a high-range walk index for widgets
+/// with no `node_map` entry.
 fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     match taffy_id {
         Some(id) => AkNodeId(u64::from(id) + 1),
@@ -192,33 +143,20 @@ fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     }
 }
 
-/// Build a complete [`accesskit::TreeUpdate`] from the live widget tree.
+/// `focused` is the taffy id of the focused widget; `focus` falls back to
+/// the synthetic root when nothing (or a stale id) matches — AccessKit
+/// requires `focus` to be a real node. `scale` multiplies rects into
+/// physical-pixel bounds; pass `1.0` for logical coords.
 ///
-/// * `root` — the App's root widget.
-/// * `node_map` — the App's `taffy::NodeId -> *mut dyn Widget` map, used in
-///   reverse to assign each widget a stable AccessKit id (see
-///   [`widget_node_id`]). A widget not present in the map gets a structural
-///   fallback id.
-/// * `focused` — the `taffy::NodeId` of the focused widget, if any. The
-///   resulting tree's `focus` points at the matching AccessKit node, or at the
-///   synthetic root window when nothing is focused (AccessKit requires `focus`
-///   to be a real node id).
-/// * `scale` — multiply each widget rect by this to emit physical-pixel bounds.
-///   Pass `1.0` for logical coords (what the tests assert on).
-///
-/// The returned update is **always a full tree** (every accessible node plus
-/// the synthetic window root). Pushing a full tree each frame is correct;
-/// AccessKit's platform adapters suppress events for unchanged nodes, so the
-/// cost is processing, not spurious AT chatter. (A future optimization can diff
-/// against the previous frame.)
+/// Always a full tree; AccessKit's adapters suppress events for unchanged
+/// nodes, so the cost is processing, not spurious AT chatter.
 pub fn build_tree_update(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
-    // Reverse map: widget pointer -> taffy id, so we can look up a stable id
-    // for any &dyn Widget we encounter during the walk.
+    // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let mut ptr_to_taffy: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
     for (&taffy_id, &w_ptr) in node_map {
         ptr_to_taffy.insert(w_ptr as *const dyn Widget, taffy_id);
@@ -245,11 +183,9 @@ pub fn build_tree_update(
     root_node.set_children(root_children);
     nodes.push((ROOT_ID, root_node));
 
-    // AccessKit requires `focus` to reference a node that exists in this update,
-    // or it panics the consuming assistive tech. The focused taffy id can be
-    // stale (taffy reassigns ids across relayouts) or point at a node the walk
-    // collapsed, so only honor it when that node was actually emitted; otherwise
-    // fall back to the synthetic window root.
+    // AccessKit panics the AT if `focus` references a node absent from this
+    // update. The taffy id can be stale (relayout reassigns ids) or point
+    // at a collapsed node, so only honour it when actually emitted.
     let focus = match focused_ak {
         Some(id) if nodes.iter().any(|(nid, _)| *nid == id) => id,
         _ => ROOT_ID,
@@ -263,11 +199,8 @@ pub fn build_tree_update(
     }
 }
 
-/// DFS helper. For the widget `w`:
-///   - if `w.accessibility()` is `Some`, emit a node, recurse to gather *its*
-///     accessible children, and append the node's id to `parent_children`;
-///   - if `None` (presentational), recurse and append the children's ids
-///     directly to `parent_children` (reparenting — the widget collapses out).
+/// DFS helper: if `w.accessibility()` is `None` (presentational), reparent
+/// the children's ids straight onto `parent_children` instead of emitting a node.
 fn visit(
     w: &dyn Widget,
     ptr_to_taffy: &HashMap<*const dyn Widget, TaffyNodeId>,
@@ -288,15 +221,11 @@ fn visit(
             let mut ak = AkNode::new(map_role(access_node.role));
             apply_semantics(&mut ak, &access_node, w, scale);
 
-            // Gather this node's accessible children (collapsing presentational
-            // descendants along the way).
             let mut my_children: Vec<AkNodeId> = Vec::new();
             for child in w.children() {
                 visit(child, ptr_to_taffy, scale, walk_counter, nodes, &mut my_children);
             }
-            // Synthetic children with no backing widget — a table's rows/cells,
-            // a virtualized list's items — described directly by the widget's
-            // AccessNode.
+            // Synthetic children with no backing widget — a table's rows/cells.
             for synth in &access_node.children {
                 visit_synthetic(synth, walk_counter, nodes, &mut my_children);
             }
@@ -315,19 +244,14 @@ fn visit(
     }
 }
 
-/// Emit an [`AccessNode`] that has no backing [`Widget`] — a table row/cell,
-/// a virtualized list item. Recurses into its own synthetic children. Carries
-/// no geometry (these elements aren't laid out as widgets); everything else
-/// (role, name/description/value, state, position, actions) is applied just as
-/// for a real widget node.
+/// A node with no backing [`Widget`] — a table row/cell, a virtualized list
+/// item. Carries no geometry; everything else is applied as for a real node.
 fn visit_synthetic(
     access: &AccessNode,
     walk_counter: &mut u64,
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
 ) {
-    // Synthetic nodes have no taffy id, so they take the structural fallback
-    // id keyed off the monotonic walk counter.
     let id = widget_node_id(None, *walk_counter);
     *walk_counter += 1;
 
@@ -344,12 +268,9 @@ fn visit_synthetic(
     parent_children.push(id);
 }
 
-/// Copy an [`AccessNode`]'s name/description/value/state plus the widget's
-/// bounds and supported actions onto an [`accesskit::Node`].
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {
     apply_semantics_common(ak, access);
 
-    // Geometry: logical rect → (optionally scaled) AccessKit Rect.
     let r = w.get_rect();
     if r.width() > 0.0 || r.height() > 0.0 {
         ak.set_bounds(AkRect::new(
@@ -361,9 +282,8 @@ fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: 
     }
 }
 
-/// The widget-independent half of [`apply_semantics`]: name/description/value,
-/// heading level, collection position, state, and implicit/role actions.
-/// Shared with [`visit_synthetic`] (table rows/cells), which has no geometry.
+/// The widget-independent half of [`apply_semantics`], also shared with
+/// [`visit_synthetic`] (table rows/cells), which has no geometry.
 fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(name) = &access.name {
         ak.set_label(name.clone());
@@ -371,21 +291,17 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(desc) = &access.description {
         ak.set_description(desc.clone());
     }
-    // Never expose a protected (password) value, even if the widget mistakenly
-    // populated one.
+    // Never expose a protected (password) value, even if the widget mistakenly populated one.
     if !access.state.protected {
         if let Some(value) = &access.value {
             ak.set_value(value.clone());
         }
     }
 
-    // Heading level rides on the role.
     if let Role::Heading { level } = access.role {
         ak.set_level(level as usize);
     }
 
-    // Collection position ("row 2 of 4", "tab 3 of 5") and explicit nesting
-    // depth, so an AT can place the element within its set.
     if let Some(pos) = access.pos_in_set {
         ak.set_position_in_set(pos);
     }
@@ -398,15 +314,12 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
 
     apply_state(ak, access);
 
-    // Implicit actions every accessible, enabled widget supports: Focus (if
-    // focusable) and the default Click activation.
     if access.state.focusable && !access.state.disabled {
         ak.add_action(AkAction::Focus);
     }
     if !access.state.disabled {
         ak.add_action(AkAction::Click);
     }
-    // Role-specific actions.
     match access.role {
         Role::Slider | Role::SpinButton => {
             if !access.state.disabled {
@@ -434,14 +347,11 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     }
 }
 
-/// Translate our [`AccessState`](crate::a11y::AccessState) onto the relevant
-/// AccessKit flags/enums.
 fn apply_state(ak: &mut AkNode, access: &AccessNode) {
     let s = &access.state;
 
     if s.focused {
-        // Focus is carried by the tree's `focus` field; nothing per-node here,
-        // but disabled/hidden/etc. below still apply.
+        // Focus is carried by the tree's `focus` field, nothing per-node here.
     }
     if s.disabled {
         ak.set_disabled();
@@ -461,9 +371,7 @@ fn apply_state(ak: &mut AkNode, access: &AccessNode) {
     if s.modal {
         ak.set_modal();
     }
-    // NOTE: AccessKit 0.24 has no `multiline` flag — a multi-line text field is
-    // expressed by the `MultilineTextInput` *role* (see `map_role`), which the
-    // widget supplies. So `s.multiline` needs no per-node flag here.
+    // AccessKit 0.24 has no `multiline` flag; expressed via `MultilineTextInput` (see `map_role`).
     if let Some(checked) = s.checked {
         ak.set_toggled(if s.mixed {
             Toggled::Mixed
@@ -478,10 +386,8 @@ fn apply_state(ak: &mut AkNode, access: &AccessNode) {
     if let Some(expanded) = s.expanded {
         ak.set_expanded(expanded);
     }
-    // `selected` is only meaningful inside a multi-selectable container; emit it
-    // when the widget says it is selected, and explicitly clear it (Some(false))
-    // for selectable items so an AT doesn't say "not selected" for unrelated
-    // controls.
+    // Clear `selected` explicitly (not just omit) for selectable roles so an
+    // AT doesn't read "not selected" on unrelated controls.
     if s.selected {
         ak.set_selected(true);
     } else if matches!(
@@ -504,9 +410,8 @@ mod tests {
     use std::collections::HashMap;
     use taffy::TaffyTree;
 
-    // A minimal test widget: a configurable accessibility() + children, with a
-    // rect we can assert on. Lets us build arbitrary trees without dragging in
-    // real widgets' layout machinery.
+    // Configurable accessibility()/children/rect, to build arbitrary trees
+    // without real widgets' layout machinery.
     struct TestWidget {
         access: Option<AccessNode>,
         rect: vello::kurbo::Rect,
@@ -601,8 +506,7 @@ mod tests {
         }
     }
 
-    /// Lay a tree out so every widget gets a real `taffy::NodeId` in the
-    /// node_map, exactly as the App does before `build_tree_update`.
+    /// Exactly as the App does before `build_tree_update`.
     fn lay_out(
         root: &mut dyn Widget,
     ) -> (TaffyTree<()>, HashMap<taffy::NodeId, *mut dyn Widget>, taffy::NodeId) {
@@ -637,7 +541,6 @@ mod tests {
 
     #[test]
     fn action_round_trips_through_accesskit() {
-        // Forward then back for the simple verbs.
         for a in [
             Action::Activate,
             Action::Focus,
@@ -650,8 +553,6 @@ mod tests {
         ] {
             let ak = map_action(&a);
             let back = accesskit_action_to_ours(ak, None).unwrap();
-            // Activate and ToggleCheck both map to Click; round-trip lands on
-            // Activate, which is the canonical "default activation".
             assert_eq!(back, a, "action {a:?} did not round-trip");
         }
 
@@ -696,8 +597,7 @@ mod tests {
             "presentational widgets must not emit a node"
         );
 
-        // The window root must own BOTH the Group and the reparented Label,
-        // since their presentational parents collapsed.
+        // The window root owns BOTH the Group and the reparented Label.
         let (_, window) = update
             .nodes
             .iter()
@@ -727,9 +627,7 @@ mod tests {
 
     #[test]
     fn synthetic_children_flow_into_the_tree_with_position_and_labels() {
-        // A widget that owns rows/cells with no backing widgets — modelling a
-        // DataTable. Each row is a Row node carrying its position, with two
-        // header-named Cell children.
+        // Models a DataTable: each row carries its position and two named cells.
         let row = |pos: usize, size: usize| {
             AccessNode::new(Role::Row)
                 .with_position(pos, size)
@@ -789,8 +687,6 @@ mod tests {
         let mut root = TestWidget::new(None).with_child(Box::new(btn));
 
         let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        // Find the taffy id of the button (the widget whose accessibility role
-        // is Button).
         let focused_taffy = node_map
             .iter()
             .find(|(_, ptr)| {
@@ -803,8 +699,6 @@ mod tests {
         assert!(focused_taffy.is_some());
 
         let update = build_tree_update(&root, &node_map, focused_taffy, 1.0);
-        // The focused AccessKit id must equal the button's derived id, and that
-        // id must exist in the node list.
         assert_ne!(update.focus, ROOT_ID, "focus should be the button, not root");
         assert!(
             update.nodes.iter().any(|(id, n)| *id == update.focus && n.role() == AkRole::Button),
@@ -822,10 +716,8 @@ mod tests {
 
     #[test]
     fn focus_falls_back_to_root_when_focused_id_is_stale() {
-        // A focused taffy id that isn't in the current tree (e.g. left over
-        // from before a relayout, since taffy reassigns ids) must NOT be
-        // forwarded as the tree focus — AccessKit panics the assistive tech if
-        // `focus` references a node that wasn't emitted.
+        // A stale taffy id (left over from before a relayout) must not be
+        // forwarded — AccessKit panics the AT if `focus` isn't emitted.
         let btn = TestWidget::new(Some(
             AccessNode::new(Role::Button)
                 .with_name("Save")

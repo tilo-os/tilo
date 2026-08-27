@@ -21,8 +21,7 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
         .ok()
 }
 
-/// Logical layout box: a 40×40 square whose top-left is at (10, 10) and
-/// bottom-right at (50, 50) in *logical* units.
+/// A 40×40 logical square, top-left (10, 10).
 const LOGICAL_L: f64 = 10.0;
 const LOGICAL_T: f64 = 10.0;
 const LOGICAL_R: f64 = 50.0;
@@ -66,25 +65,19 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
         (r, g, b) == (0x0f, 0x17, 0x2a)
     };
 
-    // Center of the square: logical (30,30) → physical (45,45).
     assert!(
         is_fill(45, 45),
         "square center should be filled at physical (45,45) for a 1.5x scale"
     );
-    // Well outside: physical (2,2) → logical (~1.3,1.3), before the square.
     assert!(
         is_bg(2, 2),
         "corner should be background outside the scaled square"
     );
 
-    // The decisive fractional-scale assertion — the RIGHT edge sits at
-    // logical 50 × 1.5 = physical 75:
-    //  * a pixel just inside (x=72) must be fill,
-    //  * a pixel just outside (x=78) must be background.
-    // An integer 1× compositor would put the edge at x=50 (so x=72 would
-    // be bg → fails); an integer 2× at x=100 (off a 90px buffer). Only the
-    // fractional 1.5 factor satisfies both, proving the edge is placed at
-    // the exact fractional coordinate with a crisp vector boundary.
+    // Decisive: the right edge sits at logical 50 × 1.5 = physical 75. An
+    // integer 1× compositor would put it at x=50 (so x=72 would be bg);
+    // an integer 2× at x=100 (off a 90px buffer). Only the fractional
+    // factor satisfies both checks.
     assert!(
         is_fill(72, 45),
         "pixel at physical x=72 (logical ~48, inside the square at 1.5x) should be fill"
@@ -94,7 +87,6 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
         "pixel at physical x=78 (logical ~52, past the 1.5x-scaled right edge at 75) should be bg"
     );
 
-    // Same argument on the bottom edge (logical 50 → physical 75).
     assert!(
         is_fill(45, 72),
         "pixel at physical y=72 (inside at 1.5x) should be fill"
@@ -107,11 +99,8 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
 
 #[test]
 fn different_fractional_factors_place_the_edge_proportionally() {
-    // Prove the placement scales with the factor (not a fixed rounding):
-    // the right edge of the logical-50 square lands at 50×scale for both
-    // 1.25 and 1.75.
+    // Proves the placement scales with the factor, not a fixed rounding.
     for (scale, edge_in, edge_out) in [(1.25_f64, 60u32, 65u32), (1.75_f64, 85u32, 90u32)] {
-        // logical 60 canvas → physical ceil(60*scale) with headroom.
         let phys = ((60.0 * scale).round() as u32) + 4;
         let mut renderer = match try_new_renderer(phys, phys) {
             Some(r) => r,

@@ -8,13 +8,10 @@ use regex::Regex;
 
 /// Files exempt from the audit:
 ///  - theme.rs (the single source of truth for literal color values)
-///  - tokens/** (palette sub-modules — colors.rs, elevation.rs, terminal_palette.rs
-///    declare the literal values that theme.rs composes; they are the token
-///    origin, not token consumers)
+///  - tokens/** (palette sub-modules — the token origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
-///  - tests/**                                                            (test fixtures)
-///  - `#[cfg(test)]` modules inside a src file (test fixtures too — see
-///    `test_module_spans`)
+///  - tests/** and `#[cfg(test)]` modules inside a src file (test fixtures —
+///    see `test_module_spans`)
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.contains("/theme.rs")
@@ -116,14 +113,10 @@ fn no_hardcoded_style_literals_in_tree() {
         let content = fs::read_to_string(f).unwrap();
         let skip = test_module_spans(&content);
         for (i, line) in content.lines().enumerate() {
-            // Ignore comment lines.
             if line.trim_start().starts_with("//") { continue; }
-            // Ignore `#[cfg(test)]` modules. The audit polices *draw
-            // paths*, and `tests/**` is already exempt on the grounds that
-            // a fixture may state a literal; a `#[cfg(test)]` module is
-            // the same fixture living in the same file as the code it
-            // covers. A test that pins how a token is painted has to be
-            // able to name the token's values.
+            // The audit polices *draw paths*; a `#[cfg(test)]` module is a
+            // fixture living in the same file as the code it covers, and a
+            // test that pins how a token is painted has to name its values.
             if skip.iter().any(|(a, b)| i >= *a && i < *b) { continue; }
             for (re, msg) in &patterns {
                 if re.is_match(line) {
@@ -144,21 +137,14 @@ fn no_hardcoded_style_literals_in_tree() {
 }
 
 // ===========================================================================
-// The patterns the audit above could not see
-// ===========================================================================
+// Escape hatches `no_hardcoded_style_literals_in_tree` cannot see: the real
+// `Color::from_rgb8`/`from_rgba8` constructors, `Color::WHITE`/`Color::BLACK`,
+// and the `surface_white_*`/`border_white_*` tiers HIG §9.5 deprecates.
 //
-// `no_hardcoded_style_literals_in_tree` greps for `Color::rgb8(` — the *old*
-// peniko constructor. This tree calls `Color::from_rgb8(` / `from_rgba8(`, so
-// that pattern matched **zero** lines while 125 literal colours sat in the
-// widget draw paths it was meant to police. Two more spellings slip past the
-// same way: `Color::WHITE` / `Color::BLACK`, and the `surface_white_*` /
-// `border_white_*` tiers HIG §9.5 deprecates.
-//
-// Turning these on outright would fail on hundreds of existing lines, and a
-// mass rewrite is a worse change than the one it fixes. So they are ratcheted:
-// `design_token_baseline.txt` records what each file carries today, a file may
-// never carry more, and a file that carries fewer lowers its record in the same
-// commit. The number can only go down.
+// Turning these into hard failures would break hundreds of existing lines, so
+// they're ratcheted instead: `design_token_baseline.txt` records what each
+// file carries today, a file may never carry more, and one that carries
+// fewer lowers its record in the same commit. The number only goes down.
 
 /// Path to the recorded counts, relative to the crate root.
 const BASELINE: &str = "tests/design_token_baseline.txt";

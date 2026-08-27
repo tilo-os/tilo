@@ -131,8 +131,6 @@ impl PageJumpPalette {
         }
     }
 
-    /// Handle a key event when the palette is visible. Returns true
-    /// if consumed.
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
         if !self.visible_flag {
             return false;
@@ -226,7 +224,6 @@ impl PageJumpPalette {
             &shape,
         );
 
-        // Input row.
         let input_rect = Rect::new(
             rect.x0 + PADDING,
             rect.y0 + PADDING,
@@ -269,7 +266,6 @@ impl PageJumpPalette {
             None,
         );
 
-        // Results list.
         let list_top = input_rect.y1 + PADDING;
         let row_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
@@ -319,8 +315,8 @@ impl PageJumpPalette {
         }
     }
 
-    /// Static page-id getter for tests that don't want to fish
-    /// through `take_selection`.
+    /// Page-id getter for tests that don't want to fish through
+    /// `take_selection`.
     pub fn highlighted_id(&self) -> Option<Uuid> {
         self.highlighted().map(|e| e.id)
     }

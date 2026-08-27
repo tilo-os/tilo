@@ -26,25 +26,12 @@ fn luma(c: Color) -> f32 {
 }
 
 impl TerminalPalette {
-    /// Derive the terminal palette from the OS theme's colour tokens.
-    ///
-    /// The terminal must not carry its own colour scheme — per-app colour
-    /// customisation belongs at the shell/theme level, so the default fg/bg and
-    /// the ANSI ramp are read from the active [`Colors`] here. The result tracks
-    /// whatever theme the OS applies (graphite dark, paper light, Dracula, …)
-    /// instead of a fixed palette.
-    ///
-    /// * `fg_default` / `bg_default` come straight from the theme's primary text
-    ///   and ground, so a blank terminal is indistinguishable from any other
-    ///   surface of the OS.
-    /// * The six chromatic ANSI hues anchor to the theme's semantic colours —
-    ///   every qOS theme defines these on-brand (danger→red, success→green,
-    ///   warning→yellow, info→cyan) — with the accent supplying blue and magenta
-    ///   derived from red+blue. Cyan is nudged toward green so it stays visibly
-    ///   distinct from the (often blue-ish) accent.
-    /// * The neutral anchors (ANSI black / white and their bright tiers) blend
-    ///   from the ground toward the foreground, so both ends stay legible whether
-    ///   the theme is light or dark.
+    /// The terminal must not carry its own colour scheme — customisation
+    /// belongs at the shell/theme level, so fg/bg and the ANSI ramp are
+    /// read from the active [`Colors`], tracking whatever theme the OS
+    /// applies. `fg_default`/`bg_default` come straight from the theme's
+    /// primary text and ground; the neutral ANSI anchors blend
+    /// ground→foreground so both ends stay legible in light or dark.
     pub fn from_colors(c: &Colors) -> Self {
         let bg = c.surfaces.base;
         let fg = c.text_primary;
@@ -93,12 +80,10 @@ impl TerminalPalette {
         }
     }
 
-    /// The terminal palette for the default dark theme, derived from its colours.
     pub fn dark() -> Self {
         Self::from_colors(&Colors::dark())
     }
 
-    /// The terminal palette for the default light theme, derived from its colours.
     pub fn light() -> Self {
         Self::from_colors(&Colors::light())
     }

@@ -58,9 +58,8 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         b.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
-    // Reveal the tooltip over the first (Search) button. The chip is measured,
-    // positioned and painted by the shared primitive — the same call the App's
-    // central TooltipHost makes.
+    // Reveal the tooltip over the first (Search) button via the shared
+    // primitive — the same call the App's central TooltipHost makes.
     let viewport = Rect::new(0.0, 0.0, w as f64, h as f64);
     tooltip::draw_hover_tooltip(
         &mut scene,
@@ -74,9 +73,8 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 
     let rgba = renderer.render(&scene, bg);
 
-    // The chip is anchored just below the first button. Sample a pixel inside
-    // that band and assert it is opaque and differs from the background — i.e.
-    // the chip surface actually rasterised where it was anchored.
+    // The chip is anchored just below the first button — sample a pixel there
+    // and assert it's opaque and differs from the background.
     let (bx, by) = (44u32, 78u32);
     let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, bx, by);
     let bg8 = bg.to_rgba8();

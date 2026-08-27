@@ -1,19 +1,13 @@
 //! Visual E2E journey for a `GroupRow`: renders two side-by-side
 //! `WindowGroup`s through a sequence of cross-group tab operations —
-//! baseline, transfer-tab (moves a pill from group A to group B),
-//! split-tab (detach into a brand-new group), close-group (remove an
-//! entire group) — and asserts each produces distinct pixel output.
+//! transfer-tab, split-tab, close-group — and asserts each produces
+//! distinct pixel output. The regression guard for *inter*-group
+//! rasterisation, complementing `window_group_visual_journey.rs`
+//! (single-group paint paths) and `group_row.rs`'s state-only unit tests.
 //!
-//! Complements `window_group_visual_journey.rs` (single-group paint
-//! paths) and the state-only assertions in `group_row.rs` unit tests.
-//! This file's job is to be the regression guard for the *inter*-group
-//! rasterisation: pill-count changes, group-count changes, and
-//! cross-group drag transfer should all be visible in the pixels.
-//!
-//! Skips gracefully when no wgpu adapter is available, matching the
-//! existing offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to
-//! write one PNG per state (`group_row_<state>.png`) for by-eye
-//! inspection.
+//! Skips gracefully when no wgpu adapter is available. Set
+//! `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
+//! (`group_row_<state>.png`) for by-eye inspection.
 
 use std::collections::HashMap;
 use crate::support::offscreen::OffscreenRenderer;
@@ -85,9 +79,6 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
     let mut scene = Scene::new();
     row.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    // Dark slate backdrop so the accented chrome pops clearly off the
-    // background — same base tone used by the window-group journey so
-    // the two tests read as belonging to the same family.
     let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     renderer.render(&scene, bg)
 }
@@ -117,11 +108,8 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-/// Full cross-group journey: two groups side by side →
-/// transfer one tab A → B → split a tab into a brand-new third group →
-/// close (drop) the last group. Every state must produce a distinct
-/// pixel hash. If any two match, a layout or paint invariant has
-/// regressed.
+/// Every state must produce a distinct pixel hash; if any two match, a
+/// layout or paint invariant has regressed.
 #[test]
 fn group_row_visual_journey_distinguishes_all_states() {
     let (w, h) = (960u32, 220u32);
@@ -133,7 +121,6 @@ fn group_row_visual_journey_distinguishes_all_states() {
         }
     };
 
-    // State 1: baseline — two groups, each with 3 tabs of distinct kinds.
     let g_a = make_group(
         100,
         &[
@@ -155,9 +142,8 @@ fn group_row_visual_journey_distinguishes_all_states() {
     let baseline_hash = pixel_hash(&baseline);
     maybe_write_png(&baseline, w, h, "group_row_baseline");
 
-    // State 2: transfer tab A3 from group 0 → group 1 (dropped at index 0).
-    // Group 0 now has 2 pills, group 1 has 3 pills — the distribution of
-    // pills across the row visibly shifts left-to-right.
+    // Group 0 now has 2 pills, group 1 has 3 — distribution across the
+    // row visibly shifts left-to-right.
     assert!(
         row.transfer_tab(0, 1, 3, 0),
         "transfer_tab(src=0, dst=1, tab=3, idx=0) must succeed",
@@ -170,10 +156,8 @@ fn group_row_visual_journey_distinguishes_all_states() {
         "transferring a tab between groups must change the rendered output",
     );
 
-    // State 3: split tab A2 into a brand-new group inserted to the
-    // left of group 1. Row now has 3 groups: [A1] | [A2] | [B1, B2, A3].
-    // Group count changes — the row's horizontal layout re-divides
-    // available width, so the pixel output must shift again.
+    // Row now has 3 groups: [A1] | [A2] | [B1, B2, A3] — group count
+    // changes re-divide available width, so pixel output shifts again.
     assert!(
         row.split_tab_into_new_group(0, 2, 1),
         "split_tab_into_new_group(src=0, tab=2, gap_idx=1) must succeed",
@@ -191,13 +175,8 @@ fn group_row_visual_journey_distinguishes_all_states() {
     );
 }
 
-/// Concept-parity maximize: rendering a `GroupRow` with one of its
-/// groups flagged `maximized` must produce pixel output distinct from
-/// the same row's non-maximized baseline AND must visually collapse
-/// the siblings — verified by checking the maximized group's stored
-/// rect absorbs the row's full inner width while the siblings'
-/// stored rects collapse to zero. Mirrors the concept's
-/// `width: 100vw` fixed overlay in `WindowFrame.tsx:188-200`.
+/// Verified by checking the maximized group's stored rect absorbs the
+/// row's full inner width while the siblings' collapse to zero.
 #[test]
 fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     let (w, h) = (960u32, 220u32);
@@ -225,8 +204,6 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     let baseline_hash = pixel_hash(&baseline);
     maybe_write_png(&baseline, w, h, "group_row_maximize_baseline");
 
-    // Flip group 1 (middle) to maximized. The next render must paint
-    // ONLY that group at the row's full width — siblings collapsed.
     row.groups[1].maximized = true;
     let maximized = render_row(&mut renderer, &mut row);
     let maximized_hash = pixel_hash(&maximized);
@@ -237,8 +214,6 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
         "flipping a group to maximized must change the rendered output",
     );
 
-    // Stored rects: siblings collapsed to zero width; maximized group
-    // absorbs the row's full inner width.
     let r0 = row.groups[0].get_rect();
     let r1 = row.groups[1].get_rect();
     let r2 = row.groups[2].get_rect();
@@ -261,16 +236,12 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     );
 }
 
-/// Determinism guard: two GroupRows built identically must produce the
-/// same image. Without this, the journey test's pixel-hash comparisons
-/// are meaningless.
-///
-/// "The same image" is not the same as "the same bytes": the GPU
+/// Without this, the journey test's pixel-hash comparisons are
+/// meaningless. "The same image" isn't "the same bytes": the GPU
 /// rasteriser may move an antialiased edge pixel one 8-bit step between
-/// runs (see the `ui::offscreen` module docs for the mechanism), so
-/// compare with the tolerance that describes and nothing wider. The
-/// journey test's `assert_ne!`s are unaffected — a state change moves
-/// far more than one step on far more than a few pixels.
+/// runs, so compare with that tolerance and nothing wider — the journey
+/// test's `assert_ne!`s are unaffected, since a state change moves far
+/// more than one step on far more than a few pixels.
 #[test]
 fn group_row_fresh_render_is_deterministic() {
     let (w, h) = (600u32, 200u32);
@@ -298,11 +269,9 @@ fn group_row_fresh_render_is_deterministic() {
     );
 }
 
-/// Run a build → compute → apply layout pass on `row` at `w`×`h` so its
-/// child rects land in screen space (needed before driving hit-tested
-/// gestures like a group grab). Returns the taffy tree + root node so the
-/// caller can reuse them when dispatching events (the child widgets read
-/// `taffy.children` / `taffy.layout` during event handling).
+/// Returns the taffy tree + root node so the caller can reuse them when
+/// dispatching events (child widgets read `taffy.children`/`taffy.layout`
+/// during event handling).
 fn lay_out(row: &mut GroupRow, w: u32, h: u32) -> (TaffyTree<()>, NodeId) {
     let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
@@ -329,18 +298,15 @@ fn lay_out(row: &mut GroupRow, w: u32, h: u32) -> (TaffyTree<()>, NodeId) {
     (taffy, root)
 }
 
-/// Mid-reorder drop indicator: grab a group's tab-bar background, drag it
-/// past a sibling, and render the in-flight state. The accent drop-rule at
-/// the target gap must make the frame visibly differ from the idle strip.
-/// Set `QUICK_UI_SCREENSHOT_DIR` to dump `group_row_reorder_{idle,mid}.png`
-/// for by-eye inspection.
+/// Grab a group's tab-bar background, drag past a sibling, and render the
+/// in-flight state — the drop-rule accent at the target gap must make the
+/// frame visibly differ from the idle strip.
 #[test]
 fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-    // Wide enough that all three 600 px groups + gaps fit on-screen, so
-    // the drop gap after group 200 (where the indicator paints) is visible.
+    // Wide enough that all three 600px groups + gaps fit on-screen.
     let (w, h) = (1900u32, 220u32);
     let mut renderer = match try_new_renderer(w, h) {
         Some(r) => r,
@@ -356,7 +322,6 @@ fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
         make_group(300, &[(3, "Term", AppKind::Terminal)]),
     ]);
 
-    // Idle baseline.
     let idle = render_row(&mut renderer, &mut row);
     maybe_write_png(&idle, w, h, "group_row_reorder_idle");
 
@@ -397,9 +362,8 @@ fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
         "the drag must target a drop gap so the indicator has a slot to paint",
     );
 
-    // Render the in-flight state. render_row re-lays out (group positions
-    // unchanged since no reorder committed yet) and draws — the drop
-    // indicator paints from the retained target.
+    // No reorder is committed yet, so group positions are unchanged;
+    // the drop indicator paints from the retained target.
     let mid = render_row(&mut renderer, &mut row);
     maybe_write_png(&mid, w, h, "group_row_reorder_mid");
 

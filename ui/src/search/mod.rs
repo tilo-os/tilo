@@ -1,15 +1,12 @@
 //! Shared global-search framework for qOS.
 //!
-//! A dozen apps (`music`, `mail`, `tube`, `contacts`, `file-explorer`,
-//! `software_store`, …) each roll their own search bar, their own result list,
-//! and their own ranking. This module is the seam that kills that redundancy:
-//! an app **declares what it can find** by implementing [`SearchProvider`], and
-//! the framework does the querying, merging, and ranking. Paired with the
-//! shared [`SearchField`](crate::widget::SearchField) input and the
-//! [`SearchResultsView`](crate::widget::SearchResultsView) overlay, an app gets
-//! a consistent, OS-styled search surface for free — and a future shell-level
-//! Ctrl+K can drive the very same [`SearchRegistry`] across every app's
-//! providers.
+//! Rather than each app rolling its own search bar, result list, and
+//! ranking, an app declares what it can find by implementing
+//! [`SearchProvider`], and the framework queries, merges, and ranks.
+//! Paired with [`SearchField`](crate::widget::SearchField) and
+//! [`SearchResultsView`](crate::widget::SearchResultsView), that's a
+//! consistent OS-styled search surface for free — and lets a future
+//! shell-level Ctrl+K drive the same [`SearchRegistry`] across every app.
 //!
 //! ```
 //! use ui::search::{SearchRegistry, SearchResult};

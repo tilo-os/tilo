@@ -202,11 +202,6 @@ impl Widget for Slider {
         if disabled {
             scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &self.rect);
         }
-        // Focus indicator (deferred until after the knob is positioned so
-        // we can draw a tight ring around the knob, not the whole widget
-        // rect — the full-rect ring looked like a stray border around
-        // siblings in a Row layout).
-        // Track
         let track_height = 6.0;
         let track_rect = Rect::new(
             self.rect.x0 + TRACK_PADDING,
@@ -218,7 +213,6 @@ impl Widget for Slider {
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.neutral[3], None, &track_shape);
         scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track_shape);
 
-        // Active Track (Blue part on the left)
         let active_track_rect = Rect::new(
             track_rect.x0,
             track_rect.y0,
@@ -226,15 +220,10 @@ impl Widget for Slider {
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        // Active track = filled portion of the slider — concept uses
-        // indigo-500 here, indigo-600 only for hover affordances.
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
 
-        // Knob — radius scales with state so hover/press are obvious
-        // even before you read the colors. Idle uses the translucent
-        // surface_white_10 token over a border_white_20 stroke, hover
-        // bumps the fill to surface_white_20, press fills with the
-        // accent and adds a soft halo.
+        // Radius scales with state so hover/press are obvious even before
+        // you read the colours.
         let knob_radius = self.knob_radius_for_state();
         let knob_x = track_rect.x0 + self.value * track_rect.width();
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
@@ -263,9 +252,7 @@ impl Widget for Slider {
         scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
         scene.stroke(&vello::kurbo::Stroke::new(border_width), transform, border_color, None, &knob_shape);
 
-        // Tight focus ring around the knob (2 px outset) — replaces the
-        // earlier full-rect border that looked like a misdrawn outer
-        // chrome when the slider lived inside a Row.
+        // Tight focus ring around the knob (2px outset), not the whole rect.
         if self.is_focused {
             let focus_ring = Circle::new(knob_center, knob_radius + 2.0);
             scene.stroke(

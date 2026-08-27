@@ -1,11 +1,9 @@
-//! `Table` — a CRDT-native **editable grid**.
-//!
-//! Unlike [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
-//! sortable list view), this widget is a structural editor: the user types
-//! into cells and adds / removes rows and columns *anywhere* in the grid via
-//! hover affordances in the gutters. Every mutation writes straight through to
-//! the Automerge document, so two collaborators editing the same table
-//! converge.
+//! `Table` — a CRDT-native **editable grid**. Unlike
+//! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
+//! sortable list view), this is a structural editor: the user types into
+//! cells and adds / removes rows and columns anywhere via hover affordances
+//! in the gutters, with every mutation writing straight through to the
+//! Automerge document.
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -16,22 +14,18 @@
 //! * `header` — `Bool`: render the first row as a header band.
 //! * `seq`    — `Int`: monotonic id counter (combined with the actor id).
 //!
-//! Row and column ids are stable and are never renumbered on insert/delete —
-//! only the `rows`/`cols` *order lists* change. Inserting a column in the
-//! middle is therefore a single list insert plus one empty `Text` per row, and
-//! it merges cleanly with a concurrent edit to any other cell. This flat
-//! `(row, col) -> text` shape maps directly onto the `qdoc` table
-//! representation (a `cell` block tagged `table`/`row`/`col`), so a table
-//! authored here can be lowered into a document later.
+//! Row and column ids are stable and never renumbered on insert/delete — only
+//! the `rows`/`cols` *order lists* change, so inserting a column in the
+//! middle is a single list insert plus one empty `Text` per row, merging
+//! cleanly with a concurrent edit to any other cell.
 //!
 //! # Rendering
 //!
 //! Each cell is a real [`crate::widget::TextInput`] in plain-chrome mode, so
-//! caret placement, selection, word navigation and clipboard all come for
-//! free. The cells are laid out with a CSS-grid Taffy node (one track per
-//! column, fixed row height); the widget itself paints the grid lines, the
-//! header band, row banding, and the insert / delete / resize affordances in
-//! the gutters on top. All colours and spacing come from the [`Theme`].
+//! caret placement, selection, word navigation and clipboard come for free.
+//! Cells are laid out with a CSS-grid Taffy node (one track per column, fixed
+//! row height); the widget paints the grid lines, header band, row banding,
+//! and the insert / delete / resize affordances in the gutters on top.
 
 use std::collections::HashMap;
 
@@ -63,7 +57,6 @@ const TOP_GUTTER: f64 = 24.0;
 /// Trailing padding so the far-edge insert pill isn't clipped.
 const RIGHT_PAD: f64 = 12.0;
 const BOTTOM_PAD: f64 = 12.0;
-/// Default width of a freshly created column.
 const DEFAULT_COL_W: f64 = 152.0;
 /// Columns never shrink below this when dragged.
 const MIN_COL_W: f64 = 56.0;
@@ -74,11 +67,8 @@ const ROW_H: f64 = 40.0;
 const BOUNDARY_HIT: f64 = 11.0;
 /// Half-width of the drag zone around an interior column boundary (resize).
 const RESIZE_HIT: f64 = 4.0;
-/// Radius of the round insert "+" pill.
 const PILL_R: f64 = 8.0;
-/// Side of the square delete "×" handle.
 const DELETE_SIDE: f64 = 15.0;
-/// Cell body font size.
 const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
@@ -300,7 +290,6 @@ pub fn header(doc: &AutoCommit, t: &ObjId) -> bool {
     )
 }
 
-/// Set the header-band flag.
 pub fn set_header(doc: &mut AutoCommit, t: &ObjId, on: bool) {
     ensure(doc, t);
     let _ = doc.put(t, K_HEADER, on);
@@ -433,7 +422,6 @@ impl Table {
         self.n_rows() == 0 || self.n_cols() == 0
     }
 
-    /// Build a fresh, plain-chrome cell editor bound to `(rid, cid)`.
     fn make_cell(rid: &str, cid: &str) -> Box<TextInput> {
         Box::new(
             TextInput::new(vec![])

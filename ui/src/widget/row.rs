@@ -47,14 +47,11 @@ impl Row {
         self
     }
 
-    /// Keep all children on a single line (disable the default flex-wrap).
     pub fn no_wrap(mut self) -> Self {
         self.no_wrap = true;
         self
     }
 
-    /// Grow to fill the remaining vertical space of a parent column and
-    /// stretch children to the row's full height.
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_height = true;
         self

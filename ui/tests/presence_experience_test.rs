@@ -1,15 +1,8 @@
-//! Real-path tests for the rich presence layer: they drive the exact
-//! `App` collab pump a live app runs each frame (`apply_collab_event_for_test`
+//! Real-path tests for the rich presence layer: they drive the exact `App`
+//! collab pump a live app runs each frame (`apply_collab_event_for_test`
 //! routes through the same `apply_remote_presence` the socket path uses),
 //! and assert on the production `PresenceCtx` surface the widgets render
 //! from — not a bespoke helper.
-//!
-//! Covered:
-//! - a peer's `Typing` event records a fading textmarker under the right scope,
-//! - a peer arriving on a *different* nav scope flags that nav item,
-//! - an off-screen peer can be followed by clicking their edge mist,
-//! - a caret-only peer still gets a marker, and a caret that is only reading
-//!   does not.
 
 use std::time::Instant;
 
@@ -25,9 +18,9 @@ fn app() -> App {
     App::new(State::new(), Box::new(Container::new()))
 }
 
-/// A peer's `Typing` presence event lands as a fading highlighter span in
-/// `PresenceCtx`, scoped to the block they typed in — exactly what the
-/// block editor / text input read to paint the marker.
+/// Lands as a fading highlighter span in `PresenceCtx`, scoped to the
+/// block they typed in — exactly what the block editor / text input read
+/// to paint the marker.
 #[test]
 fn remote_typing_event_records_fading_tint() {
     let mut a = app();
@@ -53,10 +46,8 @@ fn remote_typing_event_records_fading_tint() {
     );
 }
 
-/// A peer arriving on a Tab scope that is NOT the one we're looking at
-/// flags that nav item: `peers_on(that tab)` returns them, which is the
-/// exact query the notes sidebar / sheets tab strip use to paint the
-/// "Alice is on the Contacts screen" indicator.
+/// `peers_on(that tab)` returns them, the exact query the notes sidebar /
+/// sheets tab strip use to paint "Alice is on the Contacts screen".
 #[test]
 fn remote_arrival_on_tab_flags_the_right_nav_item() {
     let mut a = app();
@@ -92,9 +83,8 @@ fn remote_arrival_on_tab_flags_the_right_nav_item() {
     assert_eq!(a.presence_ctx().peers_on(&calendar), &[UserId("alice".into())]);
 }
 
-/// An off-screen peer's cursor produces a clickable edge-mist band;
-/// clicking it latches the follow target to that peer and resolves to
-/// their live pointer.
+/// Clicking the edge-mist band latches the follow target to that peer and
+/// resolves to their live pointer.
 #[test]
 fn follow_offscreen_peer_by_clicking_their_mist() {
     let mut a = app();
@@ -124,20 +114,14 @@ fn follow_offscreen_peer_by_clicking_their_mist() {
     assert_eq!(a.followed_peer(), Some("bob"), "a miss must not drop the follow");
 }
 
-/// A collaborator that publishes **only** a caret — never a `Typing` payload
-/// — still gets a highlighter over the run it just wrote.
+/// A collaborator that publishes **only** a caret — never `Typing` — still
+/// gets a highlighter over the run it just wrote.
 ///
-/// This is the reason the derivation lives on the receiving side rather than
-/// the sending one. `App` synthesises `Typing` from its own focused widget's
-/// caret, which covers peers running this toolkit and nobody else: an agent, a
-/// headless bot, or any other SDK client publishes the one thing every
-/// collaborator publishes — where its caret is — and would otherwise show a
-/// cursor with nothing to say what it did.
-///
-/// Such a peer announces the caret at the block's *pre-edit* length and then
-/// ships the CRDT delta, so the run between two consecutive carets is exactly
-/// the text it inserted, and it is already in the document by the time the
-/// second caret arrives.
+/// Why derivation lives on the receiving side, not the sending one: `App`
+/// only synthesises `Typing` from its own focused widget's caret, which
+/// covers peers running this toolkit and nobody else — an agent, headless
+/// bot, or other SDK client publishes only where its caret is, so deriving
+/// from that on receipt is what gives it a marker at all.
 #[test]
 fn caret_only_peer_still_gets_a_highlight() {
     let mut a = app();
@@ -147,9 +131,8 @@ fn caret_only_peer_still_gets_a_highlight() {
             ui::presence::PathSegment::Field("b1".into()),
         ],
     };
-    // Caret before the edit, then after it. No `Typing` anywhere — and between
-    // them the delta that carries the edit itself, which is what tells the
-    // caret advance apart from somebody reading.
+    // Caret before the edit, then after it; the delta between them is what
+    // tells the advance apart from somebody reading.
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "agent".into(),
         key: key.clone(),
@@ -175,9 +158,9 @@ fn caret_only_peer_still_gets_a_highlight() {
     assert!(marks[0].1 > 0.5, "a just-written span is near full opacity");
 }
 
-/// A peer running this toolkit publishes `Typing` *and* an advanced caret for
-/// the same run. That must read as one marker, not two tints stacked into a
-/// darker, less legible band.
+/// A peer publishing `Typing` *and* an advanced caret for the same run
+/// must read as one marker, not two tints stacked into a darker, less
+/// legible band.
 #[test]
 fn toolkit_peer_sending_both_tints_once() {
     let mut a = app();
@@ -232,25 +215,18 @@ fn retreating_caret_marks_nothing() {
     );
 }
 
-/// Reading is not writing.
-///
-/// A caret sweeping forward through a document nobody is editing — a peer
-/// clicking into a paragraph, arrowing along a line, dragging to select — must
-/// leave no marker at all. The highlight claims "here is what they just
-/// changed", so painting it for movement makes it a lie, and in a document two
-/// people are reading together that is the ordinary case rather than the edge
-/// one.
-///
-/// The caret says *who* and *where*; only a document change says *that
-/// anything happened*. This is the assertion that keeps the two joined.
+/// Reading is not writing: a caret sweeping forward through a document
+/// nobody is editing — clicking into a paragraph, arrowing along a line,
+/// dragging to select — must leave no marker. The caret says *who* and
+/// *where*; only a document change says *that anything happened*.
 #[test]
 fn a_caret_moving_without_an_edit_marks_nothing() {
     let mut a = app();
     let key = PresenceKey::Widget {
         path: vec![ui::presence::PathSegment::Index(3)],
     };
-    // A long forward sweep, exactly as reading produces it, and not one byte
-    // of document change anywhere near it.
+    // A long forward sweep, exactly as reading produces it, with no
+    // document change anywhere near it.
     for pos in [0usize, 12, 30, 64, 90] {
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: "reader".into(),
@@ -292,9 +268,6 @@ fn an_explicit_typing_report_needs_no_edit_pulse() {
     );
 }
 
-/// A caret that jumps further than anyone types in one go is a click, not a
-/// write.
-///
 /// The cap exists for exactly one case: a pointer landing far down a long
 /// paragraph while an edit happens to have landed a moment earlier, which
 /// would otherwise paint the whole span it crossed.
@@ -323,13 +296,11 @@ fn an_absurd_caret_jump_is_a_click_and_not_a_run() {
     );
 }
 
-/// You do not get highlighted to yourself.
-///
-/// A marker following your own cursor is noise — you know what you just typed
-/// — and on a busy document it would be a stripe under every word you wrote.
-/// The frames a session publishes come back to it (the same person may have
-/// the document open twice), so this is a live path: even with an edit pulse
-/// armed and a caret running forward, your own id paints nothing.
+/// A marker following your own cursor is noise, and on a busy document
+/// would be a stripe under every word you wrote. The frames a session
+/// publishes come back to it (the same person may have the document open
+/// twice), so this is a live path, not a special case: your own id paints
+/// nothing even with an edit pulse armed and a caret running forward.
 #[test]
 fn your_own_edits_do_not_highlight_on_your_own_screen() {
     let mut a = app();

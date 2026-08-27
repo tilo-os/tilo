@@ -57,12 +57,10 @@ fn paint_banner(
     let accent = kind.color(theme);
     let radius = theme.tokens.radii.md as f64;
 
-    // Tinted surface + hairline border in the severity colour.
     let surf = RoundedRect::from_rect(rect, radius);
     scene.fill(Fill::NonZero, transform, accent.with_alpha_factor(0.13), None, &surf);
     scene.stroke(&Stroke::new(1.0), transform, accent.with_alpha_factor(0.4), None, &surf);
 
-    // Left accent bar.
     let bar = RoundedRect::new(
         rect.x0,
         rect.y0,
@@ -72,13 +70,11 @@ fn paint_banner(
     );
     scene.fill(Fill::NonZero, transform, accent, None, &bar);
 
-    // Leading icon, vertically centered.
     let icon_x = rect.x0 + PAD_X;
     let icon_cy = rect.center().y;
     let icon_rect = Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
     icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
 
-    // Text block.
     let text_x = icon_rect.x1 + GAP;
     let title_size = theme.tokens.typography.scale.base;
     let msg_size = theme.tokens.typography.scale.sm;
@@ -108,7 +104,6 @@ fn paint_banner(
         );
     }
 
-    // Trailing dismiss "×".
     if dismissible {
         let dx = rect.x1 - PAD_X - DISMISS_D;
         let dr = Rect::from_center_size(
@@ -135,7 +130,6 @@ pub enum BannerKind {
 }
 
 impl BannerKind {
-    /// The semantic accent colour for this severity, from the theme ramp.
     pub fn color(self, theme: &Theme) -> Color {
         let s = &theme.tokens.colors.semantic;
         match self {
@@ -180,7 +174,6 @@ pub struct Banner {
 }
 
 impl Banner {
-    /// Construct a banner of the given severity with a title line.
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
         Self {
             kind,
@@ -196,22 +189,16 @@ impl Banner {
         }
     }
 
-    /// Shorthand for `Banner::new(BannerKind::Info, title)`.
     pub fn info(title: impl Into<String>) -> Self { Self::new(BannerKind::Info, title) }
-    /// Shorthand for `Banner::new(BannerKind::Success, title)`.
     pub fn success(title: impl Into<String>) -> Self { Self::new(BannerKind::Success, title) }
-    /// Shorthand for `Banner::new(BannerKind::Warning, title)`.
     pub fn warning(title: impl Into<String>) -> Self { Self::new(BannerKind::Warning, title) }
-    /// Shorthand for `Banner::new(BannerKind::Error, title)`.
     pub fn error(title: impl Into<String>) -> Self { Self::new(BannerKind::Error, title) }
 
-    /// Add the dim secondary line beneath the title.
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
 
-    /// Override the default leading icon for the severity.
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
@@ -495,7 +482,6 @@ mod tests {
         assert!(b.take_dismissed(), "dismiss signal fires");
         assert!(!b.take_dismissed(), "dismiss signal drains after one read");
         assert!(b.is_dismissed());
-        // Once dismissed it paints nothing.
         let scene = draw(&mut b);
         let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
         assert_eq!(fills, 0, "a dismissed banner paints nothing");

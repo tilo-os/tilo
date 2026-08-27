@@ -193,11 +193,9 @@ impl Widget for ProgressBar {
         let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
 
         if self.indeterminate {
-            // Slide a fixed-width segment across the track. The phase
-            // [0, 1) drives the segment's left edge from
-            // `-segment_width` (just off-screen left) to `track_width`
-            // (just off-screen right), so the segment fully enters and
-            // exits the track every period.
+            // Slide a fixed-width segment across the track. Phase [0,1)
+            // drives its left edge from `-segment_width` (off-screen
+            // left) to `track_width` (off-screen right) each period.
             let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
             let travel = track_width + segment_width;
             // With reduced motion the segment holds at a fixed position
@@ -227,12 +225,10 @@ impl Widget for ProgressBar {
                 );
             }
         } else if self.progress > 0.0 {
-            // Determinate fill — width is `progress * track_width`.
-            // Crucially, we *skip the fill entirely* at `progress == 0.0`
-            // so the COLOR-draw-tag count distinguishes "empty" from
-            // "non-empty" bars at the encoding level (the visual would
-            // be identical, but the test contract requires zero fill
-            // draws).
+            // Determinate fill, width `progress * track_width`. Skipped
+            // entirely at `progress == 0.0` (rather than a zero-width
+            // rect) so the COLOR-draw-tag count can distinguish empty
+            // from non-empty bars at the encoding level in tests.
             let fill_width = self.progress as f64 * track_width;
             let fill_rect = Rect::new(
                 self.rect.x0,
@@ -389,12 +385,9 @@ mod tests {
     }
 
     /// At `progress == 0.0` the bar must paint the track *only* — the
-    /// accent fill rect must be skipped entirely. Pinning this against
-    /// the encoding (rather than colour-sampling pixels) means a future
-    /// refactor that "draws a zero-width rect anyway" trips the test.
-    /// We compare against an indeterminate bar at the same phase as a
-    /// sanity baseline: indeterminate always emits an extra fill, so
-    /// the zero-progress bar must emit strictly fewer COLOR tags.
+    /// accent fill rect must be skipped entirely, pinned against the
+    /// encoding (not pixel colour) so a future "draws a zero-width rect
+    /// anyway" refactor trips the test.
     #[test]
     fn progress_bar_at_zero_paints_no_fill() {
         let mut zero = bar_at(0.0);
@@ -402,8 +395,7 @@ mod tests {
         let zero_fills = count_color_fills(&zero_scene);
 
         // The track alone is one COLOR fill — no accent fill should
-        // appear. Counting the track-only baseline by rendering a bar
-        // explicitly skips the fill branch.
+        // appear.
         assert_eq!(
             zero_fills, 1,
             "zero-progress bar must emit exactly the track COLOR fill \
@@ -421,12 +413,9 @@ mod tests {
         );
     }
 
-    /// At `progress == 1.0` the accent fill must span the *full* track
-    /// width. We can't inspect the encoded rect directly, so we drive
-    /// the contract through the public `progress()` accessor *and* via
-    /// a width-vs-half comparison: at full progress the bar produces a
-    /// fill of width `track_width`; at half progress it produces a fill
-    /// of width `track_width / 2`. The widths are exposed by computing
+    /// At `progress == 1.0` the accent fill must span the full track
+    /// width. Can't inspect the encoded rect directly, so this drives
+    /// the contract through the public `progress()` accessor, computing
     /// the fill rectangle the same way `draw` does.
     #[test]
     fn progress_bar_at_full_paints_track_width_fill() {
@@ -506,11 +495,10 @@ mod tests {
         );
     }
 
-    /// With reduced motion an indeterminate bar holds its segment at a fixed
-    /// position: a bar backdated by a full sweep paints the *same* segment
-    /// geometry as a fresh one, because `draw` ignores elapsed time. With
-    /// motion on, the same backdate lands the segment elsewhere — proving the
-    /// freeze is the reduced-motion path, not a no-op.
+    /// With reduced motion an indeterminate bar holds its segment fixed:
+    /// a bar backdated by a full sweep paints the same geometry as a
+    /// fresh one. With motion on, the same backdate lands elsewhere —
+    /// proving the freeze is the reduced-motion path, not a no-op.
     #[test]
     fn reduce_motion_freezes_the_indeterminate_segment() {
         use std::time::{Duration, Instant};

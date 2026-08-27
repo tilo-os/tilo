@@ -1,18 +1,9 @@
-//! `BlockEditor` — a vertical stack of [`RichTextLine`]-backed blocks
-//! (paragraphs + headings) wired up with split-on-Enter, merge-on-
-//! Backspace, arrow-key block navigation, and markdown-shortcut
-//! promotion (`# ` → H1, `## ` → H2, `### ` → H3).
+//! `BlockEditor`: a stack of [`RichTextLine`]-backed blocks (paragraph,
+//! heading, lists, code, divider) with split-on-Enter, merge-on-Backspace,
+//! arrow-key navigation, and markdown-shortcut promotion (`# ` -> H1, etc).
 //!
-//! Phase 2 supports two block kinds:
-//! - **Paragraph** — body text.
-//! - **Heading(1..=3)** — H1 (28 pt), H2 (22 pt), H3 (18 pt).
-//!
-//! No demotion: once a block is a heading the user must explicitly
-//! convert (Phase 3+). Promotion only fires when the user types the
-//! markdown prefix into an *empty* paragraph — typing `#` inside an
-//! already-non-empty paragraph leaves it as a paragraph (matches
-//! Notion / Obsidian's `/` slash menu mental model: a markdown
-//! shortcut acts only on the leading position of an empty line).
+//! No demotion once a block is a heading. Promotion only fires on an
+//! *empty* paragraph, matching the slash-menu convention.
 
 use std::collections::HashMap;
 
@@ -33,77 +24,45 @@ use crate::widget::rich_text_line::{LineSignal, RichTextLine};
 use crate::widget::slash_menu::SlashMenu;
 use crate::widget::Widget;
 
-/// Maximum indent level for `Bullet` / `Checklist` blocks. Beyond
-/// this the visual hierarchy stops reading as nested and just shifts
-/// off the right edge of the panel — so we clamp aggressively.
+/// Deeper nesting runs off the panel's right edge.
 pub const MAX_LIST_INDENT: u8 = 5;
-/// Horizontal indent per level, in CSS-like pixels. Matches the
-/// `28px` indent step Notion uses in its dense block view.
+/// Matches the 28px indent step Notion uses in its dense block view.
 pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 
-/// Block kinds supported by the Phase 3 block editor.
-///
-/// Each variant carries the per-block state the editor needs to
-/// render and serialise it:
-/// - `Bullet { indent }` / `Checklist { indent, done }` carry the
-///   nesting depth (clamped to [0, MAX_LIST_INDENT]).
-/// - `CodeBlock { lang }` carries the optional language tag for the
-///   fenced markdown serialisation. **v0.1 limitation**: code blocks
-///   are single-line per block — Enter inside a code block creates a
-///   *new* code block below, not a literal newline. Multi-line code
-///   editing is a Phase 3+ follow-up; the existing `RichTextLine`
-///   substrate is single-line only.
-/// - `Divider` is non-editable, non-focusable. It serialises to
-///   `---` on a line by itself.
+/// `CodeBlock` is single-line per block: Enter creates a new code block
+/// below rather than a newline, since `RichTextLine` is single-line only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
     Paragraph,
-    /// 1, 2, or 3. Any other value is invalid; the constructor
-    /// helpers in this module clamp to [1, 3].
+    /// Constructor helpers clamp to [1, 3]; other values are invalid.
     Heading(u8),
-    /// Unordered list item. `indent` is the nesting depth in
-    /// [0, MAX_LIST_INDENT].
     Bullet { indent: u8 },
-    /// Ordered (numbered) list item. `indent` is the nesting depth in
-    /// [0, MAX_LIST_INDENT]. The displayed number is NOT stored on the
-    /// block — it's computed from the item's position within its
-    /// contiguous run at the same indent (see `numbered_ordinals`), so
-    /// inserting / deleting / reordering items renumbers automatically.
+    /// The number is computed from position within its run at the same
+    /// indent (`numbered_ordinals`), not stored — renumbers automatically.
     Numbered { indent: u8 },
-    /// Checklist item. `indent` is the nesting depth; `done` flips
-    /// when the user clicks the checkbox glyph.
     Checklist { indent: u8, done: bool },
-    /// Fenced code block. `lang` is the language tag after the
-    /// opening fence (e.g. `rust`), or `None` for a bare ` ``` ` fence.
-    /// Single-line per block — see the type doc-comment.
+    /// `lang` is the fence's tag (e.g. `rust`), `None` for a bare fence.
     CodeBlock { lang: Option<String> },
-    /// Horizontal rule. Non-editable, non-focusable.
+    /// Non-editable, non-focusable.
     Divider,
 }
 
 impl BlockKind {
-    /// Render-time font size in CSS-like pixels. Matches what
-    /// `RichTextLine::with_size` expects.
     pub fn font_size(&self) -> f32 {
         match self {
             BlockKind::Paragraph => 16.0,
             BlockKind::Heading(1) => 28.0,
             BlockKind::Heading(2) => 22.0,
             BlockKind::Heading(3) => 18.0,
-            // Future-proof: unknown heading level falls back to H3.
             BlockKind::Heading(_) => 18.0,
             BlockKind::Bullet { .. } => 16.0,
             BlockKind::Numbered { .. } => 16.0,
             BlockKind::Checklist { .. } => 16.0,
             BlockKind::CodeBlock { .. } => 14.0,
-            // Dividers don't render text — height comes from the
-            // editor's row scaffolding, not the font.
             BlockKind::Divider => 16.0,
         }
     }
 
-    /// True iff this block kind supports indent / outdent via
-    /// Tab / Shift-Tab.
     pub fn supports_indent(&self) -> bool {
         matches!(
             self,
@@ -113,14 +72,10 @@ impl BlockKind {
         )
     }
 
-    /// True iff this block has an editable text body. Dividers and
-    /// (visually, but not structurally) future placeholder kinds
-    /// return false. Used to skip event routing to non-editable rows.
     pub fn is_editable(&self) -> bool {
         !matches!(self, BlockKind::Divider)
     }
 
-    /// Current indent level (0 for non-list kinds).
     pub fn indent(&self) -> u8 {
         match self {
             BlockKind::Bullet { indent } => *indent,
@@ -131,14 +86,11 @@ impl BlockKind {
     }
 }
 
-/// One row in the editor: a kind + the editable line.
 pub struct Block {
     pub kind: BlockKind,
     pub line: RichTextLine,
-    /// `true` when this block was created by Shift+Enter — it's a
-    /// soft-break continuation of the previous block. Rendered with
-    /// no inter-block top spacing so the two visual lines read as
-    /// one paragraph.
+    /// Set by Shift+Enter: renders with no inter-block top spacing so
+    /// the two lines read as one paragraph.
     pub soft_break: bool,
 }
 
@@ -162,8 +114,6 @@ impl Block {
         }
     }
 
-    /// Bullet list item with the given indent + text. Indent clamped
-    /// to [0, MAX_LIST_INDENT].
     pub fn bullet(indent: u8, text: &str) -> Self {
         let kind = BlockKind::Bullet { indent: indent.min(MAX_LIST_INDENT) };
         Self {
@@ -173,9 +123,6 @@ impl Block {
         }
     }
 
-    /// Ordered (numbered) list item with the given indent + text.
-    /// Indent clamped to [0, MAX_LIST_INDENT]. The visible number is
-    /// derived at render time, not stored here.
     pub fn numbered(indent: u8, text: &str) -> Self {
         let kind = BlockKind::Numbered { indent: indent.min(MAX_LIST_INDENT) };
         Self {
@@ -185,7 +132,6 @@ impl Block {
         }
     }
 
-    /// Checklist item with the given indent + done flag + text.
     pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
         let kind = BlockKind::Checklist { indent: indent.min(MAX_LIST_INDENT), done };
         Self {
@@ -195,10 +141,6 @@ impl Block {
         }
     }
 
-    /// Fenced code block. `lang` is `None` for a bare ` ``` ` fence.
-    ///
-    /// **v0.1 limitation**: single-line per block — see `BlockKind`
-    /// doc-comment. Multi-line code editing is a follow-up.
     pub fn code_block(lang: Option<String>, text: &str) -> Self {
         let kind = BlockKind::CodeBlock { lang };
         Self {
@@ -211,9 +153,7 @@ impl Block {
         }
     }
 
-    /// Horizontal rule. Carries an empty inner line so the layout
-    /// machinery keeps a uniform shape; the line is never focused or
-    /// edited.
+    /// Empty inner line keeps a uniform shape; never focused or edited.
     pub fn divider() -> Self {
         Self {
             kind: BlockKind::Divider,
@@ -222,105 +162,62 @@ impl Block {
         }
     }
 
-    /// Convenience read-through for tests + markdown serializer.
     pub fn text(&self) -> &str {
         self.line.value()
     }
 }
 
-/// Vertical column of paragraph + heading blocks.
 pub struct BlockEditor {
     blocks: Vec<Block>,
-    /// Currently focused block, if any. Used to route key events and
-    /// place the caret after split/merge. `None` when the whole
-    /// editor is unfocused.
     focused: Option<usize>,
-    /// True iff the editor as a whole holds App-level focus. Decoupled
-    /// from `focused` so we can preserve the focused-block index
-    /// across blur/refocus cycles.
+    /// Decoupled from `focused` so the index survives blur/refocus.
     is_focused: bool,
     rect: Rect,
-    /// Per-block taffy node ids, filled in `build_layout`.
     child_nodes: Vec<NodeId>,
-    /// True until the next `mark_drawn`. Flipped on any structural
-    /// or content edit.
     dirty: bool,
-    /// Set whenever the block list grows or shrinks. Surfaced via
+    /// Set when the block list grows/shrinks; drained by
     /// `take_structure_dirty` so the host rebuilds taffy.
     structure_dirty: bool,
-    /// Internal: set to true when any block reported a user edit
-    /// since the last `is_dirty()` call. Drained by `is_dirty`.
     edit_pending: bool,
-    /// Last mouse position in logical coords, cached from
-    /// `CursorMoved` events so click-handling code can hit-test the
-    /// checkbox glyphs without re-reading the winit event.
     last_mouse_pos: Point,
-    /// Start of an in-flight cross-block selection drag: `(block_idx,
-    /// byte_in_that_block)`. Set on MouseInput::Pressed by the
-    /// click's hit-test, cleared on Released. While present, the
-    /// CursorMoved handler paints selection bands across every block
-    /// between the start and the pointer's current block — the only
-    /// way to extend a selection past a paragraph boundary, since the
-    /// per-block TextInput's drag only tracks x within its own rect.
+    /// `(block_idx, byte)` start of an in-flight cross-block selection
+    /// drag. While set, CursorMoved paints selection bands across every
+    /// block between start and pointer — the only way to extend a
+    /// selection past a paragraph boundary, since a block's own
+    /// TextInput drag only tracks x within its own rect.
     cross_block_drag_start: Option<(usize, usize)>,
-    /// Furthest range the cross-block drag has touched on this drag
-    /// session. When the pointer retreats (e.g. user drags from block
-    /// 3 down to block 5 then back up to block 4), the previously-
-    /// dragged-through blocks (5) need their selections cleared. We
-    /// remember the range so we know which blocks to wipe.
+    /// Furthest range touched this drag, so retreating (down then back
+    /// up) knows which blocks to clear.
     cross_block_drag_touched: Option<(usize, usize)>,
-    /// Slash menu popover. Owned by the editor so it shares lifecycle
-    /// with the surrounding block list; rendered out-of-band via
-    /// [`BlockEditor::draw_overlay`].
     slash_menu: SlashMenu,
-    /// Byte offset (in the focused block) where the `/` keystroke
-    /// that opened the slash menu landed. Used to splice the menu's
-    /// `/<filter>` text back out of the block when a kind is committed
-    /// (so the block ends up with just the existing content).
+    /// Byte offset where `/` was typed, so `/<filter>` can be spliced
+    /// back out on commit.
     slash_open_at: Option<usize>,
-    /// Page-link popover. Opens when the user types `[[` inside any
-    /// editable block; closes on Enter / Escape / no-match-backspace.
     link_popover: LinkPopover,
-    /// Byte offset of the leading `[[` that opened the popover. Used
-    /// to splice the `[[<filter>` back out of the block once a page
+    /// Byte offset of the leading `[[`, spliced back out once a page
     /// is selected.
     link_open_at: Option<usize>,
-    /// When `Some`, the editor is backed by this Automerge `List` of
-    /// block Maps (`pages[id].blocks`). Each block's `Text` is bound to
-    /// the matching line so edits sync. `None` = local-only editor (the
-    /// pre-collaboration behaviour, kept for examples/tests).
+    /// `Some`: backed by this Automerge block-Map list, bound per-line
+    /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
-    /// Set by structural edits (split / merge / delete) so the next
-    /// `sync` mirrors the new block structure into the doc List,
-    /// preserving existing block `Text` objects by identity. Distinct
-    /// from `structure_dirty`, which drives taffy rebuilds on the host.
+    /// Set by split/merge/delete so the next `sync` mirrors structure
+    /// into the doc, preserving block `Text` identity. Distinct from
+    /// `structure_dirty` (which drives taffy).
     doc_structure_dirty: bool,
-    /// The local user's id, threaded into the focused block's line so its
-    /// edits stamp authorship marks. `None` = no authorship attribution.
     local_author: Option<String>,
-    /// Fixed end of a keyboard-driven cross-block selection: `(block,
-    /// byte)`. Set on the first `Ctrl+Shift+Arrow` (from the live caret)
-    /// and held across consecutive extends so the selection grows/shrinks
-    /// from a stable anchor. Cleared by any non-extend key or a mouse
-    /// press so the next extend starts fresh.
+    /// Anchor of a keyboard cross-block selection, latched on the first
+    /// `Ctrl+Shift+Arrow` and held across extends. Cleared by any
+    /// non-extend key or mouse press.
     kbd_sel_anchor: Option<(usize, usize)>,
-    /// Empty-state hint shown (dim) when the editor is a single empty
-    /// paragraph, so a brand-new document reads as a real placeholder rather
-    /// than a void. Host-customisable via [`Self::with_empty_hint`] so apps
-    /// other than Notes (e.g. the calendar's event notes) show a fitting
-    /// prompt; defaults to the Notes-style hint.
+    /// Placeholder for a single empty paragraph; host-customisable via
+    /// [`Self::with_empty_hint`].
     empty_hint: String,
 }
 
-/// Default empty-state placeholder — the Notes-app prompt. Kept as a const so
-/// callers can compare against it and the two `new`/`from_markdown`
-/// constructors stay in sync.
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
 
 impl BlockEditor {
-    /// New editor with a single empty paragraph. Mirrors what every
-    /// rich text editor does on first open — there has to be at least
-    /// one block to receive focus.
+    /// Starts with one empty paragraph — there must be a block to focus.
     pub fn new() -> Self {
         let mut s = Self {
             blocks: Vec::new(),
@@ -348,35 +245,21 @@ impl BlockEditor {
         s
     }
 
-    /// Builder: override the dim empty-state placeholder shown when the editor
-    /// holds a single empty paragraph. Lets a host (e.g. the calendar's event
-    /// notes) show a fitting prompt instead of the Notes-style default.
     pub fn with_empty_hint(mut self, hint: &str) -> Self {
         self.empty_hint = hint.to_string();
         self
     }
 
-    /// Mutate the empty-state placeholder after construction.
     pub fn set_empty_hint(&mut self, hint: &str) {
         self.empty_hint = hint.to_string();
     }
 
-    /// The empty-state placeholder currently in effect.
     pub fn empty_hint(&self) -> &str {
         &self.empty_hint
     }
 
-    /// Parse a markdown string into a fresh editor. Uses the
-    /// line-based dumb parser in `apps/notes/src/markdown.rs`'s
-    /// counterpart logic — here we re-implement the minimum:
-    ///
-    /// - Lines starting with `# `, `## `, `### ` become Heading(1..=3).
-    /// - Blank lines are block separators (consecutive blank lines
-    ///   collapse).
-    /// - Anything else is a Paragraph.
-    ///
-    /// Empty input → an editor with one empty paragraph (so the user
-    /// always has a place to start typing).
+    /// Minimal markdown parser; empty input still produces one empty
+    /// paragraph.
     pub fn from_markdown(md: &str) -> Self {
         let mut editor = Self {
             blocks: Vec::new(),
@@ -402,19 +285,11 @@ impl BlockEditor {
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
-            // Skip pure blank lines — they serve as block separators
-            // but don't produce a block themselves. (A trailing
-            // newline at EOF is the common case.)
             if line.is_empty() {
                 continue;
             }
-            // Fenced code block: parse the optional language tag, then
-            // consume lines until the closing fence. Single-line in v0.1
-            // means we expect ``` -> one body line -> ``` and serialise
-            // back the same. If the body spans multiple lines we join
-            // them with `\n` into the single RichTextLine — the user
-            // sees the literal newlines as characters (a known v0.1
-            // limitation flagged in `BlockKind::CodeBlock` docs).
+            // A fenced body's `\n`s join into one RichTextLine as literal
+            // newline characters (code blocks are single-line per Block).
             if let Some(rest) = line.strip_prefix("```") {
                 let lang = if rest.is_empty() {
                     None
@@ -424,7 +299,6 @@ impl BlockEditor {
                 let mut body: Vec<&str> = Vec::new();
                 while let Some(next) = lines.peek() {
                     if *next == "```" {
-                        // Consume the closing fence.
                         lines.next();
                         break;
                     }
@@ -433,17 +307,13 @@ impl BlockEditor {
                 editor.blocks.push(Block::code_block(lang, &body.join("\n")));
                 continue;
             }
-            // Divider: a line of exactly `---`. Three or more hyphens
-            // is the markdown convention but we only emit exactly
-            // three so round-trip is byte-stable.
+            // Three hyphens only, for byte-stable round-trip.
             if line == "---" {
                 editor.blocks.push(Block::divider());
                 continue;
             }
-            // Checklist comes BEFORE bullet because `- [ ]` matches the
-            // bullet prefix `- ` too. Indent: count leading 4-space
-            // groups (matches Notion / GFM nesting). Tabs are treated
-            // as one indent step.
+            // Checklist must be checked before bullet: `- [ ]` also
+            // matches the bullet prefix `- `.
             let (indent, body) = parse_list_indent(line);
             if let Some(check_body) = body
                 .strip_prefix("- [ ] ")
@@ -472,8 +342,7 @@ impl BlockEditor {
                 editor.blocks.push(Block::numbered(indent, num_body));
                 continue;
             }
-            // Headings are NOT indented in our grammar — they live at
-            // column 0 always. So we use the raw `line`, not `body`.
+            // Headings are never indented — use the raw `line`, not `body`.
             if let Some(rest) = line.strip_prefix("### ") {
                 editor.blocks.push(Block::heading(3, rest));
             } else if let Some(rest) = line.strip_prefix("## ") {
@@ -490,16 +359,7 @@ impl BlockEditor {
         editor
     }
 
-    /// Inverse of [`from_markdown`]. Round-trip is byte-stable for
-    /// any document this editor can produce: each block becomes one
-    /// line; blocks are joined by a single blank line; the output
-    /// ends in a trailing newline. So:
-    ///
-    /// ```text
-    /// # Title\n\nFirst paragraph.\n\nSecond paragraph.\n
-    /// ```
-    ///
-    /// round-trips identically.
+    /// Inverse of [`from_markdown`]; round-trip is byte-stable.
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let ordinals = numbered_ordinals(&self.blocks);
@@ -554,37 +414,27 @@ impl BlockEditor {
                 }
             }
         }
-        // Always trailing-newline. Round-trip stability: the parser
-        // skips empty lines, so adding a single \n at the end does
-        // not introduce a phantom block on re-parse.
         out.push('\n');
         out
     }
 
-    /// True iff any block reported a user edit since the last call.
-    /// Drains the edit flag.
+    /// Drains per-block + edit-pending dirty; `structure_dirty` is only
+    /// peeked here, and stays set until `take_structure_dirty`.
     pub fn is_dirty(&mut self) -> bool {
-        // Drain per-block dirty flags so they don't accumulate.
         for b in &mut self.blocks {
             if b.line.take_dirty().is_some() {
                 self.edit_pending = true;
             }
         }
         let was = self.edit_pending || self.structure_dirty;
-        // structure_dirty stays set until `take_structure_dirty` —
-        // is_dirty merely peeks at it. But edit_pending is consumed.
         self.edit_pending = false;
         was
     }
 
-    /// True iff at least one block is currently focused.
     pub fn is_focused(&self) -> bool {
         self.is_focused
     }
 
-    /// Set editor-wide focus. When focus arrives, route it to
-    /// `focused` (or block 0 if no prior focus); when focus leaves,
-    /// blur the focused block but remember the index for next time.
     pub fn set_focus(&mut self, focused: bool) {
         if focused == self.is_focused {
             return;
@@ -609,23 +459,18 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Read-only block-list view, for tests + the markdown serializer.
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
     }
 
-    /// Mutable block-list view. Used by integration tests + the
-    /// notes app's persistence path that needs to seed blocks
-    /// programmatically (bypassing the event loop). Production code
-    /// should prefer the public mutators (`split_at_cursor` etc.).
+    /// For tests + notes-app persistence to seed blocks directly;
+    /// production code should prefer the public mutators.
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
         &mut self.blocks
     }
 
-    /// Replace the entire block list with `blocks`. Pairs with the
-    /// notes app's markdown parser, which produces a richer
-    /// representation (carrying inline marks) than this widget's
-    /// own from_markdown can express.
+    /// For the notes app's markdown parser, which produces a richer
+    /// representation (inline marks) than this widget's `from_markdown`.
     pub fn set_blocks(&mut self, blocks: Vec<Block>) {
         self.blocks = blocks;
         if self.blocks.is_empty() {
@@ -638,9 +483,6 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Set the local user's id for authorship attribution. Applied to
-    /// every block's line so edits stamp marks regardless of which block
-    /// is focused.
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.local_author = author.clone();
         for b in &mut self.blocks {
@@ -648,36 +490,23 @@ impl BlockEditor {
         }
     }
 
-    /// Back this editor with an Automerge `List` of block Maps
-    /// (`pages[id].blocks`). After binding, every edit syncs through the
-    /// CRDT and remote edits appear via [`sync`].
-    ///
-    /// - If the doc List already has blocks (an existing or remote
-    ///   page), the editor **adopts** them, discarding the locally
-    ///   seeded blocks.
-    /// - If the doc List is empty (a brand-new page), the editor
-    ///   **seeds** it from its current local blocks.
+    /// If the doc list already has blocks, adopts them (discarding the
+    /// locally seeded ones); if empty, seeds it from the local blocks.
     pub fn bind_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
         self.blocks_list = Some(list.clone());
         let doc_len = state.length(&list);
         if doc_len == 0 {
-            // Seed the doc from our current local blocks.
             self.doc_structure_dirty = true;
             self.reconcile_structure_to_doc(state, &list);
             self.doc_structure_dirty = false;
         } else {
-            // Adopt the doc's blocks.
             self.rebuild_from_doc(state, &list, doc_len);
         }
     }
 
-    /// Mirror the local block structure into the doc `List`, preserving
-    /// each existing block's `Text` object by identity (Automerge list
-    /// insert/delete keep other elements' object ids stable, so a
-    /// mid-list split doesn't disturb its neighbours' history). New
-    /// blocks get a fresh `Text` seeded from their local content;
-    /// blocks whose `Text` is bound but whose local text drifted (after
-    /// a programmatic `set_text` during split/merge) are reconciled with
+    /// Preserves each existing block's `Text` object by identity
+    /// (Automerge list insert/delete keeps other elements' object ids
+    /// stable); text drifted by a local split/merge is reconciled with
     /// a minimal splice.
     fn reconcile_structure_to_doc(&mut self, state: &mut AutoCommit, list: &ObjId) {
         let mut doc_idx = 0usize;
@@ -717,17 +546,14 @@ impl BlockEditor {
                 }
             }
         }
-        // Drop any trailing doc blocks beyond what we have locally.
         while state.length(list) > doc_idx {
             let last = state.length(list) - 1;
             let _ = state.delete(list, last);
         }
     }
 
-    /// Rebuild the local block list from the doc `List`, binding each
-    /// line to its `Text`. Preserves the focused block index + caret
-    /// offset across the rebuild so a remote edit elsewhere doesn't
-    /// yank the local caret.
+    /// Preserves focus + caret across the rebuild so a remote edit
+    /// elsewhere doesn't yank the local caret.
     fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
         let saved_focus = self.focused;
         let saved_caret = self
@@ -763,11 +589,8 @@ impl BlockEditor {
         }
     }
 
-    /// Test/integration hook: mark the edit-pending flag so the
-    /// next `is_dirty()` returns true. Necessary because programmatic
-    /// `set_text` on the inner line deliberately doesn't flip dirty
-    /// (it's not a user edit). Tests use this to simulate the user
-    /// having edited.
+    /// `RichTextLine::set_text` deliberately doesn't flip dirty (it's
+    /// not a user edit); tests use this to simulate one.
     pub fn force_dirty_for_test(&mut self) {
         self.edit_pending = true;
         self.dirty = true;
@@ -775,14 +598,10 @@ impl BlockEditor {
         self.doc_structure_dirty = true;
     }
 
-    /// Currently focused block index, if any.
     pub fn focused_index(&self) -> Option<usize> {
         self.focused
     }
 
-    /// Move focus to `idx`. Clamps to the valid block range. Lands
-    /// the caret at byte 0 of the target block (used after a split
-    /// to land in the new block).
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
         let target = idx.min(self.blocks.len().saturating_sub(1));
         if let Some(prev) = self.focused {
@@ -808,17 +627,8 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    // -------- internal mutators (also exposed for tests) -------------
-
-    /// Split the block at `idx` into two blocks at byte `split_at`.
-    /// The prefix stays in place (as the same kind); the suffix
-    /// becomes a NEW paragraph below. After the split, focus lands
-    /// at byte 0 of the new (suffix) block.
-    ///
-    /// Splitting at byte 0 of an empty block: still produces two
-    /// blocks (the original empty one + a new empty paragraph below).
-    /// This is intentional — it's how the user gets a blank line by
-    /// hitting Enter twice.
+    /// Splitting at byte 0 of an empty block still produces two blocks
+    /// — how the user gets a blank line by hitting Enter twice.
     pub fn split_at_cursor(&mut self, idx: usize, split_at: usize) {
         let Some(block) = self.blocks.get_mut(idx) else {
             return;
@@ -826,25 +636,14 @@ impl BlockEditor {
         let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
-        // Char-boundary safety: round down to the nearest char start.
         let split = clamp_char_boundary(&text, split);
         let (prefix, suffix) = text.split_at(split);
-        // Update the current block's text to the prefix; preserve kind.
         block.line.set_text(prefix);
-        // Suffix's kind depends on the current block's kind:
-        // - Bullet/Checklist: new item of the SAME kind + indent. This
-        //   matches every Notion-style editor — pressing Enter on a
-        //   list item continues the list.
-        // - CodeBlock: new code block (Enter inside a code block does
-        //   NOT insert a literal newline in v0.1 — see BlockKind doc).
-        // - Anything else: a fresh paragraph.
         let suffix_block = match cur_kind {
             BlockKind::Bullet { indent } => Block::bullet(indent, suffix),
             BlockKind::Numbered { indent } => Block::numbered(indent, suffix),
             BlockKind::Checklist { indent, .. } => {
-                // The new item is unchecked even if the source was
-                // checked — matches the user's mental model of "add a
-                // new todo".
+                // Unchecked even if the source was checked — "add a new todo".
                 Block::checklist(indent, false, suffix)
             }
             BlockKind::CodeBlock { ref lang } => Block::code_block(lang.clone(), suffix),
@@ -857,15 +656,9 @@ impl BlockEditor {
         self.focus_block(idx + 1, CursorPlacement::Start);
     }
 
-    /// Merge the block at `idx` with the previous block: append the
-    /// current block's text to the previous block's, drop the current
-    /// block, and re-focus the previous block at the join byte. No-op
-    /// if `idx == 0` (there's no previous block to merge into).
-    ///
-    /// Kind handling: the surviving block keeps the *previous* block's
-    /// kind. This matches every editor — backspacing the start of a
-    /// paragraph into a heading folds the paragraph text into the
-    /// heading, not the other way around.
+    /// No-op at `idx == 0`. The surviving block keeps the *previous*
+    /// block's kind — backspacing a paragraph into a heading folds the
+    /// text into the heading, not the reverse.
     pub fn merge_with_previous(&mut self, idx: usize) {
         if idx == 0 || idx >= self.blocks.len() {
             return;
@@ -882,16 +675,11 @@ impl BlockEditor {
         self.focus_block(idx - 1, CursorPlacement::Byte(join_at));
     }
 
-    /// Remove the block at `idx`, shifting focus to the previous
-    /// block (or the next one if `idx == 0`). Never deletes the last
-    /// block — the editor always retains at least one paragraph to
-    /// receive focus. Called when the user backspaces an empty
-    /// paragraph.
+    /// Never deletes the last block — the editor always retains at
+    /// least one paragraph to receive focus.
     pub fn delete_empty(&mut self, idx: usize) {
         if self.blocks.len() <= 1 {
-            // Don't let the editor go to zero blocks. Reset the kind
-            // to Paragraph if a lone heading was being deleted — the
-            // user's intent is "start over with a clean slate".
+            // A lone block resets to an empty Paragraph rather than vanishing.
             if let Some(b) = self.blocks.get_mut(0) {
                 b.kind = BlockKind::Paragraph;
                 b.line.set_text("");
@@ -910,24 +698,13 @@ impl BlockEditor {
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
-        // After removal the target index is correct only if we
-        // removed something *after* it.
         let target = target.min(self.blocks.len().saturating_sub(1));
         self.focus_block(target, CursorPlacement::End);
     }
 
-    /// Inspect the leading characters of the block at `idx`. If the
-    /// block is a paragraph and its content begins with one of the
-    /// markdown heading prefixes (`# `, `## `, `### `), promote the
-    /// block to the corresponding heading kind and strip the prefix.
-    /// Returns true if a promotion happened.
-    ///
-    /// Used after every user edit to honour the markdown shortcut.
-    /// The caller is responsible for restricting *when* this runs —
-    /// it must only fire on the user's very next keystroke after an
-    /// empty paragraph, otherwise typing `#` mid-paragraph would
-    /// promote the wrong way around. See `handle_event` for the
-    /// gating logic.
+    /// The caller must restrict *when* this runs — it must only fire on
+    /// the keystroke right after an empty paragraph, or typing `#`
+    /// mid-paragraph would promote wrongly; see `handle_event`.
     pub fn try_promote_to_heading(&mut self, idx: usize) -> bool {
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
@@ -952,8 +729,6 @@ impl BlockEditor {
             .with_text(&prefix)
             .with_size(font_size);
         new_line.set_focus(true);
-        // Park the caret at the start of the stripped text — that's
-        // where the user expects to keep typing.
         new_line.set_cursor_pos(0);
         b.line = new_line;
         self.structure_dirty = true;
@@ -962,20 +737,8 @@ impl BlockEditor {
         true
     }
 
-    /// Convert the block at `idx` to `new_kind`, preserving the
-    /// current text content. Used by the SlashMenu Enter handler:
-    /// the menu picks the target kind and this applies the conversion.
-    ///
-    /// Behaviour:
-    /// - Paragraph ↔ Heading(n): text body is preserved, font size
-    ///   changes. No-op if the block is already that kind.
-    /// - Paragraph ↔ Bullet/Checklist: indent resets to 0, done = false.
-    /// - Any → Divider: replaces the block entirely (no text).
-    /// - Any → CodeBlock: keeps text, drops marks, sets lang = None.
-    ///
-    /// Returns `true` if a conversion happened. After a successful
-    /// conversion, focus stays on the same block index with the caret
-    /// at end of the preserved text.
+    /// Preserves text, except converting to Divider drops it. Resets
+    /// indent to 0 and done to false.
     pub fn try_convert_to(&mut self, idx: usize, new_kind: BlockKind) -> bool {
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
@@ -986,40 +749,28 @@ impl BlockEditor {
         let text = b.line.value().to_string();
         let font_size = new_kind.font_size();
         b.kind = new_kind.clone();
-        // Replace the inner line so the new font size lands cleanly
-        // (`set_font_size` propagates, but rebuilding the input also
-        // resets selection / dirty state — a clean cut for what is
-        // visually a hard conversion). For dividers we keep an empty
-        // line to satisfy layout but it's never rendered or focused.
+        // Rebuilt (not just resized) so selection/dirty state resets too.
         let body = if matches!(new_kind, BlockKind::Divider) { "" } else { &text };
         let was_focused = b.line.is_focused();
         let mut new_line = RichTextLine::new()
             .with_text(body)
             .with_size(font_size);
-        // Code cells render in the monospace face so code reads as code.
         if matches!(new_kind, BlockKind::CodeBlock { .. }) {
             new_line.set_mono(true);
         }
-        // After conversion, keep the caret at the end of the preserved
-        // body so the user can keep typing in the new kind. Focus
-        // restoration honours the editor's current focused-block state.
         new_line.set_cursor_pos(body.len());
         new_line.set_focus(was_focused && !matches!(new_kind, BlockKind::Divider));
         b.line = new_line;
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
-        // Dividers are not focusable — push focus to the next block
-        // (or fall back to a paragraph we splice in if we're at the end).
+        // Dividers aren't focusable — push focus to the next block (or a
+        // fresh trailing paragraph) so the user can keep typing.
         if matches!(new_kind, BlockKind::Divider) {
             if self.focused == Some(idx) {
                 if idx + 1 < self.blocks.len() {
                     self.focus_block(idx + 1, CursorPlacement::Start);
                 } else {
-                    // Add a trailing empty paragraph so the user can
-                    // keep typing below the divider. Common Notion
-                    // pattern: inserting a divider lands the caret on
-                    // the line after it.
                     self.blocks.push(Block::paragraph(""));
                     self.focus_block(idx + 1, CursorPlacement::Start);
                 }
@@ -1028,12 +779,8 @@ impl BlockEditor {
         true
     }
 
-    /// Adjust the indent of the block at `idx` by `delta` (signed).
-    /// Only Bullet / Checklist blocks have an indent — for any other
-    /// kind this is a no-op and returns `false`. Indent is clamped to
+    /// No-op (returns `false`) for kinds without an indent. Clamped to
     /// [0, MAX_LIST_INDENT].
-    ///
-    /// Returns `true` if the indent actually changed.
     pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
@@ -1063,9 +810,7 @@ impl BlockEditor {
             return false;
         }
         b.kind = new_kind;
-        // Mark dirty so the renderer re-positions the bullet glyph at
-        // the new indent. Structure doesn't actually change (still one
-        // block at the same index), but the row's horizontal layout
+        // Structure (block count) doesn't change, but the row's layout
         // does — flag both so MainPanel rebuilds taffy if needed.
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
@@ -1073,10 +818,8 @@ impl BlockEditor {
         true
     }
 
-    /// Hit-test the cached last mouse position against the checkbox
-    /// rect of every Checklist block. Returns the block index whose
-    /// checkbox was clicked, or `None`. Used by `handle_event` to
-    /// route checkbox clicks to `try_toggle_check`.
+    /// Checkbox rect is centered in the gutter to the left of
+    /// `line_rect`, matching where it's drawn.
     pub(crate) fn checkbox_hit_test_last_mouse(&self) -> Option<usize> {
         let p = self.last_mouse_pos;
         for (idx, b) in self.blocks.iter().enumerate() {
@@ -1085,8 +828,6 @@ impl BlockEditor {
             }
             let line_rect = b.line.get_rect();
             let gutter = prefix_gutter_for(&b.kind);
-            // The drawn checkbox is centered in the gutter to the
-            // left of line_rect.
             let cy = (line_rect.y0 + line_rect.y1) / 2.0;
             let cx = line_rect.x0 - gutter + gutter / 2.0;
             let r = Rect::new(
@@ -1095,8 +836,7 @@ impl BlockEditor {
                 cx + CHECKBOX_SIZE_PX / 2.0,
                 cy + CHECKBOX_SIZE_PX / 2.0,
             );
-            // Slight slop margin (~4 px) so users don't have to land
-            // pixel-perfect.
+            // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
             let slopped = Rect::new(
                 r.x0 - slop,
@@ -1111,12 +851,8 @@ impl BlockEditor {
         None
     }
 
-    /// Apply a slash-menu commit: strip the `/<filter>` text from the
-    /// focused block (between `slash_open_at` and current caret), then
-    /// convert the block to `new_kind`. Run by handle_event after the
-    /// menu fires its Enter. Idempotent — if the focused block has
-    /// changed since the menu was opened we still apply the conversion
-    /// and leave the text alone.
+    /// Idempotent — if the focused block changed since the menu opened,
+    /// still applies the conversion and leaves the text alone.
     fn commit_slash_selection(&mut self, new_kind: BlockKind) {
         let Some(focused_idx) = self.focused else {
             return;
@@ -1137,15 +873,11 @@ impl BlockEditor {
             }
         }
         self.slash_open_at = None;
-        // Apply the conversion. Skip if block already matches (e.g.
-        // user picked Paragraph on a Paragraph block).
         let _ = self.try_convert_to(focused_idx, new_kind);
     }
 
-    /// Paint the slash menu popover on top of the editor's own
-    /// scene. The host (`MainPanel` / `NotesApp`) calls this AFTER
-    /// the main draw pass — popovers must paint last so they land
-    /// above every other widget. See [`SlashMenu`] for the contract.
+    /// Host calls this AFTER the main draw pass — popovers must paint
+    /// last so they land above every other widget.
     pub fn draw_overlay(
         &self,
         scene: &mut Scene,
@@ -1157,27 +889,19 @@ impl BlockEditor {
         self.link_popover.draw_overlay(scene, transform, text_renderer, theme);
     }
 
-    /// Seed the link popover's page list (call whenever the host
-    /// workspace changes — e.g. on `NotesApp::sync_from_workspace`).
     pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
         self.link_popover.set_items(pages);
     }
 
-    /// Read-only access to the link popover (for tests + the host
-    /// app that wants to peek at the current filter / visibility).
     pub fn link_popover(&self) -> &LinkPopover {
         &self.link_popover
     }
 
-    /// Mutable access to the link popover (test hook).
     #[doc(hidden)]
     pub fn link_popover_mut(&mut self) -> &mut LinkPopover {
         &mut self.link_popover
     }
 
-    /// Apply a link-popover selection: strip the `[[<filter>` slice
-    /// out of the focused block, then insert the chosen page's title
-    /// covered by a `Mark::Link(page_id)` span.
     fn commit_link_selection(&mut self, page: PageEntry) {
         let Some(focused_idx) = self.focused else { return };
         let Some(open_byte) = self.link_open_at.take() else { return };
@@ -1188,13 +912,11 @@ impl BlockEditor {
         if cursor <= start {
             return;
         }
-        // Splice: replace [start, cursor) with the page title.
         let mut new_text = String::with_capacity(text.len() + page.title.len());
         new_text.push_str(&text[..start]);
         new_text.push_str(&page.title);
         new_text.push_str(&text[cursor..]);
         b.line.set_text(&new_text);
-        // Add a Mark::Link covering the inserted title.
         let mark_range = start..(start + page.title.len());
         b.line.add_mark(MarkSpan::new(mark_range.clone(), Mark::Link(page.id)));
         b.line.set_cursor_pos(start + page.title.len());
@@ -1202,31 +924,24 @@ impl BlockEditor {
         self.edit_pending = true;
     }
 
-    /// True iff the slash menu is currently displayed (so the host
-    /// can avoid stealing focus from the popover).
+    /// So the host can avoid stealing focus from the popover.
     pub fn slash_menu_visible(&self) -> bool {
         self.slash_menu.is_visible()
     }
 
-    /// Test/integration hook: read-only access to the slash menu so
-    /// tests can assert on its filter / highlighted kind without
-    /// going through `pub(crate)` indirection.
     #[doc(hidden)]
     pub fn slash_menu(&self) -> &SlashMenu {
         &self.slash_menu
     }
 
-    /// Test/integration hook: mutable slash-menu access. Used by the
-    /// integration test that pre-positions the menu rather than
-    /// driving the `/` keystroke through the full event chain.
+    /// Used by the integration test that pre-positions the menu rather
+    /// than driving the `/` keystroke through the full event chain.
     #[doc(hidden)]
     pub fn slash_menu_mut(&mut self) -> &mut SlashMenu {
         &mut self.slash_menu
     }
 
-    /// Test hook: open the slash menu programmatically on the focused
-    /// block, anchoring it under the line's bottom-left. Mirrors what
-    /// the `/` keystroke does internally.
+    /// Mirrors what the `/` keystroke does internally.
     #[doc(hidden)]
     pub fn open_slash_menu_for_test(&mut self) {
         let Some(focused_idx) = self.focused else { return };
@@ -1247,9 +962,6 @@ impl BlockEditor {
         self.slash_open_at = Some(caret);
     }
 
-    /// Test hook: route a key event into the slash menu and, if the
-    /// menu fires an Enter, apply the commit. Returns whether the menu
-    /// consumed the key.
     #[doc(hidden)]
     pub fn slash_menu_handle_key_for_test(&mut self, event: &WindowEvent) -> bool {
         let consumed = self.slash_menu.handle_key(event);
@@ -1262,9 +974,7 @@ impl BlockEditor {
         consumed
     }
 
-    /// Flip the `done` flag on a Checklist block. No-op for other
-    /// kinds. Returns the new `done` value, or `None` if the block
-    /// isn't a Checklist.
+    /// No-op for non-Checklist kinds.
     pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
         let Some(b) = self.blocks.get_mut(idx) else {
             return None;
@@ -1273,8 +983,7 @@ impl BlockEditor {
             let new_done = !*done;
             b.kind = BlockKind::Checklist { indent: *indent, done: new_done };
             self.dirty = true;
-            // Toggling check counts as a user edit so the page is
-            // dirty + gets persisted.
+            // Counts as a user edit so the page is dirty + gets persisted.
             self.edit_pending = true;
             Some(new_done)
         } else {
@@ -1290,15 +999,10 @@ pub enum CursorPlacement {
     Byte(usize),
 }
 
-/// True when `s` is exactly a markdown heading prefix (`# `, `## `, `### `).
-/// Used by the editor's live shortcut: when the text before the caret equals
-/// one of these, the just-typed space completed the prefix and the paragraph
-/// should promote to the matching heading.
 fn is_heading_prefix(s: &str) -> bool {
     matches!(s, "# " | "## " | "### ")
 }
 
-/// Round `byte` down to the nearest UTF-8 char boundary inside `text`.
 fn clamp_char_boundary(text: &str, byte: usize) -> usize {
     let mut b = byte.min(text.len());
     while b > 0 && !text.is_char_boundary(b) {
@@ -1307,13 +1011,8 @@ fn clamp_char_boundary(text: &str, byte: usize) -> usize {
     b
 }
 
-/// Parse the leading indent of a list-item line. Returns `(indent_level,
-/// remainder)` where `remainder` is the line with the indent stripped.
-///
-/// Convention (matches GFM nested lists): each indent level is **two
-/// spaces**. We use 2 here rather than 4 to match what Notion / Obsidian
-/// emit by default for nested bullets. A single tab character counts
-/// as one indent step.
+/// Two spaces per indent level (Notion/Obsidian style, not GFM's four);
+/// a tab counts as one indent step. Returns `(indent_level, remainder)`.
 fn parse_list_indent(line: &str) -> (u8, &str) {
     let mut bytes = 0usize;
     let mut level: u8 = 0;
@@ -1332,9 +1031,8 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
     (level, &line[bytes..])
 }
 
-/// Detect an ordered-list marker (`123. ` or `123) `) at the start of
-/// `body`, returning the text after it. The number is discarded —
-/// ordinals are recomputed from list position on render + serialise.
+/// The digits are discarded — ordinals are recomputed from list
+/// position on render + serialise.
 fn strip_ordered_prefix(body: &str) -> Option<&str> {
     let bytes = body.as_bytes();
     let mut i = 0;
@@ -1351,28 +1049,21 @@ fn strip_ordered_prefix(body: &str) -> Option<&str> {
     }
 }
 
-/// Append `indent` levels of 2-space indent to `out`. Inverse of
-/// [`parse_list_indent`] when the input contained spaces (tabs are
-/// re-emitted as spaces on the round-trip, which is fine — the parser
-/// accepts both).
+/// Inverse of [`parse_list_indent`]; tabs re-emit as spaces (the parser
+/// also accepts those back).
 fn push_indent(out: &mut String, indent: u8) {
     for _ in 0..indent.min(MAX_LIST_INDENT) {
         out.push_str("  ");
     }
 }
 
-/// Width in CSS-like pixels of the reserved gutter to the left of the
-/// editable line where a kind-specific prefix glyph (bullet point,
-/// checkbox, code-fence marker) is drawn.
-///
-/// Returns 0 for kinds with no prefix (paragraph, heading, divider,
-/// code block — the latter draws its prefix as a left-edge bar in
-/// `draw`, not inline glyphs).
+/// 0 for kinds with no prefix glyph (paragraph, heading, divider);
+/// `CodeBlock` reserves gutter for its left-edge bar, drawn in `draw`.
 pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
     match kind {
         BlockKind::Bullet { .. } => 20.0,
-        // Wide enough to right-align a two-digit ordinal ("12.") without
-        // colliding with the text column.
+        // Wide enough for a two-digit ordinal ("12.") without colliding
+        // with the text column.
         BlockKind::Numbered { .. } => 28.0,
         BlockKind::Checklist { .. } => 24.0,
         BlockKind::CodeBlock { .. } => 12.0,
@@ -1380,19 +1071,14 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
     }
 }
 
-/// Width of the clickable checkbox square in a checklist row. Slightly
-/// smaller than the gutter so there's visual breathing room either side.
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 
-/// Compute the displayed ordinal (1-based) for every `Numbered` block,
-/// 0 for non-numbered rows. Numbering is per contiguous run at each
-/// indent level: a deeper level restarts under its parent, and ANY
-/// non-numbered block resets every counter — so two numbered lists
-/// separated by a paragraph each start at 1, and a nested list numbers
-/// independently of its parent.
+/// 1-based ordinal per `Numbered` block, 0 for non-numbered rows.
+/// Numbered per contiguous run at each indent level: a deeper level
+/// restarts under its parent, and ANY non-numbered block resets every
+/// counter.
 pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
     let mut out = vec![0u32; blocks.len()];
-    // One running counter per indent level (0..=MAX_LIST_INDENT).
     let mut counters = [0u32; MAX_LIST_INDENT as usize + 1];
     for (i, b) in blocks.iter().enumerate() {
         match b.kind {
@@ -1400,12 +1086,10 @@ pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
                 let lvl = (indent as usize).min(MAX_LIST_INDENT as usize);
                 counters[lvl] += 1;
                 out[i] = counters[lvl];
-                // Deeper levels restart the next time they appear.
                 for c in counters.iter_mut().skip(lvl + 1) {
                     *c = 0;
                 }
             }
-            // Any interruption breaks every open ordered run.
             _ => {
                 counters = [0u32; MAX_LIST_INDENT as usize + 1];
             }
@@ -1414,18 +1098,12 @@ pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
     out
 }
 
-// ---------------------------------------------------------------------
-// CRDT block-list helpers (used by sync / reconcile / rebuild).
-//
-// `BlockKind` is encoded as a compact string in the doc's `kind` field
-// so the full block model round-trips: paragraph / heading{1..3} /
-// bullet:{indent} / checklist:{indent}:{0|1} / code:{lang} / divider.
-// ---------------------------------------------------------------------
+// `BlockKind` is encoded as a compact string in the doc's `kind` field:
+// paragraph / heading{1..3} / bullet:{indent} / checklist:{indent}:{0|1}
+// / code:{lang} / divider.
 
-/// Presence key addressing block `index` within the editor, so a peer's
-/// caret/selection in that block can be looked up. Both peers derive the
-/// same key from the block's position in the shared `blocks` list, so the
-/// caret renders on the matching block on every peer.
+/// Derived from block position, so a peer's caret/selection renders on
+/// the matching block everywhere.
 pub fn block_presence_key(index: usize) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
@@ -1487,8 +1165,7 @@ fn kind_from_str(s: &str) -> BlockKind {
     BlockKind::Paragraph
 }
 
-/// Build an empty `Block` of the given kind. Text is bound + pulled from
-/// the doc afterwards, so we seed with "".
+/// Text is bound + pulled from the doc afterwards, so we seed with "".
 fn block_for_kind(kind: &BlockKind) -> Block {
     match kind {
         BlockKind::Paragraph => Block::paragraph(""),
@@ -1501,7 +1178,6 @@ fn block_for_kind(kind: &BlockKind) -> Block {
     }
 }
 
-/// The block Map at `index` in a `blocks` List, if present.
 fn list_map(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId> {
     match state.get(list, index) {
         Ok(Some((Value::Object(ObjType::Map), m))) => Some(m),
@@ -1509,7 +1185,6 @@ fn list_map(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId> {
     }
 }
 
-/// The `Text` ObjId for block `index`, if present.
 fn doc_text_obj(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId> {
     let block = list_map(state, list, index)?;
     match state.get(&block, "text") {
@@ -1518,7 +1193,7 @@ fn doc_text_obj(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId>
     }
 }
 
-/// The `kind` string for block `index`, defaulting to "paragraph".
+/// Defaults to "paragraph" if the block or field is missing.
 fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     let Some(block) = list_map(state, list, index) else {
         return "paragraph".to_string();
@@ -1532,8 +1207,6 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
-/// Insert a new block Map `{ kind, text }` at `index` in the List and
-/// return the new `Text` ObjId, seeded with `text`.
 fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
@@ -1554,8 +1227,8 @@ fn insert_doc_block(
     text_id
 }
 
-/// Reconcile a doc `Text` object's content toward `local` with a single
-/// minimal splice (the structural ops produce one contiguous change).
+/// A single minimal splice, since the structural ops that call this
+/// produce one contiguous change.
 fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
     let cur = state.text(text_obj).unwrap_or_default();
     if cur == local {
@@ -1578,9 +1251,8 @@ impl Default for BlockEditor {
 }
 
 impl BlockEditor {
-    /// Index of the block whose row contains `y`. Clamps to the first
-    /// or last block when `y` is above / below the editor — so a drag
-    /// started inside a block extends cleanly past either edge.
+    /// Clamps to the first/last block when `y` is above/below the
+    /// editor, so a drag extends cleanly past either edge.
     fn block_at_y(&self, y: f64) -> Option<usize> {
         if self.blocks.is_empty() {
             return None;
@@ -1598,11 +1270,8 @@ impl BlockEditor {
         }
     }
 
-    /// Paint a selection band across `[lo_block, hi_block]`. `start`
-    /// is where the user pressed; `end` is where the pointer is now.
-    /// Blocks previously dragged through but no longer in the range
-    /// get their selection cleared (so a drag-down-then-back-up
-    /// leaves the right state).
+    /// Blocks previously dragged through but no longer in range get
+    /// cleared, so drag-down-then-back-up leaves the right state.
     fn paint_cross_block_selection(
         &mut self,
         start_block: usize,
@@ -1654,47 +1323,35 @@ impl BlockEditor {
         }
     }
 
-    /// Extend a keyboard-driven cross-block selection by one block in
-    /// `dir` (`-1` up, `+1` down). The anchor (fixed end) is latched from
-    /// the live caret on the first extend and held across subsequent
-    /// ones; the active end walks one block per press, landing at the end
-    /// of the block above (moving up) or the start of the block below
-    /// (moving down) — exactly the caret the plain arrow would jump to,
-    /// so the growing selection covers precisely the "jumped" text.
-    ///
-    /// Reuses the same band-painting the mouse cross-block drag uses so a
-    /// retreating extend (down then back up) clears the blocks it left.
+    /// `dir` is `-1` up, `+1` down. The active end lands where a plain
+    /// arrow would jump to, so the growing selection covers exactly the
+    /// "jumped" text. Reuses the mouse drag's band-painting so a
+    /// retreating extend clears the blocks it left.
     fn extend_block_selection(&mut self, from_block: usize, caret: usize, dir: i32) {
-        // Latch the anchor at the caret the very first time we extend.
         let anchor = *self.kbd_sel_anchor.get_or_insert((from_block, caret));
         let target_block = if dir < 0 {
             if from_block == 0 {
-                return; // already at the top — nothing to extend into
+                return;
             }
             from_block - 1
         } else {
             if from_block + 1 >= self.blocks.len() {
-                return; // already at the bottom
+                return;
             }
             from_block + 1
         };
-        // Active end: end of the block above (up) or start of the block
-        // below (down).
         let active_byte = if dir < 0 {
             self.blocks[target_block].line.value().len()
         } else {
             0
         };
-        // Move focus/caret to the active end, then paint the band from the
-        // fixed anchor to it across every block in between.
         self.focus_block(target_block, CursorPlacement::Byte(active_byte));
         self.paint_cross_block_selection(anchor.0, anchor.1, target_block, active_byte);
         self.dirty = true;
     }
 
-    /// Clear every block's cross-block selection contribution. Called
-    /// on the next fresh click (so the new selection doesn't OR with
-    /// the old one).
+    /// Called on the next fresh click so the new selection doesn't OR
+    /// with the old one.
     fn clear_cross_block_selection(&mut self) {
         if let Some((lo, hi)) = self.cross_block_drag_touched.take() {
             for i in lo..=hi {
@@ -1714,24 +1371,21 @@ impl Widget for BlockEditor {
             return;
         };
 
-        // 1. Push any pending local structural edit into the doc first,
-        //    preserving existing block Text objects by identity.
         if self.doc_structure_dirty {
             self.reconcile_structure_to_doc(state, &list);
             self.doc_structure_dirty = false;
         }
 
-        // 2. If the doc now has a different block count than we do, a
-        //    remote peer changed the structure — adopt it (caret-safe).
+        // A different block count now means a remote peer changed the
+        // structure — adopt it.
         let doc_len = state.length(&list);
         if doc_len != self.blocks.len() {
             self.rebuild_from_doc(state, &list, doc_len);
             return;
         }
 
-        // 3. Same structure: refresh each block's kind + text from the
-        //    doc. RichTextLine::sync pulls bound text without disturbing
-        //    the local caret.
+        // Same structure: refresh kind + text (RichTextLine::sync pulls
+        // bound text without disturbing the local caret).
         for i in 0..self.blocks.len() {
             let k = kind_from_str(&read_block_kind(state, &list, i));
             if self.blocks[i].kind != k {
@@ -1755,8 +1409,8 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.child_nodes.clear();
-        // Precompute which blocks are code so consecutive code lines can
-        // butt together (no inter-line gap) and read as one fenced block.
+        // Consecutive code lines butt together (no inter-line gap) so
+        // they read as one fenced block.
         let is_code: Vec<bool> = self
             .blocks
             .iter()
@@ -1764,12 +1418,9 @@ impl Widget for BlockEditor {
             .collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let n = b.line.build_layout(taffy, theme, node_map);
-            // Per-block top margin replaces the parent's `gap` so we
-            // can zero it out for soft-break (Shift+Enter)
-            // continuation blocks. First block always gets 0 (the
-            // parent's own padding handles the top). Consecutive code
-            // lines also get 0 so a multi-line fenced block renders as a
-            // single contiguous unit rather than separate boxes with gaps.
+            // Per-block top margin (not the parent's `gap`) so it can be
+            // zeroed for soft-break continuations, the first block, and
+            // consecutive code lines (one contiguous fenced unit).
             let continues_code_block = i > 0 && is_code[i] && is_code[i - 1];
             let top_margin = if i == 0 || b.soft_break || continues_code_block {
                 0.0
@@ -1795,9 +1446,6 @@ impl Widget for BlockEditor {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     align_items: Some(taffy::AlignItems::Stretch),
-                    // Gap is 0 — per-block `margin_top` (above) gives
-                    // each block its own inter-block spacing so soft-
-                    // break blocks can opt out.
                     gap: taffy::Size {
                         width: length(0.0),
                         height: length(0.0),
@@ -1824,18 +1472,13 @@ impl Widget for BlockEditor {
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        // Taffy's child list is the authoritative ordering — use it
-        // instead of `self.child_nodes` so we tolerate any internal
-        // re-ordering taffy might apply for justification.
+        // Taffy's child list is authoritative (not `self.child_nodes`)
+        // so any internal re-ordering taffy applies is tolerated.
         let children = taffy.children(node).unwrap();
         for (b, child_node) in self.blocks.iter_mut().zip(children.iter()) {
             b.line.apply_layout(taffy, *child_node, new_origin);
-            // For prefixed kinds (bullets, checklists, code blocks) we
-            // narrow the line's rect on the left so the prefix glyph
-            // (bullet point, checkbox, etc.) lands in a reserved
-            // gutter that doesn't overlap the editable text. The
-            // gutter width is fixed per kind so the caret-x math
-            // inside TextInput stays consistent.
+            // Shift prefixed kinds' text rect right of a reserved gutter
+            // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind);
             let indent_px =
                 LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
@@ -1862,26 +1505,18 @@ impl Widget for BlockEditor {
     ) {
         let tokens = &theme.tokens;
 
-        // Empty-state hint: when the whole editor consists of one
-        // empty Paragraph block, draw a dim placeholder next to the
-        // caret so a brand-new page doesn't look like a void. Painted
-        // BEFORE the block content so the live caret (drawn by the
-        // inner TextInput) stays on top of the hint glyphs. We bail
-        // when the line is non-empty (or there's more than one block)
-        // because the hint would compete with real content.
+        // Painted BEFORE block content so the live caret stays on top.
         let is_lone_empty_paragraph = self.blocks.len() == 1
             && matches!(self.blocks[0].kind, BlockKind::Paragraph)
             && self.blocks[0].line.value().is_empty();
         if is_lone_empty_paragraph {
             let line_rect = self.blocks[0].line.get_rect();
-            // Same vertical centring as the inner TextInput uses so
-            // the hint reads as the placeholder for THIS line, not as
-            // a floating label above/below it.
+            // Same vertical centring as the inner TextInput so the hint
+            // reads as this line's placeholder, not a floating label.
             let size = self.blocks[0].line.font_size();
             let line_height = (size as f64) * 1.25;
             let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
-            // Offset 2 px right of the caret so the hint doesn't
-            // collide with the caret bar itself.
+            // 2px right of the caret so it doesn't collide with the bar.
             let caret_w = 2.0;
             let x = line_rect.x0 + caret_w + 4.0;
             text_renderer.draw_text(
@@ -1894,17 +1529,14 @@ impl Widget for BlockEditor {
             );
         }
 
-        // Precompute code-block run geometry so a multi-line fenced block
-        // paints ONE contiguous background + left bar spanning all its
-        // lines, rather than a separate box per line. `line_rects` snapshots
-        // each block's laid-out rect (read-only, before the mut loop below).
+        // Precomputed so a multi-line fenced block paints ONE background
+        // + left bar spanning its lines, not a separate box per line.
         let is_code: Vec<bool> = self
             .blocks
             .iter()
             .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
             .collect();
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
-        // Ordinals for numbered rows, precomputed before the mut loop.
         let ordinals = numbered_ordinals(&self.blocks);
 
         for (idx, b) in self.blocks.iter_mut().enumerate() {
@@ -1912,20 +1544,8 @@ impl Widget for BlockEditor {
             let indent_px =
                 LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
             let gutter = prefix_gutter_for(&b.kind);
-            // x0 of the prefix region (before the gutter shift).
             let prefix_x0 = line_rect.x0 - gutter;
-            // Editor-column left edge — where the block "row" starts,
-            // before any indent shift or kind-specific prefix gutter.
-            // Used by the focused-block accent bar so the bar lines up
-            // across every kind regardless of indent level.
             let row_x0 = prefix_x0 - indent_px;
-
-            // (Was: 2 px translucent accent vertical bar at row_x0 to
-            // mark the focused block. The bar's geometry was identical
-            // to the caret — 2 px wide, full line height, accent
-            // colour — so it read as a "ghost caret at the start of
-            // the line". The actual caret is already the focus
-            // signal; the extra bar just confused the eye. Removed.)
             let _ = row_x0;
 
             match &b.kind {
@@ -1933,10 +1553,7 @@ impl Widget for BlockEditor {
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Bullet { .. } => {
-                    // Bullet glyph (•) centered vertically against the
-                    // line band. We draw a small filled disc instead of
-                    // a "•" character so the dot reads the same across
-                    // fonts.
+                    // A filled disc, not a "•" glyph, reads the same across fonts.
                     let cy = (line_rect.y0 + line_rect.y1) / 2.0;
                     let cx = prefix_x0 + gutter / 2.0;
                     let radius = 3.0;
@@ -1952,20 +1569,16 @@ impl Widget for BlockEditor {
                     let _ = indent_px;
                 }
                 BlockKind::Numbered { .. } => {
-                    // Right-align the ordinal ("N.") in the gutter to the
-                    // left of the text column so single- and double-digit
-                    // numbers line their periods up under each other.
+                    // Right-aligned so single- and double-digit periods line up.
                     let num = ordinals.get(idx).copied().unwrap_or(1).max(1);
                     let label = format!("{num}.");
                     let size = b.kind.font_size();
                     let (label_w, _) = text_renderer.measure(&label, size, None);
-                    // Match RichTextLine's own vertical text placement
-                    // (line height = size * 1.25) so the ordinal sits on
-                    // the same baseline as the item text.
+                    // Matches RichTextLine's line height so the ordinal
+                    // sits on the item text's baseline.
                     let line_height = size as f64 * 1.25;
                     let text_y = line_rect.y0
                         + (line_rect.height() - line_height) / 2.0;
-                    // 6 px trailing gap between the period and the text.
                     let x = (line_rect.x0 - 6.0 - label_w as f64).max(prefix_x0);
                     text_renderer.draw_text(
                         scene,
@@ -1979,8 +1592,6 @@ impl Widget for BlockEditor {
                     let _ = indent_px;
                 }
                 BlockKind::Checklist { done, .. } => {
-                    // Clickable checkbox square. Filled + with a check
-                    // glyph when done; empty stroke when not.
                     let cy = (line_rect.y0 + line_rect.y1) / 2.0;
                     let cx = prefix_x0 + gutter / 2.0;
                     let box_rect = Rect::new(
@@ -1998,8 +1609,7 @@ impl Widget for BlockEditor {
                             None,
                             &shape,
                         );
-                        // Simple check mark — two lines from lower-left
-                        // through center to upper-right.
+                        // Two lines from lower-left through center to upper-right.
                         let mut path = vello::kurbo::BezPath::new();
                         let pad = CHECKBOX_SIZE_PX * 0.22;
                         path.move_to((box_rect.x0 + pad, box_rect.y0 + CHECKBOX_SIZE_PX * 0.55));
@@ -2024,19 +1634,15 @@ impl Widget for BlockEditor {
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::CodeBlock { .. } => {
-                    // A fenced code block can span several one-line cells.
-                    // Paint the surface background + left accent bar ONCE,
-                    // at the run's first line, spanning down to the last
-                    // consecutive code line — so the whole block reads as a
-                    // single contiguous unit (no per-line boxes or gaps).
+                    // Paint background + accent bar ONCE per run, spanning
+                    // first to last line, not as per-line boxes.
                     let is_run_start = idx == 0 || !is_code[idx - 1];
                     if is_run_start {
                         let mut end = idx;
                         while end + 1 < is_code.len() && is_code[end + 1] {
                             end += 1;
                         }
-                        // A little vertical breathing room, kept inside the
-                        // inter-block gap so it never overlaps neighbours.
+                        // 4px: stays inside the inter-block gap, never overlaps neighbours.
                         const CODE_PAD_Y: f64 = 4.0;
                         let top = line_rect.y0 - CODE_PAD_Y;
                         let bottom = line_rects[end].y1 + CODE_PAD_Y;
@@ -2072,7 +1678,6 @@ impl Widget for BlockEditor {
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Divider => {
-                    // Horizontal rule centered vertically in the row.
                     let cy = (line_rect.y0 + line_rect.y1) / 2.0;
                     let rule = Rect::new(
                         line_rect.x0,
@@ -2091,25 +1696,19 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Remote presence: draw each peer's caret + selection on the
-        // block it's in, using real glyph metrics. This runs AFTER the
-        // block loop so every line's `char_x_positions` are fresh this
-        // frame (pixel_x_for_byte reads them). Positions are mapped
-        // through `transform` to match the scaled scene.
+        // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
+        // fresh `char_x_positions`.
         for i in 0..self.blocks.len() {
             let key = block_presence_key(i);
             let line = &self.blocks[i].line;
             let brect = line.get_rect();
-            // The block's rect mapped into scaled scene space, reused for
-            // the per-peer focus outline ("highlighted UI element").
             let tr_rect = {
                 let p0 = transform * Point::new(brect.x0, brect.y0);
                 let p1 = transform * Point::new(brect.x1, brect.y1);
                 Rect::new(p0.x, p0.y, p1.x, p1.y)
             };
-            // Authorship highlight (drawn first, under caret/selection):
-            // the runs each foreign author wrote, marker-style in their
-            // color. Skip runs the local user authored.
+            // Drawn first, under caret/selection: the runs each foreign
+            // author wrote, marker-style in their color.
             for (bs, be, author) in line.author_runs() {
                 if self.local_author.as_deref() == Some(author.as_str()) {
                     continue;
@@ -2126,10 +1725,8 @@ impl Widget for BlockEditor {
                     &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
                 );
             }
-            // Fading "just typed" highlighter: a peer's recently-inserted
-            // run glows in their color and decays over TYPING_FADE. Drawn
-            // over authorship, under caret/selection. Mapped through the
-            // line's own glyph metrics so the tint hugs the exact text.
+            // A peer's recently-inserted run glows and decays over
+            // TYPING_FADE. Drawn over authorship, under caret/selection.
             let now = std::time::Instant::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 if self.local_author.as_deref() == Some(user.0.as_str()) {
@@ -2147,9 +1744,6 @@ impl Widget for BlockEditor {
             }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, byte_pos) in list {
-                    // The line owns the caret geometry, so the peer caret
-                    // is pixel-identical to a local caret (just recoloured);
-                    // the labeled variant floats the peer's name above it.
                     let name = presence.display_name(user);
                     presence.draw_peer_caret_labeled(
                         scene,
@@ -2191,10 +1785,8 @@ impl Widget for BlockEditor {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::{Key, NamedKey};
 
-        // Link popover: while visible, intercept keystrokes BEFORE
-        // the editable line sees them. Same pattern as the slash
-        // menu below. Enter commits the highlighted page; Escape
-        // closes.
+        // While visible, intercept keystrokes BEFORE the editable line
+        // sees them. Same pattern as the slash menu below.
         if self.link_popover.is_visible() {
             if let WindowEvent::KeyboardInput { .. } = event {
                 let consumed = self.link_popover.handle_key(event);
@@ -2212,22 +1804,14 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Slash menu: while visible, intercept keystrokes BEFORE the
-        // editable line sees them. The menu owns arrow nav / Enter /
-        // Escape / typing-into-filter. If the menu signals Enter
-        // (pending_selection becomes Some), we splice the `/<filter>`
-        // out of the block and apply the conversion.
+        // The menu owns arrow nav / Enter / Escape / typing-into-filter.
         if self.slash_menu.is_visible() {
             if let WindowEvent::KeyboardInput { .. } = event {
                 let consumed = self.slash_menu.handle_key(event);
-                // Whether or not the menu consumed the key, an Enter
-                // press may have set pending_selection — drain it.
+                // Drain pending_selection regardless of `consumed` — Enter may have set it.
                 if let Some(new_kind) = self.slash_menu.take_selected_kind() {
                     self.commit_slash_selection(new_kind);
                 }
-                // If the menu went invisible without committing (Escape
-                // or empty-filter Backspace), close it without altering
-                // the block.
                 if !self.slash_menu.is_visible() {
                     self.slash_open_at = None;
                 }
@@ -2239,9 +1823,8 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Reset the keyboard cross-block selection anchor on any event
-        // that isn't a Ctrl+Shift+Arrow extend, so the next extend latches
-        // a fresh anchor at the live caret rather than a stale one.
+        // Reset the anchor on anything but a Ctrl+Shift+Arrow extend, so
+        // the next extend latches a fresh one.
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -2272,19 +1855,17 @@ impl Widget for BlockEditor {
             _ => {}
         }
 
-        // Mouse: checkbox-click hit-test on Checklist rows. Runs BEFORE
-        // event routing so the click doesn't fall through to TextInput
-        // (which would just place the caret at byte 0).
+        // Runs BEFORE event routing so the click doesn't fall through to
+        // TextInput (which would place the caret at byte 0).
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
         {
-            // Slash menu open: a click on one of its rows selects that block
-            // kind (and strips the `/…` trigger, exactly like Enter); a click
-            // anywhere else dismisses the menu. Handled before anything else so
-            // the popover — which paints on top — also gets first claim on clicks.
+            // A click on a slash-menu row selects that kind (strips the
+            // trigger, like Enter); elsewhere dismisses it. Checked first
+            // since the popover paints on top.
             if self.slash_menu.is_visible() {
                 if let Some(new_kind) = self.slash_menu.click_at(self.last_mouse_pos) {
                     self.commit_slash_selection(new_kind);
@@ -2293,7 +1874,6 @@ impl Widget for BlockEditor {
                     self.dirty = true;
                     return;
                 }
-                // Off-row click: dismiss without altering the block.
                 self.slash_menu.set_visible(false);
                 self.slash_open_at = None;
                 self.dirty = true;
@@ -2303,13 +1883,9 @@ impl Widget for BlockEditor {
                 *handled = true;
                 return;
             }
-            // Cross-block drag start: clear any leftover band from a
-            // previous drag and record where this click landed (block
-            // + byte). The inner TextInput's own press handler also
-            // runs and starts a single-block drag — they cooperate:
-            // the per-block drag handles X within the source block,
-            // and our coordinator picks up the slack when the
-            // pointer crosses into a different block.
+            // The inner TextInput's own press handler also runs and starts
+            // a single-block drag (X within its own rect); this
+            // coordinator picks up the slack across block boundaries.
             self.clear_cross_block_selection();
             if let Some(block_idx) = self.block_at_y(self.last_mouse_pos.y) {
                 if block_idx < self.blocks.len() {
@@ -2329,26 +1905,20 @@ impl Widget for BlockEditor {
         {
             self.cross_block_drag_start = None;
         }
-        // Cache the last mouse position so the next MouseInput knows
-        // where the click landed. Same shape as TextInput.
         if let WindowEvent::CursorMoved { position, .. } = event {
             let logical =
                 Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_mouse_pos = logical;
 
-            // Slash menu open: hovering a row moves the highlight to it, so the
+            // Hovering a slash-menu row moves the highlight to it, so
             // mouse and keyboard drive the same selection cursor.
             if self.slash_menu.is_visible() && self.slash_menu.hover_at(logical) {
                 self.dirty = true;
             }
 
-            // Cross-block drag: while a drag is in flight (cross_
-            // block_drag_start set + at least one inner TextInput is
-            // dragging) AND the pointer has moved into a *different*
-            // block than the start, paint selection bands across the
-            // whole range. Per-block drag stays under the start
-            // TextInput's control inside its own rect; we only add a
-            // band on the OTHER blocks the pointer has crossed into.
+            // Per-block drag stays under the start TextInput's control
+            // inside its own rect; this only adds a band on the OTHER
+            // blocks the pointer crossed into.
             if let Some((start_block, start_byte)) = self.cross_block_drag_start
             {
                 let any_dragging = self
@@ -2378,10 +1948,8 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Tab / Shift-Tab on a list block adjusts indent BEFORE the
-        // inner line sees it (TextInput does NOT handle Tab, but we
-        // intercept anyway so future TextInput changes don't break
-        // the contract).
+        // TextInput does NOT handle Tab, but intercept anyway so future
+        // TextInput changes don't break the contract.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -2407,13 +1975,9 @@ impl Widget for BlockEditor {
             }
         }
 
-        // `/` keystroke: if pressed in an editable block while the
-        // menu is NOT already open, open the menu anchored under the
-        // current line. The leading `/` STILL falls through to
-        // TextInput (so the user sees it as feedback that they're
-        // typing a slash command); we remember `slash_open_at` so we
-        // can remove it on commit. Code blocks don't get the slash
-        // menu (typing `/` in code is meaningful).
+        // The leading `/` still falls through to TextInput (visible
+        // feedback); `slash_open_at` remembers where to strip it on
+        // commit. Code blocks excluded — `/` there is meaningful text.
         if !self.slash_menu.is_visible() {
             if let WindowEvent::KeyboardInput {
                 event:
@@ -2441,10 +2005,6 @@ impl Widget for BlockEditor {
                                 .get(focused_idx)
                                 .map(|b| b.line.cursor_pos())
                                 .unwrap_or(0);
-                            // Anchor the popover just below the line's
-                            // left edge — close enough to the caret
-                            // for the user to associate the popover
-                            // with their `/`.
                             let line_rect = self
                                 .blocks
                                 .get(focused_idx)
@@ -2457,19 +2017,14 @@ impl Widget for BlockEditor {
                             self.slash_menu.set_filter("");
                             self.slash_menu.set_visible(true);
                             self.slash_open_at = Some(caret_byte);
-                            // Let the `/` keystroke ALSO fall through
-                            // to TextInput so it appears in the line —
-                            // commit_slash_selection will strip it.
                         }
                     }
                 }
             }
         }
 
-        // Click hit-test: a left-press places the caret in whichever
-        // editable block it lands on — not only the already-focused one.
-        // Focus that block first so the inner TextInput's click handler
-        // (in the routing below) sets the caret at the click position.
+        // Focus whichever editable block the press lands on first, so the
+        // routing below's TextInput click handler sets the caret there.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -2497,14 +2052,11 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Route the event to the focused block (if any). Each block
-        // re-reads `*handled` so a previously-handled event isn't
-        // re-processed.
         if let Some(focused_idx) = self.focused {
-            // Snapshot the paragraph's text so, after the edit, we can tell an
-            // actual content change (typing) from a mere caret move (a click) —
-            // the markdown heading shortcut must fire on the former, never the
-            // latter. `None` for a non-paragraph block skips the check entirely.
+            // Snapshot the text to distinguish an actual content change
+            // (typing) from a mere caret move (a click) — the heading
+            // shortcut fires only on the former. `None` for non-paragraph
+            // blocks skips the check.
             let before_text = self
                 .blocks
                 .get(focused_idx)
@@ -2525,7 +2077,6 @@ impl Widget for BlockEditor {
                     );
                 }
             }
-            // Drain the signal from the line and act on it.
             if let Some(sig) = self
                 .blocks
                 .get_mut(focused_idx)
@@ -2533,12 +2084,10 @@ impl Widget for BlockEditor {
             {
                 self.apply_signal(focused_idx, sig);
             }
-            // Markdown heading shortcut: promote when this event just typed the
-            // space that completes a `# ` / `## ` / `### ` prefix at the very
-            // start of the line — i.e. the text changed AND everything before the
-            // caret is exactly that prefix. Gating on "text changed" means a click
-            // that only parks the caret after an existing "# " never promotes; the
-            // caret-at-prefix-end check means a space typed mid-line doesn't.
+            // Promote only when the text just changed AND everything
+            // before the caret is exactly a heading prefix — a click that
+            // parks the caret after an existing "# " doesn't promote,
+            // nor does a space typed mid-line.
             if let Some(before) = before_text {
                 if let Some(b) = self.blocks.get(focused_idx) {
                     let now = b.line.value();
@@ -2582,8 +2131,6 @@ impl Widget for BlockEditor {
         self.rect
     }
 
-    /// The whole editor body is an editable text surface, so show the
-    /// I-beam over it. `point` is in `self.rect`'s logical space.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
@@ -2604,10 +2151,8 @@ impl Widget for BlockEditor {
         self.is_focused
     }
 
-    /// The editor is the document root: it reports [`Role::Document`] with
-    /// `multiline` set. Its block contents are not surfaced as a `value`
-    /// (a screen reader walks the per-block subtree instead, and dumping
-    /// the whole document text here would be redundant + unbounded).
+    /// Block contents are not surfaced as a `value` — a screen reader
+    /// walks the per-block subtree instead.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
@@ -2643,9 +2188,7 @@ impl BlockEditor {
                 self.split_at_cursor(idx, split_at);
             }
             LineSignal::SoftNewline { split_at } => {
-                // Same split semantics as Enter, but mark the new
-                // block as a soft-break continuation so it renders
-                // tight to the previous one (no paragraph gap).
+                // Same as Enter, but marks the new block soft_break.
                 self.split_at_cursor(idx, split_at);
                 let new_idx = idx + 1;
                 if new_idx < self.blocks.len() {
@@ -2654,7 +2197,6 @@ impl BlockEditor {
             }
             LineSignal::BackspaceAtStart => {
                 if idx == 0 {
-                    // First block — Backspace at the very top is a no-op.
                     return;
                 }
                 let block_empty = self
@@ -2663,10 +2205,8 @@ impl BlockEditor {
                     .map(|b| b.line.value().is_empty())
                     .unwrap_or(false);
                 if block_empty {
-                    // Empty paragraph: collapse into the previous block.
                     self.delete_empty(idx);
                 } else {
-                    // Non-empty: merge content into previous.
                     self.merge_with_previous(idx);
                 }
             }
@@ -2689,9 +2229,7 @@ impl BlockEditor {
                 self.extend_block_selection(idx, caret, 1);
             }
             LineSignal::LinkOpen { open_at } => {
-                // Anchor the popover under the line's bottom-left
-                // (the same convention SlashMenu uses). A future
-                // polish pass can switch to caret-precise anchoring.
+                // Anchored at the line's bottom-left, like SlashMenu.
                 let line_rect = self
                     .blocks
                     .get(idx)
@@ -2709,8 +2247,6 @@ impl BlockEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- Accessibility -----------------------------------------------
 
     #[test]
     fn accessibility_reports_multiline_document_role() {
@@ -2731,8 +2267,6 @@ mod tests {
         let node = Widget::accessibility(&ed).unwrap();
         assert!(node.state.focused);
     }
-
-    // ---- CRDT backing (sync / bind / converge) -----------------------
 
     #[test]
     fn editor_adopts_blocks_from_doc() {
@@ -2771,7 +2305,6 @@ mod tests {
     #[test]
     fn two_editors_converge_on_block_text() {
         use automerge::{ObjType, ROOT, transaction::Transactable};
-        // Peer A seeds a one-block document.
         let mut a_doc = AutoCommit::new();
         let a_list = a_doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
         let mut a = BlockEditor::new();
@@ -2800,7 +2333,6 @@ mod tests {
         ed.bind_blocks(&mut doc, list.clone());
         assert_eq!(doc.length(&list), 1);
 
-        // Split into "abc" | "def" locally, then sync to mirror to doc.
         ed.split_at_cursor(0, 3);
         ed.sync(&mut doc, &ROOT);
 
@@ -2963,11 +2495,9 @@ mod tests {
 
     #[test]
     fn plain_arrow_does_not_start_a_selection() {
-        // A bare ArrowDown moves the caret between blocks with no selection.
         let mut e = BlockEditor::new();
         e.set_blocks(vec![Block::paragraph("hello"), Block::paragraph("world")]);
         e.focus_block(0, CursorPlacement::Byte(2));
-        // Drive apply_signal directly with the plain-arrow signal.
         e.apply_signal(0, LineSignal::ArrowDown);
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(e.blocks()[0].line.selection_range(), None);
@@ -2976,13 +2506,11 @@ mod tests {
 
     #[test]
     fn code_block_cells_render_monospace() {
-        // A code block must read as code — its inner line uses the mono face.
         let b = Block::code_block(Some("rust".into()), "let x = 1;");
         assert!(
             b.line.inner().is_mono(),
             "code-block cells must shape their text in the monospace face"
         );
-        // Converting a paragraph to a code block also switches to mono.
         let mut e = BlockEditor::new();
         e.blocks[0].line.set_text("plain");
         e.focused = Some(0);
@@ -2991,7 +2519,6 @@ mod tests {
             e.blocks()[0].line.inner().is_mono(),
             "converting to a code block switches the cell to monospace"
         );
-        // A plain paragraph is NOT mono.
         assert!(!Block::paragraph("hi").line.inner().is_mono());
     }
 
@@ -3013,7 +2540,6 @@ mod tests {
         assert_eq!(e.blocks()[0].text(), "abc");
         assert_eq!(e.blocks()[1].text(), "defg");
         assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
-        // Focus lands on the new (suffix) block at byte 0.
         assert_eq!(e.focused_index(), Some(1));
         assert!(e.blocks()[1].line.cursor_at_start());
     }
@@ -3141,15 +2667,12 @@ mod tests {
         assert!(BlockKind::Heading(3).font_size() > BlockKind::Paragraph.font_size());
     }
 
-    // ---- Phase 3: convert / indent / toggle ----------------------------
-
     #[test]
     fn try_convert_paragraph_to_h1() {
         let mut e = BlockEditor::new();
         e.blocks[0].line.set_text("hello");
         assert!(e.try_convert_to(0, BlockKind::Heading(1)));
         assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
-        // Text preserved.
         assert_eq!(e.blocks()[0].text(), "hello");
     }
 
@@ -3244,7 +2767,6 @@ mod tests {
     #[test]
     fn try_convert_to_same_kind_is_noop() {
         let mut e = BlockEditor::new();
-        // Paragraph→Paragraph
         assert!(!e.try_convert_to(0, BlockKind::Paragraph));
     }
 

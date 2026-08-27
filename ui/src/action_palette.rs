@@ -1,29 +1,21 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
 //!
 //! The **resource + action model** ([`qos_actions`]) is the foundation: the
-//! focused app instance publishes a tree of open [`Resource`]s, each exporting
-//! [`ActionSpec`](qos_actions::ActionSpec)s — the operations Ctrl+K offers. On
-//! top of that, an app can fold in *searchable content* by handing the palette a
-//! set of [`SearchProvider`](crate::search::SearchProvider)s (contacts, files,
-//! …); their hits appear as navigable result rows in the same surface.
+//! focused app instance publishes a tree of open [`Resource`]s, each
+//! exporting [`ActionSpec`](qos_actions::ActionSpec)s — the operations
+//! Ctrl+K offers. An app can also fold in *searchable content* via
+//! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
+//! their hits appear as navigable result rows in the same surface.
 //!
-//! One registry, one renderer, one flow:
-//!
-//! * **Input** is the shared [`SearchField`](crate::widget::SearchField).
-//! * **Results** are rendered by the shared
-//!   [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind:
-//!   an **Actions** group from the resource tree's `ActionSpec`s, plus one group
-//!   per [`SearchProvider`] (e.g. **Contacts**) for searchable content.
-//! * **Activation** does the right thing per row kind:
-//!     - an **action** row resolves to its [`EncodedAction`] and
-//!       [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
-//!       path a remote peer replays — honoring the action's
-//!       [`ExecutionLocus`](qos_actions::ExecutionLocus); a
-//!       [`Prompted`](qos_actions::ActionInput::Prompted) action first collects
-//!       its argument in the field.
-//!     - a **content** (search-provider) row hands its opaque `action_id` back to
-//!       the app so it can navigate to the chosen record — presentation, never a
-//!       CRDT mutation.
+//! One registry, one renderer, one flow: input is the shared
+//! [`SearchField`](crate::widget::SearchField); results render through
+//! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
+//! An action row resolves to its [`EncodedAction`] and
+//! [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
+//! path a remote peer replays — with a
+//! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
+//! its argument in the field; a content row hands its opaque `action_id`
+//! back to the app to navigate, never a CRDT mutation.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
@@ -160,7 +152,6 @@ impl ActionPalette {
         self.rebuild(&self.field.value().to_string());
     }
 
-    /// Whether the palette is currently open.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -177,13 +168,11 @@ impl ActionPalette {
         self.rebuild("");
     }
 
-    /// Close the palette.
     pub fn close(&mut self) {
         self.open = false;
         self.arg = None;
     }
 
-    /// The current query text.
     pub fn query(&self) -> &str {
         self.field.value()
     }
@@ -204,12 +193,10 @@ impl ActionPalette {
             .collect()
     }
 
-    /// Number of selectable rows.
     pub fn len(&self) -> usize {
         self.results.len()
     }
 
-    /// Whether there are no rows.
     pub fn is_empty(&self) -> bool {
         self.results.is_empty()
     }
@@ -224,14 +211,11 @@ impl ActionPalette {
         self.results.cursor()
     }
 
-    /// Whether the field is collecting a prompted action's argument.
     pub fn in_argument_mode(&self) -> bool {
         self.arg.is_some()
     }
 
-    /// Activate the highlighted row, exactly as pressing Enter would: an
-    /// immediate action is queued for `take_dispatch`; a prompted action opens
-    /// the argument step; a content row is queued for `take_navigation`.
+    /// Activate the highlighted row, exactly as pressing Enter would.
     pub fn activate_selected(&mut self) {
         let Some(id) = self.results.selected_action_id().map(str::to_string) else {
             return;
@@ -240,10 +224,9 @@ impl ActionPalette {
     }
 
     /// Drain a completed action activation and dispatch it against `doc` +
-    /// `transport`, honoring its [`ExecutionLocus`](qos_actions::ExecutionLocus).
-    /// Decoding goes through [`ActionRegistry::decode`] — the same path a remote
-    /// peer uses to replay. Returns `None` when no action is pending (e.g. the
-    /// last activation was a navigation, or opened the argument step).
+    /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
+    /// same path a remote peer uses to replay. `None` when no action is
+    /// pending (e.g. the last activation was a navigation).
     pub fn take_dispatch(
         &mut self,
         doc: &mut AutoCommit,
@@ -295,9 +278,8 @@ impl ActionPalette {
         }
     }
 
-    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered) as
-    /// the **Actions** group, then each provider's hits as its own group. Ranks
-    /// on a shared footing and rebuilds the resolve index.
+    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
+    /// as the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
         let mut rows: Vec<SearchResult> = Vec::new();
         let mut index: HashMap<String, RowResolution> = HashMap::new();
@@ -351,8 +333,8 @@ impl ActionPalette {
         self.results.set_groups(rank_and_group(query, rows));
     }
 
-    /// Position the palette at `origin` with the given `width`, laying out the
-    /// field and sizing the results overlay. Called each frame before `draw`.
+    /// Position the palette at `origin` with `width`. Called each frame
+    /// before `draw`.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
@@ -405,11 +387,9 @@ impl ActionPalette {
         self.results.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Feed a keyboard event to the open palette. Returns whether it was
-    /// consumed. While open, the palette is modal over the keyboard: it swallows
-    /// every key so nothing leaks to the app behind it. Typing drives the query;
-    /// Up/Down + Enter drive the results; Escape closes (or cancels an argument
-    /// step).
+    /// Feed a keyboard event to the open palette; returns whether consumed.
+    /// While open, the palette is modal: it swallows every key so nothing
+    /// leaks to the app behind it.
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -535,10 +515,9 @@ impl ActionPalette {
     }
 }
 
-/// Rank `rows` by fit against `query` and bucket by kind. Groups appear in the
-/// order their best row ranks; within a group, rows stay ranked. Reuses the
-/// shared [`fuzzy_score`] primitive so a hit from one source is comparable to a
-/// hit from another. Caps each group so no single source floods the overlay.
+/// Rank `rows` by fit against `query` and bucket by kind. Reuses the shared
+/// [`fuzzy_score`] primitive so a hit from one source is comparable to a hit
+/// from another. Caps each group so no single source floods the overlay.
 fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
     /// A provider bias notch is worth this many query-match points.
     const BIAS_WEIGHT: i32 = 4;

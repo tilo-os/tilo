@@ -6,42 +6,26 @@ use crate::permissions::UserId;
 pub mod collab;
 pub use collab::{CollaborationState, RemoteCursor};
 
-/// One reversible action on the undo / redo stacks.
+/// One reversible action on the undo/redo stacks.
 ///
-/// **Collab-safe, change-based undo.** Instead of snapshotting the whole
-/// document (which, on undo, would replace the live `AutoCommit` and silently
-/// drop any concurrently-merged remote ops), an entry records only the
-/// document *heads* that bracket the local action: `before` (heads just prior
-/// to the action) and `after` (heads just after it committed). Undo recomputes
-/// the inverse of that action — `doc.diff(after, before)` — and writes it back
-/// as a brand-new forward change merged into the live document. Because it is a
-/// *new* change rather than a state replacement, every concurrent remote edit
-/// that arrived in between is preserved; only the local action is reverted.
-///
-/// `focused_node_idx` / `widget_metadata` / `author` are unchanged from the
-/// previous design — callers (`App::apply_undo_entry`, per-author undo) read
-/// these to restore the caret/selection and to isolate multi-user undo.
+/// **Collab-safe, change-based undo.** Rather than snapshotting the whole
+/// document — which on undo would replace the live `AutoCommit` and silently
+/// drop any concurrently-merged remote ops — an entry records only the heads
+/// that bracket the local action (`before`/`after`); undo recomputes the
+/// inverse and writes it as a new forward change, so concurrent remote edits
+/// survive.
 #[derive(Clone)]
 pub struct UndoEntry {
-    /// Document heads immediately before the action was applied.
     pub before: Vec<ChangeHash>,
-    /// Document heads immediately after the action committed.
     pub after: Vec<ChangeHash>,
-    pub focused_node_idx: Option<usize>, // Index in focusable_order
+    pub focused_node_idx: Option<usize>,
     pub widget_metadata: Option<String>,
     pub author: Option<UserId>,
 }
 
-/// One document's history: what can be undone in it, and what can be
-/// redone.
-///
-/// Separated from [`State`] because a history belongs to a *document*,
-/// not to a process. An [`UndoEntry`] is a pair of change hashes in one
-/// document's change graph, so a stack shared between two documents can
-/// only ever revert against the wrong one — which is what a second tab
-/// sharing the first tab's undo stack would do. Anything that owns a
-/// document owns one of these beside it: [`State`] for the app's live
-/// document, [`crate::record::RecordSet`] for each record it holds.
+/// Separated from [`State`] because a history belongs to a *document*, not a
+/// process — a stack shared between two documents would revert against the
+/// wrong one, as a second tab sharing the first tab's undo stack would.
 #[derive(Default)]
 pub struct UndoLog {
     undo_stack: Vec<UndoEntry>,
@@ -109,8 +93,8 @@ impl UndoLog {
             // Nothing to undo, but the baseline still moves up: `last_heads` is
             // where the *next* action starts from, and changes reach a document
             // by routes that never pass through here — a peer's ops merged in,
-            // the shared schema genesis. A baseline left behind puts those
-            // inside the next action's bracket, and one Ctrl+Z reverts both.
+            // the shared schema genesis. A baseline left behind would put those
+            // inside the next action's bracket, and one Ctrl+Z would revert both.
             self.last_heads = doc.get_heads();
             false
         }
@@ -129,19 +113,13 @@ impl UndoLog {
         self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
     }
 
-    /// As [`Self::record_committed_action`], naming who performed it.
-    ///
-    /// For a change that reached this document from *outside* the window — an
-    /// agent or a collaborator invoking an operation this app published. Such a
-    /// change is applied under the caller's own actor and never passes through
-    /// a local commit, so without a boundary here two things go wrong at once:
-    /// the action is reachable by nobody, and `last_heads` stays behind it, so
-    /// the next local edit brackets a range that *contains* somebody else's
-    /// work and one Ctrl+Z reverts both.
-    ///
-    /// The name is what keeps them apart afterwards — the local user's Ctrl+Z
-    /// walks past an entry belonging to someone else, and the entry stays
-    /// revertible under the name that made it.
+    /// As [`Self::record_committed_action`], naming who performed it — for a
+    /// change that reached this document from *outside* the window (an agent,
+    /// or a collaborator's own published operation), applied under the
+    /// caller's own actor with no local commit boundary. Without recording it
+    /// here, the action is unreachable and `last_heads` stays behind it, so
+    /// the next local edit's bracket contains someone else's work and one
+    /// Ctrl+Z reverts both. The name is what keeps them apart afterwards.
     pub fn record_committed_action_authored(
         &mut self,
         doc: &mut AutoCommit,
@@ -168,14 +146,11 @@ impl UndoLog {
         self.last_heads = after;
     }
 
-    /// Apply the inverse of the change spanning `[entry.before, entry.after]`
-    /// as a NEW forward change merged into `doc`, and return the
-    /// `[before, after]` heads of that newly-written inverse change so the
-    /// opposite stack can later invert *it* (redo, or re-undo).
-    ///
-    /// Concurrent remote ops merged into `doc` between `entry.after` and now
-    /// are untouched: only the props/elements the local action itself changed
-    /// are re-derived and rewritten.
+    /// Apply the inverse of `[entry.before, entry.after]` as a NEW forward
+    /// change merged into `doc`, returning the `[before, after]` heads of
+    /// that inverse so the opposite stack can later invert *it* (redo, or
+    /// re-undo). Concurrent remote ops merged in since `entry.after` are
+    /// untouched — only what the local action itself changed is rewritten.
     fn apply_inverse(
         &mut self,
         doc: &mut AutoCommit,
@@ -210,21 +185,17 @@ impl UndoLog {
     /// Whether `author` may revert `entry`: their own work, and anything
     /// **unattributed**.
     ///
-    /// The second half is not a convenience — it is what makes an
-    /// author-scoped undo reach the entries the toolkit records for an app's
-    /// own affordances. [`UndoLog::record_committed_action`] is the drain
-    /// behind
+    /// The second half is what lets an author-scoped undo reach entries the
+    /// toolkit records for an app's own affordances —
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
-    /// — every toolbar button, context-menu item and palette dispatch — and it
-    /// has no author to give, so those entries land with `author: None`.
-    /// Matching only on `Some(a) == author` left every one of them permanently
-    /// unreachable, because the interactive Ctrl+Z always carries an author.
+    /// (toolbar buttons, context-menu items, palette dispatch) has no author
+    /// to give, so those entries land with `author: None`.
     ///
-    /// Claiming them is sound rather than merely expedient: an entry only
-    /// reaches these stacks by way of a *local* commit boundary, and a peer's
-    /// ops arrive through `State::load_incremental`, which re-baselines without
-    /// pushing anything. An entry that names a different person still belongs
-    /// to them and is still walked past.
+    /// Sound rather than merely expedient: an entry only reaches these stacks
+    /// via a *local* commit boundary — a peer's ops arrive through
+    /// `State::load_incremental`, which re-baselines without pushing anything.
+    /// An entry naming a different person still belongs to them and is still
+    /// walked past.
     fn claimable_by(entry: &UndoEntry, author: &UserId) -> bool {
         entry.author.as_ref().is_none_or(|a| a == author)
     }
@@ -374,15 +345,13 @@ impl State {
 
     /// Replace the live document with another one — a different record's.
     ///
-    /// The undo history goes with it. An [`UndoEntry`] is a pair of change
-    /// hashes in *this* document's graph; carried across a swap it would name
-    /// changes the new document has never seen, and undo would either do
-    /// nothing or revert against the wrong history. Each record's history is
+    /// The undo history goes with it: an [`UndoEntry`] is a pair of change
+    /// hashes in *this* document's graph, and carried across a swap it would
+    /// name changes the new document has never seen. Each record's history is
     /// its own, so the stacks reset rather than travel.
     ///
-    /// `collab` (remote cursors and presence) is deliberately kept: presence is
-    /// about who else is here, which does not change because the document on
-    /// screen did.
+    /// `collab` (remote cursors and presence) is kept: presence is about who
+    /// else is here, which does not change because the document on screen did.
     pub fn adopt_doc(&mut self, doc: AutoCommit) {
         self.doc = doc;
         self.root = automerge::ROOT;
@@ -422,12 +391,11 @@ impl State {
         self.undo.peek_last_undo()
     }
 
-    /// Record an action that has *already* been committed into `doc` out-of-band
-    /// (e.g. a `qos_actions` action the `App`'s Ctrl+K palette dispatched, which
-    /// owns its own actor + timestamp commit boundary). Brackets the undo entry
-    /// with the caller-supplied `before` heads and the doc's current heads,
-    /// clears the redo stack, and realigns the undo baseline — so the action is
-    /// undoable and a *later* local edit doesn't accidentally revert it too.
+    /// Record an action that has *already* been committed into `doc`
+    /// out-of-band (e.g. a `qos_actions` action the Ctrl+K palette dispatched,
+    /// which owns its own actor + timestamp commit boundary). Brackets the
+    /// undo entry with the caller-supplied `before` heads, clears the redo
+    /// stack, and realigns the undo baseline.
     pub fn record_committed_action(
         &mut self,
         before: Vec<ChangeHash>,
@@ -458,23 +426,17 @@ impl State {
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
-    /// forward change.
+    /// forward change — "restore to this version" from the history scrubber.
+    /// Takes the same route as undo: derive the patches from current to
+    /// target, then write them, so history is appended to, never rewritten.
     ///
-    /// This is "restore to this version" from the history scrubber. It takes
-    /// exactly the same route as undo — derive the patches that lead from the
-    /// current state to the target state, then *write them* — so history is
-    /// appended to, never rewritten. Three consequences the surrounding
-    /// features depend on:
+    /// Consequences: the restore shows up in the timeline as its own entry
+    /// (the versions it rolled past are still there); remote edits merged in
+    /// while scrubbing survive, since only what actually differs is
+    /// rewritten; and the restore is itself undoable.
     ///
-    /// * The restore shows up in the timeline as its own new entry, authored by
-    ///   whoever performed it. The versions it rolled past are still there.
-    /// * Remote edits merged in while the user was scrubbing survive, because
-    ///   only the properties and elements that actually differ are rewritten.
-    /// * The restore is itself undoable — it lands on the undo stack like any
-    ///   other action.
-    ///
-    /// Returns `true` when something changed. A restore to the state the
-    /// document is already in is a no-op and returns `false`.
+    /// Returns `true` when something changed; a restore to the current state
+    /// is a no-op.
     pub fn restore_to_heads(
         &mut self,
         target_heads: &[ChangeHash],
@@ -491,19 +453,11 @@ impl State {
         )
     }
 
-    /// Translate a sequence index expressed as-of `anchor_heads` into its
-    /// position in the live document, so concurrent inserts/deletes shift it
-
-    /// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
-    /// live document. The element originally at `index` may itself have been
-    /// deleted by the action we're reverting (which would trip an automerge
-    /// fast/slow cursor-seek consistency check), so we anchor on the surviving
-
     /// Undo the most recent action by writing its inverse as a new forward
-    /// change (preserving concurrent remote edits). Callers pass the *current*
-    /// focus index and widget metadata so the redo entry carries the caret /
-    /// focus state at the moment undo fired — otherwise Ctrl+Shift+Z would
-    /// rehydrate the text body but leave the caret at offset 0.
+    /// change. Callers pass the *current* focus index and widget metadata so
+    /// the redo entry carries the caret/focus state at the moment undo fired
+    /// — otherwise Ctrl+Shift+Z would rehydrate the text body but leave the
+    /// caret at offset 0.
     pub fn undo(
         &mut self,
         current_focused_idx: Option<usize>,
@@ -515,10 +469,8 @@ impl State {
 
     /// Multi-user aware undo. Pops the topmost entry whose `author` equals
     /// `author`, writing its inverse as a new forward change. Entries from
-    /// other users are preserved in the stack so that one collaborator's undo
-    /// never reverts another's work — and, because the revert is a new change
-    /// rather than a snapshot reload, neither does it clobber their committed
-    /// ops in the live document.
+    /// other users are preserved in the stack, so one collaborator's undo
+    /// never reverts — or clobbers — another's committed work.
     ///
     /// `current_focused_idx` / `current_metadata` are captured on the redo
     /// stack so a subsequent redo can restore the caret — same rationale as
@@ -628,13 +580,10 @@ impl State {
         let n = self.doc.load_incremental(data)?;
         // Keep the undo baseline aligned with the new, merged document state
         // so the *next* local action brackets against a complete picture.
-        //
-        // NOTE: existing undo entries keep their original `before`/`after`
-        // heads. Those heads remain valid addresses into the (append-only)
-        // change graph after a merge, so undoing an earlier local action still
-        // reverts exactly that action as a new change — leaving the just-merged
-        // remote ops intact. This is precisely the collab-safety the old
-        // snapshot-reload design lacked.
+        // Existing entries keep their original before/after heads — those
+        // remain valid addresses into the append-only change graph after a
+        // merge, so undoing an earlier action still reverts exactly that
+        // action, leaving the just-merged remote ops intact.
         self.undo.rebase(&mut self.doc);
         Ok(n)
     }
@@ -651,11 +600,10 @@ impl State {
 /// Write the delta that leads from `from_heads` to `to_heads` into `doc`'s open
 /// transaction, without committing.
 ///
-/// This is the one primitive behind both undo and restore-from-history: rather
-/// than replacing the document with an old state (which would silently drop
-/// every concurrently-merged remote op), it re-derives exactly the properties
-/// and elements that differ and *writes them forward*. History is therefore
-/// only ever appended to.
+/// The one primitive behind both undo and restore-from-history: it re-derives
+/// exactly the properties and elements that differ and writes them forward,
+/// rather than replacing the document with an old state and dropping every
+/// concurrently-merged remote op.
 ///
 /// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
 /// and lets `App::commit_action` do the commit, so a restore performed from
@@ -813,9 +761,7 @@ mod tests {
 
     /// A single commit_action → undo → redo round-trip must preserve the
     /// focus index and widget metadata captured on the stacks — that's
-    /// what restores the caret in `EditorApp` after Ctrl+Shift+Z. Pre-fix
-    /// the redo stack was always pushed with `None, None`, so the entry
-    /// returned by `redo(...)` lost both fields.
+    /// what restores the caret in `EditorApp` after Ctrl+Shift+Z.
     #[test]
     fn redo_entry_carries_current_focus_and_metadata() {
         let mut state = State::new();
@@ -864,11 +810,9 @@ mod tests {
         state.doc.text(obj).unwrap_or_default()
     }
 
-    /// THE HEADLINE TEST. A committed local action, then a *concurrent remote
-    /// change* merged in, then `undo()`. The remote change MUST survive and only
-    /// the local action is reverted. With the old snapshot-reload undo this
-    /// failed: undo replaced the whole doc with a pre-merge snapshot, dropping
-    /// the remote edit entirely.
+    /// A committed local action, then a *concurrent remote change* merged in,
+    /// then `undo()`. The remote change MUST survive and only the local
+    /// action is reverted.
     #[test]
     fn undo_preserves_concurrent_remote_edit() {
         let mut state = State::new();
@@ -899,8 +843,7 @@ mod tests {
         // UNDO the local action.
         state.undo(None, None).expect("undo pops the local action");
 
-        // Local " World" reverted; remote "X" survives. With snapshot-reload
-        // this would have been "Hello" (remote dropped).
+        // Local " World" reverted; remote "X" survives.
         assert_eq!(
             text_body(&state, &text),
             "XHello",
@@ -938,7 +881,7 @@ mod tests {
     }
 
     /// Single-user undo/redo round-trip on a map value returns to the exact
-    /// pre/post values (behaviour identical to the old design).
+    /// pre/post values.
     #[test]
     fn single_user_undo_redo_roundtrip() {
         let mut state = State::new();
@@ -1007,9 +950,7 @@ mod tests {
 
     /// `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
     /// must behave like `undo_for_author` — walk past a collaborator's action
-    /// to the local user's own — not like plain LIFO undo. Before the author
-    /// was threaded through, this scenario reverted Bob's edit when Alice hit
-    /// Ctrl+Z.
+    /// to the local user's own — not like plain LIFO undo.
     #[test]
     fn undo_as_an_author_skips_a_collaborators_action() {
         let mut state = State::new();

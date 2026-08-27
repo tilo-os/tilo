@@ -1,17 +1,13 @@
 //! A hyperlink: theme-driven, underlined accent-coloured text that opens a
-//! URL through the OS's registered handler when clicked, activated by keyboard
-//! (Enter / Space), or triggered by an assistive-technology `Activate`.
-//!
-//! Reusable across the app fleet — anywhere a widget needs to surface a
-//! clickable URL (a contact's website, a feed's source link, an "about" page)
-//! it should build a [`Link`] rather than hand-roll underline + click plumbing.
+//! URL when clicked, activated by keyboard (Enter / Space), or triggered by
+//! an assistive-technology `Activate`.
 //!
 //! Opening is pluggable. By default activation hands the URL to [`open::that`]
-//! (xdg-open / the desktop portal on Linux); a host that routes external opens
-//! through its own mechanism — or a test that wants to observe the URL without
-//! spawning a browser — overrides it with [`Link::on_open`]. Either way the
-//! most-recently-activated URL is recorded on [`Link::last_activated`] so a
-//! parent or test can confirm the link fired.
+//! (xdg-open / the desktop portal on Linux); a host that routes external
+//! opens through its own mechanism — or a test that wants to observe the URL
+//! without spawning a browser — overrides it with [`Link::on_open`]. Either
+//! way the most-recently-activated URL is recorded on
+//! [`Link::last_activated`] so a parent or test can confirm the link fired.
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -23,10 +19,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Default opener: hand the URL to the OS's registered handler (xdg-open / the
-/// desktop portal on Linux) via the `open` crate. Best-effort — a launch
-/// failure is logged, not surfaced, matching how the rest of the qOS app fleet
-/// treats an external-open miss.
+/// Best-effort — a launch failure is logged, not surfaced.
 fn os_open(url: &str) {
     if let Err(e) = open::that(url) {
         tracing::warn!("Link: failed to open {url:?}: {e}");
@@ -34,10 +27,9 @@ fn os_open(url: &str) {
 }
 
 pub struct Link {
-    /// The URL activation opens.
     url: String,
-    /// Visible (and spoken) text. Defaults to the URL; a caller can show a
-    /// friendlier label (e.g. "Website") via [`with_label`](Self::with_label).
+    /// Defaults to the URL; a caller can show a friendlier label via
+    /// [`with_label`](Self::with_label).
     label: String,
     font_size: f32,
     rect: Rect,
@@ -45,11 +37,10 @@ pub struct Link {
     is_pressed: bool,
     is_focused: bool,
     enabled: bool,
-    /// Overrides the default OS opener. When set, activation calls this instead
-    /// of [`open::that`] — tests record the URL, hosts route through a portal.
+    /// When set, activation calls this instead of [`open::that`] — tests
+    /// record the URL, hosts route through a portal.
     opener: Option<Box<dyn FnMut(&str)>>,
-    /// The URL most recently activated (mouse / keyboard / AT). Lets a parent
-    /// or test observe that the link fired without intercepting the opener.
+    /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
     dirty: bool,
     last_state: (bool, bool, bool),
@@ -74,22 +65,17 @@ impl Link {
         }
     }
 
-    /// Show `label` in place of the raw URL (the URL is still what opens and
-    /// what the accessible value reports).
+    /// The URL is still what opens and what the accessible value reports.
     pub fn with_label(mut self, label: &str) -> Self {
         self.label = label.to_string();
         self
     }
 
-    /// Override the 14px default text size.
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.font_size = size;
         self
     }
 
-    /// Replace the default OS opener with a custom sink. Fires with the URL on
-    /// every activation; used by tests to record the URL without spawning a
-    /// browser, and by hosts that open external links through their own portal.
     pub fn on_open<F: FnMut(&str) + 'static>(mut self, f: F) -> Self {
         self.opener = Some(Box::new(f));
         self
@@ -103,16 +89,13 @@ impl Link {
         &self.label
     }
 
-    /// The URL most recently opened by this link, or `None` if it hasn't been
-    /// activated yet.
     pub fn last_activated(&self) -> Option<&str> {
         self.last_activated.as_deref()
     }
 
-    /// Set hover state from a parent that routes input by hand (rather than
-    /// through [`handle_event`](Widget::handle_event)). Returns `true` when the
-    /// state changed, so the caller can request a redraw. The Contacts detail
-    /// pane uses this to thicken the underline as the pointer passes over.
+    /// For a parent that routes input by hand instead of through
+    /// [`handle_event`](Widget::handle_event). Returns `true` when the state
+    /// changed, so the caller can request a redraw.
     pub fn set_hovered(&mut self, hovered: bool) -> bool {
         if hovered != self.is_hovered {
             self.is_hovered = hovered;
@@ -122,9 +105,9 @@ impl Link {
         }
     }
 
-    /// Position this link explicitly, bypassing taffy — mirrors
+    /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
-    /// parents (like the Contacts detail pane) that lay children out by hand.
+    /// parents that lay children out by hand.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         if rect != self.rect {
             self.rect = rect;
@@ -132,9 +115,7 @@ impl Link {
         }
     }
 
-    /// Fire the link: record the URL and hand it to the opener (default: the OS
-    /// handler). The single entry point shared by mouse, keyboard and AT so all
-    /// three paths behave identically.
+    /// Single entry point shared by mouse, keyboard and AT so all three paths behave identically.
     pub fn activate(&mut self) {
         if !self.enabled {
             return;
@@ -174,7 +155,6 @@ impl Widget for Link {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // A link is a single, non-wrapping run of text.
         let (w, h) = text_renderer.measure(&self.label, self.font_size, None);
         taffy::Size { width: w + 0.1, height: h }
     }
@@ -217,8 +197,7 @@ impl Widget for Link {
             None,
         );
 
-        // Underline just under the baseline; a touch thicker on hover so the
-        // link reads as "live" alongside the pointer cursor.
+        // A touch thicker on hover so the link reads as "live".
         let uy = y0 + th - 1.5;
         let stroke_w = if self.is_hovered { 1.6 } else { 1.0 };
         scene.stroke(
@@ -229,7 +208,6 @@ impl Widget for Link {
             &Line::new((x0, uy), (x0 + tw, uy)),
         );
 
-        // Keyboard focus ring.
         if self.is_focused {
             let pad = 2.0;
             let ring = RoundedRect::from_rect(
@@ -310,8 +288,6 @@ impl Widget for Link {
         self.rect
     }
 
-    /// A hyperlink is a click affordance, so the pointing-hand cursor while
-    /// hovered.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.enabled && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Pointer)
@@ -333,8 +309,6 @@ impl Widget for Link {
         self.enabled
     }
 
-    /// Keyboard / AT activation (Enter, Space, AccessKit `Activate`) opens the
-    /// URL exactly as a mouse click does.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -392,8 +366,7 @@ mod tests {
         )
         .unwrap();
         link.apply_layout(&tree, node, Point::ZERO);
-        // Force a deterministic hit rect (measure needs a text renderer we don't
-        // have here); the interaction logic only cares about `rect`.
+        // Deterministic hit rect (measure needs a text renderer we don't have here).
         link.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 20.0));
         (tree, node)
     }

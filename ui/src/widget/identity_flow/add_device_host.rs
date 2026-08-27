@@ -47,13 +47,8 @@ pub struct HostDkgOutcome {
     pub round2_to_pairer: Option<EnrolmentRound2>,
 }
 
-/// Encode + cache a pairing handshake at the host.
-///
-/// Generates the nonce (16 random bytes), opens a `DkgSession` for a
-/// 2-of-2 enrolment, builds the QR payload, and computes the 6-digit
-/// short code. The session handle is kept inside the screen so a
-/// later `host_complete_dkg` call can advance the DKG with the
-/// pairer's round-2 reply.
+/// State + rendering for hosting a device-pairing handshake — the QR + short
+/// code + status the new device pairs against.
 pub struct AddDeviceHostScreen {
     rect: Rect,
     qr_rect: Rect,
@@ -158,7 +153,6 @@ impl AddDeviceHostScreen {
             .and_then(|s| s.payload.to_json_bytes().ok())
     }
 
-    /// Reference to the active handshake state.
     pub fn handshake(&self) -> Option<&HostHandshakeState> {
         self.session.as_ref()
     }
@@ -190,38 +184,21 @@ impl AddDeviceHostScreen {
             .session
             .take()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("session already drained".into()))?;
-        // The reply is addressed to share index 1 (the host); the
-        // pairer is share index 2. We run round-2 receive with the
-        // single message from the pairer; in 2-of-2 that completes
-        // the DKG for the host side.
+        // The reply is addressed to share index 1 (the host); the pairer is
+        // share index 2, so a single round-2 receive completes 2-of-2 DKG.
         session.receive_round1(&[EnrolmentRound1 {
             from_share_index: 2,
-            // The pairer's round-1 is implicit in the round-2 reply:
-            // we don't actually have it cached here because the
-            // pairer's round-1 wasn't sent back over the pairing
-            // channel in the v1 protocol. For the *test* path the
-            // end-to-end harness drives both halves explicitly via
-            // `complete_dkg_end_to_end`; for the production wiring
-            // this needs the pairer's round-1 to arrive over the
-            // pairing channel before its round-2 — documented as a
-            // protocol-extension follow-up below.
-            //
-            // PROTOCOL FOLLOW-UP: extend `PairingHandshake` with a
-            // pairer→host `round1` publication step. The current
-            // shape sends only the round-2 reply because v1 of the
-            // UI tests build both round-1 packets in process; the
-            // production broker shim will need to add a third
-            // publication.
+            // Stand-in: the pairer's round-1 packet is not published over the
+            // pairing channel, only its round-2 reply is, so there is nothing
+            // real to pass here. `PairingHandshake` needs a pairer→host
+            // round-1 step before this (and the synthesized reply below) can
+            // carry real key material.
             package_bytes: Vec::new(),
         }])?;
-        // Round-2 receive — the actual finalisation.
         session.receive_round2(&[reply])?;
         s.completed = true;
-        // The host's "out" round-2 to the pairer is produced by the
-        // host's *own* `receive_round1`. We approximated above; the
-        // real outgoing reply needs the pairer's round-1, which the
-        // v1 test harness provides via the in-memory shim. For now
-        // return a synthetic empty reply.
+        // The host's real outgoing round-2 depends on the pairer's round-1
+        // above, which isn't available yet — return a placeholder for now.
         Ok(HostDkgOutcome {
             completed: true,
             round2_to_pairer: None,
@@ -378,10 +355,8 @@ impl Widget for AddDeviceHostScreen {
             transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
             None,
         );
-        // QR. We paint a placeholder white rect if the qr widget
-        // hasn't been built (no active handshake yet).
+        // A placeholder white rect stands in when no handshake is active yet.
         if let Some(qr) = self.qr.as_mut() {
-            // Override the QR's rect via a manual paint.
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -427,7 +402,6 @@ impl Widget for AddDeviceHostScreen {
                 None,
             );
         }
-        // Code.
         let code_label = self
             .pairing_code_display()
             .unwrap_or_else(|| "------".to_string());
@@ -439,7 +413,6 @@ impl Widget for AddDeviceHostScreen {
             transform * Affine::translate((card.x0 + pad, self.qr_rect.y1 + 16.0)),
             None,
         );
-        // Status.
         text_renderer.draw_text(
             scene,
             &self.status,
@@ -448,7 +421,6 @@ impl Widget for AddDeviceHostScreen {
             transform * Affine::translate((card.x0 + pad, self.qr_rect.y1 + 48.0)),
             None,
         );
-        // Cancel.
         let cancel_bg = if self.cancel_hovered {
             theme.bg_hover
         } else {

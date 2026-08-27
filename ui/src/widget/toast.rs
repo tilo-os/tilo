@@ -1,31 +1,17 @@
 //! `Toast` + `ToastStack` primitive — transient notifications anchored
-//! top-right of the shell.
+//! top-right of the shell, sinking fallible OS operations
+//! (trash/rename/move/copy), `ShellError` conversions, and confirmations.
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — Phase A
-//! step 15 (`ContextMenu`, `Tooltip`, `Toast` primitives landed with their
-//! first shell consumer). Toasts are the sink for fallible OS operations
-//! (trash/rename/move/copy), `ShellError` conversions and "Workspace
-//! created" confirmations.
-//!
-//! This landing (plan task **T9**) provides the primitive's expiry + cap
-//! contract exercised by the plan test plus a `Widget` impl that stacks
-//! the active toasts top-right using Plan 1 tokens (no hard-coded colors
-//! or spacing).
-//!
-//! Public surface:
-//! - [`ToastKind`] — `Info`, `Success`, `Warning`, `Error`. Maps to
-//!   `Theme::tokens.colors.semantic.*` for the accent bar.
-//! - [`Toast`] — `text`, `kind`, `ttl_remaining`. Constructed via
-//!   [`ToastStack::push`]; not meant to be created directly by shell code.
-//! - [`ToastStack`] — ring-buffered list with `new`, `with_max(n)`,
-//!   `push(text, kind)`, `tick(dt)`, `len`, `iter`. The default TTL is
-//!   `DEFAULT_TTL` (3s); the default cap is `DEFAULT_MAX` (5 toasts).
+//! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*` for the accent
+//!   bar.
+//! - [`Toast`] is constructed via [`ToastStack::push`], not directly.
+//! - [`ToastStack`] is a ring-buffered list; default TTL is [`DEFAULT_TTL`]
+//!   (3s), default cap is [`DEFAULT_MAX`] (5 toasts).
 //!
 //! The `Widget` impl draws each active toast as a stacked raised-surface
-//! card with a kind-colored accent bar on the left. Enter/exit motion
-//! uses `theme.tokens.motion.springs.snappy` — wired by the shell
-//! consumer that owns the animation driver (the primitive itself is a
-//! pure render of the current state so tests stay deterministic).
+//! card with a kind-coloured accent bar. It's a pure render of the current
+//! state — enter/exit motion is wired by the shell consumer that owns the
+//! animation driver — so tests stay deterministic.
 
 use automerge::{AutoCommit, ObjId};
 use std::time::Duration;
@@ -216,14 +202,10 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 // Shared notification-card renderer
 // ---------------------------------------------------------------------------
 //
-// One immediate-mode painter for a toast / notification card, used by both the
-// retained [`ToastStack`] (in-app toasts) and the shell's OS-notification stack
-// (`shell::shell::notification::NotificationStack`). Before this, the shell
-// hand-painted its own richer card — a fork of this widget that re-derived the
-// surface, the severity treatment, the close affordance and the enter/exit
-// fade. HIG §8 says extend the widget, don't fork it, so the richer layout
-// (attribution caption + title + body + a real dismiss button + an actionable
-// chevron) lives here now and both surfaces render through it.
+// One immediate-mode painter for a toast/notification card, shared by the
+// retained [`ToastStack`] (in-app toasts) and the shell's OS-notification
+// stack (`shell::shell::notification::NotificationStack`) — HIG §8: extend
+// the widget, don't fork it.
 
 const CARD_ACCENT_BAR_W: f64 = 4.0;
 const CARD_PAD_X: f64 = 14.0;
@@ -331,10 +313,8 @@ pub fn paint_card(
     let radius = theme.tokens.radii.md as f64;
     let shape = RoundedRect::from_rect(rect, radius);
 
-    // Drop shadow from the elevation token, following the card's own
-    // radius, and fading with the card. The spread, the offset and the
-    // strength used to be three literals here (18 / 6 / half), which is
-    // three decisions a toast should not be making on its own.
+    // Drop shadow from the elevation token (not ad-hoc literals), following
+    // the card's own radius and fading with the card.
     use crate::color_compat::ColorCompat;
     let mut elev = theme.tokens.elevation.e3;
     elev.color = elev.color.with_alpha_factor(a);
@@ -356,8 +336,7 @@ pub fn paint_card(
         &shape,
     );
 
-    // Left severity accent stripe — the at-a-glance state form (HIG §7)
-    // that replaces the shell's hand-drawn severity dot.
+    // Left severity accent stripe — the at-a-glance state form (HIG §7).
     let bar = Rect::new(
         rect.x0 + 1.5,
         rect.y0 + 8.0,
@@ -591,11 +570,9 @@ impl Widget for ToastStack {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
-        // The stack is a live region of transient notifications. Expose it as a
-        // named group whose value is the most recent toast's text, and mark it
-        // an assertive live region so a freshly-shown toast announces itself
-        // immediately (without stealing keyboard focus). The stable `name`
-        // ("Notifications") is the identity the host diffs across frames.
+        // Assertive live region so a freshly-shown toast announces itself
+        // immediately without stealing keyboard focus; the stable `name`
+        // is the identity the host diffs across frames.
         let latest = self.toasts.last().map(|t| t.text.clone());
         let mut node = AccessNode::new(Role::Group)
             .with_name("Notifications")
@@ -643,10 +620,6 @@ mod tests {
 
     #[test]
     fn paint_card_returns_a_top_right_close_rect_when_closable() {
-        // The card renderer owns the dismiss-button geometry: a `closable`
-        // card returns a non-empty rect anchored to the card's top-right,
-        // which the shell's notification stack hit-tests instead of doing
-        // its own close-rect maths.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
@@ -700,8 +673,6 @@ mod tests {
 
     #[test]
     fn paint_card_is_a_noop_when_fully_faded() {
-        // alpha == 0 (the tail of the exit animation) paints nothing and
-        // returns an empty hit, so a faded-out card can't be clicked.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();

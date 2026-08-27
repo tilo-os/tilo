@@ -15,72 +15,39 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
 
-/// Duration of the concept-parity spawn fade-in applied to a newly
-/// created `TileHost`. Mirrors the nirios-concept `WindowTile`
-/// `motion.initial={{ scale: 0.95, opacity: 0 }}` →
-/// `motion.animate={{ scale: 1, opacity: 1 }}` pattern — kept short
-/// (~180 ms) so tiles read as "arriving" without delaying the user's
-/// next interaction with the tile contents.
 const SPAWN_FADE_MS: f32 = 180.0;
-/// Initial uniform scale of the spawn curve. Matches the concept's
-/// `scale: 0.95` starting keyframe; the eased progress closes the gap
-/// back to 1.0 at the end of `SPAWN_FADE_MS`.
 const SPAWN_SCALE_START: f64 = 0.95;
 
-/// Width of the hairline the frame draws around a window. One logical
-/// pixel: the edge is structure, not decoration, and anything heavier
-/// reads as a drawn outline around the app rather than as the boundary
-/// of a surface.
+/// One logical pixel: heavier reads as a drawn outline around the app,
+/// not the boundary of a surface.
 const EDGE_STROKE_WIDTH: f64 = 1.0;
 
-/// Width of that same hairline on the window the keyboard is aimed at.
-/// Still an edge, not a fence: the focused window's boundary is drawn a
-/// half-pixel heavier and in the focus colour, so it reads as *this*
-/// surface being lit rather than as a rectangle laid over the layout.
+/// Half a pixel heavier than `EDGE_STROKE_WIDTH`, in the focus colour, so
+/// the focused surface reads as lit rather than fenced.
 const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
 
-/// Global multiplier on the focused window's tinted bloom. The ambient
-/// shadow every window casts sits at 0.25; the focused one adds this on
-/// top in the theme's focus hue, which is enough to pick the window out
-/// of a strip at a glance without the bloom becoming the loudest thing
-/// on screen.
+/// Ambient shadow sits at alpha 0.25; this adds on top in the focus hue —
+/// enough to pick the window out of a strip without becoming the
+/// loudest thing on screen.
 const FOCUS_BLOOM_ALPHA: f32 = 0.30;
 
-/// Side length of the pre-baked radial shadow sprite. 256 px keeps the
-/// one-shot RGBA8 allocation tiny (256 KiB) while being large enough
-/// that stretching the sprite under a full-height content card doesn't
-/// reveal sampling artefacts.
+/// 256 px keeps the one-shot RGBA8 allocation tiny (256 KiB) while
+/// staying large enough that stretching under a full-height card doesn't
+/// show sampling artefacts.
 const SHADOW_SPRITE_SIZE: u32 = 256;
 
-/// Gaussian falloff constant `k`, expressed as a fraction of the
-/// sprite's half-extent. Alpha follows
-/// `alpha = exp(-((d - d_peak) / k)^2)` with `d` the distance from the
-/// centre normalised to the half-extent. 0.35 lands most of the
-/// shadow's energy inside ~60 % of the radius — tuned by eye to match
-/// Tailwind `shadow-2xl`'s visual density.
+/// Gaussian falloff constant `k` (fraction of the sprite's half-extent):
+/// `alpha = exp(-((d - d_peak) / k)^2)`. 0.35 lands most of the shadow's
+/// energy inside ~60% of the radius — tuned by eye to match Tailwind
+/// `shadow-2xl`'s visual density.
 const SHADOW_GAUSSIAN_K: f64 = 0.35;
 
-/// Normalised radius at which the Gaussian bump peaks. 0.30 puts the
-/// peak ring at roughly a third of the way to the edge, matching the
-/// task spec: centre transparent (so the white card paints over pure
-/// nothing rather than a darkened underlay), peak in the interior,
-/// sprite edge transparent (so the stretched image has no hard halo).
+/// Normalised radius where the Gaussian bump peaks. 0.30 keeps the
+/// centre transparent (the card paints over nothing, not a darkened
+/// underlay) and the sprite edge transparent (no hard halo when
+/// stretched).
 const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
-/// Build a 256×256 RGBA8 premultiplied sprite with a radial Gaussian
-/// falloff baked into the alpha channel and `(r, g, b)` baked into the
-/// RGB channels. Called once per tint via `OnceLock`.
-///
-/// The alpha envelope is `bump * inner_shoulder * outer_shoulder`:
-/// - `bump = exp(-((d - SHADOW_PEAK_RADIUS) / SHADOW_GAUSSIAN_K)^2)` —
-///   the classic Gaussian bump centred at the peak radius.
-/// - `inner_shoulder = clamp(d / SHADOW_PEAK_RADIUS, 0, 1)` forces the
-///   centre to zero so the card's own fill paints over transparent
-///   sprite, not a pre-darkened spot.
-/// - `outer_shoulder = max(1 - d, 0)` forces the sprite boundary to
-///   zero so the stretched image can't leak a square-edged halo.
-///
-/// Vello expects premultiplied RGBA8: RGB channels are `src * alpha`.
 fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     let size = SHADOW_SPRITE_SIZE;
     let s = size as f64;
@@ -116,26 +83,15 @@ fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     }
 }
 
-/// Cached ambient (black) drop-shadow sprite used for `shadow-2xl`.
 fn ambient_shadow_sprite() -> &'static Image {
     static SPRITE: OnceLock<Image> = OnceLock::new();
     SPRITE.get_or_init(|| build_shadow_sprite(0, 0, 0))
 }
 
-/// The focused window's bloom sprite, tinted with the theme's own focus
-/// colour.
-///
-/// This used to bake `#6366f1` — Tailwind indigo-500 — into the binary,
-/// which meant the focus bloom was the same violet on a warm light
-/// palette, on the graphite dark one, and on high-contrast, where the
-/// focus colour is a high-visibility yellow and a violet glow says
-/// nothing at all. Colours belong to the theme (see `ui/HIG.md` §9.4),
-/// so the tint is now a parameter.
-///
-/// Sprites are cached per RGB triple rather than rebuilt each frame:
-/// baking one is a 256x256 pass over 65k pixels, and a session uses one
-/// tint until the user changes theme, so the map holds a single entry in
-/// the common case and one more per theme actually visited.
+/// Tinted with the theme's own focus colour (`ui/HIG.md` §9.4) — never
+/// hard-code it, high-contrast's focus colour is nothing like a violet
+/// glow. Cached per RGB triple rather than rebuilt each frame: baking one
+/// is a 256x256 pass over 65k pixels, and a session visits few themes.
 fn focus_bloom_sprite(tint: Color) -> Image {
     static SPRITES: OnceLock<Mutex<HashMap<[u8; 3], Image>>> = OnceLock::new();
     let rgba = tint.to_rgba8();
@@ -148,10 +104,7 @@ fn focus_bloom_sprite(tint: Color) -> Image {
         .clone()
 }
 
-/// Stretch a cached shadow sprite across `target`, modulated by `alpha`
-/// via a `push_layer`/`pop_layer` pair so callers can scale the overall
-/// shadow intensity without re-baking the sprite. The sprite's baked
-/// RGB already encodes the tint; `alpha` is just a global multiplier.
+/// RGB in `sprite` is already tinted; `alpha` only scales opacity.
 fn draw_shadow_sprite(
     scene: &mut Scene,
     transform: Affine,
@@ -187,19 +140,12 @@ fn draw_shadow_sprite(
     scene.pop_layer();
 }
 
-/// Which direction through a document's history a keystroke asks for.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum UndoStep {
     Undo,
     Redo,
 }
 
-/// The undo / redo chord an event carries, if any.
-///
-/// The same three bindings the host answers globally (`Ctrl+Z`,
-/// `Ctrl+Shift+Z`, `Ctrl+Y`) — read here first, and only while a tile's
-/// app holds focus, so the keystroke lands on the document the user is
-/// looking at.
 fn undo_step(event: &WindowEvent, m: &winit::event::Modifiers) -> Option<UndoStep> {
     if !(m.state().control_key() || m.state().super_key()) {
         return None;
@@ -236,61 +182,38 @@ impl AppKind {
     }
 }
 
-/// Content for a single tile (single tab) hosted by a `TileHost`.
-///
-/// As of Plan 3 Task 3, `App` carries a `Box<dyn AppWidget>` — `AppWidget: Widget`
-/// so layout/draw/event calls still auto-upcast to the base `Widget` contract.
-/// The `Wayland(SurfaceId)` variant is reserved for future compositor integration.
 pub enum TileContent {
     App(Box<dyn AppWidget>),
     Stub { kind: AppKind, label: String },
-    /// A card that states something, rather than standing in for an app
-    /// that is not built yet.
-    ///
-    /// [`TileContent::Stub`] is the "coming soon" placeholder, and its
-    /// sub-line says so — which is a true thing to say about an app this
-    /// OS has not written and a false one about anything else. A tab whose
-    /// window has a reason for not being here needs to say *that* reason:
-    /// a peer's window whose app is not installed on this machine is not
-    /// coming soon, it is absent, and the two sentences send the reader to
-    /// different places.
-    ///
-    /// So: `title` names the thing, `detail` says what is actually the
-    /// case, and nothing is added to either.
+    /// Distinct from `Stub`'s "coming soon": `title` names the thing,
+    /// `detail` says what's actually the case (e.g. a peer's app not
+    /// installed here is absent, not coming soon).
     Notice { title: String, detail: String },
-    // reserved: Wayland(u64),
 }
 
-/// Which record a tile is showing, and where that record's document lives.
-///
-/// A tab is an open thing, not a view onto one shared thing, so the
-/// document behind it is the tab's own. Without this the host handed every
-/// tile the same document root and the same key inside it: two Notes tabs
-/// were one note wearing two pills, and everything downstream — undo,
-/// presence, in-app search — inherited that.
+/// A tab is an open thing, not a view onto one shared thing: the document
+/// behind it is the tab's own, otherwise two tabs of the same app would
+/// share one document, and undo/presence/search with it.
 struct Binding {
     store: RecordStore,
-    /// The record the *tab* is: where its content lives while no file
-    /// names it. Never changes for the life of the tab.
+    /// Where the tab's content lives while no file names it. Never
+    /// changes for the life of the tab.
     tab: RecordCheckout,
-    /// The record actually live in this tile. `tab.id` until the hosted
-    /// app declares a file through
+    /// `tab.id` until the hosted app declares a file through
     /// [`Widget::record_intent`](crate::widget::Widget::record_intent) —
-    /// opening a document *is* moving the tab onto that document's record,
-    /// and the scratch record it leaves behind is still its own document.
+    /// opening a document *is* moving the tab onto that document's record;
+    /// the scratch record it leaves behind is still its own document.
     live: RecordId,
     /// Whether the app has taken this record's document through a first
-    /// `sync` yet. What that pass writes — the object a body lives in, the
-    /// seed a fresh note carries — is the document's *shape*, not
-    /// something the user did, so the history's baseline is taken after
-    /// it. Otherwise the first Ctrl+Z deletes the body wholesale instead
-    /// of reverting what was typed into it.
+    /// `sync` yet. What that pass writes (the object a body lives in, the
+    /// seed a fresh note carries) is the document's *shape*, not something
+    /// the user did, so the history's baseline is taken after it —
+    /// otherwise the first Ctrl+Z deletes the body wholesale instead of
+    /// reverting what was typed into it.
     established: bool,
 }
 
 impl Binding {
-    /// Follow what the app says it is working on. Returns the record whose
-    /// document the app must be handed this pass.
     fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
         if let Some(want) = want {
             if want.id != self.live {
@@ -305,86 +228,51 @@ impl Binding {
 
 pub struct TileHost {
     content: TileContent,
-    /// The tab's own document, or `None` for a tile nothing bound — a
-    /// bare `ui` host, a stub card, a test that only exercises paint.
-    /// Unbound tiles keep the old behaviour of editing whatever document
+    /// `None` when nothing is bound — a bare `ui` host, a stub card, a
+    /// test exercising only paint. Unbound tiles edit whatever document
     /// the parent pass carries.
     binding: Option<Binding>,
-    /// The record scope the hosted app was last told about, so a scope is
-    /// announced once per change rather than every frame.
     announced: Option<RecordId>,
     /// Set by [`TileHost::replace_content`]; drained by
-    /// [`Widget::take_structure_dirty`]. What tells the layout pass that
-    /// this tile's node shape changed even though no hosted widget
-    /// reported anything.
+    /// [`Widget::take_structure_dirty`]. Tells the layout pass this
+    /// tile's node shape changed even though no hosted widget reported
+    /// anything.
     structure_dirty: bool,
-    /// Latched: this tile has had something to show at least once, so
-    /// the window it is in stays on screen from here on.
-    ///
-    /// It has to survive [`TileHost::replace_content`], which is the
-    /// case that makes it necessary: a tab announcing a window somebody
-    /// else in the room opened is a card, and a card is on screen. When
-    /// this machine's own instance of that app arrives, the tile becomes
-    /// a client surface that has not drawn yet — and without the latch
-    /// the window the person was already looking at would blink out and
-    /// come back, which is worse than what it replaced.
+    /// Latched: once this tile has shown something, its window stays on
+    /// screen for good. Must survive [`TileHost::replace_content`] — a
+    /// peer's already-open window arrives as a card, then gets replaced
+    /// by this machine's own not-yet-drawn app instance, and without the
+    /// latch the window would blink out and back.
     was_presented: std::cell::Cell<bool>,
     rect: Rect,
-    /// Set by the parent `WindowGroup` each frame: is this the tile the
-    /// keyboard is aimed at? Drives both halves of the focus signal —
-    /// the tinted bloom under the card and the lit card edge.
     pub focused: bool,
-    /// Timestamp at which this TileHost was marked "newly spawned".
-    /// When set, `draw` applies an ease-out-cubic fade + uniform scale
-    /// curve over `SPAWN_FADE_MS`, mirroring the nirios-concept
-    /// `WindowTile` framer-motion
-    /// `initial={{ scale: 0.95, opacity: 0 }}` →
-    /// `animate={{ scale: 1, opacity: 1 }}` pattern. Cleared back to
-    /// `None` at the top of `draw` once the curve has elapsed so
-    /// subsequent frames render at steady state and don't pay the
-    /// layer push/pop cost. Tests that construct a `TileHost` via
-    /// `TileHost::new` get `None` here by default, matching the
-    /// "animations only fire for runtime insertions" invariant used
-    /// by `TabBar`'s insert fade.
+    /// `None` by default, matching the "animations only fire for runtime
+    /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
-    /// The app's own name, as it reads on the tab pill above this tile.
     /// Pushed down by the parent [`crate::widget::WindowGroup`] every
-    /// frame: the pill is where a wayland app-id is turned into a name a
-    /// person recognises, and resolving it a second time down here would
-    /// only be a second chance for the two to disagree.
+    /// frame: the pill is where a wayland app-id becomes a name a person
+    /// recognises, and resolving it a second time down here would only be
+    /// a second chance for the two to disagree.
     opening_name: String,
-    /// The indicator on the opening card, kept across frames so its
-    /// motion is continuous rather than restarting on every paint.
     opening_spinner: Spinner,
-    /// Set on the first frame the opening card is actually painted.
-    ///
-    /// What decides whether an arriving window is dissolved into or
-    /// simply drawn: a card nobody ever saw has nothing to dissolve, and
-    /// fading one out over an app that opened in a blink would invent a
-    /// transition out of a placeholder that was never on screen.
+    /// Set on the first frame the opening card is actually painted: a
+    /// card nobody saw has nothing to dissolve, and fading one out over
+    /// an app that opened in a blink would invent a transition out of a
+    /// placeholder that was never on screen.
     opening_shown: bool,
-    /// When the app's own content first took the place of the opening
-    /// card. Drives the dissolve, and is only ever set once
-    /// `opening_shown` is.
+    /// Drives the dissolve; only ever set once `opening_shown` is.
     handed_over_at: Option<Instant>,
 }
 
-/// How long the opening card takes to dissolve into the window that
-/// replaced it.
-///
-/// The same length as the tab-close fade, because it is the same kind of
-/// motion at the same scale: long enough to read as one thing becoming
-/// another, short enough that nobody is waiting on it.
+/// Same length as the tab-close fade — one motion becoming another, short
+/// enough nobody is waiting on it.
 const HANDOVER_MS: u64 = 180;
 
-/// Diameter of the indicator on the opening card.
-///
-/// A little larger than the toolkit's default so it holds its own under
-/// a title on a full-window card, and small enough that it stays an
-/// indicator rather than becoming the subject of the screen.
+/// Larger than the toolkit default so it holds its own under a title on a
+/// full-window card, small enough to stay an indicator rather than the
+/// subject of the screen.
 const OPENING_SPINNER_PX: f64 = 36.0;
 
-/// Gap between the app's name and the indicator under it.
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
@@ -405,11 +293,6 @@ impl TileHost {
         }
     }
 
-    /// Tell this tile the name of the app whose place it is holding.
-    ///
-    /// Called by the parent group each frame, from the tab above it.
-    /// Tiles not standing in for an app that has yet to draw never read
-    /// it.
     pub fn set_opening_name(&mut self, name: &str) {
         if self.opening_name != name {
             self.opening_name.clear();
@@ -417,32 +300,20 @@ impl TileHost {
         }
     }
 
-    /// The name this tile would put on its opening card. Test seam for
-    /// the parent group's push — a card naming the wrong app, or naming
-    /// an app-id, is the defect this exists to catch.
+    /// Test seam for the parent group's push — a card naming the wrong
+    /// app, or an app-id, is the defect this exists to catch.
     #[cfg(test)]
     pub(crate) fn opening_name_for_test(&self) -> &str {
         &self.opening_name
     }
 
-    /// Whether the opening card is mid-dissolve into the window that
-    /// replaced it.
     fn handover_in_flight(&self) -> bool {
         self.handed_over_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(HANDOVER_MS))
     }
 
-    /// Give this tile its own document: the record `tab` names, kept in
-    /// `store`.
-    ///
-    /// Called once per tab as the window tree is built. From here on the
-    /// hosted app reads and writes that record's document rather than
-    /// whatever the parent pass carries, which is what makes a second tab
-    /// of an app a second thing rather than another window onto the first.
-    ///
-    /// Idempotent on the same record — rebuilding the tree re-binds every
-    /// tile, and a bind that opened the record again would hand the tab a
-    /// fresh empty document.
+    /// Idempotent on the same record — rebinding would hand the tab a
+    /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
         if let Some(b) = &self.binding {
             if b.tab.id == tab.id {
@@ -460,8 +331,6 @@ impl TileHost {
         self.announce_scope();
     }
 
-    /// Bring the binding up to date with what the app says it is working
-    /// on, and hand back the record whose document it must be given.
     fn resolve_record(&mut self) -> Option<RecordId> {
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
@@ -472,7 +341,6 @@ impl TileHost {
         Some(live)
     }
 
-    /// Tell the hosted app which record it is on, once per change.
     fn announce_scope(&mut self) {
         let Some(live) = self.binding.as_ref().map(|b| b.live.clone()) else {
             return;
@@ -493,49 +361,24 @@ impl TileHost {
         }
     }
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
-    /// Swap what this tile hosts, keeping the tab it belongs to.
-    ///
-    /// A tab is an open thing; what fills it can change while it stays
-    /// the same tab. The case this exists for is a window that was
-    /// announced before it existed — a card saying an app is opening,
-    /// which becomes the app — and replacing the tab instead would take
-    /// the tab away from the person looking at it and hand focus somewhere
-    /// they did not ask for.
-    ///
-    /// The record binding is deliberately kept: same tab, same document.
-    /// What is dropped is the memory of having told the *previous*
-    /// occupant which record it was on, so the new one is told too.
-    ///
-    /// Flags a structural rebuild, because the swap can change the tile's
-    /// taffy shape — an `App` contributes a child node and the card
-    /// variants are leaves, and a layout pass that kept the old shape
-    /// would index a child that is no longer there.
+    /// Used when a window announced before it existed (an opening card)
+    /// becomes the app; replacing the tab instead would hand focus
+    /// elsewhere. Keeps the record binding but resets `announced` so the
+    /// new occupant is told its scope, and flags a structural rebuild
+    /// since `App` and the card variants have different taffy shapes.
     pub fn replace_content(&mut self, content: TileContent) {
         self.content = content;
         self.announced = None;
         self.structure_dirty = true;
     }
-    /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
-    /// Mark this tile as the one the keyboard is aimed at. Called by
-    /// `WindowGroup::draw` before dispatching to the active host.
     pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
 
-    /// Latch the concept-parity spawn fade-in (opacity 0→1, scale
-    /// 0.95→1.0 with an ease-out-cubic curve over `SPAWN_FADE_MS`).
-    /// Callers that create a brand-new `TileHost` — e.g. a future
-    /// `WindowGroup::add_tab` path or the detach/insert flow in
-    /// `GroupRow` — invoke this immediately after construction so the
-    /// tile reads as "arriving" rather than popping in opaque. A call
-    /// inside the animation window simply restarts the curve.
+    /// A call mid-animation restarts the curve.
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(Instant::now());
     }
 
-    /// True while the spawn fade is still within its `SPAWN_FADE_MS`
-    /// window. Used by the `draw` path to decide whether to compose
-    /// the alpha/scale layer and by `needs_animation_frame` to keep
-    /// pumping redraws.
     pub fn spawn_in_flight(&self) -> bool {
         match self.spawned_at {
             Some(t) => t.elapsed().as_millis() < SPAWN_FADE_MS as u128,
@@ -543,10 +386,8 @@ impl TileHost {
         }
     }
 
-    /// Ease-out-cubic progress of the spawn curve in `[0.0, 1.0]`, or
-    /// `None` when no spawn animation is in flight. Exposed for tests
-    /// so the curve shape can be pinned without peeking into Vello's
-    /// scene buffer.
+    /// Exposed for tests to pin the curve shape without peeking into
+    /// Vello's scene buffer.
     #[cfg(test)]
     pub fn spawn_alpha(&self) -> Option<f32> {
         self.spawned_at.and_then(|t| {
@@ -571,8 +412,6 @@ impl Widget for TileHost {
             (Some(id), Some(b)) => {
                 b.store.with(&id, |doc| w.sync(doc, &ROOT));
                 if !b.established {
-                    // The document's shape is now established; the user's
-                    // history starts here. See `Binding::established`.
                     b.store.with_history(&id, |doc, history| history.rebase(doc));
                     b.established = true;
                 }
@@ -590,10 +429,9 @@ impl Widget for TileHost {
             return w.update(s, p);
         };
         let changed = b.store.with(&id, |doc| w.update(doc, &ROOT)).unwrap_or(false);
-        // Close the app's typing burst against *this* record's history.
-        // The host's own commit pass works on the document it holds, which
-        // is no longer the one the tab is editing — leaving the burst open
-        // forever, and the tab with nothing to undo.
+        // Close the burst against *this* record's history: the host's own
+        // commit pass no longer touches the document the tab is editing,
+        // and would otherwise leave it open forever.
         if w.needs_commit() {
             b.store.with_history(&id, |doc, history| {
                 history.commit_action_authored(
@@ -624,13 +462,9 @@ impl Widget for TileHost {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64, origin.x + l.location.x as f64 + l.size.width as f64, origin.y + l.location.y as f64 + l.size.height as f64);
         if let TileContent::App(w) = &mut self.content {
-            // Defensive guard for a structural mismatch where `self.content`
-            // is `App` but the taffy node has no child (the build_layout
-            // pass that registered the node ran while content was still
-            // `Stub`, or a structure_dirty rebuild hasn't fired yet).
-            // Previously panicked with "index out of bounds: the len is
-            // 0 but the index is 0" when opening Files for the first
-            // time on a freshly-booted shell.
+            // Guards a structural mismatch: content is `App` but the taffy
+            // node has no child yet (build_layout ran while content was
+            // still `Stub`, or structure_dirty hasn't fired).
             let children = taffy.children(node).unwrap_or_default();
             if let Some(&child_node) = children.first() {
                 w.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
@@ -643,26 +477,18 @@ impl Widget for TileHost {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        // Clear an expired spawn timestamp before branching so
-        // `spawn_in_flight()` can't stay `Some` forever once the curve
-        // has ended — otherwise subsequent steady-state frames would
-        // still carry the Option around for no reason.
+        // Clear an expired spawn timestamp before branching, or it stays
+        // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at {
             if t.elapsed().as_millis() >= SPAWN_FADE_MS as u128 {
                 self.spawned_at = None;
             }
         }
-        // Reduced motion: a new tile appears at its resting opacity and
-        // scale with no fade-in. Drop the timestamp so the steady-state
-        // branch below runs and we stop requesting animation frames.
         if theme.reduce_motion {
             self.spawned_at = None;
         }
-        // Spawn-fade branch: compose the fade + uniform-scale curve by
-        // wrapping the steady-state paint in a single alpha layer +
-        // centre-pivot scale. The whole tile (shadow sprites + card +
-        // content) is scaled and faded together so the motion reads as
-        // one arriving unit.
+        // Wrap the steady-state paint in one alpha layer + centre-pivot
+        // scale so the whole tile fades/scales as one unit.
         if self.spawn_in_flight() {
             let started = self.spawned_at.expect("spawn_in_flight guards Some");
             let elapsed = started.elapsed().as_millis() as f32;
@@ -670,10 +496,8 @@ impl Widget for TileHost {
             let eased = 1.0 - (1.0 - t).powi(3);
             let alpha = eased;
             let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * eased as f64;
-            // Wide clip so the shadow sprites (`ambient_pad = 50`,
-            // `bloom_pad = 120`) aren't chopped mid-fade. 160 px is a
-            // touch wider than the bloom's outer extent to leave
-            // headroom if future tweaks widen the glow.
+            // 160 px clip so the shadow sprites (ambient_pad=50,
+            // bloom_pad=120) aren't chopped mid-fade.
             let clip = Rect::new(
                 self.rect.x0 - 160.0,
                 self.rect.y0 - 160.0,
@@ -712,21 +536,17 @@ impl Widget for TileHost {
             w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
             return;
         };
-        // Undo belongs to the document, so it is answered here rather than
-        // by the host's one global stack. An `UndoEntry` is a pair of
-        // change hashes inside *this* record's change graph; run against
-        // another tab's document it names changes that document has never
-        // seen, and Ctrl+Z either does nothing or reverts the wrong thing.
+        // An `UndoEntry` is a pair of change hashes inside *this* record's
+        // change graph, so running it against another tab's document
+        // either does nothing or reverts the wrong thing.
         if w.is_focused()
             && let Some(step) = undo_step(event, m)
         {
             b.store.with_history(&id, |doc, history| {
                 let author = crate::collaboration::local_user_id();
-                // Close whatever burst is still open first, so Ctrl+Z
-                // immediately after typing reverts what was just typed
-                // rather than the action before it. A commit with nothing
-                // in the transaction records nothing, so this is free when
-                // the burst has already closed.
+                // Close any open burst first, so Ctrl+Z right after typing
+                // reverts what was just typed, not the action before it —
+                // free when the burst is already closed.
                 if matches!(step, UndoStep::Undo) {
                     history.commit_action_authored(
                         doc,
@@ -764,13 +584,8 @@ impl Widget for TileHost {
         });
     }
     fn name(&self) -> &str { "TileHost" }
-    /// Whether the thing this tile hosts has drawn yet.
-    ///
-    /// Only an app can answer anything but `true`: a stub and a notice
-    /// are cards this process painted itself, and they are on screen the
-    /// moment the tile is. An app that stands in for a client process
-    /// answers for that process — see
-    /// `crate::widget::Widget::presented`.
+    /// Only an app can answer anything but `true` — a stub/notice is
+    /// painted by this process and is on screen the moment the tile is.
     fn presented(&self) -> bool {
         if self.was_presented.get() {
             return true;
@@ -782,13 +597,9 @@ impl Widget for TileHost {
         self.was_presented.set(now);
         now
     }
-    /// Whether this tile is holding a window's place for an app that has
-    /// been asked for and has not arrived — see [`Widget::opening`].
-    ///
-    /// A tile that has ever presented is never opening again. The latch
-    /// is what stops a window whose buffer briefly stops fitting its tab,
-    /// or one replaced by another instance of the same app, from falling
-    /// back to a placeholder the person has already watched go away once.
+    /// A tile that has ever presented is never opening again: the latch
+    /// stops a window whose buffer briefly stops fitting its tab from
+    /// falling back to a placeholder the person already watched go away.
     fn opening(&self) -> bool {
         if self.was_presented.get() {
             return false;
@@ -799,20 +610,17 @@ impl Widget for TileHost {
         }
     }
     fn get_rect(&self) -> Rect { self.rect }
-    /// The tile's presence identity is the record it is showing.
-    ///
-    /// Which is the only thing that tells two tabs of one app apart: the
-    /// app is the same app, the widget path inside it is the same path,
-    /// and a peer's caret is a position in *a document*. Unbound tiles
-    /// report nothing, as they did before there was a record to name.
+    /// Presence identity is the record shown, not the tile — the only
+    /// thing that tells two tabs of one app apart, since a peer's caret is
+    /// a position in *a document*. Unbound tiles report nothing.
     fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
         self.binding.as_ref().map(|b| crate::presence::PresenceKey::Tab {
             id: b.live.as_str().to_string(),
         })
     }
     /// A bound tile has already committed the app's burst against its own
-    /// record in [`Widget::update`]; saying "yes" here would ask the host
-    /// to commit its own, unrelated document too.
+    /// record in [`Widget::update`]; saying "yes" here would commit the
+    /// host's own, unrelated document too.
     fn needs_commit(&self) -> bool {
         if self.binding.is_some() {
             return false;
@@ -831,13 +639,8 @@ impl Widget for TileHost {
         }
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // A hosted app widget could itself mutate its subtree (e.g. a file
-        // explorer that spawns a new pane). Forward through so App can
-        // rebuild the taffy tree when the inner widget reports dirty.
-        // Or the tile's own content was swapped under it
-        // ([`TileHost::replace_content`]), which changes the node shape
-        // this host contributes. Both are drained, not short-circuited, so
-        // an inner flag cannot be left set behind an outer one.
+        // Both flags drained, not short-circuited, so neither can be left
+        // set behind the other.
         let swapped = std::mem::take(&mut self.structure_dirty);
         let inner = match &mut self.content {
             TileContent::App(w) => w.take_structure_dirty(),
@@ -846,20 +649,15 @@ impl Widget for TileHost {
         swapped || inner
     }
     fn needs_animation_frame(&self) -> bool {
-        // `TileHost` doesn't expose children via `children()`, so the
-        // default `Widget::needs_animation_frame` (which recurses into
-        // `children()`) would return `false` for every host. Override
-        // explicitly so (a) the spawn fade keeps pumping frames until
-        // it settles, and (b) any hosted `AppWidget`'s own animation
-        // signal still bubbles up through the tile to `App::run`.
+        // `TileHost` has no `children()`, so the default recursive
+        // implementation would always say false; override so the spawn
+        // fade and a hosted app's own signal both bubble up. The opening
+        // card's indicator and its dissolve are motion too, and neither is
+        // visible through `children()` either.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         };
-        // The opening card's indicator moves, and the dissolve that
-        // retires it is motion too. Both belong to this tile and neither
-        // is visible through `children()`, so both are named here or they
-        // play out as one frozen frame.
         self.spawn_in_flight()
             || Widget::opening(self)
             || self.handover_in_flight()
@@ -868,11 +666,9 @@ impl Widget for TileHost {
 }
 
 impl TileHost {
-    /// Steady-state paint: ambient shadow → focused-only indigo bloom
-    /// → white card + border → hosted `AppWidget` or stub contents.
-    /// Extracted from `draw` so the spawn-fade branch can wrap the
-    /// exact same paint under a single `push_layer` + scaled
-    /// `transform` without duplicating the underlying paint code.
+    /// Ambient shadow → focus bloom → white card + border → hosted app or
+    /// stub contents. Extracted from `draw` so the spawn-fade branch can
+    /// wrap the same paint under one scaled layer.
     fn draw_steady_state(
         &mut self,
         scene: &mut Scene,
@@ -882,13 +678,8 @@ impl TileHost {
         presence: &PresenceCtx,
     ) {
         let radius = theme.tokens.radii.xl as f64;
-        // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`):
-        // stretch the cached radial-Gaussian sprite beneath the card
-        // with a 25 px downward offset and ~50 px bleed on each side so
-        // the soft falloff extends past the card's rounded corners.
-        // Replaces the prior 24-ring concentric rounded-rect stack,
-        // which visibly stair-stepped because Vello 0.2 has no blur
-        // primitive to smooth the ring union.
+        // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`): 25 px
+        // downward offset, ~50 px bleed so the falloff clears the corners.
         let ambient_pad = 50.0_f64;
         let ambient_y = 25.0_f64;
         let ambient_target = Rect::new(
@@ -904,18 +695,11 @@ impl TileHost {
             ambient_target,
             0.25,
         );
-        // The focused window's bloom: the same radial sprite as the
-        // ambient shadow, but wider, centred (no y-offset), and tinted
-        // with the theme's focus colour.
-        //
-        // This is the "which window is the keyboard aimed at" signal,
-        // and it is deliberately a *deeper shadow* rather than a line
-        // drawn around the window. A strip of non-overlapping windows
-        // has no z-order to read focus from, so the focused one has to
-        // announce itself — but announcing it by fencing off the
-        // content area draws a shape that belongs to nothing else on
-        // screen. Lighting the window's own footprint keeps the signal
-        // attached to the object it describes.
+        // Deliberately a deeper shadow rather than a border: a strip of
+        // non-overlapping windows has no z-order to read focus from, and
+        // fencing off the content area would draw a shape belonging to
+        // nothing else on screen. Lighting the window's own footprint
+        // keeps the signal attached to the object it describes.
         if self.focused {
             let bloom_pad = 120.0_f64;
             let bloom_target = Rect::new(
@@ -932,18 +716,11 @@ impl TileHost {
                 FOCUS_BLOOM_ALPHA,
             );
         }
-        // White rounded-3xl card (concept: `bg-white` `rounded-3xl`
-        // `border-white/20` `shadow-2xl`).
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.window_card, None, &shape);
-        // Everything the tile hosts paints inside the card's silhouette.
-        // Hosted apps fill their own background as a plain rectangle —
-        // they have to, since an app cannot know it is being framed — so
-        // without this clip the first `scene.fill` an app makes squares
-        // off the window's corners and paints over the border below.
-        // Clipping here keeps the rounded window shape a property of the
-        // frame (which the OS owns) rather than something every app has
-        // to reproduce.
+        // Hosted apps fill their own background as a plain rectangle (an
+        // app can't know it's being framed); without this clip the first
+        // fill squares off the window's rounded corners.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -951,12 +728,10 @@ impl TileHost {
             transform,
             &shape,
         );
-        // An app that has been asked for and has not arrived gets the
-        // card that holds its window's place, in place of the app rather
-        // than behind it. Its early buffers are the size the client
-        // picked and not the size of the tab, and painting one is the
-        // window visibly resizing itself a moment after it opened, which
-        // is the other half of what the presented gate is for.
+        // An app asked for but not arrived gets the card in place of the
+        // app, not behind it: its early buffer is the client's own size,
+        // not the tab's, and painting it would show the window visibly
+        // resizing a moment after opening.
         if Widget::opening(self) {
             self.opening_shown = true;
             draw_opening_card(
@@ -970,10 +745,8 @@ impl TileHost {
                 &mut self.opening_spinner,
             );
         } else {
-            // The window has arrived. When the card was on screen it is
-            // dissolved over the top rather than cut away: the window is
-            // underneath at full opacity from the very first frame, so
-            // there is never one with nothing in the tile.
+            // Dissolve the card over the arrived window rather than cut
+            // it away, so the tile is never briefly empty.
             if self.opening_shown && self.handed_over_at.is_none() {
                 self.handed_over_at = Some(Instant::now());
             }
@@ -987,9 +760,8 @@ impl TileHost {
                     draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
                 }
             }
-            // Reduced motion takes the cut. The window simply being there
-            // is the honest end state, and it is the one somebody who has
-            // asked for less movement wants.
+            // Reduced motion takes the cut — the window just being there
+            // is the honest end state.
             if theme.reduce_motion {
                 self.opening_shown = false;
                 self.handed_over_at = None;
@@ -1021,33 +793,16 @@ impl TileHost {
             }
         }
         scene.pop_layer();
-        // The window's edge, painted *outside* the card's silhouette.
-        //
-        // The app can no longer erase it — everything the tile hosts is
-        // clipped to `shape` by the layer above, so the edge is safe by
-        // construction rather than by winning a paint-order race. That
-        // matters more than the ordering it replaces, because stroking
-        // the edge over the app's content made the shell tint pixels it
-        // does not own and cannot sample: one constant landed on
-        // whatever the app happened to paint, reading as a soft rim
-        // light over a dark app and as a glaring near-white line over
-        // one painting light chrome. No alpha satisfies both.
-        //
-        // Outside the card the ground is the desktop, which the shell
-        // *does* know, so `Theme::window_edge` can derive an edge that
-        // registers against it in every theme. Inflating by half the
-        // stroke width puts the whole 1 px band in `[0, 1]` outward from
-        // the card boundary: flush against the card, zero overlap with
-        // its interior. The corner radius grows by the same half-width
-        // so the offset band stays concentric with the card's arc
-        // instead of pinching at the corners.
-        //
-        // Focus is carried on this same edge rather than by a second
-        // stroke outside it. Two concentric rings around one card is
-        // how the old maximize / search rings read — a hairline, then a
-        // gap, then a heavier line that belonged to neither the card
-        // nor the desktop. One edge that changes colour and weight says
-        // the same thing and leaves the silhouette intact.
+        // Painted *outside* the card's silhouette, safe from app content
+        // by the clip above rather than a paint-order race: a stroke over
+        // unknown app content can't pick one alpha that reads right on
+        // every ground, but the desktop outside is known, so
+        // `Theme::window_edge` can derive one that does. Inflated by half
+        // the stroke width so the band sits flush with zero overlap; the
+        // radius grows by the same half so it stays concentric at the
+        // corners. Focus reuses this same edge (colour + weight) rather
+        // than a second ring, keeping the signal part of the window's own
+        // silhouette.
         let (edge_width, edge_color) = if self.focused {
             (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
         } else {
@@ -1068,18 +823,10 @@ impl TileHost {
     }
 }
 
-/// The card that holds a window's place while its app is starting.
-///
-/// The same two-part composition as [`draw_card_text`] — a name, and
-/// something under it — with the sentence replaced by motion. There is
-/// deliberately no sentence: the app's own name over a working indicator
-/// already says the only two things somebody waiting for a window needs,
-/// and more than that would be describing the machinery to a person who
-/// asked to open an app.
-///
-/// It paints its own card ground, because it is also the top half of the
-/// dissolve that retires it, where it has to cover the window that has
-/// arrived underneath for as long as it is still fading.
+/// No sentence, deliberately: the app's name over a working indicator is
+/// the only two things someone waiting for a window needs. Paints its own
+/// ground because it is also the top half of the dissolve that retires
+/// it, covering the arrived window underneath while still fading.
 fn draw_opening_card(
     scene: &mut Scene,
     transform: Affine,
@@ -1097,19 +844,14 @@ fn draw_opening_card(
         None,
         &rect,
     );
-    // Ink measured against the card, not taken from a fixed ramp slot.
-    // `neutral[1]` is the *dark* end of a dark theme's ramp, and the card it
-    // was painted on is that theme's darkest surface: the app's name came out
-    // at about 1.05:1 against its own ground — present in the scene, invisible
-    // on screen, and the only thing a person watching a window open had to
-    // read. The light presets had the mirror bug. `draw_card_text` already
-    // carries this fix; this call site was missed.
+    // Measured against the card, not a fixed ramp slot: `neutral[1]` is
+    // the *dark* end of a dark theme's ramp, and on that theme's own dark
+    // card the name would land at ~1.05:1 contrast — invisible on screen.
     let on_card = theme.on_card().ink;
     let size = theme.tokens.typography.scale.xl;
     let cx = rect.center().x;
-    // The name sits above centre so that the pair of it and the indicator
-    // is what reads as centred, rather than the name alone with the
-    // indicator hanging off below the middle.
+    // Above centre, so name + indicator reads as one centred pair rather
+    // than the name alone with the indicator hanging below.
     let y = rect.center().y - size as f64;
     if !name.is_empty() {
         let (tw, _) = tr.measure(name, size, None);
@@ -1132,14 +874,8 @@ fn draw_opening_card(
     Widget::draw(spinner, scene, transform, tr, theme, presence);
 }
 
-/// Two centred lines on an otherwise empty window card: a name, and a
-/// sentence under it about why there is nothing else here.
-///
-/// One function because the two callers must not drift apart. A card is
-/// what the user sees when a tab has no app in it, and a tab that reads
-/// differently depending on which internal variant produced it teaches
-/// them that the difference is meaningful when it is not — the difference
-/// that *is* meaningful is the sentence, which the caller supplies.
+/// One function so the two callers (`Stub`, `Notice`) can't drift apart —
+/// only the sentence they supply is meant to read as meaningful.
 fn draw_card_text(
     scene: &mut Scene,
     transform: Affine,
@@ -1149,17 +885,14 @@ fn draw_card_text(
     title: &str,
     detail: &str,
 ) {
-    // Ink derived from the card's own luminance — the card is a black
-    // surface under the high-contrast preset and a white one on the
-    // preserved concept palette, so a fixed ramp slot is legible on
-    // only one of them.
+    // Derived from the card's own luminance: it's a black surface under
+    // high-contrast and white elsewhere, so a fixed ramp slot is only
+    // legible on one of them.
     let card = theme.tokens.colors.surfaces.window_card;
     let on_card = theme.on_card().ink;
-    // The detail line is set at the bottom of the type scale, where the default
-    // floor is measured for an ideal glyph and a real one is anti-aliased:
-    // derived at 4.5:1 it reached the screen at 3.8:1 on the light card, a tier
-    // under the floor its colour was picked to clear. Still a quieter grey than
-    // the title in every theme.
+    // The floor here is measured for an ideal glyph but a real one
+    // anti-aliases: derived at 4.5:1 it measured 3.8:1 on screen against
+    // the light card, a tier under the floor it was picked to clear.
     let on_card_dim = theme
         .on_surface_at(card, crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST)
         .ink_dim;
@@ -1188,20 +921,13 @@ mod tests {
         bytes[idx]
     }
 
-    /// Per the task spec: the radial sprite must be transparent at the
-    /// centre, transparent at the edge, and non-trivially opaque in the
-    /// interior band so the shadow reads as a soft ring rather than a
-    /// hard rectangle or a flat fill. Samples are taken along the
-    /// horizontal row through the sprite centre at fractions
-    /// 0.0 / 0.3 / 0.9 of the diameter (task spec's recommendation).
     #[test]
     fn shadow_sprite_peaks_in_interior_not_centre_or_edge() {
         let sprite = ambient_shadow_sprite();
         let size = sprite.width;
         let cy = size / 2;
         // Centre and outer edge are guaranteed zero by the `inner`/
-        // `outer` shoulder terms; a pixel offset of ±1 from centre and
-        // +/-0 from edge still evaluates near zero within 2/255.
+        // `outer` shoulder terms.
         let a_centre = sprite_alpha_at(sprite, size / 2, cy);
         let a_edge = sprite_alpha_at(sprite, size - 1, cy);
         // 0.3 × diameter puts the sample on the Gaussian peak ring;
@@ -1220,8 +946,8 @@ mod tests {
         );
     }
 
-    /// A hosted app that writes one string into whatever document it is
-    /// handed, and optionally declares a file it has open.
+    /// Writes one string into whatever document it is handed, and
+    /// optionally declares a file it has open.
     struct Scribe {
         text: String,
         opens: Option<std::path::PathBuf>,
@@ -1271,8 +997,6 @@ mod tests {
         fn get_rect(&self) -> Rect {
             Rect::ZERO
         }
-        /// The file-backed half of a tab's identity: an app that has a
-        /// file open says so, and the tile moves onto that file's record.
         fn record_intent(&self) -> Option<RecordCheckout> {
             self.opens.as_ref().map(|p| {
                 RecordCheckout::new(RecordId::for_file(p), crate::record::RecordKind::new("file"))
@@ -1435,13 +1159,10 @@ mod tests {
 
     #[test]
     fn draw_without_spawn_animation_does_not_push_extra_layer() {
-        // Indirect assertion: when no spawn animation has been
-        // started, `spawn_in_flight` is false, `spawn_alpha` is None,
-        // and the `draw` path skips the wrapper `push_layer`/centre-
-        // pivot-scale block entirely. Pinning that pair keeps future
-        // edits from accidentally making the wrapper always-on — which
-        // would regress steady-state cost by one layer + one affine
-        // compose per frame per tile.
+        // Indirect: no direct hook to check the draw path skips the
+        // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
+        // — guards against the wrapper becoming always-on and costing an
+        // extra layer + affine compose every frame.
         let h = stub_host();
         assert!(
             !h.spawn_in_flight(),
@@ -1453,15 +1174,9 @@ mod tests {
         );
     }
 
-    /// An app that fills its whole rect — which is what every hosted app
-    /// does, since an app cannot know it is being framed — must not be
-    /// able to square off the window's rounded corners or paint over its
-    /// border. Both are properties of the frame the OS draws, and both
-    /// were being destroyed by the first `scene.fill` the app made.
-    ///
-    /// Rendered through the real `Widget::draw`, then sampled: the outer
-    /// corner has to stay the desktop behind the tile, and the card's
-    /// edge has to still be distinguishable from the app's own fill.
+    /// An app that fills its whole rect (as every hosted app does, since
+    /// it can't know it's being framed) must not square off the window's
+    /// rounded corners or paint over its border — both are the frame's.
     #[test]
     fn a_hosted_app_cannot_square_off_the_window_or_erase_its_border() {
         use crate::offscreen::OffscreenRenderer;
@@ -1585,14 +1300,9 @@ mod tests {
              ({mr},{mg},{mb}), expected the app's flood colour",
         );
 
-        // Along the tile's left edge, mid-height. The edge that separates a
-        // window from the desktop is the frame's to draw — and it is drawn
-        // *outside* the card, so it survives the app's flood without the
-        // frame having to tint a pixel the app owns.
-        //
-        // One pixel out from the boundary is the frame's: it must be neither
-        // the app (which would mean the flood escaped its clip) nor the bare
-        // desktop (which would mean there is no edge there at all).
+        // One pixel out from the boundary is the frame's edge: it must be
+        // neither the app (flood escaped its clip) nor bare desktop (no
+        // edge there at all).
         let edge_x = rect.x0 as u32 - 1;
         let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
         assert!(
@@ -1618,19 +1328,9 @@ mod tests {
         );
     }
 
-    /// The window's edge must never tint a pixel the hosted app owns.
-    ///
-    /// The shell does not sample app content, so an edge stroked *over* it is
-    /// a constant landing on an unknown ground. The same `white/20` reads as a
-    /// soft rim light where the app painted dark and as a glaring near-white
-    /// line where it painted light chrome, and no alpha satisfies both: the
-    /// two grounds sit at opposite ends of the ramp, so raising the alpha
-    /// fixes one case exactly as fast as it breaks the other. The only way out
-    /// is for the edge not to be there at all — it belongs on the desktop,
-    /// which the shell does know.
-    ///
-    /// Rendered across four app grounds spanning the ramp. Each must come back
-    /// exactly as the app painted it, with no lightening from the frame.
+    /// The window's edge must never tint a pixel the hosted app owns —
+    /// stroking a constant over unknown app content reads right on one
+    /// ground and wrong on the rest of the ramp.
     #[test]
     fn the_window_edge_never_tints_a_pixel_the_app_owns() {
         use crate::offscreen::OffscreenRenderer;
@@ -1704,8 +1404,7 @@ mod tests {
         }
 
         // Spanning the ramp: a dark app, two mid grounds, and the light
-        // chrome a word processor paints. The last is the case the constant
-        // edge turned into a near-white line.
+        // chrome a word processor paints.
         let grounds: [(u8, u8, u8); 4] = [
             (0x10, 0x10, 0x12),
             (0x40, 0x40, 0x44),
@@ -1755,23 +1454,11 @@ mod tests {
         }
     }
 
-    /// Focus is a change to the window's own edge, and it stays inside
-    /// the card's silhouette.
-    ///
-    /// The regression this guards is specific. Focus-ish states used to
-    /// be stroked as sharp-cornered rectangles around the *group's*
-    /// bounding box, a pixel outside a card whose corners are rounded.
-    /// At the corner that produces two lines — a square one and a round
-    /// one — and diagonally outside the arc it paints a saturated pixel
-    /// on bare desktop, which is what made the whole thing read as a
-    /// fence rather than as part of the window.
-    ///
-    /// So: on the flat of the edge the focused window shows the focus
-    /// colour and the unfocused one does not; and diagonally outside the
-    /// rounded corner, where a square fence would have to paint, both
-    /// show untouched desktop. Rendered through `TileHost::draw` — the
-    /// same call the shell makes — on every theme preset, because the
-    /// hardcoded indigo this replaces was correct on exactly one.
+    /// Focus is a change to the window's own edge, staying inside the
+    /// card's silhouette — not a square fence around the bounding box,
+    /// which would double-line the rounded corner and paint on desktop
+    /// diagonally outside it. Checked at the edge's flat and diagonally
+    /// outside the corner, across every theme preset.
     #[test]
     fn focus_lights_the_card_s_edge_and_never_squares_off_its_corner() {
         use crate::offscreen::OffscreenRenderer;
@@ -1829,14 +1516,10 @@ mod tests {
                 "{name}: an unfocused window paints the focus colour on its                  edge at ({x},{y}), so focus distinguishes nothing",
             );
 
-            // Diagonally outside the rounded corner. The card's radius
-            // is `radii.xl`, so a point two pixels in from the corner of
-            // the bounding box on both axes lies well outside the arc —
-            // exactly where a square fence around the box had to paint.
-            // The window's ambient shadow legitimately darkens this
-            // pixel, so the claim is not "untouched": it is that the
-            // focus colour is not there, and that the desktop still
-            // reads as the desktop rather than as a stroke laid over it.
+            // Well outside the rounded arc, where a square fence would
+            // have painted. The ambient shadow legitimately darkens this
+            // pixel, so the claim is only that focus colour isn't there,
+            // not that it's untouched.
             let (cx, cy) = (rect.x0 as u32 - 2, rect.y0 as u32 - 2);
             for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
                 let (r, g, b, _) = OffscreenRenderer::sample(buf, w, cx, cy);
@@ -1963,13 +1646,10 @@ mod tests {
         scene
     }
 
-    /// The card that holds a window's place must not be the app.
-    ///
-    /// An app that has not presented has only the buffer it chose its own
-    /// size for, and painting that is the window appearing magnified and
-    /// snapping down a moment later. So while the tile is standing in for
-    /// the app, the app does not draw at all — the place is held by the
-    /// frame, which is the one thing that knows how big the tab is.
+    /// An unpresented app has only its own early buffer size, so painting
+    /// it is the window appearing magnified then snapping down. The frame
+    /// holds the place instead, since it's the one thing that knows the
+    /// tab's real size.
     #[test]
     fn a_tile_holding_a_place_does_not_paint_the_app_behind_it() {
         let theme = Theme::default();
@@ -1997,12 +1677,9 @@ mod tests {
         );
     }
 
-    /// The card is on screen, so it must keep moving.
-    ///
-    /// Its indicator is the only thing telling somebody the wait is a wait
-    /// rather than a hang, and a still one says the opposite of what it is
-    /// for. Nothing else in the tile is animating at that moment, so if
-    /// this tile does not ask for frames, none arrive.
+    /// Its indicator is the only thing distinguishing a wait from a hang,
+    /// and nothing else in the tile is animating to trigger a frame
+    /// otherwise.
     #[test]
     fn a_tile_holding_a_place_keeps_asking_for_frames() {
         let (host, _) = starting_host(false, true);
@@ -2014,12 +1691,8 @@ mod tests {
     }
 
     /// A tile that has ever had a window in it never goes back to holding
-    /// a place for one.
-    ///
-    /// The latch is the difference between a window that briefly stops
-    /// fitting its tab mid-resize and one that was never there. Without
-    /// it, a drag on a group edge would flash the opening card over a
-    /// window the person is using.
+    /// a place for one — without the latch, a drag on a group edge would
+    /// flash the opening card over a window the person is using.
     #[test]
     fn a_tile_that_has_shown_a_window_never_holds_a_place_again() {
         let (host, _) = starting_host(true, false);

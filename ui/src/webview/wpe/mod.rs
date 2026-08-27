@@ -1,25 +1,22 @@
 //! WPE WebKit engine backend (feature `webview-wpe`).
 //!
-//! Runs WebKit's WPE port fully offscreen on a dedicated engine thread:
-//! a WPEBackend-fdo "exportable" view backend in SHM mode hands us every
-//! composited frame as a shared-memory buffer, which we convert to RGBA
-//! and publish into the widget's [`FrameSlot`]. Commands arrive over an
-//! mpsc channel drained by a GLib timeout source on the engine thread;
-//! navigation state flows back as [`WebViewEvent`]s from GObject signal
-//! handlers.
+//! Runs WebKit's WPE port fully offscreen on a dedicated engine thread: a
+//! WPEBackend-fdo "exportable" view backend in SHM mode hands us every
+//! composited frame as a shared-memory buffer, which we convert to RGBA and
+//! publish into the widget's [`FrameSlot`]. Commands arrive over an mpsc
+//! channel drained by a GLib timeout source on the engine thread; navigation
+//! state flows back as [`WebViewEvent`]s from GObject signal handlers.
 //!
-//! The SHM path costs one CPU copy + BGRA→RGBA swizzle per frame —
-//! deliberate v1 simplicity; the DMA-BUF → wgpu external-texture import
-//! is the follow-up optimisation and slots in behind the same trait.
+//! The SHM path costs one CPU copy + BGRA→RGBA swizzle per frame — deliberate
+//! v1 simplicity; DMA-BUF → wgpu external-texture import slots in behind the
+//! same trait as the follow-up.
 //!
-//! Requires the WPE stack built by `os/dev/build-wpe.sh` (Fedora ships
-//! no WPE packages). Point `PKG_CONFIG_PATH`/`LD_LIBRARY_PATH` at the
-//! prefix when building/running with this feature.
+//! Requires the WPE stack built by `os/dev/build-wpe.sh` (Fedora ships no WPE
+//! packages); point `PKG_CONFIG_PATH`/`LD_LIBRARY_PATH` at the prefix.
 //!
-//! Lifetime: the engine thread runs for the process lifetime — a
-//! browser window owns exactly one engine. Dropping `WpeEngine` leaks
-//! the thread by design (WebKit teardown is not worth the shutdown
-//! races for a per-window process).
+//! The engine thread runs for the process lifetime — a browser window owns
+//! exactly one engine. Dropping `WpeEngine` leaks the thread by design
+//! (WebKit teardown is not worth the shutdown races for a per-window process).
 
 mod ffi;
 pub mod egl;
@@ -62,17 +59,13 @@ const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 /// Shared between the engine thread and the widget/app side.
 struct Shared {
     frames: FrameSlot,
-    /// Latest exported dmabuf frame (zero-copy path). Consumed by the
-    /// render side via [`WpeEngine::take_dmabuf`].
     dmabuf: Mutex<Option<egl::DmabufFrame>>,
     events: Mutex<Vec<WebViewEvent>>,
-    /// Host wake callback — pokes the winit loop so an idle app paints
-    /// engine activity promptly.
+    /// Pokes the winit loop so an idle app paints engine activity promptly.
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// The engine thread's `GMainContext`, stored as a pointer once the
-    /// thread has created it (0 until then). `send()` wakes it so a just-
-    /// enqueued command is drained immediately rather than on the next
-    /// timer tick. `g_main_context_wakeup` is explicitly thread-safe.
+    /// thread has created it (0 until then). `g_main_context_wakeup` is
+    /// explicitly thread-safe.
     ctx: AtomicUsize,
 }
 
@@ -128,13 +121,9 @@ impl WpeEngine {
 
 impl WebViewEngine for WpeEngine {
     fn send(&self, cmd: WebViewCommand) {
-        // A dropped send only happens if the thread died, which `new()`
-        // guards.
         let _ = self.tx.send(cmd);
         // Wake the engine loop so the command is drained now instead of
-        // waiting up to the timer interval — this is the difference
-        // between input latency tracking the drain cadence and tracking
-        // the engine's actual work.
+        // waiting up to the timer interval.
         let ctx = self.shared.ctx.load(Ordering::Acquire);
         if ctx != 0 {
             unsafe { ffi::g_main_context_wakeup(ctx as *mut ffi::GMainContext) };
@@ -153,9 +142,8 @@ impl WebViewEngine for WpeEngine {
         *self.shared.waker.lock().unwrap() = Some(waker);
     }
 
-    /// Take the latest exported dmabuf frame (zero-copy path), if one is
-    /// pending. The caller imports it into a wgpu texture; on the next
-    /// paint the engine publishes a fresh one.
+    /// The caller imports it into a wgpu texture; the engine publishes a
+    /// fresh one on the next paint.
     fn take_dmabuf(&self) -> Option<crate::webview::DmabufFrame> {
         self.shared.dmabuf.lock().unwrap().take()
     }
@@ -173,28 +161,23 @@ struct EngineState {
     /// `wpe_input_modifier` bits for currently-held mouse buttons.
     button_modifiers: u32,
     scale_factor: f32,
-    /// Whether the mobile UA is currently presented (see the Resize
-    /// handler's breakpoint switch).
     mobile_mode: bool,
-    /// A UA change is waiting for a reload once the window stops resizing
-    /// — so dragging across the mobile breakpoint doesn't reload (and
-    /// flash blank) on every intermediate size.
+    /// Waiting for a reload once the window stops resizing, so dragging
+    /// across the mobile breakpoint doesn't flash blank on every step.
     ua_reload_pending: bool,
-    /// Timestamp of the last Resize, to debounce that reload.
+    /// To debounce that reload.
     last_resize: Option<std::time::Instant>,
-    /// Whether we've received the first Resize yet. Until we have, the
-    /// real viewport (and thus the correct mobile/desktop UA) is unknown,
-    /// so the initial navigation is held in `pending_nav` to avoid loading
-    /// at the wrong size and then reloading — the startup flicker.
+    /// Until the first Resize, the real viewport (and correct UA) is
+    /// unknown, so the initial navigation is held in `pending_nav` to avoid
+    /// loading at the wrong size and reloading — the startup flicker.
     first_resize_seen: bool,
     /// A Navigate that arrived before the first Resize, deferred until the
     /// viewport is known. Also fired by `nav_deadline` as a fallback so a
     /// window that never resizes still loads.
     pending_nav: Option<String>,
-    /// Fallback deadline: load `pending_nav` even without a Resize.
     nav_deadline: Option<std::time::Instant>,
-    /// EGL/dmabuf export state — `Some` only on the zero-copy path
-    /// (`QOS_WEBVIEW_DMABUF=1`); `None` uses the SHM copy path.
+    /// `Some` only on the zero-copy path (`QOS_WEBVIEW_DMABUF=1`); `None`
+    /// uses the SHM copy path.
     egl: Option<egl::EglExport>,
 }
 
@@ -408,9 +391,8 @@ fn cstr_to_string(ptr: *const c_char) -> Option<String> {
 // ─────────────────────────── frame export ─────────────────────────────────
 
 /// DMA-BUF export callback (zero-copy path). WebKit hands us a
-/// GPU-rendered `EGLImageKHR`; we export it to a dmabuf fd. Phase 1 logs
-/// the handle to prove the GPU export works; Phase 2 forwards it to the
-/// render thread for zero-copy import.
+/// GPU-rendered `EGLImageKHR`; we export it to a dmabuf fd for the render
+/// thread to import.
 extern "C" fn on_export_fdo_egl_image(
     data: *mut c_void,
     image: *mut ffi::wpe_fdo_egl_exported_image,
@@ -466,12 +448,11 @@ extern "C" fn on_export_shm_buffer(
                 let opaque = format == WL_SHM_FORMAT_XRGB8888;
                 let w = width as usize;
                 let n = w * height as usize * 4;
-                // Fill an *uninitialised* buffer — every byte is written
-                // below, so the `vec![0u8; n]` zero-init was a wasted 5 MB
-                // memset per frame. Swap B<->R a whole 32-bit pixel at a
-                // time (LLVM vectorises the word op): source is little-
-                // endian [AX]RGB8888 = bytes B,G,R,[AX] → word
-                // `A<<24|R<<16|G<<8|B`; RGBA wants `A<<24|B<<16|G<<8|R`.
+                // Uninitialised: every byte is written below, so a zero-init
+                // Vec would be a wasted memset per frame. Swap B<->R a whole
+                // 32-bit pixel at a time (LLVM vectorises the word op):
+                // source word is `A<<24|R<<16|G<<8|B`, RGBA wants
+                // `A<<24|B<<16|G<<8|R`.
                 let mut rgba = Vec::<u8>::with_capacity(n);
                 let dst = rgba.as_mut_ptr();
                 for row in 0..height as usize {
@@ -656,11 +637,9 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
     unsafe {
         match cmd {
             WebViewCommand::Navigate(uri) => {
-                // Hold the very first navigation until the app reports the
-                // real viewport, so the page loads once at the correct
-                // size + UA instead of loading at the default and then
-                // reloading (the startup flicker). A short fallback in the
-                // drain loop still loads it if no Resize ever arrives.
+                // Hold the very first navigation until the real viewport is
+                // known (the startup flicker); the drain loop's fallback
+                // still loads it if no Resize ever arrives.
                 if !state.first_resize_seen {
                     state.pending_nav = Some(uri);
                     state.nav_deadline =
@@ -687,11 +666,9 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 );
                 ffi::wpe_view_backend_dispatch_set_size(state.backend, lw, lh);
 
-                // Present a phone UA below the breakpoint so UA-sniffing
-                // sites serve their fits-any-width mobile layout. The UA
-                // takes effect on the next load, so mark a reload pending
-                // and fire it once the window stops resizing (see the
-                // drain loop) — never mid-drag, which would flash blank.
+                // The UA takes effect on the next load, so mark a reload
+                // pending and fire it once resizing stops (see the drain
+                // loop) — never mid-drag, which would flash blank.
                 let want_mobile = wants_mobile(lw);
                 if want_mobile != state.mobile_mode {
                     state.mobile_mode = want_mobile;

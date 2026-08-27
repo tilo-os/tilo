@@ -6,22 +6,12 @@ use crate::permissions::UserId;
 use super::PresenceCtx;
 
 /// How much pigment a "just typed" marker lays down over the text.
-///
-/// The *strength* dial; [`MARKER_PIGMENT_L`] is the evenness one, and
-/// separating the two is what makes a strong marker safe. The pigment is
-/// pinned to a fixed luminance before it is laid down, so the band cannot go
-/// darker than that pigment however opaque this is — raising it makes the
-/// marker easier to see without ever walking the text underneath toward its
-/// background.
-///
-/// Set by looking at frames rather than by taste: at 0.5 the band measured
-/// 1.22:1 against paper, which is a tint you have to be told about. At this
-/// value it measures 1.79:1 — something you see first and read through
-/// second, which is what a highlighter is.
+/// [`MARKER_PIGMENT_L`] pins pigment to a fixed luminance first, so raising
+/// this makes the marker easier to see without the text paying for it.
+/// Measured: at 0.5 the band read 1.22:1 against paper; at 0.7, 1.79:1.
 const MARKER_ALPHA: f32 = 0.7;
 
-/// The relative luminance every marker pigment is mapped to before it is laid
-/// down. See [`marker_pigment`].
+/// Luminance every marker pigment is normalised to. See [`marker_pigment`].
 const MARKER_PIGMENT_L: f32 = 0.30;
 
 /// Relative luminance (WCAG), from sRGB.
@@ -36,29 +26,12 @@ fn relative_luminance(c: Color) -> f32 {
 
 /// A peer's colour re-tuned to a common marker luminance, keeping its hue.
 ///
-/// A fixed alpha over [`super::PEER_PALETTE`] does not give a marker of even
-/// strength, because the palette spans a 4x luminance range: it is picked so
-/// that *cursors* stay far apart on screen, and a cursor is an opaque shape
-/// whose lightness costs it nothing. Composited onto a light page the same
-/// spread is the difference between a marker and a stain — its palest members
-/// land near 1.1:1 against white paper where its darkest land near 1.9:1, so
-/// side by side one peer has highlighted a line and the other appears not to
-/// have, which reads as the feature failing for that person.
-///
-/// Scaling in linear light to a fixed luminance fixes it at the pigment rather
-/// than at the alpha, and that is the right place: what identifies a
-/// collaborator here is *hue*, preserved exactly, while lightness is the thing
-/// carrying no information and doing the damage. Measured on rendered frames,
-/// this takes two peers highlighting the same page from 1.39:1 and 1.09:1
-/// against the paper to 1.79:1 and 1.65:1, a spread of 1.08x.
-///
-/// Pinning the luminance also bounds how dark a band can ever be, which is
-/// what lets [`MARKER_ALPHA`] be raised to something you can actually see
-/// without the text paying for it.
-///
-/// Only the marker uses this. Carets, pointers, chips and selections keep the
-/// peer's colour untouched, so the person a highlight belongs to is still the
-/// person their cursor is coloured by.
+/// A fixed alpha over [`super::PEER_PALETTE`] isn't even — the palette spans
+/// a 4x luminance range, so a wash reads ~1.1:1..1.9:1 against paper
+/// depending on peer. Scaling in linear light to a fixed luminance fixes
+/// that (measured 1.39:1/1.09:1 -> 1.79:1/1.65:1) while hue survives
+/// exactly. Only the marker uses this; carets/pointers/chips/selections
+/// keep the peer's own colour.
 fn marker_pigment(c: Color) -> Color {
     let l = relative_luminance(c);
     if l <= f32::EPSILON {
@@ -68,7 +41,6 @@ fn marker_pigment(c: Color) -> Color {
     let rgba = c.to_rgba8();
     let ch = |v: u8| -> u8 {
         let v = v as f32 / 255.0;
-        // sRGB -> linear, scale, clamp, and back.
         let lin = if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
         let scaled = (lin * k).clamp(0.0, 1.0);
         let enc = if scaled <= 0.0031308 {
@@ -81,16 +53,10 @@ fn marker_pigment(c: Color) -> Color {
     Color::from_rgba8(ch(rgba.r), ch(rgba.g), ch(rgba.b), rgba.a)
 }
 
-/// Deterministic per-user color — maps a UserId string to a hue with stable lightness.
-///
-/// Consults the [`PresenceCtx::color_for`] override map first (seeded by
-/// the shell from [`Collaborator::cursor_color`]) and only falls through
-/// to the palette-pinned [`super::user_color`] when no override exists.
-/// This is how every collab affordance — tab presence dots, remote
-/// cursors, peer caret, selection highlight, focus ring — picks the
-/// **same** colour for a given peer. `theme` is retained on the signature
-/// for the all-zero fallback, which only fires if a hash happens to land
-/// exactly on black.
+/// Deterministic per-user colour via [`PresenceCtx::color_for`], falling
+/// back to `theme.accent_primary` only on the all-zero (hash-lands-on-black)
+/// case. Every collab affordance resolves through this so they all agree on
+/// a peer's colour.
 pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Color {
     let (r, g, b) = ctx.color_for(user);
     if r == 0 && g == 0 && b == 0 {
@@ -100,12 +66,9 @@ pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Colo
 }
 
 impl PresenceCtx {
-    /// Paint a peer's caret in their colour. `rect` is the caret geometry
-    /// the widget itself produced (`TextInput::caret_rect` /
-    /// `RichTextLine::caret_rect`) in its local coordinates, and
-    /// `transform` maps that into scene space — so a peer caret is
-    /// pixel-identical to the widget's own focused caret, never a
-    /// re-derived approximation.
+    /// Paint a peer's caret in their colour. `rect` is the widget's own
+    /// caret geometry (`TextInput::caret_rect` / `RichTextLine::caret_rect`),
+    /// so a peer caret is pixel-identical to the local one.
     pub fn draw_peer_caret(
         &self,
         scene: &mut Scene,
@@ -118,9 +81,6 @@ impl PresenceCtx {
         scene.fill(Fill::NonZero, transform, color, None, &rect);
     }
 
-    /// Paint a peer's selection highlight in their colour at read-through
-    /// alpha. `rect` comes from the widget's own `selection_rect`, mapped
-    /// to scene space by `transform`.
     pub fn draw_peer_selection(
         &self,
         scene: &mut Scene,
@@ -133,43 +93,15 @@ impl PresenceCtx {
         scene.fill(Fill::NonZero, transform, color, None, &rect);
     }
 
-    /// Draw an authorship "marker" highlight — a translucent underlay in
-    /// the author's color behind the runs they wrote, like a highlighter
-    /// pen. Lower alpha than a selection so the text stays readable.
+    /// Draw an authorship "marker": translucent underlay in the author's
+    /// colour behind the runs they wrote, at lower alpha than a selection.
     ///
-    /// # This one is not fed by presence
-    ///
-    /// Every other method on this type draws something a peer *is doing* —
-    /// where their caret is, what they have selected — and that arrives as
-    /// a presence frame. Authorship is different: it is who wrote what,
-    /// and it has to survive both people closing the document, so it lives
-    /// **in the document** rather than on the presence channel.
-    ///
-    /// In the [`crate::widget::TextInput`] stack it is an Automerge mark:
-    /// every insert stamps `AUTHOR_MARK` with the widget's `local_author`,
-    /// and `RichTextLine::author_runs` reads the marks back on sync. Two
-    /// consequences worth knowing before you debug this:
-    ///
-    /// - It crosses machines wherever document deltas already cross. There
-    ///   is no presence payload to bridge and no wire format to add — if
-    ///   the text replicates, the authorship replicates with it.
-    /// - **It only exists if the app called `set_local_author`.** With no
-    ///   local author, inserts stamp no mark, `author_runs` stays empty,
-    ///   and this method is never reached — so the tint is missing while
-    ///   the caret and selection work perfectly. That looks exactly like a
-    ///   network fault and is not one. `apps/notes` and `apps/chat` set it;
-    ///   an app that forgets will spend a day in the wrong subsystem.
-    ///
-    /// A document model that records no per-run author cannot feed this at
-    /// all. The word processor is the live example: it is built on `qdoc`,
-    /// whose only author field is `CHANGE_AUTHOR` on a tracked `ins`/`del`
-    /// change, so ambient "she wrote this paragraph" tinting needs a new
-    /// per-run mark in that schema before there is anything to draw.
-    ///
-    /// The fading "just typed" swipe is the separate, genuinely ephemeral
-    /// half, and that one *is* presence — see
-    /// [`crate::presence::PresenceCtx::record_peer_typing`] and
-    /// [`Self::draw_peer_typing`].
+    /// Not presence-fed — authorship must survive both peers closing the
+    /// doc, so it's an Automerge mark (`local_author` /
+    /// `RichTextLine::author_runs`). **Silently a no-op if
+    /// `set_local_author` was never called** — looks exactly like a network
+    /// fault. Set by `apps/notes`/`apps/chat`; `qdoc` has no per-run author
+    /// field yet.
     pub fn draw_peer_authorship(
         &self,
         scene: &mut Scene,
@@ -183,11 +115,6 @@ impl PresenceCtx {
         }
     }
 
-    /// Draw a peer's mouse pointer as a round, color-coded cursor: a
-    /// soft translucent halo, a filled dot in the peer's color, and a
-    /// thin white ring for contrast against any background. `transform`
-    /// is the scene transform (HiDPI scale etc.); `pos` is the pointer
-    /// position in logical coordinates.
     pub fn draw_peer_pointer(
         &self,
         scene: &mut Scene,
@@ -198,22 +125,16 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme);
         let t = transform * Affine::translate((pos.0 as f64, pos.1 as f64));
-        // Soft halo so the pointer reads over busy content.
         let halo = Circle::new(Point::ORIGIN, 9.0);
         scene.fill(Fill::NonZero, t, color.with_alpha_factor(0.22), None, &halo);
-        // Solid dot in the peer's color.
         let dot = Circle::new(Point::ORIGIN, 5.0);
         scene.fill(Fill::NonZero, t, color, None, &dot);
-        // White ring for contrast.
         scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
     }
 
-    /// Draw a soft "indicative mist" over `rect` in the peer's color —
-    /// a wayfinding cue painted on the navigational element that leads to
-    /// where a peer currently is (e.g. a sidebar row for the page they're
-    /// editing). Layered translucent fills approximate a radial glow
-    /// without a gradient: a faint wash over the whole element plus a
-    /// brighter core.
+    /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
+    /// wayfinding to where a peer currently is. Two translucent fills
+    /// approximate a radial glow without an actual gradient.
     pub fn draw_peer_mist(
         &self,
         scene: &mut Scene,
@@ -222,7 +143,6 @@ impl PresenceCtx {
         rect: Rect,
     ) {
         let color = color_for(self, user, theme);
-        // Faint full-element wash.
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
@@ -230,8 +150,7 @@ impl PresenceCtx {
             None,
             &rect,
         );
-        // Brighter core inset from the edges so it reads as a glow
-        // rather than a flat highlight.
+        // Brighter core inset from the edges, so it reads as a glow.
         let pad = (rect.height() * 0.2).min(rect.width() * 0.45);
         let core = rect.inflate(-pad, -pad);
         scene.fill(
@@ -243,13 +162,9 @@ impl PresenceCtx {
         );
     }
 
-    /// Draw a peer's caret **with a small name chip** floating just above
-    /// the caret tip — so on a shared document you can tell not just where
-    /// a peer's cursor is but *who* it is, without hovering. The caret bar
-    /// is `caret_rect` (the widget's own geometry, mapped by `transform`,
-    /// pixel-identical to a local caret); the chip is drawn in the peer's
-    /// colour with the name in a contrasting ink. Mirrors the pointer name
-    /// pill so caret and pointer read as the same person.
+    /// Draw a peer's caret with a name chip above the tip — mirrors the
+    /// pointer's pill (same size/shadow) so caret and pointer read as one
+    /// person.
     pub fn draw_peer_caret_labeled(
         &self,
         scene: &mut Scene,
@@ -261,17 +176,9 @@ impl PresenceCtx {
         caret_rect: Rect,
     ) {
         let color = color_for(self, user, theme);
-        // The caret bar itself.
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
-        // Chip anchored to the caret's top, mapped into scene space so it
-        // rides with the caret under any transform. The same pill as the one
-        // beside a peer's pointer, at the same size and carrying the same
-        // shadow — a person's name should not change shape according to which
-        // part of them you are looking at.
         let (chip_w, chip_h) = peer_pill_size(text_renderer, theme, name);
-        // Top-left corner of the caret in local space; the chip sits just
-        // above it (a 2px gap) and left-aligns to the caret.
         let cx = caret_rect.x0;
         let cy = caret_rect.y0 - chip_h - 2.0;
         let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
@@ -279,30 +186,15 @@ impl PresenceCtx {
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
-    /// they inserted. `spans` pairs each scene-space rect with its fade alpha
-    /// (from [`PresenceCtx::active_typing`]); the tint is the peer's colour
-    /// scaled by that alpha and by [`MARKER_ALPHA`]. Rects are already in
-    /// scene space, so this uses `Affine::IDENTITY`.
+    /// they inserted. `spans` pairs each rect with its fade alpha.
     ///
-    /// # Paint this BEFORE the text, not after
+    /// # Must be painted BEFORE the text, not after
     ///
-    /// The band is opaque enough to be seen, which means it is opaque enough
-    /// to matter to whatever is already on the canvas. Painted over the glyphs
-    /// it is a wash: it drags ink and paper toward the same pigment together,
-    /// and the two ends converge. Measured through the word processor's real
-    /// canvas, a fresh mark left **2.4:1** between glyph and band where
-    /// unmarked body text reads about 15:1 — below WCAG AA, for every hue in
-    /// the palette. Beneath the glyphs the same band at the same strength
-    /// leaves **7.5:1**, because only the paper takes the colour.
-    ///
-    /// The band's own strength is identical either way — the composite over
-    /// paper is the same pixels — so ordering this correctly costs the marker
-    /// nothing. It is also what a highlighter physically is: pigment under the
-    /// writing.
-    ///
-    /// [`MARKER_PIGMENT_L`] bounds how dark the band can get, which is what
-    /// keeps the ink-against-band ratio safe for any hue; that floor is held
-    /// by `text_stays_legible_under_a_marker_in_both_palettes`.
+    /// Painted over glyphs this drags ink and paper toward the same pigment:
+    /// measured, a fresh mark over text leaves 2.4:1 (unmarked ~15:1, below
+    /// WCAG AA); beneath the glyphs the same band leaves 7.5:1. Composite
+    /// strength is identical either way, so getting the order right is
+    /// free. Held by `text_stays_legible_under_a_marker_in_both_palettes`.
     pub fn draw_peer_typing(
         &self,
         scene: &mut Scene,
@@ -312,11 +204,8 @@ impl PresenceCtx {
     ) {
         let color = marker_pigment(color_for(self, user, theme));
         for (rect, alpha) in spans {
-            // Under reduce-motion the mark takes the cut rather than the
-            // dissolve: it holds full strength for its whole life and then
-            // goes. The span is still dropped at `TYPING_FADE`, so it clears
-            // on the same schedule — what is removed is the animation, not the
-            // marker or its lifetime.
+            // Reduce-motion holds full strength instead of fading; the span
+            // still drops on schedule — only the animation is removed.
             let fade = if theme.reduce_motion { 1.0 } else { *alpha };
             let a = (fade * MARKER_ALPHA).clamp(0.0, 1.0);
             scene.fill(
@@ -329,12 +218,6 @@ impl PresenceCtx {
         }
     }
 
-    /// Draw a thin gutter strip on the left edge of `rect` in `user`'s
-    /// assigned color — a far subtler "this peer is present on me"
-    /// signal than a heavy block outline. Mirrors the gutter-rule a
-    /// code editor uses to mark a hunk of unsaved changes. `rect` is
-    /// already in scene space (transformed by the caller); the strip
-    /// itself uses `Affine::IDENTITY` to avoid double-transforming.
     pub fn draw_peer_focus(
         &self,
         scene: &mut Scene,
@@ -349,50 +232,28 @@ impl PresenceCtx {
 }
 
 
-// =====================================================================
-// Several peers at once
-// =====================================================================
-
-/// Radius of the solid dot at a peer's pointer. Larger than the single
-/// -peer pointer this grew out of: with a name pill beside it, a 5px
-/// dot reads as a speck next to its own label, and a person's cursor
-/// should be the thing you find first.
 const DOT_R: f64 = 6.5;
-/// Outer edge of the dot including its contrast ring — what a name pill
-/// has to clear.
+/// Outer edge including the contrast ring — the clearance pill placement
+/// uses.
 const RING_R: f64 = 8.5;
-/// Breathing room between the dot and its pill, and between two pills.
+/// Gap between the dot and its pill, and between two pills.
 const PILL_GAP: f64 = 4.0;
-/// How far a pill is allowed to sit from its own pointer before it stops
-/// being self-evidently that pointer's and gets a tether drawn to it.
+/// Distance from its pointer past which a pill gets a tether line.
 const TETHER_AFTER: f64 = 4.0;
 
-/// Horizontal and vertical padding inside a peer's name pill.
-///
-/// One pair of numbers, because there is one pill. Two call sites used to size
-/// this object by hand — the pointer pill and the caret's chip — and they
-/// disagreed on every value they could: 12 px of label against 10, 7x3 of
-/// padding against 5x1.5. On screen that is two labels for the same person at
-/// two sizes, and only one of them carrying the drop shadow, which at that
-/// size reads as a hard outline the other one lacks.
+/// Padding inside a peer's name pill. One pair of numbers because there is
+/// one pill: the pointer's and the caret's chip must size identically.
 pub(crate) const PILL_PAD_X: f64 = 7.0;
 pub(crate) const PILL_PAD_Y: f64 = 3.0;
 
-/// Type size for a peer's name, wherever it is drawn.
-///
-/// `scale.sm`, the same step the HIG gives every other control label — not
-/// `scale.xs`. These are names of people, on screen for the length of a shared
-/// session, and `xs` put them at roughly 34x15 px with about 8 px of glyph:
-/// present, but not readable.
+/// Peer name type size: `scale.sm`, not `scale.xs` — xs measured ~34x15px
+/// with ~8px of glyph, present but not readable for a whole-session label.
 pub(crate) fn pill_label_size(theme: &Theme) -> f32 {
     theme.tokens.typography.scale.sm
 }
 
-/// The size a peer's name pill wants for `label`, padding included.
-///
-/// Shared so a caller placing a pill computes its box the same way the painter
-/// does; a caller that measures it its own way is how the implementations
-/// drifted apart in the first place.
+/// Pill size for `label`, padding included — shared so callers size their
+/// box exactly like the painter.
 pub(crate) fn peer_pill_size(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -403,8 +264,6 @@ pub(crate) fn peer_pill_size(
     (tw as f64 + PILL_PAD_X * 2.0, size as f64 + PILL_PAD_Y * 2.0)
 }
 
-/// One peer to paint: where their pointer is, what to call them, and the
-/// colour that is theirs on every screen.
 #[derive(Debug, Clone)]
 pub struct PeerCursor {
     pub pos: (f64, f64),
@@ -412,44 +271,29 @@ pub struct PeerCursor {
     pub color: Color,
 }
 
-/// A pill wanting a home: the pointer it belongs to and how big it is.
 #[derive(Debug, Clone, Copy)]
 pub struct PillRequest {
     pub at: (f64, f64),
     pub size: (f64, f64),
 }
 
-/// Where a pill ended up, and whether it had to leave its pointer to get
-/// there (in which case the caller draws a tether so it stays legible
-/// *whose* it is).
+/// Where a pill ended up; `tethered` means the caller should draw a line
+/// back to its pointer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PillPlacement {
     pub rect: Rect,
     pub tethered: bool,
 }
 
-/// Place one name pill per peer so that no two overlap and none leaves
-/// `viewport`.
-///
-/// Two people working next to each other put their pointers a few pixels
-/// apart, and two pills at the same offset from two nearby pointers land
-/// on top of each other — which is not one name obscuring another, it is
-/// both names becoming unreadable. Someone near the right or bottom edge
-/// has the same problem against the window: a pill anchored below-right
-/// of them is half outside it.
-///
-/// So each pill is offered the four corners around its own pointer in
-/// turn and takes the first that is fully inside the viewport and clear
-/// of every pill already placed. Only when all four are taken does it
-/// slide away along the vertical, and then it is marked `tethered` so
-/// the caller can draw the line back.
-///
-/// Placement order is by position, not by arrival, so the same peers in
-/// the same places always produce the same picture — a cursor that
-/// reconnects does not reshuffle everyone else's names.
+/// Place one name pill per peer so none overlap and none leaves `viewport`.
+/// Each pill tries the four corners around its pointer, taking the first
+/// clear of the viewport and every already-placed pill; only when all four
+/// are taken does it slide along the vertical and get marked `tethered`.
+/// Placement order is by position, not arrival, so a peer reconnecting
+/// doesn't reshuffle everyone else's names.
 pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlacement> {
-    // Normalise: a caller handing us an inverted rect would otherwise
-    // clamp every pill to nothing.
+    // Normalise — an inverted `viewport` would otherwise clamp every pill
+    // to nothing.
     let vp = Rect::new(
         viewport.x0.min(viewport.x1),
         viewport.y0.min(viewport.y1),
@@ -503,10 +347,8 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         for (n, (x, y)) in corners.into_iter().enumerate() {
             let r = Rect::new(x, y, x + w, y + h);
             if inside(&r, &vp) && clear(&r, &placed) {
-                // Anything but the first corner means this pill moved to
-                // get out of someone's way or off an edge, and in a
-                // cluster of pointers a pill that is not below-right of
-                // its own is no longer obviously its own. Draw the line.
+                // Any corner but the first means the pill moved — no longer
+                // obviously its own pointer.
                 chosen = Some((r, n > 0));
                 break;
             }
@@ -515,10 +357,8 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         let (rect, tethered) = match chosen {
             Some((r, moved)) => (r, moved),
             None => {
-                // Every corner is taken or off-window. Keep the pill on
-                // the side of the pointer that fits and walk it down the
-                // vertical until it is clear, then back up if the bottom
-                // runs out.
+                // Every corner taken or off-window: keep to whichever side
+                // fits and walk down the vertical until clear.
                 let x = if right + w <= vp.x1 { right } else { left.max(vp.x0) };
                 let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
                 let mut r = Rect::new(x, below, x + w, below + h);
@@ -528,8 +368,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
                     let next_y = if r.y1 + step <= vp.y1 {
                         r.y0 + step
                     } else {
-                        // Out of room going down — restart above the
-                        // pointer and walk up instead.
+                        // Out of room going down — restart above and walk up.
                         let up = if r.y0 > py { above } else { r.y0 - step };
                         if up < vp.y0 {
                             break;
@@ -549,8 +388,8 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             }
         };
 
-        // A pill that ended up further from its pointer than a corner
-        // placement would have needs the line drawn, however it got there.
+        // Further from its pointer than a corner placement gets: draw the
+        // line, however it got there.
         let dx = (rect.x0 - px).abs().min((rect.x1 - px).abs());
         let dy = (rect.y0 - py).abs().min((rect.y1 - py).abs());
         let far = dx.max(dy) > RING_R + PILL_GAP + TETHER_AFTER;
@@ -563,15 +402,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
     out
 }
 
-/// Paint a whole room's worth of pointers in one pass — every dot, then
-/// every tether, then every pill.
-///
-/// The three layers are separate on purpose: pills carry the names, so
-/// nothing is allowed on top of one. Drawing peer-by-peer would let a
-/// later peer's halo wash over an earlier peer's name.
-///
-/// `viewport` bounds the pills. Pass the rect the peers are being drawn
-/// into; positions themselves are assumed already filtered to it.
+/// Paint pointers, then tethers, then pills — in that layer order so a
+/// later peer's halo can't wash over an earlier peer's name. `viewport`
+/// bounds the pills; positions are assumed already filtered to it.
 pub fn draw_peer_cursors(
     scene: &mut Scene,
     transform: Affine,
@@ -592,12 +425,11 @@ pub fn draw_peer_cursors(
         .collect();
     let placements = layout_peer_pills(viewport, &requests);
 
-    // Layer 1 — the pointers themselves.
     for p in peers {
         draw_peer_dot(scene, transform, p.pos, p.color);
     }
 
-    // Layer 2 — tethers, under the pills so a line never crosses a name.
+    // Tethers — under the pills so a line never crosses a name.
     for (p, place) in peers.iter().zip(&placements) {
         if !place.tethered {
             continue;
@@ -616,7 +448,6 @@ pub fn draw_peer_cursors(
         );
     }
 
-    // Layer 3 — the names, on top of everything.
     for (p, place) in peers.iter().zip(&placements) {
         draw_peer_pill(
             scene,
@@ -630,14 +461,10 @@ pub fn draw_peer_cursors(
     }
 }
 
-/// A peer's pointer: soft halo, a shadow edge, the solid dot in their
-/// colour, and a white ring.
-///
-/// The shadow and the ring are what make one dot work over both the word
-/// processor's white page and the desktop behind it — the white ring
-/// separates a dark colour from a dark background, the shadow separates a
-/// light colour from a light one, and whichever is doing nothing is
-/// invisible rather than in the way.
+/// A peer's pointer: halo, shadow edge, solid dot, white ring. Shadow and
+/// ring together work on both light and dark backgrounds — ring separates
+/// dark-on-dark, shadow separates light-on-light; whichever isn't needed
+/// stays invisible.
 fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Color) {
     let t = transform * Affine::translate((pos.0, pos.1));
     scene.fill(
@@ -659,12 +486,9 @@ fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Co
     scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
 }
 
-/// A peer's name pill: their colour as the fill, a soft drop shadow, and
-/// the label in whichever of black or white reads on that colour.
-///
-/// Filling in the peer's colour rather than in a surface token is what
-/// makes several peers legible at once — the pill *is* the swatch, so a
-/// name and a cursor are matched by colour and not by proximity.
+/// A peer's name pill, filled in their own colour (not a surface token) so
+/// the pill *is* the swatch — name and cursor match by colour, not by
+/// proximity.
 pub(crate) fn draw_peer_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -696,21 +520,16 @@ pub(crate) fn draw_peer_pill(
     );
 }
 
-/// Closest point on `rect`'s boundary box to `p` — where a tether meets
-/// the pill it points at.
+/// Closest point on `rect` to `p` — where a tether meets the pill it points
+/// at.
 fn nearest_point_on(rect: Rect, p: Point) -> Point {
     Point::new(p.x.clamp(rect.x0, rect.x1), p.y.clamp(rect.y0, rect.y1))
 }
 
-/// Paint every entry in `presence.remote_cursors` as a dot + name pill,
-/// at scene-space coordinates transformed by `transform`. Used by the
-/// App's per-frame draw so non-shell apps (terminal, settings, file
-/// explorer) get cross-process ghost cursors without each having to
-/// re-implement the geometry.
-///
-/// No viewport is supplied here, so pills are only de-overlapped, not
-/// clamped. [`draw_remote_presence`] is the one to prefer: it knows the
-/// window and can keep a name on screen.
+/// Paint every entry in `presence.remote_cursors` as a dot + name pill, for
+/// non-shell apps drawing cross-process ghost cursors without reimplementing
+/// the geometry. No viewport, so pills are de-overlapped but not clamped —
+/// prefer [`draw_remote_presence`], which keeps names on screen.
 pub fn draw_remote_cursors(
     scene: &mut Scene,
     transform: Affine,
@@ -718,10 +537,8 @@ pub fn draw_remote_cursors(
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
-    // Same ownership rule as [`draw_remote_presence`]: a pointer the
-    // compositor overlay paints is not painted again here. Filtering in
-    // both is what keeps a future caller of this older helper from
-    // reintroducing the duplicate.
+    // Same ownership rule as draw_remote_presence: skip pointers the
+    // compositor overlay already paints.
     let peers: Vec<PeerCursor> = presence
         .remote_cursors
         .iter()
@@ -749,15 +566,9 @@ fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
     }
 }
 
-/// Pick black or white ink for text drawn on top of `bg`, by relative
-/// luminance — so a name chip label stays readable on any peer colour.
-///
-/// Public because every surface that fills a shape with a peer's colour and
-/// then writes a name on it needs the same answer. The palette spans a 16:1
-/// luminance range — it has to, or peers would not be told apart — so a fixed
-/// white label is unreadable on rather more than half of it: eleven of the
-/// twenty-four entries put white below 2:1, and the palest reaches 1.24:1.
-/// There is no one ink that works, which is why this is a function.
+/// Black or white ink for text on `bg`, by luma — a fixed white label is
+/// unreadable on over half the peer palette (11 of 24 entries under 2:1,
+/// palest 1.24:1 against white).
 pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
@@ -765,12 +576,11 @@ pub fn contrast_ink(bg: Color) -> Color {
     if luma > 140.0 { Color::BLACK } else { Color::WHITE }
 }
 
-/// The clickable / paintable rectangle of an off-screen peer's mist band
-/// for `viewport`. A localised strip hugging the resolved edge, centred on
-/// where the peer projects (`mist.along`), clamped inside the viewport.
-/// Shared by [`draw_remote_presence`] (paints it) and
-/// [`super::PresenceCtx::hit_test_offscreen_mist`] (hit-tests it) so the
-/// two never drift.
+/// The clickable/paintable rect of an off-screen peer's mist band, centred
+/// on `mist.along`, clamped to the viewport. Shared by
+/// [`draw_remote_presence`] (paints) and
+/// [`super::PresenceCtx::hit_test_offscreen_mist`] (hit-tests) so the two
+/// never drift.
 pub(super) fn mist_band_rect(
     viewport: vello::kurbo::Rect,
     mist: &super::geom::EdgeMist,
@@ -783,8 +593,6 @@ pub(super) fn mist_band_rect(
     let w = x1 - x0;
     let h = y1 - y0;
 
-    // How deep the band reaches into the screen, and how long it runs
-    // along the edge.
     let depth = 44.0_f64.min(w * 0.5).min(h * 0.5);
     let extent = 140.0_f64;
 
@@ -812,10 +620,8 @@ pub(super) fn mist_band_rect(
     }
 }
 
-/// Paint one off-screen peer's wayfinding mist: a soft colour band at the
-/// resolved edge that fades away from the border (approximating a gradient
-/// with a few inset layers), plus a tiny name tag so you know who drifted
-/// off which way. `peer` is their colour; `name` the chip label.
+/// Paint one off-screen peer's edge mist: a soft band fading from the
+/// border (a few inset layers approximating a gradient), plus a name tag.
 fn draw_edge_mist(
     scene: &mut Scene,
     text_renderer: &mut TextRenderer,
@@ -828,13 +634,12 @@ fn draw_edge_mist(
     use super::geom::MistEdge;
     let band = mist_band_rect(viewport, mist);
 
-    // Intensity tapers with how far off-screen the peer is: someone just
-    // past the edge glows brighter than someone who scrolled far away.
+    // Intensity tapers with how far off-screen the peer is.
     let far = (mist.distance / 600.0).clamp(0.0, 1.0) as f32;
     let base = 0.34 * (1.0 - 0.6 * far);
 
-    // Layered falloff: three bands from the edge inward, each dimmer and
-    // shorter, so the mist reads as a soft glow rather than a flat block.
+    // Three bands from the edge inward, each dimmer and shorter, so the
+    // mist reads as a soft glow rather than a flat block.
     let layers = 3;
     for i in 0..layers {
         let f = i as f64 / layers as f64;
@@ -854,7 +659,6 @@ fn draw_edge_mist(
         );
     }
 
-    // A small name tag riding the band, so the mist says *who*.
     let tokens = &theme.tokens;
     let label_size = tokens.typography.scale.xs;
     let (tw, _th) = text_renderer.measure(name, label_size, None);
@@ -881,13 +685,10 @@ fn draw_edge_mist(
     );
 }
 
-/// Viewport-aware peer overlay: the one call the App makes each frame to
-/// render *all* cross-process peer presence. Peers whose cursor is inside
-/// `viewport` get the round dot + name pill (identical to
-/// [`draw_remote_cursors`]); peers whose cursor has drifted off-screen get
-/// a colored edge mist pointing the way, so nobody vanishes. `viewport` is
-/// the visible window rect in the same (logical) space as the cursor
-/// positions; `transform` is the scene transform (HiDPI etc.).
+/// The one call the app makes each frame to render all cross-process peer
+/// presence: on-screen peers get a dot + pill, off-screen peers get an edge
+/// mist. `viewport` is the visible rect in the same (logical) space as
+/// cursor positions.
 pub fn draw_remote_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -900,47 +701,20 @@ pub fn draw_remote_presence(
         return;
     }
     // Split first, draw after: the on-screen peers are laid out together
-    // so their names cannot land on top of each other, which is only
-    // possible once the whole set is known.
+    // so their names cannot land on top of each other.
     let mut on_screen: Vec<PeerCursor> = Vec::new();
     for cursor in &presence.remote_cursors {
-        // Nobody is a peer of themselves.
-        //
-        // The rule was enforced only at the two doors state arrives by —
-        // `apply_remote_presence` and `upsert_remote_cursor_owned`. Both
-        // guards depend on the ingesting side having been told what to call
-        // itself, and there are several spellings of that (a participant id, a
-        // handle, an app id, a `peer@…` address off the wire); an entry that
-        // came in under one nobody had seeded walked straight past both, and
-        // put somebody's own name floating in the middle of their own empty
-        // pane, pointing at nothing.
-        //
-        // Checked here as well, because this is the last place the question
-        // can be asked and the only one that catches every door at once.
+        // Nobody is a peer of themselves. Already enforced where state
+        // arrives (apply_remote_presence, upsert_remote_cursor_owned), but
+        // those depend on knowing our own id, which has several spellings —
+        // checked again here as the one place that catches every door.
         if presence.is_own_identity(&cursor.user_id) {
             continue;
         }
-        // A window may only place a pointer that was measured in its own
-        // coordinates — one question, asked once, for everything this function
-        // draws.
-        //
-        // It used to be asked of the on-screen dot alone, on the reasoning
-        // that the compositor paints a desktop pointer above this window and
-        // painting it here too is the same person twice, while the band at the
-        // edge was nobody else's and so could stay. That does not survive
-        // contact with what the band claims. A desktop pointer's numbers are a
-        // place on the *desktop*; tested against this window's rect they are
-        // outside it almost always, and "outside my rect" was then read as
-        // "off my top edge" and painted as a 140x44 wayfinding band hugging
-        // that edge with the peer's name on it — a filled block lying across a
-        // file manager's toolbar, pointing in a direction the peer is not in,
-        // and drawn once per open window because every one of them ran the
-        // same arithmetic on the same foreign numbers.
-        //
-        // A window that does not know where somebody is cannot honestly point
-        // at them, and an off-screen indicator for a desktop pointer belongs
-        // to the layer that can place one. The same holds for a pointer
-        // measured in a *different* window's surface.
+        // A window only places pointers measured in its own coordinates. A
+        // desktop-space pointer is the compositor's to resolve — testing it
+        // against this window's rect and calling "outside" "off my edge"
+        // would point a wayfinding band in a direction the peer isn't in.
         if !cursor.painted_by_window() {
             continue;
         }
@@ -970,9 +744,8 @@ mod tests {
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
 
-    /// The round remote pointer paints the peer's color at its center.
-    /// "alice" maps to the pinned pink (0xec, 0x48, 0x99), so the dot
-    /// center should read red-high / green-low / blue-mid.
+    /// "alice" maps to the pinned pink (0xec, 0x48, 0x99): the dot center
+    /// should read red-high / green-low / blue-mid.
     #[test]
     fn peer_pointer_paints_peer_color_at_center() {
         let ctx = PresenceCtx::empty();
@@ -990,14 +763,9 @@ mod tests {
         );
     }
 
-    /// The pixels behind "one person, one pointer".
-    ///
-    /// The same peer, at the same place, painted once when this layer
-    /// owns them and not at all when the compositor overlay does. Both
-    /// halves are asserted in one test on purpose: a filter that
-    /// dropped everything would satisfy the first assertion on its own,
-    /// and a filter that dropped nothing would satisfy the second, so
-    /// neither is worth much without the other.
+    /// "One person, one pointer": painted once when this layer owns it, not
+    /// at all when the compositor overlay does. Both halves are asserted in
+    /// one test — either alone would pass a filter that always/never draws.
     #[test]
     fn only_a_pointer_this_layer_owns_reaches_the_screen() {
         use super::super::PointerOwner;
@@ -1033,8 +801,7 @@ mod tests {
             "a pointer this layer owns must be drawn; got ({r},{g},{b})"
         );
 
-        // Owned by the compositor: nothing here, because the overlay
-        // above this window is already drawing that person.
+        // Owned by the compositor: the overlay already draws that person.
         let (r, g, b, _) = paint(PointerOwner::Desktop);
         assert_eq!(
             (r, g, b),
@@ -1043,7 +810,6 @@ mod tests {
         );
     }
 
-    /// The remote caret paints the peer's color as a thin vertical bar.
     /// "charlie" maps to emerald (0x10, 0xb9, 0x81): green dominant.
     #[test]
     fn peer_caret_paints_peer_color() {
@@ -1051,7 +817,6 @@ mod tests {
         let theme = Theme::default();
         let mut scene = Scene::new();
         let user = UserId("charlie".to_string());
-        // The widget supplies the caret rect; the helper just recolours it.
         ctx.draw_peer_caret(
             &mut scene,
             &theme,
@@ -1070,10 +835,8 @@ mod tests {
         );
     }
 
-    /// Indicative mist tints a navigational element in the peer's color.
     /// "bob" maps to orange (0xf9, 0x73, 0x16): red-high, green-mid,
-    /// blue-low. The mist is translucent, so over a dark background the
-    /// channel ordering (R > G > B) still holds.
+    /// blue-low. Translucent over black, the channel ordering still holds.
     #[test]
     fn peer_mist_tints_element_in_peer_color() {
         let ctx = PresenceCtx::empty();
@@ -1096,10 +859,8 @@ mod tests {
         );
     }
 
-    /// A labeled caret paints the peer's color as the caret bar AND draws
-    /// a name chip in the peer's color just above the caret tip. We sample
-    /// both: the bar (mid-height of the caret) and the chip (above it).
-    /// "charlie" is emerald (G dominant).
+    /// Samples both the caret bar and the name chip above it. "charlie" is
+    /// emerald (G dominant).
     #[test]
     fn labeled_caret_paints_bar_and_chip_above() {
         let ctx = PresenceCtx::empty();
@@ -1128,10 +889,7 @@ mod tests {
             "caret bar should be emerald, got ({br},{bg},{bb})"
         );
 
-        // The chip fill, a few pixels above the caret top (y ~ 33), at the
-        // caret's left x. It is drawn solid in the peer color, so an
-        // emerald reading here proves the label chip positions above the
-        // caret.
+        // The chip fill, a few pixels above the caret top (y ~ 33).
         let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
         assert!(ca > 0, "expected an opaque chip above the caret, got alpha {ca}");
         assert!(
@@ -1140,9 +898,8 @@ mod tests {
         );
     }
 
-    /// The typing highlighter paints the peer's color over the typed run.
-    /// "bob" is orange (R>G>B). Fresh (alpha 1.0) over black still keeps
-    /// that channel ordering.
+    /// "bob" is orange (R>G>B); fresh (alpha 1.0) over black keeps that
+    /// ordering.
     #[test]
     fn typing_tint_paints_peer_color_over_run() {
         let ctx = PresenceCtx::empty();
@@ -1176,9 +933,8 @@ mod tests {
         assert!(red2 < red, "lower alpha must paint a dimmer tint: {red2} !< {red}");
     }
 
-    /// An off-screen peer produces an edge-mist band on the correct edge.
-    /// A peer whose cursor is off to the RIGHT tints the right edge in
-    /// their color and leaves the left edge clear.
+    /// A peer off to the RIGHT tints the right edge and leaves the left
+    /// edge clear.
     #[test]
     fn offscreen_peer_mists_the_correct_edge() {
         let mut ctx = PresenceCtx::empty();
@@ -1215,8 +971,6 @@ mod tests {
         );
     }
 
-    // -- several peers at once -----------------------------------------
-
     fn req(x: f64, y: f64, w: f64, h: f64) -> PillRequest {
         PillRequest {
             at: (x, y),
@@ -1241,8 +995,7 @@ mod tests {
         );
     }
 
-    /// Four peers in a pile is the case that broke: four pills all at the
-    /// same offset from four nearly-identical pointers.
+    /// Four pills from four nearly-identical pointers must still separate.
     #[test]
     fn four_piled_peers_get_four_readable_pills() {
         let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -1285,9 +1038,8 @@ mod tests {
         }
     }
 
-    /// A pill that had to leave its pointer says so, so the caller draws
-    /// the line back to it. One that sits in its own corner does not — a
-    /// tether on every pill would be noise.
+    /// A pill in its own corner needs no tether; a tether on every pill
+    /// would be noise.
     #[test]
     fn only_a_displaced_pill_asks_for_a_tether() {
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1306,9 +1058,7 @@ mod tests {
         );
     }
 
-    /// The same peers in the same places must produce the same picture
-    /// however the list is ordered — a peer reconnecting must not
-    /// reshuffle everyone else's names.
+    /// A peer reconnecting must not reshuffle everyone else's names.
     #[test]
     fn placement_does_not_depend_on_arrival_order() {
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1322,9 +1072,6 @@ mod tests {
         assert_eq!(forward[2], backward[0]);
     }
 
-    /// A peer's name is painted in their own colour, and the label on it
-    /// is whichever of black or white can be read on that colour. Both
-    /// samples are taken off a real render.
     #[test]
     fn a_peer_pill_is_the_peer_colour_and_its_label_contrasts() {
         let theme = Theme::default();
@@ -1368,9 +1115,6 @@ mod tests {
         );
     }
 
-    /// A peer over a white page has to be as visible as one over the dark
-    /// desktop. The dot carries both a white ring and a dark edge so that
-    /// whichever background it lands on, one of the two separates it.
     #[test]
     fn a_peer_dot_reads_on_a_white_page_and_on_a_dark_desktop() {
         let theme = Theme::default();
@@ -1410,24 +1154,15 @@ mod tests {
         }
     }
 
-    /// A person's name is one object, whichever part of them it labels.
-    ///
-    /// There were two of these and they agreed on nothing: the pill beside a
-    /// pointer took `scale.sm` with 7x3 of padding, the chip above a caret
-    /// took `scale.xs` with 5x1.5. That is the same person labelled at two
-    /// sizes, and only the pointer's carrying the drop shadow — which at that
-    /// size reads as a hard outline the other lacks.
-    ///
-    /// Asserted through `peer_pill_size`, which is what both now measure
-    /// with, so this fails if either starts measuring its own way again.
+    /// Asserted through `peer_pill_size`, shared by the pointer pill and
+    /// the caret chip, so this fails if either drifts.
     #[test]
     fn a_peer_name_is_the_same_pill_everywhere() {
         let theme = Theme::default();
         let mut tr = crate::text_render::TextRenderer::new();
 
-        // The size is the type scale's control step, not the caption step
-        // below it: these are names of people, on screen for the length of a
-        // shared session.
+        // Control step, not caption — names are on screen for a whole
+        // session.
         assert_eq!(
             pill_label_size(&theme),
             theme.tokens.typography.scale.sm,
@@ -1441,27 +1176,20 @@ mod tests {
             "peer_pill_size is not stable for one label",
         );
 
-        // The old chip came out about 34x15 with roughly 8px of glyph in it;
-        // the floor here is what separates "present" from "readable".
         assert!(
             h >= 18.0,
             "a name pill {h}px tall is the unreadable one this replaced",
         );
         assert!(w > h, "a name pill should be wider than it is tall, got {w}x{h}");
 
-        // A longer name gets a wider pill and the same height — the height is
-        // the type, not the content.
+        // Wider pill, same height — height is the type, not the content.
         let (w2, h2) = peer_pill_size(&mut tr, &theme, "bob-with-a-long-name");
         assert!(w2 > w, "a longer name should get a wider pill");
         assert_eq!(h2, h, "pill height should not depend on the label");
     }
 
-    /// The caret's chip and the pointer's pill paint the same shadow.
-    ///
-    /// The chip above a caret used to have none at all while the pill beside a
-    /// pointer did, so two labels for two people in one frame were styled
-    /// differently for no reason a viewer could name. Sampled just under the
-    /// chip's bottom edge, where a drop shadow lands and a flat fill does not.
+    /// Sampled just under the chip's bottom edge, where a shadow lands and
+    /// a flat fill does not.
     #[test]
     fn a_caret_chip_carries_the_same_shadow_as_a_pointer_pill() {
         let theme = Theme::default();
@@ -1492,9 +1220,8 @@ mod tests {
         assert!(w > 0.0);
     }
 
-    /// Paint a fresh full-width marker for `user` on `paper` and return the
-    /// composited band colour. The production `draw_peer_typing`, rendered for
-    /// real — the band is read back off the framebuffer, not computed.
+    /// Renders the production `draw_peer_typing` for real — the band is read
+    /// back off the framebuffer, not computed.
     fn marker_band(user: &str, paper: Color, theme: &Theme) -> (u8, u8, u8) {
         let ctx = PresenceCtx::empty();
         let mut scene = Scene::new();
@@ -1510,11 +1237,10 @@ mod tests {
         (red, green, blue)
     }
 
-    /// [`marker_band`] for an explicit colour rather than an id, so a test can
-    /// walk every entry in [`super::super::PEER_PALETTE`] instead of the
-    /// handful of ids that happen to hash onto one. Goes in through
-    /// `set_color_override`, the same door the shell uses to seed a peer's
-    /// colour, so this is still the production painter.
+    /// [`marker_band`] for an explicit colour, so a test can walk every
+    /// entry in [`super::super::PEER_PALETTE`], not just the ids that hash
+    /// onto one. Goes in through `set_color_override`, the same door the
+    /// shell uses, so this is still the production painter.
     fn marker_band_for(rgb: (u8, u8, u8), paper: Color, theme: &Theme) -> (u8, u8, u8) {
         let mut ctx = PresenceCtx::empty();
         let user = UserId("peer".to_string());
@@ -1535,12 +1261,10 @@ mod tests {
         (red, green, blue)
     }
 
-    /// WCAG relative luminance of a sampled band.
     fn lum(c: (u8, u8, u8)) -> f32 {
         relative_luminance(Color::from_rgb8(c.0, c.1, c.2))
     }
 
-    /// Contrast ratio between two sampled colours.
     fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
         let (la, lb) = (lum(a), lum(b));
         let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
@@ -1548,13 +1272,7 @@ mod tests {
     }
 
     /// Every peer's marker lands at comparable strength against the page.
-    ///
-    /// The palette spans a 4x luminance range because it is tuned for
-    /// *cursors*, where lightness is free. Laid down as a wash at one fixed
-    /// alpha, the palest peer colour reached about 1.1:1 against white paper
-    /// while the darkest reached about 1.9:1 — one peer looked like they had
-    /// highlighted a line and the other like the feature had not fired. This
-    /// is the assertion that stops a fixed alpha coming back.
+    /// See [`marker_pigment`].
     #[test]
     fn every_peers_marker_is_about_as_strong_as_every_others() {
         let theme = Theme::default();
@@ -1583,14 +1301,10 @@ mod tests {
         );
     }
 
-    /// And the text underneath still reads, on the paper the word processor
-    /// keeps in every palette *and* on a dark app surface, for the palest and
-    /// the darkest peer alike.
-    ///
-    /// This measures the band against *unmarked* ink, which is the right model
-    /// only while the marker is painted **under** the glyphs — see the note on
-    /// [`PresenceCtx::draw_peer_typing`]. A caller that paints it over them
-    /// gets a number this test cannot see.
+    /// Measures the band against *unmarked* ink, which is only right while
+    /// the marker paints under the glyphs (see
+    /// [`PresenceCtx::draw_peer_typing`]) — over them gets a number this
+    /// test can't see.
     #[test]
     fn text_stays_legible_under_a_marker_in_both_palettes() {
         let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
@@ -1598,9 +1312,8 @@ mod tests {
         let ink = (0x1a, 0x1a, 0x1a);
         let dark_ink = (0xf5, 0xf5, 0xf5);
 
-        // Every colour a peer can be drawn in, not the handful of ids that
-        // happen to hash onto one — a palette entry nobody has landed on yet
-        // is still a legibility promise.
+        // Every colour a peer can be drawn in, not just the ids that hash
+        // onto one — an unhit palette entry is still a legibility promise.
         for rgb in super::super::PEER_PALETTE {
             for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
                 let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
@@ -1620,11 +1333,8 @@ mod tests {
         }
     }
 
-    /// Reduce-motion takes the dissolve, not the marker.
-    ///
-    /// A half-faded mark is drawn at full strength when the user has asked for
-    /// less motion — the highlight still says what was written and still
-    /// clears when the span expires; what goes is the animation.
+    /// Reduce-motion holds the marker at full strength instead of fading it
+    /// — it still clears when the span expires; only the animation goes.
     #[test]
     fn reduce_motion_holds_the_marker_instead_of_dissolving_it() {
         let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
@@ -1664,9 +1374,8 @@ mod tests {
         );
     }
 
-    /// The marker re-tunes lightness only. A peer's hue — the thing that says
-    /// whose highlight it is, and the thing their caret is coloured by —
-    /// survives it, so the two affordances still name the same person.
+    /// The marker re-tunes lightness only; a peer's hue (what their caret is
+    /// also coloured by) must survive it.
     #[test]
     fn marker_pigment_keeps_the_peers_hue() {
         for user in ["alice", "bob", "charlie", "me", "agent", "sara"] {
@@ -1691,15 +1400,8 @@ mod tests {
         }
     }
 
-    /// A window paints presence for a pointer measured in its own coordinates,
-    /// and for no other — the band at its edge included.
-    ///
-    /// A desktop pointer's numbers are a place on the desktop, which only the
-    /// compositor can resolve. Tested against one window's rect they fall
-    /// outside it almost always, and "outside my rect" was read as "off my
-    /// edge" and painted as a 140x44 band hugging that edge with the peer's
-    /// name on it. In a file manager that lands across the toolbar, pointing
-    /// in a direction the peer is not in, and drawn once per open window.
+    /// The edge band, too, is only for a pointer measured in this window's
+    /// own coordinates — a desktop pointer is the compositor's to place.
     #[test]
     fn a_window_paints_no_band_for_a_pointer_it_cannot_place() {
         let theme = Theme::default();
@@ -1709,9 +1411,8 @@ mod tests {
         let mut ctx = PresenceCtx::empty();
         ctx.set_own_identity(["me"]);
         ctx.set_display_name(UserId("peer@7".to_string()), "bob");
-        // The frame a room really sends: a pointer keyed by the room, which is
-        // the key the compositor overlay draws desktop pointers from and the
-        // one the broker hands to every app in the room.
+        // The frame a room really sends: a pointer keyed by the room, the
+        // same key the compositor overlay and broker use.
         let _ = ctx.apply_remote_presence(
             "peer@7".to_string(),
             crate::presence::PresenceKey::Workspace { id: "room-1".to_string() },
@@ -1735,9 +1436,8 @@ mod tests {
             "a window painted something for a pointer it cannot place",
         );
 
-        // And the click that band used to swallow goes back to whatever is
-        // under it. The hit test is the same rule or the pixels and the
-        // pointer disagree about what is there.
+        // A click there goes to whatever's under it — hit-test must use the
+        // same rule or pixels and clicks disagree.
         assert_eq!(
             ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
             None,
@@ -1745,10 +1445,9 @@ mod tests {
         );
     }
 
-    /// The half that has to keep working, or the rule above is satisfied by
-    /// never drawing anything: a peer whose pointer *is* measured in this
-    /// window, and has left the visible part of it, still gets the band that
-    /// says which way they went.
+    /// The half that must keep working, or the rule above is satisfied by
+    /// never drawing anything: a pointer this window does own still gets a
+    /// band once it leaves the visible part of it.
     #[test]
     fn an_offscreen_peer_in_this_window_still_gets_a_band() {
         let theme = Theme::default();

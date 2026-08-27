@@ -72,7 +72,6 @@ impl NameField {
         &self.buffer
     }
 
-    /// Overwrite the text.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.buffer = text.into();
     }

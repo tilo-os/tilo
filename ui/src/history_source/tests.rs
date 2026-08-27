@@ -36,9 +36,8 @@ fn qdoc_doc(handle: &str) -> (AutoCommit, qdoc::Containers, qdoc::IdGen) {
 }
 
 /// Two peers over one document: Alice writes "hello", Bob appends " world",
-/// Alice appends "!". Each edit is one commit, stamped an hour apart.
-///
-/// Returns Alice's document (with Bob's change merged in) and the block id.
+/// Alice appends "!" — each edit one commit, stamped an hour apart. Returns
+/// Alice's document (with Bob's change merged in) and the block id.
 fn two_identity_document() -> (AutoCommit, String) {
     let (mut alice, c, mut alice_ids) = qdoc_doc("alice");
 
@@ -50,8 +49,7 @@ fn two_identity_document() -> (AutoCommit, String) {
     };
     qdoc::history::commit_stamped_at(&mut alice, T0 + HOUR);
 
-    // Bob forks from Alice's state — the same thing a peer that synced does —
-    // and edits under his own actor.
+    // Bob forks from Alice's state, as a synced peer would.
     let mut bob = alice.fork();
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
@@ -93,14 +91,10 @@ fn content_rows(entries: &[HistoryEntry]) -> Vec<&HistoryEntry> {
         .collect()
 }
 
-// =====================================================================
 // 1. Three edits, two identities, attributed
-// =====================================================================
 
 /// THE HEADLINE TEST. Three edits made under two different actors must come
-/// back as three rows with the right names on them — that is the entire point
-/// of the timeline, and it is what "actor_hex resolves to nothing" made
-/// impossible.
+/// back as three rows with the right names on them.
 #[test]
 fn three_edits_by_two_identities_are_attributed_correctly() {
     let (mut doc, _) = two_identity_document();
@@ -119,7 +113,6 @@ fn three_edits_by_two_identities_are_attributed_correctly() {
         vec!["Alice", "Bob", "Alice"],
         "causal order and authorship: Alice wrote, Bob appended, Alice appended"
     );
-    // Two distinct people, two distinct avatar colours.
     assert_ne!(rows[0].author.avatar_hue, rows[1].author.avatar_hue);
     assert_eq!(rows[0].author.identity_short, "a11ce000");
     assert_eq!(rows[1].author.identity_short, "b0b00000");
@@ -177,9 +170,9 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
     assert_eq!(rows[2].summary, "-1 block");
 }
 
-/// A document with no qdoc schema still produces real rows: the patch fallback
-/// reads the change's own splices. This is what makes the producer usable over
-/// the compositor's chrome document, not just over qdoc artifacts.
+/// A document with no qdoc schema still produces real rows via the patch
+/// fallback, which is what makes the producer usable over the compositor's
+/// chrome document, not just qdoc artifacts.
 #[test]
 fn a_plain_automerge_document_falls_back_to_patch_summaries() {
     let mut doc = AutoCommit::new();
@@ -205,13 +198,10 @@ fn a_plain_automerge_document_falls_back_to_patch_summaries() {
     );
 }
 
-// =====================================================================
 // 2. Restore
-// =====================================================================
 
 /// Restore to an earlier version must bring the earlier content back — and
-/// must do it by *appending* to history, never by rewriting it. Both halves are
-/// asserted: the text, and the fact that the change graph grew.
+/// must do it by *appending* to history, never by rewriting it.
 #[test]
 fn restore_returns_earlier_content_and_appends_a_new_entry() {
     let (doc, block) = two_identity_document();
@@ -220,7 +210,6 @@ fn restore_returns_earlier_content_and_appends_a_new_entry() {
     let before = source().entries(&mut state.doc);
     let rows = content_rows(&before);
     assert_eq!(rows.len(), 3);
-    // Version 1 in user terms = the first content edit, "hello".
     let v1 = rows[0].id;
     let ids_before: Vec<HistoryEntryId> = before.iter().map(|e| e.id).collect();
 
@@ -308,13 +297,10 @@ fn an_unknown_entry_id_resolves_to_no_version() {
     assert_eq!(heads_for_entry(&mut doc, &HistoryEntryId([0xab; 16])), None);
 }
 
-// =====================================================================
 // 3. Filters, through the real widget
-// =====================================================================
 
 /// Filtering by contributor must actually filter. Asserted through
-/// `ActivityTimeline`, i.e. the code that runs when a user clicks a row —
-/// not through `HistoryFilter::matches` in isolation.
+/// `ActivityTimeline`, not `HistoryFilter::matches` in isolation.
 #[test]
 fn filtering_by_contributor_hides_the_other_authors_rows() {
     let (mut doc, _) = two_identity_document();
@@ -349,8 +335,7 @@ fn filtering_by_date_range_selects_only_edits_inside_the_window() {
     let entries = source().entries(&mut doc);
 
     let mut timeline = ActivityTimeline::with_entries(entries.clone());
-    // Bob's edit is stamped at T0 + 2h. A window covering only that hour must
-    // isolate it.
+    // Bob's edit is stamped at T0 + 2h.
     timeline.set_filter(HistoryFilter {
         time_range: Some((at(T0 + 2 * HOUR - 60), at(T0 + 2 * HOUR + 60))),
         ..Default::default()
@@ -358,7 +343,6 @@ fn filtering_by_date_range_selects_only_edits_inside_the_window() {
     assert_eq!(timeline.visible_len(), 1, "one edit falls in the window");
     assert_eq!(timeline.visible_entry(0).unwrap().author.name, "Bob");
 
-    // A window before anything happened is empty.
     timeline.set_filter(HistoryFilter {
         time_range: Some((at(T0 - 10 * HOUR), at(T0 - 9 * HOUR))),
         ..Default::default()
@@ -392,12 +376,10 @@ fn contributor_and_date_filters_intersect() {
     );
 }
 
-// =====================================================================
 // Timestamps + authorship edge cases
-// =====================================================================
 
-/// A stamped commit produces a real timestamp. Before this, every version read
-/// as the Unix epoch and no date filter could work.
+/// A stamped commit produces a real timestamp, so date filters have
+/// something to compare against.
 #[test]
 fn stamped_commits_carry_their_wall_clock_into_the_row() {
     let (mut doc, _) = two_identity_document();
@@ -478,8 +460,8 @@ fn the_entry_cap_keeps_the_most_recent_versions() {
         all[all.len() - 3..].iter().map(|e| e.id).collect::<Vec<_>>(),
         "the cap takes the tail of history, not the head"
     );
-    // The first capped row still describes a delta, not the whole document —
-    // the window opens against the snapshot just before it.
+    // The first capped row still describes a delta, since the window opens
+    // against the snapshot just before it.
     assert_eq!(capped[0].summary, "+1 -0 chars");
 }
 
@@ -496,8 +478,7 @@ fn entry_ids_are_stable_across_peers() {
     assert_eq!(a, b, "same history, same row ids");
 }
 
-/// `prefix_heads` has to handle a merged, non-linear change graph: after Bob's
-/// concurrent edit is merged the prefix at Bob's version has one frontier, and
+/// `prefix_heads` has to handle a merged, non-linear change graph, and
 /// materialising through it must reproduce the content the timeline claims.
 #[test]
 fn heads_address_a_merged_history_correctly() {

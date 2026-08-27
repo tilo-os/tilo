@@ -15,17 +15,13 @@ pub struct Toggle {
     is_hovered: bool,
     is_checked: bool,
     is_focused: bool,
-    on_toggle_path: String, // Path in CRDT to mutate
+    on_toggle_path: String,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// When `false` the toggle is disabled: skipped by focus, rejects
-    /// input (no toggle, no hover feedback) and renders dimmed. Default `true`.
     enabled: bool,
-    /// Optional override for `Widget::test_id()`. Defaults to `"toggle"`.
     id_override: Option<String>,
-    /// Spoken name for a standalone toggle that has no adjacent text label
-    /// (e.g. an icon-only switch in a toolbar). When unset the toggle
-    /// relies on a sibling label resolved by the tree builder.
+    /// Spoken name for a label-less toggle (e.g. an icon-only switch);
+    /// unset falls back to a sibling label from the tree builder.
     accessible_name: Option<String>,
 }
 
@@ -46,22 +42,18 @@ impl Toggle {
         }
     }
 
-    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this widget behind a permission scope.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
     }
 
-    /// Override the value returned from `Widget::test_id()`. Without a
-    /// custom id the toggle reports `"toggle"`; callers with multiple
-    /// toggles in the same surface can disambiguate them with e.g.
-    /// `with_id("airplane_mode")`.
+    /// Default `test_id()` is `"toggle"`; override to disambiguate multiple
+    /// toggles in one surface.
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
@@ -74,24 +66,19 @@ impl Toggle {
         self
     }
 
-    /// Give a label-less toggle a spoken name, so a screen reader
-    /// announces what it switches ("Airplane mode", "Dark theme") rather
-    /// than just "switch, on".
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
     }
 
-    /// Imperatively flip the enabled state.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 }
 
-/// Interaction state for an immediate-mode toggle face. The retained
-/// [`Toggle`] tracks these itself; an immediate-mode caller (a canvas app
-/// that owns its own hit-testing) passes what it knows — usually just
-/// `hovered`, derived from the last cursor position.
+/// Interaction state for the immediate-mode toggle face; the retained
+/// [`Toggle`] tracks these itself. A canvas app doing its own hit-testing
+/// usually only knows `hovered`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ToggleInteract {
     pub hovered: bool,
@@ -99,40 +86,28 @@ pub struct ToggleInteract {
     pub disabled: bool,
 }
 
-/// How much further from its track a hovered knob is pushed.
-///
-/// Hover has to be visible without being a different colour, so it is the same
-/// walk carried on rather than a second tone: the knob asks for this multiple
-/// of the contrast it already reached, which can only move it the way it was
-/// already going.
+/// Hover is visible without a colour swap: the knob is pushed this multiple
+/// of the contrast it already reached, rather than resolved to a second tone.
 const HOVER_KNOB_GAIN: f64 = 1.4;
 
-/// Resolve the `(track, knob, border, border_width)` colours for a switch in
-/// a given on/off + interaction state. The single source of truth for both
-/// the retained [`Toggle`]'s draw and the immediate-mode [`Toggle::paint`] —
-/// so every switch across the OS shares one palette per state.
+/// Single source of truth for both the retained [`Toggle`]'s draw and
+/// [`Toggle::paint`], so every switch shares one palette per state.
 pub fn toggle_face_colors(
     theme: &Theme,
     on: bool,
     interact: ToggleInteract,
 ) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
     let track = if on {
-        // On-state = active fill (indigo-500); indigo-600 is reserved for hover.
         theme.accent_primary
     } else {
         theme.tokens.colors.neutral[3]
     };
-    // The knob is the whole of what a switch says. Both of its tones were
-    // chosen for the neutral off-track, and on the accent on-track they
-    // collapse into it — 1.16:1 on the dark palette, a switch with no visible
-    // knob in the state that matters.
-    //
-    // Resolving each tone separately would fix the ratio and break something
-    // else: on a light accent the dim tone has to walk toward white while the
-    // primary tone already clears where it is, so the knob would jump from
-    // near-white to near-black under the pointer. So the resting knob is
-    // resolved against the track once, and hover is that knob pressed further
-    // from the track rather than a second tone.
+    // Both knob tones are chosen for the off-track; on-track they collapse
+    // into it (1.16:1 on dark) — no visible knob, the state that matters.
+    // Resolving each tone separately breaks on light accents (the dim tone
+    // would jump near-white to near-black under the pointer), so the
+    // resting knob is resolved once and hover pushes it further rather
+    // than swapping to a second tone.
     let knob = theme.tokens.colors.ink_on_any(
         &[track],
         theme.text_dim,
@@ -152,10 +127,6 @@ pub fn toggle_face_colors(
     (track, knob, border, border_w)
 }
 
-/// Configuration for [`Toggle::paint`], the immediate-mode switch face.
-/// Built fluently: `ToggleFace::new(rect, on).hovered(hit)`. The knob scales
-/// to the rect height so callers can paint switches of any size while keeping
-/// the retained widget's proportions.
 pub struct ToggleFace {
     rect: Rect,
     on: bool,
@@ -169,21 +140,15 @@ impl ToggleFace {
     pub fn hovered(mut self, v: bool) -> Self { self.interact.hovered = v; self }
     pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
     pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
-    /// The resolved `(track, knob, border, border_width)` palette for the
-    /// current state, without painting. Exposed for tests and callers.
     pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
         toggle_face_colors(theme, self.on, self.interact)
     }
 }
 
 impl Toggle {
-    /// Immediate-mode paint of a themed switch inside `face.rect`, matching
-    /// the retained [`Toggle`]'s look (track fill on/off, focus ring, knob
-    /// slid to the on/off edge, disabled dim). For canvas/immediate-mode apps
-    /// that own their own rect hit-testing: call this to paint, keep your
-    /// existing hit-test to fire the toggle. Extends the widget rather than
-    /// forking a second painter — the retained draw and every converted app
-    /// now share [`toggle_face_colors`].
+    /// Paints a themed switch inside `face.rect`, matching the retained
+    /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
+    /// palette ([`toggle_face_colors`]) is shared.
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -205,8 +170,7 @@ impl Toggle {
         }
         scene.fill(vello::peniko::Fill::NonZero, transform, track, None, &track_shape);
         scene.stroke(&Stroke::new(border_w), transform, border, None, &track_shape);
-        // Knob: radius scaled to the rect with a 2-px edge gap, matching the
-        // retained widget's proportions at its 44×24 default (knob r = 10).
+        // 2-px edge gap; matches the retained widget's 44×24 default (r = 10).
         let kr = (radius - 2.0).max(1.0);
         let cy = face.rect.y0 + face.rect.height() / 2.0;
         let cx = if face.on {
@@ -261,15 +225,11 @@ impl Widget for Toggle {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
         if disabled {
             let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
             scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
         }
-        // Palette resolved from the shared source of truth so the retained
-        // switch and every immediate-mode `Toggle::paint` caller stay in lock-step.
         let interact = ToggleInteract {
             hovered: self.is_hovered,
             focused: self.is_focused,
@@ -283,7 +243,6 @@ impl Widget for Toggle {
 
         scene.stroke(&Stroke::new(stroke_w), transform, stroke_color, None, &track_shape);
 
-        // Knob
         let knob_radius = 10.0;
         let knob_x = if self.is_checked {
             self.rect.x1 - knob_radius - 2.0
@@ -301,7 +260,6 @@ impl Widget for Toggle {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
-        // Disabled: reject all input — no toggle, no hover feedback.
         if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -316,12 +274,10 @@ impl Widget for Toggle {
                 if self.is_hovered && *element_state == ElementState::Pressed {
                     *handled = true;
                     *focus_target = Some(node_id);
-                    // CRDT Mutation
                     let new_val = !self.is_checked;
                     let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
-                    // Update the local cache now so accessibility() reflects the
-                    // new state this same frame — otherwise the focus narration
-                    // triggered by this click would speak the pre-click state.
+                    // Set now, not on next sync: focus narration triggered by
+                    // this same click must not speak the pre-click state.
                     self.is_checked = new_val;
                 }
             }
@@ -344,8 +300,8 @@ impl Widget for Toggle {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
-    /// Keyboard / AT activation: Enter, Space, or an AccessKit `Activate` /
-    /// `ToggleCheck` flips the switch — the same mutation the mouse path does.
+    /// AT/keyboard activation (Enter/Space route to `Activate`/`ToggleCheck`
+    /// upstream) — same mutation as the mouse path.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -364,8 +320,6 @@ impl Widget for Toggle {
                     self.on_toggle_path.as_str(),
                     automerge::ScalarValue::Boolean(new_val),
                 );
-                // Keep accessibility() consistent within this frame (mirrors
-                // the optimistic update the next sync would apply).
                 self.is_checked = new_val;
                 true
             }
@@ -375,9 +329,6 @@ impl Widget for Toggle {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A toggle is a Switch: the on/off state lives in `checked`. An
-        // explicit accessible name covers label-less switches; otherwise a
-        // sibling label is resolved by the tree builder.
         let name = self
             .accessible_name
             .as_ref()
@@ -476,8 +427,6 @@ mod tests {
 
     #[test]
     fn accessibility_uses_accessible_name_when_set() {
-        // A label-less toggle has no name by default, but `with_accessible_name`
-        // gives the switch a spoken identity.
         let plain = Toggle::new("any", "path");
         assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
 
@@ -515,8 +464,6 @@ mod tests {
 
     #[test]
     fn toggle_face_matches_shared_colors() {
-        // The immediate-mode face resolves through the same source of truth
-        // as the retained widget, so a face's palette equals the free fn.
         let theme = Theme::dark();
         let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).hovered(true);
         assert_eq!(

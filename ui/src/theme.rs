@@ -14,64 +14,40 @@ pub struct Theme {
     pub border_standard: Color,
     pub border_focus: Color,
     pub text_primary: Color,
-    /// Secondary text — the second tier of the type hierarchy (captions,
-    /// sub-labels). Mirrors `tokens.colors.text_dim`.
+    /// Second tier of the type hierarchy (captions, sub-labels).
     pub text_dim: Color,
-    /// Tertiary text — the quietest legible tier (timestamps, hints). Mirrors
-    /// `tokens.colors.text_tertiary`; sits below [`Theme::text_dim`].
+    /// Quietest legible tier (timestamps, hints), below [`Theme::text_dim`].
     pub text_tertiary: Color,
-    /// Dominant accent fill. Use for
-    /// active states (slider active track, checkbox tick, toggle
-    /// on-state, focused caret, currently-selected dot, etc.). For
-    /// hover states use [`Theme::accent_hover`] instead.
+    /// Active states (slider track, checkbox tick, toggle on, focused
+    /// caret). For hover use [`Theme::accent_hover`] instead.
     pub accent_primary: Color,
-    /// Hover-state accent. One step darker than [`Theme::accent_primary`].
+    /// One step darker than [`Theme::accent_primary`].
     pub accent_hover: Color,
     pub status_success: Color,
     pub radius_standard: f64,
     pub padding_standard: f32,
     pub gap_standard: f32,
-    /// When set, widgets that animate (spinners, indeterminate progress,
-    /// hover/press transitions) snap straight to their resting state instead
-    /// of easing. Carried on the theme so every widget can react to the
-    /// user's reduced-motion preference without new plumbing through `draw`.
-    /// Default `false`.
+    /// Carried on the theme (not passed through `draw`) so every widget
+    /// reacts without new plumbing. Default `false`.
     pub reduce_motion: bool,
-    /// Multiplier applied to every text size the theme exposes, so the whole
-    /// UI scales together for low-vision users. `1.0` is the default size.
-    /// Already baked into `tokens.typography.scale` and `font_size_base` by
-    /// [`Theme::with_text_scale`], so widgets that read their font size from
-    /// the theme scale automatically — and layout, which measures the same
-    /// sizes, grows to fit so text never clips. Kept here too so a widget can
-    /// scale a size it computes itself (a hard-coded glyph metric, say).
+    /// `1.0` = default. Baked into `tokens.typography.scale`/
+    /// `font_size_base` by [`Theme::with_text_scale`]; kept here too so a
+    /// widget can scale a size it computes itself.
     pub text_scale: f32,
-    /// Global UI-scale multiplier applied to the WHOLE design system — spacing,
-    /// radii, and the type scale all grow together — so the entire interface
-    /// gets larger or smaller as one unit (the "make everything bigger" knob,
-    /// distinct from [`Theme::text_scale`] which only touches type). `1.0` is
-    /// the default. Baked into `tokens.spacing`, `tokens.radii`,
-    /// `tokens.typography.scale`, and `font_size_base` by
-    /// [`Theme::with_ui_scale`], and reflected in the legacy
-    /// `padding`/`gap`/`radius` shortcuts, so every widget that sources its
-    /// metrics from the theme scales with no per-widget plumbing.
-    ///
-    /// This is the **user** scale; it composes on top of the per-output
-    /// **device** scale the compositor reports (widgets lay out in logical
-    /// px and the render transform rasterises at the device's physical
-    /// resolution). Effective physical size = logical × `ui_scale` ×
-    /// device-scale, and text additionally × `text_scale`.
+    /// The "make everything bigger" knob — spacing, radii, and type scale
+    /// together, distinct from [`Theme::text_scale`] (type only). Baked in
+    /// by [`Theme::with_ui_scale`]. Composes with the compositor's
+    /// per-output device scale: physical size = logical × `ui_scale` ×
+    /// device-scale, text additionally × `text_scale`.
     pub ui_scale: f32,
 }
 
 impl Default for Theme { fn default() -> Self { Self::dark() } }
 
-/// Every shipped palette, including the two accessibility tracks.
-///
-/// Anything asserted about "a theme's surfaces" is asserted about all of them,
-/// so a new preset cannot quietly ship a card its text cannot be read on — or
-/// a tab bar whose tiers only separate on one side of the light/dark line.
-/// Crate-visible (test builds only) because the widgets that read these
-/// surfaces live in sibling modules and need to sweep the same list.
+/// Every shipped palette, including the accessibility tracks, so an
+/// assertion about "a theme's surfaces" covers all of them. Crate-visible
+/// (test builds only) because sibling-module widget tests sweep the same
+/// list.
 #[cfg(test)]
 pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
@@ -90,41 +66,27 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::high_contrast,
 ];
 
-/// A widget's desired global appearance, polled by [`crate::app::App`] once per
-/// frame (when [`crate::app::App::appearance_reconcile`] is enabled) and
-/// reconciled against the live theme. Mirrors the level-triggered
-/// `fullscreen_intent` contract: returning a *steady* value is correct and
-/// idempotent — the App only re-themes when a field actually differs from what
-/// is currently applied, and a settings pane surfaces the user's live choice by
-/// returning the same intent every frame while it is open.
+/// Polled by [`crate::app::App`] once per frame and reconciled against the
+/// live theme. Level-triggered like `fullscreen_intent`: a *steady* value is
+/// correct, since the App only re-themes when a field differs from what's
+/// applied, so a settings pane can return the same intent every open frame.
 ///
-/// `base_theme` is the colour theme **only** (no high-contrast track, no
-/// scale folded); the App applies the high-contrast override, the UI scale, and
-/// the text scale on top so the a11y and scale bookkeeping stays in one place.
+/// `base_theme` is the colour theme **only**; the App layers high-contrast,
+/// UI scale, and text scale on top itself, keeping that bookkeeping in one
+/// place.
 #[derive(Clone, Debug)]
 pub struct AppearanceIntent {
-    /// Base colour theme, unscaled and without the a11y track folded in — e.g.
-    /// [`Theme::nord`]. The App layers high-contrast / scale on top itself.
     pub base_theme: Theme,
-    /// Force the high-contrast accessibility palette.
     pub high_contrast: bool,
-    /// Snap animations to their resting state.
     pub reduce_motion: bool,
-    /// Text-size multiplier (type only). `1.0` = default.
     pub text_scale: f32,
-    /// Global UI-scale multiplier (spacing + radii + type together). `1.0` =
-    /// default.
     pub ui_scale: f32,
 }
 
 impl Theme {
     fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
-        // Keep the terminal palette coherent with whatever colour set this theme
-        // ended up with. Presets replace `tokens.colors` wholesale (via
-        // `Colors::themed`) after the base tokens are built, so deriving the
-        // terminal palette here — the single funnel every constructor passes
-        // through — is what stops the terminal from carrying its own hard-coded
-        // scheme and makes it track the OS theme instead.
+        // Derived here, the single funnel every constructor passes through,
+        // so the terminal tracks the OS theme instead of a hard-coded one.
         tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
         let c = &tokens.colors;
         Self {
@@ -150,57 +112,37 @@ impl Theme {
             tokens,
         }
     }
-    /// The default: a calm neutral **graphite** dark theme with a restrained
-    /// blue accent. See [`crate::tokens::Colors::dark`].
     pub fn dark() -> Self { Self::from_tokens("Dark", Tokens::dark()) }
-    /// A clean, faintly-warm neutral light theme.
     pub fn light() -> Self { Self::from_tokens("Light", Tokens::light()) }
 
-    /// Ink tiers for content painted directly on the window card. Thin
-    /// forwarder to [`crate::tokens::Colors::on_card`] so a widget that
-    /// already holds a `&Theme` does not have to reach through `tokens`.
     pub fn on_card(&self) -> crate::tokens::colors::OnCard {
         self.tokens.colors.on_card()
     }
 
     /// [`Self::on_card`] for any surface a widget actually paints on — a
-    /// document's paper, a placeholder box that is a tint of it, a panel a
-    /// chart plots inside. Thin forwarder to
-    /// [`crate::tokens::Colors::on_surface`], which explains why the surface
-    /// has to be a parameter.
+    /// document's paper, a tinted placeholder box, a chart panel. See
+    /// [`crate::tokens::Colors::on_surface`] for why the surface is a
+    /// parameter.
     pub fn on_surface(&self, surface: Color) -> crate::tokens::colors::OnCard {
         self.tokens.colors.on_surface(surface)
     }
 
-    /// [`Self::on_surface`] against a caller-chosen contrast floor — what a
-    /// caller drawing at the bottom of the type scale asks for. Thin forwarder
-    /// to [`crate::tokens::Colors::on_surface_at`], which explains why the
-    /// floor belongs to the caller.
+    /// [`Self::on_surface`] against a caller-chosen contrast floor.
     pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> crate::tokens::colors::OnCard {
         self.tokens.colors.on_surface_at(surface, min_ratio)
     }
 
-    /// The hairline that separates a window from the desktop behind it. Thin
-    /// forwarder to [`crate::tokens::Colors::window_edge`], which explains why
-    /// the edge is derived from the desktop ground rather than taken as a
-    /// constant.
+    /// See [`crate::tokens::Colors::window_edge`] for why it's derived from
+    /// the desktop ground rather than a constant.
     pub fn window_edge(&self) -> Color {
         self.tokens.colors.window_edge()
     }
 
-    /// This theme with its three text tiers re-pointed at the ink the
-    /// **window card** takes ([`Theme::on_card`]).
-    ///
-    /// Shared widgets read every colour off the theme they are handed, so a
-    /// hosted app that paints no background of its own — and therefore
-    /// renders straight onto the card — hands them this instead of the
-    /// ambient theme. That keeps `EmptyState`, `Button` and friends legible
-    /// on the card without every widget growing an on-card colour parameter
-    /// for one caller.
-    ///
-    /// On a theme whose card already matches its chrome this is a no-op
-    /// clone, which is the common case; it earns its keep on the presets
-    /// where the card sits on the other side of the light/dark line.
+    /// Re-points the three text tiers at the ink the **window card** takes
+    /// ([`Theme::on_card`]) — handed to shared widgets by a hosted app that
+    /// paints no background of its own, so `EmptyState`, `Button` and
+    /// friends stay legible on the card without an on-card colour parameter
+    /// on every widget.
     pub fn on_window_card(&self) -> Self {
         let on = self.on_card();
         let mut card = self.clone();
@@ -210,25 +152,21 @@ impl Theme {
         card
     }
 
-    /// Build a theme from a compact [`PaletteSpec`]. The default typography /
-    /// spacing / motion tokens come from the matching (dark or light) base;
-    /// the whole colour set is expanded by [`Colors::themed`].
+    /// Typography/spacing/motion tokens come from the matching (dark or
+    /// light) base; the colour set is expanded by [`Colors::themed`].
     fn from_palette(name: &str, spec: PaletteSpec) -> Self {
         let mut t = if spec.dark { Tokens::dark() } else { Tokens::light() };
         t.colors = crate::tokens::Colors::themed(spec);
         Self::from_tokens(name, t)
     }
 
-    /// The original qOS look — slate + indigo — kept verbatim as a preset so
-    /// nothing from the first design is lost. See [`Colors::qos_blue`].
+    /// Kept verbatim as a preset so nothing from the first design is lost.
     pub fn qos_blue() -> Self {
         let mut t = Tokens::dark();
         t.colors = crate::tokens::Colors::qos_blue();
         Self::from_tokens("qOS Blue", t)
     }
 
-    /// Dracula — the canonical palette (pink accent, purple focus, the
-    /// signature green / cyan / red / yellow on a charcoal-violet ground).
     pub fn dracula() -> Self {
         Self::from_palette("Dracula", PaletteSpec {
             dark: true,
@@ -250,8 +188,6 @@ impl Theme {
         })
     }
 
-    /// Nord — Polar Night ground, Snow Storm text, Frost accent, Aurora
-    /// semantics. The canonical Nord palette.
     pub fn nord() -> Self {
         Self::from_palette("Nord", PaletteSpec {
             dark: true,
@@ -273,7 +209,6 @@ impl Theme {
         })
     }
 
-    /// Gruvbox (dark) — the canonical warm retro ramp, near-square corners.
     pub fn gruvbox() -> Self {
         let mut t = Self::from_palette("Gruvbox", PaletteSpec {
             dark: true,
@@ -302,7 +237,6 @@ impl Theme {
         t
     }
 
-    /// Gruvbox Light — the canonical light variant on warm cream paper.
     pub fn gruvbox_light() -> Self {
         let mut t = Self::from_palette("Gruvbox Light", PaletteSpec {
             dark: false,
@@ -330,8 +264,6 @@ impl Theme {
         t
     }
 
-    /// Catppuccin Mocha — the canonical dark flavour (blue accent, mauve /
-    /// green / yellow / red / sky on a soft violet-charcoal ground).
     pub fn catppuccin_mocha() -> Self {
         Self::from_palette("Catppuccin Mocha", PaletteSpec {
             dark: true,
@@ -353,7 +285,6 @@ impl Theme {
         })
     }
 
-    /// Catppuccin Latte — the canonical light flavour.
     pub fn catppuccin_latte() -> Self {
         Self::from_palette("Catppuccin Latte", PaletteSpec {
             dark: false,
@@ -375,7 +306,6 @@ impl Theme {
         })
     }
 
-    /// Solarized (dark) — Ethan Schoonover's canonical palette.
     pub fn solarized() -> Self {
         let mut t = Self::from_palette("Solarized", PaletteSpec {
             dark: true,
@@ -403,8 +333,6 @@ impl Theme {
         t
     }
 
-    /// OLED Dark — a true-black (`#000000`) ground for OLED panels, with
-    /// high-contrast white text and an accent tuned to pop on black.
     pub fn oled() -> Self {
         Self::from_palette("OLED", PaletteSpec {
             dark: true,
@@ -422,14 +350,12 @@ impl Theme {
             warning:       Color::from_rgb8(0xFF, 0xB0, 0x20),
             danger:        Color::from_rgb8(0xFF, 0x5C, 0x5C),
             info:          Color::from_rgb8(0x4C, 0xC2, 0xFF),
-            // Keep window framing black so it disappears behind app content
-            // rather than flashing a white card on a black desktop.
+            // Black so it disappears behind app content instead of
+            // flashing a white card on a black desktop.
             window_card:   Some(Color::from_rgb8(0x0A, 0x0A, 0x0A)),
         })
     }
 
-    /// Beige — a warm paper-white light theme (not a cold clinical white),
-    /// with legible warm-neutral typography and a soft terracotta accent.
     pub fn warm_light() -> Self {
         Self::from_palette("Beige", PaletteSpec {
             dark: false,
@@ -451,7 +377,6 @@ impl Theme {
         })
     }
 
-    /// Rosé Pine — the canonical "main" (dark) flavour.
     pub fn rose_pine() -> Self {
         Self::from_palette("Rosé Pine", PaletteSpec {
             dark: true,
@@ -473,22 +398,11 @@ impl Theme {
         })
     }
 
-    /// The theme this machine is configured to use.
-    ///
-    /// Read from `$XDG_CONFIG_HOME/qos/settings.json` (falling back to
-    /// `~/.config/qos/settings.json`) — the same file `apps/themes` writes when
-    /// somebody picks a theme.
-    ///
-    /// Until this existed nothing read that file: `App::new` hard-coded
-    /// [`Self::dark`] and `set_theme` had no production caller, so the themes
-    /// app could report a theme applied and be describing a write no reader
-    /// would ever see. That also left [`Self::high_contrast`] reachable only
-    /// from the screenshot harness, which makes the accessibility theme a
-    /// picture of a feature rather than one.
-    ///
-    /// Unreadable, absent and unrecognised all mean the dark default: a machine
-    /// with no preference and one whose settings file is corrupt both want a
-    /// desktop that starts.
+    /// Reads `$XDG_CONFIG_HOME/qos/settings.json` (falling back to
+    /// `~/.config/qos/settings.json`), the file `apps/themes` writes.
+    /// Unreadable, absent and unrecognised all mean the dark default — a
+    /// machine with no preference and one whose settings file is corrupt
+    /// both want a desktop that starts.
     pub fn configured() -> Self {
         match Self::configured_id().as_deref() {
             Some("light") => Self::light(),
@@ -497,11 +411,8 @@ impl Theme {
         }
     }
 
-    /// The active theme's id as the settings file spells it, if any.
-    ///
-    /// A plain string lookup rather than a parse of the whole appearance
-    /// section: `ui` cannot depend on the themes app, and the one field needed
-    /// here is a scalar.
+    /// A plain string lookup, not a parse of the whole appearance section:
+    /// `ui` cannot depend on the themes app.
     fn configured_id() -> Option<String> {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(std::path::PathBuf::from)
@@ -513,17 +424,10 @@ impl Theme {
         v.get("appearance")?.get("theme")?.as_str().map(str::to_string)
     }
 
-    /// High-contrast accessibility preset (workstream W2 of the a11y design).
-    ///
-    /// Maximises foreground/background contrast for low-vision users: pure
-    /// black solid surfaces under pure-white text (WCAG AAA, 21:1 — the
-    /// maximum possible), crisp white borders, and a high-visibility **yellow
-    /// focus ring** so keyboard focus is unmistakable. Because every widget
-    /// reads its colours from the passed-in [`Theme`], selecting this preset
-    /// makes the whole UI high-contrast with no per-widget changes.
-    ///
-    /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
-    /// is set; the shell owns theming and broadcasts the swap.
+    /// Pure black surfaces under pure-white text (WCAG AAA, 21:1 — the
+    /// maximum possible), crisp white borders, a high-visibility yellow
+    /// focus ring. Selected when
+    /// [`A11ySettings::high_contrast`](crate::a11y::A11ySettings) is set.
     pub fn high_contrast() -> Self {
         let mut t = Tokens::dark();
         let c = &mut t.colors;
@@ -537,18 +441,17 @@ impl Theme {
         c.surfaces.window_card = Color::BLACK;
         c.surfaces.window_card_border = Color::WHITE;
 
-        // Maximal text contrast. `text_dim` stays near-white so even secondary
-        // copy clears AAA against black instead of fading to a low-contrast grey.
+        // `text_dim` stays near-white so secondary copy clears AAA on black
+        // instead of fading to a low-contrast grey.
         c.text_primary = Color::WHITE;
         c.text_dim = Color::from_rgb8(230, 230, 230);
         c.text_tertiary = Color::from_rgb8(210, 210, 210);
 
-        // Crisp white structure + an unmistakable yellow focus ring.
         c.border_standard = Color::WHITE;
         c.border_focus = Color::from_rgb8(255, 255, 0); // high-visibility yellow
 
-        // A bright, legible accent fill. Stays distinct from the yellow focus
-        // ring and keeps the white checkmark/knob it backs readable on top.
+        // Distinct from the yellow focus ring, and keeps the white
+        // checkmark/knob it backs readable on top.
         c.accent.stops[ACCENT_PRIMARY_IDX] = Color::from_rgb8(0, 153, 255);
         c.accent.stops[ACCENT_HOVER_IDX] = Color::from_rgb8(64, 176, 255);
 
@@ -561,12 +464,11 @@ impl Theme {
         Self::from_tokens("High Contrast", t)
     }
 
-    /// Resolve a theme by name. Accepts the exact display name (e.g.
-    /// `"Catppuccin Mocha"`) as well as loose forms — case-insensitive, with
-    /// spaces / hyphens / underscores ignored (`"gruvbox-light"`,
-    /// `"catppuccinmocha"`) — so the same lookup serves the settings picker,
-    /// the persisted preference, and the `--shots` theme override. Returns
-    /// `None` for an unknown name; callers pick their own fallback.
+    /// Accepts the exact display name as well as loose forms —
+    /// case-insensitive, spaces / hyphens / underscores ignored
+    /// (`"gruvbox-light"`, `"catppuccinmocha"`) — so the same lookup serves
+    /// the settings picker, the persisted preference, and the `--shots`
+    /// theme override.
     pub fn named(name: &str) -> Option<Self> {
         let key: String = name
             .chars()
@@ -592,23 +494,15 @@ impl Theme {
         })
     }
 
-    /// Return this theme with reduced motion turned on or off. Widgets that
-    /// animate consult [`Theme::reduce_motion`] and skip their motion when it
-    /// is set, so the resting state is shown immediately.
     pub fn with_reduce_motion(mut self, on: bool) -> Self {
         self.reduce_motion = on;
         self
     }
 
-    /// Return this theme with every text size scaled by `factor` (`1.0` =
-    /// unchanged). The factor multiplies the whole type scale, the base body
-    /// size, and the line heights, so widgets that read their font size from
-    /// the theme grow together — and because layout measures the same scaled
-    /// sizes, the boxes around the text grow to fit and nothing clips.
-    ///
-    /// Clamped to a sane range so a stray setting can't make text vanish or
-    /// blow up the layout. Idempotent on top of an already-scaled theme is
-    /// not assumed — call this once on a fresh theme.
+    /// `1.0` = unchanged. Multiplies the whole type scale and base body
+    /// size together, so layout (which measures the same scaled sizes)
+    /// grows to fit and nothing clips. Not assumed idempotent — call once
+    /// on a fresh theme.
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 4.0);
         self.text_scale = factor;
@@ -628,21 +522,9 @@ impl Theme {
         self
     }
 
-    /// Return this theme scaled uniformly by a global **UI scale** factor
-    /// (`1.0` = unchanged): spacing, radii, the type scale, and the base body
-    /// size are all multiplied together, so the entire interface grows or
-    /// shrinks as one unit. This is the user-facing "make everything bigger /
-    /// smaller" knob, distinct from [`Theme::with_text_scale`] which only
-    /// resizes type.
-    ///
-    /// The legacy `padding_standard` / `gap_standard` / `radius_standard`
-    /// shortcuts are re-derived from the freshly scaled tokens so widgets that
-    /// still read those keep in step. `radii.full` (the pill sentinel) is left
-    /// alone — a fully-round corner stays fully round at any scale.
-    ///
-    /// Clamped to a sane range so a stray setting can't collapse the layout or
-    /// blow it up. Call once on a fresh theme; it is not assumed idempotent on
-    /// top of an already-scaled theme.
+    /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
+    /// distinct from [`Theme::with_text_scale`] which only resizes type.
+    /// Not assumed idempotent — call once on a fresh theme.
     pub fn with_ui_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 3.0);
         self.ui_scale = factor;
@@ -677,7 +559,6 @@ impl Theme {
 
         self.tokens.font_size_base *= factor;
 
-        // Keep the legacy shortcuts consistent with the scaled tokens.
         self.radius_standard = self.tokens.radii.md as f64;
         self.padding_standard = self.tokens.spacing.s3;
         self.gap_standard = self.tokens.spacing.s3;
@@ -685,12 +566,8 @@ impl Theme {
         self
     }
 
-    /// Apply the user's low-vision preferences to this theme: pick the
-    /// high-contrast colour track when requested, fold in the global UI-scale
-    /// and text-scale factors (UI scale first so it grows the whole system,
-    /// then text scale layers additional type growth on top), and carry the
-    /// reduced-motion flag. One call turns a base theme into the themed surface
-    /// every widget should draw against.
+    /// UI scale first so it grows the whole system, then text scale layers
+    /// additional type growth on top.
     pub fn with_a11y(
         self,
         settings: &crate::a11y::A11ySettings,
@@ -712,8 +589,7 @@ impl Theme {
 mod tests {
     //! Pin each theme's accent shortcuts and identity so a ramp swap or an
     //! [`ACCENT_PRIMARY_IDX`] / [`ACCENT_HOVER_IDX`] index change becomes a
-    //! visible failure. The default is the neutral graphite theme (restrained
-    //! blue accent); the preserved concept look lives in `qos_blue`.
+    //! visible failure.
     use super::*;
     use crate::color_compat::ColorCompat;
 
@@ -726,7 +602,6 @@ mod tests {
         let theme = Theme::dark();
         assert_eq!(rgb(theme.accent_primary), [0x58, 0x91, 0xE8], "restrained blue");
         assert_eq!(rgb(theme.accent_hover), [0x48, 0x7B, 0xD1], "hover one step darker");
-        // The default theme carries three distinct text tiers.
         assert_ne!(rgb(theme.text_primary), rgb(theme.text_dim));
         assert_ne!(rgb(theme.text_dim), rgb(theme.text_tertiary));
     }
@@ -741,18 +616,15 @@ mod tests {
 
     #[test]
     fn accent_indices_pin_to_palette_positions() {
-        // If these constants ever drift the rest of the assertions in
-        // this module are rendered meaningless — pin them here so a
-        // ramp re-ordering trips this test first.
+        // If these drift, every other assertion in this module goes meaningless.
         assert_eq!(ACCENT_PRIMARY_IDX, 5);
         assert_eq!(ACCENT_HOVER_IDX, 4);
     }
 
     #[test]
     fn preset_palettes_read_as_their_real_canonical_colours() {
-        // A per-theme identity pin: each named preset must expose its
-        // signature ground + accent, so a preset can't silently drift into
-        // the default. These are the canonical upstream hex values.
+        // Canonical upstream hex values, so a preset can't silently drift
+        // into the default.
         let cases: &[(Theme, [u8; 3], [u8; 3])] = &[
             (Theme::dracula(),          [0x28, 0x2A, 0x36], [0xFF, 0x79, 0xC6]),
             (Theme::nord(),             [0x2E, 0x34, 0x40], [0x88, 0xC0, 0xD0]),
@@ -767,7 +639,6 @@ mod tests {
         for (theme, base, accent) in cases {
             assert_eq!(rgb(theme.bg_app), *base, "{} ground", theme.name);
             assert_eq!(rgb(theme.accent_primary), *accent, "{} accent", theme.name);
-            // The primary/hover accent stops are always pinned exactly.
             assert_eq!(rgb(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]), *accent);
         }
     }
@@ -780,8 +651,6 @@ mod tests {
 
     #[test]
     fn named_resolves_every_preset_to_its_own_theme() {
-        // Every display name round-trips to a theme whose own name matches,
-        // and loose spellings resolve to the same theme.
         for name in [
             "Dark", "Light", "qOS Blue", "Catppuccin Mocha", "Catppuccin Latte",
             "Dracula", "Nord", "Gruvbox", "Gruvbox Light", "Solarized", "OLED",
@@ -797,9 +666,6 @@ mod tests {
 
     #[test]
     fn preset_default_body_text_clears_aa_on_its_ground() {
-        // Every shipped preset must keep primary body text legible on its
-        // own ground — a palette that reads as itself but can't be read is a
-        // regression.
         use crate::a11y::contrast_ratio;
         for t in [
             Theme::dark(), Theme::light(), Theme::qos_blue(), Theme::dracula(),
@@ -812,21 +678,16 @@ mod tests {
         }
     }
 
-    /// Both ink tiers clear AA on any surface, not only on the window card.
-    ///
-    /// The card is one ground among several. A document's paper is light in
-    /// every theme by design, and a placeholder box drawn on it is a tint of
-    /// that paper — so ink for it cannot come from darkening the background by
-    /// a fixed fraction, which is what a hand-rolled shade does. That produces
-    /// about the same ratio whatever the palette, which is how the
-    /// high-contrast preset ended up *less* legible than the light one:
-    /// 4.37:1 against 4.52:1, on the sentence telling a reader why their
-    /// picture was not there.
+    /// Both ink tiers clear AA on any surface, not only the window card —
+    /// ink can't come from darkening the background by a fixed fraction (a
+    /// hand-rolled shade), which produces about the same ratio whatever the
+    /// palette: that is how high-contrast ended up *less* legible than
+    /// light, 4.37:1 against 4.52:1.
     #[test]
     fn on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on() {
         use crate::a11y::contrast_ratio;
-        // The grounds real callers hand in, sampled across the light/dark line
-        // and including the near-white tints a paper-like surface produces.
+        // Sampled across the light/dark line, including the near-white tints
+        // a paper-like surface produces.
         let grounds = [
             ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
             ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
@@ -852,12 +713,8 @@ mod tests {
         }
     }
 
-    /// A palette authored for more contrast delivers more of it.
-    ///
-    /// The measured symptom: a placeholder label read at 4.37:1 under the
-    /// high-contrast preset and 4.52:1 under the light one, on the same box. A
-    /// preset whose whole purpose is legibility cannot come out behind the
-    /// ordinary one.
+    /// A palette authored for more contrast must deliver more of it — cannot
+    /// come out behind the ordinary preset on the same box.
     #[test]
     fn the_high_contrast_preset_is_not_the_least_legible_one() {
         use crate::a11y::contrast_ratio;
@@ -875,15 +732,10 @@ mod tests {
         }
     }
 
-    /// Every preset, including the accessibility ones.
-    ///
-    /// `high_contrast` and `oled` are the whole point of the list: their
-    /// window card is black / `#0A0A0A`, and the three call sites that
-    /// paint on it used to take ink from `neutral[1]` — the *dark* end of a
-    /// dark theme's ramp — so a stub tile's label, a foreign surface's
-    /// "waiting for first frame", and a blank note's zero-state were dark
-    /// on dark and simply could not be read. The light presets had the
-    /// mirror bug: `neutral[1]` there is near-white, on a white card.
+    /// Every preset, including the accessibility ones — `high_contrast` and
+    /// `oled` are the whole point of the list, since their window card is
+    /// black / `#0A0A0A` and ink pulled from the wrong end of the ramp reads
+    /// as dark-on-dark (or, on a light preset, near-white-on-white).
     #[test]
     fn on_card_ink_clears_aa_on_every_preset_card() {
         use crate::a11y::contrast_ratio;
@@ -894,16 +746,11 @@ mod tests {
             assert!(r >= 4.5, "{} on-card ink = {r:.2}:1 (< AA)", t.name);
             let rd = contrast_ratio(on.ink_dim, card);
             assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
-            // The tertiary tier is the deliberately quiet one — hints,
-            // comments, a gutter's line numbers — and how quiet it is, is a
-            // property of the palette's authorship, not of this derivation.
-            // (Solarized's runs at 2.8:1 on its own ground on purpose; the
-            // documented target for the token is large-text AA, 3:1.) So the
-            // bar here is: clear 3:1, or at minimum be no worse on the card
-            // than that palette already manages against its own ground.
-            // Either way it stays a readable tier, which is the thing the
-            // old fixed ramp slot lost entirely on the high-contrast and
-            // OLED cards.
+            // How quiet the tertiary tier is is a property of the palette's
+            // authorship, not this derivation — Solarized runs at 2.8:1 on
+            // its own ground on purpose, against a large-text-AA target of
+            // 3:1. So the bar is: clear 3:1, or be no worse than the
+            // palette already manages on its own ground.
             let rt = contrast_ratio(on.ink_tertiary, card);
             let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
             assert!(
@@ -915,18 +762,9 @@ mod tests {
         }
     }
 
-    /// The window's edge has to register against the desktop it is painted
-    /// on, in every preset.
-    ///
-    /// This is the sibling of `on_card_ink_clears_aa_on_every_preset_card`,
-    /// and it exists for the same reason: "what colour is the line around a
-    /// window" was answered by one constant per palette, and a constant can
-    /// only be right about a surface someone checked. The edge used to be
-    /// stroked over the *app's* content, where the shell has no idea what is
-    /// underneath — so the answer was wrong by construction on any app that
-    /// painted the opposite way from the theme. Moving it onto the desktop
-    /// makes the ground knowable; this pins that the derived edge actually
-    /// separates from that ground rather than dissolving into it.
+    /// A constant per palette can only be right about a surface someone
+    /// checked; the desktop is the one ground that's always knowable,
+    /// unlike the app content a window may sit over.
     #[test]
     fn window_edge_registers_against_the_desktop_on_every_preset() {
         use crate::a11y::relative_luminance;
@@ -954,18 +792,15 @@ mod tests {
         }
     }
 
-    /// A preset whose declared border matches its own ground must not ship
-    /// that value: the derivation has to flip it, not pass it through.
-    ///
-    /// Without this the sweep above would be satisfied by every current preset
-    /// happening to declare a workable border, and the fallback branch would
-    /// never be exercised — leaving the next palette free to reintroduce the
-    /// bug.
+    /// The derivation has to flip a border that matches its own ground, not
+    /// pass it through — without this, the sweep above would be satisfied
+    /// by every preset happening to declare a workable border, and the
+    /// fallback branch would never be exercised.
     #[test]
     fn window_edge_flips_a_border_its_ground_would_swallow() {
         let mut t = Theme::dark();
-        // A white hairline on a white desktop: the exact shape of the bug,
-        // an edge declared without reference to what it lands on.
+        // A white hairline on a white desktop — an edge declared without
+        // reference to what it lands on.
         t.tokens.colors.surfaces.base = Color::WHITE;
         t.tokens.colors.surfaces.window_card_border = Color::from_rgba8(255, 255, 255, 51);
         let edge = t.window_edge();
@@ -1020,20 +855,11 @@ mod tests {
         }
     }
 
-    /// The window card and the ground apps fill are the same colour family,
-    /// so a window whose app painted nothing does not read as a different
-    /// kind of surface from the window beside it.
-    ///
-    /// This is what stops the desktop flipping between a light and a dark
-    /// window as the user moves across tabs: Notes paints no background and
-    /// shows the card, while Files and the word processor fill
-    /// `surfaces.base` and the terminal fills its own deep ground.
-    ///
-    /// `qos_blue` is deliberately not in the list. It is the first design
-    /// preserved verbatim — its white card is Tailwind ground truth, pinned
-    /// by `qos_blue_surfaces_match_concept_layered_palette` — and in the
-    /// concept the hosted content was light too, so the card is consistent
-    /// within that palette's own world.
+    /// The window card and the app ground fill are the same colour family,
+    /// so a window whose app painted nothing (like Notes, which shows the
+    /// bare card) does not flip light/dark against a window beside it that
+    /// fills its own background. `qos_blue` is excluded deliberately: its
+    /// white card is preserved verbatim from the first design.
     #[test]
     fn window_card_shares_the_ground_s_colour_family() {
         use crate::a11y::contrast_ratio;
@@ -1098,7 +924,6 @@ mod tests {
 
     #[test]
     fn text_scale_is_clamped_to_a_sane_range() {
-        // Absurd factors can't make text vanish or explode the layout.
         let tiny = Theme::dark().with_text_scale(0.0);
         assert!(tiny.text_scale >= 0.5);
         let huge = Theme::dark().with_text_scale(100.0);
@@ -1121,10 +946,8 @@ mod tests {
             screen_reader: false,
         };
         let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
-        // High-contrast colours.
         assert_eq!(theme.name, "High Contrast");
         assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
-        // Reduced motion + text scale folded in.
         assert!(theme.reduce_motion);
         assert_eq!(theme.text_scale, 2.0);
         let base_sm = Theme::high_contrast().tokens.typography.scale.sm;
@@ -1155,9 +978,7 @@ mod tests {
         assert!((scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4, "spacing grows");
         assert!((scaled.tokens.radii.md - br * 1.5).abs() < 1e-4, "radii grow");
         assert!((scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4, "type grows");
-        // The pill sentinel is left untouched — still fully round.
         assert_eq!(scaled.tokens.radii.full, bfull, "radii.full is a sentinel, not scaled");
-        // Legacy shortcuts track the scaled tokens.
         assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4, "padding shortcut tracks spacing");
         assert!((scaled.radius_standard - (br as f64) * 1.5).abs() < 1e-4, "radius shortcut tracks radii");
     }
@@ -1179,9 +1000,7 @@ mod tests {
 
     #[test]
     fn ui_scale_and_text_scale_compose_on_type() {
-        // UI scale grows the whole system; text scale layers extra type growth
-        // on top — so a heading ends up at base × ui × text, while spacing only
-        // picks up the UI factor (not the text factor).
+        // A heading ends up at base × ui × text; spacing only picks up ui.
         let base = Theme::dark();
         let base_type = base.tokens.typography.scale.base;
         let base_gap = base.tokens.spacing.s3;
@@ -1203,13 +1022,12 @@ mod tests {
     fn high_contrast_uses_a_strong_distinct_focus_ring() {
         use crate::a11y::contrast_ratio;
         let hc = Theme::high_contrast();
-        // The focus ring must itself be highly visible against the background.
         assert!(
             contrast_ratio(hc.border_focus, hc.bg_app) >= 7.0,
             "focus ring must clear AAA against the background",
         );
-        // …and be a different colour from the standard border so focus reads
-        // as a distinct state, not just "a border".
+        // Must also differ from the standard border so focus reads as a
+        // distinct state, not just "a border".
         assert_ne!(
             (hc.border_focus.r(), hc.border_focus.g(), hc.border_focus.b()),
             (hc.border_standard.r(), hc.border_standard.g(), hc.border_standard.b()),
@@ -1221,15 +1039,9 @@ mod tests {
 mod configured_theme {
     use super::*;
 
-    /// The accessibility theme is reachable from a real settings file.
-    ///
-    /// Before this, `Theme::high_contrast` existed and nothing outside the
-    /// screenshot harness could select it: `App::new` hard-coded
-    /// `Theme::dark()` and `set_theme` had no production caller. The themes app
-    /// wrote `appearance.theme` and reported success, and no reader existed.
-    ///
-    /// `XDG_CONFIG_HOME` is pointed at a temp directory for this process only,
-    /// so the check runs against a real file without touching the operator's.
+    /// `XDG_CONFIG_HOME` is pointed at a temp directory for this process
+    /// only, so the check runs against a real file without touching the
+    /// operator's.
     #[test]
     fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
         let dir = std::env::temp_dir().join(format!("qos-theme-{}", std::process::id()));

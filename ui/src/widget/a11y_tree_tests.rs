@@ -45,9 +45,7 @@ fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &
         .unwrap_or_else(|| panic!("no {role:?} node labelled {label:?}"))
 }
 
-// ---------------------------------------------------------------------------
-// segmented::TriStateControl  →  Group + RadioButton children
-// ---------------------------------------------------------------------------
+// segmented::TriStateControl -> Group + RadioButton children
 
 #[test]
 fn tri_state_control_exposes_a_radio_group() {
@@ -80,9 +78,7 @@ fn tri_state_control_exposes_a_radio_group() {
     assert!(allow.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// segmented::ColorSwatchPicker  →  List + ListItem children
-// ---------------------------------------------------------------------------
+// segmented::ColorSwatchPicker -> List + ListItem children
 
 #[test]
 fn color_swatch_picker_exposes_a_selectable_list() {
@@ -110,9 +106,7 @@ fn color_swatch_picker_exposes_a_selectable_list() {
     assert!(chosen.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// gauge::RingGauge / gauge::BarGauge  →  ProgressBar with % value
-// ---------------------------------------------------------------------------
+// gauge::RingGauge / gauge::BarGauge -> ProgressBar with % value
 
 #[test]
 fn ring_gauge_exposes_a_named_percentage_meter() {
@@ -140,9 +134,7 @@ fn bar_gauge_prefers_the_caller_value_readout() {
     assert_eq!(plain_bar.value().as_deref(), Some("25%"));
 }
 
-// ---------------------------------------------------------------------------
-// slash_menu::SlashMenu  →  Menu + MenuItem children (hidden when closed)
-// ---------------------------------------------------------------------------
+// slash_menu::SlashMenu -> Menu + MenuItem children (hidden when closed)
 
 #[test]
 fn slash_menu_open_exposes_menu_items() {
@@ -182,9 +174,7 @@ fn slash_menu_closed_is_a_hidden_menu() {
     assert!(of_role(&nodes, AkRole::MenuItem).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// tabs::TabBar  →  TabList + Tab children with selected state
-// ---------------------------------------------------------------------------
+// tabs::TabBar -> TabList + Tab children with selected state
 
 #[test]
 fn tab_bar_exposes_each_tab_with_selected_state() {
@@ -215,9 +205,7 @@ fn tab_bar_exposes_each_tab_with_selected_state() {
     assert!(details.supports_action(AkAction::Click), "tabs are activatable");
 }
 
-// ---------------------------------------------------------------------------
-// toggle_group::ToggleGroup  →  Group + ToggleButton children with checked
-// ---------------------------------------------------------------------------
+// toggle_group::ToggleGroup -> Group + ToggleButton children with checked
 
 #[test]
 fn toggle_group_exposes_each_segment_with_checked_state() {
@@ -244,10 +232,8 @@ fn toggle_group_exposes_each_segment_with_checked_state() {
     assert!(dark.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// Composed UI: the leaf widgets under one presentational container all reach
+// Composed UI: leaf widgets under one presentational container all reach
 // the window root through the real collapse/reparent walk.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn composed_ui_reaches_every_new_widget_through_the_window_root() {
@@ -286,10 +272,8 @@ fn composed_ui_reaches_every_new_widget_through_the_window_root() {
     assert!(nodes.iter().any(|(_, n)| n.label().as_deref() == Some("Battery")));
 }
 
-// ---------------------------------------------------------------------------
-// Screen-reader announcement path: focus + value-change narration on the same
-// AccessNodes the bridge consumes.
-// ---------------------------------------------------------------------------
+// Screen-reader announcement path: focus + value-change narration on the
+// same AccessNodes the bridge consumes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
