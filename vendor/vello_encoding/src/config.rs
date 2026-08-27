@@ -549,7 +549,12 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// coverage this measurement already has; 320/tile keeps clear of it
 /// with room over both measurement noise and a second simultaneous
 /// composited surface.
-const FLOOR_LINES: u32 = 1 << 16;
+/// Path segments scale with how much is drawn, so this floor scales with the
+/// viewport like the tile-indexed ones. A flat constant cannot cover a large or
+/// high-DPI surface: a subtree cache at scale 2 measured 105,450 lines against
+/// the old flat 65,536, and the overflow drops geometry silently.
+const FLOOR_LINES_PER_TILE: u32 = 16;
+const FLOOR_LINES_MIN: u32 = 1 << 16;
 const FLOOR_BINNING: u32 = 1 << 14;
 const FLOOR_BLEND_SPILL: u32 = 1 << 14;
 const FLOOR_TILES_PER_TILE: u32 = 24;
@@ -620,7 +625,9 @@ impl BumpBudget {
     /// measurements at the constants above.
     pub fn floor_for_viewport(n_tiles: u32) -> Self {
         Self {
-            lines: FLOOR_LINES,
+            lines: n_tiles
+                .saturating_mul(FLOOR_LINES_PER_TILE)
+                .max(FLOOR_LINES_MIN),
             binning: FLOOR_BINNING,
             tiles: n_tiles.saturating_mul(FLOOR_TILES_PER_TILE),
             seg_counts: n_tiles
@@ -779,6 +786,37 @@ mod tests {
              client composite asked for at {n_tiles} tiles -- the first frame a client \
              presents would overflow ptcl and render with its pixels silently missing",
             floor.ptcl,
+        );
+    }
+
+    /// A cached subtree redrawn at scale 2 measured 105,450 lines against
+    /// a flat floor of 65,536, overflowed (`failed=0x4`) and lost geometry.
+    ///
+    /// The lesson is the shape of the floor rather than its size: every other
+    /// floor here scales with `n_tiles` and this one did not. Segment count
+    /// follows how much is drawn, so a flat constant covers a small window and
+    /// silently under-provisions a large or high-DPI one -- the case least
+    /// likely to be measured and most likely to be somebody's actual desktop.
+    #[test]
+    fn lines_floor_scales_with_the_viewport_it_has_to_cover() {
+        let n_tiles = 1920u32.div_ceil(16) * 1080u32.div_ceil(16);
+        let measured_lines = 105_450;
+        let floor = BumpBudget::floor_for_viewport(n_tiles);
+        assert!(
+            floor.lines >= measured_lines,
+            "floor of {} lines does not cover the {measured_lines} a subtree cache at \
+             scale 2 asked for at {n_tiles} tiles",
+            floor.lines,
+        );
+        // And the viewport is what decides: a desktop must reserve more than a
+        // small window, or the floor is flat in disguise.
+        let small = BumpBudget::floor_for_viewport(320u32.div_ceil(16) * 240u32.div_ceil(16));
+        assert!(
+            floor.lines > small.lines,
+            "a desktop reserves {} lines and a 320x240 window {} -- the floor is not \
+             scaling with the viewport",
+            floor.lines,
+            small.lines,
         );
     }
 
