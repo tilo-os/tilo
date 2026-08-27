@@ -30,9 +30,19 @@ arithmetic faults a naive shrink would carry over:
   `bin_data_start` underflows that subtraction on a `u32` to near four
   billion. `bin_data` is now `bin_data_start.saturating_add(...)`.
 
-Own test module (6 tests): the two faults above each have a dedicated
-regression test, plus growth-from-measurement, ceiling and the headline
-"far less than upstream" comparison.
+`FLOOR_PTCL_PER_TILE` is 320, not 96: the 28-scene catalogue the floors were
+measured from has no *foreign* (Wayland client) surface in it, and compositing
+one is `push_layer(rounded-rect clip) + draw_image + pop_layer` — a blend
+layer around a sampled image costs far more per-tile `ptcl` than the vector UI
+the catalogue was measured from. At 96/tile the first frame a client ever
+presents overflowed `ptcl` (`failed=0x10`) and rendered with the client's
+pixels silently missing, with no prior frame for `BumpBudget::observe` to have
+grown from yet. See the doc comment above `FLOOR_PTCL_PER_TILE` for the
+measurement this raised it from.
+
+Own test module (7 tests): the two faults above and the `ptcl` floor gap each
+have a dedicated regression test, plus growth-from-measurement, ceiling and
+the headline "far less than upstream" comparison.
 
 ## `vendor/vello/src/bump_budget.rs` (new)
 
