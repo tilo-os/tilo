@@ -10,27 +10,18 @@
 //! # It is the same enforcement point, not a second door
 //!
 //! This service reaches the same documents the FUSE mount serves, by a
-//! shorter route: no inode permissions, no open mode, just "splice this
-//! text into that block". So it consults the **same [`WorkspaceAcl`] as
-//! the same identity**, and presents a denial the same way
-//! ([`crate::fs`]):
+//! shorter route, so it consults the **same [`WorkspaceAcl`] as the same
+//! identity** and presents a denial the same way ([`crate::fs`]): outside
+//! the view is [`Resp::NotFound`] (indistinguishable from nonexistent, so
+//! the socket can't enumerate what the filtered view omits), and a write
+//! without capability is [`Resp::Err`] with the read-only-filesystem
+//! message, CRDT untouched. That second point is what makes read
+//! participation hold — this is the *fine-grained authoring path*, so a
+//! read participant reaching it must not be able to author after all.
 //!
-//! - a path or handle outside the mount's view answers [`Resp::NotFound`],
-//!   which is what a path that does not exist answers — the app cannot
-//!   tell the two apart, and cannot use the socket to enumerate what the
-//!   filtered view omits;
-//! - an edit to a document the identity may read but not write answers
-//!   [`Resp::Err`] carrying the read-only-filesystem message, and the CRDT
-//!   is not touched.
-//!
-//! That second point is what makes read participation hold: this is the
-//! *fine-grained authoring path* for documents, so a read participant that
-//! could reach it would be able to author after all, whatever the mount
-//! said.
-//!
-//! A mount with no ACL attached leaves this unenforced too, which is the
-//! same single-user unshared-mount case [`crate::acl`] describes. The
-//! socket is 0600 either way.
+//! A mount with no ACL attached leaves this unenforced too, the same
+//! single-user unshared-mount case [`crate::acl`] describes. The socket is
+//! 0600 either way.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,16 +36,11 @@ use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::namespace::Namespace;
 use crate::sync::SyncHandle;
 
-/// The ACL this service enforces, and the identity it answers for.
-///
-/// One field, like [`crate::QuickFS`]'s, so an ACL cannot be attached
-/// without the identity it is evaluated as.
-///
-/// An [`AclHandle`] rather than a `WorkspaceAcl` by value, for the same
-/// reason the mount holds one: the socket reaches the same documents by a
-/// shorter route, so a grant or revocation has to reach it at the same
-/// moment. A snapshot taken when the socket was bound would leave the
-/// service enforcing mount-time policy for the life of the session.
+/// The ACL this service enforces, and the identity it answers for. One
+/// field, like [`crate::QuickFS`]'s, so an ACL can't be attached without
+/// its identity. An [`AclHandle`] rather than a value, for the same reason
+/// the mount holds one: a snapshot taken when the socket was bound would
+/// leave it enforcing mount-time policy for the life of the session.
 pub type Enforcement = Option<(AclHandle, IdentityKey)>;
 
 /// The message an edit refused for want of a write capability carries.
@@ -281,15 +267,10 @@ pub async fn serve(
     }
 }
 
-/// Did an edit apply?
-///
-/// The reply used to be discarded, so a refused edit and an applied one
-/// were the same `Ok(())` and an app could not tell that its user's typing
-/// had gone nowhere. A read participant needs to know it is a read
-/// participant — that is how it can render itself as a viewer instead of
-/// silently swallowing edits. What it must never do is ask the user to fix
-/// a permission, which is why the message is the read-only-filesystem
-/// wording rather than a permission error.
+/// Did an edit apply? A read participant needs to know it's a read
+/// participant, so it can render itself as a viewer instead of silently
+/// swallowing edits — but never as a permission error to fix, which is why
+/// the message is the read-only-filesystem wording.
 fn applied(resp: Resp) -> std::io::Result<()> {
     match resp {
         Resp::Err(msg) => Err(std::io::Error::other(msg)),

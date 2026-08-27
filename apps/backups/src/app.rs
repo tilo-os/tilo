@@ -292,8 +292,8 @@ impl BackupsApp {
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        // The content spans to the window bottom now that the permanent status
-        // strip is gone (its tally lives in the floating bubble instead).
+        // Content spans to the window bottom; the tally lives in the floating
+        // status bubble, not a permanent bottom strip.
         let content = Rect::new(
             self.rect.x0 + PAD,
             self.rect.y0 + BAR_H + 14.0,
@@ -483,9 +483,8 @@ impl BackupsApp {
         );
     }
 
-    /// Compose the bubble's label from the live catalog: the health signal
-    /// (kept as text so the pill needs no bespoke tint) followed by the snapshot
-    /// tally and protected size — the two contextual pieces the old strip showed.
+    /// Health signal (kept as text so the pill needs no bespoke tint) followed
+    /// by the snapshot tally and protected size.
     fn status_label(&self) -> String {
         let failed = self
             .catalog
@@ -505,11 +504,8 @@ impl BackupsApp {
         )
     }
 
-    /// Draw the transient floating status bubble at the window's bottom-right —
-    /// the reclaimed home of the old bottom status strip. It surfaces on a status
-    /// change (a completed job shifts the tally/health) or while the pointer
-    /// hovers the bottom-right corner, then fades. All colours come from the
-    /// theme (via `draw_pill`).
+    /// Surfaces on a status change (a completed job shifts the tally/health) or
+    /// while the pointer hovers the bottom-right corner, then fades.
     fn draw_status_bubble(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let now = Instant::now();
         let label = self.status_label();
@@ -662,6 +658,9 @@ impl BackupsApp {
     }
 
     /// The "All sources" aggregate row.
+    // scene/t/tr/theme is the fixed draw-call boilerplate every `draw_*`
+    // method takes; the rest are this row's own content and layout.
+    #[allow(clippy::too_many_arguments)]
     fn draw_source_row(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, _src: Option<&Source>, sel: bool) {
         let c = &theme.tokens.colors;
         let h = 38.0;
@@ -675,6 +674,7 @@ impl BackupsApp {
         *y += h + 6.0;
     }
 
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_source_row_real(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, src: &Source, sel: bool) {
         let c = &theme.tokens.colors;
         let h = 50.0;
@@ -694,6 +694,7 @@ impl BackupsApp {
         *y += h + 4.0;
     }
 
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_dest_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, d: &Destination) {
         let c = &theme.tokens.colors;
         let h = 48.0;
@@ -825,6 +826,7 @@ impl BackupsApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_snapshot_row(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, row: Rect, s: &Snapshot, selected: bool, show_source: bool) {
         let c = &theme.tokens.colors;
         let hovered = self.hover == Some(Hit::Snap(s.id.clone()));
@@ -851,10 +853,10 @@ impl BackupsApp {
         let rc = Self::retention_color(theme, s.retention);
         px += paint::tag_pill(scene, tr, t, px, cy, s.retention.label(), 11.0, rc) + 8.0;
         // Source path (only in "all" mode).
-        if show_source {
-            if let Some(src) = self.catalog.source(&s.source_id) {
-                paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
-            }
+        if show_source
+            && let Some(src) = self.catalog.source(&s.source_id)
+        {
+            paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
         }
         // Right side: files changed, delta, total.
         let total_x = row.x1 - 16.0;
@@ -1307,6 +1309,7 @@ impl BackupsApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_stepper(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, b: Rect, glyph: &str, hit: Hit) {
         let c = &theme.tokens.colors;
         let hovered = self.hover.as_ref() == Some(&hit);
@@ -1704,6 +1707,8 @@ impl Widget for BackupsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
         let node = taffy
             .new_leaf(Style {
                 size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
@@ -1716,6 +1721,8 @@ impl Widget for BackupsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a lookup
+        // miss would mean the frame cycle called these out of order.
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + layout.location.x as f64,
@@ -1901,19 +1908,15 @@ impl BackupsApp {
                     "3" => { BackupsDoc::set_view(doc, root, View::Destinations); self.load_cache(doc, root); *handled = true; }
                     "4" => { BackupsDoc::set_view(doc, root, View::Schedules); self.load_cache(doc, root); *handled = true; }
                     "n" | "N" => { self.start_job(); *handled = true; }
-                    "+" | "=" => {
-                        if self.ui.view == View::Schedules {
-                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
-                            self.load_cache(doc, root);
-                            *handled = true;
-                        }
+                    "+" | "=" if self.ui.view == View::Schedules => {
+                        self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
+                        self.load_cache(doc, root);
+                        *handled = true;
                     }
-                    "-" | "_" => {
-                        if self.ui.view == View::Schedules {
-                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
-                            self.load_cache(doc, root);
-                            *handled = true;
-                        }
+                    "-" | "_" if self.ui.view == View::Schedules => {
+                        self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
+                        self.load_cache(doc, root);
+                        *handled = true;
                     }
                     _ => {}
                 }

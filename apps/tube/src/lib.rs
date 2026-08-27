@@ -35,13 +35,9 @@ pub use app::TubeApp;
 
 use ui::widget::Widget;
 
-/// The searchable result types Tube contributes to qOS's global search. An OS
-/// search host registers these descriptors (id, display name, whether hits carry
-/// a thumbnail) so a video or a channel shows up in the OS-wide palette and
-/// activating it deep-links back into Tube's watch / channel page via
-/// [`search_type::SearchHit`]. Exposed here as the single registration point so
-/// the host's integration is a one-liner (`for t in tube::searchable_types() {
-/// registry.register(t) }`) with no reach into the app internals.
+/// Descriptors an OS search host registers so a video or channel shows up in
+/// the global palette; activating a hit deep-links back into Tube's watch /
+/// channel page via [`search_type::SearchHit`].
 pub fn searchable_types() -> Vec<search_type::SearchableType> {
     vec![
         search_type::video_searchable_type(),
@@ -49,25 +45,17 @@ pub fn searchable_types() -> Vec<search_type::SearchableType> {
     ]
 }
 
-/// Build and return the app's root widget tree.
-///
-/// Starts with an empty catalogue. This is the conventional entry point for
-/// a host embedding Tube, and it used to hand back [`TubeApp::new`] — which
-/// carries the bundled `sample` catalogue of invented channels and view
-/// counts. A host that did not know to call `.online()` (which discards the
-/// sample) therefore showed fabricated videos as though they were real.
-/// The sample now has to be asked for by name, via `TubeApp::new` on a
-/// `--shots` path.
+/// The conventional entry point for a host embedding Tube. Starts with an
+/// empty catalogue — the bundled `sample` data has to be asked for by name,
+/// via [`TubeApp::new`], on a `--shots` path.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::empty())
 }
 
-/// `--shots` variant for a NARROW viewport: the navigation rail is collapsed
-/// to an overlay flap and forced open so the still frame captures the
-/// summoned rail + dimming scrim. Pair with a sub-breakpoint `--viewport`
-/// width. Unlike [`app_root`] this starts from `TubeApp::new`, so it carries
-/// the bundled sample catalogue — a shot of an empty grid would show nothing
-/// about the rail. Shots-only for that reason.
+/// `--shots` variant for a narrow viewport: the nav rail is forced open as an
+/// overlay flap with its dimming scrim, and starts from [`TubeApp::new`] (the
+/// sample catalogue) since a shot of an empty grid says nothing about the
+/// rail. Pair with a sub-breakpoint `--viewport` width.
 pub fn app_root_narrow_shot() -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_open_sidebar_shot())
 }
@@ -96,11 +84,9 @@ mod tests {
         assert!(types.iter().all(|t| t.has_thumbnail));
     }
 
-    /// A host that embeds Tube the documented way must not be handed the
-    /// bundled sample catalogue. `app_root` used to return `TubeApp::new()`,
-    /// whose model is `sample::model()` — invented channels with invented
-    /// subscriber and view counts — and only `.online()` cleared it. Anyone
-    /// who embedded without calling `.online()` shipped that as real data.
+    /// A host embedding Tube the documented way must not be handed the
+    /// bundled sample catalogue (invented channels, subscriber and view
+    /// counts) as though it were real.
     #[test]
     fn app_root_starts_with_no_catalogue() {
         let app = TubeApp::empty();

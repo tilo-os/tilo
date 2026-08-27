@@ -25,13 +25,10 @@ struct Cli {
 /// someone else's, the file-access question is the same one.
 #[derive(Args, Debug, Clone, Default)]
 struct AclArgs {
-    /// Enforce this capability list. A JSON file holding an array of
-    /// capability records (`collab_types::CapOverride`), which is the
-    /// system's one permission vocabulary.
-    ///
-    /// Without this flag the mount keeps the Unix-veneer-only behaviour.
-    /// *With* it, the file must load: a missing or malformed file aborts
-    /// the mount rather than silently serving an unenforced workspace.
+    /// Enforce this capability list — a JSON file holding an array of
+    /// `collab_types::CapOverride` records. Without this flag the mount
+    /// keeps the Unix-veneer-only behaviour; with it, the file must load,
+    /// or the mount aborts rather than silently serving unenforced.
     #[arg(long, value_name = "FILE")]
     acl: Option<PathBuf>,
     /// The identity this mount acts as: 64 hex characters (a 32-byte
@@ -44,14 +41,11 @@ struct AclArgs {
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
     /// How often to re-read `--acl`, in seconds. `0` reads it once at
-    /// mount and never again.
-    ///
-    /// `/var/workspace` is mounted at boot and stays up for the session,
-    /// so a list read only at mount time cannot express a grant made an
-    /// hour later — the compositor would show a capability the
-    /// filesystem is not honouring. The default is a second: an
-    /// unchanged file costs one `stat`, and a permission change should
-    /// not be something the user waits on.
+    /// mount and never again. `/var/workspace` stays mounted for the whole
+    /// session, so a list read only at mount time could never express a
+    /// grant made an hour later. Defaults to a second: an unchanged file
+    /// costs one `stat`, and a permission change shouldn't be something
+    /// the user waits on.
     #[arg(long, value_name = "SECONDS", default_value_t = 1)]
     acl_reload_secs: u64,
 }
@@ -147,17 +141,13 @@ fn parse_principal(spec: &str) -> Result<Principal> {
 /// enforces, or `None` when no capability list was requested.
 ///
 /// Fail-closed on every error path: if enforcement was asked for and
-/// anything about it does not resolve — the file is missing, the JSON is
-/// malformed, the identity is not a key — the mount is refused. Silently
-/// falling back to an unenforced mount would turn a typo in a systemd
-/// unit into a wide-open workspace, which is precisely the failure this
-/// enforcement point exists to prevent. Omitting `--acl` entirely is the
-/// documented opt-out and keeps the pre-existing behaviour, so
-/// single-user mounts are unaffected.
+/// anything about it does not resolve — missing file, malformed JSON, a
+/// bad identity — the mount is refused rather than silently falling back
+/// to unenforced, which would turn a systemd unit typo into a wide-open
+/// workspace. Omitting `--acl` entirely is the documented opt-out.
 ///
-/// `device_key` is the default subject: this machine's device public
-/// key, which is stable across reboots. A grant written against it
-/// keeps meaning the same thing after a restart.
+/// `device_key` is the default subject: this machine's device public key,
+/// stable across reboots, so a grant written against it survives a restart.
 fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
@@ -606,8 +596,7 @@ mod tests {
 
     #[test]
     fn service_command_line_parses() {
-        // The exact line fs.service runs. This used to crash-loop on boot
-        // because `--cache-dir` was not a recognized argument (clap exit 2).
+        // The exact line fs.service runs, so a bad flag fails here, not on boot.
         let argv = service_exec_start();
         assert_eq!(argv[0], "/usr/bin/fs", "unexpected ExecStart binary: {argv:?}");
         let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
@@ -627,12 +616,8 @@ mod tests {
         }
     }
 
-    // The shipped image mounted /var/workspace with no capability list,
-    // so `check_access` short-circuited to "allowed" for every open,
-    // read and write on the machine — the compositor could show a
-    // capability as revoked while the file stayed readable through the
-    // mount. An enforcement point that ships switched off is not an
-    // enforcement point, so the unit is asserted on directly.
+    // An enforcement point that ships switched off is not an enforcement
+    // point, so the unit is asserted on directly.
     #[test]
     fn the_shipped_service_enforces_a_capability_list() {
         let argv = service_exec_start();
@@ -660,10 +645,8 @@ mod tests {
         );
     }
 
-    // The unit names a file. tmpfiles.d has to put one there, or the
-    // mount is refused on a fresh boot and the desktop never comes up —
-    // fail-closed is right, but shipping a configuration that always
-    // fails closed is just a broken image.
+    // The unit names a file; tmpfiles.d has to put one there or the mount
+    // is refused on every fresh boot — fail-closed, but a broken image.
     #[test]
     fn tmpfiles_seeds_the_capability_list_the_service_names() {
         let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/qos.conf"))
@@ -679,10 +662,9 @@ mod tests {
             "the seed must come from the shipped default: {seeding}"
         );
 
-        // …and the image has to actually contain the file tmpfiles
-        // copies from. If it does not, the seed silently does nothing,
-        // `--acl` names a file that never appears, and the mount is
-        // refused on every boot — fail-closed, but an unbootable image.
+        // …and the image must actually contain the file tmpfiles copies
+        // from, or the seed silently does nothing and the mount is
+        // refused on every boot.
         let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
             .expect("the production Containerfile must exist");
         assert!(

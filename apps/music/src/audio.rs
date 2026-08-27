@@ -1,63 +1,50 @@
 //! Audio output engine.
 //!
-//! Real playback uses a GStreamer `playbin` (gated behind the `audio`
-//! cargo feature). The default build compiles the silent stub so the UI, the
-//! offline `--shots` screenshot and CI stay free of a system GStreamer
-//! dependency. The public surface is identical either way, so the app can drive
-//! playback without caring which backend is linked.
+//! Real playback uses a GStreamer `playbin` (gated behind the `audio` cargo
+//! feature). The default build compiles a silent stub with the same public
+//! surface, so the UI, the offline `--shots` screenshot and CI stay free of a
+//! system GStreamer dependency.
 //!
-//! ## Real audio out — routing to a real sink, never a `fakesink`
+//! ## Real audio out — an explicit sink chain, never a `fakesink`
 //!
-//! `playbin` is given an **explicit audio sink chain** —
-//! `audioconvert ! audioresample ! autoaudiosink` — so the decoded PCM is
+//! `playbin` is given an explicit audio sink chain —
+//! `audioconvert ! audioresample ! autoaudiosink` — so decoded PCM is
 //! converted to whatever the system sink wants and handed to `autoaudiosink`,
 //! which auto-plugs the real desktop sink (`pipewiresink` / `pulsesink` /
-//! `alsasink`). This is the audible path.
+//! `alsasink`). A buffer pad-probe on the sink's input counts every decoded
+//! PCM buffer that actually reaches it ([`AudioEngine::frames_rendered`]), and
+//! [`AudioEngine::actual_audio_sink_name`] reports which concrete sink
+//! `autoaudiosink` selected, so a test can assert real audio is flowing to a
+//! real sink and not merely that the pipeline reached `PLAYING`.
 //!
-//! ## Fetching googlevideo streams (the reason real playback was silent)
+//! ## Fetching googlevideo streams
 //!
-//! A resolved YouTube stream URL cannot be handed straight to playbin's
-//! `souphttpsrc`: to enable seeking it issues an **open-ended** `Range:
-//! bytes=0-` request, which googlevideo answers `403 Forbidden` — it only
-//! serves **bounded** byte ranges. So every real stream returned no bytes,
-//! decoded nothing and was silent, while the pipeline lingered with `pending ==
-//! PLAYING`, making the transport *look* like it was playing.
+//! A resolved YouTube stream URL can't be handed straight to playbin's
+//! `souphttpsrc`: to enable seeking it issues an open-ended `Range: bytes=0-`
+//! request, and googlevideo answers that with `403 Forbidden` — it only serves
+//! **bounded** byte ranges. So the engine stages the stream to a temp file
+//! with `reqwest` using bounded `Range` requests instead, then plays that
+//! local file through the ordinary playbin path — see
+//! [`spawn_stream_download`] and [`AudioEngine::pump`]. A `file://` uri (a
+//! cached track) plays directly. The engine also services the GStreamer bus
+//! so a genuinely failed pipeline is never reported as still playing.
 //!
-//! The engine therefore stages an http(s) stream to a temp file with `reqwest`
-//! using bounded `Range` requests (which YouTube serves), then plays that local
-//! file through the ordinary playbin path — see [`spawn_stream_download`] and
-//! [`AudioEngine::pump`]. A `file://` uri (a cached track, or the audible test)
-//! plays directly. Any properly-rangeable http source streams in full; a
-//! PoToken-gated URL plays as much as the server serves. The engine also
-//! services the GStreamer bus so a genuinely failed pipeline is no longer
-//! reported as playing.
-//!
-//! Crucially the engine can **prove** audio is genuinely flowing rather than
-//! merely that the pipeline reached `PLAYING`: a buffer pad-probe on the sink's
-//! input counts every decoded PCM buffer that actually reaches the sink
-//! ([`AudioEngine::frames_rendered`]), and [`AudioEngine::actual_audio_sink_name`]
-//! reports which concrete sink `autoaudiosink` selected — so a test can assert
-//! it is a real audio sink and **not** a `fakesink`. A previous test proved
-//! decode/timing against a `fakesink`, which never exercises a real sink and so
-//! cannot prove *audible* output; that shortcut is gone.
-//!
-//! ffmpeg / ALSA / PulseAudio crates are deliberately **not** used —
-//! GStreamer's `playbin` already negotiates decode + the system sink.
+//! ffmpeg / ALSA / PulseAudio crates are deliberately not used — `playbin`
+//! already negotiates decode + the system sink.
 //!
 //! ## System dependency (host + OS image)
 //!
 //! Audible output needs, in the runtime environment:
-//!   * a GStreamer **audio sink** plugin — `gstreamer1-plugin-pipewire`
-//!     (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
-//!     running PipeWire/Pulse server. Without one, `autoaudiosink` silently
-//!     falls back to `fakesink` and the user hears nothing.
-//!   * an **AAC / Opus decoder** for the streams YouTube Music serves —
-//!     `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
-//!     `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
-//!     `-good` can demux (`qtdemux`) the staged file but cannot decode AAC, so
-//!     playback is silent without one. This is the qOS-image dependency the
-//!     Containerfile must install alongside the PipeWire sink. (The stream is
-//!     fetched by `reqwest`, so no GStreamer HTTP-source plugin is needed.)
+//! - a GStreamer **audio sink** plugin — `gstreamer1-plugin-pipewire`
+//!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
+//!   running PipeWire/Pulse server. Without one, `autoaudiosink` silently
+//!   falls back to `fakesink` and the user hears nothing.
+//! - an **AAC / Opus decoder** for the streams YouTube Music serves —
+//!   `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
+//!   `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
+//!   `-good` can demux (`qtdemux`) the staged file but cannot decode AAC, so
+//!   playback is silent without one. (The stream itself is fetched by
+//!   `reqwest`, so no GStreamer HTTP-source plugin is needed.)
 
 /// A handle to the audio backend. Cheap to construct; owns the pipeline
 /// when the `audio` feature is enabled.
@@ -132,64 +119,47 @@ struct Inner {
 }
 
 impl AudioEngine {
-    /// Build an engine. Never fails for the stub; the GStreamer path falls
-    /// back to the stub if the pipeline can't be created.
+    /// Build an engine. Infallible for the stub build. With `--features
+    /// audio`, `playbin` is a core GStreamer element (`gstreamer1-plugins-base`)
+    /// that this feature depends on, so a failure to construct it means the
+    /// deployment is missing that runtime dependency rather than a condition
+    /// callers can route around — this panics with a diagnostic rather than
+    /// silently degrading to a stub that would claim to play and never sound.
     pub fn new() -> Self {
         #[cfg(feature = "audio")]
-        {
-            if gstreamer::init().is_ok() {
-                if let Ok(playbin) =
-                    gstreamer::ElementFactory::make("playbin").build()
-                {
-                    use gstreamer::prelude::*;
-                    let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-                    // Route audio through an explicit **real** sink chain, so the
-                    // output is audible and verifiable. `autoaudiosink` selects
-                    // the concrete system sink (pipewire/pulse/alsa); the pad
-                    // probe lets us confirm real buffers flow.
-                    let sink = build_audio_sink(&playbin, &frames);
-                    let errored =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    // Defensive: never leave the transport muted, and start at a
-                    // sane volume so "no sound" is never a stuck property.
-                    playbin.set_property("mute", false);
-                    playbin.set_property("volume", 0.8f64);
-                    return Self {
-                        inner: Inner {
-                            playbin,
-                            sink,
-                            frames,
-                            errored,
-                            error_msg: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                            eos: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                            #[cfg(feature = "live")]
-                            pending: None,
-                        },
-                        current_uri: None,
-                        volume: 0.8,
-                    };
-                }
+        let inner = {
+            use gstreamer::prelude::*;
+            if let Err(e) = gstreamer::init() {
+                tracing::error!(target: "music::audio", error = %e, "gstreamer::init failed — the `audio` feature needs a working GStreamer runtime");
             }
-        }
-        Self {
-            #[cfg(feature = "audio")]
-            inner: Inner {
-                playbin: gstreamer::ElementFactory::make("playbin")
-                    .build()
-                    .expect("playbin"),
-                sink: None,
-                frames: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                errored: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            let playbin = gstreamer::ElementFactory::make("playbin").build().expect(
+                "playbin: requires gstreamer1-plugins-base, the audio feature's runtime dependency",
+            );
+            let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            // Route audio through an explicit **real** sink chain, so the
+            // output is audible and verifiable. `autoaudiosink` selects
+            // the concrete system sink (pipewire/pulse/alsa); the pad
+            // probe lets us confirm real buffers flow.
+            let sink = build_audio_sink(&playbin, &frames);
+            let errored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // Defensive: never leave the transport muted, and start at a
+            // sane volume so "no sound" is never a stuck property.
+            playbin.set_property("mute", false);
+            playbin.set_property("volume", 0.8f64);
+            Inner {
+                playbin,
+                sink,
+                frames,
+                errored,
                 error_msg: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 eos: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 #[cfg(feature = "live")]
                 pending: None,
-            },
-            #[cfg(not(feature = "audio"))]
-            inner: Inner { playing: false },
-            current_uri: None,
-            volume: 0.8,
-        }
+            }
+        };
+        #[cfg(not(feature = "audio"))]
+        let inner = Inner { playing: false };
+        Self { inner, current_uri: None, volume: 0.8 }
     }
 
     /// Point the engine at a new stream URI and start from zero.
@@ -352,11 +322,10 @@ impl AudioEngine {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            return self
-                .inner
+            self.inner
                 .playbin
                 .query_position::<gstreamer::ClockTime>()
-                .map(|p| p.mseconds());
+                .map(|p| p.mseconds())
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -369,11 +338,10 @@ impl AudioEngine {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            return self
-                .inner
+            self.inner
                 .playbin
                 .query_duration::<gstreamer::ClockTime>()
-                .map(|d| d.mseconds());
+                .map(|d| d.mseconds())
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -423,15 +391,11 @@ impl AudioEngine {
             // Once a staged stream's temp file is ready, switch playback onto it.
             #[cfg(feature = "live")]
             {
-                let ready = matches!(
-                    &self.inner.pending,
-                    Some(p) if !p.started && p.ready.load(std::sync::atomic::Ordering::Relaxed)
-                );
-                if ready {
-                    let (path, want) = {
-                        let p = self.inner.pending.as_ref().unwrap();
-                        (p.path.clone(), p.want_play)
-                    };
+                let staged = self.inner.pending.as_ref().and_then(|p| {
+                    (!p.started && p.ready.load(std::sync::atomic::Ordering::Relaxed))
+                        .then(|| (p.path.clone(), p.want_play))
+                });
+                if let Some((path, want)) = staged {
                     let has_bytes =
                         std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
                     if has_bytes {
@@ -452,10 +416,10 @@ impl AudioEngine {
                         self.inner
                             .errored
                             .store(true, std::sync::atomic::Ordering::Relaxed);
-                        if let Ok(mut m) = self.inner.error_msg.lock() {
-                            if m.is_none() {
-                                *m = Some("no audio source served bytes".to_string());
-                            }
+                        if let Ok(mut m) = self.inner.error_msg.lock()
+                            && m.is_none()
+                        {
+                            *m = Some("no audio source served bytes".to_string());
                         }
                     }
                     if let Some(p) = &mut self.inner.pending {
@@ -595,10 +559,8 @@ impl AudioEngine {
     /// is a `GstAudioBaseSink` subclass; `fakesink` is not, so this cleanly
     /// distinguishes "audible" from "silently dropped".
     pub fn audio_sink_is_real(&self) -> Option<bool> {
-        match self.actual_audio_sink_name() {
-            Some(name) => Some(name != "fakesink" && !name.contains("fakesink")),
-            None => None,
-        }
+        self.actual_audio_sink_name()
+            .map(|name| name != "fakesink" && !name.contains("fakesink"))
     }
 
     /// Block until the pipeline reaches `PLAYING` (or `timeout` elapses),
@@ -621,7 +583,7 @@ impl AudioEngine {
             if current == gstreamer::State::Playing {
                 return true;
             }
-            if matches!(res, Err(_)) {
+            if res.is_err() {
                 // A hard state-change error (missing plugin, unreadable uri).
                 return false;
             }
@@ -735,11 +697,11 @@ fn spawn_stream_download(
             // staged chunk so audio starts without waiting for the full download.
             tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
             let mut wrote = download_into(&uri, &mut file, &ready);
-            if wrote == 0 {
-                if let Some(fb) = fallback {
-                    tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
-                    wrote = download_into(&fb, &mut file, &ready);
-                }
+            if wrote == 0
+                && let Some(fb) = fallback
+            {
+                tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
+                wrote = download_into(&fb, &mut file, &ready);
             }
             tracing::info!(target: "music::audio", bytes = wrote, "stream staging: finished");
             let _ = std::io::Write::flush(&mut file);
@@ -770,10 +732,10 @@ fn download_into(
     const CHUNK: u64 = 1_048_576;
     let mut off = 0u64;
     loop {
-        if let Some(c) = clen {
-            if off >= c {
-                break;
-            }
+        if let Some(c) = clen
+            && off >= c
+        {
+            break;
         }
         let end = match clen {
             Some(c) => (off + CHUNK - 1).min(c - 1),

@@ -1,37 +1,23 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
 //! `--acl FILE` binds a JSON array of [`CapOverride`] records to a mount.
-//! The list was read exactly once, at mount time, and copied into the
-//! filesystem by value — so a capability granted or revoked afterwards
-//! did not reach the filesystem at all. `/var/workspace` is mounted once
-//! at boot and stays up for the life of the session, which made "a later
-//! grant needs a remount" mean "a later grant does not apply".
+//! `/var/workspace` is mounted once at boot and stays up for the session,
+//! so binding the list by value at mount time would make "a later grant
+//! needs a remount" mean "a later grant does not apply" — a wrong answer,
+//! not a slow update. [`CapabilityFile`] owns the file and an
+//! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads when the file has
+//! changed and swaps the result in underneath the live mount.
 //!
-//! That is not a slow update, it is a wrong answer: the compositor shows
-//! a grant the filesystem is not honouring, or keeps enforcing one the
-//! user revoked. This module closes it. [`CapabilityFile`] owns the file
-//! and an [`AclHandle`]; [`CapabilityFile::refresh`] re-reads when the
-//! file has changed and swaps the result in underneath the live mount.
-//!
-//! # What each outcome means, and why
-//!
-//! The three failure shapes are deliberately *not* treated alike:
-//!
-//! - **The file changed and parsed.** Swap. This is the point.
-//! - **The file is gone.** Bind an empty ACL, which denies everything.
-//!   Removing the file is how the producer says "this identity holds
-//!   nothing"; keeping the previous list would make a revocation
-//!   ineffective, which is the failure being fixed, not a mitigation of
-//!   it. Note this is distinct from *never passing* `--acl`, which
-//!   leaves the mount unenforced and is the documented opt-out.
-//! - **The file is unreadable or malformed.** Keep the previous list and
-//!   log. A capability file is rewritten in place rather than renamed
-//!   over, so a reader can catch it truncated mid-write; letting that
-//!   transient state revoke every capability on the machine would make
-//!   the reloader itself the outage. It is a strictly narrower window
-//!   than the alternative: the stale list is the one the administrator
-//!   last successfully installed, and the next successful read replaces
-//!   it.
+//! The three outcomes are deliberately not treated alike. A changed,
+//! parseable file swaps in — the point. A **gone** file binds an empty
+//! (deny-everything) ACL: removing the file is how the producer says
+//! "this identity holds nothing", so keeping the previous list would make
+//! a revocation ineffective (distinct from *never passing* `--acl`,
+//! which leaves the mount unenforced). An **unreadable or malformed**
+//! file keeps the previous list and logs — a capability file is rewritten
+//! in place rather than renamed over, so a reader can catch it truncated
+//! mid-write, and revoking every capability on the machine for that
+//! transient window would make the reloader itself the outage.
 //!
 //! None of these can *widen* access beyond what some successfully-parsed
 //! file said.

@@ -1,34 +1,22 @@
 //! Mechanism tests against an emulated TPM and a loopback-free LUKS2 image.
 //!
-//! These are the tests that decide whether bounded rollback actually bounds
-//! anything. Everything here drives the production code paths — the same
-//! `policy`, `keyslots` and `counter` functions the `qos-rollback` binary calls —
-//! against a real TPM 2.0 implementation (`swtpm`) and a real LUKS2 header.
+//! These drive the production code paths — the same `policy`, `keyslots` and
+//! `counter` functions the `qos-rollback` binary calls — against a real TPM
+//! 2.0 (`swtpm`) and a real LUKS2 header. `cryptsetup` operates on a regular
+//! file for everything that only touches the header (`luksFormat`,
+//! `luksAddKey`, `luksKillSlot`, token import/export, and
+//! `open --test-passphrase`, which does the full key-derivation and digest
+//! check without a device-mapper mapping), so the whole keyslot lifecycle is
+//! testable without root, loop devices or a VM. Not covered: mounting the
+//! mapping and early userspace calling `qos-rollback unlock`, which need a
+//! booted machine and are unverified here.
 //!
-//! # Why a file image and not a loopback device
-//!
-//! `cryptsetup` operates on a regular file for everything that only touches the
-//! header: `luksFormat`, `luksAddKey`, `luksKillSlot`, `token import/export`, and
-//! `open --test-passphrase`, which does the full key-derivation and digest check
-//! without creating a device-mapper mapping. So the whole keyslot lifecycle is
-//! testable without root, without loop devices, and without a VM.
-//!
-//! What that does *not* cover is the boot path: mounting the mapping, and early
-//! userspace calling `qos-rollback unlock`. That needs a booted machine and is
-//! called out as unverified rather than implied by these passing.
-//!
-//! # Requirements
-//!
-//! `swtpm`, `tpm2-tools`, `cryptsetup` and `openssl`. When they are absent each
-//! test prints what is missing and returns; running them is
-//!
-//! ```text
-//! cargo test -p qos-rollback --test mechanism -- --test-threads 1
-//! ```
-//!
-//! Each test gets its own `swtpm` instance, because several of them deliberately
-//! drive the TPM into dictionary-attack lockout and a shared instance would leak
-//! that into its neighbours.
+//! Needs `swtpm`, `tpm2-tools`, `cryptsetup`, `openssl` (each test prints
+//! what is missing and returns otherwise):
+//! `cargo test -p qos-rollback --test mechanism -- --test-threads 1`. Each
+//! test gets its own `swtpm` instance, because several deliberately drive
+//! dictionary-attack lockout, which a shared instance would leak into its
+//! neighbours.
 
 use qos_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
@@ -1679,14 +1667,12 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let sess_s = sess.to_str().unwrap().to_string();
     let idx = format!("0x{:08X}", f.cfg.nv_index);
 
-    // PolicyCommandCode
     assert_eq!(
         trial(&[&["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"]]),
         tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT).to_vec(),
         "PolicyCommandCode"
     );
 
-    // PolicyAuthValue
     assert_eq!(
         trial(&[&["tpm2_policyauthvalue", "-S", &sess_s]]),
         tpm_policy::auth_value(tpm_policy::ZERO).to_vec(),

@@ -67,8 +67,8 @@ impl YtBackend for OfflineBackend {
     }
 
     fn trending(&self) -> BackendOutcome {
-        let mut vids: Vec<_> = self.model.videos.iter().cloned().collect();
-        vids.sort_by(|a, b| b.views.cmp(&a.views));
+        let mut vids: Vec<_> = self.model.videos.to_vec();
+        vids.sort_by_key(|v| std::cmp::Reverse(v.views));
         Ok(BackendResult::Videos(vids))
     }
 }

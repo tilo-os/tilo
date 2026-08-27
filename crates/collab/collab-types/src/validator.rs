@@ -1,42 +1,17 @@
-//! The inbound-op validation pipeline.
+//! The inbound-op validation pipeline, implementing the validation steps
+//! specified in `2026-06-29-spaces-channels-and-cryptographic-roles.md`.
+//! Each step has a dedicated [`ValidationError`] variant so callers can
+//! pattern-match the failure and surface a precise reason in the audit log.
 //!
-//! This module implements the eight-step pipeline specified in
-//! `2026-06-29-spaces-channels-and-cryptographic-roles.md`,
-//! "Validation pipeline (per inbound op)". Each step is a
-//! standalone check with a dedicated [`ValidationError`] variant
-//! so callers can pattern-match the failure and surface a precise
-//! reason in the audit log + toast.
+//! The validator is pure: it takes a [`ChannelState`] snapshot and a
+//! `SignedOp`, and returns `Ok(())` or a structured error. The only side
+//! effect — bumping the last-seen sequence number on success — is applied
+//! to the borrowed `&mut ChannelState`; callers that want to
+//! validate-without-applying pass a clone and discard it.
 //!
-//! The validator is pure: it takes a [`ChannelState`] *snapshot*
-//! and a `SignedOp`, returns `Ok(())` or a structured error. It
-//! does not touch the network, does not lazy-fetch missing
-//! attestations, and does not mutate global state. The single side
-//! effect — bumping the last-seen sequence number on success — is
-//! applied to the borrowed `&mut ChannelState`. Callers that want
-//! to validate-without-applying use [`ChannelState::clone`] and
-//! discard the modified clone.
-//!
-//! ## Snapshot vs live state
-//!
-//! `ChannelState` is the validator's *view* of the channel. The
-//! authoritative live state lives in the broker (Phase 3+). The
-//! split lets the validator be tested without a broker and lets
-//! the broker assemble a snapshot from cheap accessors. The
-//! snapshot includes:
-//!
-//! - the current set of accepted *channel-local* attestations
-//!   (member-role grants);
-//! - the set of identity-level attestations for each known author
-//!   (used by the clearance check);
-//! - the set of public keys authorised to *issue* attestations
-//!   (channel owner + delegations);
-//! - the set of trust roots accepted for identity-level attestations
-//!   (e.g. an org's master key, for clearance gates);
-//! - the artifact kind for each artifact id (for the role-table
-//!   lookup);
-//! - the per-author last-seen sequence number (for replay defence);
-//! - the channel's `min_clearance` floor;
-//! - the per-artifact classification override.
+//! `ChannelState` is the validator's snapshot view; the authoritative live
+//! state lives in the broker. The split lets the validator be tested
+//! without a broker.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -166,7 +141,7 @@ pub enum ValidationError {
         issuer: Ed25519PublicKey,
     },
 
-    /// Step 5b (Phase 9): a `Redact` op's payload could not be parsed
+    /// Step 5b: a `Redact` op's payload could not be parsed
     /// or violated a per-payload invariant (e.g. `reason` too long,
     /// `redacted_by` does not match the envelope's author). Reported
     /// here rather than in a separate decode pass so audit-log entries
@@ -175,7 +150,7 @@ pub enum ValidationError {
     #[error("malformed redact payload: {0}")]
     MalformedRedact(#[source] RedactionError),
 
-    /// Step 5c (Phase 9): the `Redact` op's `target_op_id` resolves to
+    /// Step 5c: the `Redact` op's `target_op_id` resolves to
     /// another op that has itself been redacted. Recursive redaction
     /// is rejected — see the design doc §6 for the rationale ("un-
     /// redact is not a concept").
@@ -185,7 +160,7 @@ pub enum ValidationError {
         target: OpId,
     },
 
-    /// Step 9 (Phase 9): the inbound op's id is already in the
+    /// Step 9: the inbound op's id is already in the
     /// channel's `redacted_ops` set. The op-log entry is rewritten to
     /// the redacted marker (so the seq gap doesn't form) but the
     /// derived state is **not** updated and the validator surfaces
@@ -267,15 +242,12 @@ pub struct ChannelState {
     /// pass `&mut clone()` and drop the clone.
     pub last_seq_per_author: HashMap<Ed25519PublicKey, u64>,
 
-    /// Phase 6: in-memory op log for the channel, bounded by
-    /// `max_in_memory_ops`. Validated ops are pushed in arrival order
-    /// (typically `seq` order but not guaranteed — out-of-order
-    /// arrivals stay where they land). When the log exceeds capacity
-    /// the oldest entry is evicted on the next push; when a
-    /// compaction checkpoint is applied, the matching prefix is
-    /// evicted en masse. The log lets a late-joining peer fetch
-    /// recent history via `CollabRequest::FetchScrollback` without
-    /// triggering a peer-to-peer cold fetch.
+    /// In-memory op log for the channel, bounded by `max_in_memory_ops`.
+    /// Pushed in arrival order (not necessarily `seq` order); the oldest
+    /// entry is evicted on overflow, or a matching prefix in one shot
+    /// when a compaction checkpoint lands. Lets a late-joining peer fetch
+    /// recent history via `CollabRequest::FetchScrollback` without a
+    /// peer-to-peer cold fetch.
     pub op_log: VecDeque<SignedOp>,
 
     /// Upper bound on `op_log`. Defaults to
@@ -285,28 +257,21 @@ pub struct ChannelState {
     /// chat or starve the kanban.
     pub max_in_memory_ops: usize,
 
-    /// Phase 9: the set of op ids that have been redacted on this
-    /// channel. Used by [`ChannelState::is_redacted`] +
-    /// [`validate_inbound_op`]'s step-9 redaction-aware filter.
-    ///
-    /// The set survives across compaction (a redaction record is
-    /// retained even when the op it points to has been evicted; see
-    /// §4 of the design doc). It is in-memory only in v1 — Phase 9.5
-    /// adds persistence to the channel's authoritative event log so
-    /// a cold-start peer can re-derive the set without re-running the
-    /// full op stream.
+    /// The set of op ids that have been redacted on this channel,
+    /// consulted by [`ChannelState::is_redacted`] and
+    /// [`validate_inbound_op`]'s redaction-aware filter. Survives across
+    /// compaction — a redaction record is retained even after the op it
+    /// points to has been evicted (design doc §4). In-memory only; not
+    /// yet persisted to the channel's authoritative event log.
     pub redacted_ops: HashSet<OpId>,
 
-    /// Phase 9: snapshot of the **pre-redaction full envelope** of
-    /// every redacted op, keyed by [`OpId`]. The audit log uses these
-    /// to reconstruct the original `target_op_hash` long after the
-    /// op-log entry has been rewritten to the redacted marker; the
-    /// compaction path also consults them so the prefix hash stays
-    /// stable across redactions (see §4 of the design doc — hash
-    /// original bytes, not marker bytes).
-    ///
-    /// Bounded by the redaction set, which is small by construction
-    /// (manual compliance acts, not bulk traffic).
+    /// Snapshot of the **pre-redaction full envelope** of every redacted
+    /// op, keyed by [`OpId`]. The audit log uses these to reconstruct the
+    /// original `target_op_hash` after the entry has been rewritten to
+    /// the redacted marker; the compaction path consults them so the
+    /// prefix hash stays stable across redactions (design doc §4 — hash
+    /// original bytes, not marker bytes). Bounded by the redaction set,
+    /// which is small by construction.
     pub original_envelopes: HashMap<OpId, Box<SignedOp>>,
 }
 

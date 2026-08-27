@@ -1,42 +1,20 @@
 //! The Backups app's exported **actions** and the **resource tree** it publishes
 //! to Ctrl+K.
 //!
-//! Backups keeps almost all of its state *outside* the shared document. The
-//! catalog of sources, snapshots and destinations is projected from the storage
-//! backend (btrfs/snapper subvolumes or a `restic snapshots` dump), and running
-//! a backup, its live progress, verifying, deleting and restoring a snapshot are
-//! external side effects *driven by* that backend. The one piece of
-//! user-authored **configuration** that lives in the CRDT — and therefore the one
-//! thing that must replicate, undo, and replay byte-identically — is the
-//! **retention policy**: how many snapshots to keep per class (hourly / daily /
-//! weekly / monthly). So that is the whole action surface: a single
-//! [`BackupsAction::SetRetention`] that sets one policy field to an absolute
-//! count. The exact same [`EncodedAction`] the on-screen +/- affordance
-//! dispatches is what the Ctrl+K palette dispatches — one source of truth, one
-//! replay path, undo for free.
+//! Backups keeps almost all of its state *outside* the shared document: the
+//! catalog of sources, snapshots and destinations is projected live from the
+//! storage backend, and running/verifying/restoring a snapshot are external
+//! side effects, not CRDT mutations. The one thing that must replicate, undo
+//! and replay byte-identically is the **retention policy**, so that is the
+//! whole action surface: a single [`BackupsAction::SetRetention`] that sets one
+//! policy field to an absolute, pre-resolved count. The exact same
+//! [`EncodedAction`] the on-screen +/- affordance dispatches is what Ctrl+K
+//! dispatches — one source of truth, one replay path, undo for free.
 //!
-//! ## What is *not* an action
-//!
-//! * **Running / pausing a backup, restore, verify, delete, snapshot listing,
-//!   credential auth** — external side effects and backend-projected live state,
-//!   never part of [`Action::apply`], which only mutates the CRDT
-//!   deterministically. They stay separate steps driven by the configuration.
-//! * **Sources & destinations** — projected from the backend into the in-memory
-//!   [`Catalog`](crate::model::Catalog), not stored in the document. There is no
-//!   user-authored jobs/plans model in the CRDT to migrate, so none is
-//!   fabricated here: the retention policy is the entire stored configuration.
-//! * **Presentation** — the open view, the selected source / snapshot /
-//!   destination, and whether the restore sheet is up are stored in the document
-//!   as shared view state but are never actions.
-//!
-//! ## Determinism contract
-//!
-//! [`BackupsAction::SetRetention`] carries the resolved target count (computed at
-//! authoring time from the current value plus a delta, clamped to `[0, 999]`), so
-//! replay is order-free: two replicas at the same heads land on the byte-identical
-//! result. A set that would change nothing is a **no-op** — the write is skipped —
-//! so a redundant replay leaves the document (its heads) untouched, and
-//! [`Action::apply`] never touches the RNG or the wall-clock.
+//! Carrying the resolved target (rather than a delta) makes replay order-free:
+//! two replicas at the same heads land on the byte-identical result, and a set
+//! that would change nothing is a no-op (see the change-guard in
+//! [`BackupsAction::apply`]).
 
 use automerge::{AutoCommit, ROOT};
 
@@ -95,9 +73,8 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<BackupsAction>(BACKUPS_ACTION_TYPE);
 }
 
-/// Encode any [`BackupsAction`] into the wire form the palette and the on-screen
-/// affordances both dispatch. The single point that turns a backups action into a
-/// replayable envelope.
+/// The single point that turns a [`BackupsAction`] into the wire envelope both
+/// the palette and the on-screen affordances dispatch.
 pub fn encode(action: &BackupsAction) -> EncodedAction {
     EncodedAction::encode(BACKUPS_ACTION_TYPE, action).expect("BackupsAction is always serializable")
 }
@@ -112,11 +89,9 @@ pub fn set_retention_action(field: PolicyField, count: u32) -> BackupsAction {
     BackupsAction::SetRetention { field, count: count.min(999) }
 }
 
-/// Resolve the retention target for a bump of `delta` from `cur`, clamped to
-/// `[0, 999]`, and build the absolute [`BackupsAction::SetRetention`]. This is the
-/// single place both the on-screen +/- affordances (see [`crate::app`]) and the
-/// palette's increment/decrement specs compute their target, so a button and its
-/// Ctrl+K row build the byte-identical action.
+/// The single place both the on-screen +/- affordances and the palette's
+/// increment/decrement specs resolve a bump into an absolute target, so a
+/// button and its Ctrl+K row build the byte-identical action.
 pub fn bump_retention_action(field: PolicyField, cur: u32, delta: i64) -> BackupsAction {
     let count = (cur as i64 + delta).clamp(0, 999) as u32;
     BackupsAction::SetRetention { field, count }
@@ -126,7 +101,6 @@ pub fn bump_retention_action(field: PolicyField, cur: u32, delta: i64) -> Backup
 // Resource tree
 // ===========================================================================
 
-/// Read one field's count out of a resolved policy.
 fn policy_field(p: &RetentionPolicy, field: PolicyField) -> u32 {
     match field {
         PolicyField::Hourly => p.hourly,
@@ -146,10 +120,9 @@ fn immediate_spec(id: &str, label: &str, action: &BackupsAction) -> ActionSpec {
     ActionSpec::immediate(id, label, BACKUPS_ACTION_TYPE, action).expect("encode backups action")
 }
 
-/// Build the resource tree the Backups app publishes: the retention policy, with
-/// a child per class (hourly / daily / weekly / monthly) exporting set / increase
-/// / decrease. Every document-mutating operation is exported as the same action
-/// the on-screen affordance dispatches.
+/// The resource tree Backups publishes: the retention policy, with a child per
+/// class exporting set / increase / decrease, each the same action the
+/// on-screen affordance dispatches.
 pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
@@ -161,7 +134,6 @@ pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
             format!("{}: keep {} ({})", field.label(), cur, field.unit()),
         );
 
-        // Set to an absolute count — prompted for the number.
         let set_label = format!("Set {} retention", field.label().to_ascii_lowercase());
         fr = fr.with_action(ActionSpec::prompted(
             "set",
@@ -172,8 +144,7 @@ pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
             move |text: &str| encode(&set_retention_action(field, parse_count(text))),
         ));
 
-        // Increase / decrease by one — offered only where there is room to move,
-        // and resolved through the same builder the +/- buttons call.
+        // Offered only where there is room to move.
         if cur < 999 {
             fr = fr.with_action(immediate_spec(
                 "increment",
@@ -230,9 +201,8 @@ mod tests {
         }
     }
 
-    /// A Backups app synced into a fresh document. `sync` seeds the default
-    /// retention policy into the document, so it is the source of truth every
-    /// action reads.
+    /// `sync` seeds the default retention policy, so this is ready for actions
+    /// to read.
     fn seeded() -> (BackupsApp, AutoCommit) {
         let mut app = BackupsApp::new();
         let mut doc = AutoCommit::new();
@@ -240,8 +210,7 @@ mod tests {
         (app, doc)
     }
 
-    /// The `backups.retention` child resource for one policy field.
-    fn field_resource<'a>(root: &'a Resource, field: PolicyField) -> &'a Resource {
+    fn field_resource(root: &Resource, field: PolicyField) -> &Resource {
         let id = format!("backups.retention:{}", field.key());
         root.children
             .iter()
@@ -249,9 +218,7 @@ mod tests {
             .unwrap_or_else(|| panic!("a resource for {id}"))
     }
 
-    /// Ctrl+K on Backups yields the tree: the retention policy root, a
-    /// `backups.retention` child per class exporting set / increment / decrement.
-    /// Drives the real resource hook and the real palette.
+    /// Drives the real resource hook and the real palette, not a mock tree.
     #[test]
     fn ctrl_k_publishes_the_retention_tree() {
         let (app, doc) = seeded();
@@ -289,8 +256,6 @@ mod tests {
         );
     }
 
-    /// A field pinned at its bounds omits the move that can't happen: a `0`-count
-    /// field offers no decrement, a `999`-count field offers no increment.
     #[test]
     fn bounded_fields_omit_the_impossible_move() {
         let (_app, mut doc) = seeded();
@@ -310,9 +275,6 @@ mod tests {
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
     #[test]
     fn action_records_one_undo_boundary_and_reverts() {
         let mut app = BackupsApp::new();
@@ -345,9 +307,7 @@ mod tests {
         );
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
+    /// Same head hashes on replay, not merely the same values.
     #[test]
     fn action_replays_byte_identical_on_a_peer() {
         let (_app, seeded_doc) = seeded();
@@ -377,8 +337,6 @@ mod tests {
         );
     }
 
-    /// A redundant payload is a no-op, not an error: setting a field to the value
-    /// already stored leaves the document (its heads) untouched.
     #[test]
     fn redundant_action_is_a_no_op() {
         let (_app, mut doc) = seeded();
@@ -395,9 +353,6 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a no-change set changed nothing");
     }
 
-    /// Single source of truth (spec == builder): the palette's per-field
-    /// increment / decrement specs and the prompted set spec encode
-    /// byte-identically to the builders the on-screen affordances call.
     #[test]
     fn palette_specs_match_builders() {
         let (app, doc) = seeded();
@@ -423,10 +378,8 @@ mod tests {
         assert_eq!(from_spec.payload, from_builder.payload, "set is one source of truth");
     }
 
-    /// Single source of truth on the *real* affordance path: the on-screen +/-
-    /// control (`bump_retention`, the method both the mouse hit and the keyboard
-    /// arrow/`+`/`-` handlers funnel through) dispatches the byte-identical action
-    /// the palette's `increment` spec exports.
+    /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
+    /// handlers funnel through.
     #[test]
     fn bump_button_dispatches_the_palette_action() {
         let (mut app, mut doc) = seeded();

@@ -225,43 +225,6 @@ impl<W: Widget> Harness<W> {
         self.click_at(r.center());
     }
 
-    /// Inject a press → drag → release (move to `from`, press, move to `to`,
-    /// release), then relayout. Drives real pointer-capture drag handling
-    /// through `handle_event` — used to exercise the scrubber's drag-to-seek.
-    pub fn drag(&mut self, from: Point, to: Point) {
-        let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved {
-            device_id: dev,
-            position: PhysicalPosition::new(from.x, from.y),
-        });
-        self.dispatch(WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.dispatch(WindowEvent::CursorMoved {
-            device_id: dev,
-            position: PhysicalPosition::new(to.x, to.y),
-        });
-        self.dispatch(WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
-        self.frame();
-    }
-
-    /// Drag the horizontal scrubber addressed by `id` to `frac` of its width.
-    /// Returns the target x used, for callers that want to reason about it.
-    pub fn drag_scrubber_to(&mut self, id: &str, frac: f64) {
-        let r = self
-            .rect_by_id(id)
-            .unwrap_or_else(|| panic!("no widget with test_id {id:?} in the laid-out tree"));
-        let from = r.center();
-        let to = Point::new(r.x0 + r.width() * frac.clamp(0.0, 1.0), r.center().y);
-        self.drag(from, to);
-    }
-
     /// Laid-out rects of the **direct children** of the widget with `test_id ==
     /// id` — e.g. the card rects inside the grid, for a "no right gutter" check.
     pub fn child_rects(&self, id: &str) -> Vec<Rect> {

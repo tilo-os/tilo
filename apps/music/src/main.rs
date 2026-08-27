@@ -1,16 +1,16 @@
 //! Music — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//! - default — run the live winit event loop via `ui::App`.
+//! - `--shots PATH` — render one offscreen frame to a PNG and exit (headless
+//!   screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots`:
-//!   * `--viewport WxH`   — render at a custom size (e.g. `--viewport 480x820`
-//!                          to capture the narrow / overlay-sidebar layout).
-//!   * `--scenario NAME`  — stage a named interaction state for the single
-//!                          frame (see `music::app_root_for_shot`); `sidebar`
-//!                          snaps the navigation sidebar open.
+//! - `--viewport WxH` — render at a custom size (e.g. `--viewport 480x820` to
+//!   capture the narrow / overlay-sidebar layout).
+//! - `--scenario NAME` — stage a named interaction state for the single frame
+//!   (see `music::app_root_for_shot`); `sidebar` snaps the navigation sidebar
+//!   open.
 
 use std::collections::HashMap;
 
