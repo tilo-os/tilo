@@ -1,20 +1,15 @@
 //! Built-in format providers bundled with `qdoc`, plus a registry preloaded
 //! with them. Third-party apps register additional providers on top.
 //!
-//! # Reading text out of the zip+XML formats
-//!
-//! `.docx`, `.odt`, `.ods`, `.xlsx` and `.odp` are all zip archives of XML 1.0
-//! documents, and every codec here reads them with the one `quick-xml` the
-//! workspace pins. Text content comes out via [`BytesText::xml10_content`],
-//! which unescapes entities *and* applies XML 1.0 end-of-line normalisation
-//! (`\r\n` and lone `\r` become `\n`). That normalisation is what the XML 1.0
-//! spec requires of a conforming parser; neither OOXML nor ODF carries line
-//! breaks as literal CR/LF anyway — those are `<w:br/>` and `<text:line-break/>`
-//! elements — so a raw CR in text content is whitespace, and folding it is
-//! correct. Use `xml11_content` only if a format ever declares XML 1.1, which
-//! none of these do.
-//!
-//! [`BytesText::xml10_content`]: quick_xml::events::BytesText::xml10_content
+//! `.docx`, `.odt`, `.ods`, `.xlsx` and `.odp` are zip archives of XML 1.0
+//! documents; every codec here reads them through the one `quick-xml` the
+//! workspace pins, pulling text via [`BytesText::xml10_content`], which
+//! unescapes entities *and* applies XML 1.0 end-of-line normalisation (`\r\n`
+//! and lone `\r` become `\n`) — required by the XML 1.0 spec. Neither OOXML nor
+//! ODF carries line breaks as literal CR/LF (those are `<w:br/>` and
+//! `<text:line-break/>` elements), so a raw CR in text content is whitespace
+//! and folding it is correct. Use `xml11_content` only if a format ever
+//! declares XML 1.1, which none of these do.
 
 pub mod docx;
 pub mod html;
@@ -37,10 +32,8 @@ pub use xlsx::XlsxCodec;
 
 use crate::format::{ProviderTier, Registry};
 
-/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive).
-/// Separate from [`builtin_registry`] because spreadsheets speak the
-/// [`SheetProvider`] contract (workbook model), not the rich-text
-/// [`crate::format::FormatProvider`] one.
+/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
+/// from [`builtin_registry`] since spreadsheets speak [`SheetProvider`], not [`crate::format::FormatProvider`].
 pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
     match ext.to_ascii_lowercase().as_str() {
         "xlsx" => Some(Box::new(XlsxCodec)),
@@ -49,38 +42,31 @@ pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
     }
 }
 
-/// Whether `ext` (case-insensitive, no dot) is a built-in spreadsheet format.
 pub fn is_supported_sheet_ext(ext: &str) -> bool {
     sheet_provider_for_ext(ext).is_some()
 }
 
-/// A registry preloaded with the built-in codecs at `Builtin` tier.
 pub fn builtin_registry() -> Registry {
     let mut r = Registry::new();
     r.register("md", ProviderTier::Builtin, Box::new(MarkdownCodec));
     r.register("markdown", ProviderTier::Builtin, Box::new(MarkdownCodec));
     r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
     r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
-    // RTF is import-only via this codec (its `export` returns Unsupported; RTF
-    // writing lives in the editor's `qdoc-rtf` crate). Registering it still makes
-    // `.rtf` an openable document type.
+    // RTF is import-only via this codec (`export` returns Unsupported; writing lives
+    // in the editor's `qdoc-rtf` crate) — registering it still makes `.rtf` openable.
     r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
-    // HTML is import-only via this codec (its `export` returns Unsupported; HTML
-    // writing lives in the editor's `qdoc-html` crate — `qdoc` can't depend on it
-    // without a cycle). Registering it makes `.html`/`.htm` openable.
+    // HTML is import-only via this codec (`export` returns Unsupported; writing lives
+    // in `qdoc-html`, which `qdoc` can't depend on without a cycle) — this makes `.html`/`.htm` openable.
     r.register("html", ProviderTier::Builtin, Box::new(HtmlCodec));
     r.register("htm", ProviderTier::Builtin, Box::new(HtmlCodec));
     r
 }
 
-/// Extensions the built-in codecs handle (`md`, `markdown`, `odt`, `docx`,
-/// `rtf`, `html`, `htm`) — the OS source of truth for "this file is an editable
-/// document".
+/// Extensions the built-in codecs handle — the OS source of truth for "this file is an editable document".
 pub fn supported_extensions() -> Vec<String> {
     builtin_registry().extensions()
 }
 
-/// Whether `ext` (case-insensitive, no dot) is a built-in document format.
 pub fn is_supported_ext(ext: &str) -> bool {
     builtin_registry().provider_for_ext(ext).is_some()
 }
@@ -137,8 +123,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// Random documents over the subset both codecs model (headings, paragraphs,
-    /// unordered list items, **strong** / *em*).
+    /// Random documents over the subset both codecs model (headings, paragraphs, unordered list items, **strong** / *em*).
     fn doc_strategy() -> impl Strategy<Value = String> {
         let inline = prop_oneof![
             "[a-z]{1,5}".prop_map(|w| w),

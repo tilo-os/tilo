@@ -23,11 +23,10 @@ use winit::keyboard::{Key, NamedKey};
 /// What the caller should do after handing a key to [`apply`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edit {
-    /// The key was not ours — let it fall through to whatever is behind
-    /// the field.
+    /// Not ours — let it fall through to whatever is behind the field.
     Ignored,
-    /// Consumed, and nothing visible changed (a no-op `Ctrl+C` on an
-    /// empty selection, say). Swallow the key, skip the repaint.
+    /// Consumed, nothing visible changed (a no-op `Ctrl+C`, say): swallow
+    /// the key, skip the repaint.
     ConsumedQuiet,
     /// Consumed and the buffer or selection changed — repaint.
     Changed,
@@ -55,11 +54,8 @@ impl Mods {
     }
 }
 
-/// Apply one key press to `buf` / `sel`.
-///
-/// `buf` and `sel` are the caller's own storage; `sel`'s anchor and
-/// cursor are byte indices into `buf` and are always left on a character
-/// boundary.
+/// Apply one key press to the caller's own `buf` / `sel`; `sel`'s anchor
+/// and cursor are byte indices into `buf`, always left on a char boundary.
 pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Edit {
     let Mods { shift, ctrl } = mods;
     match key {
@@ -175,10 +171,9 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
             _ => Edit::Ignored,
         },
         Key::Character(s) => {
-            // Control characters never enter a buffer — a stray one would
-            // be invisible, unremovable by eye, and would travel into
-            // whatever the field feeds (an nmcli argument, a workspace
-            // name that syncs to peers).
+            // Control characters never enter a buffer — invisible,
+            // unremovable by eye, and travels into whatever the field
+            // feeds (an nmcli argument, a synced workspace name).
             let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
             if filtered.is_empty() {
                 return Edit::Ignored;
@@ -192,12 +187,8 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
     }
 }
 
-/// Render `buf` as a password field's visible text: one bullet per
-/// character, so the width still tracks what was typed.
-///
-/// Bullets rather than asterisks because the field is proportional-set —
-/// `•` is round and even at the chrome's text size where `*` sits high
-/// and reads as a footnote marker.
+/// One bullet per character. Bullets over asterisks: `•` is round and even
+/// at the chrome's text size, where `*` sits high like a footnote marker.
 pub fn masked(buf: &str) -> String {
     "•".repeat(buf.chars().count())
 }
@@ -245,8 +236,7 @@ mod tests {
 
     #[test]
     fn space_is_a_character_not_a_command() {
-        // Wi-Fi passphrases contain spaces, and the Space key arrives as
-        // a NamedKey rather than a Character.
+        // Space arrives as a NamedKey, not a Character.
         let (buf, _) = typed("correct horse");
         assert_eq!(buf, "correct horse");
     }

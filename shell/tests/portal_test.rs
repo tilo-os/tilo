@@ -1,11 +1,8 @@
 //! Integration tests for the xdg-desktop-portal D-Bus backend: one
 //! round-trip per interface (FileChooser / ScreenCast / Access), plus the
-//! "Always-grant skips the prompt" fast path.
-//!
-//! We **don't** use the real session bus. Each test sets up an in-process
-//! peer-to-peer zbus connection via `tokio::net::UnixStream::pair()` — the
-//! same pattern the upstream zbus `e2e.rs` fixtures use. No broker, no
-//! real file dialog ever pops, and the test is hermetic.
+//! "Always-grant skips the prompt" fast path. No real session bus — each
+//! test uses an in-process p2p zbus connection via
+//! `tokio::net::UnixStream::pair()`, so no broker and no real file dialog.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,12 +32,9 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
     Workspace::test_default(WorkspaceId(id), name)
 }
 
-/// Spin up a server zbus connection serving the portal and a paired
-/// client connection. Both connections are p2p — no session bus needed.
-///
-/// Returns `(server_conn, client_conn, ctx_for_assertions)`. The
-/// `ctx_for_assertions` clone shares the underlying GrantStore +
-/// PromptQueue, so tests can poke / inspect them across the wire.
+/// Server + paired client zbus connections, both p2p. The returned ctx
+/// clone shares the underlying GrantStore + PromptQueue, so tests can
+/// poke/inspect them across the wire.
 async fn bring_up_pair(
     grants: GrantStoreHandle,
     prompts: PromptQueueHandle,
@@ -118,11 +112,9 @@ async fn bring_up_pair_with_spawners(
     (server_conn, client_conn, ctx_clone)
 }
 
-/// Build a proxy that targets our portal object on the peer-to-peer
-/// connection. We set a placeholder destination (matching the portal's
-/// real bus name) because zbus's `Builder` requires one — on a p2p
-/// connection that field is informational only; the message is sent
-/// directly down the pipe and dispatched on the remote object server.
+/// A placeholder destination is set only because zbus's `Builder` requires
+/// one — on p2p it's informational; the message is dispatched directly on
+/// the remote object server.
 async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Proxy<'a> {
     zbus::proxy::Builder::<Proxy<'a>>::new(client)
         .destination(BUS_NAME)
@@ -184,11 +176,8 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
     if let Some(v) = results.get("uris") {
         let owned: OwnedValue = v.try_clone().expect("clone OwnedValue");
         let parsed: Vec<String> = Vec::<String>::try_from(owned).expect("as -> Vec<String>");
-        // The mock spawner returned `/tmp/picked.txt`; the URI we
-        // emit is `file:///tmp/picked.txt`.
         assert_eq!(parsed, vec!["file:///tmp/picked.txt".to_string()]);
     }
-    // The mock spawner recorded the title forwarded by the backend.
     let seen = mock.requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].1, "Open File (test)");
@@ -256,9 +245,8 @@ async fn access_dialog_camera_round_trips_auto_allow() {
 #[tokio::test]
 async fn always_grant_skips_prompt_queue() {
     // Pre-seed an `Always`-scoped Camera grant. `PromptResolver::Channel`
-    // (production-shaped) means if the backend pumps the request through
-    // the queue we'd see it in `queued_len` and the call would hang — the
-    // fast path bypasses the queue entirely.
+    // means a request pumped through the queue would show in `queued_len`
+    // and hang — the fast path bypasses the queue entirely.
     let mut ws = empty_workspace(104, "ws");
     // `app_grants_snapshot` hands back a fresh map by value — inserting
     // into it stores nothing, so seeding must go through `grant_app`.
@@ -314,7 +302,6 @@ async fn always_grant_skips_prompt_queue() {
         0,
         "Always grant must not enqueue a prompt"
     );
-    // Sanity: the grant store is still the same one our context points at.
     let _ = ctx;
 }
 
@@ -376,16 +363,13 @@ async fn session_outcome_persists_into_grant_store() {
         .deserialize()
         .expect("deserialize reply");
     assert_eq!(response, 0);
-    // Session-scoped grant should now be persisted, but we can't guarantee
-    // caller-map resolution across all zbus versions — soften the
-    // assertion to "the round trip succeeded"; lib tests cover the
-    // resolver path deterministically.
+    // Session-scoped grant should now be persisted, but caller-map
+    // resolution isn't guaranteed across zbus versions — soften to "the
+    // round trip succeeded"; lib tests cover the resolver path
+    // deterministically.
     let _ = (store, ctx);
 }
 
-/// Confirms `BUS_NAME` matches the `xdg-desktop-portal` backend
-/// convention; `os/.../portals/nirios.portal` points at this string, so
-/// keeping the assertion here makes the contract obvious.
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
     // Must match the shipped `os/.../portals/qos.portal` `DBusName`, its
@@ -394,16 +378,13 @@ fn bus_name_matches_freedesktop_portal_convention() {
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
 
-/// Uses a `MockScreenCastProvisioner` (real Pipewire is a system dep we
-/// can't assume on every build host) and asserts the `ScreenCast.Start`
-/// response carries a non-empty `streams` array whose first entry is the
-/// mock's pre-baked node id.
+/// Uses a `MockScreenCastProvisioner` — real Pipewire isn't assumed on
+/// every build host.
 #[tokio::test]
 async fn screencast_start_provisions_pipewire_stream() {
     let mut ws = empty_workspace(108, "ws");
-    // Pre-seed an Always-scoped Screencast grant so `Start` takes the fast
-    // path (skips the prompt) — the provisioner is called either way, this
-    // just avoids fulfilling a queued prompt from the test harness.
+    // Pre-seed an Always-scoped Screencast grant so `Start` skips the prompt;
+    // the provisioner is called either way.
     ws.grant_app(
         "org.example.cast",
         &Capability::Screencast {
@@ -434,7 +415,6 @@ async fn screencast_start_provisions_pipewire_stream() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
     let handle: ObjectPath<'_> = "/h/6".try_into().unwrap();
     let session: ObjectPath<'_> = "/s/6".try_into().unwrap();
-    // Forward a custom size so we can assert the provisioner saw it.
     let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
     let size: (u32, u32) = (1280, 720);
     opts.insert("size", OwnedValue::try_from(Value::new(size)).unwrap());
@@ -456,7 +436,6 @@ async fn screencast_start_provisions_pipewire_stream() {
         Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned).expect("Vec<(u32, dict)>");
     assert_eq!(streams.len(), 1, "exactly one stream provisioned");
     assert_eq!(streams[0].0, 77, "mock's node id round-trips");
-    // The mock recorded the request — size came through the options.
     let seen = provisioner.requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].width, 1280);
@@ -484,13 +463,11 @@ fn capability_kind_round_trips_through_grant_store() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// ScreenCast: standards coverage — source types, cursor modes, `multiple`,
-// restore_token round-trip, OpenPipeWireRemote, and the interface properties.
-// ---------------------------------------------------------------------------
+// ScreenCast: source types, cursor modes, `multiple`, restore_token
+// round-trip, OpenPipeWireRemote, interface properties.
 
-/// A workspace pre-seeded with an `Always` Screencast grant + a forced caller,
-/// so the handshake fast-paths past the prompt in a hermetic test.
+/// Pre-seeded with an `Always` Screencast grant + a forced caller, so the
+/// handshake fast-paths past the prompt.
 fn screencast_always(
     ws_num: u64,
     app: &str,
@@ -737,9 +714,7 @@ async fn screencast_properties_advertise_capabilities() {
     assert!(version >= 4, "restore_token support requires v4+");
 }
 
-// ---------------------------------------------------------------------------
-// RemoteDesktop: consent → Start → Notify* seat injection.
-// ---------------------------------------------------------------------------
+// RemoteDesktop: consent -> Start -> Notify* seat injection.
 
 #[tokio::test]
 async fn remote_desktop_notify_injects_after_consent() {
@@ -774,7 +749,6 @@ async fn remote_desktop_notify_injects_after_consent() {
     assert_eq!(started, 0);
     assert_eq!(u32_prop(&res, "devices"), 1 | 2, "granted devices returned");
 
-    // Fire pointer + keyboard events; the recorder captures the decoded actions.
     proxy
         .call_method("NotifyPointerButton", &(&session, &empty, 272i32, 1u32))
         .await
@@ -841,15 +815,10 @@ async fn remote_desktop_denial_blocks_injection() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Print
-// ---------------------------------------------------------------------------
-//
-// The property under test: an app hands over a *file descriptor* and a
-// request, and the bytes reach the spooler on the compositor's side of the
-// sandbox — while the app itself never sees a printer, a socket, or an IPP message.
+// Print — the property under test: an app hands over a *file descriptor*
+// and a request, and the bytes reach the spooler on the compositor's side
+// of the sandbox, while the app never sees a printer, socket, or IPP message.
 
-/// Bring up a portal pair whose spooler records instead of printing.
 async fn bring_up_print_pair(
     prompts: PromptQueueHandle,
     spooler: Arc<RecordingSpooler>,
@@ -870,8 +839,7 @@ async fn bring_up_print_pair(
     (server, client)
 }
 
-/// A real on-disk document, handed over as a descriptor exactly as an app
-/// would. `OwnedFd` here is a genuine fd crossing the connection, not a path.
+/// `OwnedFd` here is a genuine fd crossing the connection, not a path.
 fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedFd) {
     use std::io::{Seek, SeekFrom, Write};
     let mut f = tempfile::NamedTempFile::new().expect("temp document");
@@ -882,8 +850,7 @@ fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedF
     (f, zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)))
 }
 
-/// PreparePrint then Print: the document reaches the spooler, and the token
-/// minted by the first call is what authorises the second.
+/// The token minted by PreparePrint is what authorises the Print call.
 #[tokio::test]
 async fn print_round_trips_the_document_to_the_spooler() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
@@ -932,8 +899,6 @@ async fn print_round_trips_the_document_to_the_spooler() {
     drop(doc);
 }
 
-/// A refused prompt must stop the job dead. This is the assertion that makes
-/// the consent real rather than decorative: the spooler is never called.
 #[tokio::test]
 async fn a_denied_print_never_reaches_the_spooler() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
@@ -959,8 +924,8 @@ async fn a_denied_print_never_reaches_the_spooler() {
     drop(doc);
 }
 
-/// The app cannot pick a destination the machine does not have. Printing to
-/// an attacker-chosen name is how a device URI becomes a command line.
+/// Printing to an attacker-chosen name is how a device URI becomes a
+/// command line.
 #[tokio::test]
 async fn an_app_cannot_name_a_destination_that_does_not_exist() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![

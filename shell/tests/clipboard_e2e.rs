@@ -1,25 +1,15 @@
 //! End-to-end clipboard, primary selection and drag-and-drop, against a real
-//! qOS compositor with real Wayland clients.
+//! qOS compositor with real Wayland clients — no mocks, no in-process
+//! `State`, no `arboard`. Each client connects to a `UnixStream` inside the
+//! compositor's private runtime dir, never `Connection::connect_to_env()` or
+//! `WAYLAND_DISPLAY`.
 //!
-//! Everything here talks to a `shell` process this test spawned, over a
-//! Wayland socket in a private `XDG_RUNTIME_DIR`, using `wayland-client`. No
-//! mocks, no in-process `State`, no `arboard`.
-//!
-//! ## Why the connection is made by explicit path
-//!
-//! The bug these tests exist to prevent hid for exactly one reason: under a
-//! nested GNOME session `arboard` reaches X11 through Xwayland and *appears*
-//! to work, so a clipboard test could pass while the qOS compositor had no
-//! selection protocol at all. A test that can accidentally talk to the
-//! developer's session is worth nothing here.
-//!
-//! So no test in this file ever calls `Connection::connect_to_env()` or reads
-//! `WAYLAND_DISPLAY`. Each client connects to a `UnixStream` at a path inside
-//! the temporary runtime directory of the compositor this test started, and
-//! [`TestClient::assert_is_qos_compositor`] then checks the seat name the peer
-//! reports. If anything ever reroutes these clients to another compositor, the
-//! seat-name assertion fails loudly rather than the suite passing for the
-//! wrong reason.
+//! Why: under a nested GNOME session `arboard` reaches X11 through Xwayland
+//! and *appears* to work, so a clipboard test could pass while the qOS
+//! compositor had no selection protocol at all.
+//! [`TestClient::assert_is_qos_compositor`] checks the seat name the peer
+//! reports, so a reroute to another compositor fails loudly instead of the
+//! suite passing against a session it never touched.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -72,11 +62,8 @@ const QOS_SEAT_NAME: &str = "quick-desktop";
 /// headless compositor spins up a wgpu offscreen renderer on its first frame.
 const DEADLINE: Duration = Duration::from_secs(25);
 
-// =============================================================================
 // Compositor harness
-// =============================================================================
 
-/// A real `shell` process with a private runtime directory.
 struct Compositor {
     child: Child,
     runtime_dir: PathBuf,
@@ -93,10 +80,9 @@ struct Compositor {
 }
 
 impl Compositor {
-    /// Boot a headless compositor and wait until it has published every
-    /// socket. Panics with the compositor's own log on any failure, because a
-    /// harness that returns `None` here would turn a broken compositor into a
-    /// skipped test.
+    /// Boot a headless compositor and wait until every socket is published;
+    /// panics with the compositor's log on failure rather than turning a broken
+    /// compositor into a skipped test.
     fn start() -> Self {
         Self::start_with_home(None)
     }
@@ -111,10 +97,8 @@ impl Compositor {
     /// two window groups on screen at once when one of them is the demo
     /// group, whose tabs are laid out at their normal width.
     fn start_with(home: Option<&Path>, size: (i32, i32)) -> Self {
-        // A unix socket path is capped at `SUN_LEN` (~108 bytes), so the
-        // runtime dir has to be short — `/run/user/$UID` is where a session
-        // runtime dir belongs anyway, and being outside the repo keeps a
-        // stray socket from ever being committed.
+        // SUN_LEN caps a unix socket path (~108 bytes), so the runtime dir must be
+        // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/qos-clip-{}-{}",
             unsafe { libc::getuid() },
@@ -131,27 +115,22 @@ impl Compositor {
         let mut child = command
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
-            // The compositor loads its workspace tree, room identities and
-            // session records from disk. Point every XDG dir at the throwaway
-            // runtime dir so a test neither reads nor writes the developer's
-            // real desktop — and so each run starts from the same known tree
-            // instead of whatever windows happened to be open last time.
+            // Point every XDG dir at the throwaway runtime dir so the test neither
+            // reads nor writes the developer's real desktop, and each run starts from
+            // the same known tree.
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
             .env("QOS_TEST_CONTROL", &control_socket)
             .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
-            // smithay logs its selection and drag decisions at debug, and
-            // "denying drag from client without implicit grab" is the one
-            // line that distinguishes a rejected drag from a delivered one
-            // that went to the wrong surface.
+            // smithay logs selection/drag decisions at debug; "denying drag from
+            // client without implicit grab" is what distinguishes a rejected drag from
+            // one delivered to the wrong surface.
             .env("RUST_LOG", "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug")
-            // The whole point of this suite is that it cannot reach the
-            // developer's session. Removing both display variables means the
-            // compositor binds a fresh socket in our private runtime dir and
-            // that nothing inside it can find a host compositor to fall back
-            // onto.
+            // Removing both display variables is what keeps this suite from ever
+            // reaching the developer's session — the compositor binds a fresh socket
+            // with nothing to fall back onto.
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -161,12 +140,10 @@ impl Compositor {
 
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
-        // Both pipes must be drained continuously. A full 64 KiB pipe blocks
-        // the compositor mid-write, which shows up much later as an
-        // unexplained timeout on an unrelated read. `tracing` writes to
-        // stdout while the compositor's own `eprintln!`s go to stderr, so
-        // both feed the log — a failure that only quotes half of it can miss
-        // the one line that explains it.
+        // Both pipes must be drained continuously — a full 64 KiB pipe blocks the
+        // compositor mid-write, surfacing as an unrelated timeout much later.
+        // `tracing` goes to stdout, the compositor's `eprintln!`s to stderr;
+        // missing either can hide the one line that explains a failure.
         let stdout = child.stdout.take().expect("compositor stdout");
         let stdout_log = Arc::clone(&log);
         std::thread::spawn(move || {
@@ -244,7 +221,6 @@ impl Compositor {
         this
     }
 
-    /// Send one test-control command and return the decoded response.
     fn control(&self, request: serde_json::Value) -> serde_json::Value {
         use std::io::Write;
         let mut stream =
@@ -264,7 +240,6 @@ impl Compositor {
             .unwrap_or_else(|e| panic!("control response was not JSON ({e}): {response:?}"))
     }
 
-    /// Copy `text` from in-process chrome, through `ui`'s clipboard.
     fn chrome_copy(&self, text: &str, primary: bool) {
         let resp = self.control(serde_json::json!({
             "op": "clipboard_copy", "text": text, "primary": primary,
@@ -275,7 +250,6 @@ impl Compositor {
         );
     }
 
-    /// Paste from in-process chrome, through `ui`'s clipboard.
     fn chrome_paste(&self, primary: bool) -> Option<String> {
         let resp = self.control(serde_json::json!({
             "op": "clipboard_paste", "primary": primary,
@@ -289,7 +263,6 @@ impl Compositor {
             .map(str::to_string)
     }
 
-    /// The tail of the compositor's stderr.
     fn recent_log(&self) -> String {
         self.log
             .lock()
@@ -348,7 +321,6 @@ impl Compositor {
         self.connect_to(&self.wayland_socket)
     }
 
-    /// Open a client connection on the privileged socket.
     fn connect_privileged(&self) -> Connection {
         self.connect_to(&self.privileged_socket)
     }
@@ -396,12 +368,8 @@ fn next_id() -> u64 {
     N.fetch_add(1, Ordering::Relaxed)
 }
 
-// =============================================================================
 // Wayland test client
-// =============================================================================
 
-/// Everything a client learns from the compositor, accumulated by the dispatch
-/// impls below.
 #[derive(Default)]
 struct ClientState {
     globals: Vec<(String, u32, u32)>,
@@ -415,22 +383,18 @@ struct ClientState {
 
     /// Set once `xdg_surface.configure` has been acked — the surface is mapped.
     configured: bool,
-    /// Set while this client holds keyboard focus, which is what the
-    /// compositor gates `set_selection` on.
+    /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
     /// Latest serial from any input event, for requests that need one.
     last_serial: u32,
-    /// Set once the pointer has entered this client's surface, which is the
-    /// implicit grab a `start_drag` needs.
+    /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
     pointer_entered: bool,
     pointer_button_serial: Option<u32>,
 
-    /// Mime types announced on the most recent clipboard offer, and the offer
-    /// itself.
+    /// Mime types on the most recent clipboard offer, and the offer itself.
     clipboard_offer: Option<WlDataOffer>,
     clipboard_offer_mimes: Vec<String>,
-    /// Set when the compositor delivered `wl_data_device.selection`, i.e. the
-    /// offer is the *current clipboard*, not a drag.
+    /// Set when the compositor delivered `wl_data_device.selection` — a clipboard, not a drag.
     clipboard_selection_seen: bool,
 
     primary_offer: Option<ZwpPrimarySelectionOfferV1>,
@@ -443,17 +407,14 @@ struct ClientState {
     dnd_entered: bool,
     dnd_dropped: bool,
 
-    /// Mime types this client was asked to serve. The *text* is not stored
-    /// here: it rides along as each source's user data, so a client that owns
-    /// the clipboard and the primary selection at once serves each from its
-    /// own string instead of both from one field that the second `set_*` call
-    /// would have overwritten.
+    /// Mime types this client was asked to serve. Text isn't stored here — it
+    /// rides as each source's user data, so a client owning both selections
+    /// serves each from its own string.
     send_requests: Vec<String>,
     /// Set when the compositor told our source it was superseded.
     source_cancelled: bool,
 }
 
-/// One Wayland client: its own connection, event queue and accumulated state.
 struct TestClient {
     conn: Connection,
     queue: EventQueue<ClientState>,
@@ -467,7 +428,6 @@ struct TestClient {
 }
 
 impl TestClient {
-    /// Connect, bind every global this suite needs, and learn the seat name.
     fn new(conn: Connection, app_id: &str) -> Self {
         let mut queue: EventQueue<ClientState> = conn.new_event_queue();
         let qh = queue.handle();
@@ -490,7 +450,6 @@ impl TestClient {
         }
     }
 
-    /// Fail unless this client is talking to the qOS compositor.
     fn assert_is_qos_compositor(&mut self) {
         self.roundtrip();
         assert_eq!(
@@ -516,9 +475,8 @@ impl TestClient {
             .expect("client roundtrip");
     }
 
-    /// Map an xdg-toplevel so the compositor adopts it as a tab and focuses
-    /// it. Returns once the compositor has given this client keyboard focus,
-    /// which is the precondition for setting a selection.
+    /// Map an xdg-toplevel and return once the compositor has given this
+    /// client keyboard focus — the precondition for setting a selection.
     fn map_window(&mut self, compositor: &Compositor) {
         let wl_compositor = self
             .state
@@ -543,7 +501,6 @@ impl TestClient {
             surface.id().protocol_id()
         ));
 
-        // Bind the selection devices now that there is a seat.
         let seat = self.state.seat.clone().expect("compositor advertises wl_seat");
         if let Some(mgr) = self.state.data_manager.clone() {
             self.data_device = Some(mgr.get_data_device(&seat, &self.qh, ()));
@@ -552,10 +509,9 @@ impl TestClient {
             self.primary_device = Some(mgr.get_device(&seat, &self.qh, ()));
         }
 
-        // Paint something. A toplevel with no buffer has no size, so the
-        // compositor lays its tile out at zero area and the window is not
-        // addressable — a drag could not be aimed at it. Attaching a real
-        // `wl_shm` buffer is also just what an app does.
+        // A toplevel with no buffer has no size (tile laid out at zero area, not
+        // addressable) — attach a real wl_shm buffer, which is also just what an
+        // app does.
         self.wait_until(
             |s| s.configured,
             "the compositor never sent an xdg_surface.configure",
@@ -581,13 +537,9 @@ impl TestClient {
     }
 
     /// Find a screen position at which this client receives pointer input.
-    ///
-    /// Asked of the client rather than computed from the compositor's layout:
-    /// "where does this window actually receive the pointer" is exactly what a
-    /// drag needs, and the client saying `wl_pointer.enter` is the only
-    /// authority on it. Probing also means the test does not encode the strip
-    /// layout, so a change to how tiles are arranged moves the drag with them
-    /// instead of silently aiming it at chrome.
+    /// Asked of the client, not computed from the compositor's layout: its own
+    /// `wl_pointer.enter` is the only authority, so a strip-layout change moves
+    /// the drag with it instead of aiming at chrome.
     fn pointer_target(&mut self, compositor: &Compositor) -> (f64, f64) {
         if let Some(p) = self.try_pointer_target(compositor) {
             return p;
@@ -601,8 +553,7 @@ impl TestClient {
         );
     }
 
-    /// [`Self::pointer_target`] without the panic: `None` when this client is
-    /// not on screen right now.
+    /// [`Self::pointer_target`] without the panic.
     fn try_pointer_target(&mut self, compositor: &Compositor) -> Option<(f64, f64)> {
         const STEP: i32 = 40;
         let (w, h) = compositor.size;
@@ -624,14 +575,13 @@ impl TestClient {
         None
     }
 
-    /// Attach an opaque `wl_shm` buffer of `width * height` and commit it, so
-    /// the compositor has real content to size and composite the tile from.
+    /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
+    /// content to size and composite the tile from.
     fn attach_buffer(&mut self, width: i32, height: i32) {
         let shm = self.state.shm.clone().expect("compositor advertises wl_shm");
         let stride = width * 4;
         let len = (stride * height) as usize;
 
-        // An anonymous in-memory file is the standard backing for a shm pool.
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
         let raw = unsafe { libc::memfd_create(c"qos-clipboard-e2e".as_ptr(), 0) };
@@ -659,20 +609,16 @@ impl TestClient {
         self.step(&format!("attached a {width}x{height} buffer"));
     }
 
-    /// Note a milestone. Visible under `--nocapture`, so a run that stalls
-    /// says where rather than just stopping.
+    /// Note a milestone, so a run that stalls says where under `--nocapture`.
     fn step(&self, what: &str) {
         eprintln!("[clipboard-e2e] {}: {what}", self.app_id);
     }
 
     /// Pump this client until `cond` holds, failing with `what` on timeout.
-    ///
-    /// Deliberately built on `roundtrip` and a sleep rather than
-    /// `blocking_dispatch`: a blocking dispatch parks until the compositor
-    /// happens to send something, so a compositor that sends *nothing* — the
-    /// exact failure this suite is meant to catch — would hang the test
-    /// instead of failing it. A `roundtrip` always returns as long as the peer
-    /// is alive, which keeps the deadline meaningful.
+    /// Built on `roundtrip` + sleep rather than `blocking_dispatch`: a blocking
+    /// dispatch parks until the compositor sends something, so a compositor
+    /// that sends *nothing* — the exact failure this suite catches — would hang
+    /// instead of failing.
     fn wait_until(&mut self, cond: impl Fn(&ClientState) -> bool, what: &str) {
         let started = Instant::now();
         while started.elapsed() < DEADLINE {
@@ -685,18 +631,15 @@ impl TestClient {
         panic!("{what} (waited {DEADLINE:?}, app_id {})", self.app_id);
     }
 
-    /// Pump without requiring progress — used when waiting on something
-    /// outside this client (a pipe, another client, the compositor's tick).
+    /// Pump without requiring progress, for waits on something outside this client.
     fn pump(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
             .expect("client roundtrip while pumping");
     }
 
-    /// Take ownership of the clipboard, offering `text` as UTF-8 text.
-    ///
-    /// The source stays alive on `self.state` so the client can answer the
-    /// `send` request the compositor forwards when a peer pastes.
+    /// Take ownership of the clipboard. The source stays alive on `self.state`
+    /// so the client can answer the compositor's forwarded `send` request.
     fn set_clipboard(&mut self, text: &str) {
         let mgr = self
             .state
@@ -713,7 +656,6 @@ impl TestClient {
         self.roundtrip();
     }
 
-    /// Take ownership of the primary selection.
     fn set_primary(&mut self, text: &str) {
         let mgr = self
             .state
@@ -730,12 +672,9 @@ impl TestClient {
         self.roundtrip();
     }
 
-    /// Read the current clipboard as this client sees it.
-    ///
-    /// `peer` is pumped while the transfer runs: when the selection is owned
-    /// by another client in this same test process, that client is the one
-    /// that has to answer the `send` request, and nothing would ever be
-    /// written if only the reader were dispatched.
+    /// Read the current clipboard. `peer` is pumped while the transfer runs —
+    /// when another client in this process owns the selection, it must be
+    /// dispatched to answer the `send` request or nothing gets written.
     fn read_clipboard(&mut self, peer: Option<&mut TestClient>) -> String {
         self.wait_until(
             |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
@@ -755,7 +694,6 @@ impl TestClient {
         drain(read_fd, self, peer)
     }
 
-    /// Read the current primary selection as this client sees it.
     fn read_primary(&mut self, peer: Option<&mut TestClient>) -> String {
         self.wait_until(
             |s| s.primary_selection_seen && s.primary_offer.is_some(),
@@ -774,15 +712,13 @@ impl TestClient {
         drain(read_fd, self, peer)
     }
 
-    /// Read the drag-and-drop offer that entered this client's surface.
     fn read_dnd(&mut self, peer: &mut TestClient) -> String {
         let bytes = self.read_dnd_bytes(TEXT_MIME, Some(peer));
         String::from_utf8(bytes).expect("selection bytes were not UTF-8")
     }
 
-    /// Read the drag-and-drop offer as `mime`. `peer` is pumped while waiting
-    /// when the source is another test client; a compositor-sourced drag
-    /// needs no peer.
+    /// Read the drag-and-drop offer as `mime`; `peer` is pumped when the source
+    /// is another test client (a compositor-sourced drag needs none).
     fn read_dnd_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         let offer = self.state.dnd_offer.clone().expect("a drag offer");
         let (read_fd, write_fd) = make_pipe();
@@ -793,8 +729,7 @@ impl TestClient {
     }
 }
 
-/// An `OwnedFd` plus a borrow helper, so `receive` can take `&fd` while the
-/// test still owns the lifetime.
+/// An `OwnedFd` plus a borrow helper, so `receive` can take `&fd`.
 struct Fd(OwnedFd);
 
 impl Fd {
@@ -819,10 +754,8 @@ fn make_pipe() -> (Fd, Fd) {
 }
 
 /// Read `fd` to EOF while pumping both clients, and return it as UTF-8.
-///
-/// The pumping is the whole trick: a selection transfer between two clients in
-/// one process only completes if the *owner* is dispatched so it can answer the
-/// `send` request the compositor forwards to it.
+/// The pumping is the trick: a same-process transfer only completes if the
+/// *owner* is dispatched to answer the `send` request.
 fn drain(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -> String {
     String::from_utf8(drain_bytes(fd, reader, peer)).expect("selection bytes were not UTF-8")
 }
@@ -861,9 +794,7 @@ fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -
     );
 }
 
-// =============================================================================
 // Dispatch impls
-// =============================================================================
 
 impl Dispatch<WlRegistry, ()> for ClientState {
     fn event(
@@ -1064,10 +995,8 @@ impl Dispatch<WlDataDevice, ()> for ClientState {
                 state.last_serial = serial;
                 if let Some(offer) = id {
                     state.dnd_offer_mimes = std::mem::take(&mut state.clipboard_offer_mimes);
-                    // Accept a type the source actually offered — the text
-                    // type when it is there, else the first one — and a copy
-                    // action, or the source will be told the drop was refused
-                    // and send nothing.
+                    // Accept a type the source actually offered (text if present, else the
+                    // first) and a copy action, or the source is told the drop was refused.
                     let accept = state
                         .dnd_offer_mimes
                         .iter()
@@ -1211,7 +1140,7 @@ delegate_noop!(ClientState: ignore WlShm);
 delegate_noop!(ClientState: ignore WlShmPool);
 delegate_noop!(ClientState: ignore WlBuffer);
 
-/// Answer a `send` request: write the served text and close, since closing is
+/// Answer a `send` request: write the served text and close — closing is
 /// what signals EOF to the reader.
 fn write_and_close(fd: OwnedFd, text: &str) {
     use std::io::Write;
@@ -1219,17 +1148,12 @@ fn write_and_close(fd: OwnedFd, text: &str) {
     let _ = file.write_all(text.as_bytes());
 }
 
-// =============================================================================
 // Tests
-// =============================================================================
 
-/// A real toolkit must find every global it treats as mandatory.
-///
-/// GTK refuses the display outright if `wl_data_device_manager` is missing —
-/// it does not degrade to a clipboard-less session, it stops every GTK
-/// program on the machine from opening a window at all. qOS's own toolkit
-/// never asks for it, so nothing in-tree would notice; this asserts the full
-/// set a foreign toolkit needs, on the socket a sandboxed app is given.
+/// A real toolkit must find every global it treats as mandatory — GTK
+/// refuses the display outright (stopping every GTK program) if
+/// `wl_data_device_manager` is missing. qOS's own toolkit never asks for
+/// it, so this asserts the full set a foreign toolkit needs.
 #[test]
 fn compositor_advertises_the_globals_a_toolkit_requires() {
     let compositor = Compositor::start();
@@ -1261,7 +1185,6 @@ fn compositor_advertises_the_globals_a_toolkit_requires() {
     }
 }
 
-/// The headline case: copy in one process, paste in another.
 #[test]
 fn clipboard_crosses_from_one_client_to_another() {
     let compositor = Compositor::start();
@@ -1277,9 +1200,8 @@ fn clipboard_crosses_from_one_client_to_another() {
     source.map_window(&compositor);
     source.set_clipboard(payload);
 
-    // Mapping the second window moves focus, which is what makes the
-    // compositor offer the selection to it. That is the real sequence: you
-    // copy in one window, switch to another, and paste.
+    // Mapping the second window moves focus, which is what makes the compositor
+    // offer it the selection — the real sequence a user performs.
     let mut sink = TestClient::new(compositor.connect(), "org.qos.test.sink");
     sink.assert_is_qos_compositor();
     sink.map_window(&compositor);
@@ -1297,12 +1219,10 @@ fn clipboard_crosses_from_one_client_to_another() {
     );
 }
 
-/// Copy in the compositor's own chrome, paste in a sandboxed app.
-///
-/// The chrome, the terminal and the file explorer are linked into the
-/// compositor binary and are not Wayland clients, so this path goes
-/// chrome → `ui::clipboard` → the compositor's mirror → a compositor-owned
-/// Wayland selection → the focused client.
+/// Copy in the compositor's own chrome, paste in a sandboxed app. Chrome,
+/// terminal and file-explorer are linked into the binary, not Wayland
+/// clients, so this goes chrome -> `ui::clipboard` -> the compositor's
+/// mirror -> a compositor-owned selection -> the focused client.
 #[test]
 fn clipboard_crosses_from_in_process_chrome_to_a_client() {
     let compositor = Compositor::start();
@@ -1321,11 +1241,9 @@ fn clipboard_crosses_from_in_process_chrome_to_a_client() {
     );
 }
 
-/// Copy in a sandboxed app, paste in the compositor's own chrome.
-///
-/// The compositor mirrors a client-owned selection into memory so its hosted
-/// widgets can paste synchronously; this proves the mirror actually fills from
-/// the live protocol rather than only from chrome's own writes.
+/// Copy in a sandboxed app, paste in the compositor's own chrome — proves
+/// the synchronous paste mirror fills from the live protocol, not just
+/// from chrome's own writes.
 #[test]
 fn clipboard_crosses_from_a_client_to_in_process_chrome() {
     let compositor = Compositor::start();
@@ -1442,15 +1360,11 @@ fn primary_selection_crosses_from_in_process_chrome_to_a_client() {
     assert_eq!(client.read_clipboard(None), "chrome clipboard");
 }
 
-/// `wlr-data-control` is the clipboard-manager protocol: a client that binds it
-/// reads every selection on the seat, with no focus requirement and no user
-/// interaction.
-///
-/// It must therefore be invisible on the public socket — the one the sandbox
-/// launcher bind-mounts into a workspace sandbox — and present on the
-/// privileged socket. This asserts the boundary in both directions, because
-/// only checking that it is absent would also pass if the global had never
-/// been created at all.
+/// `wlr-data-control` is the clipboard-manager protocol: binding it reads
+/// every selection on the seat, no focus or user interaction required.
+/// Must be invisible on the public (sandbox-bind-mounted) socket and
+/// present on the privileged one — asserted in both directions, since only
+/// checking absence would also pass if the global never existed.
 #[test]
 fn data_control_is_privileged_socket_only() {
     let compositor = Compositor::start();
@@ -1494,12 +1408,10 @@ fn data_control_is_privileged_socket_only() {
     }
 }
 
-/// Drag a piece of text out of one client and drop it on another.
-///
-/// The pointer is driven through the compositor's real input path (the
-/// test-control socket synthesises the same events the backend would), so the
-/// source's `start_drag` rides a genuine implicit grab rather than a serial the
-/// test invented.
+/// Drag a piece of text out of one client and drop it on another. The
+/// pointer is driven through the compositor's real input path (test-control
+/// socket synthesises the same events the backend would), so `start_drag`
+/// rides a genuine implicit grab, not an invented serial.
 #[test]
 fn drag_and_drop_carries_data_between_two_clients() {
     let compositor = Compositor::start();
@@ -1518,25 +1430,20 @@ fn drag_and_drop_carries_data_between_two_clients() {
     target.assert_is_qos_compositor();
     target.map_window(&compositor);
 
-    // Click the source once before measuring anything. Clicking raises its
-    // window group, and raising scrolls the strip — so a position measured
-    // before the click is stale afterwards, and the drag would be aimed at
-    // wherever the target used to be. Settling first makes the layout the
-    // drag runs against the same one it was measured in.
+    // Click the source once before measuring anything — clicking raises its
+    // window group, which scrolls the strip, so a position measured before
+    // the click is stale afterward.
     let settle_point = source.pointer_target(&compositor);
     compositor.pointer_move(settle_point.0, settle_point.1);
     compositor.pointer_button(true);
     compositor.pointer_button(false);
 
-    // Ask each client where it now receives the pointer, rather than guessing
-    // at the strip layout.
     let target_point = target.pointer_target(&compositor);
     let source_point = source.pointer_target(&compositor);
 
-    // Press inside the source tile so the client gets a real implicit grab.
-    // The serial has to come from *this* press: smithay only honours
-    // `start_drag` against the serial of the grab that is currently held, so
-    // the one left over from the settling click above would be refused.
+    // Press inside the source tile for a real implicit grab; the serial must
+    // come from *this* press since smithay only honours `start_drag` against
+    // the serial of the currently held grab.
     source.state.pointer_button_serial = None;
     compositor.pointer_move(source_point.0, source_point.1);
     compositor.pointer_button(true);
@@ -1593,8 +1500,8 @@ fn drag_and_drop_carries_data_between_two_clients() {
 }
 
 impl Compositor {
-    /// Ask the compositor to open the next window of `app_id` in its own
-    /// group, so two client windows can be on screen at the same time.
+    /// Open the next window of `app_id` in its own group, so two client windows
+    /// can be on screen at once.
     fn place_next_window(&self, app_id: &str) {
         let resp = self.control(serde_json::json!({
             "op": "place_next_window", "app_id": app_id,
@@ -1616,8 +1523,7 @@ impl Compositor {
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
     }
 
-    /// The on-screen rect `[x, y, w, h]` of a named chrome target, as the
-    /// renderer laid it out this frame. `None` when nothing is named so.
+    /// The on-screen rect `[x, y, w, h]` of a named chrome target this frame.
     fn named_rect(&self, name: &str) -> Option<[f64; 4]> {
         let resp = self.control(serde_json::json!({"op": "list_targets"}));
         let targets = resp.get("targets")?.as_array()?;
@@ -1629,7 +1535,6 @@ impl Compositor {
         })
     }
 
-    /// Wait for a named chrome target to be laid out, then return its centre.
     fn named_center(&self, name: &str) -> (f64, f64) {
         let started = Instant::now();
         while started.elapsed() < DEADLINE {
@@ -1646,7 +1551,6 @@ impl Compositor {
         );
     }
 
-    /// Every named chrome target this frame, for a failure message.
     fn target_names(&self) -> Vec<String> {
         let resp = self.control(serde_json::json!({"op": "list_targets"}));
         resp.get("targets")
@@ -1655,13 +1559,11 @@ impl Compositor {
             .unwrap_or_default()
     }
 
-    /// Write a PNG of the current frame to `path`.
     fn snapshot(&self, path: &Path) {
         let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
         assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
     }
 
-    /// A click at `(x, y)` through the real input path.
     fn click_at(&self, x: f64, y: f64) {
         self.pointer_move(x, y);
         self.pointer_button(true);
@@ -1669,8 +1571,7 @@ impl Compositor {
     }
 }
 
-/// A 1×1 transparent PNG — the smallest real image a word processor would
-/// accept from a drop.
+/// A 1x1 transparent PNG — the smallest real image a drop can carry.
 const TINY_PNG: [u8; 67] = [
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
@@ -1679,8 +1580,6 @@ const TINY_PNG: [u8; 67] = [
     0x42, 0x60, 0x82,
 ];
 
-/// Whether some window group's active tab is titled "Files", read off the
-/// compositor's own state dump.
 fn files_tab_is_active(compositor: &Compositor) -> bool {
     let dump = compositor.control(serde_json::json!({"op": "state_dump"}));
     let mut active = false;
@@ -1697,15 +1596,12 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
     active
 }
 
-/// Drag a file out of the hosted file manager — a widget inside the
-/// compositor, not a client — and drop it on a client's window.
-///
-/// The gesture runs through the real input path: press on the row the file
-/// manager laid out (found by name, not by coordinate), move over the
-/// client's tile, release. The compositor promotes the in-process drag to a
-/// server-side `wl_data_device` drag the moment the pointer reaches the
-/// client, which then receives enter, an offer carrying both the path list
-/// and the file's own bytes, and the drop.
+/// Drag a file out of the hosted file manager (a widget inside the
+/// compositor, not a client) and drop it on a client's window. Runs
+/// through the real input path; the compositor promotes the in-process
+/// drag to a server-side `wl_data_device` drag the moment the pointer
+/// reaches the client, which then gets enter, an offer carrying both the
+/// path list and the file's own bytes, and the drop.
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let home = PathBuf::from(format!(
@@ -1729,7 +1625,6 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // where the pills are; a pill read mid-animation is clicked where it
     // used to be.
     std::thread::sleep(Duration::from_millis(1000));
-    // Bring the Files tab to the front of the demo group, by its pill.
     let files_pill = compositor.named_center("tab:Files");
     compositor.click_at(files_pill.0, files_pill.1);
     std::thread::sleep(Duration::from_millis(500));
@@ -1739,11 +1634,10 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
         compositor.debug_state()
     );
 
-    // The demo group is laid out at the full output width, so with Files
-    // focused the client is off screen — and pressing in the Files tile
-    // focuses it, so the client has to be visible *while* Files is focused.
-    // Narrow the demo group with the real gesture: drag the seam handle
-    // between the two groups to the left.
+    // The demo group is laid out at full output width, so with Files focused
+    // the client is off-screen; narrow the demo group with the real gesture
+    // (drag the seam handle) so the client stays visible while Files is
+    // focused.
     let seam = compositor.named_center("group_resize_handle[0]");
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
@@ -1816,10 +1710,9 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
             compositor.recent_log(),
         );
     }
-    // The client accepted a mime type and an action while handling the
-    // enter; make sure those requests reached the compositor before the
-    // button is released, or the drop is refused as unaccepted — which is
-    // what the protocol says, and what a real client's event loop avoids by
+    // The client's accept-mime/action requests from `enter` must reach the
+    // compositor before release, or the drop is refused as unaccepted —
+    // matching the protocol and what a real client's event loop avoids by
     // flushing as it goes.
     target.roundtrip();
     assert!(
@@ -1870,13 +1763,11 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The same drag, dropped on the real word processor.
-///
-/// A live lane: it starts `target/debug/word-processor` as an unsandboxed
-/// Wayland client of the compositor under test (so it needs a GPU the app
-/// can render with) and asserts the app's own report that it inserted the
-/// image from the drop. Self-skips unless `QOS_LIVE_APP_DND=1`, the way the
-/// other live lanes do (`docs/testing-live.md`), so hermetic CI stays green.
+/// The same drag, dropped on the real word processor. A live lane: starts
+/// `target/debug/word-processor` as an unsandboxed client (needs a GPU to
+/// render) and asserts its own report that it inserted the image.
+/// Self-skips unless `QOS_LIVE_APP_DND=1` (`docs/testing-live.md`), so
+/// hermetic CI stays green.
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     if std::env::var_os("QOS_LIVE_APP_DND").is_none() {
@@ -1904,7 +1795,6 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     let compositor = Compositor::start_with_home(Some(&home));
     compositor.place_next_window("dev.qos.word-processor");
 
-    // The app connects by explicit socket path, like every client here.
     let socket_name = compositor
         .wayland_socket
         .file_name()
@@ -1982,7 +1872,6 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     );
     let row = compositor.named_center("file_row:photo.png");
 
-    // The app's tile, by the name the chrome gives a foreign surface.
     let tile_name = compositor
         .target_names()
         .into_iter()

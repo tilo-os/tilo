@@ -72,10 +72,8 @@ impl PeerToastQueue {
     /// Drain all events whose batch window has closed at instant `now`,
     /// grouped by kind, and format the toast(s).
     pub fn drain_ready(&mut self, now: Instant) -> Vec<ReadyToast> {
-        // Take everything whose first-in-window entry is at least
-        // BATCH_WINDOW old. The batch window is measured from the
-        // first event, not the last, so a slow trickle of joins over
-        // >1s still produces separate toasts once per second.
+        // Measured from the first event, not the last, so a slow trickle
+        // of joins over >1s still produces separate toasts once per second.
         let mut out: Vec<ReadyToast> = Vec::new();
         while let Some(head_t) = self.pending.front().map(QueuedEvent::time) {
             let elapsed = now.saturating_duration_since(head_t);
@@ -83,7 +81,6 @@ impl PeerToastQueue {
                 break;
             }
             let boundary = head_t + BATCH_WINDOW;
-            // Collect this batch: every event with t <= boundary.
             let mut batch = Vec::new();
             while let Some(front) = self.pending.front() {
                 if front.t <= boundary {
@@ -92,8 +89,6 @@ impl PeerToastQueue {
                     break;
                 }
             }
-            // Split by kind — join and leave burst simultaneously would
-            // otherwise produce a confusing single toast.
             let joins: Vec<_> = batch
                 .iter()
                 .filter(|e| e.kind == PeerEventKind::Joined)
@@ -145,8 +140,7 @@ fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
         PeerEventKind::Joined => "joined",
         PeerEventKind::Left => "left",
     };
-    // Deduplicate by name so a peer that flapped in a single window
-    // only counts once.
+    // Dedup so a peer that flapped in a single window only counts once.
     let mut names: Vec<String> = batch.iter().map(|e| e.name.clone()).collect();
     names.sort();
     names.dedup();

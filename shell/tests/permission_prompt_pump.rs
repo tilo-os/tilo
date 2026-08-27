@@ -1,10 +1,7 @@
-//! Integration tests for the permission-prompt pump, exercising the
-//! chrome ↔ overlay-host wiring without a full render loop: queue a
-//! pending grant, tick so the host latches a `PermissionPrompt`, click one
-//! of its buttons through the widget's own `handle_event`, then tick again
-//! so the pump drains the choice.
-//!
-//! Each test asserts both the queue state and the workspace's `grants` map
+//! Integration tests for the permission-prompt pump (chrome <-> overlay-host
+//! wiring, no render loop): queue a pending grant, tick to latch a
+//! `PermissionPrompt`, click through the widget's own `handle_event`, tick
+//! again to drain. Asserts queue state and the workspace `grants` map
 //! (Once doesn't persist; Session/Always do).
 
 use std::collections::VecDeque;
@@ -46,8 +43,8 @@ fn left_press() -> WindowEvent {
     }
 }
 
-/// Drive an event through a [`PermissionPrompt`] with throwaway scaffolding,
-/// mirroring the shell's own `pump_permission_prompt`.
+/// Drive an event through a [`PermissionPrompt`], mirroring the shell's own
+/// `pump_permission_prompt`.
 fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     let mut tree = TaffyTree::<()>::new();
     let node = tree.new_leaf(Default::default()).unwrap();
@@ -68,15 +65,9 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     );
 }
 
-/// Build a minimal chrome holding one workspace plus the requested app's
-/// pending grant, returning the chrome and the workspace id.
-///
-/// The workspace is handed to the local user because that is the only state
-/// the compositor runs in: a room with no recorded owner has no
-/// administrators (deliberately — a workspace a peer shared with you cannot
-/// be administered by you), and both paths that mint a workspace call
-/// `adopt_ownerless_workspaces`. A fixture skipping that would test a room
-/// nobody can govern, where "Always" is correctly refused.
+/// One workspace plus the requested app's pending grant. The workspace is
+/// handed to the local user because an ownerless room has no administrators,
+/// where "Always" is correctly refused.
 fn chrome_with_pending_grant(
     app_id: &str,
     capability: Capability,
@@ -96,8 +87,7 @@ fn chrome_with_pending_grant(
     (chrome, id)
 }
 
-/// Stub content widget. The host doesn't need a real strip tree to
-/// exercise the prompt pump.
+/// Stub content widget — the pump needs no real strip tree.
 struct StubContent {
     rect: Rect,
 }
@@ -167,8 +157,7 @@ fn pump_drains_pending_grant_after_choice() {
         let prompt = host
             .permission_prompt_mut_for_tests()
             .expect("prompt latched");
-        // Drive the prompt through a known geometry so the button
-        // rects are deterministic.
+        // Known geometry so the button rects are deterministic.
         prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
         let center = prompt.allow_rect().center();
         dispatch(prompt, &cursor_at(center));
@@ -204,7 +193,6 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
     let mut host = host_with_chrome(chrome.clone());
 
-    // Latch the prompt.
     host.tick_permission_prompt_for_tests();
     {
         let prompt = host
@@ -217,7 +205,6 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
     }
 
-    // Drain.
     host.tick_permission_prompt_for_tests();
 
     let st = chrome.borrow();
@@ -229,8 +216,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         .get("org.example.app")
         .expect("Session click must persist a grant on the active workspace");
     assert_eq!(caps.len(), 1);
-    // Scope must be `Session`, not the pre-prompt `Once` — the pump
-    // upgrades the scope based on the user's choice.
+    // Scope must be `Session`, not the pre-prompt `Once` — the pump upgrades it.
     assert!(
         matches!(
             &caps[0],
@@ -245,8 +231,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
 
 #[test]
 fn pump_persists_always_grant_with_filesystem_capability() {
-    // Filesystem carries `path` + `mode` fields the pump must preserve
-    // while flipping the scope.
+    // Filesystem carries `path` + `mode` the pump must preserve across the flip.
     let granted_path = PathBuf::from("/home/u/work");
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.gnome.gedit",
@@ -256,9 +241,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
             scope: GRANT_ONCE,
         },
     );
-    // "Always" means "still granted after a reboot", so point the tree at a
-    // state file and read it back — otherwise this only proves the grant
-    // reached memory.
+    // "Always" means "still granted after a reboot", so read the state file back
+    // — otherwise this only proves the grant reached memory.
     let state_file = scratch_dir().join("state.json");
     chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
 
@@ -269,8 +253,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         let prompt = host
             .permission_prompt_mut_for_tests()
             .expect("prompt latched");
-        // Only a room administrator may grant permanently; the fixture handed
-        // the workspace to the local user, so the Always button is live.
+        // Only a room administrator may grant permanently; the local user owns it.
         assert!(prompt.is_owner);
         prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
         let center = prompt.always_rect().center();
@@ -310,8 +293,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         );
     }
 
-    // The write is eager because the compositor can be killed rather than
-    // asked to exit; reload the way the boot path does.
+    // The write is eager because the compositor can be killed rather than asked
+    // to exit; reload the way the boot path does.
     let reloaded = shell::shell::persist::load_tree_from(&state_file)
         .expect("the pump must have written the state file");
     let ws = reloaded
@@ -322,8 +305,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     expect_grant(ws, "after reloading the state file");
 }
 
-/// Per-test scratch dir under `target/`, so state files never reach the
-/// user's real config dir and parallel workers don't collide.
+/// Per-test scratch dir under `target/`, off the user's real config dir.
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -391,8 +373,7 @@ fn pump_does_not_latch_when_queue_is_empty() {
 
 #[test]
 fn pump_advances_to_next_grant_after_first_drain() {
-    // Two queued grants for different apps, Allow then Deny: both visible in
-    // sequence, and after the second drain nothing remains.
+    // Allow then Deny across two apps: both visible in sequence, nothing left.
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     tree.workspaces.push(Workspace::new(id, "demo"));
@@ -411,7 +392,6 @@ fn pump_advances_to_next_grant_after_first_drain() {
     }
     let mut host = host_with_chrome(chrome.clone());
 
-    // First grant — Allow.
     host.tick_permission_prompt_for_tests();
     {
         let prompt = host
@@ -425,7 +405,6 @@ fn pump_advances_to_next_grant_after_first_drain() {
     }
     host.tick_permission_prompt_for_tests();
 
-    // Second grant — Deny.
     {
         let prompt = host
             .permission_prompt_mut_for_tests()
@@ -459,8 +438,7 @@ fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
     p.is_none()
 }
 
-// `OverlayFlags`, `Duration` and `VecDeque` are imported for symmetry with
-// the wider chrome-state API even when these tests don't use them.
+// Imported for symmetry with the wider chrome-state API, unused here.
 #[allow(dead_code)]
 fn _suppress_unused() {
     let _ = OverlayFlags::default();

@@ -1,17 +1,14 @@
 //! Shell overlay host — wraps the root content widget and draws modal
-//! overlays (command palette for ⌘K, overview for ⌘Tab, etc.) on top.
+//! overlays (command palette, overview, quick settings) on top.
 //!
-//! The `build_nirios_root` entry point returns this widget so that the
-//! shell has exactly one place to route global keyboard events
-//! (⌘K / ⌘Tab / Esc) and exactly one place to render the overlay stack
-//! above the desktop content. Overlays each own their state — the host
-//! just gates their visibility and paints a scrim when at least one is
-//! showing.
+//! `build_nirios_root` returns this widget so the shell has exactly one
+//! place to route global keyboard events and one place to render the
+//! overlay stack. Overlays own their own state; the host gates their
+//! visibility and paints the scrim.
 //!
-//! Key routing: `handle_event` consumes the palette-toggle and Esc
-//! presses before propagating to the wrapped content. When the palette
-//! is open, it also gets first crack at every event so typing-into-
-//! query / Enter-to-select work without the desktop stealing focus.
+//! `handle_event` consumes the palette-toggle and Esc before propagating
+//! to the wrapped content, and an open palette gets first crack at every
+//! event so typing and Enter work without the desktop stealing focus.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -78,125 +75,83 @@ enum ComposerHit {
 pub struct ShellOverlayHost {
     rect: Rect,
     content: Box<dyn Widget>,
-    /// Floating sidebar wheel — absolutely positioned above the desktop
-    /// content, offset below the top bar. Optional so tests can build a
-    /// bare host without a wheel; production shells always provide one.
+    /// Floating sidebar wheel. Optional so tests can build a bare host
+    /// without one; production always provides it.
     sidebar: Option<Box<dyn Widget>>,
-    /// Displays the compositor is painting across. Pushed by
-    /// `FrameBuilder` before every `build_layout` so each strip can size
-    /// its groups against the display they sit on. Empty in a bare
-    /// `ui::App` host (`--mode hosted`), where [`Self::strip_output_spans`]
-    /// falls back to treating the window as the one display.
+    /// Displays the compositor is painting across, pushed by `FrameBuilder`
+    /// before layout. Empty in a bare `ui::App` host, where
+    /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
     palette: CommandPalette,
     palette_visible: bool,
-    /// Registry of every search provider the palette fans out to on
-    /// every keystroke. Built once at construction and never mutated
-    /// from outside the shell's `new` — providers are stateful (they
-    /// own background indexers etc.) so re-registration would leak
-    /// worker threads.
+    /// Search providers the palette fans out to. Built once at
+    /// construction — providers are stateful (own background indexers),
+    /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
-    /// The result list backing the current palette entries. Indexed in
-    /// lock-step with `palette.entries` so an Enter/click resolves the
-    /// row by ordinal into this vec and calls the stored `on_open`.
+    /// Backs the current palette entries, indexed in lock-step with
+    /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
-    /// Value of `palette.query()` after the last provider fan-out.
-    /// The refresh is short-circuited when this matches — every
-    /// keystroke pushes new bytes into the palette, so the compare is
-    /// the source of "did the query change this frame?".
+    /// `palette.query()` after the last fan-out; refresh is
+    /// short-circuited when this still matches.
     last_search_query: String,
-    /// Kinds the chip strip has toggled on. Empty means "everything",
-    /// so an unfiltered fan-out is the default. Toggled by clicks on
-    /// the shell-drawn chip strip above the palette.
+    /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
-    /// Painted rects of the chip strip's chips this frame, indexed in
-    /// the same order [`Self::search_registry`]::registered_kinds
-    /// returns. Populated during draw so `handle_event` can hit-test
-    /// without recomputing geometry.
+    /// Painted chip rects this frame, indexed like
+    /// [`Self::search_registry`]'s `registered_kinds`. Cached from draw
+    /// so `handle_event` hit-tests without recomputing geometry.
     search_chip_rects: Vec<Rect>,
-    /// Rect of the leading "All" chip that clears the kind filter.
-    /// Cached from the draw pass so the click hit-test uses exactly the
-    /// geometry that was painted.
+    /// Rect of the leading "All" chip, cached from draw for hit-testing.
     search_all_chip_rect: Rect,
-    /// Chip rows the filter band is currently reserving. Recomputed
-    /// during draw from the labels' measured widths; when it changes the
-    /// palette is told, so the card grows and the rows below the band
-    /// move down rather than being painted over. See
+    /// Chip rows the filter band is reserving. Changing it tells the
+    /// palette to grow so lower rows aren't painted over. See
     /// [`Self::draw_search_banner`].
     search_chip_rows: usize,
-    /// Which records each room holds — shared with the records search
-    /// provider, which is what writes into it. Held here as well so the
-    /// host can seed it (`--shots`) and flush it on teardown.
+    /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
-    /// Set to `true` whenever [`Self::refresh_search_results`] rewrites
-    /// the palette's entry list. The next `take_structure_dirty` folds
-    /// it in so the taffy layout pass rebuilds the palette node with
-    /// the new row count — without this the palette's height stays
-    /// pinned at whatever the empty-entries first paint computed, and
-    /// only the first ~1 result is visible.
+    /// Set whenever [`Self::refresh_search_results`] rewrites the
+    /// palette's entries, so `take_structure_dirty` rebuilds the taffy
+    /// node with the new row count — without this only ~1 result shows.
     palette_layout_dirty: bool,
     /// Host width the palette's taffy style was last computed against.
     /// See the sizing comment in `build_layout`.
     palette_layout_host_w: f64,
-    // Child node ids are captured once during `build_layout` so we can
-    // forward layout/draw/event calls without re-walking the tree.
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
-    /// Shared chrome state; the host reads `overlays` flags from this to
-    /// decide whether to draw overview / quick-settings / ws-settings on
-    /// top of the content.
+    /// Shared chrome state; drives whether overview / quick-settings /
+    /// ws-settings draw on top of the content.
     chrome: Option<Chrome>,
-    /// Last known cursor position in logical coords, for hit-testing
-    /// overlay clicks (shared with the rest of the chrome).
+    /// Last known cursor position, for hit-testing overlay clicks.
     last_cursor: Option<Point>,
-    /// Overview crossfade state: `overview_t` ∈ [0, 1] where 0 = desktop
-    /// fully visible and 1 = overview fully visible. `overview_target` is
-    /// the value `overview_t` is animating toward (latched on toggle).
-    /// `transition_started`/`transition_from` bookend the in-flight
-    /// animation so a re-toggle mid-fade picks up from the current visible
-    /// alpha rather than popping back to 0 or 1.
+    /// Overview crossfade: `overview_t` ∈ [0, 1], animating toward
+    /// `overview_target` (latched on toggle). `transition_started`/
+    /// `transition_from` let a re-toggle mid-fade continue from the
+    /// current alpha instead of popping to 0 or 1.
     overview_t: f32,
     overview_target: f32,
     transition_started: Option<Instant>,
     transition_from: f32,
-    /// Vertical scroll offset (px) for the overview's room list. Wheel
-    /// events over the panel pan the rooms through this offset while the
-    /// "you are here" block stays pinned. Clamped in [0, max] each frame
-    /// against the total content extent so a workspace deletion can't
-    /// strand the scroll past the tail.
+    /// Scroll offset (px) for the overview's room list, clamped each
+    /// frame so a workspace deletion can't strand it past the tail.
     overview_scroll_y: f64,
-    /// Which room the keyboard is pointing at, as a tree index.
-    ///
-    /// The overview is a switcher, so it has a target you move before you
-    /// commit to it: arrows walk this, Enter goes there, Esc leaves it
-    /// alone. `None` while the panel is closed — the selection is
-    /// re-seeded from the room you are in each time it opens, so it never
-    /// reopens pointing at wherever you happened to stop last time.
+    /// Keyboard target in the overview switcher: arrows walk it, Enter
+    /// goes there, Esc leaves it alone. `None` while closed; re-seeded
+    /// from the current room each time it opens.
     overview_selection: Option<usize>,
-    /// Interruptible open/close driver for the quick-settings popover.
-    /// Follows the `quick_settings` flag each frame; unlike the raw flag
-    /// it keeps the popover drawn through its close curve so it fades +
-    /// slides OUT instead of vanishing.
+    /// Interruptible open/close driver for quick-settings, so it fades +
+    /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
-    /// Previous-frame visibility of the quick-settings flag, used to
-    /// detect the rising edge (open transition) without reaching into
-    /// the chrome on every tick.
+    /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
-    /// Which quick-settings slider (0 = brightness, 1 = volume) is
-    /// currently being dragged. `Some(i)` after a Pressed inside the
-    /// slider's hit rect and cleared on Released. While set, CursorMoved
-    /// updates the slider's value inline; the os_action shell-out fires
-    /// only on Released so a fast drag doesn't spawn a subprocess per
-    /// pixel of motion.
+    /// Quick-settings slider being dragged (0 = brightness, 1 = volume).
+    /// The os_action shell-out fires only on Released so a drag doesn't
+    /// spawn a subprocess per pixel of motion.
     qs_slider_drag: Option<usize>,
-    /// When the workspace invite link was last copied, so the button can
-    /// confirm it happened.
+    /// When the workspace invite link was last copied, to confirm it.
     ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
-    /// Segment of the strip rail under the pointer, if any. Paint-only,
-    /// same as [`Self::strip_ribbon_hover`].
+    /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
     strip_rail_hover: Option<usize>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
@@ -209,13 +164,10 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
-    /// Per-strip raw pointers to the [`GroupRow`] widgets inside `content`.
-    /// Captured at [`build_nirios_overlay_host_with_chrome`] time and used
-    /// each frame by [`Self::reconcile_active_group_off_closing`] to harvest
-    /// the [`UiWindowGroup::is_closing`] set without having to downcast a
-    /// `&dyn Widget`. Empty by default — tests that build a bare host
-    /// through [`Self::new`] don't get the per-frame reconcile path until
-    /// they call [`Self::with_group_row_ptrs`] explicitly.
+    /// Per-strip raw pointers to the [`GroupRow`] widgets inside
+    /// `content`, so the per-frame reconcilers reach them without
+    /// downcasting `&dyn Widget`. Empty until
+    /// [`Self::with_group_row_ptrs`] is called.
     ///
     /// SAFETY: each pointer is the heap address of a `GroupRow` owned by
     /// the chrome's content tree. `Box<T>` -> `Box<dyn Widget>` unsizing
@@ -223,33 +175,22 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
-    /// Raw id of the workspace the current `content` was built for.
-    /// [`Self::resync_workspace_content`] compares it against
-    /// `tree.active` each frame and rebuilds the content when they
-    /// disagree — the strip widgets are a projection of ONE workspace,
-    /// and without the swap the screen keeps showing the boot
-    /// workspace forever. `None` means "unbuilt / test stub": the
-    /// reconciler then only latches the current id without rebuilding,
-    /// so hosts constructed around hand-made content keep it.
+    /// Workspace id the current `content` was built for.
+    /// [`Self::resync_workspace_content`] rebuilds when this disagrees
+    /// with `tree.active`. `None` means unbuilt/test stub: the
+    /// reconciler only latches the id without rebuilding, so hosts
+    /// constructed around hand-made content keep it.
     content_built_for_ws: Option<u64>,
-    /// Per-strip record of the last active-group id that
-    /// [`Self::scroll_active_group_into_view`] scrolled into view. Lets the
-    /// focus-follow scroll stay edge-triggered: it only re-centres the
-    /// strip when the persisted `active_group` pointer actually changes, so
-    /// a user who wheels away from the focused group isn't fought by a
-    /// per-frame snap-back. Seeded lazily on first reconcile.
+    /// Per-strip last active-group id that
+    /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
+    /// focus-follow scroll is edge-triggered and doesn't fight a user who
+    /// wheels away.
     last_scrolled_active_group: HashMap<StripId, GroupId>,
-    /// Hit rect for the "+ Add workspace" affordance painted at the tail
-    /// of the overview's vertical workspace list. `Rect::ZERO` until the
-    /// first overview draw populates it; cleared back to `Rect::ZERO`
-    /// when the overview is hidden so stale clicks during the crossfade
-    /// can't activate it.
+    /// Hit rect for the "+ Add workspace" affordance at the tail of the
+    /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
-    /// Hit rects for the WS-settings tab pills painted by
-    /// `draw_ws_settings`, in [`WsTab::all`] order. Every pill is a
-    /// real tab. All entries are `Rect::ZERO` until the first
-    /// `draw_ws_settings` populates them, and are cleared back to
-    /// `Rect::ZERO` when the modal closes so a stale click during a
+    /// Hit rects for the WS-settings tab pills, in [`WsTab::all`] order.
+    /// `Rect::ZERO` when not painted, so a stale click during a
     /// crossfade can't flip tabs after the modal is gone.
     ws_settings_tab_pill_rects: [Rect; 3],
     /// Cached Revoke-button rects for the Permissions pane, keyed by
@@ -264,157 +205,96 @@ pub struct ShellOverlayHost {
     /// Cached per-member control rects for the Members pane:
     /// `(member, role chip, Remove button)`.
     member_control_rects: Vec<(crate::shell::state::UserId, Rect, Rect)>,
-    /// Vertical inset at which the floating sidebar wheel starts. Defaults
-    /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
-    /// real shell wraps its topbar in a padded `Column`/`Container`, so
-    /// the topbar's bottom edge lands below y=40. `build_nirios_root_
-    /// with_chrome` overrides this via [`Self::with_sidebar_top`] so the
-    /// sidebar's rect doesn't overlap the topbar and swallow the overview-
-    /// toggle click.
+    /// Vertical inset at which the floating sidebar wheel starts.
+    /// Defaults to [`SIDEBAR_TOP_OFFSET_PX`]; `with_sidebar_top`
+    /// overrides it so the real shell's padded topbar doesn't overlap.
     sidebar_top_y: f32,
-    /// Live permission-prompt widget rendered at the top of the active
-    /// strip when `chrome.pending_grants.front().is_some()`. Constructed
-    /// lazily — populated by `pump_permission_prompt` each frame from
-    /// the front of the queue. `None` when the queue is empty so we
-    /// don't paint a stale prompt during the moment between two
-    /// requests.
+    /// Live permission-prompt widget, populated by
+    /// `pump_permission_prompt` from the front of
+    /// `chrome.pending_grants`. `None` when the queue is empty.
     permission_prompt: Option<PermissionPrompt>,
-    /// The portal's prompt queue, when the compositor is serving
-    /// portals. `drain_portal_prompts` empties it onto
-    /// `chrome.pending_grants` every frame; `None` when no portal is
-    /// running, in which case there is nothing to drain.
+    /// The portal's prompt queue, when the compositor serves portals.
+    /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
     /// The portal's file-picker queue. Drained every frame into
     /// [`Self::file_picker`].
     portal_pickers: Option<crate::portal::FilePickerQueue>,
-    /// The live file-chooser dialog, and the request it is answering.
-    /// One at a time: a second `OpenFile` while a dialog is up waits in
-    /// the queue rather than stacking two modals over each other.
+    /// The live file-chooser dialog, and the request it answers. One at
+    /// a time: a second `OpenFile` while a dialog is up queues instead
+    /// of stacking two modals.
     file_picker: Option<Box<ActiveFilePicker>>,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
-    /// surfaced to the user. Off by default; the compositor flips this
-    /// to `true` when booted with `--enable-peer-sync`. Toggled via
+    /// surfaced. Off by default; set via `--enable-peer-sync` or
     /// [`Self::with_peer_sync_enabled`].
     peer_sync_enabled: bool,
-    /// Queue of peer-sync palette actions emitted by
-    /// [`Self::dispatch_palette_command`] when the user picks `/invite`
-    /// or `/connect`. The compositor drains this each tick and routes
-    /// the action into its `ShellNetwork` handle (issue token + paste
-    /// to clipboard, or validate + dial). Stays empty when
-    /// `peer_sync_enabled` is false because the entries aren't
-    /// registered in the palette.
+    /// Queue of peer-sync actions from [`Self::dispatch_palette_command`],
+    /// drained by the compositor into its `ShellNetwork` handle.
     peer_sync_actions: Vec<PeerSyncAction>,
-    /// What actually performs a peer-sync request.
-    ///
-    /// The palette records an intent; something has to carry it out.
-    /// The compositor installs a closure here that reaches its
-    /// `ShellNetwork` handle, so the libp2p work stays on the runtime
-    /// thread and the widget layer keeps knowing nothing about
-    /// transports. `None` in tests and in a session booted without
-    /// peer-sync, where `/invite` and `/connect` report that rather
-    /// than silently doing nothing.
+    /// Closure that carries out a peer-sync request against
+    /// `ShellNetwork`, keeping the widget layer transport-agnostic.
+    /// `None` in tests and in sessions booted without peer-sync, where
+    /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>>,
     /// Hit rects of the connect prompt's buttons, published by
-    /// [`Self::draw_peer_sync`] and consumed by the click path. Empty
-    /// when the prompt is not painted, so a click cannot reach a button
-    /// that is not on screen.
+    /// [`Self::draw_peer_sync`]. Empty when the prompt is not painted.
     peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
-    /// Top-right notification stack. Painted above the desktop content
-    /// but below the permission prompt and modal overlays so a
-    /// permission prompt always wins focus. `None` until
-    /// [`Self::with_chrome`] runs — the stack needs a chrome handle
-    /// to read notifications from.
+    /// Top-right notification stack, above content but below the
+    /// permission prompt and modals. `None` until [`Self::with_chrome`]
+    /// runs.
     notification_stack: Option<NotificationStack>,
-    /// Last `chrome.revision` value observed by
-    /// [`Self::resync_strips_from_tree`]. The chrome bumps its
-    /// revision counter on every structural mutation (workspace
-    /// add, group insert, tab close, …); when the cached value
-    /// disagrees with the live one we know the persisted tree has
-    /// changed shape and the live [`GroupRow`] widgets need to
-    /// pick up the new strip contents. `u64::MAX` at construction
-    /// so the first poll always rebuilds, even when chrome boots
-    /// with `revision: 0`.
+    /// Last `chrome.revision` seen by [`Self::resync_strips_from_tree`];
+    /// a disagreement means the tree changed shape and live
+    /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
+    /// construction so the first poll always rebuilds.
     last_chrome_revision: u64,
-    /// What each live tab was last built to show, keyed by tab id.
-    ///
-    /// The revision counter says *something* in the tree moved; this says
-    /// which tabs it moved. Without it the resync can only add and remove
-    /// tabs, so a tab whose content changed while its id did not keeps the
-    /// widget it was built with — the tree and the screen then disagree
-    /// permanently, and every assertion made against the tree passes while
-    /// the person is still looking at the old thing.
+    /// What each live tab was last built to show, keyed by tab id — the
+    /// revision counter says something moved, this says which tabs, so a
+    /// tab whose content changed without its id changing still gets
+    /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
     /// Side-effect dispatcher for quick-settings actions. Production
-    /// builds use [`crate::shell::qs_actions::RealQsActions`]; tests
-    /// can swap in a recording impl via [`Self::with_qs_actions`] to
-    /// assert that clicks routed through the popover translate into
-    /// the expected shell-outs without actually invoking `nmcli` etc.
+    /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
+    /// recording impl via [`Self::with_qs_actions`].
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
-    /// Live battery / network / volume readings, or `None` when nothing
-    /// is polling — a `--shots` render and a headless test deliberately
-    /// have no poller so their pixels do not depend on the host's
-    /// hardware. See [`crate::shell::status`].
+    /// Live battery/network/volume readings, or `None` when nothing
+    /// polls — `--shots` and headless tests have no poller so their
+    /// pixels don't depend on host hardware. See
+    /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
-    /// Room-activity sheet — the workspace's own change history. Held rather
-    /// than drawn immediate-mode because the timeline it wraps is a real
-    /// `Widget` with its own hover, scroll and filter state; it is placed by
-    /// hand (`RoomActivityPane::layout`) rather than through taffy, the same
-    /// way the notification stack is.
+    /// Room-activity sheet. Held rather than drawn immediate-mode
+    /// because it is a real `Widget` with its own hover/scroll/filter
+    /// state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
     /// Open/close curve for the room-activity sheet.
     room_activity_transition: ui::Transition,
-    /// Whether the sheet was open on the previous frame, so the rising edge
-    /// can invalidate the derived rows.
+    /// Whether the sheet was open last frame, to invalidate derived rows
+    /// on the rising edge.
     room_activity_was_open: bool,
-    /// Hit rect of the "Room activity" row at the foot of the collaborator
-    /// dropdown. Populated by `draw_collaborators` and zeroed whenever the
-    /// dropdown is not painted, so a click during the close cannot trip it.
+    /// Hit rect of the "Room activity" row in the collaborator dropdown.
+    /// Zeroed whenever the dropdown is not painted.
     collab_activity_row_rect: Rect,
-    /// Hit rects of the Invite / Join buttons in the collaborator
-    /// dropdown. Zeroed on the same terms as the activity row, and also
-    /// whenever the local user may not invite here — a button that is
-    /// not painted must not be clickable, and the capability decides
-    /// both together so the two can never disagree.
+    /// Hit rects of the Invite/Join buttons in the collaborator dropdown.
+    /// Also zeroed when the local user may not invite, so a button that
+    /// isn't painted can't be clicked.
     collab_invite_row_rect: Rect,
     collab_join_row_rect: Rect,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
-/// when the user picks a peer-sync command. The compositor's per-frame
-/// drainer (in `compositor::hosted::run_with_options`) routes these
-/// into its `ShellNetwork` handle so the actual libp2p side-effects
-/// stay on the runtime thread.
+/// when the user picks a peer-sync command; the compositor drains these
+/// into its `ShellNetwork` handle so libp2p side-effects stay on the
+/// runtime thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncAction {
-    /// User invoked `/invite`. The compositor should call
-    /// `ShellNetwork::issue_invite(active_ws, listening_addr)` and
-    /// drop the resulting token onto the system clipboard.
+    /// User invoked `/invite`. The compositor calls
+    /// `ShellNetwork::issue_invite` and puts the token on the clipboard.
     IssueInvite,
-    /// Mint an invite *for somebody*, and put it on the clipboard in
-    /// the same step when `copy`.
-    ///
-    /// `name` is what this room will call them. It is recorded here, by
-    /// the machine doing the inviting, and written into the room
-    /// document the moment that peer turns up — the same replicated,
-    /// authority-checked channel every other name in the room travels
-    /// on, refused by `apply_room_changes` from anybody but the room's
-    /// authority. The invitee never says who they are.
-    ///
-    /// `copy` is what separates the collaborators panel's Invite from
-    /// the palette's `peer.invite.named` row. Somebody who filled in a
-    /// name and pressed Create has said everything the token needs;
-    /// making them then locate a Copy button is a second gesture serving
-    /// one intent, and it is the one people forget — an invite nobody
-    /// copied was never issued. The card carries a Copy button either
-    /// way, for a second copy.
+    /// Mint an invite for `name`, copying it to the clipboard when
+    /// `copy`. The name is written into the room document once the
+    /// invitee turns up — it never rides inside the token itself.
     IssueInviteFor { name: String, copy: bool },
-    /// Open the invite composer: the field that asks who is being
-    /// invited, before anything is minted.
-    ///
-    /// What the collaborators panel's Invite button emits. A button
-    /// that minted an anonymous blob left the host's own roster reading
-    /// `peer@12191268537764683811` after the guest arrived, because
-    /// nothing in the flow had ever been told a name.
+    /// Open the invite composer, before anything is minted. What the
+    /// collaborators panel's Invite button emits.
     PromptInvite,
     /// User invoked `/connect`. Opens the token-input prompt
     /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
@@ -423,27 +303,16 @@ pub enum PeerSyncAction {
 }
 
 /// A peer-sync operation the widget layer wants performed, handed to
-/// the closure installed by
-/// [`ShellOverlayHost::with_peer_sync_bridge`].
-///
-/// Deliberately not the same type as [`PeerSyncAction`]: an action is
-/// what the user picked in the palette, a request is what the network
-/// has to be asked. `/connect` is one action and produces no request
-/// until a token has actually been typed.
+/// the closure installed by [`ShellOverlayHost::with_peer_sync_bridge`].
+/// Not the same type as [`PeerSyncAction`]: an action is what the user
+/// picked, a request is what the network is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
     /// Mint a signed invite to the active workspace. `Ok` carries the
     /// token.
     IssueInvite,
-    /// Mint a signed invite to the active workspace, and remember that
-    /// whoever redeems it is called this. `Ok` carries the token.
-    ///
-    /// The name does not travel inside the token: a token is a bearer
-    /// credential that crosses machines, and a name that rode along in
-    /// it would be a name the *holder* presents. It stays on the
-    /// inviting machine until that machine sees the invitee ask this
-    /// room for its document, and is written into the room document
-    /// from there.
+    /// Same, remembering that whoever redeems it is called this. The
+    /// name does not travel inside the token itself.
     IssueInviteFor(String),
     /// Join the room a token names. `Ok` carries the room id.
     AcceptInvite(String),
@@ -452,43 +321,23 @@ pub enum PeerSyncRequest {
 /// A button on the peer-sync card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerSyncPromptButton {
-    /// Mint the invite for the name that has been typed into the
-    /// composer.
+    /// Mint the invite for the name typed into the composer.
     CreateInvite,
     /// Submit whatever has been typed as an invite token.
     Join,
     /// Abandon the prompt.
     Cancel,
     /// Put the minted invite token on the system clipboard.
-    ///
-    /// The token is the one thing in this flow that has to physically
-    /// travel between two machines. Without this the only way across is
-    /// to read several hundred base64 characters off one screen and
-    /// type them into another, which is not a thing anybody does
-    /// correctly twice.
     CopyToken,
     /// Pull an invite token off the system clipboard into the prompt.
     PasteToken,
 }
 
-/// Rows the palette asks the registry for, shared round-robin between
-/// the matching kinds. See
-/// [`crate::shell::search::SearchRegistry::query_grouped`].
-///
-/// This has to equal what the card actually paints, or the split that
-/// budget buys is spent on rows nobody sees. `CommandPalette` grows to
-/// eight entry rows (plus a separate allowance for three section
-/// headers) before the list starts scrolling; asking for sixteen meant a
-/// three-group answer put its third header around row eleven, off the
-/// bottom of the card. Typing `workspace` then showed twenty-seven files
-/// and thirteen folders while `Open workspace settings` — the thing that
-/// query is for — was scrolled out of sight, which reads as the action
-/// simply not being found.
-///
-/// Eight rows across three groups is tight, and it is the honest kind of
-/// tight: every group's header is on the card and each one reports the
-/// total it is holding back, so the way to see more of a kind is to click
-/// its chip, which is also the gesture that means "show me all of these".
+/// Rows the palette asks the registry for, shared round-robin between the
+/// matching kinds. Must equal what the card actually paints — asking for
+/// 16 let a three-group answer's third header land off the bottom of the
+/// card. Eight keeps every group's header on screen, each showing the
+/// total it's holding back, so clicking its chip is how you see the rest.
 const PALETTE_ROW_BUDGET: usize = 8;
 
 /// Glyph that stands for a result kind in the palette. Giving each kind
@@ -522,12 +371,10 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
 /// Gap between a segmented control's outer track and its segments.
 const SEGMENT_INSET_PX: f64 = 2.0;
 
-/// Shorten an invite token to something that fits on one line.
-///
-/// Head and tail with the middle elided, so a person can see that the
-/// field is holding a token — and that it changed — without the card
-/// turning into six lines of base64. Nothing reads this to check a
-/// token; the fingerprint underneath is what is meant to be compared.
+/// Shortens an invite token to fit one line: head and tail with the
+/// middle elided, so a person sees the field is holding a token (and
+/// that it changed) without six lines of base64. The fingerprint
+/// underneath, not this, is what's meant to be compared.
 fn elide_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
     if chars.len() <= 20 {
@@ -539,29 +386,16 @@ fn elide_token(token: &str) -> String {
 }
 
 /// The invite `token` carries, if it is one this machine will act on.
-///
-/// Deliberately the real validator rather than a lenient parse: a token
-/// that does not verify, or that has expired, is not an invite, and a
-/// card that summarised it as though it were would be describing
-/// something the Join button is about to refuse.
+/// Uses the real validator rather than a lenient parse, since an
+/// expired or unverifiable token is not an invite.
 fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
     crate::network::invite::validate_invite_token(token.trim()).ok()
 }
 
-/// A short, comparable fingerprint of the machine an invite came from.
-///
-/// The last eight base58 characters of the inviter's libp2p `PeerId`,
-/// in two groups so it can be read aloud over a phone. A `PeerId` is a
-/// multihash of that machine's public key, so this identifies the
-/// *sender*, not the bytes of one particular token: every invite from
-/// one machine reads the same, which is what makes it something two
-/// people can check against each other and not a second password.
-///
-/// Grouped with a space, which is how this OS already writes a
-/// fingerprint somebody is meant to compare by eye — see
-/// `onboarding::MintedIdentity::grouped_fingerprint`. Not the `·` this
-/// card uses between phrases: one glyph meaning two things on one
-/// surface is how a code gets read as a sentence.
+/// A short, comparable fingerprint of the inviter's machine: the last
+/// eight base58 characters of their libp2p `PeerId`, grouped in two so
+/// it can be read aloud (same grouping as
+/// `onboarding::MintedIdentity::grouped_fingerprint`).
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
     let tail: Vec<char> = chars[chars.len().saturating_sub(8)..].to_vec();
@@ -577,10 +411,8 @@ fn peer_fingerprint(peer_id: &str) -> String {
 }
 
 /// How long until `expiry_unix_seconds`, in units a person reads.
-///
-/// Rounded down, and never rounded up into a promise: an invite the
-/// card called "1 hour" a second before it lapsed would be a card that
-/// lied at the only moment the number mattered.
+/// Always rounded down, never up — a card that rounds "1 hour" past
+/// the actual expiry has lied at the only moment it mattered.
 fn time_until(expiry_unix_seconds: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -597,16 +429,9 @@ fn time_until(expiry_unix_seconds: u64) -> String {
 }
 
 /// One person, drawn the way the collaborators panel draws them: an
-/// avatar chip, a name, and a line of state under it.
-///
-/// The same idiom on the card as in the roster, so the person the card
-/// is about and the row they will become are recognisably the same
-/// thing. Returns the y the row ends at.
-///
-/// `named` distinguishes somebody from nobody: an invite minted with no
-/// name is an invite to whoever holds it, and it gets the top bar's
-/// empty-seat ring rather than a monogram, because there is no initial
-/// to put in one.
+/// avatar chip, a name, and a line of state under it. Returns the y the
+/// row ends at. `named` distinguishes somebody from nobody: an unnamed
+/// invite gets the empty-seat ring rather than a monogram.
 #[allow(clippy::too_many_arguments)]
 fn draw_invite_person_row(
     scene: &mut Scene,
@@ -670,10 +495,8 @@ fn draw_invite_person_row(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// The invite code, drawn as the field it is: full width, set large, in
-/// the face that makes a code legible character by character — not a
-/// caption, which is not how an interface says a field is readable and
-/// copyable.
+/// The invite code, drawn full width and set large so it reads as a
+/// legible, copyable field rather than a caption.
 fn draw_invite_code(
     scene: &mut Scene,
     transform: Affine,
@@ -710,48 +533,31 @@ fn draw_invite_code(
 const CHIP_GAP_PX: f64 = 6.0;
 /// Horizontal padding inside a chip — both sides together.
 const CHIP_PAD_PX: f64 = 18.0;
-/// Narrowest a chip is ever squeezed to. Below this a pill stops reading
-/// as a control at all; a chip this narrow is a chip whose label is an
-/// ellipsis, and the band is expected to have grown a row by the next
-/// frame anyway.
+/// Narrowest a chip is ever squeezed to before its label is just an
+/// ellipsis.
 const CHIP_MIN_W_PX: f64 = 34.0;
 
 /// Where each chip of the filter strip goes.
 #[derive(Debug, Clone, PartialEq)]
 struct ChipStrip {
-    /// One rect per chip, in the order handed in. **Every chip gets one**
-    /// — see [`lay_out_chip_strip`].
+    /// One rect per chip, in the order handed in. Every chip gets one —
+    /// see [`lay_out_chip_strip`].
     rects: Vec<Rect>,
-    /// Rows the chips want at their natural width. The host reserves this
-    /// many from the palette; until it does, the strip is laid out inside
-    /// however many it currently has.
+    /// Rows the chips want at their natural width; the host reserves
+    /// this many from the palette.
     rows_needed: usize,
 }
 
-/// Lay the filter chips out across a band that may be too narrow.
+/// Lays the filter chips out across a band that may be too narrow.
 ///
-/// **The invariant is that every chip gets a rect.** The strip used to
-/// stop painting at the first chip that did not fit, and an unpainted
-/// chip has no rect, so it could not be clicked either: a filter that
-/// exists, is listed by the registry, and cannot be reached. At 1600 px
-/// the five kinds of the day exactly filled the row, so the sixth was
-/// invisible — which reads as a missing feature rather than a layout bug.
+/// Invariant: every chip gets a rect — an unpainted chip could never be
+/// clicked. Three behaviours in preference order: natural width while it
+/// fits; wrap to a new row (over eliding — `Applications` → `Ap…` stops
+/// saying what it filters); only once rows run out do leftovers share and
+/// narrow the last row, a transient case the next layout fixes.
 ///
-/// Three behaviours, in order of preference:
-///
-/// - Chips take their natural width while they fit.
-/// - They **wrap** to the next row when they do not, and the band is told
-///   how many rows that needs. Wrapping is chosen over eliding because a
-///   filter strip is a set of names: `Applications` squeezed to `Ap…` is
-///   reachable but no longer says what it filters.
-/// - Only when the rows on offer run out do the leftovers **share** the
-///   last one, narrowing (and, at paint time, eliding) so that all of
-///   them still land. That is the transient case — the band grows on the
-///   next layout — and it is what keeps the invariant unconditional
-///   rather than dependent on when a relayout happens to run.
-///
-/// `first_row_x1` is where the first row must stop, because the scope
-/// switch is anchored to the right of it; later rows have the whole band.
+/// `first_row_x1` bounds the first row, since the scope switch anchors to
+/// its right; later rows have the whole band.
 fn lay_out_chip_strip(
     natural: &[f64],
     band: Rect,
@@ -769,9 +575,8 @@ fn lay_out_chip_strip(
     let rows_available = rows_available.max(1);
     let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
 
-    // Greedy wrap at natural width — what the strip wants. `per_row`
-    // additionally caps how many chips a row may take, which is what the
-    // balancing pass below uses.
+    // Greedy wrap at natural width; `per_row` caps chips per row, used
+    // by the balancing pass below.
     let wrap = |per_row: usize| -> Vec<Vec<usize>> {
         let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
         let mut x = band.x0;
@@ -791,12 +596,10 @@ fn lay_out_chip_strip(
     let plan = wrap(usize::MAX);
     let rows_needed = plan.len();
 
-    // Spread the chips evenly over the rows that will be used. Filling
-    // each row to the brim leaves the last one with whatever is left —
-    // six chips and then a lone `Folders` underneath, which reads as
-    // something having gone wrong rather than as a two-row strip. The
-    // balanced plan is only adopted if it still fits in the same number
-    // of rows, so evenness never costs anyone a chip.
+    // Spread chips evenly over the rows used, rather than filling each
+    // to the brim and leaving a lone chip on the last row. Only adopted
+    // if it still fits in the same row count, so evenness never costs a
+    // chip.
     let plan = if rows_needed > 1 {
         let per_row = natural.len().div_ceil(rows_needed);
         let balanced = wrap(per_row);
@@ -825,7 +628,6 @@ fn lay_out_chip_strip(
         let widths: Vec<f64> = ids.iter().map(|&i| natural[i].max(CHIP_MIN_W_PX)).collect();
         place(row, ids, &widths, &mut rects);
     }
-    // The last row this layout may use holds everything left over.
     let last = kept_rows - 1;
     let leftover: Vec<usize> = plan[last..].iter().flatten().copied().collect();
     let widths = share_row(
@@ -838,12 +640,9 @@ fn lay_out_chip_strip(
 }
 
 /// Widths for one row of chips that must all fit inside `available`.
-///
 /// Chips narrower than an equal share keep their natural width and hand
-/// what they do not need to the ones that are over — so squeezing costs
-/// the long labels and leaves the short ones alone, rather than shaving
-/// every chip by the same amount and making `Files` look deliberate at
-/// half its natural size.
+/// the rest to the ones that are over, so squeezing costs the long
+/// labels and leaves short ones alone.
 fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
     if natural.is_empty() {
         return Vec::new();
@@ -874,8 +673,8 @@ fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
         .collect()
 }
 
-/// One pill in the search card's filter band. Shared by the kind chips
-/// and the "All" reset chip so they cannot drift apart.
+/// One pill in the search card's filter band, shared by the kind chips
+/// and the "All" reset chip.
 #[allow(clippy::too_many_arguments)]
 fn draw_filter_chip(
     scene: &mut Scene,
@@ -907,52 +706,39 @@ fn draw_filter_chip(
 const OVERVIEW_TRANSITION_MS: u64 = 400;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
-/// starts. Matches `TOPBAR_HEIGHT_PX` so the wheel doesn't clip into the
-/// tray; kept as a local constant to avoid a cross-module import for a
-/// single f32.
+/// starts. Matches `TOPBAR_HEIGHT_PX`; kept local to avoid a
+/// cross-module import for one f32.
 const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
 
-/// Clamp range for the viewport-driven sidebar width, scaling between
-/// laptop and 4K viewports so the disc's `apply_layout` can recompute
-/// `diameter_px` and keep the visible-arc curvature identical across
-/// widths.
-///
-/// `SIDEBAR_WIDTH_MAX_PX` doubles as the *fixed* extra-left-padding the
-/// content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`), so
-/// the sidebar is never wider than the gutter content reserves.
+/// Clamp range for the viewport-driven sidebar width, so the disc's
+/// `apply_layout` keeps the visible-arc curvature identical across
+/// widths. `SIDEBAR_WIDTH_MAX_PX` also caps the extra left padding the
+/// content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`).
 const SIDEBAR_WIDTH_MIN_PX: f32 = 220.0;
 const SIDEBAR_WIDTH_MAX_PX: f32 = 320.0;
 const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
 
-/// Compute the sidebar width for a given viewport height. `0.26 * h`
-/// gives ~281 px at 1080p, ~374 → clamped to 320 at 1440p, ~187 →
-/// clamped to 220 at 720p. First-frame callers (before any layout pass)
-/// pass `0.0` and get the lower bound, which is a fine seed: the slot
-/// reflows on the next frame once `ShellOverlayHost::rect` is known.
+/// Sidebar width for a given viewport height: `0.26 * h`, clamped to
+/// [220, 320]. First-frame callers pass `0.0` and get the lower bound,
+/// which reflows once `ShellOverlayHost::rect` is known.
 fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
     (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION).clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
 }
 
 /// Wallpaper gutter between the wheel disc's right edge and the first
-/// window. Without it, a leading inset equal to the wheel width exactly
-/// makes the radial switcher butt into the first window instead of
-/// reading as separation between canvas chrome and content.
+/// window, so the radial switcher reads as separated chrome rather than
+/// butting into content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
 /// Wallpaper gutter at the far edge of a display, matching
-/// [`WHEEL_TO_STRIP_GAP_PX`] on the near edge. Without it a full-width
-/// group ended exactly on the last column of the output, so the card's
-/// right border, its rounded corners and its drop shadow all fell off the
-/// screen and the window read as cut off by the bezel rather than as a
-/// window resting on a desktop.
+/// [`WHEEL_TO_STRIP_GAP_PX`] — without it a full-width group's border,
+/// corners and shadow fall off screen at the bezel.
 const STRIP_TRAILING_GUTTER_PX: f64 = 28.0;
 
 /// One display the compositor is painting across, in its combined
-/// coordinate space. The compositor renders a single scene spanning the
-/// bounding box of every output (see `compositor::backend::Output`), so the
-/// host has to be told where the seams are: a window group's width is a
-/// fraction of *its* display, and resolving against the combined desktop
-/// would let one window span two monitors.
+/// coordinate space. The compositor renders one scene spanning every
+/// output's bounding box, so a window group's width must be resolved
+/// against its own display, not the combined desktop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputGeometry {
     /// Left edge in combined coordinates.
@@ -961,34 +747,18 @@ pub struct OutputGeometry {
     pub height: f64,
 }
 
-/// Duration of the quick-settings popover entry animation (concept
-/// motion.div springs the panel in roughly this fast). Short enough to
-/// feel snappy on a dropdown; long enough to register as motion.
+/// Duration of the quick-settings popover entry animation: short enough
+/// to feel snappy, long enough to register as motion.
 const QS_OPEN_ANIM_MS: u64 = 180;
 
-/// Duration of the modal-style entry animation used by workspace-settings
-/// and global-search (both wrap in a `motion.div` that fades + scales +
-/// settles from y=20). Slightly longer than the dropdown variant because
-/// the travel distance is larger and the user focus is on the modal
-/// contents rather than a tray affordance.
+/// Duration of the modal-style entry animation for workspace-settings
+/// and global-search. Slightly longer than the dropdown variant since
+/// the travel distance is larger.
 const MODAL_OPEN_ANIM_MS: u64 = 220;
 
-// ---------------------------------------------------------------------------
-// Surface and scrim alphas (gap #3 in `docs/nirios/visual-gaps.md`).
-//
-// The concept layers `backdrop-blur-xl` / `backdrop-blur-md` under
-// `bg-slate-900/80` + `/70` tints. The pinned Vello has no backdrop
-// filter — it can blur a *shape* (`draw_blurred_rounded_rect`, which is
-// what a drop shadow is made of) but not what is behind one — so the
-// tint is all the shell could honour, and a tint without its blur is not
-// glass. It is a contrast loss that changes with whatever the user has
-// open behind it.
-//
-// So the chrome surfaces are opaque and the *scrims* carry the depth
-// instead: a scrim dims a known quantity by a known amount, which is a
-// thing an un-blurred fill can actually do well. Centralised so the
-// `shell_chrome_test` suite can pin the numeric values.
-// ---------------------------------------------------------------------------
+// Surface and scrim alphas. The pinned Vello has no backdrop filter, so
+// chrome surfaces are opaque and scrims carry the depth instead.
+// Centralised so `shell_chrome_test` can pin the numeric values.
 
 /// Height of the "Room activity" row at the foot of the collaborator
 /// dropdown, including the separator above it.
@@ -996,102 +766,53 @@ const COLLAB_FOOTER_H: f64 = 40.0;
 /// Height reserved for the broker-unavailable line when the dropdown
 /// also has participants to list beneath it.
 const COLLAB_WARNING_H: f64 = 24.0;
-/// Height of the Invite / Join band above the "Room activity" row.
-///
-/// The dropdown answers "who is in this room". Adding somebody to it,
-/// and joining somebody else's, are the two acts that change the
-/// answer — so they belong on the surface that shows it, and not only
-/// in a palette a person has to know the name of a command to reach.
+/// Height of the Invite / Join band above the "Room activity" row —
+/// inviting and joining change who's in the room, so they belong on the
+/// surface that shows it, not only in a palette command.
 const COLLAB_ACTIONS_H: f64 = 40.0;
 
-/// What a row for somebody who has been named but has not arrived says
-/// about itself.
-///
-/// A word rather than only a dimming, because dimming alone is a
-/// difference a viewer has to already know the meaning of, and the
-/// difference here is the one the whole surface turns on: whether the
-/// person in this row is actually in the room.
+/// Label for a row whose person has been named but has not arrived.
 const INVITED_TAG: &str = "invited";
 
-/// How far back the dashed seat-ring of an invited row is drawn, in
-/// that peer's own colour.
-///
-/// Their colour, so the ring and the chip that replaces it when they
-/// arrive are recognisably the same person; faded, so it reads as
-/// pending beside a present peer without looking disabled — an
-/// invitation is live, and the row becomes an ordinary participant the
-/// moment its peer turns up.
+/// Alpha of an invited row's dashed seat-ring, in that peer's own
+/// colour, faded so it reads as pending rather than disabled.
 const INVITED_ROW_ALPHA: f32 = 0.55;
 
-/// Alpha applied to the collaborator and QuickSettings popover surfaces.
-///
-/// Opaque, and it defers to the toolkit's own chrome constant so a
-/// popover cannot drift away from the bar it hangs off. The pinned Vello
-/// has no backdrop filter, so a translucent tint here would be a loss of
-/// contrast rather than glass.
+/// Alpha of the collaborator and QuickSettings popover surfaces.
+/// Opaque, deferring to the toolkit's chrome constant so a popover can't
+/// drift from the bar it hangs off — the pinned Vello has no backdrop
+/// filter, so a translucent tint here would just lose contrast.
 pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
-/// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
-/// surfaces. The design calls for `bg-slate-900/70`, but at that alpha the
-/// palette reads as translucent chrome bleeding through, dropping
-/// legibility of long rows against a busy backdrop — so it paints solid
-/// and the scrim beneath sells the "page-on-top-of-page" affordance
-/// instead. Also backs the workspace-settings modal; app content that
-/// inherits this tint (file viewer, etc.) picks up the same lift for free.
+/// Alpha of the GlobalSearch palette and Workspace-Settings modal
+/// surfaces. Paints solid rather than the design's translucent tint,
+/// since translucency drops legibility of long rows; the scrim beneath
+/// sells the depth instead.
 pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 
-/// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
-/// Concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`. The pinned Vello
-/// has no `push_blur_layer`, so a literal `0.30` scrim under-dims and the
-/// desktop bleeds through the [`MODAL_SURFACE_ALPHA`]-tinted surface,
-/// killing the "page-on-top-of-page" affordance. We compensate by
-/// lifting the scrim to `0.45` — empirically the alpha at which an
-/// un-blurred scrim reads roughly the same as the concept's blurred
-/// 0.30 fill. Pinned by `tests::palette_scrim_alpha_matches_concept`.
+/// Alpha of the scrim beneath the WorkspaceSettings modal. The design
+/// calls for a blurred `0.30`; the pinned Vello has no blur layer, so
+/// `0.45` is the empirical alpha at which an un-blurred scrim reads the
+/// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
-/// Alpha applied to the scrim painted beneath the GlobalSearch palette and
-/// the Overview view. A literal `0.30` scrim reasons about the *card*
-/// (both surfaces sit on a stronger glass tint than the WorkspaceSettings
-/// modal); the scrim's job is the *background*, and there that reasoning
-/// does not hold — a `bg-white` window card at 0.30 leaves it at 178 grey,
-/// a bright field abutting a slate-900 palette with no dim behind it.
-///
-/// So this takes the same un-blurred lift [`MODAL_SCRIM_ALPHA`] documents,
-/// for the same reason: the pinned Vello has no `push_blur_layer`, so an
-/// un-blurred fill has to go heavier to read like the concept's blurred
-/// one. Same value as the modal — both are the same gesture, a page on
-/// top of the page. Pinned by
-/// `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
+/// Alpha of the scrim beneath the GlobalSearch palette and Overview
+/// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
+/// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
-/// A cheap value that changes exactly when what a tab should be showing
-/// changes.
-///
-/// The serialised tile, because that is the whole of what
-/// [`crate::shell::to_ui_tile`] reads — so two tiles with the same
-/// serialisation build the same widget, and building one to compare
-/// against would be both expensive and, for a tile that spawns a process,
-/// destructive.
+/// A cheap value that changes exactly when a tab's content changes: the
+/// serialised tile, since that's the whole of what
+/// [`crate::shell::to_ui_tile`] reads.
 fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
     serde_json::to_string(tile).unwrap_or_default()
 }
 
-/// Whether `tile` is a client window that has not drawn anything yet.
-///
-/// Asked of a tab that is about to have its contents replaced by this
-/// tile, to decide whether the replacement is ready to be shown. Only a
-/// foreign surface can answer yes: everything else is drawn by this
-/// process and is on screen the moment it is built.
-///
-/// The question is "has the client committed a buffer", not "does that
-/// buffer fit its tab" — the stricter test the window group applies
-/// before painting. It has to be the looser one here, because the tab's
-/// rectangle only reaches the client once this swap has happened: the
-/// widget that publishes the placement is the one being swapped in. A
-/// client that never draws keeps the card it already has, which says
-/// what is being done about it and is the honest thing to leave on
-/// screen.
+/// Whether `tile`, about to replace a tab's contents, is a client window
+/// that hasn't drawn anything yet — only a foreign surface can answer
+/// yes, since everything else is on screen the moment it's built. Looser
+/// than the window group's own paint-time check, because the tab's rect
+/// only reaches the client once this swap has happened.
 fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
     match tile {
         crate::shell::state::TileContent::Foreign { surface_id, .. } => {
@@ -1102,24 +823,15 @@ fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
 }
 
 impl ShellOverlayHost {
-    /// Display name painted in the General tab's collaborator tile when
-    /// no `me` collaborator is seeded in the active workspace. Pinned to
-    /// `"Me"` so the adjacent indigo "You" badge doesn't duplicate the row
-    /// label as "You [You]". When the local user signs in for real,
-    /// `c.name` from the seeded collaborator wins.
+    /// Fallback name in the General tab's collaborator tile when no `me`
+    /// collaborator is seeded, so the adjacent "You" badge doesn't
+    /// duplicate as "You [You]".
     pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
 
     pub fn new(content: Box<dyn Widget>) -> Self {
-        // Palette entries are produced by the search registry on every
-        // keystroke (`refresh_search_results`). In-shell providers:
-        // `actions` (chrome-command rows), `applications` (installed
-        // packages — picking a row launches one), `notes` and `editor`
-        // (each text app's own Automerge body, also what `Ctrl+K`
-        // narrows to), `records` (every record any app wrote, each row
-        // saying which room it lives in), `files` (walkdir + tantivy
-        // content index). New providers slot in via
-        // `SearchRegistry::register`; the palette picks up their
-        // resource-kind chips automatically.
+        // Palette entries come from the search registry on every
+        // keystroke. New providers slot in via `SearchRegistry::register`;
+        // the palette picks up their resource-kind chips automatically.
         let mut palette = CommandPalette::new();
         palette.set_bypass_fuzzy(true);
         // The shell paints scope + kind controls into the palette's own
@@ -1132,9 +844,8 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
-        // Applications qOS did not package. Separate provider and
-        // separate chip from the one above: these run unconfined, and
-        // the palette is where the user chooses between them.
+        // Applications qOS did not package: unconfined, separate chip
+        // from the one above.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::HostApplicationsProvider::new(),
         ));
@@ -1261,13 +972,10 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
-    /// Where the on-screen readout sits: horizontally centred, one
-    /// eighth of the viewport up from the bottom.
-    ///
-    /// Low, because it must not cover what the user is working on, and
-    /// centred because it is not attached to anything — unlike a
-    /// notification, which belongs to an app and lives in that app's
-    /// corner. This is the machine answering a key.
+    /// Where the on-screen readout sits: horizontally centred, one eighth
+    /// of the viewport up from the bottom — low so it doesn't cover the
+    /// user's work, centred (unlike a notification, which belongs to an
+    /// app's corner) because it's the machine answering a key.
     pub fn osd_rect(&self) -> Rect {
         let w = 260.0_f64.min(self.rect.width() * 0.6);
         let h = 96.0_f64;
@@ -1288,10 +996,8 @@ impl ShellOverlayHost {
             return;
         };
         let now = Instant::now();
-        // Expiring here rather than on a timer keeps the slab's lifetime
-        // tied to the frames that actually paint it: a compositor that is
-        // idle is not painting, and a readout that expired while nothing
-        // was on screen has nothing to clean up.
+        // Expiring here rather than on a timer ties the slab's lifetime
+        // to frames that actually paint it, not an idle compositor.
         {
             let mut st = chrome.borrow_mut();
             st.expire_osd(now);
@@ -1320,8 +1026,8 @@ impl ShellOverlayHost {
             );
         }
 
-        // Lift it off whatever it covers — without a shadow a translucent
-        // slab over a busy tile reads as a rendering artefact.
+        // Without a shadow a translucent slab over a busy tile reads as
+        // a rendering artefact.
         ui::surface::soft_shadow(
             scene,
             transform,
@@ -1347,7 +1053,6 @@ impl ShellOverlayHost {
             &body,
         );
 
-        // Glyph, centred in the upper half.
         let glyph_px = 28.0_f64;
         let gx = rect.center().x;
         let gy = rect.y0 + 26.0;
@@ -1392,9 +1097,8 @@ impl ShellOverlayHost {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
         );
 
-        // Level bar. The track is always drawn at full width so the
-        // number and the bar occupy the same place whatever the value —
-        // a bar that shrinks its own track reads as a progress spinner.
+        // Track is always drawn full width; a track that shrinks with
+        // the value reads as a progress spinner instead of a level bar.
         if osd.has_level() {
             let bar_h = 6.0_f64;
             let inset = 24.0_f64;
@@ -1411,9 +1115,8 @@ impl ShellOverlayHost {
                 None,
                 &RoundedRect::from_rect(bar, bar_h / 2.0),
             );
-            // A muted sink draws an empty track: the level it will return
-            // to is still true, but reporting it as a filled bar would
-            // contradict the crossed-out glyph directly above it.
+            // A muted sink draws an empty track — a filled bar would
+            // contradict the crossed-out glyph above it.
             let filled = if matches!(
                 osd.kind,
                 crate::shell::osd::OsdKind::Volume { muted: true }
@@ -1435,7 +1138,6 @@ impl ShellOverlayHost {
             }
         }
 
-        // Caption.
         let caption = osd.caption();
         let size = tokens.typography.scale.sm;
         let (cw, ch) = text_renderer.measure_weighted(&caption, size, None, TextWeight::Medium);
@@ -1459,9 +1161,7 @@ impl ShellOverlayHost {
     }
 
     /// Copy the poller's latest reading onto the chrome, bumping the
-    /// revision only when something actually changed — the revision is
-    /// the repaint trigger, and a status that re-publishes an identical
-    /// battery percentage every five seconds must not wake the renderer.
+    /// repaint-triggering revision only when it actually changed.
     fn sync_status_from_bridge(&mut self) {
         let Some(bridge) = self.status_bridge.as_ref() else {
             return;
@@ -1478,21 +1178,17 @@ impl ShellOverlayHost {
     }
 
 
-    /// Advance the overview crossfade toward `overview_target`. Latches
-    /// a new transition if the target changed since last frame, then
-    /// evaluates a linear lerp of raw progress. The draw path is
-    /// responsible for splitting the returned `t` into a sequential
-    /// two-phase animation (desktop shrink-out in `[0, 0.5]`, overview
-    /// zoom-in in `[0.5, 1.0]`), each with its own smoothstep easing —
-    /// so keep this function returning *linear* progress.
+    /// Advance the overview crossfade toward `overview_target`, latching a
+    /// new transition if the target changed. Returns *linear* progress —
+    /// the draw path splits it into its own two-phase, smoothstep-eased
+    /// animation, so this must stay linear.
     fn tick_overview_transition(&mut self, target: f32) -> f32 {
         if (target - self.overview_target).abs() > f32::EPSILON {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
-            // Opening points the selection at the room you are in, so the
-            // first arrow press moves one step from *here* rather than
-            // from wherever a previous visit left off.
+            // Reseed from the current room so the first arrow press moves
+            // one step from here, not from a stale previous visit.
             self.overview_selection = if target > 0.5 {
                 self.overview_here_index()
             } else {
@@ -1528,21 +1224,11 @@ impl ShellOverlayHost {
         self
     }
 
-    /// Toggle the peer-sync palette commands (`/invite`, `/connect`).
-    ///
-    /// When enabled, the palette grows two extra rows that the user
-    /// can pick to issue an invite token (copied to clipboard by the
-    /// compositor) or paste one in to dial a remote workspace. Off
-    /// by default; the compositor flips this on when booted with
-    /// `--enable-peer-sync`.
-    ///
-    /// Idempotent: calling it twice with `true` only appends the rows
-    /// once. The rows can't be removed once added — toggling back to
-    /// `false` is not a supported transition.
+    /// Toggle the peer-sync palette commands (`/invite`, `/connect`). Off
+    /// by default; flipped on by `--enable-peer-sync`. Idempotent: the
+    /// rows are appended once and can't be removed by toggling back off.
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
-        // The palette rows come from `ActionsProvider`, which reads the
-        // flag off chrome — so the flag has to reach chrome, not only
-        // this struct.
+        // `ActionsProvider` reads the flag off chrome, not this struct.
         self.peer_sync_enabled = enabled;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().peer_sync_enabled = enabled;
@@ -1550,34 +1236,20 @@ impl ShellOverlayHost {
         self
     }
 
-    /// Read-only accessor for whether peer-sync palette entries are
-    /// currently registered. Tests use this to assert
-    /// [`Self::with_peer_sync_enabled`] flipped the flag without
-    /// having to inspect the internal `CommandPalette` directly.
+    /// Whether peer-sync palette entries are registered.
     pub fn peer_sync_enabled(&self) -> bool {
         self.peer_sync_enabled
     }
 
-    /// Drain any pending [`PeerSyncAction`]s emitted by the palette
-    /// dispatcher since the last call. Returns the captured actions
-    /// in FIFO order.
-    ///
-    /// The compositor (in `compositor::hosted::run_with_options`)
-    /// pumps this each frame and routes the actions into its
-    /// `ShellNetwork` handle: `IssueInvite` issues a token + posts to
-    /// clipboard, `PromptConnect` opens a small text-input modal for
-    /// the inbound token. Buffer is cleared on every drain so
-    /// repeated `/invite` invocations all surface — no de-dup, no
-    /// coalescing.
+    /// Drain pending [`PeerSyncAction`]s since the last call, FIFO. Pumped
+    /// each frame by the compositor into its `ShellNetwork` handle. No
+    /// de-dup or coalescing, so repeated `/invite` all surface.
     pub fn take_peer_sync_actions(&mut self) -> Vec<PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_actions)
     }
 
-    /// Install the closure that carries out [`PeerSyncRequest`]s.
-    ///
-    /// Without one, `/invite` and `/connect` have nowhere to go: the
-    /// palette pushes an action onto a queue nothing drains, so both
-    /// commands stay inert in a running session however the flag is set.
+    /// Install the closure that carries out [`PeerSyncRequest`]s. Without
+    /// one, `/invite` and `/connect` push to a queue nothing drains.
     pub fn with_peer_sync_bridge(
         mut self,
         bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
@@ -1604,12 +1276,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Drain the palette's peer-sync intents and act on them.
-    ///
-    /// Called once per frame from [`Widget::update`]. `/invite` mints a
-    /// token and parks it where the user can read it; `/connect` opens
-    /// the token prompt. Both write their outcome into chrome so the
-    /// result is on screen rather than only in a log.
+    /// Drain the palette's peer-sync intents and act on them, once per
+    /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
+    /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
         let mut actions = std::mem::take(&mut self.peer_sync_actions);
         if let Some(chrome) = self.chrome.clone() {
@@ -1627,11 +1296,10 @@ impl ShellOverlayHost {
                 PeerSyncAction::PromptInvite => {
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
-                        // A fresh field, and nothing left over from the
-                        // last invite: a card that opened still showing
-                        // the previous token would put a live bearer
-                        // credential behind a question about somebody
-                        // else.
+                        // A fresh field, nothing left over from the last
+                        // invite — a card still showing the previous token
+                        // would put a live bearer credential behind a
+                        // question about somebody else.
                         st.peer_sync_invite_name = Some(String::new());
                         st.peer_sync_connect_input = None;
                         st.peer_sync_invite_token = None;
@@ -1653,15 +1321,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Mint a token, park it on the card, and say who it is for.
-    ///
-    /// `invitee` is the name this room will call whoever redeems the
-    /// token. `None` is a plain `/invite`, which is an invite to nobody
-    /// in particular and is labelled as one — never with a name left
-    /// over from the last person who was invited.
-    ///
-    /// The composer field is cleared only on success, so an invite the
-    /// network refused can be retried without retyping the name.
+    /// Mint a token, park it on the card, and say who it is for. `None`
+    /// invitee is a plain `/invite`, labelled as such rather than keeping
+    /// a stale name. The composer clears only on success, so a refused
+    /// invite can be retried without retyping the name.
     fn mint_invite(&mut self, invitee: Option<String>, copy: bool) {
         let request = match invitee.as_deref() {
             Some(name) => PeerSyncRequest::IssueInviteFor(name.to_string()),
@@ -1698,11 +1361,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Mint the invite the composer has been filled in for.
-    ///
-    /// An empty field is not an invite: it is the question still
-    /// unanswered, and minting anyway is exactly how the host ended up
-    /// looking at a number instead of a name.
+    /// Mint the invite the composer has been filled in for. An empty
+    /// field is not an invite — minting anyway is how a peer ends up
+    /// named after a number instead of a person.
     fn submit_invite_composer(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -1720,10 +1381,8 @@ impl ShellOverlayHost {
     }
 
     /// Submit whatever is in the connect prompt as an invite token.
-    ///
-    /// Closes the prompt on success and leaves it open on failure with
-    /// the reason underneath, so a mistyped token can be corrected
-    /// rather than retyped from scratch.
+    /// Closes on success; on failure stays open with the reason shown,
+    /// so a mistyped token can be corrected rather than retyped.
     fn submit_connect_prompt(&mut self) {
         let token = match self.chrome.as_ref() {
             Some(chrome) => match chrome.borrow().peer_sync_connect_input.clone() {
@@ -1748,13 +1407,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Put the minted invite token on the system clipboard.
-    ///
-    /// The compositor installs its selection mirror as this process's
-    /// clipboard backend (`compositor::selection::install_host_clipboard`),
-    /// so this reaches the same `wl_data_device` selection a sandboxed
-    /// app pastes from — the token leaves the machine the same way any
-    /// other copied text does.
+    /// Put the minted invite token on the system clipboard — the same
+    /// `wl_data_device` selection a sandboxed app pastes from, via
+    /// `compositor::selection::install_host_clipboard`.
     fn copy_invite_token(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -1767,12 +1422,9 @@ impl ShellOverlayHost {
         st.bump();
     }
 
-    /// Pull an invite token off the system clipboard into the prompt.
-    ///
-    /// Replaces the field rather than appending to it: a token is one
-    /// whole value, and a paste on top of a half-typed one is a request
-    /// to use the pasted one. Whitespace goes — a token copied out of a
-    /// chat window arrives wrapped.
+    /// Pull an invite token off the clipboard, replacing the field rather
+    /// than appending. Whitespace stripped, since a token copied out of
+    /// a chat window arrives wrapped.
     fn paste_invite_token(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -1796,13 +1448,10 @@ impl ShellOverlayHost {
         st.bump();
     }
 
-    /// Route one event to the peer-sync card. Returns whether the card
-    /// consumed it.
-    ///
-    /// While the token prompt is open every key belongs to it: a base64
-    /// token contains the same characters the chrome reads as chords,
-    /// so anything that leaked past would both corrupt the token and
-    /// fire a shell action.
+    /// Route one event to the peer-sync card, returning whether it was
+    /// consumed. While a prompt is open every key belongs to it — a
+    /// base64 token shares characters with shell chords, so anything
+    /// that leaked past would both corrupt the token and fire an action.
     fn handle_peer_sync_event(
         &mut self,
         event: &WindowEvent,
@@ -1810,11 +1459,10 @@ impl ShellOverlayHost {
     ) -> bool {
         let prompt_open = self.connect_prompt_open();
         let composer_open = self.invite_composer_open();
-        // Ctrl (or Super, for a user whose muscle memory is a Mac) is
-        // what turns `c` and `v` from token characters into the copy and
-        // paste chords. Checked before the plain-character branch below,
-        // which would otherwise splice a literal "v" into the token the
-        // user was trying to paste over.
+        // Ctrl (or Super, for muscle-memory-is-a-Mac users) turns `c`/`v`
+        // from token characters into copy/paste chords — checked before
+        // the plain-character branch, which would otherwise splice a
+        // literal "v" into the token being pasted over.
         let mods = modifiers.state();
         let chord = mods.control_key() || mods.super_key();
         match event {
@@ -1828,9 +1476,8 @@ impl ShellOverlayHost {
                 ..
             } => {
                 match logical_key {
-                    // Copy / paste come first: they are the whole point
-                    // of the card, and `Key::Character` below would
-                    // otherwise swallow them as token text.
+                    // Copy/paste first, or `Key::Character` below would
+                    // swallow them as token text.
                     Key::Character(s) if chord && s.eq_ignore_ascii_case("c") => {
                         self.copy_invite_token();
                         return true;
@@ -1891,9 +1538,7 @@ impl ShellOverlayHost {
                         }
                         return true;
                     }
-                    // A name has spaces in it. `Key::Character` never
-                    // carries one, so without this the composer could
-                    // only be told a single word.
+                    // `Key::Character` never carries a space.
                     Key::Named(NamedKey::Space) if composer_open && !chord => {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
@@ -1906,9 +1551,7 @@ impl ShellOverlayHost {
                     }
                     _ => {}
                 }
-                // Swallow anything else while the card owns the
-                // keyboard so a stray chord cannot act on the desktop
-                // behind it.
+                // Swallow anything else while the card owns the keyboard.
                 prompt_open || composer_open
             }
             WindowEvent::KeyboardInput { .. } => prompt_open || composer_open,
@@ -1968,33 +1611,24 @@ impl ShellOverlayHost {
             .unwrap_or(false)
     }
 
-    /// Register the floating sidebar wheel. The wheel is laid out as an
-    /// absolutely-positioned overlay above the desktop content so it
-    /// appears to hover over the wallpaper rather than occupy a column.
+    /// Register the floating sidebar wheel as an absolutely-positioned
+    /// overlay, so it hovers over the wallpaper rather than occupying a
+    /// column.
     pub fn with_sidebar(mut self, sidebar: Box<dyn Widget>) -> Self {
         self.sidebar = Some(sidebar);
         self
     }
 
-    /// Override the vertical y-offset at which the sidebar wheel starts.
-    /// Callers pass the real topbar-bottom in viewport-local coordinates
-    /// (i.e. accounting for any outer padding introduced by `Column` /
-    /// `Container` wrappers around the topbar). The default is 40 px
-    /// which assumes the topbar is rendered at y=0..40; the real shell
-    /// wraps the topbar in padded layout widgets so the actual bottom
-    /// sits lower. Without this override, the sidebar's rect overlaps
-    /// the topbar's rendered band and swallows clicks on the overview-
-    /// toggle grid icon (see
-    /// `full_root_click_toggles_overview_via_topbar_button`).
+    /// Override the sidebar's top y-offset. The 40px default assumes an
+    /// unpadded topbar; without this on the real shell's padded topbar,
+    /// the sidebar overlaps it and swallows overview-toggle clicks.
     pub fn with_sidebar_top(mut self, y: f32) -> Self {
         self.sidebar_top_y = y;
         self
     }
 
-    /// Tell the host which displays it is painting across. The compositor
-    /// calls this through `FrameBuilder` whenever the output set or a mode
-    /// changes; the host forwards the derived per-display strip widths to
-    /// every [`GroupRow`] at the top of `build_layout`.
+    /// Tell the host which displays it is painting across, so
+    /// [`GroupRow`]s can size against per-display strip widths.
     pub fn set_output_geometry(&mut self, outputs: &[OutputGeometry]) {
         if self.outputs != outputs {
             self.outputs = outputs.to_vec();
@@ -2006,28 +1640,16 @@ impl ShellOverlayHost {
         &self.outputs
     }
 
-    /// Per-display strip widths for the [`GroupRow`]s: each display's full
-    /// extent plus the width actually available to window groups on it.
-    ///
-    /// The leftmost display gives up the wheel-disc slot and its wallpaper
-    /// gutter — that region is canvas the strip reserves but never places a
-    /// group in — so a `Wide` group there fills the screen *beside* the
-    /// wheel rather than running off its right edge. Other displays have no
-    /// chrome to reserve and hand over their full width.
-    ///
-    /// Falls back to the host's own rect when the compositor hasn't pushed
-    /// geometry (`--mode hosted`, or before the first push), which treats
-    /// the window as the single display — the right answer in that mode.
+    /// Per-display strip widths: full extent plus width actually
+    /// available to window groups, with the leftmost display giving up
+    /// the wheel-disc slot and its gutter. Falls back to the host's own
+    /// rect when the compositor hasn't pushed geometry yet (`--mode
+    /// hosted`).
     fn strip_output_spans(&self) -> Vec<OutputSpan> {
         let outputs: Vec<OutputGeometry> = if self.outputs.is_empty() {
-            // No backend has told us about its displays yet. `self.rect` is
-            // only set in `apply_layout`, and this runs during
-            // `build_layout`, so on a first frame it is still zero — a
-            // synthesised span would hand every strip a 1 px basis and
-            // nothing would paint. Returning no spans instead lets
-            // `GroupRow::basis_for` use its own chain (its laid-out width,
-            // then a default), which is the answer for any host that does
-            // not publish output geometry at all.
+            // `self.rect` is zero on a first frame (only set in
+            // apply_layout, this runs during build_layout); no spans
+            // lets `GroupRow::basis_for` fall back to its own chain.
             if self.rect.width() <= 1.0 {
                 return Vec::new();
             }
@@ -2039,7 +1661,6 @@ impl ShellOverlayHost {
         } else {
             self.outputs.clone()
         };
-        // The strip's left edge — where the wheel-disc slot is reserved.
         let strip_left = 0.0_f64;
         outputs
             .iter()
@@ -2060,10 +1681,9 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Register the per-strip [`GroupRow`] raw pointers harvested at build
-    /// time. The host uses these each frame in
-    /// [`Self::reconcile_active_group_off_closing`] to feed the data-layer
-    /// reconciler without re-walking the widget tree.
+    /// Register the per-strip [`GroupRow`] raw pointers harvested at
+    /// build time, used each frame to feed the reconciler without
+    /// re-walking the widget tree.
     ///
     /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
     /// the content subtree this host wraps. The caller (currently
@@ -2078,43 +1698,22 @@ impl ShellOverlayHost {
     }
 
     /// Record which workspace the injected content was built for, so
-    /// [`Self::resync_workspace_content`] can detect the first switch
-    /// away from it. The production builder always sets this.
+    /// [`Self::resync_workspace_content`] can detect the first switch away.
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
         self
     }
 
-    /// Swap the workspace-scoped content when the active workspace
-    /// changes, or when it grows a strip the content has no row for.
-    /// On either the content root and the strip pointer map are
-    /// rebuilt TOGETHER via [`crate::shell::build_workspace_root`], so
-    /// no reconciler can ever observe pointers into freed rows.
-    /// Returns `true` when a swap happened (the caller must treat the
-    /// widget structure as dirty — every row is new).
-    ///
-    /// The strip check is what makes a peer's window visible.
-    /// [`Self::resync_strips_from_tree`] splices new groups and tabs
-    /// incrementally, but it is keyed by strip and skips any strip it
-    /// has no row for — and a window opened on another machine arrives
-    /// in a strip of *theirs*, which is new here. So the window landed
-    /// in the tree, read back correctly, and was skipped by the only
-    /// code that could have drawn it.
-    ///
-    /// A rebuild rather than an incremental insert because there is no
-    /// incremental path for a strip: rows are built with the content
-    /// root and the pointer map has to be replaced with them or it
-    /// dangles. It costs the rows' widget-local state (scroll offsets),
-    /// and it runs only when the strip set actually changes, which is
-    /// rare. What the person is looking at — workspace, strip, group,
-    /// front tab — lives in the tree, not in the rows, so a rebuild
-    /// does not move them.
-    ///
-    /// Runs at the top of both [`Widget::update`] and
-    /// [`Widget::take_structure_dirty`], BEFORE
-    /// [`Self::resync_strips_from_tree`] and every other
-    /// `group_row_ptrs` consumer, for the same reason the resync does:
-    /// the shots driver's relayout-only path skips `update` entirely.
+    /// Swaps the workspace-scoped content when the active workspace changes
+    /// or grows a strip with no row. Content root and pointer map rebuild
+    /// TOGETHER via [`crate::shell::build_workspace_root`], so no
+    /// reconciler ever observes a pointer into a freed row. A new strip has
+    /// no incremental path — [`Self::resync_strips_from_tree`] splices by
+    /// strip id and skips strips it has no row for — so a rebuild (costing
+    /// scroll offsets, not focus, which lives in the tree) is the only
+    /// option, and it's rare. Returns `true` on a swap. Runs at the top of
+    /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
+    /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -2151,12 +1750,8 @@ impl ShellOverlayHost {
     }
 
     /// Does the content tree have a row for every strip of the active
-    /// workspace?
-    ///
-    /// A strip with no row is a strip nothing can draw — the
-    /// incremental resync looks its row up by strip id and skips what
-    /// it cannot find. Extra rows count too: a strip that went away
-    /// leaves a row pointing at a group that is no longer in the tree.
+    /// workspace? A strip with no row can't be drawn (the incremental
+    /// resync looks it up by id); extra rows point at strips that went away.
     fn rows_cover_active_strips(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
         let Some(ws) = tree.active_workspace() else {
             return true;
@@ -2174,18 +1769,10 @@ impl ShellOverlayHost {
         self.resync_workspace_content()
     }
 
-    /// On-screen rectangle of the tile hosting the foreign wayland
-    /// surface `surface_id`, or `None` when no *visible* tile hosts it
-    /// (unknown surface, background tab, inactive workspace).
-    ///
-    /// Walks the live widget tree rather than the persisted state, so the
-    /// answer is the rect the surface's pixels are actually painted into
-    /// this frame — which is what the compositor needs when it tells the
-    /// client what size to render at. Only the active tile of each group
-    /// is consulted because that is the only one laid out and drawn.
-    ///
-    /// Valid after a layout pass; before the first `apply_layout` every
-    /// rect is `Rect::ZERO` and this reports `None`.
+    /// On-screen rect of the tile hosting foreign wayland surface
+    /// `surface_id`, or `None` when no *visible* tile hosts it. Walks the
+    /// live widget tree, not persisted state, so the answer is what's
+    /// actually painted — what the compositor needs to size the client at.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<Rect> {
         let wanted = format!("foreign-surface-{surface_id}");
         for &row_ptr in self.group_row_ptrs.values() {
@@ -2213,16 +1800,11 @@ impl ShellOverlayHost {
     }
 
     /// Whether any tab on screen is still holding a place for an app that
-    /// has not drawn yet — see [`ui::widget::WindowGroup::any_tile_opening`].
-    ///
-    /// The opening card carries a spinner, so a group in this state asks
-    /// for animation frames for as long as it is waiting. That is the
-    /// point of it: a launch that takes three seconds should look like
-    /// something is happening. It does mean
-    /// [`Self::needs_animation_frame`] stays true the whole time, which is
-    /// correct but indistinguishable, from the outside, from an animation
-    /// that is wedged. Anything waiting for the tree to go quiet needs to
-    /// tell those two apart, and this is how.
+    /// hasn't drawn yet (see [`ui::widget::WindowGroup::any_tile_opening`]).
+    /// A group in this state requests animation frames for as long as it
+    /// waits — deliberately indistinguishable from a wedged animation from
+    /// the outside; this method is how a caller waiting for the tree to go
+    /// quiet tells them apart.
     pub fn any_tile_opening(&mut self) -> bool {
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -2237,26 +1819,12 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Per-frame diff of the live `WorkspaceTree` against every
-    /// `GroupRow`'s current children. Returns `true` if the row
-    /// shape actually changed (so callers can propagate a redraw
-    /// signal).
-    ///
-    /// Chrome bumps its revision on every structural
-    /// mutation (workspace add, group insert, tab close, file
-    /// drop, …), but the live `GroupRow` widgets cache their
-    /// children in `groups: Vec<WindowGroup>` — without this poll
-    /// the rows keep painting the boot-time snapshot even after the
-    /// persisted tree has grown new strips/groups. We compare the
-    /// row's `group_ids()` against the strip's
-    /// `window_groups.iter().map(|g| g.id)` and call
-    /// `insert_group` / `remove_group_by_id` to converge, which
-    /// preserves existing rows' host state (per-tile scroll, tab
-    /// selection, etc.) on revision bumps that don't touch them.
-    ///
-    /// Cheap on the no-op path: `chrome.revision` is a single u64
-    /// compare against the cached `last_chrome_revision`. The diff
-    /// only runs when something changed.
+    /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
+    /// splicing via `insert_group`/`remove_group_by_id` to preserve
+    /// untouched rows' host state (scroll, tab selection). Without this
+    /// poll, rows would keep painting the boot-time snapshot as the
+    /// persisted tree grows. Cheap on the no-op path — one u64 compare
+    /// against `last_chrome_revision`.
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -2287,20 +1855,13 @@ impl ShellOverlayHost {
                     row.group_ids().into_iter().collect();
                 let tree_ids: std::collections::HashSet<u64> =
                     strip.window_groups.iter().map(|g| g.id).collect();
-                // Splice in any new groups (preserves existing row
-                // groups' host state — scroll positions, per-tile
-                // selection, etc. — instead of rebuilding the whole
-                // vector and losing it).
+                // Splice in new groups without rebuilding the vector, so
+                // existing rows keep their host state.
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
                         let mut fresh = crate::shell::to_ui_window_group(g, &records);
-                        // A window arriving is worth seeing arrive. The
-                        // row's own splice paths (a tab dragged out into
-                        // its own group) already run this fade; a window
-                        // that appeared because the user opened it
-                        // deserves the same, and it is what reads
-                        // together with the neighbours sliding over to
-                        // make room for it.
+                        // Same spawn fade the row's own splice paths use,
+                        // so an opened window arrives the same way.
                         fresh.start_spawn_animation();
                         row.insert_group(fresh, idx);
                         any_change = true;
@@ -2312,11 +1873,10 @@ impl ShellOverlayHost {
                         any_change = true;
                     }
                 }
-                // Reconcile *tabs* inside groups that already exist. The
+                // Reconcile tabs inside groups that already exist — the
                 // group-level splice above only fires for whole new
-                // groups, so a tab appended to an existing group — which
-                // is what adopting an external wayland toplevel does —
-                // would otherwise never reach the widget tree.
+                // groups, so a tab adopted into an existing one (an
+                // external toplevel) needs its own path here.
                 for g in strip.window_groups.iter() {
                     let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
                         continue;
@@ -2328,25 +1888,11 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
-                            // The tab is already on screen. What is *in*
-                            // it can still have changed under it — a tab
-                            // that announced a window before the window
-                            // existed becomes the window, in place — and
-                            // the splice above only ever fires for a tab
-                            // id it has not seen. Without this the tree
-                            // and the screen disagree permanently, and
-                            // every assertion made against the tree
-                            // passes while the person sees the old thing.
-                            // ...but not before the window is there to
-                            // become. The card this tab is currently
-                            // showing says what is being done — a peer's
-                            // window that this machine is opening its own
-                            // instance of says exactly that — and
-                            // swapping it for a surface that has not
-                            // drawn replaces a sentence that is true with
-                            // a blank frame. The tile signature is left
-                            // unrecorded, so the swap is retried until
-                            // the window can be shown.
+                            // A placeholder becoming the real window: held
+                            // off by `window_is_still_starting` until the
+                            // surface has drawn, so a swap doesn't replace
+                            // an "opening" card with a blank frame — the
+                            // signature is left unrecorded so it retries.
                             if tab_tiles.get(&tab.id) != Some(&signature)
                                 && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
@@ -2362,10 +1908,8 @@ impl ShellOverlayHost {
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
                         };
-                        // A tab spliced into a live group gets its own
-                        // document too — an adopted toplevel or a
-                        // freshly-opened app is as much an open thing as
-                        // one that was there at boot.
+                        // Gets its own document too, same as any tab
+                        // present at boot.
                         let mut host =
                             ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
                         host.bind_record(
@@ -2392,20 +1936,11 @@ impl ShellOverlayHost {
         any_change
     }
 
-    /// Push the compositor's transient fullscreen state (`ChromeState::
-    /// fullscreen_group`) down onto every strip's [`GroupRow`], so the strip
-    /// that owns the fullscreen surface promotes it to the whole output while
-    /// the other strips collapse away. Idempotent — each `GroupRow::
-    /// set_fullscreen` is a no-op when its flags are unchanged, so this is
-    /// cheap to run every frame. A real change flags the owning row structurally
-    /// dirty, which drives the taffy rebuild that applies the collapse/restore.
-    ///
-    /// Called both from [`Widget::update`] (the update-driven path) and from
-    /// [`Widget::build_layout`] (so the compositor's `relayout`-only frame loop
-    /// still applies it even if `update` isn't pumped that tick), and directly
-    /// from [`crate::compositor::frame::FrameBuilder::relayout`] *before* the
-    /// structure-dirty check so a promotion/restore triggers the rebuild that
-    /// applies it.
+    /// Pushes the compositor's transient fullscreen state onto every
+    /// strip's [`GroupRow`] so the owning strip promotes while others
+    /// collapse. Idempotent. Called from [`Widget::update`],
+    /// [`Widget::build_layout`], and `FrameBuilder::relayout` *before* the
+    /// structure-dirty check, so a promotion/restore triggers the rebuild.
     pub fn sync_fullscreen_from_chrome(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2413,19 +1948,15 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Either route promotes a group to the whole output: a client that
-        // asked for `xdg_toplevel.set_fullscreen`, or a group the user expanded
-        // with the tab's Expand chip. The client request wins if both are set.
+        // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
+        // group if both are set.
         let fs_group = {
             let st = chrome.borrow();
             st.fullscreen_group().or_else(|| st.maximized_group())
         };
-        // Only apply the scene override when the fullscreen group actually
-        // exists in the *rendered* tree. The live client tree (which the xdg
-        // handler mutates) and this rendered tree are not yet unified, so a
-        // fullscreen id we don't host must be treated as "no fullscreen" —
-        // otherwise every strip would hide around a group that isn't here
-        // and blank the shell.
+        // The live client tree and this rendered tree aren't yet unified,
+        // so a fullscreen id we don't host must count as "no fullscreen"
+        // — otherwise every strip hides around a group that isn't here.
         let owned = fs_group.is_some_and(|gid| {
             self.group_row_ptrs
                 .values()
@@ -2487,21 +2018,11 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that mirrors any per-frame `WindowGroup::maximized`
-    /// flips into the persisted [`crate::shell::state::WorkspaceTree`].
-    ///
-    /// Walks the captured [`GroupRow`] pointers, drains every group's
-    /// [`UiWindowGroup::take_pending_maximize_change`] one-shot, and writes
-    /// the new boolean into the matching `WindowGroup::maximized` slot of
-    /// the persisted tree. Without this hook the on-screen flip — driven
-    /// by the tab-bar Maximize2 glyph or the floating restore / close-while-
-    /// maximized chrome — would live only on the widget instance and reset
-    /// to the pre-toggle value on the next shell restart.
-    ///
-    /// Idempotent and cheap: groups with no pending change are skipped, and
-    /// the chrome borrow is only taken when at least one flip needs writing.
-    /// Called from [`Widget::update`] alongside the active-group reconciler
-    /// so the persisted state catches up with the widget tree every frame.
+    /// Drains every group's [`UiWindowGroup::take_pending_maximize_change`]
+    /// one-shot and mirrors it into the persisted
+    /// [`crate::shell::state::WorkspaceTree`] — without this the toggle
+    /// lives only on the widget and resets on the next restart. Idempotent;
+    /// the chrome borrow is only taken when a flip needs writing.
     fn harvest_pending_maximize_changes(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2509,11 +2030,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Snapshot first so we drop the mutable widget borrow before
-        // taking the chrome borrow. Each entry is `(group_id, new_value)`;
-        // strip_id is unused here because group ids are tree-unique, but
-        // we keep it in the tuple for symmetry with the active-group
-        // reconciler and to make a future per-strip writeback trivial.
+        // Snapshot first so the mutable widget borrow drops before the
+        // chrome borrow.
         let mut changes: Vec<(StripId, GroupId, bool)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
@@ -2532,11 +2050,9 @@ impl ShellOverlayHost {
         }
         let mut st = chrome.borrow_mut();
         for (_strip_id, group_id, new_value) in &changes {
-            // An expanded window takes over the whole output: park the group id
-            // in the chrome's user-maximize slot so `is_fullscreen()` reports
-            // true and the top bar + sidebar wheel suppress themselves. Exiting
-            // maximize clears it (only if this group owns the slot, so a stale
-            // exit from another group can't steal the state).
+            // Parks the group id in chrome's user-maximize slot so
+            // `is_fullscreen()` suppresses the top bar + wheel. Cleared
+            // only by the group that owns the slot.
             if *new_value {
                 st.set_maximized_group(Some(*group_id));
             } else if st.maximized_group() == Some(*group_id) {
@@ -2544,11 +2060,7 @@ impl ShellOverlayHost {
             }
         }
         for (_strip_id, group_id, new_value) in changes {
-            // Walk the tree to find the group by id — group ids are
-            // unique across the whole tree, so a flat scan is correct.
-            // The shell currently keeps trees small (single-digit groups
-            // per strip in practice), so this is an O(g) write that runs
-            // only on frames where a click actually flipped maximize.
+            // Flat scan is correct since group ids are tree-unique.
             let mut tree = st.tree_mut();
             for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
@@ -2557,29 +2069,15 @@ impl ShellOverlayHost {
                     }
                 }
             }
-            // Mirror the maximize flip into the automerge doc so
-            // peer-sync observes the change. Tolerant of the doc not
-            // yet carrying this group — see
-            // `WorkspaceTree::doc_set_maximized` doc-comment.
             tree.doc_set_maximized(group_id, new_value);
         }
     }
 
-    /// Per-tick wire-up that mirrors the widget-side `TabBar::active_id`
-    /// (and the group whose bar it is) back into the persisted
-    /// [`crate::shell::state::WorkspaceTree`]. Without this, the
-    /// tree's `group.active_tab` / `active_group` / `active_strip`
-    /// pointers stayed frozen at the values they took at construction;
-    /// clicking a different tab pill flipped the visible content but
-    /// left the search-scope helpers (`ChromeState::active_tab_id`,
-    /// `active_app_title`) pointing at whichever tab shipped in the
-    /// group's initial list.
-    ///
-    /// Runs once per frame regardless of whether a tab was clicked — the
-    /// walk is O(groups × tabs), which stays small for a normal
-    /// workspace. Skipping the scan when nothing changed would need a
-    /// per-group `changed` bit and a wakeup path, extra state for a
-    /// walk that's already cheap.
+    /// Mirrors the widget-side `TabBar::active_id` back into the persisted
+    /// tree's `group.active_tab`/`active_group`/`active_strip` — without
+    /// it, a tab click flips visible content but leaves search-scope
+    /// helpers pointing at the group's initial tab. Runs every frame; the
+    /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
     fn harvest_active_tab_writeback(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2587,11 +2085,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Two-phase: first walk the widgets and collect (strip, group,
-        // tab) tuples for every group whose bar's active_id differs from
-        // the tree's, then apply them under a single chrome borrow.
-        // (Widgets and chrome live in the same shell so we can't hold
-        // both borrows at once — same pattern the other harvesters use.)
+        // Widgets and chrome can't be borrowed at once, so collect the
+        // tuples first and apply under one chrome borrow.
         struct Writeback {
             strip_id: StripId,
             group_id: GroupId,
@@ -2616,13 +2111,9 @@ impl ShellOverlayHost {
             return;
         }
         let st = chrome.borrow_mut();
-        // A mid-frame divergence between the widget-side
-        // `bar.active_id()` and the tree's `group.active_tab` means the
-        // user just clicked a tab pill inside THAT group. Collect those
-        // (ws, strip, group) triples so we can stamp
-        // `tree.active_strip` / `tree.active_group` after the tab-id
-        // writeback — otherwise the palette scope (Ctrl+K) stays anchored
-        // to whichever group was active before.
+        // A divergence between `bar.active_id()` and the tree means a tab
+        // pill was clicked; stamp `active_strip`/`active_group` after the
+        // writeback, or Ctrl+K's scope stays on the old group.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         {
             let mut tree = st.tree_mut();
@@ -2636,17 +2127,9 @@ impl ShellOverlayHost {
                             strip.window_groups.iter_mut().find(|g| g.id == w.group_id)
                         {
                             if group.active_tab != w.tab_id {
-                                // Guard: only mirror the widget-side
-                                // active tab if it actually exists in
-                                // this group's persisted tab list.
-                                // Without this, a stale `bar.active_id`
-                                // from a mid-detach frame (bar still
-                                // points at a tab that got moved to
-                                // another group) would land here as
-                                // `group.active_tab = <phantom-id>`,
-                                // and the next draw would silently
-                                // drop the whole group because the
-                                // active-tab lookup finds nothing.
+                                // A stale `bar.active_id` (mid-detach
+                                // frame) would write a phantom active-tab
+                                // id and silently drop the group.
                                 let tab_exists = group.tabs.iter().any(|t| t.id == w.tab_id);
                                 if !tab_exists {
                                     continue;
@@ -2670,15 +2153,9 @@ impl ShellOverlayHost {
     }
 
     /// Give every live window group the same share of its strip, and
-    /// mirror it to the persisted tree the way a width drag does.
-    ///
-    /// A group takes about three quarters of its strip by default, so
-    /// two of them never fit on screen at once. Setting the state
-    /// tree alone does not move anything: the laid-out width lives on
-    /// the `RuntimeGroup` widget and the taffy node carries a baked
-    /// length, so the widget is the thing that has to be told.
-    ///
-    /// Returns the ids it touched.
+    /// mirror it to the persisted tree the way a width drag does. Setting
+    /// the tree alone wouldn't move anything — the laid-out width lives
+    /// on the widget. Returns the ids touched.
     pub fn set_group_widths(&mut self, permille: u16) -> Vec<u64> {
         let mut touched: Vec<u64> = Vec::new();
         for (_strip_id, &ptr) in self.group_row_ptrs.iter() {
@@ -2714,14 +2191,9 @@ impl ShellOverlayHost {
         touched
     }
 
-    /// Close the active tab of the group the user is looking at, through
-    /// the same `TabBar::start_closing` a `✕` click runs.
-    ///
-    /// The live `WindowGroup` widget owns the tab list, so — like
-    /// [`Self::set_group_widths`] — setting the persisted tree alone
-    /// would not move anything; the widget is the thing that has to be
-    /// told. Returns `false` when nothing is focused or the group has no
-    /// tab left to close.
+    /// Close the active tab of the focused group, through the same
+    /// `TabBar::start_closing` a `✕` click runs. `false` when nothing is
+    /// focused or the group has no tab left to close.
     pub fn close_focused_tab(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -2747,13 +2219,9 @@ impl ShellOverlayHost {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                // Deliberately no `bump()`. A revision bump makes the
-                // strip resync rebuild this row from the persisted tree,
-                // and the tree still lists the tab: closing a tab is a
-                // live-widget operation with no tree-side counterpart
-                // (there is no `doc_remove_tab`), exactly as a `✕` click
-                // is. Bumping here re-spliced the tab straight back and
-                // the chord looked like a no-op.
+                // No `bump()`: closing a tab has no tree-side counterpart
+                // (no `doc_remove_tab`), so a revision bump would resync
+                // this row from the tree and splice the tab straight back.
                 return closed;
             }
         }
@@ -2797,19 +2265,11 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that mirrors a completed whole-group reorder drag
-    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks the
-    /// captured [`GroupRow`] pointers, drains each row's
-    /// [`GroupRow::take_pending_group_reorder`] one-shot, and calls
-    /// [`WorkspaceTree::reorder_group_within_strip`] so the strip's
-    /// `window_groups` order in the data layer matches what the user just
-    /// dropped on screen. That method also mirrors the move into the
-    /// automerge doc, so peer-sync ships the new order.
-    ///
-    /// Without this hook a group-drag is a widget-only reshuffle that
-    /// resets to the persisted order on the next shell restart. Mirrors
-    /// [`Self::harvest_pending_width_changes`] in shape; gated on a
-    /// non-empty pending pile so quiescent frames cost a single map walk.
+    /// Mirrors a completed whole-group reorder drag into the persisted
+    /// tree via [`WorkspaceTree::reorder_group_within_strip`] (which also
+    /// mirrors into the automerge doc for peer-sync) — without this a
+    /// group-drag resets to the persisted order on restart. Mirrors
+    /// [`Self::harvest_pending_width_changes`] in shape.
     fn harvest_pending_group_reorder(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2835,17 +2295,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that mirrors a completed *intra-group* tab reorder
-    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks the
-    /// captured [`GroupRow`] pointers, drains each group's
-    /// [`UiWindowGroup::take_pending_tab_reorder`] one-shot, and calls
-    /// [`WorkspaceTree::reorder_tab_within_group`] so the group's `tabs` order
-    /// in the data layer matches the pill order the user just dropped. That
-    /// method also mirrors the move into the automerge doc for peer-sync.
-    ///
-    /// Without this hook dragging a tab within its group is a widget-only
-    /// reshuffle that resets to the persisted order on the next shell
-    /// restart. Mirrors [`Self::harvest_pending_group_reorder`] in shape.
+    /// Same as [`Self::harvest_pending_group_reorder`], for an
+    /// *intra-group* tab reorder via [`WorkspaceTree::reorder_tab_within_group`].
     fn harvest_pending_tab_reorder(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2873,11 +2324,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up for the magnifier chip in a tab's window decoration:
-    /// drains each group's [`UiWindowGroup::take_pending_search_open`] one-shot
-    /// and opens the search bar scoped to the active app — the same entry point
-    /// Ctrl+K uses. The group can't do this itself because the palette lives
-    /// here on the host.
+    /// Drains each group's [`UiWindowGroup::take_pending_search_open`]
+    /// one-shot and opens the search bar scoped to the active app — the
+    /// same entry point Ctrl+K uses. The palette lives on the host, not
+    /// the group.
     fn harvest_pending_search_open(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2901,18 +2351,10 @@ impl ShellOverlayHost {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
     }
 
-    /// Sibling of [`Self::harvest_pending_search_open`] for the tab
-    /// strip's "+" chip: drains each group's
-    /// [`UiWindowGroup::take_pending_new_tab`] and opens the palette
-    /// aimed at that group.
-    ///
-    /// The "+" deliberately opens the palette rather than immediately
-    /// minting a tab of some assumed type. A new tab is a *choice* — a
-    /// terminal, a browser, a note — and the palette is where choosing
-    /// already happens. What the "+" adds on top is the destination:
-    /// [`OpenTarget::Here`] pins the result to this group even when the
-    /// placement rule would have opened beside it, which is exactly the
-    /// distinction a user clicking a specific group's strip is making.
+    /// Sibling of [`Self::harvest_pending_search_open`] for the "+" chip:
+    /// opens the palette aimed at that group rather than minting an
+    /// assumed tab type. [`OpenTarget::Here`] pins the result to this
+    /// group even when the placement rule would open beside it.
     fn harvest_pending_new_tab(&mut self) -> bool {
         if self.group_row_ptrs.is_empty() {
             return false;
@@ -2930,30 +2372,22 @@ impl ShellOverlayHost {
         let Some(group) = requested else {
             return false;
         };
-        // Make the tree's focus match the strip that was clicked before
-        // anything reads it — the palette's own scope resolution and the
-        // launch path both walk from the active pointers.
+        // Must run before the palette's scope resolution and launch path
+        // read the active pointers.
         self.harvest_active_tab_writeback();
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
-            // `All` rather than `ActiveApp`: the question a "+" asks is
-            // "what do you want to open", and only the widest scope
-            // offers to launch something that isn't already running.
+            // `All`, not `ActiveApp`: a "+" asks what to open, and only the
+            // widest scope offers something not already running.
             st.search_scope = crate::shell::chrome_state::SearchScope::All;
             st.bump();
         }
-        // …and narrowed to the kinds that can *be* a tab. A "+" on a tab
-        // row asks for a program, so a picker that answers with notes,
-        // files and chrome actions has answered a different question —
-        // the user has to read past them to reach the one row they came
-        // for. The chips stay lit and clickable, so widening back out is
-        // one click away.
+        // Narrowed to kinds that can *be* a tab, so results aren't buried
+        // under notes/files/chrome actions the user has to read past.
         self.active_kind_filter = app_kind_filter();
-        // Force-open rather than routing through `open_palette_with_scope`:
-        // that helper toggles closed on a same-scope repeat, which is the
-        // right behaviour for a chord and the wrong one for a button the
-        // user pointed at. Clicking "+" always means "show me the picker".
+        // Force-open, not `open_palette_with_scope`: that helper toggles
+        // closed on a same-scope repeat, wrong for a "+" click.
         if !self.palette_visible {
             self.palette_visible = true;
             self.palette.set_focus(true);
@@ -2965,20 +2399,9 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Drop a stale [`OpenTarget::Here`] and any kind filter once the
-    /// palette is gone.
-    ///
-    /// Both are one-shot by contract. The target aims exactly one launch
-    /// at exactly one group; the filter narrows exactly one picker to
-    /// exactly one sort of answer. Anything that dismisses the palette
-    /// (Esc, an outside click, activating a result) ends that window of
-    /// intent, and there are enough such paths that clearing at each of
-    /// them would rot. Reconciling here, once per frame against the
-    /// single fact that matters, cannot miss one.
-    ///
-    /// A filter that outlived its picker would be the worse of the two:
-    /// it is invisible until the palette is next opened, and then it
-    /// silently decides what an unrelated query is allowed to find.
+    /// Drops a stale `OpenTarget::Here` and kind filter once the palette
+    /// closes — both are one-shot aims for a single launch, and a leaked
+    /// filter would silently narrow the next unrelated query.
     fn clear_stale_open_target(&mut self) {
         if self.palette_visible {
             return;
@@ -3000,13 +2423,8 @@ impl ShellOverlayHost {
         self.clear_stale_open_target();
     }
 
-    /// Drop a passphrase buffer the user walked away from.
-    ///
-    /// Closing the popover — by Esc, by clicking outside, by any of the
-    /// paths that clear the flag — has to take the typed passphrase with
-    /// it. Reconciling once per frame against the one fact that matters
-    /// (is the popover open) cannot miss a path, and a password is
-    /// exactly the kind of buffer that must not outlive its window.
+    /// Clears a typed wifi passphrase once the quick-settings popover
+    /// closes, so it doesn't outlive the window it was entered in.
     fn clear_stale_wifi_password(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -3021,14 +2439,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that keeps the focused window group scrolled into
-    /// view. Edge-triggered on a change to the persisted `active_group`
-    /// pointer for a strip: when the focused group differs from the one we
-    /// last scrolled to, [`GroupRow::scroll_group_into_view`] pans the
-    /// strip so the newly-focused group is fully visible. Comparing against
-    /// the last-scrolled id (rather than scrolling every frame) is what lets
-    /// the user freely wheel away from the focused group without the strip
-    /// yanking it back — only a genuine focus change re-centres it.
+    /// Pans the focused group into view, edge-triggered on the persisted
+    /// `active_group` pointer so free wheel-scrolling isn't fought by a
+    /// per-frame snap-back.
     fn scroll_active_group_into_view(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -3036,7 +2449,6 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Snapshot each strip's current active group from the tree.
         let active: Vec<(StripId, GroupId)> = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -3053,41 +2465,22 @@ impl ShellOverlayHost {
             if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
                 // SAFETY: see field doc on `group_row_ptrs`.
                 let row: &mut GroupRow = unsafe { &mut *ptr };
-                // A group focused in the same frame it appeared — a freshly
-                // adopted Wayland client is exactly this — has not been through
-                // a layout pass, so it has no rect and the row cannot pan to
-                // it. Latching the memo here would mark the pan done and the
-                // window would stay off the output for good. Leave the memo
-                // alone and retry next frame, once the rect exists.
+                // A group focused the same frame it appeared has no rect yet
+                // (no layout pass); leave the memo and retry once it does.
                 if !row.group_is_laid_out(group_id) {
                     continue;
                 }
-                // Eased, not teleported: a focus change (click, Alt+Shift
-                // wheel jump, keyboard) slides the strip to the group on
-                // the snap curve, the way Niri's focus-column-left/right
-                // slides the view.
+                // Eased, not teleported — matches Niri's focus-column slide.
                 row.scroll_group_into_view_animated(group_id, Instant::now());
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
         }
     }
 
-    /// Tell exactly one window group on screen that the keyboard is
-    /// aimed at it.
-    ///
-    /// The tree has always persisted an `active_group` pointer per strip
-    /// and an `active_strip` pointer per workspace — that pair decides
-    /// where a new window lands, what Ctrl+K scopes to, and which tab
-    /// takes a keystroke. None of it was drawn. In a strip of
-    /// non-overlapping windows there is no z-order to infer focus from,
-    /// so three side-by-side windows looked identical while only one of
-    /// them would receive what the user typed.
-    ///
-    /// Runs every frame rather than edge-triggered on a change: it is a
-    /// handful of bool writes across the groups already in memory, and
-    /// making it a pure function of the tree means focus cannot be left
-    /// latched on a group that a resync spliced in, moved between
-    /// strips, or rebuilt.
+    /// Lights exactly one on-screen window group as keyboard-focused, since
+    /// non-overlapping windows have no z-order to infer it from. Runs every
+    /// frame as a pure function of the tree (not edge-triggered) so focus
+    /// can't stay latched on a group a resync moved or removed.
     fn mark_focused_group(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -3095,10 +2488,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Groups fading out are not focus candidates: the pointer keeps
-        // resolving to a closing group for the length of its fade, and
-        // lighting a corpse tells the user their keystrokes are going
-        // somewhere they are not.
+        // Closing groups aren't focus candidates — lighting one mid-fade
+        // would tell the user their keystrokes go somewhere gone.
         let closing: std::collections::HashSet<GroupId> = self
             .group_row_ptrs
             .values()
@@ -3112,13 +2503,8 @@ impl ShellOverlayHost {
                     .collect::<Vec<_>>()
             })
             .collect();
-        // Which strip owns focus, resolved exactly the way
-        // `publish_strip_viewport` resolves it — including the fallback
-        // to the first strip, so a workspace whose pointer was never
-        // seeded still lights one window instead of none. The group is
-        // resolved through `resolve_active_group`, which brings the same
-        // guarantee one level down: an unseeded strip falls back to its
-        // leftmost surviving group rather than lighting nothing.
+        // Mirrors `publish_strip_viewport`'s resolution, including the
+        // fallback to the first strip/leftmost group for an unseeded pointer.
         let focused: Option<(StripId, GroupId)> = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -3135,12 +2521,8 @@ impl ShellOverlayHost {
                         .map(|gid| (sid, gid))
                 })
         };
-        // With one window on the workspace there is nothing to tell
-        // apart, and a permanently lit edge around the only thing on
-        // screen is decoration — the marker has to earn its place. It
-        // is the workspace's total, not the strip's: three strips
-        // holding one window each is exactly the case where "which one
-        // takes the keystroke" is unanswerable without it.
+        // A lone window needs no marker; it's a workspace-wide count so
+        // three strips holding one window each still disambiguate.
         let disambiguating = self
             .group_row_ptrs
             .values()
@@ -3160,19 +2542,14 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Publish the active strip's laid-out geometry on the chrome, so an
-    /// "open this" path can consult it — see [`crate::shell::placement`].
-    ///
-    /// Runs at the end of every layout pass. Deliberately does **not**
-    /// bump the chrome revision: this is a report of what the layout just
-    /// produced, not a mutation anyone needs to re-sync against, and
-    /// bumping every frame would make the strip resync run forever.
+    /// Publishes the active strip's laid-out geometry for
+    /// [`crate::shell::placement`] to consult. Doesn't bump the chrome
+    /// revision — this reports layout output, not a mutation to resync against.
     fn publish_strip_viewport(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // The active strip is the one a new window would land in — the
-        // same resolution the placement rule performs.
+        // Same resolution the placement rule performs.
         let strip_id = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -3203,56 +2580,22 @@ impl ShellOverlayHost {
         chrome.borrow_mut().set_strip_viewport(viewport);
     }
 
-    /// Per-tick wire-up for cross-strip tab drag-drop.
+    /// Routes a cross-strip tab drop: hit-tests the release point against
+    /// other strips' rects and delivers via
+    /// [`GroupRow::accept_cross_strip_drop`], or returns the tab to its
+    /// source strip when none matches — returning to source avoids
+    /// mutating the persisted tree outside the explicit strip-creation UI.
     ///
-    /// Walks the captured [`GroupRow`] pointers, drains each row's
-    /// [`GroupRow::take_pending_cross_strip_detach`] one-shot, and routes
-    /// the payload to whichever strip's row contains the release point.
-    /// Within-strip drops never reach this hook — they're already resolved
-    /// by `GroupRow`'s own post-dispatch sweep before the tab is detached.
-    /// Cross-strip drops show up here because the source row deferred
-    /// resolution (release point fell outside its own vertical band) and
-    /// stashed `(TabDescriptor, TileHost, release_point)` for the shell
-    /// to route.
-    ///
-    /// Resolution rules:
-    ///
-    /// - Release point's `y` lands inside another strip's row rect →
-    ///   deliver via that row's [`GroupRow::accept_cross_strip_drop`],
-    ///   which splices the tab into a brand-new `WindowGroup` at the
-    ///   nearest gap.
-    /// - Release point doesn't match any other strip's row rect → return
-    ///   to the source row via the same `accept_cross_strip_drop` entry
-    ///   point (the source row uses its own gap math against the
-    ///   release point, so a "drop just below my own row" lands as a
-    ///   new group at the closest source-row gap, mirroring the in-row
-    ///   "drop in empty strip space" path the source's local resolver
-    ///   would have produced if we hadn't intercepted it).
-    ///
-    /// "Return to source" is the v1 fallback rather than "create a new
-    /// strip at drop_pos.y" because creating new strips touches the
-    /// persisted [`crate::shell::state::WorkspaceTree`] (it's not a
-    /// widget-local mutation), and the strip-creation flow already lives
-    /// behind explicit user affordances (settings modal, command palette).
-    /// Letting a stray drag accidentally produce a new strip would be
-    /// surprising; keeping the tab in its source strip preserves the
-    /// "no valid target → cancel" contract the in-row recovery path
-    /// (see `ui/src/widget/group_row.rs:937` block) already pins.
-    ///
-    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: each
-    /// pointer addresses a `GroupRow` owned by the content tree, the host
-    /// outlives the content, and the `&mut self` borrow keeps the other
-    /// reconcile sweeps from racing this one.
-
+    /// SAFETY: each pointer addresses a `GroupRow` owned by the content
+    /// tree, the host outlives the content, and `&mut self` here keeps
+    /// other reconcile sweeps from racing this one.
     fn dispatch_cross_strip_detaches(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
         }
-        // First, drain every source row, snapshot every other row's
-        // rect. We have to drain first because subsequent
-        // `accept_cross_strip_drop` calls borrow the destination row
-        // mutably, which would conflict with holding any reference to
-        // a source row's `take_pending_cross_strip_detach` payload.
+        // Drain sources first: a later `accept_cross_strip_drop` borrows
+        // the destination row mutably, conflicting with a held source
+        // payload reference.
         let mut detaches: Vec<(StripId, CrossStripDetach)> = Vec::new();
         let mut strip_rects: Vec<(StripId, Rect)> = Vec::with_capacity(self.group_row_ptrs.len());
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -3269,13 +2612,8 @@ impl ShellOverlayHost {
         if detaches.is_empty() {
             return;
         }
-        // Then, for each detach, hit-test the release point's `y`
-        // against every other strip's rect and pick the first match.
-        // We bias on `y` only: strips span the full content width, so a
-        // release at any `x` inside a strip's vertical band is "in that
-        // strip" by definition. Inside the matched strip's band the
-        // destination row resolves the gap by `x` via its own
-        // `gap_index_for` machinery.
+        // Hit-test release.y only: strips span the full content width, so
+        // the destination row resolves the gap by x itself.
         for (src_strip_id, payload) in detaches {
             let release = payload.release_point;
             let dest_strip_id = strip_rects
@@ -3294,12 +2632,8 @@ impl ShellOverlayHost {
             };
             let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
             dest_row.accept_cross_strip_drop(payload.desc, payload.host, release);
-            // Mirror the splice into the persisted `WorkspaceTree` so a
-            // shell restart sees the tab in its new strip rather than
-            // its old one. The tree-side mutation walks the source strip
-            // for the moved tab and re-homes it on the destination strip
-            // at the corresponding gap; if the source/destination are
-            // the same (return-to-source path), it's a no-op write.
+            // Mirror into the persisted tree so a restart sees the tab
+            // in its new strip.
             if dest_strip_id != src_strip_id {
                 if let Some(chrome) = self.chrome.clone() {
                     let st = chrome.borrow_mut();
@@ -3313,17 +2647,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Drain the app-launcher's worker-thread reports and turn the ones
-    /// the user needs to know about into notifications.
-    ///
-    /// A launch that starts and an app that exits cleanly are silent —
-    /// the window appearing (or closing) is the feedback. A launch that
-    /// dies is not: the sandbox refusing, a missing runtime bundle, or
-    /// the app crashing on start all leave nothing on screen, so they
-    /// surface here with the child's own stderr quoted back.
-    ///
-    /// Returns whether anything was posted, so the caller can mark the
-    /// frame dirty.
+    /// Turns app-launcher worker-thread failures into notifications (a clean
+    /// launch/exit is silent — the window is the feedback). Returns whether
+    /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
@@ -3335,19 +2661,10 @@ impl ShellOverlayHost {
         use crate::shell::launcher::LaunchEventKind;
         let mut posted = false;
         for event in events {
-            // An open that had to load the app first raised a notice
-            // saying so, and it stands until the user can see how the
-            // open ended.
-            //
-            // Only a *failure* settles it here. `Started` does not: it
-            // means the launcher process forked, which is several
-            // seconds before the app has a window — retiring on it left
-            // exactly the silence the notice exists to prevent, with
-            // the user watching an empty desktop after the one piece of
-            // feedback had already gone. The success settlement is the
-            // window appearing, and that is
-            // [`Self::retire_notices_for_opened_windows`]. `Exited` is
-            // not a settlement either: by then the app has run.
+            // Only a failure settles the "Opening…" notice here. `Started`
+            // doesn't — the window is still seconds away — that's
+            // [`Self::retire_notices_for_opened_windows`]'s job; `Exited`
+            // doesn't either, by then the app has run.
             if matches!(
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
@@ -3393,37 +2710,10 @@ impl ShellOverlayHost {
         posted
     }
 
-    /// Retire the "Opening …" notice of any app that is now on screen.
-    ///
-    /// This is the success half of an open's settlement, and what counts
-    /// as "on screen" is the point of it.
-    ///
-    /// A launch reports `Started` when the launcher process forks, which
-    /// on a cold open is seconds before there is anything to look at.
-    /// Settling on that put the desktop back to silence while the user
-    /// was still waiting, which is the whole defect.
-    ///
-    /// A tab merely existing is not the answer either. The compositor
-    /// adopts a tab when the client creates its toplevel, and the client
-    /// then takes seconds more to present a buffer; for a short while
-    /// after adoption there is still nothing in that tab to look at.
-    ///
-    /// What settles it is the moment something the person can see stands
-    /// in the window's own place — the app's first frame, or the card
-    /// holding the place for it, whichever arrives first. Both are the
-    /// wait being accounted for where the window is going to be, which is
-    /// a better place to account for it than the corner of the screen. So
-    /// this is a hand-over rather than a dismissal: the notice covers the
-    /// stretch before there is a window's place at all, and stands down
-    /// when the place itself takes over.
-    ///
-    /// Waiting for the first frame instead would leave both up together
-    /// for seconds, saying the same thing twice — and worse, an app that
-    /// never draws ends with a window reading "isn't responding" under a
-    /// notification still reading "Loading…".
-    ///
-    /// Returns whether anything was retired, so the caller can mark the
-    /// frame dirty.
+    /// Retires the "Opening…" notice of any app now on screen. Neither
+    /// `Started` (forked, no window yet) nor an adopted-but-not-presenting
+    /// tab counts — what settles it is the app's first frame or placeholder
+    /// card, whichever shows first, handing over to the window's own place.
     pub(crate) fn retire_notices_for_opened_windows(&mut self) -> bool {
         let pending = crate::shell::catalogue::pending_notices();
         if pending.is_empty() {
@@ -3488,9 +2778,8 @@ impl ShellOverlayHost {
             .and_then(|p| p.pending_choice.map(|c| (p.app_id.clone(), c)));
         if let Some((widget_app_id, choice)) = drain_payload {
             let mut st = chrome_handle.borrow_mut();
-            // Pop only if the head still belongs to the prompt the
-            // user just clicked — if a portal push changed the head
-            // mid-frame we'd otherwise apply the user's grant to
+            // Pop only if the head still belongs to the prompt clicked —
+            // a mid-frame portal push could otherwise apply the grant to
             // the wrong app.
             let head_matches = st
                 .pending_grants
@@ -3504,8 +2793,7 @@ impl ShellOverlayHost {
                     match choice {
                         PromptChoice::Allow => {
                             // Once: don't persist on the workspace.
-                            // The portal request is treated as
-                            // satisfied for this single call.
+                            // Treated as satisfied for this single call.
                         }
                         PromptChoice::Session => {
                             let cap = with_grant_scope(capability, GRANT_SESSION);
@@ -3516,20 +2804,18 @@ impl ShellOverlayHost {
                             record_app_grant(&mut st, &app_id, &cap);
                         }
                         PromptChoice::Deny => {
-                            // No-op — the caller treats absence of a
-                            // matching grant as "deny".
+                            // No-op: absence of a grant reads as deny.
                         }
                     }
-                    // Release the blocked portal call. Without this the
-                    // D-Bus method awaiting the oneshot never returns and
-                    // the calling app hangs on its own Open dialog.
+                    // Release the blocked portal call — otherwise the D-Bus
+                    // method awaiting the oneshot never returns and the app
+                    // hangs on its own Open dialog.
                     pending.answer(prompt_choice_to_outcome(choice));
                     st.bump();
                 }
             }
-            // Whether or not the head matched, the widget has
-            // discharged its pending choice — drop it so the next
-            // frame either latches a fresh prompt or paints nothing.
+            // Discharged either way — drop it so the next frame latches
+            // fresh or paints nothing.
             self.permission_prompt = None;
         }
 
@@ -3571,11 +2857,9 @@ impl ShellOverlayHost {
         self.file_picker.as_mut().map(|a| &mut a.widget)
     }
 
-    /// Mount dialogs for everything the portal's picker queue has
-    /// buffered, and resolve whichever dialog the user just finished
-    /// with.
-    ///
-    /// Returns whether anything changed, so the caller can repaint.
+    /// Mounts queued file-chooser dialogs and resolves whichever one the
+    /// user just finished. Returns whether anything changed, so the caller
+    /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
         let mut dirty = false;
 
@@ -3603,18 +2887,16 @@ impl ShellOverlayHost {
         }
         for req in queued {
             if self.file_picker.is_some() {
-                // A dialog is already up. Answering "cancelled" is the
-                // honest response to a request we are not going to show
-                // — better than queueing a modal the user will meet
-                // minutes later with no idea what asked for it.
+                // Already showing a dialog — answer cancelled rather than
+                // queue a modal the user would meet minutes later with no
+                // idea what asked for it.
                 let _ = req.reply.send(None);
                 continue;
             }
             let scope = self.picker_scope_for(&req.caller);
             let active = ActiveFilePicker::mount(req, scope);
-            // Which app raised the dialog, and where it may browse. A
-            // file dialog appearing with no record of who asked for it
-            // is the one event here nobody can debug after the fact.
+            // Logged so a file dialog with no record of who asked for it
+            // isn't undebuggable after the fact.
             tracing::info!(
                 app = %active.app_id,
                 dir = %active.widget.current_dir().display(),
@@ -3626,12 +2908,8 @@ impl ShellOverlayHost {
         dirty
     }
 
-    /// Where the dialog for `caller` may browse.
-    ///
-    /// Read off the live workspace, not off a default: the roots are
-    /// the user's own directories plus whatever filesystem paths this
-    /// workspace has already granted this app, so a project directory
-    /// the app was given earlier is reachable in the dialog.
+    /// Where the dialog for `caller` may browse: user directories plus any
+    /// filesystem paths this workspace already granted the app.
     fn picker_scope_for(&self, caller: &crate::portal::PortalCaller) -> crate::portal::PickerScope {
         let base = crate::portal::PickerScope::for_user();
         let Some(chrome) = self.chrome.as_ref() else {
@@ -3657,16 +2935,9 @@ impl ShellOverlayHost {
         base.with_granted_paths(granted)
     }
 
-    /// Move everything the portal's prompt queue has buffered onto the
-    /// chrome's queue, so the next `pump_permission_prompt` surfaces it.
-    ///
-    /// Every entry owns the reply sender for a D-Bus method parked on
-    /// `rx.await`, which is why the senders travel onto `pending_grants`
-    /// rather than being dropped here — dropping one answers deny, and a
-    /// user who has not been asked yet has not denied anything.
-    ///
-    /// Returns whether anything moved, so the caller can mark the frame
-    /// dirty and repaint with the prompt on screen.
+    /// Moves buffered portal prompts onto the chrome's queue for
+    /// `pump_permission_prompt`. Senders travel with them rather than being
+    /// dropped — dropping one would answer deny before the user was asked.
     pub fn drain_portal_prompts(&mut self) -> bool {
         let Some(prompts) = self.portal_prompts.as_ref() else {
             return false;
@@ -3676,10 +2947,8 @@ impl ShellOverlayHost {
             return false;
         }
         let Some(chrome_handle) = self.chrome.clone() else {
-            // No chrome to render a prompt: answer every request rather
-            // than hold senders that will never be fulfilled. An
-            // unanswerable request is a denial, and it says so now
-            // instead of at some later drop.
+            // No chrome to render a prompt — answer deny now rather than
+            // hold senders that would never be fulfilled.
             for pending in drained {
                 let _ = pending.reply.send(crate::portal::PromptOutcome::Deny);
             }
@@ -3698,27 +2967,20 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Test-only one-shot drive: lets integration tests run the
-    /// per-frame permission-prompt pump without spinning up a full
-    /// render loop. Mirrors `Widget::update`'s in-frame call.
+    /// Test-only: runs the per-frame permission-prompt pump outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_permission_prompt_for_tests(&mut self) {
         self.pump_permission_prompt();
     }
 
-    /// Test-only accessor for the currently-held [`PermissionPrompt`].
-    /// Lets integration tests synthesise a click on the widget
-    /// without exposing the internal field via `pub`.
+    /// Test-only accessor for the held [`PermissionPrompt`].
     #[cfg(any(test, debug_assertions))]
     pub fn permission_prompt_mut_for_tests(&mut self) -> Option<&mut PermissionPrompt> {
         self.permission_prompt.as_mut()
     }
 
-    /// Test-only escape hatch: lend out a mutable reference to the
-    /// [`UiWindowGroup`] at `(strip_id, group_idx)`. Lets integration
-    /// tests drive the close fade through public widget APIs (e.g.
-    /// [`UiWindowGroup::start_closing`]) without having to downcast a
-    /// `&dyn Widget` they only know through the boxed root.
+    /// Test-only: mutable access to the [`UiWindowGroup`] at
+    /// `(strip_id, group_idx)`.
     ///
     /// SAFETY mirrors [`Self::with_group_row_ptrs`]: the pointer is valid
     /// for the host's lifetime, and the `&mut self` borrow on this method
@@ -3734,98 +2996,78 @@ impl ShellOverlayHost {
         row.groups.get_mut(group_idx)
     }
 
-    /// Test-only one-shot reconcile: lets integration tests invoke the
-    /// per-frame wire-up from outside `update` without spinning up a full
-    /// `App` render loop. Mirrors what [`Widget::update`] runs.
+    /// Test-only: runs the per-frame active-group reconcile outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_active_group_reconcile_for_tests(&mut self) {
         self.reconcile_active_group_off_closing();
     }
 
-    /// Test-only one-shot harvest: lets integration tests invoke the
-    /// per-frame maximize-change writeback from outside `update` without
-    /// spinning up a full `App` render loop. Mirrors what
-    /// [`Widget::update`] runs each frame.
+    /// Test-only: runs the per-frame maximize-change writeback outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_maximize_harvest_for_tests(&mut self) {
         self.harvest_pending_maximize_changes();
     }
 
-    /// Test-only one-shot harvest: lets integration tests invoke the
-    /// per-frame width-change writeback from outside `update`.
+    /// Test-only: runs the per-frame width-change writeback outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_width_harvest_for_tests(&mut self) {
         self.harvest_pending_width_changes();
     }
 
-    /// Test-only one-shot dispatch: lets integration tests invoke the
-    /// per-frame cross-strip drag-drop router from outside `update`
-    /// without spinning up a full `App` render loop. Mirrors what
-    /// [`Widget::update`] runs each frame.
+    /// Test-only: runs the per-frame cross-strip drag-drop router outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_cross_strip_dispatch_for_tests(&mut self) {
         self.dispatch_cross_strip_detaches();
     }
 
-    /// Test-only one-shot harvest: lets integration tests invoke the
-    /// per-frame whole-group reorder writeback from outside `update`.
+    /// Test-only: runs the per-frame whole-group reorder writeback outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_group_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_group_reorder();
     }
 
-    /// Test-only accessor for the sidebar wheel's laid-out rect. Returns
-    /// `None` when the host has no sidebar at all. A zero-area rect means the
-    /// wheel is currently suppressed (a window holds the output fullscreen).
+    /// Test-only accessor for the sidebar wheel's laid-out rect. `None` means
+    /// no sidebar; zero-area means suppressed by a fullscreen window.
     #[cfg(any(test, debug_assertions))]
     pub fn sidebar_rect_for_tests(&self) -> Option<vello::kurbo::Rect> {
         self.sidebar.as_ref().map(|s| s.get_rect())
     }
 
-    /// Test-only one-shot harvest: lets integration tests invoke the
-    /// per-frame intra-group tab reorder writeback from outside `update`.
+    /// Test-only: runs the per-frame intra-group tab reorder writeback outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
     }
 
-    /// Test-only one-shot harvest: lets integration tests invoke the per-frame
-    /// decoration-search-chip handling from outside `update`.
+    /// Test-only: runs the per-frame decoration-search-chip handling outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_search_open_for_tests(&mut self) {
         self.harvest_pending_search_open();
     }
 
-    /// Test-only one-shot harvest for the tab strip's "+" chip.
+    /// Test-only harvest for the tab strip's "+" chip.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_new_tab_for_tests(&mut self) -> bool {
         self.harvest_pending_new_tab()
     }
 
-    /// Test-only one-shot: mirror the widget-side active tab back into
-    /// the tree. Runs immediately before the focus-follow scroll in
-    /// [`Widget::update`], and a harness that skips it is reading a tree
-    /// one frame behind the clicks it just made.
+    /// Test-only: mirrors the widget-side active tab into the tree. Must run
+    /// before the focus-follow scroll, or the tree reads one frame behind
+    /// the clicks that just happened.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_active_tab_writeback_for_tests(&mut self) {
         self.harvest_active_tab_writeback();
     }
 
-    /// Test-only one-shot: run the focus-follow scroll reconcile from
-    /// outside `update`. Mirrors what [`Widget::update`] runs each frame.
+    /// Test-only: runs the focus-follow scroll reconcile outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_scroll_active_into_view_for_tests(&mut self) {
         self.scroll_active_group_into_view();
     }
 
-    /// The sidebar wheel disc, downcast back out of the `Box<dyn Widget>`
-    /// the host holds it in.
-    ///
-    /// For the screenshot harness, which needs to ask the wheel to hold
-    /// its settle at a chosen point on the curve: the settle is motion,
-    /// a still frame cannot show motion, and an offscreen render takes
-    /// longer than the settle lasts, so stepping real frames only ever
-    /// catches the endpoints.
+    /// The sidebar wheel disc, downcast from the `Box<dyn Widget>`. For the
+    /// screenshot harness to hold the settle animation at a chosen point —
+    /// a still frame can't show motion, and offscreen rendering outruns it.
     pub fn sidebar_wheel_mut_for_tests(&mut self) -> Option<&mut SidebarWheelDisc> {
         self.sidebar
             .as_mut()?
@@ -3839,12 +3081,10 @@ impl ShellOverlayHost {
         Some(unsafe { &mut *ptr })
     }
 
-    /// Select `tab` inside `group` on the live widget tree — the
-    /// authoritative side for the active tab (the per-frame
-    /// `harvest_active_tab_writeback` mirrors widgets into the tree, so
-    /// a tree-only write is overwritten one frame later). Used by the
-    /// compositor's Alt+Shift wheel window jump. Returns `true` when
-    /// the widget-side active tab changed.
+    /// Selects `tab` inside `group` on the live widget tree (the
+    /// authoritative side — `harvest_active_tab_writeback` mirrors it into
+    /// the persisted tree each frame). Used by the compositor's Alt+Shift
+    /// wheel jump.
     pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
         let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
             return false;
@@ -3854,28 +3094,13 @@ impl ShellOverlayHost {
         row.set_group_active_tab(group, tab)
     }
 
-    /// Move focus one or more windows along the active strip.
-    ///
-    /// This is the *only* implementation of "next window / previous
-    /// window" in the shell. The keyboard chord, a horizontal scroll, a
-    /// touchpad swipe and the modifier wheel all call it, so they cannot
-    /// drift apart into four navigation models that agree on easy cases
-    /// and disagree at group boundaries — which is what they did while
-    /// two of them stepped tabs inside a group and stopped at its edge.
-    ///
-    /// A "window" is a tab, and the strip is one flat sequence of them in
-    /// visual order, so stepping past a group's last tab continues into
-    /// the next group rather than wrapping back to its own first. Clamped
-    /// at the strip's ends: there is nothing beyond them, and wrapping
-    /// from the last window to the first teleports the viewport the whole
-    /// length of the strip for what the user asked to be one step.
-    ///
-    /// The widget side is written first and the tree second, for the
-    /// reason [`Self::focus_window_widget`] documents: the per-frame
-    /// writeback mirrors widgets into the tree, so a tree-only write is
-    /// undone one frame later.
-    ///
-    /// Returns `true` when focus actually moved.
+    /// Moves focus one or more windows along the active strip — the single
+    /// implementation behind keyboard, scroll, touchpad and modifier-wheel
+    /// navigation, so they can't drift into models that disagree at group
+    /// boundaries. A "window" is a tab in one flat sequence across groups
+    /// (stepping past a group's last tab continues into the next rather
+    /// than wrapping), clamped at the strip's ends. Widget written before
+    /// tree, per [`Self::focus_window_widget`].
     pub fn step_focus_along_strip(&mut self, steps: i32) -> bool {
         if steps == 0 {
             return false;
@@ -3894,13 +3119,9 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
-    /// Focus one window by identity — the strip rail's click target, and
-    /// the landing half of [`Self::step_focus_along_strip`].
-    ///
-    /// Unlike a click on the window itself this *does* pan the strip: the
-    /// rail is a map of the whole strip, so its segments address windows
-    /// that are not on screen, and picking one that cannot be seen has to
-    /// bring it into view to have meant anything.
+    /// Focuses one window by identity, then pans the strip to it (unlike a
+    /// click on the window itself) since the rail addresses windows that may
+    /// be off screen.
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
         self.focus_window_widget(strip, group, tab);
         let Some(chrome) = self.chrome.clone() else {
@@ -3948,31 +3169,17 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
-    /// Read-only accessor for the cached "+ Add workspace" tile rect.
-    /// Populated by `draw_overview` each frame the overview is visible
-    /// and reset to `Rect::ZERO` once the overview is fully hidden.
-    /// Exposed so concept-parity tests can both (a) assert the rect is
-    /// non-empty after a render and (b) drive a synthetic click at its
-    /// centre through the public `handle_event` path.
+    /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
+    /// is hidden. Lets tests assert it's on screen and click its centre.
     pub fn add_workspace_rect_for_tests(&self) -> Rect {
         self.add_workspace_rect
     }
 
-    /// Snapshot the post-layout groups-per-strip layout: for every captured
-    /// `GroupRow` pointer, walk its current `groups` vec and produce
-    /// `(strip_id, Vec<(group_id, Vec<tab_id>)>)`. Used by the headless
-    /// shots driver to verify drag-out scenarios that should produce
-    /// multiple groups in one strip — e.g. a 4-tab drag-out should leave
-    /// the strip with two groups (3 in source, 1 in new), not one.
-    ///
-    /// Test-only accessor for a strip's `GroupRow` rect, in screen-space
-    /// coords. Returns `None` if no `GroupRow` was registered for the
-    /// given strip, or `Rect::ZERO` if the row hasn't seen a layout pass
-    /// yet. Used by cross-strip drag tests to pick a release point
-    /// inside another strip's vertical band without re-walking the
-    /// taffy tree.
-    ///
-    /// Mirrors the SAFETY contract on [`Self::groups_per_strip`].
+    /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
+    /// row is registered for the strip, `Rect::ZERO` if not yet laid out.
+    /// Used by cross-strip drag tests to pick a release point in another
+    /// strip's band without re-walking the taffy tree. Mirrors the
+    /// SAFETY contract on [`Self::groups_per_strip`].
     #[cfg(any(test, debug_assertions))]
     pub fn group_row_rect_for_tests(&self, strip_id: StripId) -> Option<Rect> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
@@ -3981,24 +3188,13 @@ impl ShellOverlayHost {
         Some(row.get_rect())
     }
 
-    /// Screen-space rect of the *content* area (the active tab's tile
-    /// host, i.e. everything below the tab bar) of the window group with
-    /// id `group_id`, or `None` when no live strip row hosts that group
-    /// yet.
+    /// Screen-space rect of the content area (below the tab bar) of
+    /// window group `group_id`, or `None` if no live row hosts it yet.
+    /// The compositor's input router uses this to translate a cursor
+    /// position into a foreign toplevel's surface-local coordinates,
+    /// since the group's active tile rect *is* the surface's rect.
     ///
-    /// The compositor's input router uses this as the origin for
-    /// translating a global cursor position into the surface-local
-    /// coordinates a Wayland client expects: a foreign toplevel is
-    /// mounted as the tile of its own window group, so the group's active
-    /// tile rect *is* the surface's on-screen rectangle.
-    ///
-    /// A zero-area rect is returned as-is (it means the row hasn't been
-    /// laid out yet); callers treat that as "no hit".
-    ///
-    /// SAFETY mirrors [`Self::groups_per_strip`]: pointers were captured
-    /// from `Box<GroupRow>`s owned by the content tree, the host outlives
-    /// the content, and `&self` keeps the reconcile sweeps from racing
-    /// the read.
+    /// SAFETY mirrors [`Self::groups_per_strip`].
     pub fn active_tile_rect(&self, group_id: u64) -> Option<Rect> {
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -4032,15 +3228,9 @@ impl ShellOverlayHost {
         out
     }
 
-    /// Read-only accessor for the cached WS-settings tab-pill rect for
-    /// `tab`. Populated by [`Self::draw_ws_settings`] each frame the
-    /// modal is visible and cleared back to `Rect::ZERO` once the modal
-    /// is hidden. Every pill in the strip is a real tab, so every
-    /// [`WsTab`] has a rect here.
-    ///
-    /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tab strip
-    /// is the modal's only visible nav, and clicking a pill must mutate
-    /// `chrome.ws_settings_tab` directly.
+    /// Cached WS-settings tab-pill rect for `tab`, populated while the
+    /// modal is visible. Every [`WsTab`] has a real pill, so every tab has
+    /// a rect.
     pub fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
         let idx = match tab {
             WsTab::General => 0,
@@ -4091,16 +3281,9 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// The collaborator dropdown's Invite / Join buttons, as painted on
-    /// the last frame.
-    ///
-    /// The stored rects rather than a recomputation: a name that
-    /// resolves has to mean "this was on screen", and geometry computed
-    /// on demand would answer for a dropdown that is shut. Both are
-    /// `Rect::ZERO` while the panel is closed or the local user may not
-    /// invite here, and `register_chrome_rects` drops zero-area entries
-    /// — so a scenario that clicks `collab_invite` fails when the
-    /// button is not really there, instead of clicking the origin.
+    /// The collaborator dropdown's Invite / Join buttons, as painted last
+    /// frame (not recomputed) — `Rect::ZERO` when closed or not permitted,
+    /// so a test click on a missing button fails instead of hitting the origin.
     pub fn collaborators_action_rects_for_tests(&self) -> (Rect, Rect) {
         (self.collab_invite_row_rect, self.collab_join_row_rect)
     }
@@ -4120,9 +3303,7 @@ impl ShellOverlayHost {
     }
 
     /// Grant-composer control rects painted while the Permissions tab is
-    /// active: the subject picker, the capability picker, the three
-    /// expiry segments and the Grant button. `None` when the composer
-    /// isn't on screen.
+    /// active. `None` when the composer isn't on screen.
     pub fn grant_composer_rects(&self) -> Option<&GrantComposerRects> {
         self.grant_composer_rects.as_ref()
     }
@@ -4133,19 +3314,10 @@ impl ShellOverlayHost {
         &self.member_control_rects
     }
 
-    /// Open the palette in the given scope, or toggle it closed when the
-    /// same chord fires twice.
-    ///
-    /// - Palette closed → open, set scope, focus input, clear query.
-    /// - Palette open, DIFFERENT scope → keep it open, just swap scope
-    ///   (users can jump from app-scope to global mid-query without
-    ///   losing what they've typed).
-    /// - Palette open, SAME scope → close (mirrors the old
-    ///   [`Self::toggle_palette`] second-press behaviour so a chord
-    ///   still dismisses the overlay it opened).
-    ///
-    /// `ActiveApp` degrades to `All` when no tab is focused so the pill
-    /// never highlights a scope that can't display anything.
+    /// Open the palette in `scope`, or close it if the same scope fires
+    /// twice (mirrors the old second-press-dismisses chord behaviour). A
+    /// different scope while open just swaps scope without losing the
+    /// typed query. `ActiveApp` degrades to `All` when no tab is focused.
     fn open_palette_with_scope(&mut self, scope: crate::shell::chrome_state::SearchScope) {
         use crate::shell::chrome_state::SearchScope;
         let effective = if matches!(scope, SearchScope::ActiveApp)
@@ -4177,31 +3349,21 @@ impl ShellOverlayHost {
             self.palette_visible = true;
             self.palette.set_focus(true);
             self.palette.set_query("");
-            // Empty query still runs through the registry so the palette
-            // lands with a sensible "everything" list (chrome actions,
-            // recent notes, ...) instead of a blank surface.
+            // Empty query still runs through the registry, so the palette
+            // opens with an "everything" list rather than blank.
             self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         }
     }
 
-    /// Recompute the palette's entry list by fanning the current query
-    /// out to every registered [`crate::shell::search::SearchProvider`],
-    /// then swapping the palette's row set. Called whenever the palette
-    /// query changes (typed / backspaced / pasted) or the chip strip
-    /// toggles the active kind filter.
-    ///
-    /// Cheap on a warm cache — the in-shell providers (actions, notes)
-    /// answer in microseconds; the files provider hits its in-memory
-    /// name index synchronously and the tantivy content index via an
-    /// LRU cache. First-boot latency comes from the tantivy walker
-    /// finishing its initial pass; the palette shows whatever's ready.
+    /// Refreshes the palette's rows by fanning the query out to every
+    /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
+    /// cache; first-boot latency comes from the tantivy walker's initial pass.
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
-        // Short-circuit no-op refreshes triggered by peer state polling
-        // or a re-entry through the palette's own update cycle.
+        // Short-circuits no-op refreshes from peer-state polling or palette re-entry.
         if current_query == self.last_search_query {
             return;
         }
@@ -4226,12 +3388,9 @@ impl ShellOverlayHost {
             )
         };
 
-        // Flatten the groups into palette rows. The kind travels as the
-        // row's *section* and its *glyph*, not as a `[Files]` literal
-        // glued onto every subtitle — that literal was debug output
-        // rendered as UI, it repeated identically down the whole list,
-        // and it pushed the part of the path that actually distinguishes
-        // one hit from another off the right edge.
+        // Kind travels as the row's section and glyph, not a `[Files]`
+        // literal on the subtitle, which pushed the distinguishing part
+        // of a path off the right edge.
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
         for group in &groups {
@@ -4250,32 +3409,21 @@ impl ShellOverlayHost {
             }
         }
 
-        // The peer-sync rows are not grafted on here. They are ordinary
-        // action results from `ActionsProvider`, so they are ranked
-        // against everything else the query matched — which is the
-        // whole point: appended rows sort below every search hit, and
-        // typing "invite" selected a file whose name contains the word.
+        // Peer-sync rows are ordinary `ActionsProvider` results, ranked
+        // against everything else rather than appended below every hit.
         self.palette.set_entries(entries);
         self.search_results = results;
-        // New entry count → new desired_size → new palette node height.
-        // Flag the layout dirty so the next `take_structure_dirty` /
-        // `relayout` rebuilds the taffy tree. Without this the palette
-        // stays pinned at whatever height the first (usually empty)
-        // paint sized it to, and follow-up refreshes only reveal the
-        // first ~1 row.
+        // New entry count needs a new palette node height on the next
+        // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
     }
 
-    /// Walk every widget-side [`GroupRow`] and mirror any group that
-    /// exists in the widget but NOT in the persisted tree into the
-    /// tree. Used to close the writeback gap for
-    /// [`ui::widget::GroupRow::split_tab_into_new_group`] — the drag
-    /// handler creates a fresh widget-side group but has no access to
-    /// the automerge doc to persist it. Without this, the next
-    /// [`Self::resync_strips_from_tree`] would see "widget has X, tree
-    /// doesn't" and evict X, dropping the dragged-out group. Also
-    /// synthesises the corresponding [`state::WindowGroup`] from the
-    /// widget's tab descriptors so tab ids / titles carry over.
+    /// Mirrors any widget-side group missing from the persisted tree into
+    /// it — closes the writeback gap for
+    /// [`ui::widget::GroupRow::split_tab_into_new_group`], whose drag
+    /// handler creates a widget-side group with no automerge access.
+    /// Without this, [`Self::resync_strips_from_tree`] would see "widget
+    /// has X, tree doesn't" and evict the dragged-out group.
     fn harvest_widget_only_groups_into_tree(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -4283,22 +3431,18 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Skip when the chrome revision advanced since our last snapshot —
-        // that means the tree just changed (e.g. a persist-side remove
-        // via bump()) and the widget-side view will catch up through
-        // `resync_strips_from_tree`. Running the harvest in that
-        // window would re-add a legitimately-removed group. Widget-side
-        // splits (`GroupRow::split_tab_into_new_group`) don't bump, so
-        // this guard leaves those visible to the harvest.
+        // Skip if the chrome revision moved since our snapshot (tree just
+        // changed) — `resync_strips_from_tree` will catch up, and running
+        // here would re-add a legitimately-removed group. Widget-side
+        // splits don't bump, so they stay visible to this harvest.
         {
             let cur_rev = chrome.borrow().revision;
             if cur_rev != self.last_chrome_revision {
                 return;
             }
         }
-        // Collect (strip_id, idx, group) tuples for every widget-only
-        // group under an immutable borrow, then apply them under the
-        // mutable borrow. Same shape as the other harvesters.
+        // Collect under an immutable borrow, apply under the mutable
+        // one — same shape as the other harvesters.
         let mut writes: Vec<(StripId, usize, crate::shell::state::WindowGroup)> = Vec::new();
         {
             let st = chrome.borrow();
@@ -4337,11 +3481,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Snapshot the `(strip_id, group_id, rect)` triples from the live
-    /// per-strip [`GroupRow`] pointers, in traversal order. Shared by the
+    /// `(strip_id, group_id, rect)` triples from the live per-strip
+    /// [`GroupRow`] pointers, in traversal order. Shared by the
     /// click-focus stamp and the file-drop router so both resolve a
-    /// pointer coordinate to a window group through the exact same
-    /// post-layout geometry (see [`pick_group_at`]).
+    /// pointer coordinate through the same post-layout geometry.
     fn group_hit_candidates(&self) -> Vec<(StripId, GroupId, Rect)> {
         let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -4357,11 +3500,9 @@ impl ShellOverlayHost {
         candidates
     }
 
-    /// Resolve the window group directly under pointer position `p`, if
-    /// any. Reuses the click-focus hit-test ([`pick_group_at`] over
-    /// [`Self::group_hit_candidates`]) so a file drop lands on exactly
-    /// the group a click at the same spot would focus. `None` means the
-    /// pointer is over empty strip / desktop space.
+    /// The window group directly under `p`, via the click-focus
+    /// hit-test, so a file drop lands on exactly the group a click there
+    /// would focus. `None` over empty strip/desktop space.
     fn resolve_drop_target(&self, p: Point) -> Option<(StripId, GroupId)> {
         pick_group_at(&self.group_hit_candidates(), p)
     }
@@ -4373,21 +3514,14 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Snapshot the (strip_id, group_id, rect) triples from the
-        // widget-side pointers first, then hit-test in pure code so the
-        // production path shares its logic with the unit test at the
-        // bottom of the file (which drives synthetic rects without a
-        // real widget tree).
         let candidates = self.group_hit_candidates();
         let Some((strip_id, group_id)) = pick_group_at(&candidates, p) else {
             return;
         };
-        // Ensure any widget-only group under this strip is mirrored
-        // into the tree before we stamp — the harvest reconciler
-        // normally runs during `take_structure_dirty` at frame
-        // boundaries, but a click's event dispatch happens BEFORE
-        // that, and a stale `active_group` pointing at a group the
-        // tree doesn't know about would leave `active_tab_id` as None.
+        // Mirror any widget-only group into the tree first: the harvest
+        // reconciler runs at frame boundaries, after this dispatch, and
+        // an `active_group` the tree doesn't know leaves `active_tab_id`
+        // as None.
         self.harvest_widget_only_groups_into_tree();
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
@@ -4403,22 +3537,10 @@ impl ShellOverlayHost {
         tree.active_group.insert(strip_id, group_id);
         drop(tree);
         drop(st);
-        // Tell the focus-follow reconciler this strip is already where it
-        // should be for this group, so it does not pan.
-        //
-        // The pointer is the one input with a fixed place on screen. A
-        // click can only land on something already visible, so there is
-        // nothing to reveal — while panning to bring the *rest* of that
-        // group into view drags the thing the user just pressed out from
-        // under their cursor. That is what made pressing a group's "+"
-        // scroll the desktop: the chip sits near the middle of the tab
-        // row, so it stays clickable on a group whose right edge hangs
-        // off the display, and the focus stamp then asked for the whole
-        // group.
-        //
-        // Keyboard and wheel navigation keep the pan — they can address a
-        // window that is entirely off screen, so revealing it is the
-        // whole point.
+        // Marks this strip at rest so a click doesn't also pan: the
+        // target was visible to be clicked, and panning would drag it
+        // out from under the cursor. Keyboard/wheel keep the pan, since
+        // they can target off-screen windows.
         self.last_scrolled_active_group.insert(strip_id, group_id);
     }
 
@@ -4432,10 +3554,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Dispatch the currently selected palette row through the provider
-    /// callback (for a `result:N` id) or the legacy chrome-command
-    /// dispatcher (for `peer:invite` / `peer:connect`, kept as a bridge
-    /// until peer commands migrate into their own provider).
+    /// Dispatch the selected palette row through the provider callback
+    /// (`result:N`) or the legacy chrome-command dispatcher (`peer:*`,
+    /// a bridge until peer commands get their own provider).
     fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
         let Some(id) = self.palette.selected_id().map(|s| s.to_string()) else {
             return;
@@ -4444,13 +3565,9 @@ impl ShellOverlayHost {
             if let Ok(idx) = idx.parse::<usize>() {
                 if let Some(result) = self.search_results.get(idx).cloned() {
                     if let Some(chrome) = self.chrome.clone() {
-                        // The palette has no step that collects an
-                        // argument yet, so it can only offer the nullary
-                        // half of the surface. A parameterised row
-                        // reached from here refuses, and the refusal is
-                        // shown rather than swallowed: a row that does
-                        // nothing when activated, silently, is the worst
-                        // of the three possible behaviours.
+                        // No argument-collection step yet, so a
+                        // parameterised row refuses visibly rather than
+                        // doing nothing.
                         let args = crate::shell::search::action_api::ActionArgs::none();
                         if let Err(err) = (result.on_open)(doc, root, &chrome, &args) {
                             chrome.borrow_mut().push_warning_notification(
@@ -4464,9 +3581,8 @@ impl ShellOverlayHost {
                 }
             }
         }
-        // Fall back to the legacy id-based dispatcher for peer-sync
-        // rows. These match `peer:invite` / `peer:connect` and enqueue
-        // an action drained by `take_peer_sync_actions`.
+        // Legacy id-based dispatch for peer-sync rows, which enqueue an
+        // action drained by `take_peer_sync_actions`.
         if id.starts_with("peer:") {
             match id.as_str() {
                 "peer:invite" => {
@@ -4481,10 +3597,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Read-only accessor for the command-palette ("global search")
-    /// visibility flag. Exposed so integration tests that only hold the
-    /// host through `Box<dyn Widget>` can still assert on the live-binary
-    /// hotkey path — the flag itself stays internal to this module.
+    /// The command-palette visibility flag, for tests that only hold the
+    /// host through `Box<dyn Widget>`.
     pub fn palette_visible(&self) -> bool {
         self.palette_visible
     }
@@ -4495,28 +3609,17 @@ impl ShellOverlayHost {
         self.last_cursor
     }
 
-    /// Record where the pointer is, for a motion this widget tree will
-    /// never be handed.
-    ///
-    /// The chrome hit-tests a press against the position the last motion
-    /// left behind, because `MouseInput` carries no position of its own.
-    /// That holds only while the chrome sees every motion — and a
-    /// `CursorMoved` over a foreign client window is delivered straight
-    /// to that client and never reaches this tree's own event dispatch,
-    /// so without this call `last_cursor` goes stale the moment the
-    /// pointer enters a window and stays stale until it leaves.
+    /// Record pointer position for a motion this widget tree never sees:
+    /// a `CursorMoved` over a foreign client goes straight to it, so
+    /// `last_cursor` (which hit-tests the position-less `MouseInput`)
+    /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
     }
 
-    /// Whether the workspace wheel is currently summoned to the pointer.
-    ///
-    /// Read by the client-input filter alongside
-    /// [`Self::palette_visible`]: Escape is only taken from the focused
-    /// client while the shell has something up that Escape would
-    /// dismiss, and a summoned wheel is exactly that. Without it the
-    /// key would go to the app underneath and the wheel would have no
-    /// way to be dismissed from the keyboard.
+    /// Whether the workspace wheel is summoned. Read alongside
+    /// [`Self::palette_visible`] so Escape is taken from the focused
+    /// client only when the shell has something up to dismiss with it.
     pub fn wheel_summoned(&self) -> bool {
         self.chrome
             .as_ref()
@@ -4524,28 +3627,17 @@ impl ShellOverlayHost {
             .unwrap_or(false)
     }
 
-    /// Whether the last draw discovered that the layout it was handed is
-    /// not the one it needs — the palette's filter band growing a row
-    /// when the kind chips wrap, which only a paint can measure.
-    ///
-    /// A peek, not a take: `take_structure_dirty` is the layout pass's
-    /// own call and consumes the flag. This exists so a caller that
-    /// paints exactly once (a screenshot) can notice it has to lay out
-    /// and paint again, rather than capturing a frame the user never
-    /// sees.
+    /// Whether the last draw found the layout it was handed isn't what
+    /// it needs (the filter band growing a row is only measurable by
+    /// painting). A peek, not a take, so a caller that paints once (a
+    /// screenshot) can notice it must lay out and paint again.
     pub fn structure_dirty(&self) -> bool {
         self.palette_layout_dirty
     }
 
-    /// What the palette currently is: its query, the id Enter would
-    /// activate, and the rows on offer.
-    ///
-    /// A harness driving the palette by keystroke is otherwise blind to
-    /// the one thing that decides what happens next — which row is
-    /// selected. Without this, "press Enter and see what changed" is
-    /// the only available diagnosis, and a palette that offered a
-    /// different row than expected looks identical to one that ignored
-    /// the key.
+    /// The palette's query, the id Enter would activate, and the rows on
+    /// offer — otherwise a keystroke-driven harness can't tell which row
+    /// is selected without "press Enter and see what changed".
     pub fn palette_snapshot(&self) -> (bool, String, Option<String>, Vec<(String, String)>) {
         (
             self.palette_visible,
@@ -4559,15 +3651,9 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Which result kinds the palette is currently filtered to, as the
-    /// chip labels the user can read off the strip. Empty means no chip
-    /// is lit and every kind is on offer.
-    ///
-    /// A caller driving the palette from outside can otherwise only see
-    /// the rows, and "filtered to apps" and "asked a query only apps
-    /// matched" produce the same list. The filter is the fact that
-    /// decides what a *later* keystroke will show, so it has to be
-    /// readable on its own.
+    /// Result kinds the palette is filtered to, as chip labels. Empty
+    /// means every kind is on offer — otherwise "filtered to apps" and
+    /// "a query only apps matched" produce the same row list.
     pub fn palette_kind_filter(&self) -> Vec<String> {
         self.active_kind_filter
             .iter()
@@ -4575,19 +3661,10 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Every strip's horizontal pan, keyed by strip id.
-    ///
-    /// The pan is what "where along the strip am I looking" means, and
-    /// nothing else in the state dump carries it: two frames with the
-    /// same tree and the same chrome can show completely different
-    /// windows. An assertion that the viewport did not move has no
-    /// subject without this.
-    /// Reported with the pan it is a bound on, because on a strip whose
-    /// content fits the display the pan is pinned at zero — and then
-    /// "the viewport did not move" is true of every possible change and
-    /// proves nothing. A caller checking that something left the
-    /// viewport alone has to be able to see whether it could have moved
-    /// at all.
+    /// Every strip's horizontal pan, keyed by strip id, paired with its
+    /// max — on a strip whose content fits the display the pan is pinned
+    /// at zero, so "the viewport didn't move" needs the bound to mean
+    /// anything.
     pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64, f64)> {
         let mut out: Vec<(u64, f64, f64)> = self
             .group_row_ptrs
@@ -4604,15 +3681,9 @@ impl ShellOverlayHost {
         out
     }
 
-    /// The rows on offer, with the subtitle each one renders under its
-    /// label.
-    ///
-    /// [`Self::palette_snapshot`] carries labels only, which is enough
-    /// to say *which* row Enter takes but not enough to say what the
-    /// row tells the user. The subtitle is where a badge, a source
-    /// marker or the word "install" would appear, so a harness
-    /// checking that an app the machine has to fetch is offered
-    /// indistinguishably from one it already has needs to read it.
+    /// The rows on offer with their subtitles — [`Self::palette_snapshot`]
+    /// carries labels only, not the badge/source-marker text a harness
+    /// needs to tell "already have this" from "fetches this" apart.
     pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
         self.palette
             .visible_entries()
@@ -4621,59 +3692,45 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Focus the palette's query field. The live open path
-    /// ([`Self::open_palette_with_scope`]) does this; screenshot
-    /// harnesses that force `palette_visible` need it too or they
+    /// Focus the palette's query field. `open_palette_with_scope` does
+    /// this; harnesses that force `palette_visible` need it too or they
     /// capture the unfocused field.
     pub fn set_palette_focus(&mut self, focused: bool) {
         self.palette.set_focus(focused);
     }
 
-    /// Force-set the palette visibility. Lets headless screenshot
-    /// harnesses (e.g. `bin/shots`) drive the palette scene without
-    /// staging a synthetic Ctrl+K key event through `handle_event`.
+    /// Force-set the palette visibility, so headless harnesses can drive
+    /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
     }
 
     /// The room record index the records provider reads and writes.
-    ///
-    /// Shared, not copied: a caller that references a record in here is
-    /// changing what the next keystroke finds.
+    /// Shared, not copied — a caller referencing a record here changes
+    /// what the next keystroke finds.
     pub fn room_records(
         &self,
     ) -> std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>> {
         std::rc::Rc::clone(&self.room_records)
     }
 
-    /// Run the search fan-out directly. `bin/shots` calls this after
-    /// forcing the palette open so the offscreen scene shows a
-    /// populated result list instead of an empty card (the production
-    /// entry point is `handle_event`'s per-keystroke refresh, which
-    /// scenes bypass by mutating `palette_visible` directly).
+    /// Runs the search fan-out directly, for `bin/shots` after forcing
+    /// the palette open — scenes bypass the per-keystroke refresh.
     pub fn refresh_search_results_for_shots(
         &mut self,
         doc: &mut automerge::AutoCommit,
         root: &ObjId,
     ) {
-        // Drop the no-op short-circuit first. `last_search_query` starts
-        // empty, so an empty-query scene matched it and returned without
-        // ever running a provider — every "palette just opened" shot was
-        // of a palette that had not searched.
+        // Drop the no-op short-circuit, or an empty-query scene matches
+        // the initially-empty `last_search_query` and runs no provider.
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         self.refresh_search_results(doc, root);
     }
 
-    /// Build a headless [`ActionCatalog`](crate::shell::search::action_api::ActionCatalog)
-    /// over the **same** provider registry that feeds the Ctrl+K palette.
-    ///
-    /// This is the action side of the "action ≠ presentation" boundary:
-    /// the palette renders these providers as rows; a script or an LLM
-    /// navigator drives the identical registry with no scene. The scope
-    /// is resolved from the live chrome (`ActiveApp` narrows to the
-    /// focused tab's provider, exactly as the palette does), and
-    /// `visibility` is the permission seam — a restricted caller only
-    /// enumerates what it may see.
+    /// Builds a headless [`ActionCatalog`](crate::shell::search::action_api::ActionCatalog)
+    /// over the same provider registry that feeds the Ctrl+K palette, so a
+    /// script or LLM navigator can drive it with no scene. `visibility` is
+    /// the permission seam — a restricted caller only sees what it may.
     pub fn action_catalog(
         &self,
         query: &str,
@@ -4696,27 +3753,20 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Read-only accessor for the command-palette query buffer. Used by
-    /// the `shots` driver / scenario harness to assert that synthetic
-    /// `Type("…")` actions actually landed inside the palette input.
+    /// The command-palette query buffer, for the `shots` harness to
+    /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
         self.palette.query()
     }
 
-    /// Force-set the command-palette query buffer. Lets the `shots`
-    /// driver seed a query without round-tripping through synthetic
-    /// keyboard events when the palette is closed (when it's open,
-    /// `dispatch` already routes characters to the palette).
+    /// Force-set the query buffer, for `shots` to seed a query while the
+    /// palette is closed without round-tripping synthetic key events.
     pub fn set_palette_query(&mut self, q: &str) {
         self.palette.set_query(q);
     }
 
-    /// Fast-forward the overview crossfade to its settled state
-    /// (`overview_t = overview_target = target`). Bypasses the 400 ms
-    /// AnimatePresence curve so headless single-frame renders see the
-    /// fully-opened (or fully-closed) layer instead of an alpha-zero
-    /// transition. Intended for screenshot harnesses + tests; the live
-    /// run-loop should keep using `tick_overview_transition`.
+    /// Fast-forwards the overview crossfade so a headless single-frame
+    /// render sees the settled layer, not the alpha-zero start.
     pub fn force_overview_settled(&mut self, target: bool) {
         let t = if target { 1.0 } else { 0.0 };
         self.overview_target = t;
@@ -4724,7 +3774,7 @@ impl ShellOverlayHost {
         self.transition_from = t;
         self.transition_started = None;
         // Same seeding the animated open does, so a single-frame paint
-        // shows the panel in the state a real open would leave it in.
+        // matches what a real open leaves behind.
         self.overview_selection = if target {
             self.overview_here_index()
         } else {
@@ -4732,22 +3782,9 @@ impl ShellOverlayHost {
         };
     }
 
-    /// Single-frame settle helpers for the rising-edge entry animations
-    /// of the modal/popover overlays — palette, quick-settings, and the
-    /// workspace-settings modal. Used by the headless screenshot harness
-    /// (`shots --mode offscreen --scenes …`), which paints exactly one
-    /// frame per scene: without these the harness lands at `elapsed == 0`
-    /// on the open curve and renders the overlays at `alpha == 0` →
-    /// indistinguishable from the bare desktop.
-    ///
-    /// Each helper backdates the `*_opened_at` timestamp by the matching
-    /// animation duration so `modal_transition_curve` / the QS open curve
-    /// short-circuit to the "fully open" branch, and sets the
-    /// `*_was_visible` mirror so the next `draw` doesn't immediately
-    /// re-arm the rising edge.
-    ///
-    /// Live runs should keep using the natural rising-edge gate in
-    /// [`Widget::draw`]; these are purely a screenshot/test affordance.
+    /// Single-frame settle for the palette's entry animation, so a
+    /// one-frame headless scene doesn't land at alpha 0 — which is
+    /// indistinguishable from no overlay at all. Test-only.
     pub fn force_palette_settled(&mut self) {
         if !self.palette_visible {
             return;
@@ -4765,15 +3802,11 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::open();
     }
 
-    /// Fold every reading the quick-settings workers have delivered
-    /// into chrome state. Runs once per frame and never blocks: the
-    /// reads themselves happen on a worker (see
-    /// [`crate::shell::qs_refresh`]), because a shell-out on the paint
-    /// path froze the whole desktop for as long as the OS tool took.
-    ///
-    /// Each field is applied only if it was actually read, so a missing
-    /// daemon leaves the previous value on screen rather than blanking
-    /// the panel.
+    /// Folds every reading the quick-settings workers delivered into
+    /// chrome state. Never blocks — the reads happen on a worker, since
+    /// a shell-out on the paint path froze the desktop. Each field
+    /// applies only if actually read, so a missing daemon leaves the
+    /// previous value rather than blanking it.
     fn apply_quick_settings_readings(&mut self) {
         use crate::shell::qs_refresh::QsReading;
         let readings = self.qs_refresh.drain();
@@ -4850,40 +3883,25 @@ impl ShellOverlayHost {
         self.ws_settings_transition = ui::Transition::open();
     }
 
-    /// Font size the overview sets the current room's name at, in logical
-    /// pixels.
-    ///
-    /// The panel opens by naming the room you are in, and that name is
-    /// the largest thing on the surface — it is the answer to the first
-    /// question the screen exists to answer. Exposed so the shell-chrome
-    /// test can pin "it reads as large" against a real number. A method,
-    /// not a constant, so it tracks the active theme's typography token.
+    /// Font size the overview sets the current room's name at — the
+    /// largest thing on the panel, since naming where you are is the
+    /// first question it answers. A method, not a constant, so it tracks
+    /// the active theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
     }
 
-    /// Dispatch the shell action associated with a palette command id,
-    /// then close the palette. Returns `true` if the id matched a known
-    /// command. Callers still close the palette on unknown ids to avoid
-    /// leaving a stale overlay on screen.
-    ///
-    /// Command ids come from the seed set in [`ShellOverlayHost::new`]
-    /// (`search.open` / `overview.toggle` / `settings.open` /
-    /// `quick-settings.open`) and map to a single overlay-flag mutation
-    /// on the shared [`Chrome`] state.
-    // No production caller: nothing routes a palette selection into this,
-    // so `/invite` and `/connect` are inert even under --enable-peer-sync.
-    // Kept rather than deleted because it is the only definition of what
-    // those commands do, and its tests pin that contract.
+    /// Dispatches the shell action for a palette command id, then closes
+    /// the palette (even on an unknown id, to avoid a stale overlay).
+    // No production caller routes a selection here, so `/invite` and
+    // `/connect` are inert even under --enable-peer-sync. Kept as the
+    // only definition of what those commands do; tests pin the contract.
     #[allow(dead_code)]
     pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
-        // Peer-sync rows (`/invite`, `/connect`) don't mutate chrome
-        // state — they enqueue an action the compositor drains via
-        // `take_peer_sync_actions` so the libp2p side-effect happens
-        // on the runtime thread. Match these first so we can short-
-        // circuit before reaching for `chrome`. Ignored when the
-        // peer-sync flag is off — defence-in-depth in case a stale
-        // palette row survives a flag toggle.
+        // Peer-sync rows enqueue an action for the compositor to drain
+        // (libp2p stays on the runtime thread) rather than mutating
+        // chrome directly. Ignored when the flag is off, in case a stale
+        // palette row survives a toggle.
         if self.peer_sync_enabled {
             match id {
                 "peer.invite" => {
@@ -4945,12 +3963,9 @@ impl ShellOverlayHost {
     }
 
     /// Mirror of the geometry in `draw_quick_settings` — the popover rect
-    /// anchored under the top-right tray pill.
-    ///
-    /// Width matches the concept's `w-80` (320 px). Height is the sum of
-    /// the section bands declared in [`Self::draw_quick_settings`]:
-    /// 16 + 56 (action row) + 16 + 72 (sliders) + 16 + 88 (toggles)
-    /// + 16 + 48 (power profile) + 16 = 360 px.
+    /// anchored under the top-right tray pill. Width matches the concept's
+    /// `w-80` (320px); height sums the section bands in
+    /// [`Self::draw_quick_settings`]: 16+56+16+72+16+88+16+48+16 = 360px.
     fn quick_settings_rect(&self) -> Rect {
         let popover_w = 320.0_f64;
         let popover_h = 360.0_f64;
@@ -4959,12 +3974,9 @@ impl ShellOverlayHost {
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
-    /// The strip ribbon for the active workspace, anchored to the right
-    /// edge of the content area.
-    ///
-    /// The content's right gutter is [`STRIP_TRAILING_GUTTER_PX`] wide
-    /// and holds nothing else, so the ribbon costs no layout: it sits in
-    /// space the strips already leave clear.
+    /// The strip ribbon for the active workspace, anchored to the content
+    /// area's right edge. Costs no layout — it sits in
+    /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.
     fn strip_ribbon(&self) -> ui::chrome::shell::StripRibbon {
         let (count, focused) = self
             .chrome
@@ -4989,13 +4001,10 @@ impl ShellOverlayHost {
         self.strip_ribbon()
     }
 
-    /// The rail that maps the active strip: one segment per window
-    /// group, the focused one marked, and the ones currently on screen
-    /// lit.
-    ///
-    /// Reads the live [`GroupRow`] rather than the tree, because the
-    /// question "which of these can I see" is answered by the layout —
-    /// the tree knows the order and nothing about the viewport.
+    /// The rail that maps the active strip: one segment per window group,
+    /// the focused one marked, the ones on screen lit. Reads the live
+    /// [`GroupRow`] rather than the tree — visibility is a layout question,
+    /// and the tree knows only order.
     fn strip_rail(&self) -> ui::chrome::shell::StripRail {
         let content = Rect::new(
             self.rect.x0,
@@ -5141,13 +4150,9 @@ impl ShellOverlayHost {
             .is_some_and(|c| c.borrow().collab_unavailable.is_some())
             && members > 0;
         let warning_h = if warning { COLLAB_WARNING_H } else { 0.0 };
-        // + COLLAB_FOOTER_H for the "Room activity" row: the dropdown answers
-        // "who is in this room", and "what has happened in this room" is the
-        // question you ask next.
-        // + COLLAB_ACTIONS_H for Invite / Join, but only when this user may
-        // actually invite. Reserving the band unconditionally would leave a
-        // strip of empty popover under the roster for everyone who cannot,
-        // which reads as a control that failed to paint.
+        // COLLAB_ACTIONS_H only when this user may actually invite —
+        // reserving it unconditionally would leave empty popover space
+        // for everyone who can't, reading as a control that failed to paint.
         let actions_h = if self.may_invite_here() {
             COLLAB_ACTIONS_H
         } else {
@@ -5165,17 +4170,11 @@ impl ShellOverlayHost {
         )
     }
 
-    /// May the local user invite into the room they are looking at?
-    ///
-    /// The same question the palette's `peer.invite` row is filtered on,
-    /// asked through the same policy (`required_capability` →
-    /// [`Workspace::allows`]) rather than re-decided here. A second
-    /// opinion about who may invite is a second security boundary, and
-    /// the one that disagrees is the one that is wrong.
-    ///
-    /// Fail-closed at every missing piece: no chrome, no workspace, or
-    /// peer-sync not running in this session all answer "no", because a
-    /// button that mints nothing is worse than no button.
+    /// May the local user invite into the room they're looking at? Asked
+    /// through the same policy the palette's `peer.invite` row is filtered
+    /// on, not re-decided here — a second opinion is a second security
+    /// boundary. Fail-closed at every missing piece (no chrome, no
+    /// workspace, peer-sync off).
     fn may_invite_here(&self) -> bool {
         use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
         use crate::shell::search::visibility::CapabilityVisibility;
@@ -5223,14 +4222,8 @@ impl ShellOverlayHost {
         Rect::new(r.x0 + 8.0, r.y1 - COLLAB_FOOTER_H + 4.0, r.x1 - 8.0, r.y1 - 8.0)
     }
 
-    /// Lay the room-activity sheet out and re-derive its rows from the room
-    /// document.
-    ///
-    /// Placed by hand rather than through taffy — the sheet floats over the
-    /// desktop like the other overlays, and giving it a layout node would
-    /// make it participate in the strip's sizing. The viewport starts below
-    /// the top bar so the sheet never covers the workspace pill that says
-    /// which room this is.
+    /// Lays the room-activity sheet out (by hand, not taffy, like the
+    /// other floating overlays) and re-derives its rows from the document.
     fn refresh_room_activity(&mut self) {
         let viewport = Rect::new(
             self.rect.x0,
@@ -5327,13 +4320,9 @@ impl ShellOverlayHost {
         )
     }
 
-    /// The band the scope + kind controls are painted into.
-    ///
-    /// This is the palette's *own* reserved filter band, not a separate
-    /// surface floating above the card. Reading it from the palette is
-    /// what keeps the controls on the same left edge as the query field
-    /// and the rows below them; the previous banner computed its own
-    /// insets and so lined up with neither.
+    /// The band the scope + kind controls paint into — the palette's own
+    /// reserved filter band, not a floating surface, which keeps the
+    /// controls aligned with the query field and rows below.
     fn search_banner_rect(&self) -> Rect {
         let p = self.palette.get_rect();
         if p.width() <= 0.0 {
@@ -5361,21 +4350,10 @@ impl ShellOverlayHost {
         out
     }
 
-    /// Label to render inside the i-th scope pill. For
-    /// [`SearchScope::ActiveApp`] this names the focused app (e.g.
-    /// `Notes app`), truncated to `MAX_APP_PILL_CHARS` so a very long
-    /// title can't push the sibling pills off the banner. Static labels
-    /// fall through to [`SearchScope::label`].
-    ///
-    /// The pill names the app *and* says it is an app, because the band
-    /// directly above it is the kind-filter strip and those chips carry
-    /// kind names — `Actions`, `Applications`, `Notes`, `Files`. With
-    /// Notes focused, the strip read `Notes` and the scope control read
-    /// `Only Notes` one row below it: two adjacent controls saying the
-    /// same word for two different things, one filtering to note-shaped
-    /// results and the other narrowing to the app. Naming the app as an
-    /// app is what separates them, and it reads as a place alongside its
-    /// siblings `Workspace` and `All` rather than as a second filter.
+    /// Label for the i-th scope pill. [`SearchScope::ActiveApp`] names
+    /// the focused app (`Notes app`), truncated to `MAX_APP_PILL_CHARS`
+    /// — "app" is explicit because the kind-filter strip above uses the
+    /// same names for a different axis.
     pub(crate) fn search_scope_pill_label(
         &self,
         scope: crate::shell::chrome_state::SearchScope,
@@ -5408,16 +4386,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Individual scope-segment rect inside the filter band. `idx`
-    /// indexes into [`Self::search_scope_list`], so the ActiveApp
-    /// segment (when present) is idx 0.
-    ///
-    /// The three scopes are one segmented control anchored to the right
-    /// end of the band, not three loose pills after a "Search in:"
-    /// label: they are mutually exclusive, so they should look like one
-    /// switch rather than three independent toggles sitting next to a
-    /// row of multi-select kind chips that look exactly the same.
-    /// Hit-test and draw consume this same helper.
+    /// Individual scope-segment rect. `idx` indexes into
+    /// [`Self::search_scope_list`] (ActiveApp is 0 when present). One
+    /// segmented control, not loose pills, since the scopes are mutually
+    /// exclusive. Hit-test and draw share this helper.
     fn search_scope_pill_rect(&self, idx: usize) -> Rect {
         let b = self.search_banner_rect();
         if b.width() <= 0.0 {
@@ -5477,11 +4449,9 @@ impl ShellOverlayHost {
         self.overview_cards().iter().position(|c| c.is_current)
     }
 
-    /// How many share rows the "shared out of here" list draws for a room.
-    ///
-    /// At least one: a room that shares nothing says so on a line of its
-    /// own rather than collapsing the section away, because "nothing
-    /// leaves this room" is an answer the screen exists to give.
+    /// How many share rows the "shared out of here" list draws — at least
+    /// one, so a room sharing nothing says so on its own line rather than
+    /// collapsing the section away.
     fn overview_share_rows(card: &crate::shell::overview::RoomCard) -> usize {
         let shown = card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
         let overflow = usize::from(card.shares.len() > shown);
@@ -5513,12 +4483,9 @@ impl ShellOverlayHost {
             .max(0.0)
     }
 
-    /// The panel: a floating surface centred in the viewport, sized to
-    /// what it has to say and capped so it never runs off the screen.
-    ///
-    /// Same width and centring as the workspace-settings modal, because
-    /// they are the same kind of object — a shell surface you summon,
-    /// act in, and dismiss.
+    /// The panel: a floating surface centred in the viewport, sized to what
+    /// it has to say and capped so it never runs off screen. Same width and
+    /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
         let w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - OVERVIEW_PANEL_MARGIN_PX * 2.0);
         let natural = OVERVIEW_PANEL_PAD_PX * 2.0
@@ -5591,11 +4558,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Rect of workspace `idx` on this surface — the "you are here"
-    /// block for the room you are in, its list row for any other.
-    ///
-    /// Indices are tree order, which is the contract the test-control
-    /// socket's `overview_card[i]` names are built on.
+    /// Rect of workspace `idx` — the "you are here" block for the room
+    /// you are in, its list row for any other. Indices are tree order,
+    /// the contract the test-control socket's `overview_card[i]` names
+    /// are built on.
     fn overview_row_rect(&self, idx: usize) -> Rect {
         match self.overview_slot_of(idx) {
             None => self.overview_here_rect(),
@@ -5609,11 +4575,9 @@ impl ShellOverlayHost {
         self.overview_list_slot_rect(slot)
     }
 
-    /// Pan the room list so the keyboard's selection is on screen.
-    ///
-    /// Without this, arrowing past the last visible room moves a
-    /// selection the user cannot see — the list would keep answering the
-    /// keyboard while showing the same rows.
+    /// Pan the room list so the keyboard's selection is on screen —
+    /// otherwise arrowing past the last visible room moves a selection
+    /// nobody can see.
     fn scroll_overview_selection_into_view(&mut self) {
         let Some(idx) = self.overview_selection else {
             return;
@@ -5664,19 +4628,10 @@ impl ShellOverlayHost {
         None
     }
 
-    /// True if `p` is contained in any currently-open overlay's hit rect.
-    ///
-    /// Used by [`Widget::handle_event`] to absorb every pointer event whose
-    /// cursor is over an open palette / collaborators dropdown / quick-
-    /// settings popover / workspace-settings modal — not just `Pressed`.
-    /// Without this gate, `Released` and `CursorMoved` events fall through
-    /// to the wrapped content and light up tab pills, hover affordances,
-    /// or stray drag-loop continuations underneath the modal.
-    ///
-    /// `pub(crate)` because the same predicate is reused by the
-    /// palette-focus / WS-settings-pill click branches — keeping it a
-    /// method on `ShellOverlayHost` lets those branches stay in sync with
-    /// the rect helpers above.
+    /// True if `p` is over any open overlay's hit rect, so
+    /// [`Widget::handle_event`] absorbs every pointer event and not just
+    /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
+    /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         (self.palette_visible && self.palette.get_rect().contains(p))
@@ -5687,18 +4642,10 @@ impl ShellOverlayHost {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Overview layout constants
-// -----------------------------------------------------------------------------
-//
-// The overview answers three questions at a glance — what workspaces exist,
-// what is in each one, and which one you are in — so the geometry is built
-// around a grid of equal cards rather than a tall column of near-empty rows.
-// Keeping the numbers as module-level constants lets the draw path,
-// `hit_test_overview`, and the unit tests share one geometry oracle.
+// Overview layout constants. Module-level so the draw path,
+// `hit_test_overview` and the unit tests share one geometry oracle.
 
-/// Widest the rooms panel ever gets. The panel is a switcher, not a
-/// page: it is sized to what it says, and matches the workspace-settings
+/// Widest the rooms panel ever gets, matching the workspace-settings
 /// modal so the shell's floating surfaces are one family.
 const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
 /// Inset from the viewport edge, and the smallest gap the panel keeps
@@ -5713,9 +4660,9 @@ const OVERVIEW_HERE_HEIGHT_PX: f64 = 84.0;
 const OVERVIEW_CAPTION_HEIGHT_PX: f64 = 26.0;
 /// Height of one share row.
 const OVERVIEW_SHARE_ROW_HEIGHT_PX: f64 = 28.0;
-/// Most share rows drawn before the rest collapse into a "+N more" line.
-/// The panel's job is to say *whether* things leave this room and roughly
-/// what; the full list is the permissions pane's job.
+/// Most share rows drawn before the rest collapse into "+N more" — the
+/// panel says whether things leave this room, the permissions pane has
+/// the full list.
 const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
 /// Height of one room row in the "go to" list.
 const OVERVIEW_ROOM_ROW_HEIGHT_PX: f64 = 60.0;
@@ -5730,21 +4677,18 @@ const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
 /// Horizontal step between overlapping faces.
 const OVERVIEW_FACE_STEP_PX: f64 = 18.0;
 /// How much of their own colour an away member's face keeps, the rest
-/// being the panel behind it. Quiet enough to read as "not here right
-/// now", strong enough to still be a face — at a third it vanished
-/// against a light ground and lost the member altogether.
+/// being the panel behind it. At a third it vanished against a light
+/// ground and lost the member altogether.
 const OVERVIEW_FACE_AWAY_ALPHA: f32 = 0.55;
 /// Most faces drawn before the rest collapse into a "+N" disc.
 const OVERVIEW_FACES_MAX: usize = 4;
-/// How far the panel rises as it opens, in logical pixels. Matches the
-/// workspace-settings modal's entrance so the shell's floating surfaces
-/// arrive the same way.
+/// How far the panel rises as it opens, matching the workspace-settings
+/// modal so the shell's floating surfaces arrive the same way.
 const OVERVIEW_PANEL_RISE_PX: f64 = 20.0;
 /// Scale the panel starts its entrance at.
 const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
-/// Height of the fade painted over the bottom of the room list when it
-/// overflows, so a clipped row reads as "there is more" rather than as a
-/// row someone forgot to finish.
+/// Height of the fade over the bottom of an overflowing room list, so a
+/// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
 impl Widget for ShellOverlayHost {
@@ -5757,25 +4701,15 @@ impl Widget for ShellOverlayHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
-        // Carry out anything the palette's peer-sync rows asked for.
-        // First, so the invite token or the token prompt is in chrome
-        // before this frame's draw reads it.
+        // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
-        // Diff the live tree against each `GroupRow`'s current
-        // children. Every structural mutation in the
-        // persisted `WorkspaceTree` bumps `chrome.revision`; if our
-        // cached value disagrees the tree has changed shape and the
-        // live rows need to splice new groups in (or drop removed
-        // ones) so the painted strip matches state. Runs BEFORE the
-        // children's own `update` calls so the freshly-spliced
-        // groups participate in the same frame's sync pass.
-        // Workspace switch first: everything below walks
-        // `group_row_ptrs`, and a switch replaces the whole row set.
+        // Workspace switch before anything walking `group_row_ptrs` (it
+        // replaces the whole row set), then splice the tree's structural
+        // changes into the rows — both before the children's own `update`
+        // so freshly-spliced groups join this frame's sync pass.
         let ws_swapped = self.resync_workspace_content();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
-        // Mirror the compositor's live fullscreen state onto the strip rows
-        // before the children update, so a promotion/restore is reflected in
-        // the same frame it changes.
+        // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
         let a = self.content.update(s, p);
         let b = self.palette.update(s, p);
@@ -5784,107 +4718,45 @@ impl Widget for ShellOverlayHost {
             .as_mut()
             .map(|w| w.update(s, p))
             .unwrap_or(false);
-        // Per-frame wire-up: nudge the data-layer active-group pointer off
-        // any group whose widget tree latched the 180 ms close fade. Has
-        // to run after `content.update` so any close fade started by the
-        // current frame's events is observable in the harvest below.
+        // The harvesters run after `content.update` so this frame's
+        // gestures are visible to them, mirroring one-shot widget-side
+        // changes into the persisted tree so they survive a restart and
+        // replicate to peers.
         self.reconcile_active_group_off_closing();
-        // Mirror any in-frame `WindowGroup::maximized` flips into the
-        // persisted `WorkspaceTree`. Drains the per-group take-pattern
-        // accessor; runs after `content.update` for the same reason as
-        // the close-reconciler above (clicks observed this frame must
-        // be visible to the harvest).
         self.harvest_pending_maximize_changes();
-        // Mirror any in-frame resize-handle gestures (press-drag-release on
-        // the right edge of a `WindowGroup`) into the persisted
-        // `WorkspaceTree`. Same take-pattern as the maximize writeback;
-        // runs once per gesture, not once per pixel.
         self.harvest_pending_width_changes();
-        // Mirror any in-frame whole-group reorder drag (grab a group's
-        // tab-bar background, slide it to a new slot) into the persisted
-        // `WorkspaceTree` so the strip's group order survives a restart and
-        // replicates to peers. Same one-shot take-pattern as the width
-        // writeback.
         self.harvest_pending_group_reorder();
-        // Mirror any in-frame intra-group tab reorder (drag a pill to a new
-        // slot inside its own group) into the persisted `WorkspaceTree` so the
-        // tab order survives a restart and replicates to peers. Same one-shot
-        // take-pattern as the group reorder above.
         self.harvest_pending_tab_reorder();
-        // Open the search bar scoped to the app whose decoration magnifier the
-        // user just clicked.
         self.harvest_pending_search_open();
-        // Open the palette aimed at the group whose "+" chip was clicked,
-        // and retire that aim once the palette is gone. The refresh has
-        // to happen here rather than inside the harvest: a picker that
-        // opens on "Nothing to show" until the user types reads as
-        // broken, and this is the frame where both the intent and the
-        // document are in hand.
+        // Refreshing here (not inside the harvest) means the palette never
+        // shows "Nothing to show" before the user's first keystroke.
         let opened_for_new_tab = self.harvest_pending_new_tab();
         if opened_for_new_tab {
             self.refresh_search_results(s, p);
         }
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
-        // Publish the poller's latest battery / network / volume reading
-        // onto the chrome the top bar draws from.
         self.sync_status_from_bridge();
-        // Mirror the widget-side `TabBar::active_id` into the persisted
-        // `WorkspaceTree::group.active_tab`. Without this, clicking a
-        // different tab pill flips the visible content but the tree's
-        // `active_tab` stays pointing at whatever tab was constructed
-        // first. Also stamps
-        // `tree.active_group` / `tree.active_strip` on group focus so
-        // the search-scope narrowing has an honest anchor.
         self.harvest_active_tab_writeback();
-        // Keep the focused group scrolled into view. Edge-triggered on a
-        // change to the strip's `active_group` pointer, so a manual wheel
-        // pan away from the focus isn't fought — only a genuine focus
-        // change re-centres the strip (Niri "focused column follows").
-        // Runs after `harvest_active_tab_writeback` so a focus change made
-        // this frame is already reflected in `active_group`.
+        // Both edge-triggered on `active_group`, so they run after the
+        // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
-        // Light the group that pointer names. Same ordering rationale as
-        // the scroll reconciler above: `active_group` is settled for this
-        // frame by the time both of them read it.
         self.mark_focused_group();
-        // Cross-strip tab drag-drop: drain any `GroupRow` that
-        // published a cross-strip detach during this frame's events and
-        // splice the dragged tab into whichever strip's row contains the
-        // release point (or back into source if no strip matched).
         self.dispatch_cross_strip_detaches();
-        // Offer every open tab's document to its own writer. Debounced and
-        // off-thread, so a frame on which nothing was typed costs a head
-        // comparison per open record — but a frame on which something was
-        // is what puts it on disk. Without this the store holds each tab's
-        // document in memory and the session ends having written nothing.
+        // Offer every open tab's document to its own writer, debounced and
+        // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
             let records = chrome.borrow().records().clone();
             records.tick();
         }
-        // Move whatever the portal buffered since the last frame onto the
-        // chrome's queue. This has to run *before* the prompt pump: a
-        // request that arrives during this frame should be on screen at
-        // the end of it, not one frame later.
+        // Before the prompt pump, so a request arriving this frame is on
+        // screen by the end of it, not one frame later.
         let portal_dirty = self.drain_portal_prompts();
-        // Mount a file-chooser dialog for any queued portal request, and
-        // resolve one the user just finished with.
         let picker_dirty = self.pump_file_picker();
-        // Drive the permission-prompt pump.
-        // Latches a fresh widget for the front of `chrome.pending_grants`,
-        // and drains entries when the user clicks an action button.
-        // Idempotent — runs every frame regardless of queue state.
         self.pump_permission_prompt();
-        // App launches report back from their worker threads. Draining
-        // here is what turns "the sandbox refused to start" into
-        // something the user can see; the frame thread only ever takes
-        // a mutex and moves a Vec out.
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
-        // Notification lifecycle: drop expired toasts so the stack
-        // shrinks even on frames where the user does nothing. The
-        // widget's own `update` also drives this, but routing it
-        // here too means the chrome stays consistent for tests that
-        // never call the widget directly.
+        // Also driven by the widget's own `update`, but routed here too so
+        // chrome stays consistent for tests that never call the widget.
         let d = if let Some(chrome) = self.chrome.as_ref() {
             let dropped = chrome
                 .borrow_mut()
@@ -5893,11 +4765,8 @@ impl Widget for ShellOverlayHost {
         } else {
             false
         };
-        // Close whatever the frame's `doc_*` mirrors left open on the room
-        // document, stamping it with the wall clock. Automerge would
-        // otherwise close it implicitly at the next read with a zero
-        // timestamp, and a room whose every change reads as the Unix epoch
-        // cannot be filtered by date. Free when nothing is pending.
+        // Stamp the wall clock on whatever `doc_*` left open, or automerge
+        // closes it implicitly with a zero timestamp — undatable later.
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
@@ -5910,19 +4779,15 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Push the compositor's live fullscreen state down to the strip rows
-        // (which group is promoted / which strips are hidden) BEFORE the
-        // content tree is built, so the collapse takes effect this pass.
+        // Both pushed before the content tree is built, so this pass's
+        // fullscreen collapse and per-display width resolution are in
+        // effect — the latter is what makes a single-frame offscreen
+        // render match the live shell's geometry.
         self.sync_fullscreen_from_chrome();
         let fullscreen = self
             .chrome
             .as_ref()
             .is_some_and(|c| c.borrow().is_fullscreen());
-        // Tell every strip which displays it spans BEFORE the content tree
-        // is built, so each window group's width fraction resolves against
-        // the display it sits on in this very pass. Doing it here rather
-        // than in `apply_layout` is what makes a single-frame offscreen
-        // render (a screenshot) show the same geometry as the live shell.
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -5933,27 +4798,17 @@ impl Widget for ShellOverlayHost {
         }
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
-        // Overlay the palette above content: absolute positioning with
-        // auto-margin horizontal centering and a fixed top offset so it
-        // floats below the shell's top bar like a popover. The widget's
-        // own `build_layout` defaults to a narrow 360 px footprint —
-        // override to 640 px here so the palette reads as a proper
-        // centered modal sheet, not a top-right anchored popover.
+        // Override the widget's own narrow 360px default so the palette
+        // reads as a centered modal sheet, not a top-right popover.
         let mut palette_style = taffy.style(palette_node).unwrap().clone();
         palette_style.position = Position::Absolute;
-        // Adaptive width: 70 % of viewport, clamped to [560, 640]. At
-        // 800 wide the palette shrinks to 560 (120 px margin per
-        // side); at 1280+ it caps at 640. Lower bound is the minimum
-        // that still fits the filter strip's eight pills (WORKSPACE
-        // / ALL / DOCS / CODE / IMG / VID / FULL TEXT) without the
-        // last pill bleeding into the close glyph.
+        // 70% of viewport clamped to [560, 640]; 560 is the minimum that
+        // still fits the filter strip's eight pills without the last one
+        // bleeding into the close glyph.
         let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
-        // `self.rect` is last frame's post-layout rect, so the very
-        // first layout sizes the card off a zero-width host and lands on
-        // the 560 floor. Remember what we sized against; `apply_layout`
-        // re-dirties the tree if the host turned out to be a different
-        // width, so the card converges on its real size instead of
-        // keeping whichever width the first frame happened to see.
+        // `self.rect` is last frame's, so frame 1 sizes off a zero-width
+        // host and lands on the 560 floor; remembering what it sized
+        // against lets `apply_layout` re-dirty and converge.
         self.palette_layout_host_w = self.rect.width();
         palette_style.size = Size {
             width: Dimension::length(palette_target_w as f32),
@@ -5976,12 +4831,8 @@ impl Widget for ShellOverlayHost {
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
 
-        // Floating sidebar wheel: absolutely positioned on the left edge
-        // directly below the top bar, taking the remainder of the host's
-        // height. Sized to the wheel's intrinsic 96 px width. The sidebar
-        // widget's own build_layout chose a leaf style — we override it
-        // with an absolute position so it hovers above the content pane
-        // instead of displacing it.
+        // Override the sidebar's own leaf style with absolute positioning
+        // so it hovers above the content pane instead of displacing it.
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(node).unwrap().clone();
@@ -5998,9 +4849,8 @@ impl Widget for ShellOverlayHost {
             };
             style.flex_grow = 0.0;
             style.flex_shrink = 0.0;
-            // A fullscreen surface covers the whole output: the sidebar
-            // wheel is suppressed alongside the top bar so nothing paints
-            // over the promoted group. Clearing fullscreen restores it.
+            // A fullscreen surface covers the whole output, so the wheel
+            // is suppressed alongside the top bar.
             if fullscreen {
                 style.display = Display::None;
             }
@@ -6037,38 +4887,22 @@ impl Widget for ShellOverlayHost {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Did the card get sized against a stale host width? Ask for one
-        // more layout pass; the check is a float compare against the
-        // exact value `build_layout` stored, so it settles in a single
-        // extra frame and then stops.
+        // One more pass if the card sized against a stale host width;
+        // settles in a single extra frame.
         if self.palette_layout_host_w != self.rect.width() {
             self.palette_layout_dirty = true;
         }
-        // Push the current wheel-disc slot width (plus a small
-        // breathing-room gap) into every GroupRow's `leading_inset`
-        // BEFORE the content tree lays out, so the strip reserves the
-        // canvas-x the wheel disc is about to render into AND a
-        // 16 px wallpaper gutter to its right. With the inset equal to
-        // wheel_w exactly, the radial switcher's right edge butts into
-        // the first window — the small gap reads as visual separation
-        // between the canvas chrome (wheel) and the workspace's actual
-        // content. Skipped when there's no sidebar (no wheel ⇒ no
-        // gutter to reserve).
+        // Wheel-disc slot width plus a gap, reserved so the strip leaves
+        // room for the wheel and a wallpaper gutter beside it. No sidebar
+        // means no gutter to reserve.
         let wheel_w = if self.sidebar.is_some() {
             sidebar_width_for_viewport(self.rect.height() as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
         } else {
             0.0
         };
-        // Re-derive the per-display strip widths now that the host's own
-        // rect is known. This is what makes a host nobody pushed geometry
-        // into converge: `build_layout` runs before the first `apply_layout`,
-        // so on frame 1 it has no viewport to fall back on and the strips
-        // size against the toolkit's default. Pushing again here flags the
-        // rows structurally dirty on any change, so the next layout pass
-        // bakes the real width — the same one-extra-pass convergence the
-        // palette card above uses. When the compositor *has* pushed real
-        // output geometry this is a no-op: the spans come from that, not
-        // from `self.rect`.
+        // Re-derive strip widths now the host's rect is known: frame 1's
+        // `build_layout` had no viewport yet. A no-op once the
+        // compositor has pushed real output geometry.
         let settled_spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as the other group_row_ptrs
@@ -6087,20 +4921,11 @@ impl Widget for ShellOverlayHost {
         self.palette
             .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
-            // The radial wheel on the left is fixed in place and should
-            // scroll with the rest of the desktop. The wheel disc
-            // lives in the overlay layer (absolute-positioned above
-            // the content) so we can't make it a sibling of the
-            // GroupRow; instead, shift its origin by the active
-            // strip's `scroll_x` so it pans in lock-step.
-            //
-            // group_row_ptrs only contains strips from the currently-
-            // active workspace (see `shell/mod.rs` build path), but it
-            // is a HashMap, so iteration order is not the stacking
-            // order — on a multi-strip workspace "the first one" was
-            // whichever strip happened to hash first, and could differ
-            // between runs. Take the topmost strip in tree order
-            // instead, which is the one the wheel lines up beside.
+            // The wheel disc lives in the overlay layer, not as a sibling
+            // of GroupRow, so it pans in lock-step by shifting its origin
+            // with the active strip's `scroll_x`. `group_row_ptrs` is a
+            // HashMap, so take the topmost strip in tree order rather
+            // than whatever "first" iterates to.
             let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
                 let st = c.borrow();
                 let tree = st.tree();
@@ -6126,10 +4951,8 @@ impl Widget for ShellOverlayHost {
                         .map(|&ptr| unsafe { (&*ptr).scroll_x() })
                 })
                 .unwrap_or(0.0);
-            // A summoned wheel has left the canvas: it places itself
-            // around the pointer, in screen space, so handing it the
-            // strip's pan would shift it back out from under the
-            // cursor by however far the strip happens to be scrolled.
+            // A summoned wheel places itself around the pointer in screen
+            // space; the strip's pan would shift it out from under the cursor.
             let summoned = self
                 .chrome
                 .as_ref()
@@ -6156,45 +4979,31 @@ impl Widget for ShellOverlayHost {
         let flags = self.overlay_flags();
         let target = if flags.overview { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target);
-        // The overview is a panel over your desk, not a room you travel
-        // to, so the desktop does not go anywhere: it stays drawn and
-        // the scrim dims it while the panel rises into place. This is
-        // the same enter/exit the workspace-settings modal plays, run
-        // off `overview_t` — one motion language for the shell's
-        // floating surfaces.
+        // The overview is a panel over the desk, not a place you travel
+        // to: the desktop stays drawn and the scrim dims it as the panel
+        // rises, the same enter/exit the ws-settings modal plays.
         let (overview_alpha, overview_dy, overview_scale) = overview_panel_curve(t);
 
-        // Scale pivot = scene centre (so the shrink/zoom feels anchored
-        // to the viewport the user is looking at, not the origin).
+        // Scale pivot is the scene centre, so the zoom anchors to the
+        // viewport rather than the origin.
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         let scaled = |s: f64| -> Affine {
             Affine::translate((cx, cy)) * Affine::scale(s) * Affine::translate((-cx, -cy))
         };
 
-        // A workspace switch does not move the screen. The content tree
-        // paints the new workspace where the old one was, at rest, on the
-        // very next frame — no translate, no curve, nothing to wait out.
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
-        // Floating sidebar wheel: above the desktop content, below every
-        // overlay — including the scrims. The wheel is part of the
-        // desktop, so it dims with the desktop.
+        // Sidebar wheel: above desktop content, below every overlay
+        // (including scrims) — it's part of the desktop, so it dims with it.
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        // Inline permission prompt. Painted
-        // as a thin bar at the top of the content viewport (just below
-        // the topbar) when `chrome.pending_grants.front().is_some()`.
-        // Sits above the desktop content but below the overlay layer
-        // so an open palette / overview / quick-settings still occludes
-        // it — the user wants to act on the modal first, then come
-        // back to the prompt. The host owns the widget; the pump in
-        // `update` (and its `tick_permission_prompt_for_tests` shim)
-        // is what observes pending grants and drains them.
+        // Below the overlay layer, so an open modal occludes it: act on
+        // the modal first, then come back to the prompt.
         if let Some(prompt) = self.permission_prompt.as_mut() {
             let bar_y0 = self.rect.y0 + self.sidebar_top_y as f64;
             let bar_x0 = self.rect.x0 + self.sidebar_top_y as f64;
@@ -6204,13 +5013,10 @@ impl Widget for ShellOverlayHost {
         }
 
 
-        // Top-right notification stack. Drawn above the desktop content
-        // but below modal overlays (palette / settings / overview) and
-        // the permission prompt so a prompt always wins focus.
+        // Above desktop content, below modal overlays and the permission
+        // prompt, so a prompt always wins focus. Top inset keeps toasts
+        // off the clock/tray.
         if let Some(stack) = self.notification_stack.as_mut() {
-            // Offset top inset below the topbar so toasts don't crash
-            // into clock / tray. Right edge is the viewport's right
-            // edge — the stack itself insets by EDGE_INSET.
             let viewport = Rect::new(
                 self.rect.x0,
                 self.rect.y0 + self.sidebar_top_y as f64,
@@ -6221,14 +5027,9 @@ impl Widget for ShellOverlayHost {
             stack.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        // The rooms panel. It rises 20 px and settles from 0.97, over a
-        // scrim whose own strength follows the openness — so the desk
-        // dims under it on the way in and comes back on the way out,
-        // instead of the screen cutting to a different ground.
         if overview_alpha <= 0.0 {
-            // Overview fully hidden — clear the cached "New room" hit
-            // rect so a stray click during an in-flight close can't
-            // create a workspace.
+            // Clear the cached hit rect so a stray click during an
+            // in-flight close can't create a workspace.
             self.add_workspace_rect = Rect::ZERO;
         }
         if overview_alpha > 0.0 {
@@ -6255,16 +5056,11 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Workspace settings modal — concept wraps the content in
-        // `motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
-        // `animate={{ opacity: 1, scale: 1, y: 0 }}` over ~220 ms. The
-        // `ws_settings_transition` plays this on open AND in reverse on
-        // close, so the modal + its scrim fade out instead of popping.
+        // `ws_settings_transition` plays the entrance in reverse on close
+        // too, so the modal + scrim fade out instead of popping.
         if !flags.ws_settings {
-            // Clear cached pill rects so a click during the close fade
-            // (flag already false, modal still painting) can't flip
-            // tabs. Mirrors the `add_workspace_rect = Rect::ZERO`
-            // pattern above.
+            // Clear cached rects so a click during the close fade can't
+            // flip tabs, same as `add_workspace_rect` above.
             self.ws_settings_tab_pill_rects = [Rect::ZERO; 3];
             self.permissions_revoke_rects.clear();
             self.grant_composer_rects = None;
@@ -6278,10 +5074,8 @@ impl Widget for ShellOverlayHost {
         );
         let now = Instant::now();
         if self.ws_settings_transition.is_visible(now) {
-            // Settings modal: concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`
-            // — the softer modal scrim rather than the stronger overview /
-            // palette dimmer. The scrim's own alpha follows the openness
-            // so it fades out with the panel on close.
+            // The softer modal scrim, not the stronger overview/palette
+            // dimmer; fades with the panel on close.
             draw_modal_scrim_at(
                 scene,
                 transform,
@@ -6331,41 +5125,25 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Strip ribbon — which strip of this workspace has focus, and
-        // how many there are. Drawn under the popovers so an open panel
-        // sits over it, and hidden while the overview is up because the
-        // overview is not showing strips.
+        // Both drawn under the popovers, hidden under the overview since
+        // it isn't showing strips.
         if !self.overlay_flags().overview {
             let ribbon = self.strip_ribbon();
             ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
-            // Strip rail — how many windows this strip holds, which one
-            // has focus, and which of them the viewport is currently
-            // over. Same reasoning as the ribbon for why it hides under
-            // the overview: the overview is not showing a strip.
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
 
-        // Quick-settings popover (anchored top-right, no scrim so it reads
-        // as a dropdown rather than a modal). Concept wraps this in a
-        // `motion.div` with `initial={{ opacity: 0, y: -10, scale: 0.95 }}`
-        // → `animate={{ opacity: 1, y: 0, scale: 1 }}` so the panel reads
-        // as "slipping out of the top-right". Detect the open rising edge
-        // and play the same motion for `QS_OPEN_ANIM_MS`.
+        // No scrim, so it reads as a dropdown rather than a modal.
         if flags.quick_settings && !self.qs_was_open {
-            // Rising edge: ask for fresh OS state, but do not wait for
-            // it. The panel opens on this frame with the last known
-            // values and updates as readings land. The lists behind the
-            // Wi-Fi and Bluetooth drill-ins are deliberately not
-            // requested here — see `qs_refresh`.
+            // Rising edge: ask for fresh OS state without waiting — the
+            // panel opens with last-known values and updates as readings
+            // land. Wi-Fi/Bluetooth drill-in lists aren't requested here,
+            // see `qs_refresh`.
             self.qs_refresh.kick_fast();
         }
         self.qs_was_open = flags.quick_settings;
-        // Apply anything the workers have delivered since the last frame.
         self.apply_quick_settings_readings();
-        // Drive the interruptible transition from the flag. `is_visible`
-        // keeps the popover drawn through its close curve so it fades +
-        // slides OUT instead of popping.
         self.qs_transition.set_open(
             flags.quick_settings,
             Duration::from_millis(QS_OPEN_ANIM_MS),
@@ -6406,9 +5184,6 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
-            // Soft elevation behind the popover so it lifts off the
-            // desktop like the toasts do. Faded by openness so it
-            // animates in/out with the panel.
             ui::surface::soft_shadow(
                 scene,
                 qs_xform,
@@ -6424,9 +5199,6 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Collaborators dropdown (anchored top-right, no scrim — matches the
-        // quick-settings dropdown behaviour and the concept's avatar stack
-        // "open peer list" affordance).
         if flags.collaborators {
             self.draw_collaborators(scene, transform, text_renderer, theme);
         } else {
@@ -6435,13 +5207,9 @@ impl Widget for ShellOverlayHost {
             self.collab_join_row_rect = Rect::ZERO;
         }
 
-        // Room-activity sheet. Above the dropdowns (it is a surface you read,
-        // not a menu you pick from) and below the palette (the palette is how
-        // you got here and must always be reachable on top).
+        // Above the dropdowns, below the palette (which must stay reachable).
         if flags.room_activity && !self.room_activity_was_open {
-            // Rising edge: the room may have changed while the sheet was
-            // closed, so drop the derived rows rather than showing a stale
-            // list for one frame.
+            // Room may have changed while closed — drop stale derived rows.
             self.room_activity.invalidate();
         }
         self.room_activity_was_open = flags.room_activity;
@@ -6467,9 +5235,9 @@ impl Widget for ShellOverlayHost {
                     &self.rect,
                 );
             }
-            // A side sheet slides in from the edge it is anchored to rather
-            // than scaling about its centre — scaling a full-height panel
-            // reads as the whole desktop breathing.
+            // Slides in from its anchored edge rather than scaling about
+            // its centre — scaling a full-height panel reads as the whole
+            // desktop breathing.
             let slide = (1.0 - openness as f64) * (sheet.width() * 0.25);
             let sheet_xform = if slide > 0.0 {
                 transform * Affine::translate((slide, 0.0))
@@ -6492,10 +5260,6 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Command palette / global search — concept `GlobalSearch.tsx:109-113`
-        // wraps the panel in a motion.div with a scale 0.9 → 1.0 and
-        // y 20 → 0 + opacity 0 → 1 entry, now played in reverse on close
-        // by `palette_transition`.
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -6529,9 +5293,6 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
-            // One card. The filter controls live in a band the palette
-            // itself reserves, so there is no second surface to stitch
-            // on and no seam to hide.
             ui::surface::soft_shadow(
                 scene,
                 palette_xform,
@@ -6541,11 +5302,9 @@ impl Widget for ShellOverlayHost {
                 14.0,
                 0.55 * alpha,
             );
-            // Re-theme just the palette surface to the modal tint. The
-            // `CommandPalette` widget lives in `quick-ui` and paints its
-            // own surface from `surfaces.raised`, so we hand it a cloned
-            // theme whose `surfaces.raised` is pre-tinted rather than
-            // reaching inside the shared widget to plumb an override.
+            // A cloned theme with `surfaces.raised` pre-tinted, since
+            // `CommandPalette` (in `quick-ui`) paints its own surface from
+            // there and has no override plumbed in.
             let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
             self.palette.draw(
                 scene,
@@ -6554,39 +5313,22 @@ impl Widget for ShellOverlayHost {
                 &palette_theme,
                 presence,
             );
-            // Filter band content, painted into the palette's reserved
-            // band so it shares the card's content inset.
             self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
             if in_flight {
                 scene.pop_layer();
             }
         }
 
-        // Peer-sync card last: while it is up it owns the keyboard, so
-        // it has to sit above the palette that opened it.
+        // Owns the keyboard while up, so it must sit above the palette
+        // that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
 
-        // The portal's file-chooser dialog, over a scrim, above every
-        // other overlay — including the sidebar wheel, which paints
-        // after the desktop content and would otherwise sit on top of a
-        // dialog that is supposed to be modal.
-        //
-        // It genuinely is modal: an app in another process is blocked on
-        // the answer, and `handle_event` absorbs every event while it is
-        // up. Chrome that still looks live underneath a modal is chrome
-        // the user will try to click, so the scrim covers the whole
-        // viewport and the dialog is drawn last.
-        //
-        // The compositor drawing it is also what makes it trustworthy:
-        // the requesting app cannot draw over it, read it, or dismiss
-        // it.
+        // Above every other overlay, including the sidebar wheel — it's
+        // genuinely modal (an app in another process is blocked on the
+        // answer, and `handle_event` absorbs every event), and drawn by
+        // the compositor rather than the requesting app so it can't be
+        // drawn over, read, or dismissed by that app.
         if let Some(active) = self.file_picker.as_mut() {
-            // Through `fill_scrim`, at the same strength every other
-            // modal dims with — filling with the raw token instead paints
-            // it at full opacity, leaving a file dialog floating on a
-            // void with the desktop and the document the file was going
-            // into erased behind it, so nothing on screen says what had
-            // asked or where the file would land.
             fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
             active.widget.set_rect(file_picker_rect(self.rect));
             active
@@ -6594,11 +5336,8 @@ impl Widget for ShellOverlayHost {
                 .draw(scene, transform, text_renderer, theme, presence);
         }
 
-        // The hardware-key readout sits above absolutely everything,
-        // including the modals. It reports a change the user just made
-        // with a physical key, and that key works while a modal is up —
-        // so hiding the answer behind the modal would make the key look
-        // broken exactly when the user is least able to check.
+        // Above everything, including modals — a physical key works
+        // while a modal is up, so its readout must too.
         self.draw_osd(scene, transform, text_renderer, theme);
     }
 
@@ -6619,10 +5358,8 @@ impl Widget for ShellOverlayHost {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
-            // Ribbon hover. Paint-only, so it is tracked here rather
-            // than routed: a segment thickens under the pointer to say
-            // it is a control, which is most of how the ribbon
-            // advertises that it can be clicked at all.
+            // Paint-only: a segment thickens under the pointer to say it's
+            // clickable.
             let hover = if self.overlay_flags().overview {
                 None
             } else {
@@ -6642,16 +5379,9 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // The portal's file-chooser dialog runs before everything,
-        // including the peer-sync card, and absorbs every event whether
-        // or not it consumed one.
-        //
-        // It is genuinely modal: a D-Bus method in another process is
-        // parked on the answer, and a filename being typed into it
-        // contains characters (`k`, `/`) the chrome underneath would
-        // otherwise read as chords. Letting a keystroke through would
-        // mean the user switching workspaces mid-dialog, leaving an app
-        // blocked on a dialog they can no longer see.
+        // Runs before everything and absorbs every event: genuinely
+        // modal (a D-Bus method in another process is parked on the
+        // answer), and a typed filename shares characters with chords.
         if self.file_picker.is_some() {
             let picker_rect = file_picker_rect(self.rect);
             if let Some(active) = self.file_picker.as_mut() {
@@ -6674,22 +5404,15 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
-        // Peer-sync card. Runs before every other overlay because while
-        // the token prompt is up it owns the keyboard outright — a
-        // token contains characters (`k`, `/`) that would otherwise be
-        // read as chords by the chrome underneath.
+        // Before every other overlay: a token prompt owns the keyboard
+        // outright, since a token shares characters with chords.
         if self.peer_sync_card_visible() && self.handle_peer_sync_event(event, modifiers) {
             *handled = true;
             return;
         }
 
-        // Quick-settings slider drag: while the user holds a slider,
-        // CursorMoved updates the value inline (so the fill follows the
-        // pointer) and Released pushes the final value through
-        // `qs_actions`. Runs BEFORE the modal event-absorb gate so a drag
-        // that leaves the slider bar or even the popover keeps updating
-        // — matches the concept's slider feel and the way every native
-        // slider on Linux behaves once the knob is grabbed.
+        // Before the modal absorb gate, so a drag that leaves the slider
+        // bar or popover keeps updating, like a native slider.
         if let Some(drag_i) = self.qs_slider_drag {
             match event {
                 WindowEvent::CursorMoved { .. } => {
@@ -6744,11 +5467,9 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Room-activity sheet. Routed BEFORE the absorb gate because the
-        // timeline inside it wants exactly the events that gate swallows —
-        // hover to reveal a row's `[Revert]`, wheel to scroll the list. The
-        // gate still catches anything the sheet does not claim, so the
-        // desktop underneath stays inert.
+        // Before the absorb gate — the timeline wants exactly the events
+        // that gate would swallow (hover, wheel). The gate still catches
+        // whatever the sheet doesn't claim.
         if self.overlay_flags().room_activity
             && matches!(
                 event,
@@ -6761,11 +5482,9 @@ impl Widget for ShellOverlayHost {
             let sheet = self.room_activity.rect();
             let pointer_inside = self.last_cursor.map(|p| sheet.contains(p)).unwrap_or(false);
             let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
-            // Escape belongs to the ladder below, which owns overlay
-            // dismissal ordering; every other key is the sheet's contributor
-            // typeahead. The exception is a name field: while one is up, Escape
-            // is how the user abandons it, and closing the whole sheet instead
-            // would throw away what they typed.
+            // Escape belongs to the dismissal ladder below, except while a
+            // name field is up — there it abandons the field instead, or
+            // closing the sheet would throw away what was typed.
             let naming = self.room_activity.wants_keyboard();
             let is_escape = !naming
                 && matches!(
@@ -6797,9 +5516,6 @@ impl Widget for ShellOverlayHost {
                     );
                 }
                 if outcome.named {
-                    // The name went into the room document, so it syncs to
-                    // whoever else is in the room — worth saying, because the
-                    // user just labelled something for other people.
                     let mut st = chrome.borrow_mut();
                     st.bump();
                     st.push_notification(
@@ -6807,11 +5523,9 @@ impl Widget for ShellOverlayHost {
                         "Saved in this room's history, so everyone here sees it.",
                     );
                 }
-                // Pointer events over the sheet are absorbed whether or not it
-                // used them, so the desktop underneath stays inert. Keys are
-                // absorbed only when the sheet actually consumed them —
-                // otherwise an arrow key pressed with the cursor resting over
-                // the sheet would vanish instead of reaching the shell.
+                // Pointer events over the sheet absorb regardless; keys
+                // only when consumed, or an arrow key with the cursor
+                // resting over the sheet would vanish.
                 if outcome.handled || (pointer_inside && !is_key) {
                     *handled = true;
                     return;
@@ -6819,14 +5533,9 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Modal event-absorb gate. The per-overlay `Pressed` branches
-        // further down handle outside-click-close + inside-rect-swallow
-        // for `MouseInput { state: Pressed }`. Absorb every other
-        // non-Pressed pointer event whose cursor is over an open
-        // overlay, so a hover cannot light up a tab pill or a drag
-        // continue receiving `CursorMoved` underneath it. `Pressed` is
-        // intentionally excluded so the existing scope-pill / slider /
-        // name-rect logic still gets to run for clicks *inside* the rect.
+        // Absorbs every non-Pressed pointer event over an open overlay so
+        // a hover/drag can't continue underneath it. `Pressed` is
+        // excluded so the per-overlay branches below still get clicks.
         let is_absorbable_pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -6845,14 +5554,8 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Notification click-to-dismiss. The stack publishes per-toast
-        // hit rects each `draw`; we consume a left-click that lands on
-        // one of them by dismissing the matching id, *before* the
-        // permission prompt or any other overlay sees it. A toast
-        // never overlaps the permission prompt (prompt is anchored
-        // top-left below the topbar, toasts top-right), but routing
-        // them in this order keeps the contract simple: click on a
-        // toast = dismiss, no other widget runs for that press.
+        // A left-click on a toast dismisses it, before the permission
+        // prompt or any other overlay sees the press.
         if let (
             Some(stack),
             WindowEvent::MouseInput {
@@ -6870,13 +5573,9 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Forward pointer events to the
-        // permission prompt before anything else. The widget's own
-        // `handle_event` updates `pending_choice`; the per-frame
-        // pump (`pump_permission_prompt`) drains the choice + applies
-        // the grant on the next tick. Gate on the prompt's rect for
-        // pointer events so the bar's hit zone doesn't swallow
-        // clicks on content underneath outside the bar.
+        // `pump_permission_prompt` drains `pending_choice` next tick.
+        // Gated on the prompt's rect so its hit zone doesn't swallow
+        // clicks outside the bar.
         if let Some(prompt) = self.permission_prompt.as_mut() {
             let prompt_rect = prompt.get_rect();
             let forward = match event {
@@ -6907,32 +5606,19 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Cursor-targeted file-drop. winit's `WindowEvent::DroppedFile`
-        // carries the path but NO coordinate, so we route it to the
-        // window group under `last_cursor` — the pointer position tracked
-        // from `CursorMoved` above. The group is resolved with the same
-        // hit-test click-focus uses (`resolve_drop_target` → `pick_group_at`),
-        // and the dropped file is delivered to that group's app together
-        // with a per-workspace filesystem grant (see
-        // `ChromeState::handle_file_drop_at`). A drop over empty strip /
-        // desktop space (no group under the cursor) is a defined no-op —
-        // the file is not dumped into an arbitrary window. Either way the
-        // event is consumed so downstream widgets don't re-handle it.
+        // `DroppedFile` carries no coordinate, so route by `last_cursor`
+        // through the same hit-test click-focus uses. A drop over empty
+        // space is a no-op, not dumped into an arbitrary window.
         if let WindowEvent::DroppedFile(path) = event {
             if let Some(chrome) = self.chrome.clone() {
                 if let Some(p) = self.last_cursor {
                     if let Some((strip_id, group_id)) = self.resolve_drop_target(p) {
-                        // Mirror `stamp_active_group_from_click`: fold any
-                        // widget-only group into the tree before we splice
-                        // into it, so the target group id is resolvable in
-                        // the persisted tree.
+                        // Mirrors `stamp_active_group_from_click`: fold a
+                        // widget-only group into the tree before splicing.
                         self.harvest_widget_only_groups_into_tree();
-                        // A file an installed app declares is *opened in
-                        // that app*, in the group the user aimed at —
-                        // through the one open path, so it arrives with
-                        // its read grant and with the file loaded. A
-                        // folder, or a type nothing claims, keeps the
-                        // placeholder-tab drop below.
+                        // A file an app declares opens in that app with
+                        // its read grant; a folder or unclaimed type
+                        // takes the placeholder-tab drop below.
                         let owned = matches!(
                             crate::shell::doc_open::resolve(path),
                             crate::shell::doc_open::DocumentTarget::App { .. }
@@ -6960,21 +5646,11 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
-        // Global shortcuts first. Palette-open chords split by scope:
-        //
-        // - `Ctrl+K`               → open scoped to the focused tab
-        //                            (the palette can widen from there).
-        // - `Super+K` / `Super+Space` / `Alt+Space`
-        //                          → open in global scope.
-        //
-        // `Alt+Space` is the nested-friendly Super substitute. When qOS
-        // runs as a Wayland CLIENT (e.g. inside GNOME for development)
-        // the host DE swallows Super before the compositor ever sees the
-        // event, so a chord that doesn't touch Super is needed to keep
-        // global-search reachable in a dev window.
-        //
-        // `Ctrl+Tab` / `Super+Tab` toggle the overview, and Esc closes
-        // whichever overlay is on top.
+        // Global shortcuts: `Ctrl+K` opens scoped to the focused tab;
+        // `Super+K`/`Super+Space`/`Alt+Space` open in global scope
+        // (`Alt+Space` is the nested-Wayland-client substitute, since a
+        // host DE running qOS as a client swallows Super first).
+        // `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top overlay.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -6991,18 +5667,14 @@ impl Widget for ShellOverlayHost {
             let alt_down = mstate.alt_key();
             let is_mod = super_down || ctrl_down;
             let shift_down = mstate.shift_key();
-            // A passphrase field takes the keyboard whole while it is up.
-            // Ahead of every chord below, including the palette ones: a
-            // password can contain any character, and a `k` in one must
-            // not open search instead of being typed.
+            // Ahead of every chord below: a password can contain any
+            // character, and a `k` in one must not open search instead.
             if self.handle_wifi_password_key(logical_key, modifiers) {
                 *handled = true;
                 return;
             }
-            // Space chord routes global-search: `Super+Space` matches the
-            // Super+K convention; `Alt+Space` covers the nested case.
-            // Both are captured here before the modifier-only branch so a
-            // Character('K') path further down can't also fire.
+            // Captured ahead of the modifier-only branch so Character('K')
+            // further down can't also fire.
             let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
             if is_space && (super_down || alt_down) {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
@@ -7010,11 +5682,8 @@ impl Widget for ShellOverlayHost {
                 *handled = true;
                 return;
             }
-            // The overview is a switcher, so while it is up the arrows
-            // walk its room list and Enter goes to the room they land
-            // on. Ahead of the modifier chords because these keys carry
-            // no modifier, and ahead of the content because the desktop
-            // must not scroll underneath an open panel.
+            // Unmodified, so ahead of the modifier chords and of the
+            // content — the desktop must not scroll under an open panel.
             if self.overlay_flags().overview
                 && !self.palette_visible
                 && matches!(
@@ -7031,9 +5700,7 @@ impl Widget for ShellOverlayHost {
                     .unwrap_or(0);
                 if count > 0 {
                     if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                        // Enter commits: go there, and leave. A switcher
-                        // that made you find the mouse to finish would
-                        // not be one.
+                        // Commits: go there and leave, no mouse required.
                         let target = self
                             .overview_selection
                             .or_else(|| self.overview_here_index());
@@ -7060,8 +5727,7 @@ impl Widget for ShellOverlayHost {
                             .overview_selection
                             .or_else(|| self.overview_here_index())
                             .unwrap_or(0) as isize;
-                        // Wraps, because a switcher's list is a ring: the
-                        // room after the last one is the first.
+                        // A ring: the room after the last one is the first.
                         let next = (cur + step).rem_euclid(count as isize) as usize;
                         self.overview_selection = Some(next);
                         self.scroll_overview_selection_into_view();
@@ -7074,34 +5740,18 @@ impl Widget for ShellOverlayHost {
                 if let Key::Character(s) = logical_key {
                     if s.as_str().eq_ignore_ascii_case("k") {
                         use crate::shell::chrome_state::SearchScope;
-                        // The two entry points are different questions,
-                        // and the chords say which one you are asking.
-                        //
-                        // Ctrl+K is "search in what I am looking at" —
-                        // pre-scoped to the focused app's own resources,
-                        // so it answers about your notes, your cells,
-                        // your messages. Super+K is "search the machine"
-                        // — every app plus full-text over the
-                        // filesystem, and the only one that offers to
-                        // launch something you don't have open.
-                        //
-                        // Narrowing is safe to seed because it degrades:
-                        // when no provider claims the focused tab (a
-                        // foreign Wayland surface, say) `ActiveApp`
-                        // allows every provider, and with nothing
-                        // focused at all `open_palette_with_scope`
-                        // widens it to `All`. So the scope can only be
-                        // narrow when there is genuinely something
-                        // narrow to search.
+                        // Ctrl+K searches the focused app; Super+K searches
+                        // the whole machine, including apps not open.
+                        // `ActiveApp` widens to every provider (or `All`)
+                        // when nothing claims/has the focused tab.
                         let scope = if super_down {
                             SearchScope::All
                         } else {
                             SearchScope::ActiveApp
                         };
                         self.open_palette_with_scope(scope);
-                        // Fire an initial refresh so the palette lands
-                        // with a populated result list (chrome actions
-                        // for empty queries) instead of a blank card.
+                        // So the palette lands populated (chrome actions
+                        // for an empty query) instead of blank.
                         self.refresh_search_results(state, path);
                         *handled = true;
                         return;
@@ -7116,15 +5766,11 @@ impl Widget for ShellOverlayHost {
                         return;
                     }
                 }
-                // Window-creation chords. All four are Super-only, which
-                // `is_shell_chord` already grabs wholesale, so none of
-                // them takes a key away from a focused client — the
-                // reason not to reach for the Ctrl+Shift+letter chords
-                // that browsers and terminals already define.
-                //
-                // `Super+Return` is the direct one: a terminal, now, no
-                // picker. It is the recovery path when the last shell is
-                // gone, so it must not depend on search working.
+                // Window-creation chords are Super-only (grabbed wholesale,
+                // taking nothing from a focused client), not the
+                // Ctrl+Shift+letter chords browsers/terminals define.
+                // Super+Return is the recovery path when the last shell is
+                // gone, so it must not depend on search.
                 if super_down && matches!(logical_key, Key::Named(NamedKey::Enter)) {
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
@@ -7139,8 +5785,8 @@ impl Widget for ShellOverlayHost {
                 if super_down {
                     if let Key::Character(s) = logical_key {
                         match s.as_str() {
-                            // Super+T — a new tab *here*: the chord form
-                            // of the tab strip's "+".
+                            // Chord form of the tab strip's "+": same
+                            // question, same picker.
                             "t" | "T" => {
                                 let group = self
                                     .chrome
@@ -7156,9 +5802,6 @@ impl Widget for ShellOverlayHost {
                                         crate::shell::chrome_state::SearchScope::All;
                                     st.bump();
                                     drop(st);
-                                    // Super+T is the chord form of the
-                                    // tab row's "+", so it asks the same
-                                    // question and gets the same picker.
                                     self.active_kind_filter = app_kind_filter();
                                     self.palette_visible = true;
                                     self.palette.set_focus(true);
@@ -7189,21 +5832,10 @@ impl Widget for ShellOverlayHost {
                                 *handled = true;
                                 return;
                             }
-                            // Super+W — close the tab you are looking at,
-                            // the chord form of the pill's `✕`.
-                            //
-                            // Super, not Ctrl+W: `shell_owns_chord`
-                            // grabs every Super chord wholesale, so this
-                            // takes nothing away from a focused client,
-                            // and it sits with the other window verbs
-                            // (Super+T new tab, Super+N new window,
-                            // Super+D duplicate). Ctrl+W would have to
-                            // be added to the chord table, and would
-                            // then be swallowed ahead of every client
-                            // that binds it — which is browsers,
-                            // terminals and editors, i.e. most of them.
-                            // Same reasoning that keeps Super+S off the
-                            // `is_mod` alias a few lines down.
+                            // Chord form of the pill's `✕`. Super, not
+                            // Ctrl+W — the latter is already bound in
+                            // most browsers/terminals/editors, and the
+                            // shell would swallow it ahead of the client.
                             "w" | "W" => {
                                 if self.close_focused_tab() {
                                     *handled = true;
@@ -7227,21 +5859,11 @@ impl Widget for ShellOverlayHost {
                                     return;
                                 }
                             }
-                            // Super+S — call the workspace wheel to the
-                            // pointer. The wheel is docked at the left
-                            // edge of the strip's content and pans with
-                            // it, so working out at the right-hand end
-                            // of a strip leaves it off screen; without
-                            // this you would have to scroll the whole
-                            // strip home just to glance at the workspace
-                            // list. Pressing it again, Escape, or
-                            // picking a workspace sends it back.
-                            //
-                            // Gated on Super specifically, not on the
-                            // `is_mod` alias: Ctrl+S is save in every
-                            // app that has ever had a keyboard, and the
-                            // shell grabs its chords ahead of the
-                            // focused client.
+                            // Calls the workspace wheel to the pointer —
+                            // it's docked at the strip's left edge and
+                            // pans with it, so it can be off screen from
+                            // the right end. Super specifically, not
+                            // `is_mod`: Ctrl+S is save in nearly every app.
                             "s" | "S" if super_down => {
                                 if let Some(chrome) = self.chrome.clone() {
                                     let mut st = chrome.borrow_mut();
@@ -7258,25 +5880,10 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
-                // Super+ArrowLeft / Super+ArrowRight — move focus one
-                // window along the strip.
-                //
-                // The arrow cluster already carries the spatial model's
-                // other two axes on this modifier: unshifted Up/Down
-                // switches workspace, shifted Up/Down switches strip.
-                // Travelling *along* a strip is the primary motion of a
-                // desktop made of horizontal strips and was the one axis
-                // with no key at all — reachable only by holding Alt and
-                // Shift and turning a wheel, which is not something a
-                // person discovers.
-                //
-                // Super only, not the `is_mod` Super-or-Ctrl alias the
-                // vertical pair uses: `shell_owns_chord` grabs every
-                // Super chord ahead of the focused client, so this takes
-                // nothing away, while Ctrl+Left/Right is word-wise
-                // cursor motion in every text field and terminal there
-                // has ever been. Same reasoning that keeps Super+W and
-                // Super+S off Ctrl.
+                // Super+ArrowLeft/Right moves focus one window along the
+                // strip — Super only, not the `is_mod` alias the vertical
+                // pair uses: Ctrl+Left/Right is word-wise cursor motion in
+                // nearly every text field.
                 if super_down
                     && matches!(
                         logical_key,
@@ -7293,14 +5900,8 @@ impl Widget for ShellOverlayHost {
                     }
                     return;
                 }
-                // Shift+ArrowUp / Shift+ArrowDown (with the same Super
-                // or Ctrl modifier) — move focus between the strips of
-                // the current workspace.
-                //
-                // Workspaces already own the unshifted Up/Down on both
-                // modifiers, and strips are a different level of the same
-                // model rather than a variant of the same move, so they
-                // take the shifted pair.
+                // Shift+ArrowUp/Down move focus between strips —
+                // workspaces already own the unshifted pair.
                 if shift_down
                     && matches!(
                         logical_key,
@@ -7341,9 +5942,8 @@ impl Widget for ShellOverlayHost {
                 }
             }
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                // Priority order matches z-order: palette > overview > ws
-                // settings > quick settings. Esc cancels an in-flight name
-                // edit before closing the ws-settings modal.
+                // Priority matches z-order: palette > overview > ws
+                // settings > quick settings.
                 if self.palette_visible {
                     self.palette_visible = false;
                     *handled = true;
@@ -7351,9 +5951,7 @@ impl Widget for ShellOverlayHost {
                 }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
-                    // A summoned wheel is the most transient thing on
-                    // screen — it is up for one glance — so it goes
-                    // first, above even an in-flight name edit.
+                    // Most transient thing on screen, so goes first.
                     if st.wheel_summon().is_some() {
                         st.set_wheel_summon(None);
                         *handled = true;
@@ -7398,9 +5996,8 @@ impl Widget for ShellOverlayHost {
                 }
             }
 
-            // Workspace-name editor. When a buffer is in flight we consume
-            // character / backspace / enter before anything else gets a
-            // chance at them — modifiers already handled above.
+            // A buffer in flight consumes character/backspace/enter
+            // before anything else gets a chance.
             if let Some(chrome) = self.chrome.clone() {
                 let is_editing = chrome.borrow().editing_workspace_name.is_some();
                 if is_editing {
@@ -7412,11 +6009,8 @@ impl Widget for ShellOverlayHost {
                     let shift = mods_state.shift_key();
                     let ctrl = mods_state.control_key() || mods_state.super_key();
                     let mut st = chrome.borrow_mut();
-                    // Borrow the buffer + selection out together. The
-                    // selection's anchor/cursor are byte indices into
-                    // the buffer.
-                    // Pull the selection out by value first so we don't
-                    // hold a separate immutable borrow alongside `buf`.
+                    // Pulled out by value first so it isn't a separate
+                    // immutable borrow alongside `buf`.
                     let mut sel = st.editing_workspace_name_selection;
                     let Some(buf) = st.editing_workspace_name.as_mut() else {
                         return;
@@ -7559,10 +6153,9 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Outside-click close: if a popover/modal is up and the click
-        // lands outside its rect, dismiss it and swallow the click so the
-        // content below doesn't react. Overview has its own dismissal path
-        // below (click-to-activate-workspace) so we skip it here.
+        // Outside-click close: dismiss the popover/modal and swallow the
+        // click so the content below doesn't react. Overview has its own
+        // dismissal path below, so it is skipped here.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: winit::event::MouseButton::Left,
@@ -7570,9 +6163,8 @@ impl Widget for ShellOverlayHost {
         } = event
         {
             if let Some(p) = self.last_cursor {
-                // Strip ribbon: click a segment to focus that strip.
-                // Gated on no overlay owning the pointer, so a click that
-                // happens to land under an open panel goes to the panel.
+                // Gated on no overlay owning the pointer, so a click
+                // under an open panel goes to the panel.
                 if !self.overlay_flags().overview
                     && !self.cursor_over_open_overlay(p)
                     && let Some(i) = self.strip_ribbon().hit(p)
@@ -7582,11 +6174,8 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                // Strip rail: click a segment to go to that window. The
-                // rail addresses windows that are not on screen, so this
-                // is the one pointer path that does pan the strip —
-                // picking a segment you cannot see has to bring it into
-                // view to have meant anything.
+                // The rail addresses windows off screen, so this is the
+                // one pointer path that also pans the strip.
                 if !self.overlay_flags().overview
                     && !self.cursor_over_open_overlay(p)
                     && let Some(i) = self.strip_rail().hit(p)
@@ -7597,10 +6186,8 @@ impl Widget for ShellOverlayHost {
                     return;
                 }
                 if self.palette_visible {
-                    // Scope-pill click (runs before outside-click so users
-                    // can swap scope without dismissing the palette).
-                    // Iterates the same dynamic scope list the draw code
-                    // uses so ActiveApp (when present) is at idx 0.
+                    // Before outside-click so scope can be swapped
+                    // without dismissing the palette.
                     let scopes = self.search_scope_list();
                     for (idx, scope) in scopes.iter().enumerate() {
                         if self.search_scope_pill_rect(idx).contains(p) {
@@ -7631,23 +6218,13 @@ impl Widget for ShellOverlayHost {
                     return;
                 }
                 if flags.collaborators {
-                    // Invite / Join before the activity row and before the
-                    // outside-click close, so a click that lands on a button
-                    // performs it rather than dismissing the surface it is
-                    // painted on. Both rects are zero unless the button was
-                    // painted, so this cannot fire for a band that is not
-                    // there — the capability decides the paint and the hit
-                    // together.
+                    // Before outside-click close, so a button click acts
+                    // rather than dismissing. Rects are zero unless painted.
                     let invite = self.collab_invite_row_rect;
                     if invite.area() > 0.0 && invite.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
                             st.push_peer_sync_request(PeerSyncAction::PromptInvite);
-                            // The card carries the question, and then the
-                            // token, and it is what the user now has to
-                            // read. Leaving the dropdown up would put a
-                            // menu over the thing the click was for — the
-                            // same reason `room.activity.open` closes it.
                             st.overlays.collaborators = false;
                             st.bump();
                         }
@@ -7686,8 +6263,8 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    // Inside the dropdown: swallow the click so the content
-                    // beneath doesn't grab it. No per-row actions yet.
+                    // Inside the dropdown: swallow so the content beneath
+                    // doesn't grab it. No per-row actions yet.
                     *handled = true;
                     return;
                 }
@@ -7697,10 +6274,7 @@ impl Widget for ShellOverlayHost {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
                             st.overlays.quick_settings = false;
-                            // Reset nav-stack on close so the next open
-                            // starts at root rather than dropping the user
-                            // back into the WiFi / BT list they last
-                            // visited.
+                            // Next open starts at root, not the last drill-in.
                             st.quick_settings.nav_stack =
                                 vec![crate::shell::quick_settings::QsLevel::Root];
                             st.bump();
@@ -7708,26 +6282,15 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    // Click inside the popover: branch on the current
-                    // nav-stack level. Drill-in panes only have a back
-                    // chevron + scroll list; root has sliders + toggle
-                    // cards + power profile.
                     let current_level = self
                         .chrome
                         .as_ref()
                         .map(|c| c.borrow().quick_settings.current_level().clone())
                         .unwrap_or(crate::shell::quick_settings::QsLevel::Root);
                     if !matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
-                        // Drill-in pane: the back-chevron pops the stack,
-                        // and on the Wi-Fi pane a row click triggers
-                        // `nmcli device wifi connect <ssid>` via the
-                        // QS dispatcher. Everything else is swallowed.
                         let back = self.qs_back_chevron_rect();
-                        // A passphrase prompt owns the Wi-Fi pane while
-                        // it is up, so its controls are tested before the
-                        // list's — including the back chevron, which
-                        // backs out of the prompt rather than out of
-                        // Wi-Fi altogether.
+                        // A passphrase prompt owns the pane while up, so
+                        // its controls (including back) are tested first.
                         let prompt_up = self
                             .chrome
                             .as_ref()
@@ -7745,9 +6308,8 @@ impl Widget for ShellOverlayHost {
                                 *handled = true;
                                 return;
                             }
-                            // Everything else on the pane is inert: the
-                            // field is always focused, so there is
-                            // nothing a click inside it could focus.
+                            // The field is always focused; nothing else
+                            // on the pane can be focused by a click.
                             *handled = true;
                             return;
                         }
@@ -7761,9 +6323,7 @@ impl Widget for ShellOverlayHost {
                             return;
                         }
                         if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
-                            // Row geometry mirrors `draw_qs_wifi_list`:
-                            // row_h = 56 px, list_y0 = rect.y0 + 56, rows
-                            // span rect.x0 + 12 to rect.x1 - 12.
+                            // Mirrors `draw_qs_wifi_list`'s row geometry.
                             let rect = self.quick_settings_rect();
                             let row_h = 56.0_f64;
                             let list_y0 = rect.y0 + 56.0;
@@ -7782,17 +6342,11 @@ impl Widget for ShellOverlayHost {
                                 );
                                 if row_rect.contains(p) {
                                     let ssid = net.ssid.clone();
-                                    // An open network, or one already
-                                    // joined, needs no passphrase — and
-                                    // asking for one the user does not
-                                    // have would be a dead end. A
-                                    // protected network we are not on
-                                    // gets the prompt: NetworkManager
-                                    // may already hold a profile, but it
-                                    // will not tell us that without
-                                    // trying, and a prompt the user can
-                                    // dismiss is cheaper than a silent
-                                    // failure.
+                                    // A protected network we're not on gets
+                                    // the prompt — NetworkManager might
+                                    // already hold a profile, but a
+                                    // dismissable prompt beats a silent
+                                    // failure if it doesn't.
                                     if net.secure && !net.connected {
                                         self.begin_wifi_password(&ssid);
                                     } else {
@@ -7810,12 +6364,8 @@ impl Widget for ShellOverlayHost {
                         return;
                     }
                     if let Some(chrome) = self.chrome.clone() {
-                        // Toggle-card chevron: drill into WiFi / Bluetooth
-                        // pane. Tested *before* the toggle hit so the
-                        // chevron region wins over the toggle's full-card
-                        // hit rect. Concept ref: `QuickSettings.tsx:218-246`
-                        // — chevron on the right of each card reads as
-                        // "drill in for details".
+                        // Tested before the toggle hit so the chevron
+                        // region wins over the toggle's full-card rect.
                         let mut pushed_level = None;
                         for i in 0..2 {
                             let chev = self.quick_settings_toggle_chevron_rect(i);
@@ -7829,11 +6379,8 @@ impl Widget for ShellOverlayHost {
                             }
                         }
                         if let Some(level) = pushed_level {
-                            // The list this level shows is fetched here,
-                            // not on panel-open: enumerating networks
-                            // means a Wi-Fi scan, which is by far the
-                            // slowest read in the set and is invisible
-                            // until this drill-in.
+                            // Fetched here, not on panel-open: a Wi-Fi
+                            // scan is the slowest read in the set.
                             match level {
                                 crate::shell::quick_settings::QsLevel::Wifi => {
                                     self.qs_refresh.kick_wifi_networks()
@@ -7849,8 +6396,7 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
-                        // Top action row (Settings / Camera / Power). Each
-                        // tile closes the popover on click; the action fires
+                        // Each tile closes the popover; the action fires
                         // after the chrome borrow drops.
                         let mut action_hit: Option<usize> = None;
                         for i in 0..3 {
@@ -7864,27 +6410,19 @@ impl Widget for ShellOverlayHost {
                             let mut st = chrome.borrow_mut();
                             match i {
                                 0 => {
-                                    // Settings gear → open workspace settings
-                                    // modal, same intent the palette's
-                                    // `settings.open` command carries.
                                     st.overlays.ws_settings = true;
                                 }
                                 1 => {
-                                    // Camera glyph → placeholder notification
-                                    // until app launch is plumbed through
-                                    // the sandbox spawn path with the
-                                    // compositor's own wayland socket.
+                                    // Placeholder until app launch is wired
+                                    // through the sandbox spawn path.
                                     st.push_notification(
                                         "Camera",
                                         "Launch not yet wired to the sandbox spawner.",
                                     );
                                 }
                                 _ => {
-                                    // Power glyph → placeholder notification.
-                                    // A destructive `systemctl poweroff` needs
-                                    // an explicit confirmation UI first; not
-                                    // wiring it here to avoid a one-click
-                                    // shutdown from the QS popover.
+                                    // Placeholder: a destructive poweroff
+                                    // needs a confirmation UI first.
                                     st.push_notification(
                                         "Power",
                                         "Shutdown / restart menu not yet available.",
@@ -7898,14 +6436,9 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
-                        // Track which actions to dispatch *after* dropping the
-                        // chrome borrow — calling into `qs_actions` while
-                        // `st` is alive would risk a re-entrant `borrow_mut`
-                        // from a tracing subscriber or anything else that
-                        // touches the chrome. Sliders don't participate: the
-                        // Released branch in the drag block above owns the
-                        // shell-out so a mid-drag pixel doesn't spawn one
-                        // subprocess per frame.
+                        // Actions dispatch after dropping the chrome borrow
+                        // to avoid a re-entrant `borrow_mut`. Sliders don't
+                        // participate — Released owns their shell-out.
                         let mut pending_wifi: Option<bool> = None;
                         let mut pending_bt: Option<bool> = None;
                         let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> =
@@ -7914,9 +6447,7 @@ impl Widget for ShellOverlayHost {
                         let mut changed = false;
                         for i in 0..2 {
                             let (bar, _) = self.quick_settings_slider_geometry(i);
-                            // Extend the hit region vertically so the whole
-                            // slider row (including padding + label) is
-                            // clickable, not just the 6 px bar.
+                            // Extends the hit vertically to the whole row.
                             let hit =
                                 Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
                             if hit.contains(p) {
@@ -7926,12 +6457,9 @@ impl Widget for ShellOverlayHost {
                                 } else {
                                     st.quick_settings.volume = t;
                                 }
-                                // Latch drag state. The value is committed to
-                                // the OS on Released — during drag, only the
-                                // visual updates (via `qs_slider_drag` in the
-                                // pre-absorb branch). This mirrors how a
-                                // physical mixer knob feels: instant visual,
-                                // final commit when you let go.
+                                // Committed to the OS on Released; only the
+                                // visual updates during drag, like a
+                                // physical mixer knob.
                                 self.qs_slider_drag = Some(i);
                                 changed = true;
                             }
@@ -8002,8 +6530,6 @@ impl Widget for ShellOverlayHost {
                             return;
                         }
                     }
-                    // Inside the popover but not on a control — swallow so
-                    // the content below doesn't steal the click.
                     *handled = true;
                     return;
                 }
@@ -8012,8 +6538,7 @@ impl Widget for ShellOverlayHost {
                     if !modal_rect.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
-                            // Commit any in-flight name edit before closing
-                            // so clicking away acts like "save & dismiss".
+                            // Clicking away acts like "save & dismiss".
                             st.commit_workspace_name();
                             st.overlays.ws_settings = false;
                             st.bump();
@@ -8021,16 +6546,10 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    // Permissions + Members controls are hit-tested
-                    // *before* the tab pills so a click on a Revoke
-                    // button or a composer control can never route to a
-                    // pill above it.
-                    //
-                    // Every branch consumes the click. Non-owners fall
-                    // into the same branches and change nothing: the
-                    // paint already shows the control disabled, and
-                    // swallowing the click keeps a dead control from
-                    // committing a half-typed workspace name.
+                    // Before the tab pills so a Revoke/composer click can't
+                    // route to a pill above it. Every branch consumes the
+                    // click even for non-owners, since the control paints
+                    // disabled but shouldn't commit a half-typed name.
                     let is_owner = self
                         .chrome
                         .as_ref()
@@ -8113,18 +6632,13 @@ impl Widget for ShellOverlayHost {
                         }
                     }
 
-                    // Tab-pill click: hit-test the pills cached by
-                    // `draw_ws_settings` *before* the name-input branch
-                    // so a click on a pill never falls through to
-                    // "commit pending edit".
+                    // Before the name-input branch so a pill click never
+                    // falls through to "commit pending edit".
                     let pill_rects = self.ws_settings_tab_pill_rects;
                     for (idx, prect) in pill_rects.iter().enumerate() {
                         if prect.area() > 0.0 && prect.contains(p) {
                             if let Some(chrome) = self.chrome.clone() {
                                 let mut st = chrome.borrow_mut();
-                                // Commit any in-flight name edit before
-                                // switching tabs so a half-typed name
-                                // isn't silently dropped on tab flip.
                                 st.commit_workspace_name();
                                 if let Some(tab) = WsTab::all().get(idx) {
                                     st.ws_settings_tab = *tab;
@@ -8162,9 +6676,8 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    // Click inside the modal: routes to the Name input rect
-                    // (begins an edit) or — on any other click inside the
-                    // modal — commits the pending edit if one is in flight.
+                    // Name rect begins an edit; any other click inside
+                    // commits the pending one.
                     if let Some(chrome) = self.chrome.clone() {
                         let name_rect = self.ws_settings_name_rect();
                         let mut st = chrome.borrow_mut();
@@ -8191,20 +6704,11 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Vertical-wheel scroll for the workspace overview. When the
-        // overview is visible, wheel events pan its row list — the
-        // column header (Workspaces title + subtitle) stays pinned.
-        // Wheel-up reveals workspaces above the visible band (scroll_y
-        // decreases); wheel-down reveals workspaces below (scroll_y
-        // increases). The clamp guards both ends so a hard flick can't
-        // strand the column past the tail.
+        // Pans the overview's row list; the column header stays pinned.
         if self.overlay_flags().overview {
             if let WindowEvent::MouseWheel { delta, .. } = event {
                 let dy: f64 = match *delta {
-                    // 30 px per LineDelta matches the strip's wheel
-                    // factor (`GroupRow::handle_event`), so a single
-                    // wheel detent reveals roughly an eighth of one
-                    // grid row (`OVERVIEW_CARD_HEIGHT_PX`).
+                    // Matches the strip's wheel factor (`GroupRow::handle_event`).
                     winit::event::MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 30.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
@@ -8229,22 +6733,14 @@ impl Widget for ShellOverlayHost {
             let flags = self.overlay_flags();
             if flags.overview {
                 if let Some(p) = self.last_cursor {
-                    // "+ Add workspace" affordance — sits below the
-                    // last workspace card. Wins the hit-test before the
-                    // row-card scan so a click on it doesn't fall
-                    // through to "missed → close overview".
+                    // Wins the hit-test before the row-card scan so a
+                    // click on it doesn't fall through to "missed".
                     if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
-                            // Mirror the wheel-disc plus slot's literal
-                            // (`sidebar_wheel_disc.rs`): both create-
-                            // affordances feed `add_workspace`, both
-                            // seed the new workspace as "Untitled".
+                            // Mirrors the wheel-disc slot: both create
+                            // affordances seed "Untitled".
                             st.add_workspace("Untitled");
-                            // Stay in the overview so the user sees the
-                            // newly-appended card animate in. The
-                            // workspace-slide tick handles the visual
-                            // transition on the next frame.
                         }
                         *handled = true;
                         return;
@@ -8259,8 +6755,7 @@ impl Widget for ShellOverlayHost {
                                 tree.set_active(id);
                             }
                         }
-                        // Clicking anywhere dismisses the overview once a
-                        // workspace has been chosen (or missed).
+                        // Dismisses even on a miss.
                         st.overlays.overview = false;
                         st.bump();
                     }
@@ -8272,11 +6767,8 @@ impl Widget for ShellOverlayHost {
 
         let children = taffy.children(node_id).unwrap();
         if self.palette_visible {
-            // Chip-strip click. Chips filter the wanted-kind set for the
-            // next refresh; we recompute results immediately so the
-            // effect is visible on the same frame. Runs before the row
-            // hit-test below so a click on a chip doesn't fall through
-            // to the top result.
+            // Before the row hit-test below so a chip click doesn't fall
+            // through to the top result.
             if let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -8284,9 +6776,8 @@ impl Widget for ShellOverlayHost {
             } = event
             {
                 if let Some(p) = self.last_cursor {
-                    // "All" clears the kind filter outright — the state
-                    // where nothing is selected needs a control that
-                    // *reaches* it, not just a way to untick five chips.
+                    // A direct way to reach "nothing selected", not just
+                    // untick every chip one at a time.
                     if self.search_all_chip_rect.area() > 0.0
                         && self.search_all_chip_rect.contains(p)
                     {
@@ -8312,9 +6803,8 @@ impl Widget for ShellOverlayHost {
                     }
                 }
             }
-            // Mouse-click on a visible row: move cursor to the clicked
-            // row, then dispatch its action. Happens before delegating
-            // to the palette so a single click both selects and fires.
+            // Before delegating to the palette, so a single click both
+            // selects and fires.
             if let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -8358,9 +6848,7 @@ impl Widget for ShellOverlayHost {
                 children[1],
                 taffy,
             );
-            // Every character/backspace mutates `palette.query()`;
-            // recompute the result set through the registry when it
-            // changes so the user sees new hits as they type.
+            // Recompute results when a character/backspace changes the query.
             if self.palette.query() != query_before {
                 self.refresh_search_results(state, path);
             }
@@ -8368,18 +6856,9 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
-        // Forward events to the floating sidebar before the content so
-        // clicks / wheel / drag inside the wheel's rect take precedence
-        // over the desktop underneath. The sidebar child is `children[2]`
-        // when present (build_layout appends it after content + palette).
-        //
-        // Gate this first-dibs routing on "cursor inside the sidebar's
-        // own rect" for pointer events — otherwise the sidebar's rect
-        // (x ∈ [0, 96], y ∈ [sidebar_top_y, window_h]) can overlap the
-        // topbar's rendered band and swallow clicks on the overview-
-        // toggle grid icon at (x ≈ 24..66, y ≈ 40..76). Non-pointer
-        // events (keyboard, focus, …) are always forwarded so the
-        // sidebar keeps any keyboard affordances it might add later.
+        // First dibs so wheel-content precedes the desktop underneath.
+        // Gated on the sidebar's rect for pointer events — otherwise it can
+        // overlap the topbar band and swallow the overview-toggle click.
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
             let sidebar_rect = sidebar.get_rect();
             let forward_pointer_to_sidebar = match event {
@@ -8408,14 +6887,9 @@ impl Widget for ShellOverlayHost {
                 }
             }
         }
-        // "Click-anywhere-in-a-group focuses that group" — before we
-        // forward the event, hit-test the click against every strip's
-        // group rects and stamp `tree.active_strip` / `tree.active_group`
-        // to whichever group the cursor is over. Without this, clicking
-        // the WINDOW BODY (as opposed to a tab pill) never updates the
-        // tree's active-group pointer, so the palette scope
-        // (`ChromeState::active_tab_id`) stays anchored to whatever
-        // group was active before the detach.
+        // Click-anywhere-in-a-group focuses that group: hit-test before
+        // forwarding and stamp `tree.active_strip`/`active_group`, or
+        // clicking the window body (not a tab pill) never updates them.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: winit::event::MouseButton::Left,
@@ -8438,27 +6912,8 @@ impl Widget for ShellOverlayHost {
             taffy,
         );
 
-        // Horizontal scroll travels along the strip. If the app under
-        // the cursor didn't claim the wheel (most don't implement
-        // horizontal scroll at all) and the event is horizontally
-        // dominant, it moves focus one window — the same step the
-        // Super+Left/Right chord and the Alt+Shift wheel make, so a
-        // two-finger swipe, a chord and a modifier gesture cannot
-        // disagree about where "the next window" is. The focus-follow
-        // reconciler then slides the strip to it, which is what makes
-        // the gesture read as travel along the canvas while still
-        // landing on a window boundary rather than mid-window.
-        //
-        // It steps rather than free-pans deliberately: this is a strip
-        // of non-overlapping windows, and a viewport parked across the
-        // seam between two of them shows parts of both and all of
-        // neither.
-        //
-        // Vertical wheel is left alone — it belongs to the wheel disc's
-        // workspace rotate (handled above, over the sidebar) and to the
-        // focused widget's own scrolling. The 0.5 threshold rejects
-        // trackpad axis noise; a deliberate flick is well past one
-        // line's worth.
+        // Same step as Super+Left/Right, avoiding a park on the window
+        // seam that free-panning would allow. 0.5 rejects trackpad noise.
         if !*handled {
             if let WindowEvent::MouseWheel { delta, .. } = event {
                 let dx = match *delta {
@@ -8480,10 +6935,8 @@ impl Widget for ShellOverlayHost {
     }
 
     /// Expose content + palette + sidebar as direct children so trait
-    /// walkers (e.g. the e2e harness's `widget_registry`) can recurse
-    /// into the live tree. The traversal order matches `build_layout`'s
-    /// child-node ordering: content, palette, then sidebar (last so it
-    /// paints over the desktop chrome).
+    /// walkers can recurse into the live tree, in `build_layout`'s
+    /// child-node order (sidebar last so it paints over the chrome).
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = Vec::with_capacity(3);
         out.push(self.content.as_ref());
@@ -8508,44 +6961,16 @@ impl Widget for ShellOverlayHost {
         self.rect
     }
 
-    /// Bubble structural-dirty flags up from the content tree (and the
-    /// optional sidebar) so `App::handle_window_event`'s post-event
-    /// rebuild gate can rebuild the taffy tree and pick up any new
-    /// nodes — e.g. a `WindowGroup` spliced into a `GroupRow` after a
-    /// cross-group tab drop.
-    ///
-    /// Without this forward, the host would silently shadow every child
-    /// dirty signal because the default `Widget::take_structure_dirty`
-    /// returns `false`. The visible symptom: dragging a tab past a
-    /// group's edge spawned a new `WindowGroup` in the data layer but
-    /// the layout pass never gave it a `NodeId`, so it stayed at
-    /// `Rect::ZERO` and the user perceived the source group as having
-    /// been "replaced" instead of split. Use `|` (not `||`) so both
-    /// children clear their own flags this tick — short-circuiting
-    /// would leave a stale flag pending in whichever subtree we
-    /// skipped.
+    /// Bubbles structural-dirty flags up from the content tree (and
+    /// sidebar) so the post-event rebuild picks up new nodes (e.g. a
+    /// spliced `WindowGroup`). Without this the default `false` would
+    /// shadow every child signal, leaving it at `Rect::ZERO`. Uses `|`,
+    /// not `||`, so both children clear their own flags this tick.
     fn take_structure_dirty(&mut self) -> bool {
-        // Mirror any widget-only groups (produced by
-        // `GroupRow::split_tab_into_new_group` on drag-detach) back
-        // into the persisted tree before `resync_strips_from_tree`
-        // runs — otherwise resync sees "widget has X, tree doesn't"
-        // and evicts X.
+        // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
         self.harvest_widget_only_groups_into_tree();
-        // Pump the chrome-revision diff here too — the shots driver's
-        // `relayout()` path skips `update()` entirely (it only takes
-        // structure_dirty + reruns the layout pass), so the resync
-        // wouldn't otherwise fire between a `scene_setup` mutation
-        // and the snapshot capture. Live `App::run` already pumps
-        // update each frame so the call there is also valid; calling
-        // it from both sites makes the diff idempotent (the
-        // `last_chrome_revision` guard short-circuits the second
-        // call when nothing changed).
-        // A resync that spliced a group or a tab into a live `GroupRow`
-        // has changed the widget structure, so it must force the taffy
-        // rebuild in its own right — the children it just inserted have
-        // no layout node yet. The workspace-content swap runs first for
-        // the same reason at a larger scale: it replaces the whole row
-        // set, and everything after it walks `group_row_ptrs`.
+        // Pumped here too since the shots driver's relayout path skips
+        // `update()`; `last_chrome_revision` makes both call sites idempotent.
         let ws_swapped = self.resync_workspace_content();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
         let content = self.content.take_structure_dirty();
@@ -8559,13 +6984,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Continuous redraws while any of:
-        //   - overview crossfade (transition_started)
-        //   - quick-settings open/close (qs_transition)
-        //   - any inner widget (tab drop-zones, tab layout spring, …)
-        // is in flight. `tick_*` methods clear their own flags once the
-        // animation duration has fully elapsed, so at rest this returns
-        // false and the app event loop can go idle.
+        // Continuous redraws while overview crossfade, quick-settings
+        // open/close, or any inner widget's animation is in flight;
+        // `tick_*` clear their own flags once elapsed, so this idles.
         let now = Instant::now();
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
@@ -8583,23 +7004,16 @@ impl Widget for ShellOverlayHost {
             || room_activity_in_flight
             || self.content.needs_animation_frame()
             || sidebar_frame
-            // A reading that lands after the open animation has settled
-            // still has to reach the screen, and the loop idles unless
-            // something says otherwise.
+            // A reading landing after the open animation settles still
+            // has to reach the screen.
             || self.qs_refresh.is_in_flight()
     }
 }
 
-/// `(alpha, dy, scale)` for the rooms panel at linear progress `t`.
-///
-/// The panel enters like every other floating surface in the shell: it
-/// rises the last 20 px and settles from 0.97 while its alpha comes up
-/// on an ease-out. Because `t` runs both ways, the exit is the same
-/// curve in reverse rather than the panel vanishing.
-///
-/// The desktop is not in the return value, and that is the point. It
-/// stays on screen, dimmed by the scrim, for the whole gesture — you
-/// are looking at your machine with a switcher over it.
+/// `(alpha, dy, scale)` for the rooms panel at linear progress `t`. Rises
+/// the last 20px and settles from 0.97 on an ease-out; since `t` runs
+/// both ways, the exit is the same curve in reverse. The desktop stays
+/// on screen, dimmed by the scrim, for the whole gesture.
 fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
     let o = ui::ease_out(t.clamp(0.0, 1.0) as f64);
     let alpha = o as f32;
@@ -8609,11 +7023,8 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
 }
 
 
-/// Centre the file-chooser dialog in `viewport`.
-///
-/// Sized as a fraction of the viewport with a floor and a ceiling, so it
-/// stays usable on a small output and does not become a full-screen wall
-/// of filenames on a large one.
+/// Centre the file-chooser dialog in `viewport`, sized as a clamped
+/// fraction so it stays usable small and doesn't wall a large output.
 pub fn file_picker_rect(viewport: Rect) -> Rect {
     const MIN_W: f64 = 420.0;
     const MIN_H: f64 = 320.0;
@@ -8627,11 +7038,8 @@ pub fn file_picker_rect(viewport: Rect) -> Rect {
 }
 
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
-///
-/// Two enums for one decision is not ideal, but they belong to
-/// different layers: `PromptChoice` is what a button click means, and
-/// `PromptOutcome` is what a D-Bus caller is told. Keeping the mapping
-/// in one place is what stops them drifting.
+/// Two enums for one decision because they belong to different layers;
+/// keeping the mapping in one place stops them drifting.
 fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
     use crate::portal::PromptOutcome;
     match choice {
@@ -8643,36 +7051,28 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
 }
 
 /// A file-chooser dialog on screen, and the portal request it answers.
-///
-/// The reply channel is the point: the D-Bus method that raised this is
-/// parked on it. Dropping this struct without calling [`Self::answer`]
-/// drops the sender, which the FileChooser backend reads as "cancelled"
-/// — so a dialog that disappears for any reason (session lock, a
-/// workspace closing, a panic unwinding the frame) fails closed and
-/// releases the caller instead of stranding it.
+/// The reply channel is the point: dropping this without calling
+/// [`Self::answer`] drops the sender, which the FileChooser backend
+/// reads as "cancelled" — so a dialog that disappears for any reason
+/// fails closed and releases the caller instead of stranding it.
 pub(crate) struct ActiveFilePicker {
     pub(crate) widget: ui::widget::FilePicker,
-    /// Who asked. Kept so the compositor can log and attribute the
-    /// dialog without re-reading the (consumed) request.
+    /// Who asked, kept for logging/attribution without re-reading the
+    /// consumed request.
     pub(crate) app_id: crate::shell::state::AppId,
-    /// Whether the calling app asked for more than one path. Enforced
-    /// here rather than in the widget: `OpenFile` vs `OpenFiles` is a
-    /// distinction the *portal* makes, and the widget is shared with
-    /// callers that have no portal request behind them.
+    /// Whether the app asked for more than one path. Enforced here, not
+    /// in the widget, since `OpenFile` vs `OpenFiles` is a portal-level
+    /// distinction and the widget is shared with non-portal callers.
     multiple: bool,
     reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
 }
 
 impl ActiveFilePicker {
-    /// Build the dialog for `req` out of the existing
-    /// [`ui::widget::FilePicker`].
-    ///
-    /// Note what is taken from the request and what is not. The title,
-    /// the filters and the suggested filename are the app's to choose —
-    /// they are presentation. Where the dialog opens and how far it can
-    /// browse are *not*: those come from
-    /// [`crate::portal::PickerScope`], because an app that could aim the
-    /// dialog could use it to learn what exists outside its sandbox.
+    /// Build the dialog for `req`. Title, filters and suggested filename
+    /// are the app's to choose (presentation); where the dialog opens
+    /// and how far it can browse come from
+    /// [`crate::portal::PickerScope`] instead — an app that could aim
+    /// the dialog could use it to learn what exists outside its sandbox.
     fn mount(req: crate::portal::FilePickerRequest, scope: crate::portal::PickerScope) -> Self {
         use ui::widget::file_picker::FileFilter;
         use ui::widget::{FilePicker, FilePickerMode};
@@ -8686,9 +7086,8 @@ impl ActiveFilePicker {
                 FileFilter::new(f.label.clone(), &exts)
             })
             .collect();
-        // "All files" always last, and always present: a filter list
-        // with no escape hatch is a dialog that cannot open a file whose
-        // extension the app failed to anticipate.
+        // "All files" always last: a filter list with no escape hatch
+        // can't open a file whose extension the app didn't anticipate.
         filters.push(FileFilter::all());
 
         let mode = if req.save {
@@ -8710,12 +7109,9 @@ impl ActiveFilePicker {
         }
     }
 
-    /// Release the blocked portal call.
-    ///
-    /// An app that called `OpenFile` gets one path even if the user
-    /// ctrl-clicked several: the dialog is shared and permits
-    /// multi-select, so honouring the request the app actually made is
-    /// this layer's job.
+    /// Release the blocked portal call. An `OpenFile` caller gets one
+    /// path even if the user ctrl-clicked several, since the dialog is
+    /// shared and permits multi-select regardless of what was asked.
     fn answer(&mut self, picked: Option<Vec<std::path::PathBuf>>) {
         let picked = picked.map(|mut paths| {
             if !self.multiple {
@@ -8729,9 +7125,8 @@ impl ActiveFilePicker {
     }
 }
 
-/// Build a human-readable label for the inline permission prompt
-/// from a [`Capability`] payload. i18n keys land alongside the
-/// portal layer once the strings start surfacing to end-users.
+/// Human-readable label for the inline permission prompt from a
+/// [`Capability`] payload.
 fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
@@ -8754,9 +7149,8 @@ fn capability_label(cap: &Capability) -> String {
 }
 
 /// Return a copy of `cap` with its `scope` field replaced. The portal
-/// layer pushes onto `pending_grants` with a placeholder scope (typically
-/// [`GRANT_ONCE`]); the prompt's button choice is what determines
-/// what gets persisted.
+/// layer pushes a placeholder scope (typically [`GRANT_ONCE`]); the
+/// prompt's button choice decides what actually gets persisted.
 fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
     match cap {
         Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
@@ -8769,18 +7163,12 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
-/// Is the local user the owner of the active workspace?
-///
-/// Gates the permission prompt's "Always" button and the Workspace
-/// Settings Permissions tab's Revoke buttons.
-///
-/// Asks the workspace, which answers from the capability model: the
-/// recorded owner, or anyone the owner has given `Admin` over the room.
-///
-/// A workspace with no owner recorded has no administrators. That is
-/// the fail-closed direction, and the load path
-/// ([`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`])
-/// makes sure the local user's own workspaces are never in that state.
+/// Is the local user the owner of the active workspace? Gates the
+/// permission prompt's "Always" button and the Permissions tab's Revoke
+/// buttons, via the workspace's capability model (recorded owner, or
+/// anyone given `Admin`). No recorded owner means no administrators
+/// (fail-closed) — [`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`]
+/// keeps the local user's own workspaces out of that state.
 fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
     if let Some(forced) = state.test_only_owner_override {
         return forced;
@@ -8793,13 +7181,10 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         .unwrap_or(false)
 }
 
-/// Record an app's capability grant on the active workspace and make it
-/// durable + replicated.
-///
-/// Everything the prompt hands out flows through here, so a grant is
-/// never merely in memory: it is written into the workspace's
-/// capability list, mirrored into the replicated doc, and flushed to
-/// disk when its expiry says it should survive a restart.
+/// Records an app's capability grant on the active workspace: written
+/// into the capability list, mirrored into the replicated doc, and
+/// flushed to disk when its expiry should survive a restart. Everything
+/// the prompt hands out flows through here.
 fn record_app_grant(
     state: &mut crate::shell::chrome_state::ChromeState,
     app_id: &str,
@@ -8825,16 +7210,10 @@ fn record_app_grant(
     tree.flush_to_disk();
 }
 
-/// Apply a permission edit to the active workspace and make it durable
-/// + replicated.
-///
-/// `edit` runs against the live workspace with the local user as the
-/// actor, so it can only do what [`crate::shell::state::Workspace::grant_as`]
-/// / [`crate::shell::state::Workspace::revoke_as`] let that user do. What
-/// it returns is then mirrored into the replicated doc and flushed —
-/// without that, a click would only edit the in-memory cache: the room's
-/// history would never record it, and the next boot would read the old
-/// answer back off disk.
+/// Applies a permission edit to the active workspace, then mirrors it
+/// into the replicated doc and flushes — without the mirror, a click
+/// would edit only the in-memory cache and the next boot would read the
+/// old answer back off disk. `edit` runs with the local user as actor.
 fn edit_active_workspace_caps<F>(chrome: &Chrome, edit: F) -> bool
 where
     F: FnOnce(&mut crate::shell::state::Workspace, &crate::shell::state::UserId) -> CapEdit,
@@ -8911,13 +7290,9 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
-/// One row of the collaborators dropdown.
-///
-/// People and agents are listed together because both are *in the room*,
-/// and a person asking "who else is here" is asking one question. They
-/// are tagged apart because they are not the same kind of participant:
-/// a row that did not say which it was would be the OS reporting a
-/// person present when none is.
+/// One row of the collaborators dropdown. People and agents are listed
+/// together — both are in the room — but tagged apart, or the OS would
+/// be reporting a person present when none is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterRow {
     /// What the row is called.
@@ -8928,50 +7303,32 @@ pub struct RosterRow {
     pub color: Color,
     /// True for an agent admitted by capability, false for a person.
     pub is_agent: bool,
-    /// What this participant may do here, as the room's own capability
-    /// list says — `owner`, `editor`, `commenter`, `viewer`, `blocked`.
-    ///
-    /// `None` when the room records nothing about them, which is the
-    /// ordinary case for somebody who walked in on a plain invite. A
-    /// row with no role shows none rather than a default: inventing one
-    /// would be the OS telling a user what a person is allowed to do in
-    /// their room on no evidence.
+    /// What this participant may do here, per the room's capability list.
+    /// `None` when the room records nothing — inventing a default would
+    /// state what a person may do on no evidence.
     pub role: Option<String>,
-    /// True for somebody the room has named who has not arrived in it
-    /// yet. Drawn dimmed and qualified, never as a present participant.
+    /// Named by the room but not arrived. Drawn dimmed and qualified,
+    /// never as a present participant.
     pub invited: bool,
 }
 
-/// The rows the collaborators dropdown shows: the peers this session
-/// knows about, then the agents the active room has admitted.
-///
-/// The two halves come from different places on purpose. A peer is
-/// somebody the room knows is in it — it is in `tree.collaborators`
-/// because [`crate::shell::peer_presence::PeerPresence::refresh_roster`]
-/// put it there, from the room document's own list of named peers and
-/// from the presence this session has actually had. An agent meets
-/// nobody and announces nothing a session could notice, so the only
-/// honest evidence it is here is the capability the room recorded when
-/// it was admitted, which is what `Workspace::agent_members` reads. The
-/// consequence worth stating: no agent row can exist before a grant
-/// did, and revoking the grant removes it.
-///
-/// Shared by the rect math and the paint so the two cannot drift — a
-/// card sized for one row painting two clipped the second.
+/// Rows the collaborators dropdown shows: peers this session knows
+/// about, then agents the active room has admitted. The two come from
+/// different places — a peer is in `tree.collaborators` from the room
+/// document plus actual session presence, while an agent announces
+/// nothing a session could notice, so its only evidence is the
+/// membership capability `Workspace::agent_members` reads. Shared by the
+/// rect math and the paint so the two cannot drift.
 pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Vec<RosterRow> {
-    // The people in the room the user is looking at, with the
-    // tree-level roster standing in only when that workspace has none
-    // of its own — the same precedence the top bar and the wheel disc
-    // apply. Reading the tree-level list unconditionally showed one
-    // workspace's peers under another workspace's heading.
+    // Falls back to the tree-level roster only when the workspace has
+    // none — same precedence the top bar and wheel disc apply.
     let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
         Some(ws) if !ws.collaborators.is_empty() => &ws.collaborators,
         _ => &tree.collaborators,
     };
-    // Settled over the room rather than picked per row: `roster_colors`
-    // honours an explicit `cursor_color` and moves anyone who would
-    // otherwise land on it, so a peer's row avatar matches their cursor
-    // and their top-bar chip, and two people never share a colour.
+    // Settled over the room rather than per row: `roster_colors` honours
+    // an explicit `cursor_color` and moves anyone who would collide, so
+    // a row avatar matches that peer's cursor and top-bar chip.
     let colors = crate::shell::state::roster_colors(roster);
     let mut rows: Vec<RosterRow> = roster
         .iter()
@@ -8992,24 +7349,18 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
         .collect();
     if let Some(ws) = tree.active_workspace() {
         for (agent, role) in ws.agent_members() {
-            // The label is the principal itself. An agent has no display
-            // name in the room document yet — when peers grow one, this
-            // is the seam it arrives through, and until then showing the
-            // subject is both true and the string you would revoke.
+            // The label is the principal itself — agents have no display
+            // name yet, and this is the string you would revoke.
             let (r, g, b) = ui::presence::user_color(&agent);
             rows.push(RosterRow {
                 initial: roster_initial(&agent),
                 label: agent,
                 color: Color::from_rgb8(r, g, b),
                 is_agent: true,
-                // The verb on the membership capability that admitted
-                // it. An agent's authority is nothing but that grant,
-                // so this is the one number a person needs in order to
-                // decide whether to revoke it.
+                // The verb on the admitting capability: an agent's
+                // authority is nothing but that grant.
                 role: Some(crate::shell::state::role_label(role).to_string()),
-                // An agent is admitted by a grant and needs nothing to
-                // redeem, so it is here the moment the capability says
-                // so. There is no invited state for it to be in.
+                // Admitted by grant, so there is nothing to redeem.
                 invited: false,
             });
         }
@@ -9058,12 +7409,9 @@ fn draw_modal_scrim_at(
     fill_scrim(scene, transform, rect, MODAL_SCRIM_ALPHA * openness, theme);
 }
 
-/// Paint `rect` in the theme's scrim hue at `strength`.
-///
-/// The hue comes from `surfaces.scrim` rather than a literal black: the
-/// dim behind a palette is chrome, and the OS owns what its chrome looks
-/// like. A light theme's scrim is a different colour from a dark theme's,
-/// and neither is `#000`.
+/// Paint `rect` in the theme's scrim hue at `strength`. Uses
+/// `surfaces.scrim` rather than a literal black, since a light theme's
+/// scrim is a different colour from a dark theme's.
 fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
     let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
     if alpha == 0 {
@@ -9079,21 +7427,12 @@ fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, t
     );
 }
 
-/// Slate-900 tint at the given alpha. Centralised helper so every overlay
-/// surface paints the same hue (concept's glass tint is rooted at
-/// `slate-900` / `#0f172a`) and the numeric alpha is the only knob.
-/// Synthesise a persisted [`crate::shell::state::WindowGroup`] from a
-/// widget-side `WindowGroup`. Used by
-/// [`ShellOverlayHost::stamp_active_group_from_click`] when the click
-/// resolves a group that only exists widget-side (a fresh drag-detach
-/// whose writeback to the tree hasn't landed yet).
-///
-/// Each tab is reconstructed as a `TileContent::AppPlaceholder` — good
-/// enough for the persisted tree's structural view (id, title,
-/// per-tab `active_tab` pointer). If the underlying kind was
-/// already `AppKind::Other(name)`, we keep the name; anything else
-/// becomes `AppKind::Other(String::new())`, matching the format the
-/// tree's automerge codec already writes for foreign / stub tabs.
+/// Synthesises a persisted [`crate::shell::state::WindowGroup`] from a
+/// widget-side one, for [`ShellOverlayHost::stamp_active_group_from_click`]
+/// when the click resolves a group that only exists widget-side (a fresh
+/// drag-detach not yet written back). Each tab becomes an
+/// `AppPlaceholder`, matching the tree's automerge codec for foreign/stub
+/// tabs.
 fn build_state_group_from_widget(
     widget: &ui::widget::WindowGroup,
 ) -> crate::shell::state::WindowGroup {
@@ -9104,20 +7443,15 @@ fn build_state_group_from_widget(
         .tabs()
         .iter()
         .map(|desc| {
-            // Carry the widget-side AppKind hint into the tree so
-            // `owns_tab` predicates (Notes / Files / …) can still
-            // classify the tab. Fallback to an empty `AppKind::Other`
-            // for descriptors that never learnt a kind — the tab still
-            // exists structurally, just without a provider-side match.
+            // Carry the widget-side AppKind hint so `owns_tab`
+            // predicates can still classify the tab.
             let kind = match &desc.app_kind {
                 Some(ui::widget::AppKind::Terminal) => AppKind::Terminal,
                 Some(ui::widget::AppKind::Files) => AppKind::FileExplorer,
                 Some(ui::widget::AppKind::Browser) => AppKind::Browser,
                 Some(ui::widget::AppKind::Settings) => AppKind::Settings,
-                // Editor / anything else / None → recover the hosted
-                // app's label from the tab's title, which is all the
-                // widget layer kept. A title the shell does not host
-                // carries through unchanged.
+                // Recover the hosted app's label from the title, which
+                // is all the widget layer kept.
                 _ => AppKind::Other(crate::shell::hosted_label_for_title(&desc.title)),
             };
             Tab {
@@ -9141,17 +7475,10 @@ fn build_state_group_from_widget(
     }
 }
 
-/// Pick the topmost group whose rect contains `p`. Extracted from
-/// [`ShellOverlayHost::stamp_active_group_from_click`] so it's
-/// testable without a live widget tree.
-///
-/// `candidates` is `(strip_id, group_id, rect)` in traversal order —
-/// the FIRST match wins so a group whose rect entirely contains a
-/// smaller one wouldn't shadow the smaller (which is the concrete
-/// behaviour when GroupRow's own rect wraps every child group's).
-/// Zero-area rects are skipped so a group that hasn't laid out yet
-/// (fresh detach that we haven't had a paint frame for) can't
-/// silently match any point.
+/// Picks the topmost group whose rect contains `p`. `candidates` is
+/// `(strip_id, group_id, rect)` in traversal order — the FIRST match
+/// wins, so a wrapping parent doesn't shadow a smaller child. Zero-area
+/// (not-yet-laid-out) rects are skipped.
 fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(StripId, GroupId)> {
     candidates
         .iter()
@@ -9159,12 +7486,9 @@ fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(S
         .map(|(s, g, _)| (*s, *g))
 }
 
-/// `a` moved `t` of the way toward `b`, opaque throughout.
-///
-/// The opaque form matters wherever something is drawn *on* the result —
-/// a monogram, an icon — because those pick their own contrast from the
-/// colour they sit on, and can only do that if it is a real colour
-/// rather than a partly-transparent one.
+/// `a` moved `t` of the way toward `b`, opaque throughout — matters
+/// wherever something (a monogram, an icon) is drawn on the result and
+/// needs a real colour to pick its own contrast from.
 fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let (a, b) = (a.to_rgba8(), b.to_rgba8());
@@ -9173,22 +7497,17 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
 }
 
 /// The surface every floating chrome panel is painted on — quick
-/// settings, the collaborators popover, the workspace-settings sheet, the
-/// peer-sync card.
-///
-/// A ramp slot is a colour; the surface tokens are a promise about
-/// contrast that each theme keeps in its own way, and only the latter
-/// survives a theme its author never saw. Panels take the theme's own
-/// popover tier, which is what makes them the same material as the bar
-/// they hang off (HIG §9.2).
+/// settings, the collaborators popover, workspace-settings, peer-sync.
+/// Uses the theme's own popover tier (not a raw colour ramp slot) so
+/// panels stay the same material as the bar they hang off (HIG §9.2).
 fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
-/// currently focused tab, if any. Used to seed the `active_provider_id`
-/// arg to [`crate::shell::search::SearchRegistry::query`] when the
-/// scope is [`crate::shell::chrome_state::SearchScope::ActiveApp`].
+/// currently focused tab, if any. Seeds `active_provider_id` for
+/// [`crate::shell::search::SearchRegistry::query`] under
+/// [`crate::shell::chrome_state::SearchScope::ActiveApp`].
 fn active_tab_provider_id(
     chrome: &crate::shell::chrome_state::ChromeState,
     registry: &crate::shell::search::SearchRegistry,
@@ -9202,14 +7521,10 @@ fn active_tab_provider_id(
     None
 }
 
-/// Clone `theme` with `surfaces.raised` re-tinted to the glass slate-900
-/// at `alpha`. Used by the GlobalSearch palette draw site: the
-/// `CommandPalette` widget (in `quick_ui`) paints its own surface from
-/// `surfaces.raised`, so we can't inject a translucent fill without either
-/// plumbing a per-draw override (too invasive for a shared widget) or
-/// handing it a locally-rebuilt theme (this helper). The stroke still uses
-/// `border_standard`, which the palette inherits from the original theme
-/// via the returned clone — only the fill token gets the tint.
+/// Clones `theme` with `surfaces.raised` re-tinted to a translucent glass
+/// slate-900 — how `CommandPalette` (which paints from `surfaces.raised`)
+/// gets a translucent fill without a per-draw override plumbed into a
+/// shared widget. The stroke keeps `border_standard` from the original.
 fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     let mut themed = theme.clone();
     themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
@@ -9228,19 +7543,10 @@ fn modal_transition_curve(t: &ui::Transition, now: Instant, start_scale: f64) ->
 }
 
 impl ShellOverlayHost {
-    /// Paint an overlapping stack of member faces, right-aligned at
-    /// `right_x` and centred on `cy`.
-    ///
-    /// `ground` is the colour actually behind the stack. The separator
-    /// ring between overlapping faces is a hole punched in the face
-    /// below, so it has to be painted in the surface the stack sits on:
-    /// ringed with anything else, the ring reads as a smudge and the
-    /// faces run together into one shape.
-    ///
-    /// Presence is carried by opacity, not by omission: a member who has
-    /// gone home is still someone this room admits, so they stay on the
-    /// stack at reduced strength rather than disappearing and making the
-    /// room look smaller than it is.
+    /// Paints an overlapping stack of member faces, right-aligned at
+    /// `right_x`, centred on `cy`. `ground` must match the surface behind
+    /// the stack — the separator ring is a hole punched in the face below.
+    /// An absent member stays at reduced opacity rather than disappearing.
     #[allow(clippy::too_many_arguments)]
     fn draw_face_stack(
         scene: &mut Scene,
@@ -9270,14 +7576,10 @@ impl ShellOverlayHost {
                 .copied()
                 .unwrap_or_else(|| ui::presence::user_color(&person.id));
             let fill = Color::from_rgb8(cr, cg, cb);
-            // Away members read as a quieter version of the same face,
-            // so the stack still says who belongs here.
-            //
             // Mixed toward the ground rather than made translucent: the
-            // monogram picks its ink from the fill it is drawn on, and a
-            // fill that is only *partly* there is not the colour the eye
-            // ends up seeing. On a light panel an alpha-reduced face left
-            // white letters on a pale disc, which was unreadable.
+            // monogram picks its ink from the fill it's drawn on, and on
+            // a light panel an alpha-reduced face left white letters on
+            // a pale disc.
             let fill = if person.present {
                 fill
             } else {
@@ -9319,9 +7621,8 @@ impl ShellOverlayHost {
         right - (slots - 1) as f64 * step - r
     }
 
-    /// Per-identity avatar colours for one room, settled over the room
-    /// so a face here matches that person's cursor and their chip on the
-    /// top bar.
+    /// Per-identity avatar colours for one room, matching that person's
+    /// cursor and top-bar chip.
     fn overview_face_colors(
         &self,
         idx: usize,
@@ -9382,8 +7683,8 @@ impl ShellOverlayHost {
         let x0 = rect.x0 + pad;
         let x1 = rect.x1 - pad;
 
-        // Faces first: they claim the right edge, and the name is elided
-        // against what is left rather than running underneath them.
+        // Faces first: the name elides against what's left rather than
+        // running underneath them.
         let colors_for = self.overview_face_colors(idx);
         let faces_left = Self::draw_face_stack(
             scene,
@@ -9412,9 +7713,8 @@ impl ShellOverlayHost {
             TextWeight::Semibold,
         );
         let sub_size = tokens.typography.scale.sm;
-        // Someone being in a room right now outranks who could be: it is
-        // the thing that changes what you would do next. Access is what
-        // the line says when the room is empty.
+        // Who's in the room now outranks who could be; access is what
+        // the line says when it's empty.
         let mut sub = crate::shell::overview::room_presence_label(card)
             .unwrap_or_else(|| crate::shell::overview::room_access_label(card));
         if let Some(shares) = crate::shell::overview::room_shares_label(card) {
@@ -9443,20 +7743,10 @@ impl ShellOverlayHost {
         );
     }
 
-    /// The workspace overview: a panel about **rooms**.
-    ///
-    /// # Why this is not a page
-    ///
-    /// A workspace here is a room — it has a host, a set of people, its
-    /// own permissions and its own shared files — and the overview is
-    /// how you see which one you are in, who is in it with you, what
-    /// leaves it, and how to get to another. That is a switcher: a
-    /// surface you pass *through*. So it is a floating panel in the same
-    /// family as the command palette and the workspace-settings modal,
-    /// not a full-screen document with a headline over a grid of cards.
-    ///
-    /// Reading order is the order the questions are asked: where you are
-    /// now, what is shared out of here, and where else you can go.
+    /// The workspace overview: a switcher for rooms, so it's a floating
+    /// panel like the palette and workspace-settings modal, not a
+    /// full-screen grid. Reading order follows the questions asked: where
+    /// you are, what's shared, where else to go.
     fn draw_overview(
         &mut self,
         scene: &mut Scene,
@@ -9474,9 +7764,8 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
 
-        // -- Panel surface ------------------------------------------------
-        // The same fill / hairline / lift as the workspace-settings modal:
-        // one floating-surface language across the shell's overlays.
+        // Same fill/hairline/lift as the workspace-settings modal: one
+        // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         ui::surface::elevation(scene, transform, panel, &tokens.elevation.e4);
@@ -9500,12 +7789,9 @@ impl ShellOverlayHost {
         if let Some(hi) = here_idx {
             let card = &cards[hi];
 
-            // The keyboard's target is marked wherever it lands, and on
-            // open it lands here — so the room you are in carries the
-            // same accent-tinted selection a list row does. Without it
-            // the panel would open with nothing selected on screen and
-            // the first arrow press would look like it came from
-            // nowhere.
+            // The keyboard target lands here on open, so the current room
+            // carries the same accent selection a list row does — without
+            // it the first arrow press would seem to come from nowhere.
             if self.overview_selection == Some(hi) {
                 let sel = Rect::new(
                     content.x0 - 10.0,
@@ -9634,9 +7920,8 @@ impl ShellOverlayHost {
             shares: Vec::new(),
         };
         let here_card = here_idx.map(|i| &cards[i]).unwrap_or(&empty_card);
-        // One vertical rule for the whole section: the glyph and both
-        // texts centre on the row's middle line. Nudged offsets per
-        // element are what left the icon riding above its own label.
+        // One vertical rule for the section: glyph and text centre on
+        // the row's middle line.
         let body_size = tokens.typography.scale.base;
         let glyph = 14.0_f64;
         let (_, body_h) = text_renderer.measure("Ag", body_size, None);
@@ -9651,8 +7936,7 @@ impl ShellOverlayHost {
             )
         };
         if here_card.shares.is_empty() {
-            // An honest zero-state: nothing is invented to fill the row,
-            // and "nothing" is itself the answer to the question.
+            // An honest zero-state: "nothing" is itself the answer.
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -9680,8 +7964,7 @@ impl ShellOverlayHost {
                     colors.text_tertiary,
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
-                // Who holds it sits right; what is shared runs from the
-                // left and is elided against it.
+                // Who holds it sits right; what's shared elides against it.
                 let with = match share.with.len() {
                     1 => share.with[0].clone(),
                     2 => format!("{} and {}", share.with[0], share.with[1]),
@@ -9781,7 +8064,6 @@ impl ShellOverlayHost {
             );
         }
 
-        // -- New room ------------------------------------------------------
         // A peer row in the same list, not a banner: creating a room is
         // one of the things you can go and do from here.
         let add_rect = self.overview_add_workspace_rect_for(cards.len());
@@ -9874,16 +8156,13 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Single source of truth — `ws_settings_rect()` owns the
-        // centered-modal geometry; hit-tests reach for the same
-        // helper so a width bump can't desync the painted card vs
-        // the clickable bounds.
+        // `ws_settings_rect()` is the single source of truth for the
+        // centered-modal geometry; hit-tests reach for the same helper
+        // so a width bump can't desync the card vs. the clickable bounds.
         let rect = self.ws_settings_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        // Settings modal surface — concept §4.1: `bg-slate-900/70
-        // backdrop-blur-md`. Blur primitive unavailable on the pinned Vello,
-        // so we just honour the 0.70 alpha split (visual-gap #3) and let
-        // the modal sit translucent over its scrim / the desktop.
+        // No blur primitive on the pinned Vello, so the modal sits flat
+        // translucent over its scrim rather than glass.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -9899,7 +8178,6 @@ impl ShellOverlayHost {
             &card,
         );
 
-        // Title
         let title = "Workspace Settings";
         let tsize = tokens.typography.scale.xl;
         text_renderer.draw_text(
@@ -9911,7 +8189,6 @@ impl ShellOverlayHost {
             None,
         );
 
-        // Active workspace label
         let active_name = tree
             .active_workspace()
             .map(|w| w.name.clone())
@@ -9927,9 +8204,8 @@ impl ShellOverlayHost {
             None,
         );
 
-        // Tab routing reads the typed `ws_settings_tab` field on chrome
-        // state, which keeps tab routing and the name-edit buffer fully
-        // orthogonal — concept ref `WorkspaceSettingsModal.tsx:50-95`.
+        // Reads the typed `ws_settings_tab` field on chrome state, kept
+        // orthogonal to the name-edit buffer.
         let active_tab = state.ws_settings_tab;
 
         // Tab strip. Every pill is a real destination: a host who has
@@ -9937,9 +8213,8 @@ impl ShellOverlayHost {
         let tabs = WsTab::all();
         let mut tx = rect.x0 + 24.0;
         let ty = rect.y0 + 112.0;
-        // Local pill-rect buffer; written into `self.ws_settings_tab_
-        // pill_rects` after the loop so a single source of geometry
-        // feeds both the draw and the click-routing path.
+        // Written into `self.ws_settings_tab_pill_rects` after the loop
+        // so one source of geometry feeds draw and click-routing.
         let mut pill_rects = [Rect::ZERO; 3];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
@@ -9949,11 +8224,7 @@ impl ShellOverlayHost {
             pill_rects[i] = pill_rect;
             let pill = RoundedRect::from_rect(pill_rect, tokens.radii.md as f64);
             if active {
-                // Concept ref `WorkspaceSettingsModal.tsx:62-79` —
-                // `bg-white/10 text-white` for the active row in the nav.
-                // `surface_white_10` matches the concept's subtle
-                // white-on-glass treatment. Pinned by
-                // `tests::ws_settings_active_tab_pill_uses_white_overlay`.
+                // Pinned by `tests::ws_settings_active_tab_pill_uses_white_overlay`.
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -9961,11 +8232,9 @@ impl ShellOverlayHost {
                     None,
                     &pill,
                 );
-                // White-on-glass alone is a very quiet difference from
-                // an inactive pill — on the dark modal surface the two
-                // are nearly the same value. An accent rule under the
-                // active tab gives the selection a form, not just a
-                // slightly lighter fill.
+                // White-on-glass alone is a very quiet difference on the
+                // dark modal surface; the accent rule gives the
+                // selection a form, not just a slightly lighter fill.
                 let underline = RoundedRect::from_rect(
                     Rect::new(
                         pill_rect.x0 + 4.0,
@@ -10070,10 +8339,9 @@ impl ShellOverlayHost {
         }
 
 
-        // Defensive gate: every non-General arm above already returns,
-        // so this is unreachable today — but a new `WsTab` variant
-        // added without a matching arm would otherwise fall through and
-        // paint the General body over the new pane.
+        // Unreachable today (every non-General arm returns above), but
+        // guards against a new `WsTab` variant falling through to paint
+        // the General body over its pane.
         if !matches!(active_tab, WsTab::General) {
             return;
         }
@@ -10129,16 +8397,10 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
         }
 
-        // Invite link + collaborator grid (concept TSX
-        // WorkspaceSettingsModal.tsx:99-180). Reuses
-        // chrome.workspace_settings.invite_link if non-empty; otherwise a
-        // stable placeholder URL. Two indigo-500 fills (Copy button +
-        // first collaborator's "You" badge) clear the spec test's
-        // `added_indigo >= 2` floor against the closed-modal baseline.
+        // Two indigo-500 fills here (Copy button + "You" badge) clear the
+        // spec test's `added_indigo >= 2` floor against the closed-modal
+        // baseline.
         let invite_y = body_y + 80.0;
-        // Small indigo "active sharing" dot before the Invite Link
-        // header — concept WorkspaceSettingsModal.tsx:101 has a
-        // bg-indigo-500 status indicator next to the link section.
         let dot = Rect::new(
             rect.x0 + 24.0,
             invite_y + 2.0,
@@ -10167,9 +8429,8 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(url_pill, tokens.radii.sm as f64),
         );
-        // Mirror WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id; the WorkspaceSettings widget itself
-        // lives in Shell, not on chrome state, so we don't reach for it.
+        // Mirrors WorkspaceSettings::invite_link's format so the URL is
+        // stable per workspace id.
         let invite_url = tree
             .active_workspace()
             .map(|w| format!("quickdesktop://invite/{}", u64::from(w.id)))
@@ -10193,9 +8454,8 @@ impl ShellOverlayHost {
                 ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
             ),
         );
-        // "Copied" replaces the label for a moment after a successful
-        // copy. Without it the button is indistinguishable from a
-        // button that did nothing.
+        // "Copied" replaces the label briefly, or the button looks
+        // indistinguishable from one that did nothing.
         let copy_label = if self
             .ws_invite_copied_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
@@ -10218,9 +8478,9 @@ impl ShellOverlayHost {
             None,
         );
 
-        // Collaborator row — at minimum one tile labeled "You" with an
-        // indigo-500 You-badge so the second indigo fill the test
-        // requires is always present even on a fresh workspace.
+        // At minimum one "You" tile with its badge, so the second
+        // indigo fill the test requires is present even on a fresh
+        // workspace.
         let collab_y = invite_y + 72.0;
         text_renderer.draw_text(
             scene,
@@ -10230,20 +8490,10 @@ impl ShellOverlayHost {
             transform * Affine::translate((rect.x0 + 24.0, collab_y)),
             None,
         );
-        // The General-tab paints exactly one tile — the local user's
-        // "You" tile — so the indigo-500 You-badge fill count stays
-        // constant whether or not the active workspace seeds a real
-        // `me` collaborator. Peers belong in the Collaborators overlay
-        // (`collaborators_rect`); rendering them here would push
-        // extra glyph-brush fills into the General scene and tip the
+        // Exactly one tile, real `me` or not, so the You-badge fill count
+        // stays constant — extra fills would push
         // `workspace_settings_renders_roles_tab_with_per_role_app_grid`
-        // parity-diff below its >=20-fill threshold.
-        // Fallback name when no `me` collaborator is seeded in the
-        // active workspace. We use "Me" (not "You") because the
-        // adjacent badge already says "You"; using literal "You" as
-        // the display name produces a visually awkward "You [You]"
-        // duplication in the General tab, while "Me [You]" reads
-        // cleanly as "the local user, badged as You for the viewer".
+        // over its >=20-fill threshold.
         let me_tile = tree
             .active_workspace()
             .and_then(|w| {
@@ -10260,9 +8510,8 @@ impl ShellOverlayHost {
         let row_y = collab_y + 20.0;
         for (i, (name, is_self)) in tiles.iter().take(3).enumerate() {
             let tx = rect.x0 + 24.0 + (tile_w + tile_gap) * i as f64;
-            // No tile fill / stroke — keeps the General body's solid-
-            // colour fill count under the threshold the Roles spec
-            // test pins. The badge alone communicates "you".
+            // No tile fill/stroke — keeps the solid-colour fill count
+            // under the threshold the Roles spec test pins.
             text_renderer.draw_text(
                 scene,
                 name,
@@ -10283,7 +8532,7 @@ impl ShellOverlayHost {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5], // indigo-500 — concept "You" badge
+                    colors.accent[5],
                     None,
                     &RoundedRect::from_rect(badge, 10.0),
                 );
@@ -10298,7 +8547,6 @@ impl ShellOverlayHost {
             }
         }
 
-        // Close hint
         let hint = if editing {
             "Enter to save · Esc to cancel"
         } else {
@@ -10316,23 +8564,10 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Paint every real peer's live pointer for the active workspace
-    /// scope. Reads [`PresenceCtx::pointers`] filtered to
-    /// `PresenceKey::Workspace { id: <room> }` — the same key every app
-    /// publishes under, since the toolkit derives its broadcast scope
-    /// from the room the launcher stamped in as `QOS_WORKSPACE_ID`.
-    /// Each peer gets a pointer plus a name pill, drawn by the toolkit's
-    /// [`ui::presence::draw_peer_cursors`] — the same call an app makes
-    /// for the peers inside its own window, so a peer over the desktop
-    /// and a peer over an app are the same thing drawn once. Colours are
-    /// settled over the whole room by
-    /// [`ui::presence::assign_peer_colors`], with an explicit roster
-    /// colour outranking it.
-    ///
-    /// The whole set goes in one call because the names have to be
-    /// arranged against each other: two people working side by side put
-    /// their pointers a few pixels apart, and two pills at the same
-    /// offset from those two pointers are one illegible smear.
+    /// Paints every real peer's live pointer for the active workspace, via
+    /// the same [`ui::presence::draw_peer_cursors`] call an app makes for
+    /// peers inside its own window. One call for the whole set, since
+    /// names have to be arranged against each other.
     fn draw_real_peers(
         &mut self,
         scene: &mut Scene,
@@ -10353,29 +8588,17 @@ impl ShellOverlayHost {
     }
 
     /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
-    /// who they are, where they are, and what colour they are in.
-    ///
-    /// Separated from the paint so the selection can be asserted on
-    /// directly. "No peer arrived" and "a peer arrived and was dropped by
-    /// the filter" produce the same empty screen, and a test that
-    /// rebuilds the lookup key for itself proves only that it can
-    /// rebuild the key — which is how a mismatch between this filter and
-    /// what apps publish survived long enough to need a fabricated peer
-    /// covering for it.
+    /// who, where, and what colour. Separated from the paint so the
+    /// selection can be asserted on directly — "no peer arrived" and "a
+    /// peer arrived and was filtered out" must be distinguishable in a
+    /// test, not just an empty screen both ways.
     pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
-        // Scope by the workspace's **room**, not its local handle.
-        //
-        // The room is the durable identity: it is what the launcher stamps
-        // into an app as `QOS_WORKSPACE_ID`, what the toolkit addresses its
-        // collaboration to, and therefore what an app publishes presence
-        // under. The local `WorkspaceId` is a per-machine handle and
-        // differs on every peer, so looking peers up by it matched nothing
-        // an app had ever published — which is why this overlay had never
-        // drawn a real peer, and why a fabricated one was standing in for
-        // it.
+        // Scope by the workspace's room, not local `WorkspaceId` — the room
+        // is the durable identity apps address collaboration to (stamped in
+        // as `QOS_WORKSPACE_ID`); the local id differs per machine.
         let room = {
             let chrome = chrome_rc.borrow();
             let tree = chrome.tree();
@@ -10392,12 +8615,9 @@ impl ShellOverlayHost {
             return Vec::new();
         };
 
-        // Settle the colours over everyone in the room before deciding
-        // what is on screen, and include the local user: every host in a
-        // room sees the same membership that way — the others plus
-        // itself — so every host computes the same assignment and a
-        // person is one colour on every screen. Filtering to the visible
-        // ones first would make each host compute over a different set.
+        // Settle colours over the whole room (including the local user)
+        // before filtering to what's on screen, so every host computes
+        // the same assignment and a person is one colour everywhere.
         let local = crate::shell::state::local_user_id();
         let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
         room_ids.push(local.as_str());
@@ -10407,17 +8627,13 @@ impl ShellOverlayHost {
         peers
             .iter()
             .filter(|(_, pos)| {
-                // Guard: winit delivers scaled coordinates so the pointer
-                // can, in principle, fall outside this window's rect if
-                // the broadcast came from a peer with a different viewport.
-                // Clip the paint to our content rect so we never trail a
-                // cursor into the top-bar / sidebar chrome.
+                // A peer with a different viewport can broadcast a point
+                // outside ours; clip to content so a cursor never trails
+                // into the top-bar/sidebar chrome.
                 self.rect.contains(Point::new(pos.0 as f64, pos.1 as f64))
             })
             .map(|(user, pos)| {
-                // An explicit roster colour is a decision someone made
-                // and outranks anything computed; everyone else takes
-                // what the room settled on.
+                // An explicit roster colour outranks anything computed.
                 let (r, g, b) = presence
                     .color_overrides
                     .get(user)
@@ -10426,11 +8642,7 @@ impl ShellOverlayHost {
                     .unwrap_or_else(|| presence.color_for(user));
                 ui::presence::PeerCursor {
                     pos: (pos.0 as f64, pos.1 as f64),
-                    // Name the peer rather than their id when the roster
-                    // knows one. `display_name` falls back to the id, so a
-                    // peer whose session never said who was at it is still
-                    // labelled — with the handle it actually arrived
-                    // under, not a guess.
+                    // Falls back to the id when the roster has no name.
                     label: presence.display_name(user),
                     color: Color::from_rgb8(r, g, b),
                 }
@@ -10442,11 +8654,8 @@ impl ShellOverlayHost {
     /// issued-invite readout share one surface, so one rect owns both
     /// the paint and the hit-test.
     fn peer_sync_rect(&self) -> Rect {
-        // Sized to what the card actually holds — a name, a line of
-        // state, a fingerprint — not to a token that would fill
-        // whatever width it was given; a surface much wider than its
-        // content reads as one that failed to load rather than one
-        // that is finished.
+        // Sized to what the card actually holds (name, status line,
+        // fingerprint), not to fill whatever width it's given.
         let w = (self.rect.width() * 0.42).clamp(400.0, 520.0);
         // Each face is as tall as what it has to say.
         let h = if self.invite_composer_open() {
@@ -10474,18 +8683,11 @@ impl ShellOverlayHost {
             .unwrap_or(false)
     }
 
-    /// Paint the peer-sync card: who is being invited, the invite that
-    /// was minted for them, or the prompt asking for one.
-    ///
-    /// The token itself is not drawn. It is some nine hundred base64
-    /// characters — six lines of noise filling the surface at the exact
-    /// moment the person needs to read one short thing, and nobody
-    /// checks a bearer credential by eye anyway. What travels is the
-    /// clipboard; what is shown is who the invite is for, that it is
-    /// ready, and a short fingerprint of the machine that signed it, so
-    /// the two people have something concrete to compare out of band. A
-    /// session with no clipboard still has the whole token — it is in
-    /// `state_dump`, which is where the proofs read it from.
+    /// Paints the peer-sync card: who's being invited, the invite minted
+    /// for them, or the prompt asking for one. The ~900-char token is never
+    /// drawn — only who it's for and a fingerprint of the signing machine
+    /// for out-of-band comparison; a clipboard-less session still has the
+    /// whole token in `state_dump`.
     fn draw_peer_sync(
         &mut self,
         scene: &mut Scene,
@@ -10553,12 +8755,8 @@ impl ShellOverlayHost {
         y += title_size as f64 + 14.0;
 
         if let Some(typed) = invite_name.as_deref() {
-            // --- Asking who ------------------------------------------
-            //
-            // The question comes before the token, because an invite
-            // minted without an answer to it is an invite the room can
-            // never attach a name to: the host is left reading a peer
-            // id off its own roster once the guest arrives.
+            // The question comes before the token: an invite minted
+            // with no answer is one the room can never attach a name to.
             text_renderer.draw_text(
                 scene,
                 "Who are you inviting?",
@@ -10736,16 +8934,11 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + pad, y)),
                 None,
             );
-            // The chord hint belongs to the buttons, not to the status
-            // line above it — without the gap the two read as one
-            // paragraph and the status stops being the thing that just
-            // happened.
+            // Gap keeps the status from reading as one paragraph with
+            // the buttons below.
             y += body_size as f64 + 16.0;
         }
 
-        // Every face of the card carries buttons, because every step of
-        // moving an invite is a gesture: naming the person, getting the
-        // token onto the clipboard, getting it off again.
         {
             let buttons: &[(&str, PeerSyncPromptButton)] = if invite_name.is_some() {
                 &[
@@ -10880,15 +9073,10 @@ impl ShellOverlayHost {
             );
         }
 
-        // --- Kind chips (left, multi-select) ---------------------------
         // Dynamic: one chip per kind any registered provider exposes, so
         // a new provider gets a chip for free. Empty selection means
-        // "everything shows", which the leading "All" chip states rather
-        // than leaving the strip looking like nothing is on.
-        //
-        // Every chip is painted, whatever the width — the strip wraps,
-        // and the band grows to hold the rows. See [`lay_out_chip_strip`]
-        // for why not painting one was the bug.
+        // "everything shows", stated by the leading "All" chip. Every
+        // chip is painted regardless of width; see [`lay_out_chip_strip`].
         let kinds = self.search_registry.registered_kinds();
         let labels: Vec<&str> = std::iter::once("All")
             .chain(kinds.iter().map(|k| k.label()))
@@ -10936,10 +9124,9 @@ impl ShellOverlayHost {
         }
         self.search_chip_rects = chip_rects;
 
-        // Ask the card for the rows the strip actually needs. The next
-        // layout grows the band and moves the result rows down; until it
-        // runs, the chips above are squeezed into the band there is —
-        // which is why they are all still clickable in the meantime.
+        // The next layout grows the band and moves result rows down;
+        // until it runs, the chips stay squeezed into the band there is
+        // but remain clickable.
         if strip.rows_needed != self.search_chip_rows {
             self.search_chip_rows = strip.rows_needed;
             if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
@@ -10964,17 +9151,13 @@ impl ShellOverlayHost {
             .unwrap_or_default();
 
         let rect = self.quick_settings_rect();
-        // Concept ref: `QuickSettings.tsx:169` — `rounded-3xl` (24 px).
-        // Maps to `tokens.radii.xl` per the token table.
         let card = RoundedRect::from_rect(
             rect,
             ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
         );
-        // Panels are elevated (HIG §9.1). Without this the popover was a
-        // flat tint, which reads as deliberate only on a palette whose
-        // overlay tier is much darker than its ground — i.e. only on
-        // dark. Light and high-contrast had nothing lifting the panel off
-        // the desktop at all.
+        // Panels are elevated (HIG §9.1); a flat tint only read as
+        // deliberate on dark, where the overlay tier is much darker than
+        // its ground. Light and high-contrast had nothing lifting it.
         ui::chrome::shell::panel_shadow(
             scene,
             transform,
@@ -10983,8 +9166,6 @@ impl ShellOverlayHost {
             theme,
             1.0,
         );
-        // QuickSettings popover surface — concept §3.1: `bg-slate-900/80
-        // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
         scene.fill(
             Fill::NonZero,
             transform,
@@ -11000,10 +9181,8 @@ impl ShellOverlayHost {
             &card,
         );
 
-        // Dispatch on `qs.current_level()` — root level renders the action
-        // row + sliders + toggles + power profile; Wifi/Bluetooth levels
-        // replace the body with a header-row + scrollable list.
-        // Concept ref: `QuickSettings.tsx:101-162` — drill-in views.
+        // Root level renders the action row + sliders + toggles; Wifi/
+        // Bluetooth levels replace the body with a header + list.
         match qs.current_level() {
             crate::shell::quick_settings::QsLevel::Wifi
             | crate::shell::quick_settings::QsLevel::WifiDetails(_) => {
@@ -11018,22 +9197,18 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Root => {}
         }
 
-        // -------- Section 1: Action row (Settings / Camera / Power) --------
-        // Concept ref: `QuickSettings.tsx:181-201` — three equal-width tiles
-        // with `bg-white/10`; the Power tile is `bg-red-500/20` red-tinted.
+        // Section 1: Action row (Settings / Camera / Power).
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
         for i in 0..3 {
             let tile = self.quick_settings_action_geometry(i);
-            // Control role: 12 px — the radius scale deliberately
-            // omits 16, so a literal 16 here would match nothing
-            // else on screen.
+            // Control role: 12px — the radius scale deliberately omits
+            // 16, so a literal 16 here would match nothing else on screen.
             let tile_rr = RoundedRect::from_rect(
                 tile,
                 ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
             );
-            // Power tile (i == 2) gets the red-500/20 wash. The fill must
-            // expose its r/g/b signature in the encoded scene so the
-            // concept-parity spec test detects the red Power glyph.
+            // Power tile's red wash must expose its r/g/b signature so
+            // the concept-parity spec test detects it.
             let bg = if i == 2 {
                 colors.semantic.danger.with_alpha_factor(0.20)
             } else {
@@ -11041,9 +9216,6 @@ impl ShellOverlayHost {
             };
             scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
 
-            // Glyph: lucide Settings / Camera / Power. Slot 0 ships
-            // Settings2; slots 1 and 2 resolve to the canonical lucide
-            // `Camera` and `Power` paths.
             let glyph_color = if i == 2 {
                 colors.semantic.danger
             } else {
@@ -11070,10 +9242,7 @@ impl ShellOverlayHost {
             );
         }
 
-        // -------- Section 2: Slider card (Brightness / Volume) --------
-        // Concept ref: `QuickSettings.tsx:204-215` — `bg-white/5 p-3
-        // rounded-2xl`; each slider is `h-1.5 rounded-full` thin bar with
-        // `bg-white` fill (NOT the indigo accent).
+        // Section 2: Slider card (Brightness / Volume).
         let slider_card = Rect::new(
             rect.x0 + 16.0,
             rect.y0 + 88.0,
@@ -11091,8 +9260,6 @@ impl ShellOverlayHost {
         let slider_values = [qs.brightness, qs.volume];
         for i in 0..2 {
             let (bar, row_y) = self.quick_settings_slider_geometry(i);
-            // Leading icon — says which slider is brightness and
-            // which is volume.
             let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
             let icon_cy = row_y + 12.0;
             let icon_rect = Rect::new(icon_x - 7.0, icon_cy - 7.0, icon_x + 7.0, icon_cy + 7.0);
@@ -11109,10 +9276,8 @@ impl ShellOverlayHost {
                 1.5,
             );
 
-            // Track: white/10. Fill: solid white (concept's `bg-white`),
-            // exposed via `text_primary` — pure white in the dark theme.
-            // Critically, this is NOT the indigo accent; the
-            // concept-parity spec test pins that delta to zero.
+            // Solid white via `text_primary`, not indigo — the
+            // concept-parity spec pins that delta to zero.
             let track_rr = RoundedRect::from_rect(bar, 3.0);
             scene.fill(
                 Fill::NonZero,
@@ -11135,20 +9300,10 @@ impl ShellOverlayHost {
             }
         }
 
-        // -------- Section 3: Toggle card grid (Wi-Fi / Bluetooth) --------
-        // Concept ref: `QuickSettings.tsx:218-246` — 2-col grid; cards
-        // `rounded-2xl p-3`.
-        //
-        // ON cards paint `accent[5].with_alpha_factor(0.20)` rather than
-        // a solid indigo-500: the wash mirrors the concept's other
-        // tinted-state pattern (`bg-red-500/20` on the Power tile) and the
-        // premultiplied bytes don't match the solid indigo-500 signature
-        // the concept-parity spec test pins to a closed→open delta of 0.
-        //
-        // Sub-line label = SSID/device name of whichever entry
-        // the Wi-Fi reading marked `connected` (via
-        // `nmcli`/`bluetoothctl`). Falls back to "Not connected" when
-        // the radio is on but nothing paired, or the radio is off.
+        // Section 3: Toggle card grid. ON cards use an alpha wash rather
+        // than solid indigo-500 — the concept-parity spec pins the
+        // closed→open delta to zero. Sub-line falls back to "Not
+        // connected" when unpaired or off.
         const NOT_CONNECTED: &str = "Not connected";
         let wifi_sub = if qs.wifi {
             qs.wifi_networks
@@ -11175,9 +9330,8 @@ impl ShellOverlayHost {
         for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
             let card = self.quick_settings_toggle_geometry(i);
             let card_rr = RoundedRect::from_rect(card, 16.0);
-            // ON → indigo wash; OFF → slate-800. The wash sidesteps the
-            // spec test's solid-indigo signature while reading as indigo
-            // in the rendered popover.
+            // ON → indigo wash; OFF → slate-800 — the wash keeps the
+            // spec test's solid-indigo signature clear.
             let bg = if *on {
                 colors.accent[5].with_alpha_factor(0.20)
             } else {
@@ -11185,8 +9339,7 @@ impl ShellOverlayHost {
             };
             scene.fill(Fill::NonZero, transform, bg, None, &card_rr);
 
-            // Wifi glyph for slot 0, Bluetooth for slot 1 — both lucide
-            // paths now live in `ui::icons`.
+            // Wifi for slot 0, Bluetooth for slot 1.
             let glyph_box = Rect::new(
                 card.x0 + 12.0,
                 card.y0 + 12.0,
@@ -11219,7 +9372,6 @@ impl ShellOverlayHost {
                 &chev,
             );
 
-            // Label + sub-line, anchored bottom-left of the card.
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -11239,9 +9391,7 @@ impl ShellOverlayHost {
             );
         }
 
-        // -------- Section 4: Power Profile row --------
-        // Concept ref: `QuickSettings.tsx:249-258` — `bg-white/5 p-3
-        // rounded-2xl` with a Battery glyph + label + cycle chevron.
+        // Section 4: Power Profile row.
         let pp = self.quick_settings_power_profile_geometry();
         scene.fill(
             Fill::NonZero,
@@ -11264,10 +9414,6 @@ impl ShellOverlayHost {
             colors.semantic.success,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        // Power profile label. Reads from the chrome's shared
-        // `QuickSettingsState`, which the click handler mutates on the
-        // chip and the rising-edge refresh pulls from
-        // `powerprofilesctl get`.
         let profile_label = qs.power_profile.label();
         text_renderer.draw_text_weighted(
             scene,
@@ -11286,7 +9432,6 @@ impl ShellOverlayHost {
             transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 26.0)),
             None,
         );
-        // Trailing cycle chevron placeholder.
         let chev_cx = pp.x1 - 16.0;
         let chev_cy = (pp.y0 + pp.y1) / 2.0;
         let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
@@ -11318,7 +9463,6 @@ impl ShellOverlayHost {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        // Centred title (14 px Semibold white, per concept).
         let (tw, th) = text_renderer.measure(title, tokens.typography.scale.sm, None);
         let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
         let ty = rect.y0 + (header_h - th as f64) / 2.0;
@@ -11333,10 +9477,8 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Centred dim empty-state message for a drill-in pane with no rows
-    /// (e.g. Wi-Fi list before the first scan returns). Without this the
-    /// pane rendered as a blank panel that read as broken rather than
-    /// "nothing here yet".
+    /// Centred dim empty-state message for a drill-in pane with no rows —
+    /// without it the pane read as broken rather than "nothing here yet".
     fn draw_qs_drill_in_empty(
         &self,
         scene: &mut Scene,
@@ -11368,24 +9510,19 @@ impl ShellOverlayHost {
         Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x0 + 40.0, r.y0 + 40.0)
     }
 
-    /// Toggle-card chevron-affordance hit rect — clicking here pushes
-    /// `QsLevel::Wifi` (i==0) / `QsLevel::Bluetooth` (i==1) onto the
-    /// nav stack instead of flipping the toggle bool. Concept ref:
-    /// `QuickSettings.tsx:218-246` — chevron on the right of each card
-    /// reads as "drill in for details".
+    /// Toggle-card chevron hit rect — clicking here pushes
+    /// `QsLevel::Wifi` (i==0) / `QsLevel::Bluetooth` (i==1) onto the nav
+    /// stack instead of flipping the toggle bool.
     fn quick_settings_toggle_chevron_rect(&self, i: usize) -> Rect {
         let card = self.quick_settings_toggle_geometry(i);
-        // The painted chevron sits at `(card.x1 - 16.0, card.y0 + 22.0)`
-        // with a 3 px radius — give a generous 32×32 hit rect anchored
-        // around it.
+        // Generous 32×32 hit rect around the painted 3px chevron.
         let cx = card.x1 - 16.0;
         let cy = card.y0 + 22.0;
         Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
     }
 
     /// Render the WiFi drill-in pane: header + list of `wifi_networks`
-    /// rows (SSID + signal-bars + active-radio dot). Concept ref:
-    /// `QuickSettings.tsx:108-128`.
+    /// rows (SSID + signal-bars + active-radio dot).
     fn draw_qs_wifi_list(
         &self,
         scene: &mut Scene,
@@ -11398,10 +9535,9 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let rect = self.quick_settings_rect();
 
-        // A passphrase prompt takes over the pane. It is not a separate
-        // nav level: the user is still "in Wi-Fi", and pushing a level
-        // would put a second back-chevron in the stack that means
-        // something different from the first.
+        // A passphrase prompt takes over the pane rather than pushing a
+        // nav level — the user is still "in Wi-Fi", and a second
+        // back-chevron would mean something different from the first.
         if let Some(prompt) = qs.wifi_password.as_ref() {
             self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
             return;
@@ -11425,9 +9561,8 @@ impl ShellOverlayHost {
         for (i, net) in qs.wifi_networks.iter().enumerate() {
             let row_y = list_y0 + i as f64 * row_h;
             let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-            // First row reads as "primary" with a subtle slate-800/50 wash;
-            // the rest stay transparent (concept's hover state is on
-            // `:hover white/5` which we omit until we have hover tracking).
+            // First row reads as "primary" with a subtle wash; the rest
+            // stay transparent until there's hover tracking.
             if i == 0 {
                 scene.fill(
                     Fill::NonZero,
@@ -11438,7 +9573,6 @@ impl ShellOverlayHost {
                 );
             }
 
-            // Leading Wifi glyph (signal-strength).
             let glyph_box = Rect::new(
                 row_rect.x0 + 12.0,
                 row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
@@ -11454,7 +9588,6 @@ impl ShellOverlayHost {
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            // SSID label.
             let label_x = glyph_box.x1 + 12.0;
             let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
             text_renderer.draw_text_weighted(
@@ -11467,9 +9600,7 @@ impl ShellOverlayHost {
                 TextWeight::Medium,
             );
 
-            // Trailing: signal-strength bars. We paint `signal` bars (out
-            // of 4) growing right→left so a stronger signal lights more
-            // bars — encoded as a stack of small rounded rects.
+            // `signal` bars out of 4, growing right→left.
             let bars_x1 = row_rect.x1 - 36.0;
             let bars_w = 14.0_f64;
             let bars_h_max = 12.0_f64;
@@ -11492,10 +9623,8 @@ impl ShellOverlayHost {
                 );
             }
 
-            // Trailing-most: active-radio dot (indigo) for the connected
-            // network. Concept paints this as a check inside an indigo
-            // ring; we render an indigo-filled dot until the ring path
-            // lands.
+            // Indigo dot for the connected network, standing in for a
+            // check-in-ring until that path lands.
             if net.connected {
                 let cx = row_rect.x1 - 14.0;
                 let cy = row_rect.y0 + row_rect.height() / 2.0;
@@ -11528,15 +9657,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Attempt the join.
-    ///
-    /// `nmcli device wifi connect` blocks until association succeeds or
-    /// fails, which on a busy band is seconds — but this is a deliberate
-    /// button press with a modal-ish prompt in front of it, the same
-    /// contract every other quick-settings action has, and the
-    /// alternative (a background join whose result arrives with no
-    /// prompt left to report it into) is worse. The prompt stays up on
-    /// failure carrying the reason.
+    /// Attempt the join. `nmcli device wifi connect` blocks until it
+    /// succeeds or fails, which can be seconds on a busy band — but a
+    /// background join with no prompt left to report into would be
+    /// worse. The prompt stays up on failure, carrying the reason.
     pub fn submit_wifi_password(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -11564,10 +9688,8 @@ impl ShellOverlayHost {
         match result {
             Ok(()) => {
                 st.quick_settings.wifi_password = None;
-                // The list's `connected` flags are now stale, and the
-                // next poll of the popover is on its next open. Mark the
-                // row we just joined so the pane the user lands back on
-                // is not still telling them they are not connected.
+                // Mark the joined row directly — the next poll is on the
+                // popover's next open.
                 for n in st.quick_settings.wifi_networks.iter_mut() {
                     n.connected = n.ssid == ssid;
                 }
@@ -11581,9 +9703,8 @@ impl ShellOverlayHost {
                 tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
                 if let Some(p) = st.quick_settings.wifi_password.as_mut() {
                     p.connecting = false;
-                    // The passphrase is kept so a typo is a correction
-                    // rather than a retype, and selected so the first
-                    // keystroke replaces it if it was simply wrong.
+                    // Kept (not cleared) and selected, so a typo is a
+                    // correction and a fresh keystroke replaces it.
                     p.selection.anchor = 0;
                     p.selection.cursor = p.password.len();
                     p.error = Some("Couldn't join. Check the password.".to_string());
@@ -11593,8 +9714,7 @@ impl ShellOverlayHost {
         st.bump();
     }
 
-    /// Route a key press into the passphrase field, if one is up.
-    /// Returns `true` when the key was consumed.
+    /// Routes a key press into the passphrase field, if one is up.
     fn handle_wifi_password_key(
         &mut self,
         logical_key: &Key,
@@ -11617,8 +9737,7 @@ impl ShellOverlayHost {
                 &mut sel,
             );
             prompt.selection = sel;
-            // Typing after a rejection clears the rejection: the message
-            // was about the old value.
+            // Typing clears a rejection message — it was about the old value.
             if matches!(out, crate::shell::text_entry::Edit::Changed) {
                 prompt.error = None;
             }
@@ -11651,16 +9770,9 @@ impl ShellOverlayHost {
         Rect::new(r.x0 + 16.0, y, r.x1 - 16.0, y + 40.0)
     }
 
-    /// Cancel + Connect, anchored to the foot of the pane rather than
-    /// stacked under the field.
-    ///
-    /// The popover's height is set by the network list this pane
-    /// replaces, and the prompt needs about a third of it — so buttons
-    /// placed directly below the field leave the bottom two thirds
-    /// visibly empty and the pane reads as half-drawn. Pinning them to
-    /// the foot is the layout every dialog uses for the same reason:
-    /// the question sits at the top, the answer at the bottom, and the
-    /// space between them is deliberate rather than left over.
+    /// Cancel + Connect, anchored to the pane's foot rather than stacked
+    /// under the field — the popover's height is set by the network list
+    /// this pane replaces, and the prompt only needs about a third of it.
     fn qs_password_button_rects(&self) -> (Rect, Rect) {
         let r = self.quick_settings_rect();
         let h = 36.0_f64;
@@ -11689,7 +9801,6 @@ impl ShellOverlayHost {
         // has focus the list that named it is gone.
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, &prompt.ssid);
 
-        // Sub-line: what is being asked for, and why.
         let sub_y = rect.y0 + 66.0;
         let lock_box = Rect::new(rect.x0 + 16.0, sub_y, rect.x0 + 32.0, sub_y + 16.0);
         ui::icons::draw_icon(
@@ -11710,18 +9821,11 @@ impl ShellOverlayHost {
             TextWeight::Medium,
         );
 
-        // The field. Focused for as long as it is on screen — it is the
-        // only thing on the pane that takes typing, so a focus ring that
-        // could be off would only ever be a bug.
         let field = self.qs_password_field_rect();
         let field_shape = RoundedRect::from_rect(field, 10.0);
-        // Opaque, not the `surface_white_5` wash the popover's other
-        // cards use. The quick-settings panel is translucent by design,
-        // and a 5%-white rect over it lets whatever the app underneath
-        // is showing run straight through the input — here that put the
-        // word "Click to edit" across the passphrase. A field you cannot
-        // read is a field you cannot check what you typed into, which is
-        // the one thing a masked input has to get right.
+        // Opaque, not the translucent `surface_white_5` wash the
+        // popover's other cards use — that let the app underneath show
+        // through the passphrase field.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -11877,8 +9981,7 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Centre a label inside `rect`. Small enough to inline, used often
-    /// enough in the popover that three copies had already drifted.
+    /// Centres a label inside `rect` (factored out to stop copies drifting).
     fn draw_centred_label(
         scene: &mut Scene,
         transform: Affine,
@@ -11904,9 +10007,8 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Render the Bluetooth drill-in pane: header + list of `bt_devices`
-    /// rows (name + battery-icon + active-radio dot). Concept ref:
-    /// `QuickSettings.tsx:140-160`.
+    /// Renders the Bluetooth drill-in pane: header + `bt_devices` rows
+    /// (name + battery-icon + active-radio dot).
     fn draw_qs_bt_list(
         &self,
         scene: &mut Scene,
@@ -11941,9 +10043,7 @@ impl ShellOverlayHost {
                 );
             }
 
-            // Leading device-glyph placeholder ring (no lucide
-            // `Bluetooth` glyph in the icon set yet — keeps the row
-            // from looking blank).
+            // Placeholder ring — no lucide Bluetooth glyph yet.
             let glyph_box = Rect::new(
                 row_rect.x0 + 12.0,
                 row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
@@ -11960,7 +10060,6 @@ impl ShellOverlayHost {
                 &vello::kurbo::Circle::new(Point::new(cx, cy), 7.0),
             );
 
-            // Device name label.
             let label_x = glyph_box.x1 + 12.0;
             let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
             text_renderer.draw_text_weighted(
@@ -11973,15 +10072,12 @@ impl ShellOverlayHost {
                 TextWeight::Medium,
             );
 
-            // Trailing: battery icon.
             let bat_box = Rect::new(
                 row_rect.x1 - 64.0,
                 row_rect.y0 + (row_rect.height() - 18.0) / 2.0,
                 row_rect.x1 - 64.0 + 22.0,
                 row_rect.y0 + (row_rect.height() + 18.0) / 2.0,
             );
-            // Battery glyph tinted by charge level: > 50% → success
-            // green, > 20% → text_primary, else → danger red.
             let bat_color = if dev.battery > 50 {
                 colors.semantic.success
             } else if dev.battery > 20 {
@@ -11998,7 +10094,6 @@ impl ShellOverlayHost {
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            // Trailing-most: active-radio dot for the connected device.
             if dev.connected {
                 let cx = row_rect.x1 - 14.0;
                 let cy = row_rect.y0 + row_rect.height() / 2.0;
@@ -12024,8 +10119,6 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let rect = self.collaborators_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        // Collaborators popover surface — concept §1.1: `bg-slate-900/80
-        // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
         scene.fill(
             Fill::NonZero,
             transform,
@@ -12049,25 +10142,16 @@ impl ShellOverlayHost {
             None,
         );
 
-        // Per-identity avatar colour (cursor colour, else the
-        // palette-pinned `user_color`) so a row's avatar matches that
-        // identity's cursor and top-bar chip.
+        // Avatar colour matches that identity's cursor and top-bar chip.
         let rows: Vec<RosterRow> = self
             .chrome
             .as_ref()
             .map(|c| collaborator_roster_rows(&c.borrow().tree()))
             .unwrap_or_default();
 
-        // A broken session has to say so whether or not it has anybody to
-        // list, and the two cases were not the same bug. With no rows,
-        // "No peers connected" is true of a working session nobody has
-        // joined *and* of a session with no collaboration at all, and
-        // saying the reassuring one for both is how a session with its
-        // broker down looked healthy. With rows, it is worse: an agent
-        // holds its membership by capability, so a grant made earlier
-        // still lists it after the broker has died — a participant on
-        // screen that cannot participate. So the warning is drawn above
-        // whatever is listed, never instead of it.
+        // A broken session says so regardless of roster state — a
+        // populated one can list a member whose capability outlived a
+        // dead broker. Drawn above whatever is listed, never instead of it.
         let unavailable = self
             .chrome
             .as_ref()
@@ -12106,23 +10190,12 @@ impl ShellOverlayHost {
         for (i, row) in rows.iter().enumerate() {
             let row_y = list_top + i as f64 * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-            // Row avatar = shared `ui::Avatar` chip (r = 11) in that
-            // identity's own colour, matching the top-bar stack and the
-            // overview.
             let avatar_rect =
                 Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
-            // Same chip, same place, same order, whichever state the
-            // row is in — so what a viewer sees when somebody joins is
-            // one row filling in, not a list reshuffling.
-            //
-            // An invitation is drawn as an *empty seat*: the unfilled,
-            // dashed ring the top bar already uses to mean "nobody here
-            // yet". Reusing that idiom rather than inventing one is the
-            // point — and a filled chip merely faded would not have
-            // worked anyway, because `Avatar::draw_at` paints its
-            // monogram `Color::WHITE` at full strength, so a dimmed
-            // disc under a bright letter reads as a rendering fault
-            // rather than a state.
+            // Same chip/place/order in every state, so a join reads as
+            // one row filling in, not a reshuffle. An invitation draws
+            // the dashed "empty seat" ring the top bar uses — a faded
+            // filled chip would read as a rendering fault instead.
             if row.invited {
                 let seat = vello::kurbo::Circle::new(center, 11.0);
                 scene.stroke(
@@ -12132,9 +10205,8 @@ impl ShellOverlayHost {
                     None,
                     &seat,
                 );
-                // Their own initial, not a `+`: the seat belongs to a
-                // named person, which is exactly what distinguishes
-                // this from the top bar's "invite anybody" chip.
+                // Their own initial, not a `+` — the seat belongs to a
+                // named person.
                 let initial = row.initial.to_string();
                 let size = 22.0_f32 * 0.4;
                 let (iw, ih) = text_renderer.measure_weighted(
@@ -12179,15 +10251,8 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
                 None,
             );
-            // The tag is what keeps the shared list honest. Without it
-            // this dropdown says a name is in the room and lets the
-            // reader supply "person", which is the one thing it must
-            // never do on the reader's behalf.
-            //
-            // Suppressed only when the label already carries the word,
-            // as the agent this OS ships does: "agent  agent" reads as
-            // a rendering fault, and the honesty the tag exists for is
-            // already served by the name itself.
+            // Suppressed when the label already carries the word, or it
+            // would read "agent agent".
             if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
                 text_renderer.draw_text(
                     scene,
@@ -12198,16 +10263,8 @@ impl ShellOverlayHost {
                     None,
                 );
             }
-            // The sub-line: what they may do here, or — for somebody
-            // who has been named and has not come — that they have not
-            // come. Right-aligned under the name rather than beside the
-            // agent tag above, so an agent shows both what it is and
-            // what it holds without the two colliding in the same 56 px.
-            //
-            // "invited" wins over the role when both could be said. A
-            // role is what somebody may do once they are here, and
-            // leading with it for somebody who is not here yet answers
-            // a question nobody asked ahead of the one they did.
+            // "Invited" wins over role — role isn't the question for
+            // somebody who isn't here yet.
             let sub = if row.invited {
                 Some(INVITED_TAG.to_string())
             } else {
@@ -12234,13 +10291,9 @@ impl ShellOverlayHost {
         self.draw_collaborators_footer(scene, transform, text_renderer, theme);
     }
 
-    /// "Room activity" row at the foot of the collaborator dropdown.
-    ///
-    /// The dropdown's subject is the room's people; its history is the same
-    /// subject over time, so this is where a user already looking at "who is
-    /// here" will look for "what happened". It is the visible counterpart to
-    /// the palette's `Show room activity` — the palette is how you reach it
-    /// when you know it exists, this is how you find out that it does.
+    /// "Room activity" row at the foot of the collaborator dropdown — the
+    /// visible counterpart to the palette's `Show room activity`, for
+    /// someone who doesn't yet know the command exists.
     fn draw_collaborators_footer(
         &mut self,
         scene: &mut Scene,
@@ -12251,15 +10304,8 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Invite / Join. Both are the palette's peer-sync rows, put where
-        // a person looking at the room's people will look for them: the
-        // palette is how you reach a command whose name you already know,
-        // and this is how you find out the command exists at all.
-        //
-        // Invite is the filled one because it is the act this surface is
-        // usually opened to perform; Join is outlined because it is the
-        // other machine's half of the same gesture, and a room you are
-        // already in is not one you join.
+        // Invite is filled (the usual reason this surface is opened);
+        // Join is outlined — the other machine's half of the gesture.
         let (invite, join) = self.collaborators_action_row_rects();
         self.collab_invite_row_rect = invite;
         self.collab_join_row_rect = join;
@@ -12358,23 +10404,13 @@ impl ShellOverlayHost {
     }
 
     /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
-    /// 1 = Volume). Returned together with the label baseline `y` so the
-    /// draw path and the hit-test share one source of truth.
-    ///
-    /// The slider card sits at popover y0 + 88 with 12 px inner padding;
-    /// each slider row is 24 px tall with the bar centred vertically.
-    /// Leading 24 px of the row is reserved for the icon (Sun / Volume2),
-    /// then a 12 px gap, then the bar fills the remaining width minus the
-    /// trailing 12 px padding.
+    /// 1 = Volume), with the label baseline `y`, so draw and hit-test
+    /// share one source of truth.
     pub fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
         let r = self.quick_settings_rect();
-        // Slider card: y0 + 88 to y0 + 88 + 72.
         let card_y = r.y0 + 88.0;
-        // 12 px inner padding; rows 24 px tall; 12 px gap between them.
         let row_y = card_y + 12.0 + i as f64 * 36.0;
         let bar_y_mid = row_y + 12.0;
-        // Icon takes 16 px starting at card.x0 + 16; bar starts after a
-        // 12 px gap and runs to card.x1 - 16.
         let bar_x0 = r.x0 + 16.0 + 16.0 + 12.0;
         let bar_x1 = r.x1 - 16.0;
         let bar = Rect::new(bar_x0, bar_y_mid - 3.0, bar_x1, bar_y_mid + 3.0);
@@ -12417,15 +10453,10 @@ impl ShellOverlayHost {
 
 #[cfg(test)]
 mod overview_panel_tests {
-    //! The overview is a switcher for **rooms**: which one you are in,
-    //! who is in it with you, what leaves it, and how to get to another.
-    //! These pin the parts of that which are geometry or data rather
-    //! than pixels.
-    //!
-    //! Every assertion runs against the helpers `draw_overview` itself
-    //! calls — `overview_row_rect` is where a room is painted *and* what
-    //! `hit_test_overview` clicks against, and `room_cards` is the model
-    //! the panel's every claim is read from.
+    //! The overview is a switcher for rooms: which one you're in, who's in
+    //! it, what leaves it, how to get to another. These pin geometry/data,
+    //! not pixels — every assertion runs against the same helpers
+    //! `draw_overview` itself calls (`overview_row_rect`, `room_cards`).
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -12614,9 +10645,7 @@ mod overview_panel_tests {
     #[test]
     fn a_private_room_says_so_on_its_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        // What boot does before the session paints: a room you made is a
-        // room you own. Without it the tree describes a workspace with no
-        // recorded access at all, which is a different claim.
+        // What boot does before the session paints: a room you made is one you own.
         tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
         let cards = room_cards(&tree);
         assert_eq!(cards.len(), 1);
@@ -12696,18 +10725,13 @@ mod overview_transition_tests {
     use ui::widget::Container;
 
     fn host() -> ShellOverlayHost {
-        // Dummy content widget — `Container::new()` produces an empty
-        // layout node which is enough for the transition state tests.
         ShellOverlayHost::new(Box::new(Container::new()))
     }
 
-    /// A window as wide as the strip allows still has to end before the
-    /// display does. Its border, its rounded corners and its drop shadow
-    /// all live in the last few pixels of the card, so a group that
-    /// resolves flush to the output's right edge loses every one of them
-    /// and reads as clipped by the bezel instead of as a window on a
-    /// desktop. The near edge already reserves a wallpaper gutter beside
-    /// the wheel disc; this asserts the far edge reserves one too.
+    /// A window at the strip's max width still has to stop short of the
+    /// display edge, or its border/corners/shadow — which live in the last
+    /// few pixels — get clipped by the bezel. Mirrors the gutter the near
+    /// edge already reserves beside the wheel disc.
     #[test]
     fn a_full_width_window_stops_short_of_both_screen_edges() {
         let mut h = host().with_sidebar(Box::new(Container::new()));
@@ -12805,8 +10829,7 @@ mod overview_transition_tests {
         h.tick_overview_transition(1.0);
         assert!(h.transition_started.is_some(), "should latch transition");
         assert_eq!(h.overview_target, 1.0);
-        // Sleep past the full duration and tick once more; value should
-        // settle exactly at the target with the transition cleared.
+        // Past the full duration, value settles exactly at the target.
         std::thread::sleep(std::time::Duration::from_millis(
             OVERVIEW_TRANSITION_MS + 30,
         ));
@@ -12817,10 +10840,8 @@ mod overview_transition_tests {
 
     #[test]
     fn mid_flight_re_toggle_picks_up_from_current_t() {
-        // Start a 0→1 fade, tick a bit, then flip target to 0. The
-        // `transition_from` should be captured from the current `overview_t`
-        // (not 0), so the reverse fade starts from wherever we were rather
-        // than popping.
+        // Flip target mid-fade; `transition_from` should capture the
+        // current `overview_t`, not 0, so the reverse starts from there.
         let mut h = host();
         h.tick_overview_transition(1.0);
         std::thread::sleep(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2));
@@ -13222,25 +11243,15 @@ mod palette_dispatch_tests {
         let host = ShellOverlayHost::new(Box::new(Container::new()))
             .with_peer_sync_enabled(true)
             .with_peer_sync_enabled(true);
-        // The CommandPalette doesn't expose entry count, but invoking
-        // a peer-sync id twice must still dispatch (no panic, no
-        // duplicate-row regression). Indirectly proven by checking
-        // each dispatch enqueues exactly one action.
+        // No entry-count API, so proven indirectly: invoking a peer-sync id
+        // twice must still dispatch exactly one action, no panic.
         let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         assert!(h.dispatch_palette_command("peer.invite"));
         assert_eq!(h.take_peer_sync_actions().len(), 1);
     }
 
-    // -----------------------------------------------------------------
-    // Getting the token from the machine that minted it to the machine
-    // that needs it.
-    //
-    // A token is a few hundred opaque base64 characters. If the only
-    // way across is to read it off one screen and type it into another,
-    // the invite flow does not work — not "is inconvenient", does not
-    // work, because nobody transcribes that correctly. These prove the
-    // two halves of the crossing against the process clipboard.
-    // -----------------------------------------------------------------
+    // Proves both halves of the invite-token crossing (mint → clipboard
+    // → paste) against the process clipboard.
 
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
@@ -13292,11 +11303,9 @@ mod palette_dispatch_tests {
         );
     }
 
-    /// And answering the question is one gesture, so it produces one
-    /// outcome: a token, for that person, on the clipboard, with the
-    /// card saying so. Splitting it into "mint" and "now find the Copy
-    /// button" is how the copy came to be skipped — the second half is
-    /// the half nobody thinks to do.
+    /// One gesture, one outcome: a token for that person, on the clipboard,
+    /// with the card saying so. Splitting mint from Copy is how the copy
+    /// gets skipped — nobody thinks to do the second half.
     #[test]
     #[serial_test::serial(clipboard)]
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
@@ -13376,10 +11385,8 @@ mod palette_dispatch_tests {
         );
     }
 
-    /// The card is a summary now, not a transcript, so what a person
-    /// compares out of band has to be pinned: the same machine reads
-    /// the same on both screens, and two machines do not collide into
-    /// one.
+    /// A summary, not a transcript — pinned so the same machine reads the
+    /// same on both screens, and two machines don't collide into one.
     #[test]
     fn the_fingerprint_identifies_the_machine_that_signed_the_invite() {
         let a = "12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvWx";
@@ -13395,9 +11402,8 @@ mod palette_dispatch_tests {
             peer_fingerprint("12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvAb"),
             "two machines do not read the same"
         );
-        // Short and odd inputs are not a panic. A peer id is always
-        // longer than this, but the card must not be the thing that
-        // takes the compositor down if one ever is not.
+        // Short/odd inputs must not panic — a peer id is always longer,
+        // but the card must not be what takes the compositor down if one isn't.
         assert_eq!(peer_fingerprint("abc"), "abc");
         assert_eq!(peer_fingerprint(""), "");
     }
@@ -13524,12 +11530,9 @@ mod palette_dispatch_tests {
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
 
-        // Half a token — what the field holds while somebody is typing
-        // one by hand, and the one state no end-to-end run reaches,
-        // because a paste arrives whole. The card summarises it rather
-        // than spelling it out, so this is the path through
-        // `elide_token`, and a card that panicked here would take the
-        // compositor with it.
+        // Half a token: what the field holds while typed by hand (a paste
+        // arrives whole), exercising `elide_token` — a card that panicked
+        // here would take the compositor with it.
         chrome.borrow_mut().peer_sync_connect_input = Some("e".repeat(400));
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
@@ -13554,19 +11557,9 @@ mod palette_dispatch_tests {
     // can see how it ended.
     // -----------------------------------------------------------------
 
-    /// The indication is continuous, and there is only ever one of it.
-    ///
-    /// It has to stand until there is something to look at: an open that
-    /// takes seconds forks the launcher process well before anything is
-    /// on screen, and retiring on that fork would leave somebody
-    /// watching an empty desktop wondering whether their keystroke had
-    /// registered.
-    ///
-    /// But it must also stand down as soon as there is. Once the window's
-    /// own place is saying which app is coming, a notification in the
-    /// corner saying it again is noise; and if that app never draws, the
-    /// window ends up reading "isn't responding" beneath a notification
-    /// still reading "Loading…".
+    /// The loading notice must outlive the fork (nothing on screen yet) but
+    /// retire the moment the window's own place says which app is coming —
+    /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
     #[test]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         let (mut h, chrome) = host_with_chrome();
@@ -13588,11 +11581,9 @@ mod palette_dispatch_tests {
             "the user is still waiting; the acknowledgement must still be up"
         );
 
-        // The client creates its toplevel, and the compositor adopts a
-        // tab for it. This is *not* yet the end of the wait: for the first
-        // moments after adoption the tab holds nothing anyone can see,
-        // because an app that opens in a blink must not be preceded by an
-        // indicator flashing on and off in its place.
+        // Adoption isn't the end of the wait — for the first moments the
+        // tab holds nothing visible, and a blink-fast app must not be
+        // preceded by an indicator flashing on and off.
         const SURFACE: u64 = 918_273;
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -13617,9 +11608,8 @@ mod palette_dispatch_tests {
             "still waiting — nothing stands in the window's place"
         );
 
-        // Past the delay the window's place is a card naming the app, so
-        // the wait is now being accounted for where the window is going to
-        // be. The notice stands down rather than saying it a second time.
+        // Past the delay the window's place names the app; the notice
+        // stands down rather than repeating it.
         store.backdate_first_seen(
             SURFACE,
             crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
@@ -13707,25 +11697,18 @@ mod two_workspace_host_tests {
 
     fn host_with_two_workspaces() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        // Add a second workspace so we actually have something to
-        // switch *to*. `bootstrap_demo` only seeds one, and
-        // `switch_down` is a no-op when there's nothing below.
+        // `bootstrap_demo` only seeds one workspace; `switch_down` is a
+        // no-op with nothing below.
         tree.append_empty_workspace("Second");
         let chrome = ChromeState::new(tree);
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
-        // Give the host a viewport. The exact value doesn't matter for
-        // the test assertions, only that it's > 0.
         host.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         (host, chrome)
     }
 
-    /// Switching workspace moves nothing.
-    ///
-    /// `needs_animation_frame` is the signal that would drive a
-    /// full-tree slide animation if one existed, so a switch leaving
-    /// the host idle is the property that says no such animation
-    /// exists to be reintroduced by accident.
+    /// Switching workspace must not turn on `needs_animation_frame` — a
+    /// full-tree slide animation must not get reintroduced by accident.
     #[test]
     fn switching_workspace_animates_nothing() {
         let (mut h, chrome) = host_with_two_workspaces();
@@ -13802,9 +11785,7 @@ mod two_workspace_host_tests {
         assert_eq!(visible[0].pos, (120.0, 240.0));
     }
 
-    /// Two peers in the same room are both drawn, each in their own
-    /// colour. A single peer had always been enough to make the overlay
-    /// look right; several at once is the case that has to work.
+    /// Two peers in the same room are drawn in distinct colours.
     #[test]
     fn several_peers_in_one_room_are_all_drawn_in_distinct_colours() {
         use ui::permissions::UserId;
@@ -13822,9 +11803,8 @@ mod two_workspace_host_tests {
         };
         let key = PresenceKey::Workspace { id: room };
         let mut presence = PresenceCtx::empty();
-        // Two of them close enough together that a fixed-offset pill
-        // layout would have stacked their names, and two with names that
-        // differ by one letter.
+        // Two close enough to have stacked under a fixed-offset layout, and
+        // two with names differing by one letter.
         for (who, at) in [
             ("alice", (400.0, 300.0)),
             ("bob", (404.0, 302.0)),
@@ -13893,9 +11873,8 @@ mod me_tile_fallback_tests {
 
     #[test]
     fn fallback_does_not_duplicate_you_badge() {
-        // The adjacent indigo badge always says "You"; the row label
-        // must therefore not also say "You" or the user sees the same
-        // word twice in a 160 px tile.
+        // The adjacent badge always says "You"; the row label must not
+        // repeat it in the same 160 px tile.
         assert_ne!(
             ShellOverlayHost::ME_TILE_FALLBACK_NAME,
             "You",
@@ -13911,13 +11890,9 @@ mod me_tile_fallback_tests {
 #[cfg(test)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
-    //! modal and the command palette. `modal_transition_curve` is the live
-    //! one — it drives both the enter and the exit off a `ui::Transition`,
-    //! and is what both draw paths call. The actual draw path composes this
-    //! curve into an alpha/translate/scale — these assertions keep the
-    //! *source* of that composition honest so a later refactor of the
-    //! draw path can't silently regress the rest state or the concept
-    //! animation's start scale.
+    //! modal and the command palette (`modal_transition_curve`, which both
+    //! draw paths call) — keeps the *source* honest so a later refactor
+    //! can't silently regress the rest state or the animation's start scale.
 
     use super::*;
 
@@ -13944,9 +11919,8 @@ mod modal_curve_tests {
 
     #[test]
     fn modal_curve_starts_from_initial_values() {
-        // Sampled at the instant the open begins, the panel must still be
-        // invisible, 20 px low and at its start scale — otherwise it pops
-        // in rather than animating.
+        // At t=0 the panel must be invisible, 20px low, and at its start
+        // scale — otherwise it pops in rather than animating.
         let start = Instant::now();
         let t = opening();
         let (alpha, dy, scale) = modal_transition_curve(&t, start, 0.9);
@@ -13971,10 +11945,8 @@ mod modal_curve_tests {
 
     #[test]
     fn palette_exit_interpolates_not_pops() {
-        // Deterministic proof (no wall-clock sleep) that the palette
-        // FADES out rather than popping: sample the transition's openness
-        // at explicit instants across the close window. Openness must be
-        // strictly between 0 and 1 mid-flight.
+        // Deterministic proof (no wall-clock sleep) that the palette fades
+        // out rather than popping, by sampling openness at explicit instants.
         let mut t = ui::Transition::open();
         t.set_open(
             false,
@@ -14034,11 +12006,9 @@ mod modal_curve_tests {
         assert!(!h.ws_settings_transition.is_visible(later));
     }
 
-    /// Concept `OverviewView.tsx:60-68` — rows tile vertically down the
-    /// centered column, one per workspace. The draw path consults
-    /// `self.last_cursor` against each row rect, so the hit-test must stay
-    /// honest with the row geometry it computes; `hit_test_overview` and
-    /// `overview_row_rect` are the shared oracle.
+    /// The draw path consults `self.last_cursor` against each row rect, so
+    /// the hit-test must stay honest with that geometry; `hit_test_overview`
+    /// and `overview_row_rect` are the shared oracle.
     #[test]
     fn overview_hit_test_returns_card_index_when_cursor_is_over_card() {
         use crate::shell::chrome_state::ChromeState;
@@ -14068,18 +12038,11 @@ mod modal_curve_tests {
 
 #[cfg(test)]
 mod overlay_event_absorb_tests {
-    //! Pin the modal event-absorb gate. The host must short-
-    //! circuit every pointer event whose cursor is over an open overlay so
-    //! `Released` and `CursorMoved` can't leak through to the underlying
-    //! content widget — hovers under the palette must NOT light up tab
-    //! pills, drag-loops on the wheel disc must NOT keep receiving
-    //! CursorMoved while QS is open, etc.
-    //!
-    //! Each test wires the host's content slot to a [`RecordingContent`]
-    //! mock so the assertion goes against the real production code path
-    //! (`host.handle_event(...)`) — not just the [`ShellOverlayHost::
-    //! cursor_over_open_overlay`] predicate. If the absorb gate fails, the
-    //! mock records the forwarded event and the assertion fires.
+    //! Pins the modal event-absorb gate: every pointer event over an open
+    //! overlay must short-circuit rather than leak to the content widget
+    //! underneath. Runs against the real `host.handle_event` path via a
+    //! [`RecordingContent`] mock, not just the
+    //! [`ShellOverlayHost::cursor_over_open_overlay`] predicate.
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
@@ -14092,11 +12055,9 @@ mod overlay_event_absorb_tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
-    /// A mock content widget that records every [`Widget::handle_event`]
-    /// invocation in a shared `Vec<String>`. The recorded label is the
-    /// event-variant name (e.g. `"CursorMoved"`, `"MouseInput::Released"`)
-    /// so tests can assert *which* event types reached the content — and,
-    /// critically, that absorbed events did NOT.
+    /// Mock content widget recording every [`Widget::handle_event`] call by
+    /// event-variant name, so tests can assert which events reached it —
+    /// and that absorbed ones did not.
     struct RecordingContent {
         rect: Rect,
         log: Rc<RefCell<Vec<String>>>,
@@ -14189,10 +12150,8 @@ mod overlay_event_absorb_tests {
         }
     }
 
-    /// Build a host wrapping a [`RecordingContent`] mock, lay it out at a
-    /// known viewport, and return everything the tests need to pump events.
-    /// The `log` is shared with the mock content; test assertions inspect
-    /// it after `host.handle_event(...)` to verify the absorb gate fired.
+    /// Builds a host wrapping [`RecordingContent`], laid out at a known
+    /// viewport; `log` is shared with the mock for post-event assertions.
     struct AbsorbHarness {
         host: ShellOverlayHost,
         chrome: crate::shell::chrome_state::Chrome,
@@ -14205,11 +12164,10 @@ mod overlay_event_absorb_tests {
         build_harness_sized(1600.0, 900.0)
     }
 
-    /// One full layout pass over the host at `vw` × `vh`, exactly as the
-    /// compositor's frame does it. Separate from the harness constructor
-    /// so a test can lay out *again* after a paint — which is what the
-    /// shell itself does when a draw discovers the palette needs more
-    /// room than the last layout gave it.
+    /// One full layout pass over the host, as the compositor's frame does
+    /// it. Separate from the constructor so a test can lay out *again*
+    /// after a paint — what the shell does when a draw finds the palette
+    /// needs more room than the last layout gave it.
     fn lay_out_host(host: &mut ShellOverlayHost, vw: f64, vh: f64) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -14324,8 +12282,7 @@ mod overlay_event_absorb_tests {
             .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    /// Paint once so the chip / scope rects the click router reads are
-    /// the ones that were actually drawn, then click a point.
+    /// Paints (see [`paint`]), then clicks a point.
     fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
         paint(h);
         let p = point_of(&h.host);
@@ -14344,22 +12301,15 @@ mod overlay_event_absorb_tests {
         paint(h);
     }
 
-    /// **Every filter has to be reachable at every width.**
-    ///
-    /// The strip used to stop painting at the first chip that did not
-    /// fit, and a chip that is not painted has no rect — so the filter it
-    /// stands for could be listed by the registry and still be
-    /// unclickable. At 1600 px the five kinds of the day exactly filled
-    /// the row, so a sixth was invisible; under the test harness's own
-    /// metrics even `Folders` was dropped.
-    ///
-    /// Asserts on the rects the production `draw` cached, because that is
-    /// the thing a click is hit-tested against.
+    /// Every filter must be reachable at every width. An unpainted chip has
+    /// no rect, so its filter is unclickable even though the registry lists
+    /// it — at 1600px five kinds exactly filled the row, hiding a sixth.
+    /// Asserts on the rects production `draw` cached, since that's what a
+    /// click is hit-tested against.
     #[test]
     fn every_kind_is_reachable_at_every_width() {
-        // 800 is the narrowest viewport `shots --sweep` renders, and the
-        // one where the palette card hits its 560 px floor: the filter
-        // band is at its tightest and the strip has the least room.
+        // 800 is the narrowest viewport `shots --sweep` renders, where the
+        // palette card hits its 560px floor and the filter band is tightest.
         for (vw, vh) in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
             let mut h = build_harness_sized(vw, vh);
             h.host.set_palette_visible(true);
@@ -14428,13 +12378,9 @@ mod overlay_event_absorb_tests {
         }
     }
 
-    /// The reachability claim, driven the way a user makes it: click the
-    /// **last** chip — the one that used to fall off the end of the row —
-    /// at the narrowest viewport, and the filter it stands for applies.
-    ///
-    /// Clicks the rect the production `draw` cached, through the
-    /// production `handle_event` router, so a chip that is painted but
-    /// mis-placed fails here too.
+    /// Clicking the last chip at the narrowest viewport must apply its
+    /// filter — driven through the production `handle_event` router against
+    /// the rect `draw` actually cached, so a mis-placed chip fails here too.
     #[test]
     fn the_last_chip_can_be_clicked_at_the_narrowest_width() {
         let (vw, vh) = (800.0, 600.0);
@@ -14533,12 +12479,9 @@ mod overlay_event_absorb_tests {
         }
     }
 
-    /// The kind chips and the scope switch moved inside the palette
-    /// card. Clicking one must still filter — and must not be taken for
-    /// a click outside the card, which is the dismissal gesture.
-    ///
-    /// Drives the production `handle_event` router against the rects the
-    /// production `draw` just cached, so the two cannot drift apart.
+    /// Clicking a kind chip or scope switch must filter, not be mistaken
+    /// for a dismissal click outside the card. Drives the production
+    /// `handle_event` router against rects `draw` just cached.
     #[test]
     fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
         let mut h = build_harness();
@@ -14683,11 +12626,9 @@ mod overlay_event_absorb_tests {
 
     #[test]
     fn cursor_moved_outside_open_overlay_still_reaches_content() {
-        // Negative test: when the cursor sits outside every open overlay's
-        // rect, the absorb gate must NOT fire — regular content (e.g. the
-        // sidebar wheel, topbar tray) still needs to see hover events to
-        // light up. This pins that the gate is *bounded by rect*, not just
-        // "any pointer event while an overlay is open".
+        // Negative test: outside every overlay's rect the absorb gate must
+        // NOT fire — the gate is bounded by rect, not "any pointer event
+        // while an overlay is open".
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         // A point in the top-left corner that the palette (centered modal)
@@ -14707,18 +12648,8 @@ mod overlay_event_absorb_tests {
 
 #[cfg(test)]
 mod tests {
-    //! 1. `toggle_palette_focuses_input` — opening the global-search
-    //!    palette via the live Ctrl+K production path must focus the
-    //!    palette's input *and* clear any residual query, so the user
-    //!    can start typing immediately.
-    //! 2. `ws_settings_pill_click_switches_tab` — clicking the Files
-    //!    pill in the WS-settings tab strip must mutate
-    //!    `chrome.ws_settings_tab` to `WsTab::Files`.
-    //!
-    //! Both tests drive `host.handle_event(...)` with real winit
-    //! `WindowEvent`s — they observe chrome state mutations through
-    //! the same code path the live binary takes, never reaching into
-    //! private toggles.
+    //! Drives `host.handle_event` with real winit events, through the
+    //! same path the live binary takes.
     use super::*;
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
@@ -14730,13 +12661,9 @@ mod tests {
     use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
-    /// Recording mock content widget — the host's `content` slot is a
-    /// `Box<dyn Widget>` and the existing `Container::new()` stub is
-    /// fine for the palette test (the input-focus assertion never
-    /// reaches `content.handle_event`), but the WS-settings click test
-    /// needs a non-trivial layout target so taffy can place the modal
-    /// rect inside the viewport. Reusing the absorb-suite's recording
-    /// stub keeps the two test modules aligned.
+    /// Recording mock content for the host's `content` slot. The palette
+    /// test never reaches `content.handle_event`, but the WS-settings click
+    /// test needs a real layout target so taffy can place the modal.
     struct StubContent {
         rect: Rect,
     }
@@ -14955,12 +12882,10 @@ mod tests {
         handled
     }
 
-    /// Build a `KeyEvent` via the same zero-init workaround used by
-    /// `tests/e2e_shell_flows.rs::key_press` — winit 0.30's
-    /// `KeyEventExtra` is `pub(crate)`, so we can't go through a
-    /// struct literal. Hand-write one over a zeroed buffer and only
-    /// overwrite the pub fields the host actually reads (`logical_key`
-    /// + `state`).
+    /// Builds a `KeyEvent` over a zeroed buffer — winit 0.30's
+    /// `KeyEventExtra` is `pub(crate)`, so a struct literal isn't possible.
+    /// Only the pub fields the host reads (`logical_key`, `state`) are
+    /// overwritten.
     fn key_press(logical_key: Key) -> WindowEvent {
         // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
         // bit pattern (`logical_key` is overwritten below, `text` is
@@ -15110,27 +13035,18 @@ mod tests {
         );
     }
 
-    /// Make the local user the owner of every room, which is what a real
-    /// session does on the way up (`ChromeState::add_workspace` →
-    /// `WorkspaceTree::adopt_ownerless_workspaces`) and what
-    /// `bootstrap_demo` leaves undone.
-    ///
-    /// Without it nobody administers the room, so nobody may invite into
-    /// it — correctly, but it is not a state a session is ever in, and a
-    /// test that relies on it would pass for a reason that has nothing
-    /// to do with what it claims to check.
+    /// Makes the local user owner of every room — what a real session does
+    /// on the way up but `bootstrap_demo` leaves undone. Without it nobody
+    /// may invite, correctly, but that's not a state a real session is
+    /// ever in.
     fn adopt_rooms(h: &Harness) {
         let st = h.chrome.borrow();
         let user = st.local_user_id.clone();
         st.tree_mut().adopt_ownerless_workspaces(&user);
     }
 
-    /// The dropdown's subject is who is in this room, and the two acts
-    /// that change the answer are adding somebody and joining somebody
-    /// else's room. Before this it offered neither: it listed people and
-    /// the only route to inviting one was a palette command whose name
-    /// you had to already know, which is not a route a person on a
-    /// desktop takes.
+    /// The dropdown's subject is who is in this room, so it must offer both
+    /// ways that changes: adding somebody, and joining somebody else's room.
     #[test]
     fn collaborator_dropdown_offers_invite_and_join() {
         let mut h = build_harness();
@@ -15159,13 +13075,9 @@ mod tests {
         );
     }
 
-    /// Inviting somebody is inviting *somebody*, so the button asks
-    /// who before it mints anything.
-    ///
-    /// A token minted without an answer is a token the room can never
-    /// attach a name to: the guest arrives and the host's own roster
-    /// reads `peer@12191268537764683811`, because nothing in the flow
-    /// was ever told a name.
+    /// Inviting somebody is inviting *somebody* — the button asks who
+    /// before minting, since an unnamed token leaves the host's own roster
+    /// reading a bare peer id once the guest arrives.
     #[test]
     fn collaborator_invite_button_asks_who_before_minting() {
         let mut h = build_harness();
@@ -15215,11 +13127,9 @@ mod tests {
         );
     }
 
-    /// Peer sync off means nothing in this session can mint a token, so
-    /// a button offering to is a button that lies. The room is adopted
-    /// first so peer-sync is the *only* thing missing — a test that also
-    /// happened to fail the capability check would prove nothing about
-    /// the flag it names.
+    /// Peer sync off means nothing can mint a token, so the button must not
+    /// offer to. The room is adopted first so peer-sync is the *only*
+    /// capability missing.
     #[test]
     fn collaborator_actions_are_absent_when_peer_sync_is_off() {
         let mut h = build_harness();
@@ -15236,11 +13146,9 @@ mod tests {
         assert_no_peer_sync_work_from_a_click_in_the_panel(&mut h);
     }
 
-    /// And the capability, which is the half that matters: somebody who
-    /// does not administer this room may not add people to it, and the
-    /// gate has to remove the *hit target* rather than only the paint. A
-    /// rect that outlives the button it belongs to is a control the user
-    /// cannot see and can still press.
+    /// The capability gate must remove the *hit target*, not just the
+    /// paint — a rect that outlives its button is invisible but still
+    /// clickable.
     #[test]
     fn collaborator_actions_are_absent_without_the_invite_capability() {
         let mut h = build_harness();
@@ -15369,11 +13277,9 @@ mod tests {
         );
     }
 
-    /// Stuff a non-empty query into the palette before opening it,
-    /// then assert that the open transition both focuses the input
-    /// AND clears the query. Drives the production Ctrl+K path
-    /// through `handle_event` so the test fails if either the focus
-    /// nudge or the query reset is dropped.
+    /// Opening the palette with a stale query must both focus the input
+    /// and clear it. Drives the production Ctrl+K path through
+    /// `handle_event`.
     #[test]
     fn toggle_palette_focuses_input() {
         let mut h = build_harness();
@@ -15431,21 +13337,10 @@ mod tests {
         .unwrap();
     }
 
-    /// The two chords ask different questions, and each must answer its
-    /// own.
-    ///
-    /// `Ctrl+K` is scoped to the focused app, so with a Notes tab in
-    /// front it searches notes — an installed app you do not have open
-    /// is deliberately *not* among its answers. `Super+K` is the global
-    /// surface, and it must offer that app.
-    ///
-    /// The precondition matters: `bootstrap_demo`'s active tab is
-    /// Notes, which `NotesProvider` claims via `owns_tab`. Without a
-    /// claiming provider `ActiveApp` allows everything and the narrow
-    /// half of this test would pass vacuously. Drives the whole
-    /// production chain: `handle_event` → `open_palette_with_scope` →
-    /// `refresh_search_results` → `SearchRegistry::query` →
-    /// `ApplicationsProvider` → `launcher::gui_apps`.
+    /// `Ctrl+K` scopes to the focused app (Notes, from `bootstrap_demo`,
+    /// which `NotesProvider` claims via `owns_tab`) so an installed-but-
+    /// unopened app is not among its answers; `Super+K` is the global
+    /// surface and must offer it.
     #[test]
     #[serial_test::serial(process_env)]
     fn ctrl_k_scopes_to_the_focused_app_and_super_k_reaches_installed_apps() {
@@ -15458,9 +13353,8 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
-        // Precondition: the focused tab really is one a provider owns,
-        // so `ActiveApp` would genuinely exclude the applications
-        // provider. Without this the test would pass vacuously.
+        // Precondition: the focused tab must be provider-owned, or
+        // `ActiveApp` excludes nothing and the test passes vacuously.
         let owner = {
             let st = h.chrome.borrow();
             active_tab_provider_id(&st, &h.host.search_registry)
@@ -15497,9 +13391,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // Super+K: the global surface, and the one that launches.
-        // Closed first so the chord opens the palette rather than
-        // toggling the already-open one shut.
+        // Super+K: the global surface. Closed first so the chord opens
+        // rather than toggles the already-open palette shut.
         h.host.palette_visible = false;
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), &sup));
@@ -15535,16 +13428,10 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Ctrl+K searching the focused app has to reach that app's own
-    /// *content*, not just its tab title.
-    ///
-    /// Drives the whole production chain with a document the real
-    /// `NotesApp` wrote: `handle_event` → `open_palette_with_scope` →
-    /// `refresh_search_results` → `SearchRegistry::query` →
-    /// `NotesProvider` → palette rows. `nir` appears nowhere but the
-    /// note's body, and the palette answered it with nothing, because the
-    /// provider looked for the body under a per-tab map keyed by the tab
-    /// id — a shape the tile wiring never creates.
+    /// Ctrl+K scoped-search must reach the focused app's own *content*,
+    /// not just its tab title. `nir` appears only in the note's body, so
+    /// a provider looking it up by tab id rather than by document
+    /// answers nothing.
     #[test]
     fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
         use crate::shell::chrome_state::SearchScope;
@@ -15552,9 +13439,8 @@ mod tests {
 
         let mut h = build_harness();
         let doc = AutoCommit::new();
-        // The document as the app leaves it, in the document the app is
-        // handed: the tab's own record. `TileHost::sync` calls exactly
-        // this on every frame of the live compositor.
+        // The document as `TileHost::sync` hands it to the app every
+        // frame: the tab's own record.
         let notes_tab = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].tabs[0]
             .id;
         let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
@@ -15619,19 +13505,10 @@ mod tests {
         );
     }
 
-    /// **The gesture a room starting empty depends on.**
-    ///
-    /// A room begins with nothing in it, which is only workable if moving
-    /// one of your own records into it costs one step. That step is this:
-    /// Super+K, type the name, and a record living in *another* room is
-    /// among the answers — labelled with where it lives — and Enter
-    /// brings it here.
-    ///
-    /// Drives the whole production chain rather than the provider alone:
-    /// `handle_event` → `open_palette_with_scope` →
-    /// `refresh_search_results` → `SearchRegistry::query_grouped` →
-    /// `RecordsProvider` → palette rows → `activate_selected_result` →
-    /// the row's own `on_open`.
+    /// A room starting empty is only workable if moving one of your own
+    /// records into it costs one step: Super+K, type the name, and a
+    /// record from *another* room is among the answers — labelled with
+    /// where it lives — and Enter brings it here.
     #[test]
     fn super_k_finds_a_record_from_another_room_and_enter_brings_it_here() {
         use crate::shell::chrome_state::SearchScope;
@@ -15743,11 +13620,9 @@ mod tests {
     }
 
     /// The app-scope pill has to name the focused app *as an app*, or it
-    /// collides with the kind-filter chip strip painted directly above
-    /// it. With Notes focused the strip carried a `Notes` chip and the
-    /// scope control read `Only Notes` one row below — two adjacent
-    /// controls, same word, different meanings ("results shaped like a
-    /// note" versus "search inside the Notes app").
+    /// collides with the kind-filter chip strip above it: two adjacent
+    /// controls with one word and different meanings ("results shaped
+    /// like a note" versus "search inside the Notes app").
     #[test]
     fn app_scope_pill_names_the_app_as_an_app() {
         use crate::shell::chrome_state::SearchScope;
@@ -15761,11 +13636,8 @@ mod tests {
             h.host.search_scope_pill_label(SearchScope::ActiveApp),
             "Notes app"
         );
-        // Generalised: the two bands are a filter row (kinds) and a scope
-        // row (places), and *no* label may appear in both. Pinning only
-        // the app pill would have let the next collision through — `All`
-        // was one, sitting under the `All` chip that clears the kind
-        // filter.
+        // Generalised: no label may appear in both the filter row (kinds)
+        // and the scope row (places) — `All` was one such collision.
         let chips: Vec<String> = h
             .host
             .search_registry
@@ -15789,15 +13661,8 @@ mod tests {
         assert!(!SearchScope::All.narrows_results());
     }
 
-    /// Click the Files pill in the WS-settings tab strip and assert
-    /// `chrome.ws_settings_tab` flips to `WsTab::Files`. The test:
-    ///   1. opens the modal,
-    ///   2. paints one frame so `draw_ws_settings` populates the
-    ///      cached pill rects,
-    ///   3. reads the Files pill rect through the `ws_settings_tab_
-    ///      pill_rect` accessor,
-    ///   4. dispatches a real `MouseInput::Pressed` via `handle_event`
-    ///      at that rect's centre.
+    /// Click the Members pill and assert `chrome.ws_settings_tab` flips,
+    /// through a real `MouseInput::Pressed` dispatched via `handle_event`.
     #[test]
     fn ws_settings_pill_click_switches_tab() {
         let mut h = build_harness();
@@ -15808,10 +13673,8 @@ mod tests {
             "modal must default to the General tab"
         );
 
-        // The pill rects are populated inside `draw_ws_settings`, so
-        // we have to paint one frame before they're queryable. Drive
-        // the public `Widget::draw` path with the same theme + dummy
-        // presence the live binary uses.
+        // Pill rects are populated inside `draw_ws_settings`, so paint
+        // one frame before they're queryable.
         let theme = Theme::dark();
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
@@ -15827,8 +13690,7 @@ mod tests {
         );
         let p = members_pill.center();
 
-        // MouseInput doesn't carry position data; seed `last_cursor`
-        // through a CursorMoved at the same point first.
+        // MouseInput carries no position; seed `last_cursor` via CursorMoved first.
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(p), &mods);
         let handled = pump(&mut h, &left_button_pressed(), &mods);
@@ -15845,12 +13707,9 @@ mod tests {
         );
     }
 
-    /// Concept §4.1 specifies `bg-black/30 backdrop-blur-[1px]` for the
-    /// modal scrim. Without the 1-px blur the perceived dimming drops
-    /// below what the design intended, so the rendered alpha must be
-    /// lifted to compensate. Pin a floor of `0.45` — empirically the
-    /// alpha at which a non-blurred scrim reads roughly the same as
-    /// the concept's blurred 0.30 fill.
+    /// Without the design's 1px backdrop blur, perceived dimming drops
+    /// below intent, so the rendered alpha compensates. `0.45` is
+    /// empirically where a non-blurred scrim reads like the blurred 0.30.
     #[test]
     fn palette_scrim_alpha_matches_concept() {
         assert!(
@@ -15864,10 +13723,9 @@ mod tests {
         );
     }
 
-    /// Concept ref `WorkspaceSettingsModal.tsx:62-79` — the active nav
-    /// row is tinted `bg-white/10 text-white`. This pin keeps the token
-    /// byte aligned with the Tailwind `white/10` literal so a future
-    /// refactor that renames or retypes the token surfaces here loudly.
+    /// Keeps `surface_white_10` byte-aligned with the design's
+    /// `white/10` literal, so a future refactor that retypes the token
+    /// surfaces here loudly.
     #[test]
     fn ws_settings_active_tab_pill_uses_white_overlay() {
         let tokens = ui::tokens::Tokens::dark();
@@ -15883,20 +13741,11 @@ mod tests {
         );
     }
 
-    /// The palette scrim has to actually dim bright window content.
-    ///
-    /// The concept's scrim is blurred and the pinned Vello has no
-    /// `push_blur_layer`, so an un-blurred fill has to go heavier to
-    /// read the same — exactly the compensation
-    /// [`MODAL_SCRIM_ALPHA`] already documents and is already tested for
-    /// below. At 0.30 a `bg-white` window card behind the palette stays
-    /// at 178 grey; at 0.45 it drops to 141, which is what makes the
-    /// palette read as a page on top of a page rather than a card
-    /// floating on a bright field.
-    ///
-    /// Asserted as a lower bound, matching the modal test's shape: the
-    /// requirement is "enough to dim", and pinning an exact float invites
-    /// the next person to satisfy the letter of it by re-lowering it.
+    /// The palette scrim must actually dim bright window content — same
+    /// compensation [`MODAL_SCRIM_ALPHA`] documents. At 0.30 a `bg-white`
+    /// card behind the palette stays at 178 grey; at 0.45 it drops to
+    /// 141. Asserted as a lower bound so the next person can't satisfy
+    /// the letter of it by re-lowering an exact pin.
     #[test]
     fn palette_scrim_alpha_reads_like_the_blurred_concept() {
         assert!(
@@ -15906,9 +13755,8 @@ mod tests {
              the palette stays bright and the card's edge reads as a hard \
              cut (got {PALETTE_SCRIM_ALPHA})"
         );
-        // What the constant is *for*: the brightest thing the shell
-        // paints must come out clearly darker than the palette surface it
-        // sits behind.
+        // The brightest thing the shell paints must come out clearly
+        // darker than the surface it sits behind.
         let card = 255.0;
         let dimmed = card * (1.0 - PALETTE_SCRIM_ALPHA);
         assert!(
@@ -15918,10 +13766,9 @@ mod tests {
         );
     }
 
-    /// The scrim's colour is the theme's, not a literal. Both themes
-    /// must darken: a light-theme scrim that brightened would push the
-    /// background *towards* the surface it is meant to be lifting away
-    /// from.
+    /// The scrim's colour comes from the theme, not a literal — both
+    /// themes must darken, or a light-theme scrim would push the
+    /// background toward the surface it's meant to lift away from.
     #[test]
     fn scrim_hue_comes_from_the_theme_and_darkens_in_both() {
         for (name, colors) in [
@@ -15990,13 +13837,9 @@ mod tests {
         );
     }
 
-    /// The companion to `palette_scrim_alpha_matches_concept`.
-    ///
-    /// Legibility against a busy desktop backdrop wins over the
-    /// concept's tint depth: [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90`
-    /// so the palette reads as solid chrome with just a hint of the
-    /// wallpaper's tint. The scrim below still carries the mode-shift
-    /// affordance.
+    /// Legibility against a busy desktop backdrop wins over tint depth:
+    /// [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90` so the palette reads as
+    /// solid chrome with just a hint of the wallpaper's tint.
     #[test]
     fn palette_surface_alpha_lifts_off_desktop() {
         assert!(
@@ -16012,17 +13855,10 @@ mod tests {
 
 #[cfg(test)]
 mod maximize_harvest_tests {
-    //! Unit coverage for the per-frame `WindowGroup::maximized` writeback.
-    //!
-    //! The integration test in `tests/maximize_persist_wireup_test.rs`
-    //! drives the full click pipeline; this in-crate sibling exercises
-    //! the harvest in isolation by priming the widget's
-    //! `pending_maximize_change` slot through the public test escape
-    //! and asserting `tick_pending_maximize_harvest_for_tests` mirrors
-    //! the new value into the persisted `WorkspaceTree`. Two complementary
-    //! pins: a no-op tick must leave the persisted state alone (so the
-    //! harvest doesn't clobber a `with_maximized(true)` boot), and a
-    //! pending change must be written through.
+    //! Unit coverage for the per-frame `WindowGroup::maximized` writeback,
+    //! complementing the full-pipeline test in
+    //! `tests/maximize_persist_wireup_test.rs`. Two pins: a no-op tick must
+    //! leave persisted state alone, and a pending change must write through.
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
@@ -16079,20 +13915,15 @@ mod maximize_harvest_tests {
         (tree, strip_id, group_id)
     }
 
-    /// Priming `pending_maximize_change = Some(true)` on the live widget
-    /// and ticking the harvest must mirror the new value into the
-    /// persisted `WorkspaceTree`. Without the harvest hook the persisted
-    /// state stays at `false` regardless of how often the user clicks
-    /// the maximize glyph.
+    /// Priming `pending_maximize_change = Some(true)` and ticking the
+    /// harvest must mirror it into the persisted `WorkspaceTree`.
     #[test]
     fn harvest_writes_pending_maximize_change_through_to_tree() {
         let (tree, strip_id, group_id) = one_group_tree(false);
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
 
-        // Drive the widget side: flip `maximized` directly + arm the
-        // pending-change slot the same way the production drain block
-        // does. Avoids a synthetic taffy pump for this in-crate unit
-        // test — the integration test has the full click coverage.
+        // Flip `maximized` and arm the pending-change slot the way the
+        // production drain block does — the integration test covers the click.
         {
             let g = host
                 .group_at_for_tests(strip_id, 0)
@@ -16100,21 +13931,17 @@ mod maximize_harvest_tests {
             assert_eq!(g.id, group_id);
             assert!(!g.maximized, "seed mirrors persisted state");
             g.maximized = true;
-            // `publish_maximize_intent_for_tests` would re-toggle via
-            // the production drain — here we want the explicit value
-            // mirrored into the harvest slot directly.
-            // Same as the production click flow's writeback line.
-            // We can't poke `pending_maximize_change` from outside the
-            // crate, so go through the publish + drain path instead.
+            // Can't poke `pending_maximize_change` from outside the crate,
+            // so go through the publish + drain path the production click
+            // flow uses.
             g.publish_maximize_intent_for_tests();
-            // The drain runs inside `handle_event`. Skip the layout
-            // setup by setting `maximized` back to false and letting
-            // the publish flip it back to true through `take_max`.
+            // The drain runs inside `handle_event`; reset to false so the
+            // publish flips it back to true through `take_max`.
             g.maximized = false;
         }
 
-        // Drive a no-op cursor-move so the drain block runs and arms
-        // `pending_maximize_change`. We use the public Widget API.
+        // A no-op cursor-move runs the drain block and arms
+        // `pending_maximize_change`.
         use std::collections::HashMap;
         use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use vello::kurbo::Point;
@@ -16189,12 +14016,9 @@ mod maximize_harvest_tests {
         }
     }
 
-    /// A tick with no pending change must not overwrite a persisted
-    /// `maximized = true` with the widget's default. Pins that the
-    /// harvest is gated on `take_pending_maximize_change` returning
-    /// `Some(_)`, not on the widget's current `.maximized` value
-    /// (which would be wrong: a freshly-built widget with
-    /// `with_maximized(true)` and no click has nothing to report).
+    /// A no-op tick must not overwrite a persisted `maximized = true` with
+    /// the widget default — gated on `take_pending_maximize_change`
+    /// returning `Some(_)`, not on the widget's current value.
     #[test]
     fn harvest_no_op_tick_leaves_persisted_state_alone() {
         let (tree, _strip_id, _group_id) = one_group_tree(true);
@@ -16212,12 +14036,10 @@ mod maximize_harvest_tests {
 
 #[cfg(test)]
 mod resync_strips_tests {
-    //! A `chrome.bump()` after pushing fresh
-    //! `WindowGroup`s into the persisted tree must propagate to the
-    //! live `GroupRow` widgets on the next `take_structure_dirty`
-    //! tick, even when the harness has never called `update()`. The
-    //! `shots` driver's relayout path skips update, so this test
-    //! exercises the structure-dirty pump in isolation.
+    //! A `chrome.bump()` after pushing fresh `WindowGroup`s must propagate
+    //! to the live `GroupRow` widgets on the next `take_structure_dirty`
+    //! tick, even without `update()` — the `shots` driver's relayout path
+    //! skips it.
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
@@ -16472,13 +14294,10 @@ mod peer_cursor_tests {
         PresenceKey::Workspace { id: room }
     }
 
-    /// Draw the peer layer for `presence` and report how many draw
-    /// commands it emitted. Zero means nothing was painted.
-    ///
-    /// Takes the tree the caller built its `presence` keys against —
-    /// `one_group_seed` mints a fresh `WorkspaceId` per call, so a
-    /// helper that seeded its own would look up a key nobody wrote and
-    /// report zero for every input, real peer included.
+    /// Draws the peer layer for `presence`, returning how many draw
+    /// commands it emitted (0 = nothing painted). Takes the tree the
+    /// caller built `presence` keys against — `one_group_seed` mints a
+    /// fresh `WorkspaceId` per call.
     fn peer_draw_ops(tree: &WorkspaceTree, presence: &PresenceCtx) -> usize {
         let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -16516,11 +14335,9 @@ mod peer_cursor_tests {
         );
     }
 
-    /// The other half, and the one that keeps the first two honest: if
-    /// this fails the helper is reporting zero for everything and the
-    /// no-peer assertions above prove nothing. A peer published into
-    /// `PresenceCtx::pointers` under the active workspace key — the key
-    /// the collaboration layer writes — still gets painted.
+    /// The half that keeps the no-peer assertions honest: if this fails,
+    /// the helper reports zero for everything and proves nothing. A peer
+    /// published under the active workspace's presence key still paints.
     #[test]
     fn a_real_peer_is_still_painted() {
         let tree = one_group_seed();
@@ -16537,11 +14354,8 @@ mod peer_cursor_tests {
 }
 
 /// The collaborators dropdown lists people and agents together, and says
-/// which is which.
-///
-/// The property under test is not "the vector has two entries" — it is
-/// that an agent can only get onto that list by having been granted
-/// membership, and that once there it is never mistaken for a person.
+/// which is which: an agent gets onto the list only by having been
+/// granted membership, and is never mistaken for a person once there.
 #[cfg(test)]
 mod roster_rows {
     use super::collaborator_roster_rows;
@@ -16595,15 +14409,10 @@ mod roster_rows {
         assert_eq!(rows[1].initial, 'S');
     }
 
-    /// A row says what its participant may do here, and where the room
-    /// says nothing it says nothing.
-    ///
-    /// The agent's role is the verb on the capability that admitted
-    /// it — the one row whose entire authority *is* a grant would
-    /// otherwise show no sign of what the grant was. The peer's comes
-    /// from the room's own list too, carried on the `Collaborator` the
-    /// presence path writes; a peer the room has recorded nothing about
-    /// gets no chip rather than a default.
+    /// A row shows what its participant may do here, and nothing where
+    /// the room says nothing — an agent's role is the verb on the
+    /// capability that admitted it; a peer's comes from the room's own
+    /// `Collaborator` list, never a default.
     #[test]
     fn a_row_carries_the_role_the_room_recorded_and_no_other() {
         let mut tree = tree_with_room();

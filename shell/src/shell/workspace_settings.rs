@@ -2,19 +2,16 @@
 //! workspace-name button, with General / Members / Permissions tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
-//! — the single list that `decide_capability` consults, that the
-//! sandbox turns into bwrap binds and Landlock rules, and that the room
-//! replicates. A member's role *is* the verb on their membership
-//! capability ([`Workspace::role_of`]); an app's access *is* a
-//! capability scoped to a device, host or path. Nothing in this module
-//! keeps a parallel permission vocabulary, so nothing here can drift
-//! out of agreement with what is enforced.
+//! — the single list `decide_capability` consults, the sandbox turns
+//! into bwrap/Landlock rules, and the room replicates. A member's role
+//! *is* the verb on their membership capability
+//! ([`Workspace::role_of`]); nothing here keeps a parallel vocabulary
+//! that could drift from what is enforced.
 //!
 //! Every mutation routes through [`Workspace::grant_as`] /
-//! [`Workspace::revoke_as`], which refuse callers that fail
+//! [`Workspace::revoke_as`], which refuse callers failing
 //! [`Workspace::may_administer`]. Non-owners see the same information
-//! with the controls painted disabled — the asymmetry is visible rather
-//! than hidden.
+//! with controls painted disabled, not hidden.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -34,18 +31,11 @@ use crate::shell::state::{
 /// Width of the modal's left sidebar in CSS px.
 pub const SIDEBAR_WIDTH: f64 = 256.0;
 
-/// Vertical inset between the top of the sidebar and the workspace
-/// identity card.
 const SIDEBAR_IDENTITY_TOP: f64 = 24.0;
-
-/// Height of one nav row.
 const NAV_ROW_HEIGHT: f64 = 40.0;
-
-/// Vertical gap between consecutive nav rows.
 const NAV_ROW_GAP: f64 = 4.0;
-
-/// Y origin (relative to the sidebar's top edge) where the first nav row
-/// begins. Reserves room for the identity badge + caption.
+/// Y origin (relative to the sidebar's top edge) of the first nav row —
+/// reserves room for the identity badge + caption.
 const NAV_ROWS_TOP: f64 = 120.0;
 
 /// Tab selector for the WorkspaceSettings modal.
@@ -54,9 +44,8 @@ pub enum WsTab {
     /// Workspace identity, invite link, collaborators.
     #[default]
     General,
-    /// The workspace's membership: who is in it, their role, and how
-    /// many capabilities they hold. Rendered from
-    /// [`Workspace::roster`].
+    /// Who is in the workspace, their role, and how many capabilities
+    /// they hold. Rendered from [`Workspace::roster`].
     Members,
     /// Every capability the workspace has granted, and the affordance
     /// to grant another. Rendered from [`Workspace::capabilities`].
@@ -64,7 +53,6 @@ pub enum WsTab {
 }
 
 impl WsTab {
-    /// Display label for the sidebar nav row + tab pill.
     pub fn label(&self) -> &'static str {
         match self {
             WsTab::General => "General",
@@ -73,19 +61,16 @@ impl WsTab {
         }
     }
 
-    /// Iteration order for the sidebar nav and the tab strip
-    /// (top-to-bottom / left-to-right). Every tab is always reachable:
-    /// a host who wants to grant something before any grant exists has
-    /// to be able to get to the Permissions tab.
+    /// Iteration order for the sidebar nav and tab strip. Every tab is
+    /// always reachable — a host must reach Permissions before any
+    /// grant exists.
     pub fn all() -> [WsTab; 3] {
         [WsTab::General, WsTab::Members, WsTab::Permissions]
     }
 }
 
-/// The workspace's invite URL.
-///
-/// Kept in one place so this and the compositor's inline copy in the draw
-/// pass can't drift out of agreement.
+/// The workspace's invite URL, kept in one place so this and the
+/// compositor's inline copy can't drift.
 pub fn invite_link(ws: &Workspace) -> String {
     format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
@@ -108,8 +93,6 @@ impl std::fmt::Debug for WorkspaceSettings {
 }
 
 impl WorkspaceSettings {
-    /// Construct a fresh modal targeting `ws_id` with the General tab
-    /// selected and a focus trap spanning the tab buttons.
     pub fn new(ws_id: WorkspaceId) -> Self {
         let members = WsTab::all().into_iter().map(tab_focus_id).collect();
         Self {
@@ -120,12 +103,10 @@ impl WorkspaceSettings {
         }
     }
 
-    /// The modal scaffold (scrim + id tag) that owns this dialog.
     pub fn modal(&self) -> &Modal {
         &self.modal
     }
 
-    /// The focus trap bounding tabbing to the header buttons.
     pub fn focus_trap(&self) -> &FocusTrap {
         &self.focus_trap
     }
@@ -144,22 +125,16 @@ impl WorkspaceSettings {
         self.active_tab
     }
 
-    /// Rename the given workspace. Caller is expected to pass the same
-    /// `Workspace` the modal was opened against (`ws.id == self.ws_id`);
-    /// we do not re-check here so the caller can rename any workspace they
-    /// still hold a reference to (simplifies the test harness).
+    /// Does not check `ws.id == self.ws_id`, so the caller can rename
+    /// any workspace it holds a reference to.
     pub fn rename(&mut self, ws: &mut Workspace, new_name: &str) {
         ws.name = new_name.to_string();
     }
 
-    /// Remove the collaborator with the given id from this workspace. No-op
-    /// when the id isn't present.
     pub fn remove_collaborator(&mut self, ws: &mut Workspace, collab_id: &str) {
         ws.collaborators.retain(|c| c.id != collab_id);
     }
 
-    /// Return a `quickdesktop://invite/{id}` link for this workspace. The
-    /// TopBar's "Invite" button copies this to the clipboard.
     pub fn invite_link(&self, ws: &Workspace) -> String {
         invite_link(ws)
     }
@@ -168,10 +143,8 @@ impl WorkspaceSettings {
     // Sidebar nav layout
     // -----------------------------------------------------------------
 
-    /// The sidebar's bounds inside `modal_rect`. The modal is split with
-    /// the left 256 px reserved for nav. Returns `Rect::ZERO` when the
-    /// modal isn't wide enough to host the full sidebar (callers that
-    /// hit this can fall back to drawing nothing).
+    /// The sidebar's bounds. `Rect::ZERO` when the modal isn't wide
+    /// enough to host the full sidebar.
     pub fn sidebar_rect(&self, modal_rect: Rect) -> Rect {
         if modal_rect.width() <= SIDEBAR_WIDTH {
             return Rect::ZERO;
@@ -184,8 +157,6 @@ impl WorkspaceSettings {
         )
     }
 
-    /// The right-pane bounds inside `modal_rect`. Per-tab content is
-    /// dispatched into this rect.
     pub fn pane_rect(&self, modal_rect: Rect) -> Rect {
         if modal_rect.width() <= SIDEBAR_WIDTH {
             return modal_rect;
@@ -198,8 +169,7 @@ impl WorkspaceSettings {
         )
     }
 
-    /// Per-row hit-test rects for the sidebar nav, one per [`WsTab`] in
-    /// [`WsTab::all`] order.
+    /// Per-row hit-test rects, one per [`WsTab`] in [`WsTab::all`] order.
     pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 3] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
@@ -212,18 +182,15 @@ impl WorkspaceSettings {
         })
     }
 
-    /// Tab whose nav-row contains `point`, if any. Used by hit-testing
-    /// to dispatch a pointer-down into [`Self::select_tab`].
+    /// Tab whose nav-row contains `point`, if any.
     pub fn nav_hit_test(&self, modal_rect: Rect, point: Point) -> Option<WsTab> {
         self.nav_rows(modal_rect)
             .into_iter()
             .find_map(|(tab, row)| row.contains(point).then_some(tab))
     }
 
-    /// Draw the modal body — paints the sidebar nav (always visible)
-    /// and dispatches the right pane to the per-tab drawer keyed by
-    /// `active_tab`. `None` paints nothing on the right (the sidebar
-    /// still renders).
+    /// Paint the sidebar nav (always visible) and dispatch the right
+    /// pane to the per-tab drawer. `None` paints nothing on the right.
     pub fn draw_body(
         &self,
         scene: &mut Scene,
@@ -368,35 +335,22 @@ fn tab_focus_id(tab: WsTab) -> u64 {
     }
 }
 
-// =====================================================================
 // Shared chrome — cards, chips, section headers
-// =====================================================================
 
-/// Horizontal inset on each side of a settings pane.
 const PANE_PAD_X: f64 = 16.0;
-/// Vertical inset between the top of a pane and its first element.
 const PANE_PAD_TOP: f64 = 12.0;
-/// Height of one subject row (two lines of text plus breathing room).
+/// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
-/// Vertical gap between consecutive rows.
 const ROW_GAP: f64 = 8.0;
-/// Height of a section header ("Apps", "People", …).
 const SECTION_HEADER_HEIGHT: f64 = 26.0;
-/// Height of a control (cycler, segment, button) in the composer.
 const CONTROL_HEIGHT: f64 = 30.0;
-/// Height of the whole grant composer card.
 const COMPOSER_HEIGHT: f64 = 78.0;
-/// Width of the destructive Revoke button.
 const REVOKE_WIDTH: f64 = 80.0;
-/// Height of the destructive Revoke button.
 const REVOKE_HEIGHT: f64 = 26.0;
-/// Width of the Grant submit button.
 const SUBMIT_WIDTH: f64 = 92.0;
-/// Width of one expiry segment.
 const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
-/// Alpha applied to a control the local user has no authority to use.
-/// Matches the dimmed-Revoke treatment the permission prompt uses for
-/// its `Always` button, so "disabled" reads the same everywhere.
+/// Alpha for a control the user has no authority to use — matches the
+/// permission prompt's dimmed-Revoke treatment.
 const DISABLED_ALPHA: f32 = 0.40;
 
 /// Paint a section header — a small upper-case caption plus a count.
@@ -757,11 +711,8 @@ fn draw_empty_state(
     );
 }
 
-// =====================================================================
 // Capability vocabulary — labels
-// =====================================================================
 
-/// The role a member holds, as a user-facing word.
 pub fn role_label(role: CapRole) -> &'static str {
     match role {
         CapRole::Owner => "Owner",
@@ -783,7 +734,6 @@ fn device_label(device: &str) -> &str {
     }
 }
 
-/// What a capability's scope covers, as a user-facing phrase.
 pub fn scope_label(scope: &Scope) -> String {
     match scope {
         Scope::Workspace => "this workspace".to_string(),
@@ -799,24 +749,12 @@ pub fn scope_label(scope: &Scope) -> String {
     }
 }
 
-/// A filesystem scope, phrased the way a person would say it.
-///
-/// Workspace files are *projected* at [`WORKSPACE_FILES_PATH`] by the FUSE
-/// driver. That mount point is a fact about where the OS keeps the bytes, not
-/// about what the user is agreeing to, and a permission row — the one place a
-/// person is asked to make a security decision — is the worst place to spend
-/// their attention on it. "Edit files under /var/workspace" asks the reader to
-/// work out that the path is the workspace; "Edit workspace files" just says
-/// it. HIG §4: no internal or implementation labels in user-facing chrome.
-///
-/// Paths outside the projection keep their location. They are places the user
-/// chose, not plumbing, and on a permissions surface *which* directory is
-/// being handed over is the substance of the decision — collapsing
-/// `/home/ada/taxes` to "“taxes”" would hide the thing the row exists to
-/// disclose.
+/// A filesystem scope, phrased the way a person would say it. The
+/// [`WORKSPACE_FILES_PATH`] mount point never appears in the label — it's
+/// a fact about where the OS keeps the bytes, not what the user is
+/// agreeing to (HIG §4).
 fn fs_scope_label(path: &str) -> String {
-    // Tolerate a trailing slash so `/var/workspace/` is the root, not an
-    // unnamed child of it.
+    // Trailing slash: `/var/workspace/` is the root, not an unnamed child.
     let trimmed = path.trim_end_matches('/');
     if trimmed == WORKSPACE_FILES_PATH {
         return "workspace files".to_string();
@@ -838,9 +776,8 @@ fn artifact_kind_label(kind: &collab_types::role::ArtifactKind) -> &'static str 
     }
 }
 
-/// Shorten a long opaque identifier for display. Person ids are 64-char
-/// hex public keys; printing one in full turns a row into a wall of
-/// noise, so we show enough to distinguish and no more.
+/// Shorten a long opaque identifier for display — person ids are
+/// 64-char hex keys, too much to show in full on a row.
 pub fn short_id(id: &str) -> String {
     if id.chars().count() <= 14 {
         return id.to_string();
@@ -849,14 +786,9 @@ pub fn short_id(id: &str) -> String {
     format!("{head}…")
 }
 
-/// One line describing what a capability allows, phrased for the kind of
-/// thing it ranges over.
-///
-/// "verb · scope" mechanically produces lines like "View · the
-/// microphone", which is not what anyone would say. A device is *used*,
-/// a host is *reached*, a path is read or edited, and the workspace is
-/// administered — so the sentence is built per scope kind rather than
-/// concatenated.
+/// One line describing what a capability allows, built per scope kind
+/// rather than concatenated — "verb · scope" would read "View · the
+/// microphone" instead of "Use the microphone".
 pub fn capability_allows(cap: &CapOverride) -> String {
     let what = scope_label(&cap.scope);
     match (&cap.scope, cap.verb) {
@@ -873,7 +805,6 @@ pub fn capability_allows(cap: &CapOverride) -> String {
     }
 }
 
-/// Short expiry badge label.
 pub fn expiry_label(expiry: Expiry) -> &'static str {
     match expiry {
         Expiry::AfterUse => "Once",
@@ -895,28 +826,21 @@ pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
     })
 }
 
-// =====================================================================
 // Grant composer
-// =====================================================================
 
 /// A subject the grant composer can target, and the subject axis the
 /// Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubjectKind {
-    /// An application, identified by its Wayland app id.
     App,
-    /// A person in the workspace.
     Member,
-    /// Everyone holding a role.
     Role,
-    /// An agent, bearer token or room — surfaced so no live capability
-    /// is invisible in the panel, even though the composer can't mint
-    /// one.
+    /// Agent, bearer token or room — surfaced so no live capability is
+    /// invisible in the panel, even though the composer can't mint one.
     Other,
 }
 
 impl SubjectKind {
-    /// Section heading for a group of rows with this subject kind.
     pub fn section_label(self) -> &'static str {
         match self {
             SubjectKind::App => "Apps",
@@ -931,24 +855,19 @@ impl SubjectKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantSubject {
     pub kind: SubjectKind,
-    /// The subject's identifier as the capability model stores it.
     pub id: String,
 }
 
 impl GrantSubject {
-    /// The `Subject` this resolves to in the capability model.
     pub fn to_subject(&self) -> Option<Subject> {
         match self.kind {
             SubjectKind::App => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
-            // Role and Other subjects are rendered but not mintable from
-            // this panel: a role-wide grant is a policy decision, not a
-            // per-workspace click.
+            // A role-wide grant is a policy decision, not a per-workspace click.
             SubjectKind::Role | SubjectKind::Other => None,
         }
     }
 
-    /// How the subject reads in a row title.
     pub fn display(&self) -> String {
         match self.kind {
             SubjectKind::Member => short_id(&self.id),
@@ -968,10 +887,9 @@ enum GrantTarget {
 }
 
 /// One entry in the composer's "what does this allow" picker. Every
-/// entry produces a capability an enforcement point actually reads:
-/// devices gate the portal, `NetHost` gates egress, `FsPath` gates both
-/// the sandbox binds and the filesystem, `Workspace` gates
-/// administration.
+/// entry produces a capability an enforcement point actually reads
+/// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
+/// sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
     label: &'static str,
     target: GrantTarget,
@@ -979,13 +897,11 @@ pub struct GrantChoice {
 }
 
 impl GrantChoice {
-    /// The picker's label for this choice.
     pub fn label(&self) -> &'static str {
         self.label
     }
 }
 
-/// The capabilities the panel can grant, in picker order.
 static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
         label: "Camera",
@@ -1033,14 +949,12 @@ static GRANT_CHOICES: &[GrantChoice] = &[
 /// is enforced by the sandbox's binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
-/// The composer's picker order for expiry.
 pub const EXPIRY_CHOICES: [Expiry; 3] = [Expiry::Never, Expiry::EndOfSession, Expiry::AfterUse];
 
 /// The in-flight grant the Permissions tab's composer is composing.
-/// Lives on the chrome so it survives a re-render, and holds indices
-/// rather than resolved values so a subject leaving the workspace can't
-/// leave a dangling reference — [`grant_subjects`] is re-derived every
-/// frame and the index is taken modulo its length.
+/// Holds indices rather than resolved values so a subject leaving the
+/// workspace can't leave a dangling reference — [`grant_subjects`] is
+/// re-derived every frame and the index taken modulo its length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrantDraft {
     pub subject_index: usize,
@@ -1059,7 +973,6 @@ impl Default for GrantDraft {
 }
 
 impl GrantDraft {
-    /// Advance the subject picker, wrapping at `len`.
     pub fn cycle_subject(&mut self, len: usize) {
         if len == 0 {
             self.subject_index = 0;
@@ -1068,24 +981,19 @@ impl GrantDraft {
         }
     }
 
-    /// Advance the capability picker, wrapping.
     pub fn cycle_choice(&mut self) {
         self.choice_index = (self.choice_index + 1) % GRANT_CHOICES.len();
     }
 
-    /// The capability entry this draft currently names.
     pub fn choice(&self) -> &'static GrantChoice {
         &GRANT_CHOICES[self.choice_index % GRANT_CHOICES.len()]
     }
 }
 
 /// The subjects the composer can target, in picker order: the
-/// workspace's people first, then every app that is either running in
-/// the workspace or already holds a capability.
-///
-/// Running apps matter: without them a host could only ever grant to an
-/// app that had already been granted something, so the panel could not
-/// be used to hand out access ahead of the first portal prompt.
+/// workspace's people first, then every app running in the workspace or
+/// already holding a capability — without running apps, a host could
+/// only grant to an app already granted something.
 pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     let mut out: Vec<GrantSubject> = ws
         .roster()
@@ -1162,34 +1070,26 @@ pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject>
     Some(subjects[draft.subject_index % subjects.len()].clone())
 }
 
-// =====================================================================
 // Authority-checked mutations
-// =====================================================================
 
 /// What a panel mutation changed, so the caller can mirror it into the
-/// room document and to disk. An empty edit means nothing happened —
-/// either the actor lacked authority, or there was nothing to change.
+/// room document and to disk. Empty means either the actor lacked
+/// authority, or there was nothing to change.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CapEdit {
-    /// Ids of capabilities removed.
     pub revoked: Vec<String>,
-    /// Ids of capabilities added.
     pub granted: Vec<String>,
 }
 
 impl CapEdit {
-    /// Whether anything changed.
     pub fn is_empty(&self) -> bool {
         self.revoked.is_empty() && self.granted.is_empty()
     }
 }
 
-/// Grant the capability `draft` names, as `actor`.
-///
-/// Routes through [`Workspace::grant_as`], so an actor that fails
-/// [`Workspace::may_administer`] records nothing — the authority check
-/// is the same one the portal and the replica validator use, not a
-/// UI-side copy of it.
+/// Grant the capability `draft` names, as `actor`. Routes through
+/// [`Workspace::grant_as`], the same authority check the portal and
+/// replica validator use — not a UI-side copy of it.
 pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> CapEdit {
     let Some(cap) = draft_capability(ws, draft) else {
         return CapEdit::default();
@@ -1217,9 +1117,7 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, cap_id: &str) -> CapEdit
 }
 
 /// The roles a member's role chip cycles through. `Denied` is not in
-/// the cycle: blocking someone is what the Revoke control expresses,
-/// and cycling into a block by accident is not a thing a permission
-/// panel should make easy.
+/// the cycle — that's what Revoke expresses, not an accidental click.
 const ROLE_CYCLE: [CapRole; 4] = [
     CapRole::Viewer,
     CapRole::Commenter,
@@ -1227,8 +1125,7 @@ const ROLE_CYCLE: [CapRole; 4] = [
     CapRole::Owner,
 ];
 
-/// The verb that expresses `role` on a membership capability. Inverse of
-/// the mapping [`Workspace::role_of`] reads.
+/// Inverse of the mapping [`Workspace::role_of`] reads.
 fn role_verb(role: CapRole) -> Option<Verb> {
     match role {
         CapRole::Owner => Some(Verb::Admin),
@@ -1239,13 +1136,11 @@ fn role_verb(role: CapRole) -> Option<Verb> {
     }
 }
 
-/// The role after `role` in the chip's cycle.
 pub fn next_role(role: CapRole) -> CapRole {
     let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
     ROLE_CYCLE[(idx + 1) % ROLE_CYCLE.len()]
 }
 
-/// Every membership capability id `member` currently holds in `ws`.
 fn membership_ids(ws: &Workspace, member: &UserId) -> Vec<String> {
     ws.capabilities
         .iter()
@@ -1254,7 +1149,6 @@ fn membership_ids(ws: &Workspace, member: &UserId) -> Vec<String> {
         .collect()
 }
 
-/// Whether `subject` names the person `user`.
 fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
     match subject {
         Subject::Principal(Principal::Person(id)) => id == user,
@@ -1263,15 +1157,9 @@ fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
     }
 }
 
-/// Move `member` to `role`, as `actor`.
-///
-/// A role is the verb on a membership capability, and
-/// [`Workspace::grant_capability`] keeps the strongest of two grants
-/// over the same scope — so *lowering* a role means retiring the
-/// existing membership capabilities before writing the new one. Both
-/// halves go through the authority-checked API, and an actor without
-/// authority changes nothing at all (the first `revoke_as` refuses and
-/// we stop).
+/// Move `member` to `role`, as `actor`. Lowering a role retires the
+/// existing membership capabilities first — grants keep the strongest
+/// of two over the same scope.
 pub fn set_member_role(
     ws: &mut Workspace,
     actor: &UserId,
@@ -1284,9 +1172,7 @@ pub fn set_member_role(
     if !ws.may_administer(actor) {
         return CapEdit::default();
     }
-    // The recorded owner's role is structural, not a capability — there
-    // is nothing to rewrite, and pretending otherwise would show the
-    // chip changing while `role_of` kept answering Owner.
+    // The owner's role is structural, not a capability — nothing to rewrite.
     if ws.owner.as_deref() == Some(member.as_str()) {
         return CapEdit::default();
     }
@@ -1307,13 +1193,11 @@ pub fn set_member_role(
     edit
 }
 
-/// Remove `member` from the workspace, as `actor`: their membership and
-/// every capability they hold. Routes each removal through
-/// [`Workspace::revoke_as`].
+/// Remove `member` and every capability they hold, as `actor`.
 pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> CapEdit {
+    // The owner is the workspace's root of trust; removing them would
+    // leave a room no one can administer.
     if ws.owner.as_deref() == Some(member.as_str()) {
-        // The recorded owner is the workspace's root of trust; removing
-        // it from the UI would leave a room no one can administer.
         return CapEdit::default();
     }
     let ids: Vec<String> = ws
@@ -1328,48 +1212,33 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
             edit.revoked.push(id);
         }
     }
-    // And off the roster. Revoking every capability someone holds is
-    // what removes them from the room; leaving their avatar in the
-    // top-bar stack afterwards would keep announcing a participant the
-    // owner has just shown the door. Only when a revoke actually
-    // happened — an actor without authority changes nothing, and must
-    // not be able to erase someone from the chrome by asking.
+    // Off the roster too, but only if a revoke actually happened.
     if !edit.revoked.is_empty() {
         ws.collaborators.retain(|c| c.id != member.as_str());
     }
     edit
 }
 
-// =====================================================================
 // Members pane
-// =====================================================================
 
 /// One row in the Members pane, plus the geometry the renderer painted
-/// for its controls so click-routing matches a point back to a member
-/// without re-deriving layout.
+/// so click-routing matches a point back to a member without
+/// re-deriving layout.
 #[derive(Clone, Debug)]
 pub struct MemberRow {
     pub user: UserId,
     pub role: CapRole,
-    /// Whether this member is the workspace's recorded owner. The
-    /// owner's role is structural, so their role chip is inert.
+    /// The owner's role is structural, so their role chip is inert.
     pub is_workspace_owner: bool,
-    /// How many capabilities beyond their membership this member holds.
     pub grant_count: usize,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub remove_rect: Rect,
 }
 
-/// The roster in a stable display order: the workspace owner first, then
-/// everyone else by id.
-///
-/// [`Workspace::roster`] returns members in the order their membership
-/// capabilities happen to sit in the list, and changing someone's role
-/// rewrites their capability — which moved their row while the pointer
-/// was still over it, so a second click landed on a different person.
-/// Ordering here rather than in `roster` keeps the fix in the layer that
-/// has the problem.
+/// The roster in a stable display order: owner first, then everyone
+/// else by id. [`Workspace::roster`]'s own order follows list position,
+/// which moves a row when a role change rewrites its capability.
 fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
     let mut rows = ws.roster();
     let owner = ws.owner.clone();
@@ -1381,8 +1250,7 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
     rows
 }
 
-/// Layout the Members pane. Pure geometry — no painting; the rows feed
-/// both the renderer and the click router.
+/// Pure geometry; feeds both the renderer and the click router.
 pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
     let mut rows = Vec::new();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
@@ -1436,10 +1304,8 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
     rows
 }
 
-/// Paint the Members pane: one row per person in
-/// [`Workspace::roster`], each carrying their role and how much they
-/// hold. `is_owner` is the *local* user's authority — a non-owner sees
-/// every row and every control, with the controls disabled.
+/// `is_owner` is the *local* user's authority — a non-owner sees every
+/// row and control, disabled.
 pub fn draw_members_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -1502,8 +1368,7 @@ pub fn draw_members_pane(
             theme,
         );
 
-        // Which row is you. You need that before you reach for Remove,
-        // and a name alone does not tell you — person ids are hex keys.
+        // Person ids are hex keys; a name alone doesn't say which row is you.
         let mut text_limit = row.role_rect.x0 - 12.0;
         if &row.user == local_user {
             let you = draw_pill(
@@ -1549,8 +1414,6 @@ pub fn draw_members_pane(
             None,
         );
 
-        // Role chip. The recorded owner's role is structural, so the
-        // chip reads as a status badge rather than a control.
         let role_interactive = is_owner && !row.is_workspace_owner;
         let chip_tint = if row.role == CapRole::Denied {
             colors.semantic.danger
@@ -1571,9 +1434,6 @@ pub fn draw_members_pane(
             None,
             &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
         );
-        // A stroke on every chip: it is what makes the interactive ones
-        // look interactive and the owner's status badge still look like a
-        // badge rather than a smudge.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -1583,9 +1443,7 @@ pub fn draw_members_pane(
         );
         let role_text = role_label(row.role);
         let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
-        // The label is `text_primary`, not the chip's own hue: a tinted
-        // label on a tinted fill of the same hue is unreadable, and the
-        // chip already carries the colour meaning in its fill and stroke.
+        // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
         text_renderer.draw_text(
             scene,
             role_text,
@@ -1633,8 +1491,7 @@ pub fn draw_members_pane(
     }
 }
 
-/// Explain, once per pane, why the controls are inert. A disabled
-/// control with no reason reads as a broken one.
+/// A disabled control with no reason reads as a broken one.
 fn draw_authority_footnote(
     scene: &mut Scene,
     transform: Affine,
@@ -1656,49 +1513,37 @@ fn draw_authority_footnote(
     );
 }
 
-// =====================================================================
 // Permissions pane
-// =====================================================================
 
-/// One capability row in the Permissions pane. Keyed by the
-/// capability's stable id — the same key [`Workspace::revoke_as`] takes,
-/// so a click can never revoke a different capability than the one the
-/// row was painted for.
+/// One capability row, keyed by the capability's stable id — the same
+/// key [`Workspace::revoke_as`] takes, so a click can never revoke a
+/// different capability than the one the row was painted for.
 #[derive(Clone, Debug)]
 pub struct PermissionRow {
     pub cap_id: String,
     pub subject: GrantSubject,
-    /// What the capability allows, as one line.
     pub allows: String,
-    /// Short expiry badge text.
     pub expiry: &'static str,
-    /// Who granted it, if recorded.
     pub granted_by: Option<String>,
     pub row_rect: Rect,
     pub revoke_rect: Rect,
 }
 
-/// The Permissions pane's full geometry: the composer's controls and
-/// the capability rows. Pure layout — the renderer and the click router
-/// both read it, so a click always lands on the rect that was painted.
+/// Pure layout — the renderer and the click router both read it, so a
+/// click always lands on the rect that was painted.
 #[derive(Clone, Debug, Default)]
 pub struct PermissionsPaneLayout {
-    /// The subject picker. Zero-area when the workspace has no
-    /// addressable subject.
+    /// Zero-area when the workspace has no addressable subject.
     pub subject_rect: Rect,
-    /// The capability picker.
     pub choice_rect: Rect,
-    /// The three expiry segments, in [`EXPIRY_CHOICES`] order.
+    /// In [`EXPIRY_CHOICES`] order.
     pub expiry_rects: [Rect; 3],
-    /// The Grant button.
     pub submit_rect: Rect,
-    /// One row per live granted capability.
     pub rows: Vec<PermissionRow>,
     /// Capabilities that did not fit the pane.
     pub overflow: usize,
 }
 
-/// Classify a capability's subject for grouping + display.
 fn classify_subject(subject: &Subject) -> GrantSubject {
     match subject {
         Subject::Principal(Principal::App(id)) => GrantSubject {
@@ -1732,16 +1577,11 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
     }
 }
 
-/// The capabilities the Permissions pane lists, in display order:
-/// grouped by subject kind, then by subject, then by capability id.
-///
-/// A *person's* room-membership capability is not listed here — that is
-/// what the Members tab renders as a role, and showing one fact twice in
-/// two vocabularies is how the old panel drifted. Everything else is,
-/// including a room- or workspace-scoped grant held by an app or an
-/// agent: the Members tab only knows about people, so excluding those by
-/// scope alone would leave an app holding `Admin` over the workspace
-/// visible in neither tab and revocable from neither.
+/// The capabilities the Permissions pane lists, grouped by subject
+/// kind, then subject, then capability id. A *person's* room-membership
+/// capability is excluded — the Members tab renders that as a role —
+/// but a room/workspace-scoped grant held by an app or agent stays
+/// listed here, or it would be revocable from neither tab.
 fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
     let mut out: Vec<(GrantSubject, &CapOverride)> = ws
         .capabilities
@@ -1760,11 +1600,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
     out
 }
 
-/// Lay out the Permissions pane against `pane_rect`.
-///
-/// The geometry does not depend on the draft — which subject or expiry
-/// is selected changes what the controls *say*, never where they are —
-/// so the click router can resolve a point without knowing the draft.
+/// Geometry does not depend on the draft, so the click router can
+/// resolve a point without knowing it.
 pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPaneLayout {
     let mut layout = PermissionsPaneLayout::default();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
@@ -1856,13 +1693,8 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     layout
 }
 
-/// Paint the Permissions pane: the grant composer, then every live
-/// capability the workspace has granted, grouped by subject.
-///
-/// `is_owner` is the local user's authority. Non-owners see the same
-/// list and the same controls, painted disabled, with a footnote saying
-/// why — the asymmetry is information, so it is shown rather than
-/// hidden.
+/// Non-owners see the same list and controls, painted disabled, with a
+/// footnote explaining why.
 pub fn draw_permissions_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -2100,8 +1932,6 @@ pub fn draw_permissions_pane(
             theme,
         );
 
-        // Expiry chip sits left of Revoke; the text column stops before
-        // it so nothing can overlap.
         let chip = draw_pill(
             scene,
             transform,
@@ -2359,7 +2189,6 @@ mod members_pane_tests {
         let peer_row = rows.iter().find(|r| r.user == PEER).expect("peer row");
         assert!(!peer_row.is_workspace_owner);
         assert_eq!(peer_row.role, CapRole::Viewer);
-        // Rows stack, and each control sits inside its row.
         for row in &rows {
             assert!(row.role_rect.x0 > row.row_rect.x0);
             assert!(row.remove_rect.x1 <= row.row_rect.x1);
@@ -2383,8 +2212,6 @@ mod members_pane_tests {
             Some(CapRole::Editor),
             "the role the panel shows must be the role the model decides with"
         );
-        // The promotion is a real authority change, not a label: an
-        // Editor may write the workspace, a Viewer may not.
         assert!(ws.allows(
             &ws.actor_for_person(&PEER.to_string()),
             &crate::shell::state::ResourceRef::Workspace,
@@ -2394,9 +2221,8 @@ mod members_pane_tests {
 
     #[test]
     fn owner_can_demote_a_member() {
-        // Demotion is the case a naive implementation gets wrong:
         // `grant_capability` keeps the strongest of two grants, so the
-        // old membership has to be retired first or `role_of` keeps
+        // old membership must be retired first or `role_of` keeps
         // answering the higher role.
         let mut ws = ws_with_two_members();
         set_member_role(
@@ -2438,8 +2264,6 @@ mod members_pane_tests {
 
     #[test]
     fn the_recorded_owner_role_is_structural() {
-        // `role_of` short-circuits to Owner for the recorded owner, so
-        // offering to change it would show a chip that lies.
         let mut ws = ws_with_two_members();
         let edit = set_member_role(
             &mut ws,
@@ -2596,9 +2420,6 @@ mod permissions_pane_tests {
 
     #[test]
     fn membership_capabilities_are_not_listed_as_permissions() {
-        // The owner's membership is a capability, but it is what the
-        // Members tab renders as a role. Listing it here too would show
-        // one fact twice in two vocabularies.
         let ws = ws_with_grants();
         let layout = permissions_pane_layout(&ws, pane());
         assert!(
@@ -2612,10 +2433,6 @@ mod permissions_pane_tests {
 
     #[test]
     fn a_workspace_scoped_app_grant_is_listed_and_revocable() {
-        // Excluding room- and workspace-scoped capabilities by scope
-        // alone hid this one from both tabs: Members lists people, and
-        // an app is not a person. A capability the panel cannot show is
-        // a permission nobody can audit or take back.
         let mut ws = ws_with_grants();
         let id = ws
             .grant_as(
@@ -2641,10 +2458,6 @@ mod permissions_pane_tests {
 
     #[test]
     fn a_persons_membership_is_left_to_the_members_tab() {
-        // The owner's membership is room-scoped and person-subject, so it
-        // belongs to Members. Listing it here too would offer a Revoke
-        // button that removes someone from the workspace under the
-        // heading "permissions".
         let ws = ws_with_grants();
         let layout = permissions_pane_layout(&ws, pane());
         assert!(
@@ -2659,8 +2472,6 @@ mod permissions_pane_tests {
 
     #[test]
     fn person_and_role_subjects_are_listed_too() {
-        // Every live grant must be visible somewhere: a capability the
-        // panel cannot show is a permission the user cannot audit.
         let mut ws = ws_with_grants();
         ws.grant_as(
             &OWNER.to_string(),
@@ -2685,7 +2496,6 @@ mod permissions_pane_tests {
         assert!(kinds.contains(&SubjectKind::App));
         assert!(kinds.contains(&SubjectKind::Member));
         assert!(kinds.contains(&SubjectKind::Role));
-        // Grouped: apps, then people, then roles.
         let mut sorted = kinds.clone();
         sorted.sort();
         assert_eq!(kinds, sorted, "rows must be grouped by subject kind");
@@ -2716,15 +2526,9 @@ mod permissions_pane_tests {
         );
     }
 
-    /// No capability line a person reads may name the mount point workspace
-    /// files are projected at.
-    ///
-    /// `/var/workspace` is where the FUSE driver puts the bytes. It says
-    /// nothing about what is being granted, and on a permissions surface it
-    /// spends the reader's attention on plumbing at exactly the moment they
-    /// are being asked to make a security decision (HIG §4). Swept over every
-    /// scope kind, not just the two the panel happens to show today, so a new
-    /// scope cannot reintroduce the leak through a different branch.
+    /// No capability line may name the mount point workspace files are
+    /// projected at (HIG §4). Swept over every scope kind, not just the
+    /// two the panel shows today, so a new scope can't reintroduce the leak.
     #[test]
     fn no_capability_line_leaks_the_workspace_mount_point() {
         use collab_types::role::ArtifactKind;
@@ -2772,10 +2576,8 @@ mod permissions_pane_tests {
         }
     }
 
-    /// The projection root and a path inside it read as different things, so
-    /// "all your workspace files" is never confusable with "one folder".
-    /// A permission row that blurred the two would understate what is being
-    /// granted.
+    /// The projection root and a path inside it must read as different
+    /// things, so a row never understates what is being granted.
     #[test]
     fn workspace_scopes_distinguish_the_root_from_a_folder_inside_it() {
         let root = CapOverride::grant(
@@ -2827,8 +2629,6 @@ mod permissions_pane_tests {
             .iter()
             .position(|s| s.id == "firefox")
             .expect("firefox is a candidate subject");
-        // Pick "Microphone" out of the choice table by cycling, the way
-        // a click does.
         let mut draft = GrantDraft {
             subject_index: firefox,
             choice_index: 0,
@@ -2860,10 +2660,8 @@ mod permissions_pane_tests {
         let mut ws = ws_with_grants();
         let subjects = grant_subjects(&ws);
         let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        // Pick something the app does not already hold. Re-granting an
-        // existing capability *merges*, keeping the longer of the two
-        // expiries, so a fresh grant is the only way to observe the
-        // chosen one.
+        // Re-granting an existing capability merges expiries, so pick
+        // something the app doesn't already hold to observe this one.
         let mut draft = GrantDraft {
             subject_index: firefox,
             choice_index: 0,
@@ -2888,10 +2686,8 @@ mod permissions_pane_tests {
 
     #[test]
     fn re_granting_never_shortens_an_existing_grant() {
-        // `grant_capability` keeps the longer expiry when the same
-        // (subject, scope, effect, verb) is granted again. A panel that
-        // reported "Once" after that click would be lying about what the
-        // enforcement path holds.
+        // `grant_capability` keeps the longer expiry for the same
+        // (subject, scope, effect, verb).
         let mut ws = ws_with_grants();
         let subjects = grant_subjects(&ws);
         let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
@@ -2962,7 +2758,6 @@ mod permissions_pane_tests {
             ),
             "the revoked capability must stop working, not merely stop rendering"
         );
-        // The other grant survives.
         let after = permissions_pane_layout(&ws, pane());
         assert_eq!(after.rows.len(), 1);
     }
@@ -2992,9 +2787,6 @@ mod permissions_pane_tests {
 
     #[test]
     fn every_offered_capability_produces_a_scope_an_enforcement_point_reads() {
-        // A picker entry that mints a capability nothing consults would
-        // be a control that does nothing — the exact defect this panel
-        // replaces.
         let ws = ws_with_grants();
         let subjects = grant_subjects(&ws);
         let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
@@ -3155,10 +2947,8 @@ mod roster_order_tests {
 
     #[test]
     fn changing_a_role_does_not_move_the_row() {
-        // A role change rewrites the member's membership capability, so
-        // the raw roster order shifts. The pane's order must not: a row
-        // that moves out from under a second click is how one click on
-        // one person became two clicks on two.
+        // A role change rewrites the capability, shifting the raw
+        // roster order; the pane's order must not shift with it.
         let mut ws = Workspace::new(WorkspaceId::from(5), "order");
         ws.set_owner("host");
         let room = ws.id.raw().to_string();

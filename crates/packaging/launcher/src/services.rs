@@ -10,40 +10,33 @@
 //!    refusing connections, which is what a session that died without
 //!    unlinking leaves behind → log a warning, continue.
 //! 4. For sockets that exist → open the socket as a `UnixStream` and
-//!    keep it, owned, for the length of the launch. The descriptor
-//!    reaches the app the way descriptors normally do:
-//!    `run::place_service_fds` dup2s it onto the agreed `child_fd` in
-//!    the forked child, and `dup2` leaves that copy without CLOEXEC, so
-//!    it survives bwrap's exec and the `__sandbox-exec` re-exec at that
-//!    number. The app reads the number from `QOS_SVC_<NAME>_FD`. The
-//!    launcher's own copy keeps CLOEXEC — nothing else it starts has any
-//!    business holding an app's connection to a session service — and is
-//!    released once the child has been forked.
+//!    keep it, owned, for the length of the launch. `run::place_service_fds`
+//!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
+//!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
+//!    the `__sandbox-exec` re-exec at that number. The app reads the
+//!    number from `QOS_SVC_<NAME>_FD`. **The launcher's own copy keeps
+//!    CLOEXEC** — nothing else it starts has any business holding an
+//!    app's connection to a session service — and is released once the
+//!    child has been forked.
 //!
-//! bwrap is deliberately not told about the socket. It has no flag
-//! that hands a live socket to the sandboxed process, and the one that
-//! looks like it does is a trap: `--file FD DEST` copies the
-//! descriptor's *contents* into a regular file, so pointing it at a
-//! connected socket makes bwrap read until an EOF that never arrives.
-//! The launch then hangs before it ever execs the app, and the only
-//! symptom is an app that never appears.
+//! bwrap is deliberately not told about the socket: `--file FD DEST`
+//! looks like the flag for this and isn't — it copies the descriptor's
+//! *contents* into a regular file, so pointing it at a connected socket
+//! makes bwrap block reading for an EOF that never arrives, hanging the
+//! launch before it ever execs the app.
 //!
 //! ### Open design question — where to mediate the handoff?
 //!
-//! There are three plausible mediation points:
+//! Three plausible mediation points: inherited descriptors (this
+//! module's choice — simplest, no broker, fd at a known number), a
+//! dedicated broker over SCM_RIGHTS (richer — revoke/audit/hot-swap —
+//! but adds latency and a daemon dependency), or the compositor itself
+//! handing fds to an inherited launcher (tightest coupling, hardest to
+//! test).
 //!
-//! - Inherited descriptors (this module's choice): simplest, no extra
-//!   broker process, fd ends up at a known child-side number.
-//! - A dedicated broker that listens on a per-cluster socket and
-//!   accepts a connection per launch, sending fds via SCM_RIGHTS:
-//!   richer (broker can revoke, audit, hot-swap), but adds latency
-//!   and a dependency on a running daemon.
-//! - The compositor itself, with the launcher receiving fds inherited
-//!   from its parent: tightest coupling, hardest to test.
-//!
-//! Today we pick option 1. If/when revocation/auditing matters, the
-//! launcher's API stays the same — only `resolve_service_binds`
-//! changes to dial the broker instead of opening the socket directly.
+//! Today we pick option 1. If revocation/auditing matters later, the
+//! launcher's API stays the same — only `resolve_service_binds` changes
+//! to dial the broker instead of opening the socket directly.
 
 use std::collections::BTreeMap;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -52,42 +45,40 @@ use std::path::PathBuf;
 
 use crate::manifest::{ServiceReq, ServiceReqParseError};
 
-/// Exit code for "required service missing". Mirrors `EX_SOFTWARE` (70)
-/// from sysexits.h — a service the package declared isn't available.
+/// Exit code for "required service missing" — mirrors `EX_SOFTWARE`
+/// (70) from sysexits.h.
 pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 
 /// Manifest name of the CRDT fan-out service (`[sandbox.services] collab`).
 ///
 /// This constant is the single point that decides where the collab
-/// socket lives, and it has two owners on opposite sides of a
-/// namespace boundary: the compositor *binds* [`socket_for`] of this
-/// name, and the launcher *connects* it to hand the app a descriptor.
-/// They were once two independently-written path expressions, so the
-/// compositor bound a socket nobody dialled and every app quietly ran
-/// with collaboration switched off. Route both sides through here.
-///
-/// `shell::shell::collab_broker` binds it; see
+/// socket lives, with two owners on opposite sides of a namespace
+/// boundary: the compositor *binds* [`socket_for`] of this name, and
+/// the launcher *connects* it. They were once two independently-written
+/// path expressions, so the compositor bound a socket nobody dialled
+/// and every app quietly ran with collaboration off. Route both sides
+/// through here — see
 /// `collab_service_socket_is_the_path_the_compositor_binds` in the
-/// compositor for the test that fails if the two drift apart again.
+/// compositor for the test that fails if they drift apart again.
 pub const COLLAB_SERVICE: &str = "collab";
 
-/// One resolved service handoff: the launcher's own end of the connection,
-/// plus the in-sandbox fd number the app should find it at.
+/// One resolved service handoff: the launcher's own end of the
+/// connection, plus the in-sandbox fd number the app should find it at.
 #[derive(Debug)]
 pub struct ResolvedService {
     pub name: String,
-    /// The launcher's end, **owned**, so it is closed when the launch is over.
-    /// The app's descriptor and this one are two descriptors on one socket,
-    /// and the far end cannot see the connection end until the last goes.
+    /// The launcher's end, **owned**, closed when the launch is over. The
+    /// app's descriptor and this one are two descriptors on one socket, and
+    /// the far end can't see the connection end until the last goes.
     pub host: OwnedFd,
     /// Where the app is told to look for it.
     pub child_fd: i32,
 }
 
 impl ResolvedService {
-    /// The number to `dup2` onto [`Self::child_fd`] in the child. Borrowed for
-    /// the length of the spawn and never surrendered: the copy that outlives
-    /// this one is the one `dup2` makes on the other side of the fork.
+    /// The number to `dup2` onto [`Self::child_fd`] in the child. Borrowed
+    /// for the spawn: the copy that outlives this one is the one `dup2`
+    /// makes on the other side of the fork.
     pub fn host_fd(&self) -> RawFd {
         self.host.as_raw_fd()
     }
@@ -132,46 +123,41 @@ pub fn socket_for(name: &str) -> PathBuf {
 /// Where the session's CRDT fan-out broker listens.
 ///
 /// The compositor binds this; the launcher dials it. Both call this
-/// function rather than spelling the path out, which is the whole
-/// point — see [`COLLAB_SERVICE`].
+/// function rather than spelling the path out — see [`COLLAB_SERVICE`].
 pub fn collab_socket() -> PathBuf {
     socket_for(COLLAB_SERVICE)
 }
 
 /// Create `$XDG_RUNTIME_DIR/qos/services/` if it does not exist.
 ///
-/// Called by whoever binds a service socket — nothing else creates
-/// this directory, and a `bind` into a missing parent is `ENOENT`.
-/// Mode 0700: the directory is a set of live connections into the
-/// session's services, and the sandbox boundary assumes only this
-/// user's session can reach them.
+/// Called by whoever binds a service socket — a `bind` into a missing
+/// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
+/// this user's session can reach these live connections.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
     std::fs::create_dir_all(&root)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // Best-effort tighten: an inherited 0755 from an earlier
-        // umask would widen who can reach the session's services.
+        // Best-effort tighten: an inherited 0755 from an earlier umask would
+        // widen who can reach the session's services.
         let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
     }
     Ok(root)
 }
 
-/// Walk the manifest's service requirements + open sockets. Returns
-/// the list of resolved bindings (skipping absent optional services
-/// with a warning).
+/// Walk the manifest's service requirements + open sockets. Returns the
+/// resolved bindings (skipping absent optional services with a warning).
 ///
 /// `no_services` short-circuits the lookup: any required service that
 /// would otherwise fail simply logs a warning and is skipped, and no
-/// fds are opened. Used by tests and by `--no-services`.
+/// fds are opened.
 pub fn resolve_service_binds(
     services: &BTreeMap<String, String>,
     no_services: bool,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
-    // Start child fds well above stdio (3) — using 17, 18, 19, … keeps
-    // them out of the way of bwrap's internal fds (bwrap allocates from
-    // ~10 upwards for `--seccomp` etc. in our pattern).
+    // Start child fds well above stdio (3) — 17, 18, 19… keeps them out of
+    // the way of bwrap's own fds (allocated from ~10 upwards).
     let mut next_child_fd: i32 = 17;
     let mut out = Vec::with_capacity(services.len());
 
@@ -204,12 +190,11 @@ pub fn resolve_service_binds(
         }
 
         // A socket file that exists is not the same as a service that
-        // answers. A session that died without unlinking leaves the
-        // inode behind, and connecting to it gets ECONNREFUSED. That
-        // is the *same* condition as an absent socket as far as the
-        // app is concerned — the service is not there — so it has to
-        // be treated the same way, or a leftover file from a crash
-        // turns every subsequent launch into a failed one.
+        // answers. A session that died without unlinking leaves the inode
+        // behind, and connecting to it gets ECONNREFUSED — the same condition
+        // as an absent socket, so it has to be treated the same way, or a
+        // leftover file from a crash turns every subsequent launch into a
+        // failed one.
         let stream = match UnixStream::connect(&path) {
             Ok(stream) => stream,
             Err(source) => {
@@ -224,13 +209,12 @@ pub fn resolve_service_binds(
                 continue;
             }
         };
-        // Owned from here, and deliberately left `FD_CLOEXEC`. The launch
-        // forks and `dup2`s this onto `child_fd`, and `dup2` never sets
-        // CLOEXEC on the descriptor it creates, so the app's copy survives the
-        // exec whatever this one says. Clearing the flag here was described as
-        // harmless and was not: it handed *this* descriptor to every process
-        // started after it, and the D-Bus proxy and the egress gate are both
-        // started later in the same launch.
+        // Owned from here, and deliberately left `FD_CLOEXEC`. The fork+dup2
+        // never sets CLOEXEC on the descriptor it creates, so the app's copy
+        // survives the exec whatever this one says. Clearing the flag here was
+        // described as harmless and was not: it handed this descriptor to
+        // every process started later in the same launch, including the D-Bus
+        // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
         let child_fd = next_child_fd;
@@ -265,10 +249,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// A socket file with nothing listening on it — exactly what a
-    /// session that exited without unlinking leaves in the services
-    /// directory. Binding and dropping the listener is what produces
-    /// it: `std`'s `UnixListener` does not remove the inode on drop.
+    /// A socket file with nothing listening on it — what a session that
+    /// exited without unlinking leaves behind. Binding and dropping the
+    /// listener produces it: `std`'s `UnixListener` doesn't remove the
+    /// inode on drop.
     fn dead_socket(root: &std::path::Path, name: &str) -> PathBuf {
         let path = root.join(format!("{name}.sock"));
         drop(std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture socket"));
@@ -334,20 +318,19 @@ mod tests {
         );
     }
 
-    /// What `/proc/self/fd/<n>` says a descriptor points at — for a connected
-    /// socket, `socket:[<inode>]`, unique to that connection while it exists.
-    /// Identifying the launches' own descriptors this way rather than counting
-    /// the process's is the difference between a check and a race: `#[serial]`
-    /// excludes the other serial tests and nothing else.
+    /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`
+    /// for a connected socket, unique to that connection. Identifying
+    /// descriptors this way rather than counting the process's is the
+    /// difference between a check and a race.
     fn fd_target(fd: RawFd) -> Option<String> {
         std::fs::read_link(format!("/proc/self/fd/{fd}"))
             .ok()
             .map(|p| p.display().to_string())
     }
 
-    /// Every socket this process still holds a descriptor for. Failing to read
-    /// `/proc/self/fd` fails the test: a check that cannot see its subject
-    /// must not report that the subject is fine.
+    /// Every socket this process still holds a descriptor for. Failing to
+    /// read `/proc/self/fd` fails the test — a check that can't see its
+    /// subject must not report the subject is fine.
     fn open_sockets() -> std::collections::BTreeSet<String> {
         std::fs::read_dir("/proc/self/fd")
             .expect(
@@ -363,12 +346,10 @@ mod tests {
 
     /// A launch that is over must leave no descriptor behind.
     ///
-    /// Nothing in this repository notices a leaked descriptor — no counting
-    /// test, no `RLIMIT_NOFILE` guard — which is why one sat in the launch
-    /// path unremarked. This stands in for `run_with`'s cycle at the only part
-    /// of it that touches descriptors: resolve, read the numbers the fork will
-    /// need, let the resolution go. Standing bwrap up here would be testing
-    /// bwrap.
+    /// Nothing in this repository notices a leaked descriptor, which is why
+    /// one sat in the launch path unremarked. Stands in for `run_with`'s
+    /// cycle at the only part that touches descriptors: resolve, read the
+    /// numbers the fork will need, let the resolution go.
     #[test]
     #[serial_test::serial]
     fn a_finished_launch_leaves_no_descriptor_behind() {
@@ -414,11 +395,10 @@ mod tests {
         );
     }
 
-    /// Asserted from the *service's* side of the socket, because "we called
-    /// close" is not the claim being made — the claim is that the far end can
-    /// tell. Taken as a raw fd, nothing owned this descriptor and nothing
-    /// closed it, so every caller held a live connection to a session service
-    /// that nothing would ever release.
+    /// Asserted from the *service's* side of the socket: "we called close"
+    /// isn't the claim, "the far end can tell" is. Taken as a raw fd,
+    /// nothing owned or closed this descriptor, so every caller held a live
+    /// connection nothing would ever release.
     #[test]
     #[serial_test::serial]
     fn the_launchers_end_is_released_when_the_launch_is_over() {
@@ -458,10 +438,10 @@ mod tests {
         );
     }
 
-    /// The other order, driven explicitly: a fix that released the descriptor
-    /// too early would close the app's service connection at the moment it was
-    /// handed over, and a test that only watched for an eventual EOF would
-    /// call that a pass.
+    /// The other order, driven explicitly: a fix that released the
+    /// descriptor too early would close the app's connection at the moment
+    /// it was handed over, and a test only watching for EOF would call
+    /// that a pass.
     #[test]
     #[serial_test::serial]
     fn the_apps_copy_outlives_the_launchers() {
@@ -516,10 +496,10 @@ mod tests {
         );
     }
 
-    /// The launcher's copy must not be inheritable. The launch forks, so with
-    /// CLOEXEC cleared every process started after this point — the D-Bus
-    /// proxy and the egress gate among them — held a live connection to a
-    /// session service opened on an app's behalf.
+    /// The launcher's copy must not be inheritable — with CLOEXEC cleared,
+    /// every process started after the fork (D-Bus proxy, egress gate)
+    /// would hold a live connection to a session service opened on an
+    /// app's behalf.
     #[test]
     #[serial_test::serial]
     fn the_launchers_copy_is_not_inherited_by_the_next_child() {

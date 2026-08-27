@@ -1,21 +1,11 @@
 //! Who draws the title bar.
 //!
-//! qOS draws window chrome itself: a tab's title, its controls and the
-//! frame around it belong to the compositor, and an app that draws its
-//! own is drawing a second one inside the first. The wire mechanism for
-//! saying so is `xdg_decoration` — a toolkit that cannot see the global
-//! falls back to decorating itself, since there is nobody to negotiate
-//! with.
-//!
-//! The cost is not only cosmetic: a client that keeps a title bar keeps
-//! it out of the size the compositor gave it — configured 670x668 it
-//! commits 670x633 and never commits anything else, leaving a 35-pixel
-//! band of empty tab under every window and stranding the presentation
-//! gate, which is waiting for a frame that answers the tab.
-//!
-//! So this talks to a real socket, the way `advertised_globals` does,
-//! and drives the actual handshake: bind the manager, create a toplevel,
-//! ask for a decoration, and read back the mode the compositor chose.
+//! qOS draws window chrome itself, so an app that draws its own draws a
+//! second one inside the first; `xdg_decoration` is the wire mechanism
+//! for saying so. Not only cosmetic: a client that keeps a title bar
+//! keeps it out of the size the compositor gave it — configured 670x668
+//! it commits 670x633 and never commits again, leaving a 35px dead band
+//! of empty tab and stranding the presentation gate.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -29,8 +19,7 @@ use wayland_protocols::xdg::decoration::zv1::client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-/// What the client learned: the globals it was offered, and every
-/// decoration mode the compositor configured it to, in order.
+/// The globals offered, and every decoration mode configured, in order.
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
@@ -66,8 +55,8 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // Answering the ping is not optional bookkeeping: an unanswered
-        // one is a protocol error that closes the connection mid-test.
+        // An unanswered ping is a protocol error that closes the connection
+        // mid-test.
         if let xdg_wm_base::Event::Ping { serial } = event {
             base.pong(serial);
         }
@@ -111,17 +100,15 @@ delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 
-/// The compositor on one end of a socket pair and a client on the other,
-/// pumped by hand so the test never blocks on a message that is not
-/// coming.
+/// Compositor and client on a socket pair, pumped by hand so the test
+/// never blocks on a message that is not coming.
 struct Harness {
     display: Display<shell::compositor::state::State>,
     state: shell::compositor::state::State,
     queue: wayland_client::EventQueue<Client>,
     client: Client,
     conn: Connection,
-    // Kept alive for the lifetime of the harness: dropping the loop
-    // invalidates the handle the compositor state holds.
+    // Dropping the loop invalidates the handle the compositor state holds.
     _event_loop: EventLoop<'static, shell::compositor::state::State>,
 }
 
@@ -142,9 +129,8 @@ impl Harness {
             )
             .expect("insert client");
 
-        // Non-blocking, so `prepare_read().read()` in `pump` reports
-        // "nothing waiting" instead of parking the test forever on a
-        // round where the compositor had nothing to say.
+        // Non-blocking, so `prepare_read().read()` in `pump` reports "nothing
+        // waiting" instead of parking forever on a round with nothing to say.
         client_side
             .set_nonblocking(true)
             .expect("non-blocking client socket");
@@ -160,8 +146,8 @@ impl Harness {
         }
     }
 
-    /// A full round trip in each direction, repeated so a reply that
-    /// depends on a request made this round still lands.
+    /// A full round trip each way, repeated so a reply that depends on a
+    /// request made this round still lands.
     fn pump(&mut self) {
         for _ in 0..6 {
             let _ = self.queue.flush();
@@ -174,23 +160,17 @@ impl Harness {
         }
     }
 
-    /// One shell frame, as the run loop runs it: lay every known
-    /// toplevel's tab out at `tile`, then send the configures that
-    /// follow from it.
-    ///
-    /// The compositor no longer answers a toplevel the instant it is
-    /// created — an answer sent then can only carry a decoration mode and
-    /// **no size**, which tells the client to pick its own and is exactly
-    /// the event that made every app open at the wrong size. The mode is
-    /// staged instead and rides out on the first configure that does have
-    /// a size, which is the one this pass sends. So a test that wants to
-    /// see what the client is told has to run the pass that tells it.
+    /// One shell frame as the run loop runs it. A configure sent the instant
+    /// a toplevel is created carries a decoration mode with **no size**,
+    /// telling the client to pick its own (the bug that made every app open
+    /// at the wrong size), so the mode is staged and rides out on the first
+    /// size-bearing configure, which this pass sends.
     fn lay_out_and_configure(&mut self, tile: vello::kurbo::Rect) {
         use shell::compositor::foreign;
         for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
             let id = shell::compositor::state::surface_id(toplevel.wl_surface());
-            // What `ForeignSurfaceWidget::apply_layout` publishes once the
-            // strip has given the tab a rect.
+            // What `ForeignSurfaceWidget::apply_layout` publishes once the strip has
+            // given the tab a rect.
             foreign::store().note_placement(id, tile);
         }
         foreign::flush_configures(&mut self.state);
@@ -217,9 +197,8 @@ impl Harness {
     }
 }
 
-/// Drive the handshake a toolkit drives, and hand back every decoration
-/// mode the compositor configured — plus the globals, so a failure can
-/// say whether the manager was missing or merely silent.
+/// Returns every decoration mode configured plus the globals, so a
+/// failure can say whether the manager was missing or merely silent.
 fn negotiate(
     ask_for: Option<zxdg_toplevel_decoration_v1::Mode>,
 ) -> (Vec<String>, Vec<zxdg_toplevel_decoration_v1::Mode>) {
@@ -250,9 +229,9 @@ fn negotiate(
     let toplevel = xdg_surface.get_toplevel(&qh, ());
     h.pump();
 
-    // The order sctk uses: create the decoration, then state a
-    // preference. The compositor answers on the first, and again on the
-    // second only if it changed its mind.
+    // The order sctk uses: create the decoration, then state a preference.
+    // The compositor answers on the first, and again on the second only if
+    // it changed its mind.
     let decoration = manager.get_toplevel_decoration(&toplevel, &qh, ());
     h.pump();
     if let Some(mode) = ask_for {
@@ -260,16 +239,14 @@ fn negotiate(
         h.pump();
     }
     // The answer is staged until the strip has a size to send with it.
-    // Run the frame that produces one.
     h.lay_out_and_configure(vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0));
 
     let out = modes.lock().expect("modes").clone();
     (names, out)
 }
 
-/// The global has to be on the wire, because a toolkit that cannot see
-/// it never asks — it decorates itself, and there is no negotiation to
-/// lose.
+/// A toolkit that cannot see the global never asks — it decorates
+/// itself, and there is no negotiation to lose.
 #[test]
 fn the_decoration_manager_is_advertised() {
     let (globals, _) = negotiate(None);
@@ -286,7 +263,6 @@ fn the_decoration_manager_is_advertised() {
     );
 }
 
-/// A client that asks to be decorated by the compositor is told it is.
 #[test]
 fn a_client_that_asks_for_server_side_is_given_server_side() {
     let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ServerSide));
@@ -305,12 +281,6 @@ fn a_client_that_asks_for_server_side_is_given_server_side() {
     );
 }
 
-/// And a client that asks to draw its own is told no.
-///
-/// Not a preference to be honoured: the tab chrome around the tile *is*
-/// the decoration, so a client drawing a second one is the defect — and
-/// it would keep that strip out of the buffer it commits, which is the
-/// dead band under the window.
 #[test]
 fn a_client_that_asks_to_decorate_itself_is_still_given_server_side() {
     let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ClientSide));

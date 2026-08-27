@@ -1,17 +1,13 @@
 //! One participant, one name, everywhere they appear.
 //!
-//! A room says who is in it. That fact is written by the inviter, next
-//! to the capability grant, on the replicated channel
-//! `apply_room_changes` refuses from anyone but the room's authority —
-//! and it is the *only* source of a name, because a peer that could
-//! name itself could name itself anything, beside a caret editing a
-//! document that room's capabilities gate.
+//! A room says who is in it: written by the inviter next to the capability
+//! grant, on the replicated channel `apply_room_changes` refuses from
+//! anyone but the room's authority — the only source of a name, since a
+//! peer that could name itself could name itself anything.
 //!
-//! A frame delivered to an app must not carry a raw
-//! `peer-` / `peer@` form for a participant the room can name. Both
-//! transports are exercised, because every packaged qOS app reaches the
-//! broker over the capnp one and that is where a person is normally
-//! seen from.
+//! A frame delivered to an app must not carry a raw `peer-` / `peer@` form
+//! for a participant the room can name. Both transports are exercised,
+//! since every packaged qOS app reaches the broker over the capnp one.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -30,17 +26,15 @@ use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::presence::PresenceKey;
 
 /// This machine's liveness handle, as the room document's keys hash to.
-/// Arbitrary but fixed: what matters is that the lookup and the
-/// resolver agree on it.
+/// Arbitrary but fixed: the lookup and the resolver must agree on it.
 const LOCAL_HANDLE: u64 = 5_537_458_103_208_628_978;
 
 /// What the room calls this machine's peer. A name a person chose,
 /// which is the whole point — it is not derivable from any id.
 const LOCAL_NAME: &str = "bob";
 
-/// Every label a participant can be given. A test that only checked
-/// the caret would have passed while the roster beside it disagreed,
-/// so the assertion is over the set.
+/// Every label a participant can be given — asserted as a set, since
+/// checking only the caret would pass while the roster disagreed.
 fn labels_in(events: &[CollabEvent]) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
     for e in events {
@@ -66,13 +60,11 @@ fn labels_in(events: &[CollabEvent]) -> Vec<(&'static str, String)> {
     out
 }
 
-/// The failure this file exists to catch: a transport identity shown
-/// to a person.
+/// The failure this file exists to catch: a transport identity shown to a person.
 fn is_raw_peer_form(label: &str) -> bool {
     label.starts_with("peer-") || label.starts_with("peer@")
 }
 
-// ---------- plumbing ----------
 
 fn temp_sock(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -173,13 +165,10 @@ fn channel_state_for(
     (state, att)
 }
 
-// ---------- the claims ----------
 
-/// The resolver's order, stated as an order.
-///
-/// The room outranks what a connection calls itself, and it has to: the
-/// handle on a `Hello` is self-declared, and closing this bug by
-/// trusting it would have made "announce a name" a way to wear one.
+/// The resolver's order, stated as an order: the room outranks what a
+/// connection calls itself, since a `Hello` handle is self-declared and
+/// trusting it would make "announce a name" a way to wear one.
 #[test]
 fn the_room_outranks_what_a_connection_calls_itself() {
     let id = room_that_names_us();
@@ -198,8 +187,8 @@ fn the_room_outranks_what_a_connection_calls_itself() {
     );
 }
 
-/// A room that has named nobody leaves the participant on an id, and
-/// never on an invented name or a blank.
+/// A room that has named nobody leaves the participant on an id, never on
+/// an invented name or a blank.
 #[test]
 fn an_unnamed_participant_falls_back_to_an_id_not_to_a_stand_in() {
     let silent = LocalIdentity::with_lookup(LOCAL_HANDLE, |_| PeerLabels::new());
@@ -209,18 +198,16 @@ fn an_unnamed_participant_falls_back_to_an_id_not_to_a_stand_in() {
     // authority, but nothing better exists and it is not invented here.
     assert_eq!(silent.resolve(Some(&route), Some("qos-agent")), "qos-agent");
 
-    // With nothing at all, this machine's own user id — the same string
-    // the compositor publishes its own pointer under.
+    // With nothing at all, this machine's own user id — the same string the
+    // compositor publishes its own pointer under.
     let bare = silent.resolve(Some(&route), None);
     assert!(!bare.is_empty(), "a label is never blank");
     assert_eq!(bare, shell::shell::state::local_user_id());
 }
 
-/// The whole claim, on the wire the apps actually read.
-///
-/// Two apps on one machine, neither announcing a handle — which is what
-/// a packaged app looks like — in a room that knows this machine's peer
-/// by name. Every label the second app receives has to be that name.
+/// The whole claim, on the wire the apps actually read: two apps on one
+/// machine, neither announcing a handle (what a packaged app looks like),
+/// in a room that knows this machine's peer by name.
 #[test]
 fn no_label_reaching_an_app_is_a_raw_peer_form_when_the_room_knows_the_name() {
     let socket = temp_sock("wire");
@@ -244,15 +231,13 @@ fn no_label_reaching_an_app_is_a_raw_peer_form_when_the_room_knows_the_name() {
                 app_id: app.to_string(),
                 cluster_id: cluster,
                 record: None,
-                // The capnp handshake carries no handle, so this is
-                // the case every installed app is in.
+                // The capnp handshake carries no handle — the case every installed app is in.
                 handle: None,
             },
         );
     }
     wait_for_announced(&handle, 2);
 
-    // A document the author may write to.
     let (sk, pk) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();

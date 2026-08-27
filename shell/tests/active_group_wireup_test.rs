@@ -1,15 +1,12 @@
 //! Per-frame wire-up coverage for the active-group reconciler.
 //!
-//! [`WorkspaceTree::nudge_active_group_off_closing`] advances the
-//! per-strip active-group pointer off any group whose widget tree
-//! latched the 180 ms close fade. The reconciler is fully unit-tested at
-//! the data layer; this file exercises the *live binary* hookup that
-//! calls it each tick from the widget tree's observed `is_closing()`
-//! state — marking a group closing through the same public
-//! [`WindowGroup::start_closing`] entry point `GroupRow::handle_event`
-//! reaches, then driving one tick via
-//! `tick_active_group_reconcile_for_tests` (mirroring the production
-//! per-frame [`Widget::update`] call) and asserting the pointer moved.
+//! [`WorkspaceTree::nudge_active_group_off_closing`] advances the per-strip
+//! active-group pointer off any group whose widget tree latched the 180 ms
+//! close fade. The data layer is unit-tested elsewhere; this exercises the
+//! *live binary* hookup — marking a group closing through the same
+//! [`WindowGroup::start_closing`] entry `GroupRow::handle_event` reaches,
+//! then one `tick_active_group_reconcile_for_tests` (mirroring production's
+//! per-frame [`Widget::update`]).
 
 use std::collections::HashMap;
 
@@ -19,10 +16,9 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 
-/// Build a workspace tree with two strips, two groups per strip, one tab
-/// per group. Returns the tree alongside `(strip_id, [group_id; 2])`
-/// triples for each strip so callers can drive the reconciler without
-/// re-walking the structure.
+/// Two strips, two groups per strip, one tab per group. Returns the tree
+/// plus `(strip_id, [group_id; 2])` per strip so callers can drive the
+/// reconciler without re-walking the structure.
 fn two_strip_two_group_tree() -> (
     WorkspaceTree,
     (StripId, [GroupId; 2]),
@@ -31,9 +27,8 @@ fn two_strip_two_group_tree() -> (
     let ws_id = WorkspaceId::new();
     let s0_id = StripId::new();
     let s1_id = StripId::new();
-    // Use deterministic group ids so the assertion failure messages stay
-    // legible. They're plain `u64`s — only widget-tree identity matters
-    // here, and the build helper passes them straight through.
+    // Deterministic group ids keep failure messages legible; only widget-tree
+    // identity matters here.
     let a0: GroupId = 1001;
     let a1: GroupId = 1002;
     let b0: GroupId = 2001;
@@ -66,9 +61,8 @@ fn two_strip_two_group_tree() -> (
     };
     let ws = Workspace {
         strips: vec![strip0, strip1],
-        // Everything else — including the workspace's durable
-        // collaboration room — comes from the builder, so a field added
-        // to `Workspace` does not break this fixture.
+        // Everything else — including the workspace's durable collaboration room
+        // — comes from the builder, so a new `Workspace` field won't break this.
         ..Workspace::test_default(ws_id, "Test")
     };
 
@@ -96,8 +90,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
 
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
 
-    // Sanity: if this fires, the builder reset the active_group map
-    // somewhere — fix that before chasing the wire-up.
+    // If this fires, the builder reset the active_group map — fix that before
+    // chasing the wire-up.
     {
         let st = chrome.borrow();
         assert_eq!(st.tree().active_group_for(s0_id), Some(a0));
@@ -142,8 +136,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
 
 #[test]
 fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
-    // When both groups in a strip are closing the pointer must be
-    // *removed* from the map rather than clamped to a corpse.
+    // With both groups in a strip closing, the pointer must be *removed* from
+    // the map rather than clamped to a corpse.
     let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _])) = two_strip_two_group_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
 
@@ -163,9 +157,8 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
         "every-group-closing must drop the strip-0 pointer entirely; \
          the data-layer reconciler clears it rather than dangle",
     );
-    // Suppress unused-binding warnings on the survivors we don't drive
-    // in this test — they keep the tree shape symmetric and act as a
-    // regression guard for the strip-1-untouched assertion below.
+    // Survivors we don't drive: they keep the tree shape symmetric and guard
+    // the strip-1-untouched assertion below.
     let _ = (a0, a1);
     assert_eq!(
         st.tree().active_group_for(s1_id),

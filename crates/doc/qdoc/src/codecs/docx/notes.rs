@@ -1,12 +1,7 @@
-//! Footnotes / endnotes ⇄ OOXML `word/footnotes.xml` / `word/endnotes.xml`.
-//! WordprocessingML stores each note kind in its own part: `w:footnotes` holds
-//! `<w:footnote w:id="N">` elements, `w:endnotes` holds `<w:endnote w:id="N">`,
-//! each a sequence of `w:p` paragraphs. The body references a note from inside a
-//! run via `<w:footnoteReference w:id="N"/>` / `<w:endnoteReference w:id="N"/>`.
-//! The parts are wired via `[Content_Types].xml` + `word/_rels/document.xml.rels`.
-//! This maps a note onto the canonical model: a `note-ref` marker (placeholder +
-//! `note-ref` mark valued with the note id) at the reference position in body text,
-//! plus the note's content as a block sequence in the `notes` container.
+//! Footnotes / endnotes ⇄ OOXML `word/footnotes.xml` / `word/endnotes.xml`: each kind
+//! has its own part of `w:p` paragraphs, referenced from the body via
+//! `<w:footnoteReference w:id="N"/>`/`<w:endnoteReference w:id="N"/>`. This maps a note
+//! onto a `note-ref` marker in body text plus its content in the `notes` container.
 
 use crate::model::{materialize_notes, DocMut, DocRef, NoteKind};
 use crate::snapshot::{BlockView, NoteView};
@@ -20,11 +15,9 @@ pub(super) const ENDNOTES_PART: &str = "word/endnotes.xml";
 pub(super) const FOOTNOTES_REL_ID: &str = "rIdQdocFtnotes";
 pub(super) const ENDNOTES_REL_ID: &str = "rIdQdocEndnotes";
 
-/// Import a `word/footnotes.xml` / `word/endnotes.xml` part into the notes
-/// container, returning a `docx_id → qdoc_note_id` map so the body parser can wire
-/// references. `kind` selects the element tag (`w:footnote`/`w:endnote`). The
-/// reserved separator / continuationSeparator notes (carrying a `w:type`) are
-/// skipped — they hold no user content.
+/// Import a footnotes/endnotes part, returning a `docx_id → qdoc_note_id` map for the
+/// body parser. Reserved separator/continuationSeparator notes hold no user content and
+/// are skipped.
 pub(super) fn import_notes_part(xml: &[u8], kind: NoteKind, doc: &mut DocMut) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     let Ok(s) = std::str::from_utf8(xml) else { return map };
@@ -61,8 +54,7 @@ pub(super) fn import_notes_part(xml: &[u8], kind: NoteKind, doc: &mut DocMut) ->
         }
         match ev {
             Event::Start(e) if e.name().as_ref() == tag => {
-                // A content note has no `w:type` (separators do). Capture the
-                // element verbatim; parse its paragraphs on close.
+                // A content note has no `w:type` (separators do); capture it verbatim and parse on close.
                 let ntype = attr_w_val(&e, b"w:type");
                 if ntype.is_none() {
                     if let Some(id) = attr_w_val(&e, b"w:id") {
@@ -77,9 +69,8 @@ pub(super) fn import_notes_part(xml: &[u8], kind: NoteKind, doc: &mut DocMut) ->
     map
 }
 
-/// Parse one verbatim `<w:footnote>/<w:endnote>` element into a fresh note and
-/// return its qdoc id. Each `w:p` becomes a paragraph block; `w:t` runs are text,
-/// `w:tab`/`w:br` map onto tab/newline.
+/// Parse one verbatim `<w:footnote>/<w:endnote>` element into a fresh note: each `w:p`
+/// becomes a paragraph block, `w:t` runs are text.
 fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String> {
     let note_id = doc.insert_note(kind);
     let mut reader = Reader::from_str(raw);
@@ -152,9 +143,8 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// Render a note's content paragraphs as the inner XML of a `w:footnote`/`w:endnote`
-/// element (plain text + tabs/breaks; richer inline styling in notes is not
-/// modeled).
+/// Render a note's paragraphs as `w:footnote`/`w:endnote` inner XML (plain text + tabs/
+/// breaks; richer inline styling in notes is not modeled).
 fn render_note_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
     for b in blocks {
@@ -195,9 +185,8 @@ pub(super) struct ExportNote<'a> {
     pub note: &'a NoteView,
 }
 
-/// The exported footnote/endnote parts + the per-kind `qdoc-id → docx-id` maps the
-/// body exporter uses to emit references. Each part is `None` when its kind has no
-/// notes.
+/// The exported footnote/endnote parts + the per-kind id maps the body exporter uses;
+/// `None` when a kind has no notes.
 pub(super) struct ExportedNotes {
     pub footnotes_xml: Option<Vec<u8>>,
     pub endnotes_xml: Option<Vec<u8>>,
@@ -213,9 +202,8 @@ impl ExportedNotes {
     }
 }
 
-/// Build the footnote/endnote parts from the document's notes. Footnote ids start
-/// at 1, endnote ids start at 1 (independent id spaces, as Word uses). The reserved
-/// separator notes (id 0 / -1) are emitted so Word renders the separator line.
+/// Footnote and endnote ids each start at 1 (independent id spaces, as Word uses);
+/// reserved separator notes (id 0/-1) are emitted so Word renders the separator line.
 pub(super) fn export_notes(doc: &DocRef) -> ExportedNotes {
     let notes = materialize_notes(doc.doc, doc.c);
     let mut id_map = BTreeMap::new();
@@ -232,7 +220,6 @@ pub(super) fn export_notes(doc: &DocRef) -> ExportedNotes {
     }
 }
 
-/// Assign docx ids (from 1) to the notes of one kind and record the id/kind maps.
 fn collect_kind<'a>(
     notes: &'a [NoteView],
     kind: NoteKind,
@@ -251,9 +238,8 @@ fn collect_kind<'a>(
     out
 }
 
-/// The full `word/footnotes.xml`/`word/endnotes.xml` bytes, or `None` when empty.
-/// Includes the reserved separator + continuationSeparator notes (ids -1 and 0) so
-/// Word renders the divider line, then the content notes.
+/// The full footnotes/endnotes part bytes, or `None` when empty; includes the reserved
+/// separator notes ahead of the content notes.
 fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
     if notes.is_empty() {
         return None;
