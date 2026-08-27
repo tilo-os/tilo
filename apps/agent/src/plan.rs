@@ -2,18 +2,34 @@
 //! carrying them out.
 //!
 //! An instruction is a paragraph addressed to the agent by name —
-//! `Claude: turn the bullets into a table`. The vocabulary is small and
-//! scripted; the shape is what matters: the agent reads the same document
-//! everyone else does, and answers in it.
+//! `Claude: turn the bullets into a table`. Two things it may ask for: the
+//! fixed [`CATALOGUE`] of document recipes below, and, through
+//! [`Instruction::Perform`], any operation the room's apps currently
+//! export — not written down anywhere, but surveyed through
+//! [`crate::surface`] and checked against it again at dispatch, never
+//! against a remembered list.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use word_processor::actions::{self as wp, WordProcessorAction};
 
+use crate::surface::{self, NoMatch, Offer};
+
 /// What the agent was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Instruction {
+    /// Perform one operation the room exports, named by its address. The
+    /// address is the app's own `(resource, action)` pair; the argument is
+    /// the text that operation collects, when it collects any. Neither is
+    /// interpreted here — resolving it is done against the live surface at
+    /// dispatch.
+    Perform {
+        /// `"<resource id>#<action id>"`.
+        id: String,
+        /// The text the operation collects, when it collects any.
+        argument: Option<String>,
+    },
     /// Turn the run of bullets above the instruction into a table.
     Table,
     /// Put a caption under the (first) image.
@@ -22,6 +38,16 @@ pub enum Instruction {
     Heading,
     /// Something outside the vocabulary; the agent says so in the document.
     Unknown(String),
+}
+
+/// Why an answer did not become an instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The id is not one the room exports right now. Nothing is dispatched.
+    NotExported(String),
+    /// The id is exported, but the content that came with it cannot be
+    /// written as it stands.
+    Unusable(String),
 }
 
 impl Instruction {
@@ -46,7 +72,7 @@ impl Instruction {
     ///
     /// This is what runs when no model is available — no key, switched off,
     /// or a call that was slow, failed, or answered outside the catalogue.
-    /// It is the floor the demo cannot drop below, not the intended path.
+    /// It is the floor a run cannot drop below, not the intended path.
     pub fn from_keywords(rest: &str) -> Instruction {
         if rest.contains("table") {
             Instruction::Table
@@ -86,6 +112,103 @@ impl Instruction {
     pub fn parse(text: &str, name: &str) -> Option<Instruction> {
         Self::addressed(text, name).map(|rest| Self::from_keywords(&rest))
     }
+
+    /// The deterministic floor, widened to the room's own surface: the
+    /// fixed [`CATALOGUE`] vocabulary first, and — only when nothing there
+    /// matches — whatever the room's apps currently export, matched by
+    /// [`surface::from_verbs`].
+    ///
+    /// The floor never guesses between two operations that fit equally
+    /// well; it says so, in [`NoMatch::Ambiguous`], and leaves the choice
+    /// to a model or to whoever reads the refusal.
+    pub fn from_floor(rest: &str, offers: &[Offer]) -> Instruction {
+        let by_keyword = Self::from_keywords(rest);
+        if !matches!(by_keyword, Instruction::Unknown(_)) {
+            return by_keyword;
+        }
+        match surface::from_verbs(rest, offers) {
+            Ok((offer, argument)) => Instruction::Perform {
+                id: offer.id(),
+                argument,
+            },
+            Err(why) => Instruction::Unknown(unmatched(rest, &why)),
+        }
+    }
+
+    /// The full gate over an answered id: checked against what the room
+    /// exports **now**, not against what it exported when the id was
+    /// offered.
+    ///
+    /// [`NOTHING_FITS`] is a legitimate answer, not a failure. An id in
+    /// [`CATALOGUE`] resolves exactly as [`Instruction::from_id`] already
+    /// does. Anything else must name a live [`Offer`]: an operation that
+    /// collects a content hash is never asked to quote one — there is
+    /// nowhere honest to get one from an answer — and an operation that
+    /// collects text is [`Refused::Unusable`] when neither `supplied` nor a
+    /// quoted literal in `rest` gives it any, rather than silently falling
+    /// back to the deterministic floor while reporting success.
+    pub fn from_answer(
+        id: &str,
+        rest: &str,
+        supplied: Option<&str>,
+        offers: &[Offer],
+    ) -> Result<Instruction, Refused> {
+        if id == NOTHING_FITS {
+            return Ok(Instruction::Unknown(rest.to_string()));
+        }
+        if let Some(instruction) = Self::from_id(id, rest) {
+            return Ok(instruction);
+        }
+        let Some(offer) = surface::find(offers, id) else {
+            return Err(Refused::NotExported(id.to_string()));
+        };
+        if offer.wants_content() {
+            return Ok(Instruction::Perform {
+                id: offer.id(),
+                argument: None,
+            });
+        }
+        if offer.wants_text() {
+            let literal = supplied
+                .map(str::to_string)
+                .or_else(|| surface::quoted_literal(rest))
+                .ok_or_else(|| {
+                    Refused::Unusable(format!(
+                        "{} collects text and neither the answer nor the \
+                         instruction supplied any",
+                        offer.descriptor.action_label
+                    ))
+                })?;
+            return Ok(Instruction::Perform {
+                id: offer.id(),
+                argument: Some(literal),
+            });
+        }
+        Ok(Instruction::Perform {
+            id: offer.id(),
+            argument: None,
+        })
+    }
+}
+
+/// Why the floor could not answer, in the words the agent writes into the
+/// document. The apps' own labels and nothing else — an address is how the
+/// agent dispatches, not something to say to somebody reading the page.
+pub fn unmatched(rest: &str, why: &NoMatch) -> String {
+    match why {
+        NoMatch::Nothing => rest.to_string(),
+        NoMatch::Ambiguous(labels) => format!(
+            "{rest} — that could mean {}. Which one?",
+            labels
+                .iter()
+                .map(|l| l.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+        NoMatch::NeedsText(label) => {
+            format!("{rest} — {} needs the words to use, in quotes", label.to_lowercase())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +225,7 @@ pub const NOTHING_FITS: &str = "none";
 /// trust: [`dispatched`] builds those very actions with the word processor's
 /// own builders, and `the_catalogue_only_offers_actions_the_app_exports`
 /// checks the names against what the app's encoder puts on the wire. A
-/// renamed or withdrawn action breaks the build or the test, never the demo.
+/// renamed or withdrawn action breaks the build or the test, never a run.
 pub struct Capability {
     /// The id a model answers with, and the only thing it may answer.
     pub id: &'static str,
@@ -439,7 +562,7 @@ mod tests {
         // The names the model is shown are not a list kept by hand here:
         // each one must be what the word processor's own encoder calls the
         // action its own builder produced. Rename or withdraw an action and
-        // this fails rather than the demo offering something imaginary.
+        // this fails rather than the agent offering something imaginary.
         let exported = exported_actions();
         assert!(!exported.is_empty(), "the app exports nothing");
         for cap in CATALOGUE {
@@ -557,5 +680,237 @@ mod tests {
         assert_eq!(table_ids(&blocks), vec!["t1".to_string()]);
         let cells = cells_of(&blocks, "t1");
         assert_eq!(cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(), vec!["y", "x"]);
+    }
+
+    // -- Instruction::Perform, and the floor that reaches it -------------
+
+    /// An offer built from a real descriptor, so what these tests check is
+    /// what a gate checks against a real survey.
+    fn offer(
+        app: &'static str,
+        resource: &str,
+        action: &str,
+        label: &str,
+        collects: Option<qos_actions::Collects>,
+    ) -> Offer {
+        Offer {
+            app,
+            descriptor: qos_actions::door::ActionDescriptor {
+                address: qos_actions::door::ActionAddress::new(resource, action),
+                resource_kind: format!("{app}.thing"),
+                resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
+                action_label: label.to_string(),
+                description: None,
+                locus: qos_actions::ExecutionLocus::ClientLocal,
+                input: match collects {
+                    None => qos_actions::InputSpec::None,
+                    Some(c) => qos_actions::InputSpec::Text {
+                        prompt: "p".into(),
+                        placeholder: String::new(),
+                        collects: c,
+                    },
+                },
+            },
+        }
+    }
+
+    /// A real word-processor document with one heading, surveyed through
+    /// the real contract, so every assertion below is against what the app
+    /// actually exports.
+    fn surveyed() -> Vec<Offer> {
+        let mut doc = automerge::AutoCommit::new();
+        let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+        let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let h = dm.insert_block(None, "heading");
+            dm.set_attr(&h, "level", 1i64);
+            dm.splice_text(&h, 0, 0, "Notes");
+        }
+        doc.commit();
+        let wp = &surface::CONTRACTS[0];
+        assert_eq!(wp.namespace, "word-processor");
+        surface::offers(
+            &[(wp, &doc)],
+            &surface::View::default(),
+            &permitting("word-processor"),
+        )
+    }
+
+    fn permitting(app: &str) -> ui::permissions::PermissionContext {
+        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+        PermissionContext::from_capabilities(
+            Actor::agent("Scribe"),
+            vec![CapOverride::grant(Subject::agent("Scribe"), Scope::App(app.to_string()), Verb::Write)
+                .with_id("test")],
+        )
+    }
+
+    /// Nothing the agent writes into a document names an address: it is an
+    /// internal identifier, and a refusal reciting one reads as a broken
+    /// machine to the person the document belongs to.
+    #[test]
+    fn a_refusal_names_operations_in_words_and_never_an_address() {
+        let offers = surveyed();
+        assert!(!offers.is_empty(), "nothing to refuse against");
+
+        let mut written = vec![unmatched("juggle three plates", &NoMatch::Nothing)];
+        for asked in ["align it", "juggle three plates"] {
+            if let Instruction::Unknown(why) = Instruction::from_floor(asked, &offers) {
+                written.push(why);
+            }
+        }
+        for text in &written {
+            assert!(
+                !text.contains(surface::ADDRESS_SEP),
+                "an address reached prose a person reads: {text:?}"
+            );
+        }
+
+        let ambiguous = unmatched(
+            "align it",
+            &NoMatch::Ambiguous(vec!["Align left".into(), "Align centre".into()]),
+        );
+        assert!(ambiguous.contains("align left"), "{ambiguous}");
+        assert!(ambiguous.contains("align centre"), "{ambiguous}");
+    }
+
+    #[test]
+    fn the_floor_needs_a_clear_winner_and_says_so_when_there_is_none() {
+        let offers = surveyed();
+
+        // "centre" and "notes" together land on exactly one offer: the
+        // heading's own alignment, not the document's.
+        let one = Instruction::from_floor("centre the Notes", &offers);
+        let Instruction::Perform { id, argument } = &one else {
+            panic!("a single clear match must resolve to an address, got {one:?}");
+        };
+        assert_eq!(*argument, None);
+        assert!(
+            surface::find(&offers, id)
+                .is_some_and(|o| o.descriptor.action_label.to_lowercase().contains("centre")),
+            "the floor chose {id}"
+        );
+
+        // "align" alone fits every alignment action equally.
+        let many = Instruction::from_floor("align it", &offers);
+        let Instruction::Unknown(why) = &many else {
+            panic!("an ambiguous instruction must not resolve, got {many:?}");
+        };
+        assert!(why.contains("Which one?"), "ambiguity must be reported as ambiguity: {why}");
+        assert!(
+            why.contains("align"),
+            "and it must name the alternatives, in the app's own words: {why}"
+        );
+        assert!(!why.contains(surface::ADDRESS_SEP), "in words, never as addresses: {why}");
+
+        assert!(matches!(
+            Instruction::from_floor("juggle three plates", &offers),
+            Instruction::Unknown(_)
+        ));
+
+        // The fixed vocabulary still wins outright, unaffected by the
+        // surveyed surface.
+        assert_eq!(
+            Instruction::from_floor("turn the bullets into a table", &offers),
+            Instruction::Table
+        );
+    }
+
+    /// The gate answers an address the room really exports, and refuses one
+    /// it does not — including an address that was valid against some
+    /// other survey.
+    #[test]
+    fn an_answer_is_checked_against_the_survey_and_not_against_a_list() {
+        let offers = surveyed();
+        assert!(!offers.is_empty(), "the survey found nothing to check against");
+
+        for offer in &offers {
+            let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
+            assert_eq!(
+                answered,
+                Ok(Instruction::Perform {
+                    id: offer.id(),
+                    argument: None
+                }),
+                "{} is offered but the gate would not dispatch it",
+                offer.id()
+            );
+        }
+
+        let stale = "word-processor.section:gone-block#align-left";
+        assert_eq!(
+            Instruction::from_answer(stale, "asked", None, &offers),
+            Err(Refused::NotExported(stale.to_string())),
+            "an address the survey does not carry must not be dispatched"
+        );
+        assert_eq!(
+            Instruction::from_answer(NOTHING_FITS, "juggle", None, &offers),
+            Ok(Instruction::Unknown("juggle".into()))
+        );
+        assert_eq!(
+            Instruction::from_answer("table", "asked", None, &offers),
+            Ok(Instruction::Table),
+            "a catalogue id still resolves the way it always did"
+        );
+    }
+
+    /// An operation that collects a content hash is never refused for
+    /// having quoted none: there is nothing anybody could quote.
+    #[test]
+    fn an_operation_that_collects_content_is_not_asked_for_words() {
+        let offers = vec![offer(
+            "word-processor",
+            "word-processor.section:b7",
+            "place-image",
+            "Place image below",
+            Some(qos_actions::Collects::Content),
+        )];
+        let answered =
+            Instruction::from_answer("word-processor.section:b7#place-image", "place image below b7", None, &offers);
+        assert_eq!(
+            answered,
+            Ok(Instruction::Perform {
+                id: "word-processor.section:b7#place-image".into(),
+                argument: None,
+            })
+        );
+    }
+
+    /// An operation that collects text needs words from somewhere honest —
+    /// the answer itself, or a literal quoted in the instruction — and is
+    /// refused rather than performed with a blank when it gets neither.
+    #[test]
+    fn text_collecting_operations_need_a_literal_or_are_refused() {
+        let offers = vec![offer(
+            "files",
+            "files.entry:/a",
+            "rename",
+            "Rename",
+            Some(qos_actions::Collects::Words),
+        )];
+        assert!(
+            matches!(
+                Instruction::from_answer("files.entry:/a#rename", "rename it", None, &offers),
+                Err(Refused::Unusable(_))
+            ),
+            "no literal anywhere must be refused, not performed with a blank"
+        );
+        assert_eq!(
+            Instruction::from_answer("files.entry:/a#rename", r#"rename it to "b.md""#, None, &offers),
+            Ok(Instruction::Perform {
+                id: "files.entry:/a#rename".into(),
+                argument: Some("b.md".into()),
+            }),
+            "a literal quoted in the instruction is used"
+        );
+        assert_eq!(
+            Instruction::from_answer("files.entry:/a#rename", "rename it", Some("c.md"), &offers),
+            Ok(Instruction::Perform {
+                id: "files.entry:/a#rename".into(),
+                argument: Some("c.md".into()),
+            }),
+            "a literal the answer itself supplied is used even with no quote in the instruction"
+        );
     }
 }
