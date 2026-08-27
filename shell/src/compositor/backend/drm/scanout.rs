@@ -1,19 +1,12 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
-//! [`runtime`](super::runtime) acquires the seat and wires input; this
-//! module keeps the primary card open as DRM master, sets a mode, and
-//! presents each frame. Presentation uses a KMS hardware cursor plane
-//! (`set_cursor2` + `move_cursor`, so pointer motion never touches the
-//! framebuffer; a composited software cursor is the fallback when a driver
-//! rejects the ioctls) and two dumb buffers ping-ponged with legacy
-//! `page_flip`, falling back to dirty_framebuffer / set_crtc where flips
-//! are unsupported.
+//! Presentation uses a KMS hardware cursor plane (`set_cursor2` + `move_cursor`; a composited
+//! software cursor is the fallback when a driver rejects the ioctls) and two dumb buffers
+//! ping-ponged via legacy `page_flip`, falling back to dirty_framebuffer / set_crtc where flips
+//! are unsupported. Not zero-copy: smithay's `DrmCompositor` drives a GLES `Renderer`, not vello.
 //!
-//! Not zero-copy: smithay's `DrmCompositor` drives a GLES `Renderer`, not
-//! vello, so exporting the wgpu Vulkan image as a DMA-BUF remains a follow-up.
-//!
-//! Pixel byte order: vello renders `Rgba8Unorm`, the framebuffer is
-//! `Xrgb8888` (little-endian `[B, G, R, X]`); the swizzle happens in
+//! Pixel byte order: vello renders `Rgba8Unorm`, the framebuffer is `Xrgb8888`
+//! (little-endian `[B, G, R, X]`); the swizzle happens in
 //! [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -33,13 +26,11 @@ use drm_re::control::{
 
 use crate::compositor::backend::OutputId;
 
-/// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915
-/// and amdgpu all advertise it).
+/// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = 64;
 
-/// Minimal owned-fd wrapper implementing the `drm` crate's device traits.
-/// The fd comes from libseat (`Session::open`) so it is privileged +
-/// becomes DRM master while the session is active.
+/// Minimal owned-fd wrapper implementing the `drm` crate's device traits. The fd comes from
+/// libseat (`Session::open`), privileged and DRM master while the session is active.
 struct Card(OwnedFd);
 
 impl AsFd for Card {
@@ -51,11 +42,10 @@ impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
 impl Card {
-    /// Duplicate the card's fd. The dup shares one open file description, so
-    /// it stays DRM master and every connector's page-flip completions
-    /// arrive on a single event stream, routed by crtc (see
-    /// [`DrmScanout::poll_flip_completions`]). Needed because libseat
-    /// refuses a second `session.open` of an already-open node.
+    /// Duplicate the card's fd — shares one open file description, so it stays DRM master and
+    /// every connector's page-flip completions arrive on a single event stream, routed by crtc
+    /// (see [`DrmScanout::poll_flip_completions`]). Needed because libseat refuses a second
+    /// `session.open` of an already-open node.
     pub(crate) fn try_clone(&self) -> Result<Card, String> {
         self.0
             .try_clone()
@@ -63,9 +53,8 @@ impl Card {
             .map_err(|e| format!("dup card fd: {e}"))
     }
 
-    /// `dev_t` of the underlying `cardN` node, for stable per-connector
-    /// `OutputId`s. Best-effort: `0` on `fstat` failure, since the connector
-    /// id still disambiguates outputs on one card.
+    /// `dev_t` of the underlying `cardN` node, for stable per-connector `OutputId`s. Best-effort:
+    /// `0` on `fstat` failure, since the connector id still disambiguates outputs on one card.
     fn dev_id(&self) -> u64 {
         match smithay::reexports::rustix::fs::fstat(&self.0) {
             Ok(st) => st.st_rdev as u64,
@@ -77,27 +66,22 @@ impl Card {
     }
 }
 
-/// The loop thread's own handle on the primary card, held on the thread
-/// that owns the session rather than the render thread that owns the
-/// scanouts: it drops and retakes DRM master across a VT switch (every dup
-/// shares one open file description, so releasing here releases for the
-/// scanouts too), re-enumerates on hotplug, and builds scanouts for newly
-/// connected connectors. It must outlive those scanouts — libseat refuses a
-/// second `open` of an already-open node, so this is the only handle there
-/// will ever be.
+/// The loop thread's own handle on the primary card, held on the thread that owns the session
+/// rather than the render thread that owns the scanouts: it drops and retakes DRM master
+/// across a VT switch (every dup shares one open file description, so releasing here releases
+/// for the scanouts too) and builds scanouts for newly connected connectors on hotplug. Must
+/// outlive those scanouts — libseat refuses a second `open` of an already-open node.
 pub struct CardHandle {
     card: Card,
     device_id: u64,
 }
 
-/// One connected connector as the hotplug path sees it: enough to decide
-/// whether it is new, gone, or re-moded, and to modeset it if it is new.
+/// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
 pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
     pub mode: Mode,
-    /// Physical panel size in millimetres, when the connector reports one.
-    /// `None` for virtual connectors, which report 0×0.
+    /// Physical panel size in millimetres, when the connector reports one. `None` for virtual connectors, which report 0×0.
     pub physical_mm: Option<(u32, u32)>,
 }
 
@@ -109,25 +93,21 @@ impl CardHandle {
         Ok(Self { card, device_id })
     }
 
-    /// `dev_t` of the underlying node — the device half of an output's
-    /// stable identity.
+    /// `dev_t` of the underlying node — the device half of an output's stable identity.
     pub fn device_id(&self) -> u64 {
         self.device_id
     }
 
-    /// Give up DRM master. Called before a VT switch completes: the
-    /// incoming session cannot modeset until we have.
+    /// Give up DRM master. Called before a VT switch completes: the incoming session cannot modeset until we have.
     pub fn drop_master(&self) {
         match self.card.release_master_lock() {
             Ok(()) => tracing::info!("DRM scanout: released DRM master"),
-            // Not fatal — libseat may already have taken it away on our
-            // behalf, in which case the release is redundant, not wrong.
+            // Not fatal — libseat may already have taken it away on our behalf, so the release can be redundant.
             Err(e) => tracing::debug!("DRM scanout: release_master_lock: {e}"),
         }
     }
 
-    /// Take DRM master back. Every `set_crtc` after a resume needs it, so
-    /// this runs before the modeset, not after.
+    /// Take DRM master back. Every `set_crtc` after a resume needs it, so this runs before the modeset.
     pub fn acquire_master(&self) -> bool {
         match self.card.acquire_master_lock() {
             Ok(()) => {
@@ -141,9 +121,8 @@ impl CardHandle {
         }
     }
 
-    /// Ask the hardware what is connected right now. `force_probe` is on: a
-    /// hotplug event is precisely when the cached connector state is stale,
-    /// and a cached probe reports the just-plugged monitor as still absent.
+    /// Ask the hardware what is connected right now. `force_probe` is on: a hotplug event is
+    /// precisely when the cached connector state is stale.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         let res = match self.card.resource_handles() {
             Ok(r) => r,
@@ -177,9 +156,8 @@ impl CardHandle {
         out
     }
 
-    /// Modeset one connector onto a crtc not in `used`. `None` when there is
-    /// no free crtc or the modeset failed — both logged, neither fatal, so
-    /// the other outputs keep working.
+    /// Modeset one connector onto a crtc not in `used`. `None` when there is no free crtc or the
+    /// modeset failed — both logged, neither fatal, so the other outputs keep working.
     pub fn bring_up(&self, snapshot: &ConnectorSnapshot, used: &[crtc::Handle]) -> Option<ScanoutBuild> {
         let res = self.card.resource_handles().ok()?;
         let info = self.card.get_connector(snapshot.handle, false).ok()?;
@@ -215,9 +193,8 @@ impl CardHandle {
         }
     }
 
-    /// Bring up every connected connector (startup path). Hotplug uses
-    /// [`Self::bring_up`] per connector instead, so already-live displays
-    /// are not re-modeset — a re-modeset is a visible flash.
+    /// Bring up every connected connector (startup path). Hotplug uses [`Self::bring_up`] per
+    /// connector instead, so already-live displays are not re-modeset — a re-modeset is a visible flash.
     pub fn bring_up_all(&self) -> Vec<ScanoutBuild> {
         let mut used: Vec<crtc::Handle> = Vec::new();
         let mut builds = Vec::new();
@@ -231,18 +208,17 @@ impl CardHandle {
     }
 }
 
-/// Repositions the hardware cursor plane without touching the framebuffer.
-/// Lives in the runtime's dispatch state so the libinput motion handler can
-/// move the cursor at input rate, decoupled from the paint/flip cadence.
+/// Repositions the hardware cursor plane without touching the framebuffer. Lives in the
+/// runtime's dispatch state so the libinput motion handler can move the cursor at input rate,
+/// decoupled from the paint/flip cadence.
 pub struct HwCursor {
     card: Card,
     crtc: crtc::Handle,
 }
 
 impl HwCursor {
-    /// Move the cursor so its top-left (the arrow's hot-spot) sits at
-    /// `(x, y)` in output pixels. A failing ioctl is logged and ignored — a
-    /// missed cursor move must never crash the input path.
+    /// Move the cursor so its top-left (the arrow's hot-spot) sits at `(x, y)` in output pixels. A
+    /// failing ioctl is logged and ignored — a missed cursor move must never crash the input path.
     pub fn move_to(&self, x: i32, y: i32) {
         #[allow(deprecated)]
         if let Err(e) = self.card.move_cursor(self.crtc, (x, y)) {
@@ -250,42 +226,35 @@ impl HwCursor {
         }
     }
 
-    /// Park the cursor fully off this output's panel. The KMS cursor plane
-    /// is per-CRTC, so the plane on an output the pointer just left must be
-    /// hidden or it leaves a frozen arrow behind.
+    /// Park the cursor fully off this output's panel. The KMS cursor plane is per-CRTC, so the
+    /// plane on an output the pointer just left must be hidden or it leaves a frozen arrow behind.
     pub fn hide(&self) {
         self.move_to(-(CURSOR_DIM as i32), -(CURSOR_DIM as i32));
     }
 }
 
-/// One output's hardware-cursor plane plus that output's rectangle in the
-/// compositor's combined (global) coordinate space.
+/// One output's hardware-cursor plane plus that output's rectangle in the compositor's combined (global) coordinate space.
 pub struct OutputCursor {
-    /// Identity, not index: a hotplug reordering the list would otherwise
-    /// move the cursor on the wrong monitor.
+    /// Identity, not index: a hotplug reordering the list would otherwise move the cursor on the wrong monitor.
     id: OutputId,
     /// `(x, y, w, h)` of the output in global coords.
     rect: (i32, i32, u32, u32),
     mover: HwCursor,
 }
 
-/// Routes a global pointer position to the right output's hardware cursor
-/// plane: each KMS plane is per-CRTC and takes output-local coordinates, so
-/// motion moves the plane under the pointer and hides the one it left. A
-/// single-output system collapses to one entry at `(0, 0)`, forwarding
-/// coordinates unchanged.
+/// Routes a global pointer position to the right output's hardware cursor plane: each KMS
+/// plane is per-CRTC and takes output-local coordinates, so motion moves the plane under the
+/// pointer and hides the one it left. A single-output system collapses to one entry at `(0, 0)`.
 #[derive(Default)]
 pub struct CursorPlanes {
     outputs: Vec<OutputCursor>,
-    /// The output currently showing the cursor, if any. By id rather than
-    /// by index, because a hotplug reorders the list.
+    /// The output currently showing the cursor, if any. By id rather than index, because a hotplug reorders the list.
     active: Option<OutputId>,
 }
 
 impl CursorPlanes {
-    /// One `OutputCursor` per output with an active hardware cursor plane.
-    /// Outputs without one fall back to the software cursor drawn in
-    /// [`DrmScanout::present_no_drain`], so they are simply absent here.
+    /// One `OutputCursor` per output with an active hardware cursor plane. Outputs without one
+    /// fall back to the software cursor drawn in [`DrmScanout::present_no_drain`].
     pub fn new(outputs: Vec<OutputCursor>) -> Self {
         Self {
             outputs,
@@ -303,16 +272,14 @@ impl CursorPlanes {
         self.outputs.is_empty()
     }
 
-    /// Adopt a newly-modeset output's cursor plane, replacing any already
-    /// registered for that id (what a torn-down-and-rebuilt connector gives).
+    /// Adopt a newly-modeset output's cursor plane, replacing any already registered for that id (what a torn-down-and-rebuilt connector gives).
     pub fn insert(&mut self, cursor: OutputCursor) {
         self.outputs.retain(|o| o.id != cursor.id);
         self.outputs.push(cursor);
         self.active = None;
     }
 
-    /// Drop every plane whose output is no longer live; the dropped
-    /// `HwCursor` closes its dup of the card fd with it.
+    /// Drop every plane whose output is no longer live; the dropped `HwCursor` closes its dup of the card fd with it.
     pub fn retain_outputs(&mut self, live: &[OutputId]) {
         let before = self.outputs.len();
         self.outputs.retain(|o| live.contains(&o.id));
@@ -322,17 +289,15 @@ impl CursorPlanes {
         }
     }
 
-    /// Move an output's rectangle after a re-layout — a stale rect routes
-    /// the pointer to the wrong monitor past the point the layout shifted.
+    /// Move an output's rectangle after a re-layout — a stale rect routes the pointer to the wrong monitor.
     pub fn set_rect(&mut self, id: OutputId, rect: (i32, i32, u32, u32)) {
         if let Some(o) = self.outputs.iter_mut().find(|o| o.id == id) {
             o.rect = rect;
         }
     }
 
-    /// Move the cursor to global `(gx, gy)`, hiding the previously-active
-    /// plane if the pointer crossed outputs. Outside every output (a gap
-    /// between mismatched-height monitors) the last position is left alone.
+    /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane if the pointer
+    /// crossed outputs. Outside every output (a gap between mismatched-height monitors) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         let (xi, yi) = (gx as i32, gy as i32);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
@@ -353,9 +318,8 @@ impl CursorPlanes {
     }
 }
 
-/// Index of the first output rect (`(x, y, w, h)`, global) containing
-/// `(xi, yi)`, or `None` in a gap between mismatched-size outputs. Pure so
-/// cursor routing is unit-testable without a DRM device.
+/// Index of the first output rect (`(x, y, w, h)`, global) containing `(xi, yi)`, or `None` in
+/// a gap between mismatched-size outputs. Pure so cursor routing is unit-testable without a DRM device.
 fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<usize> {
     rects.iter().position(|&(ox, oy, ow, oh)| {
         xi >= ox && xi < ox + ow as i32 && yi >= oy && yi < oy + oh as i32
@@ -368,38 +332,31 @@ pub struct DrmScanout {
     crtc: crtc::Handle,
     connector: connector::Handle,
     mode: Mode,
-    /// Double-buffered scanout targets. `front` is the one currently
-    /// being displayed (or the target of the in-flight flip); the
-    /// renderer draws into `1 - front`.
+    /// Double-buffered scanout targets. `front` is the one currently being displayed (or the
+    /// target of the in-flight flip); the renderer draws into `1 - front`.
     buffers: [DumbBuffer; 2],
     fbs: [framebuffer::Handle; 2],
     front: usize,
-    /// True between requesting a page flip and draining its completion
-    /// event. Guards against queuing a second flip before the first
-    /// retires (which the kernel rejects with `EBUSY`).
+    /// True between requesting a page flip and draining its completion event. Guards against
+    /// queuing a second flip before the first retires (the kernel rejects with `EBUSY`).
     flip_pending: bool,
-    /// Whether the page-flip path is in use. Latched to `false` if a
-    /// flip fails with a "not supported" errno, after which we fall
-    /// back to the dirty_framebuffer / set_crtc flush.
+    /// Whether the page-flip path is in use. Latched to `false` if a flip fails with a "not
+    /// supported" errno, after which we fall back to the dirty_framebuffer / set_crtc flush.
     use_pageflip: bool,
     width: u32,
     height: u32,
-    /// Set once `dirty_framebuffer` is known to be unsupported, so we
-    /// stop retrying it and use `set_crtc` to force a flush instead.
+    /// Set once `dirty_framebuffer` is known to be unsupported, so we stop retrying it and use `set_crtc` to force a flush instead.
     dirtyfb_unsupported: bool,
-    /// Cursor bitmap; kept alive so its GEM handle stays valid for
-    /// `set_cursor2`, and re-bound by [`Self::restore`] after a VT switch or
-    /// resume clears the plane. `None` when the hardware cursor is inactive.
+    /// Cursor bitmap; kept alive so its GEM handle stays valid for `set_cursor2`, and re-bound by
+    /// [`Self::restore`] after a VT switch or resume clears the plane. `None` when the hardware cursor is inactive.
     cursor_buffer: Option<DumbBuffer>,
-    /// True when the KMS cursor plane is driving the pointer; when
-    /// false we composite the software cursor into the framebuffer.
+    /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
 }
 
 impl DrmScanout {
-    /// Open `card_path` via the session and become DRM master. Split out of
-    /// [`Self::new`] so [`open_all_scanouts`] can open the card once and dup
-    /// the fd per connector — libseat refuses a second open of one node.
+    /// Open `card_path` via the session and become DRM master. Split out of [`Self::new`] so
+    /// [`open_all_scanouts`] can open the card once and dup the fd per connector — libseat refuses a second open of one node.
     fn open_card<S: Session>(session: &mut S, card_path: &Path) -> Result<Card, String> {
         use smithay::backend::session::AsErrno;
         let fd = session
@@ -409,8 +366,7 @@ impl DrmScanout {
             )
             .map_err(|e| format!("session.open({card_path:?}): errno={:?}", e.as_errno()))?;
         let card = Card(fd);
-        // Become DRM master so set_crtc is permitted. libseat normally
-        // grants it on the active session; acquire explicitly and log.
+        // Become DRM master so set_crtc is permitted. libseat normally grants it on the active session; acquire explicitly and log.
         match card.acquire_master_lock() {
             Ok(()) => tracing::info!("DRM scanout: acquired DRM master"),
             Err(e) => {
@@ -420,11 +376,9 @@ impl DrmScanout {
         Ok(card)
     }
 
-    /// Single-output convenience constructor: opens `card_path`, picks the
-    /// first connected connector + mode + crtc, and brings it up. Returns
-    /// `Err` (never panics) so the caller can run headless if scanout fails.
-    /// The runtime uses [`open_all_scanouts`] instead, which shares the same
-    /// [`Self::from_card`] body.
+    /// Single-output convenience constructor: opens `card_path`, picks the first connected
+    /// connector + mode + crtc, and brings it up. Returns `Err` (never panics) so the caller can
+    /// run headless if scanout fails. The runtime uses [`open_all_scanouts`] instead, sharing the same [`Self::from_card`] body.
     pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = Self::open_card(session, card_path)?;
         let res = card
@@ -458,10 +412,9 @@ impl DrmScanout {
         Self::from_card(card, connector, crtc, mode)
     }
 
-    /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and
-    /// set up the hardware cursor — the bring-up tail shared by
-    /// [`Self::new`] and [`open_all_scanouts`]. `card` is this scanout's own
-    /// handle: an independent fd on the single path, a dup on the multi path.
+    /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and set up the hardware
+    /// cursor — the bring-up tail shared by [`Self::new`] and [`open_all_scanouts`]. `card` is this
+    /// scanout's own handle: an independent fd on the single path, a dup on the multi path.
     fn from_card(
         card: Card,
         connector: connector::Handle,
@@ -502,8 +455,7 @@ impl DrmScanout {
             "DRM scanout: modeset complete — display is live"
         );
 
-        // Best-effort: failure leaves `hw_cursor_active = false` and the
-        // software cursor takes over.
+        // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let (cursor_buffer, hw_cursor_active) = match Self::setup_hw_cursor(&card, crtc) {
             Ok(buf) => {
                 // Centre it so a fresh boot shows the pointer before input arrives.
@@ -538,9 +490,8 @@ impl DrmScanout {
         })
     }
 
-    /// Allocate the 64×64 ARGB cursor buffer, paint the arrow, and bind it
-    /// via `set_cursor2` (hotspot at the top-left tip, matching the bitmap).
-    /// The returned buffer must be kept alive by the caller.
+    /// Allocate the 64×64 ARGB cursor buffer, paint the arrow, and bind it via `set_cursor2`
+    /// (hotspot at the top-left tip, matching the bitmap). The returned buffer must be kept alive by the caller.
     fn setup_hw_cursor(card: &Card, crtc: crtc::Handle) -> Result<DumbBuffer, String> {
         let mut cbuf = card
             .create_dumb_buffer((CURSOR_DIM, CURSOR_DIM), DrmFourcc::Argb8888, 32)
@@ -552,21 +503,18 @@ impl DrmScanout {
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
             paint_cursor_argb(map.as_mut(), pitch);
         }
-        // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel,
-        // so the plane position == the pointer position. Virtual GPUs
-        // (virtio-gpu/QXL) use the hotspot to place the host pointer.
+        // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so the plane position ==
+        // the pointer position. Virtual GPUs (virtio-gpu/QXL) use the hotspot to place the host pointer.
         #[allow(deprecated)]
         card.set_cursor2(crtc, Some(&cbuf), (0, 0))
             .map_err(|e| format!("set_cursor2: {e}"))?;
         Ok(cbuf)
     }
 
-    /// Presentation interval from the mode's raw timing
-    /// (`pixel_clock / (htotal * vtotal)`). Preferred over `Mode::vrefresh()`,
-    /// which rounds to whole hertz: a 59.94 Hz panel reports `60`, and pacing
-    /// at 60.000 Hz against it walks a full frame out of phase every ~16 s.
-    /// `None` when the timings can't be a display (virtual connectors report
-    /// zeroes), so the caller falls back rather than adopting a nonsense cadence.
+    /// Presentation interval from the mode's raw timing (`pixel_clock / (htotal * vtotal)`).
+    /// Preferred over `Mode::vrefresh()`, which rounds to whole hertz: a 59.94 Hz panel reports
+    /// `60`, and pacing at 60.000 Hz against it walks a full frame out of phase every ~16 s. `None`
+    /// when the timings can't be a display (virtual connectors report zeroes).
     pub fn refresh_interval(&self) -> Option<std::time::Duration> {
         let (_, _, htotal) = self.mode.hsync();
         let (_, _, vtotal) = self.mode.vsync();
@@ -589,12 +537,10 @@ impl DrmScanout {
         self.crtc
     }
 
-    /// Re-establish this output after the session regains the hardware (VT
-    /// switch or suspend). Nothing survives either: the CRTC has no mode,
-    /// the framebuffer is unbound, the cursor plane is reset, and the queued
-    /// page flip died with the master lock, leaving `flip_pending` latched
-    /// forever. Best-effort throughout — every failure is logged and the
-    /// rest of the sequence still runs.
+    /// Re-establish this output after the session regains the hardware (VT switch or suspend).
+    /// Nothing survives either: the CRTC has no mode, the framebuffer is unbound, the cursor plane
+    /// is reset, and the queued page flip died with the master lock, leaving `flip_pending` latched
+    /// forever. Best-effort throughout — every failure is logged and the rest of the sequence still runs.
     pub fn restore(&mut self) {
         // The in-flight flip died with the master lock; clearing this first
         // is what lets the next frame be presented at all.
@@ -631,10 +577,9 @@ impl DrmScanout {
         }
     }
 
-    /// A [`HwCursor`] mover for the runtime's input handler, holding a dup of
-    /// the card fd so it can issue `move_cursor` independently of the paint
-    /// path. `None` when the hardware cursor is inactive — the software
-    /// fallback is driven from `present_into` instead.
+    /// A [`HwCursor`] mover for the runtime's input handler, holding a dup of the card fd so it can
+    /// issue `move_cursor` independently of the paint path. `None` when the hardware cursor is
+    /// inactive — the software fallback is driven from `present_into` instead.
     pub fn cursor_mover(&self) -> Option<HwCursor> {
         if !self.hw_cursor_active {
             return None;
@@ -653,11 +598,10 @@ impl DrmScanout {
         }
     }
 
-    /// Present one frame, draining this scanout's own page-flip completions
-    /// first — the **single-output** entry point. `fill` writes the frame
-    /// into the back buffer in XRGB8888 (`[B, G, R, X]`) given the mapped
-    /// slice and its row pitch; `cursor` is consulted only when the hardware
-    /// cursor is unavailable. Errors are logged and skipped.
+    /// Present one frame, draining this scanout's own page-flip completions first — the
+    /// **single-output** entry point. `fill` writes the frame into the back buffer in XRGB8888
+    /// (`[B, G, R, X]`) given the mapped slice and its row pitch; `cursor` is consulted only when
+    /// the hardware cursor is unavailable. Errors are logged and skipped.
     pub fn present_into<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
     where
         F: FnOnce(&mut [u8], usize),
@@ -667,10 +611,9 @@ impl DrmScanout {
         self.present_no_drain(cursor, fill);
     }
 
-    /// Present one frame **without** draining DRM events first: the
-    /// multi-output backend drains the shared card fd once per frame and
-    /// routes completions via [`Self::mark_flip_complete`], so draining
-    /// per-scanout here would steal sibling outputs' events.
+    /// Present one frame **without** draining DRM events first: the multi-output backend drains
+    /// the shared card fd once per frame and routes completions via [`Self::mark_flip_complete`],
+    /// so draining per-scanout here would steal sibling outputs' events.
     pub fn present_no_drain<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
     where
         F: FnOnce(&mut [u8], usize),
@@ -710,10 +653,9 @@ impl DrmScanout {
         }
 
         if self.use_pageflip {
-            // Best-effort CPU→host transfer before flipping: on virtual GPUs
-            // dirty_framebuffer flushes the dumb buffer into the host
-            // resource, without which a bare flip presents bytes the host
-            // never received. A no-op or unsupported on real GPUs, hence ignored.
+            // Best-effort CPU→host transfer before flipping: on virtual GPUs dirty_framebuffer flushes the
+            // dumb buffer into the host resource, without which a bare flip presents bytes the host never
+            // received. A no-op or unsupported on real GPUs, hence ignored.
             let clip = ClipRect::new(0, 0, self.width as u16, self.height as u16);
             let _ = self.card.dirty_framebuffer(self.fbs[idx], &[clip]);
             self.flip_to(idx);
@@ -722,9 +664,8 @@ impl DrmScanout {
         }
     }
 
-    /// Queue a page flip to buffer `idx`, making it the new front. A
-    /// transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno
-    /// latches the page-flip path off and falls back to dirty_framebuffer.
+    /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN`
+    /// skips the frame; a "not supported" errno latches the page-flip path off and falls back to dirty_framebuffer.
     fn flip_to(&mut self, idx: usize) {
         match self
             .card
@@ -757,9 +698,8 @@ impl DrmScanout {
         }
     }
 
-    /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu
-    /// transfers a CPU buffer to the host), falling back to a forced
-    /// `set_crtc` where dirtyfb is unsupported.
+    /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer
+    /// to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
     fn flush_dirty(&mut self, idx: usize) {
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
@@ -773,13 +713,11 @@ impl DrmScanout {
         }
     }
 
-    /// Non-blocking drain of DRM events, clearing `flip_pending` on a
-    /// page-flip completion. The fd is `O_NONBLOCK`, so `EAGAIN` is the
-    /// no-events case, not a failure.
+    /// Non-blocking drain of DRM events, clearing `flip_pending` on a page-flip completion. The fd
+    /// is `O_NONBLOCK`, so `EAGAIN` is the no-events case, not a failure.
     ///
-    /// Single-output only: attributing every completion to `self` is correct
-    /// with one scanout. The multi-output backend routes by crtc via
-    /// [`Self::poll_flip_completions`] + [`Self::mark_flip_complete`].
+    /// Single-output only: attributing every completion to `self` is correct with one scanout. The
+    /// multi-output backend routes by crtc via [`Self::poll_flip_completions`] + [`Self::mark_flip_complete`].
     fn drain_flip_events(&mut self) {
         if let Ok(events) = self.card.receive_events() {
             for ev in events {
@@ -790,12 +728,10 @@ impl DrmScanout {
         }
     }
 
-    /// Drain pending DRM events, returning the crtc of each page-flip
-    /// completion. Every per-connector scanout dups the same open file
-    /// description, so all crtcs' completions arrive on any one fd: the
-    /// backend must drain this **once** and route with
-    /// [`Self::mark_flip_complete`]. Draining per scanout would let the
-    /// first consume its siblings' completions, wedging `flip_pending` forever.
+    /// Drain pending DRM events, returning the crtc of each page-flip completion. Every
+    /// per-connector scanout dups the same open file description, so all crtcs' completions arrive
+    /// on any one fd: the backend must drain this **once** and route with
+    /// [`Self::mark_flip_complete`]. Draining per scanout would let the first consume its siblings' completions, wedging `flip_pending` forever.
     pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
         let mut done = Vec::new();
         if let Ok(events) = self.card.receive_events() {
@@ -808,8 +744,7 @@ impl DrmScanout {
         done
     }
 
-    /// Clear `flip_pending` iff `crtc` is this scanout's crtc. Paired with
-    /// [`Self::poll_flip_completions`] for the routed multi-output drain.
+    /// Clear `flip_pending` iff `crtc` is this scanout's crtc. Paired with [`Self::poll_flip_completions`] for the routed multi-output drain.
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
             self.flip_pending = false;
@@ -826,11 +761,10 @@ impl DrmScanout {
         );
     }
 
-    /// Power the display on/off for idle and session-lock blanking, via both
-    /// the legacy DPMS property (`0 = On`, `3 = Off` per `drm_mode.h`, which
-    /// virtio-gpu may ignore) and a CRTC toggle, the reliable path across
-    /// drivers. Both best-effort; the backend skips [`Self::present`] while
-    /// blanked so no frame races the disabled CRTC.
+    /// Power the display on/off for idle and session-lock blanking, via both the legacy DPMS
+    /// property (`0 = On`, `3 = Off` per `drm_mode.h`, which virtio-gpu may ignore) and a CRTC
+    /// toggle, the reliable path across drivers. Both best-effort; the backend skips
+    /// [`Self::present`] while blanked so no frame races the disabled CRTC.
     pub fn set_dpms(&mut self, on: bool) {
         self.set_dpms_property(on);
         if on {
@@ -857,9 +791,8 @@ impl DrmScanout {
         }
     }
 
-    /// Best-effort legacy DPMS property toggle. A missing property
-    /// (atomic-only drivers) or ioctl error is ignored — the CRTC toggle in
-    /// [`Self::set_dpms`] is the load-bearing path.
+    /// Best-effort legacy DPMS property toggle. A missing property (atomic-only drivers) or ioctl
+    /// error is ignored — the CRTC toggle in [`Self::set_dpms`] is the load-bearing path.
     fn set_dpms_property(&self, on: bool) {
         // `drm_mode.h`: DRM_MODE_DPMS_ON = 0, DRM_MODE_DPMS_OFF = 3.
         let value: u64 = if on { 0 } else { 3 };
@@ -885,36 +818,30 @@ impl DrmScanout {
     }
 }
 
-/// One output's scanout plus the fields the runtime needs to intern a stable
-/// [`OutputId`](super::OutputId) and lay outputs out side-by-side.
+/// One output's scanout plus the fields the runtime needs to intern a stable [`OutputId`](super::OutputId) and lay outputs out side-by-side.
 pub struct ScanoutBuild {
     /// `dev_t` of the `cardN` node this output is on.
     pub device_id: u64,
     /// DRM connector handle (raw u32) for this output.
     pub connector_id: u32,
-    /// Physical panel size in mm, when reported — the one input to scale
-    /// derivation that resolution alone cannot supply (see [`super::scale`]).
+    /// Physical panel size in mm, when reported — the one input to scale derivation that resolution alone cannot supply (see [`super::scale`]).
     pub physical_mm: Option<(u32, u32)>,
-    /// The crtc this output was modeset onto, so a later hotplug can pick
-    /// one still free.
+    /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
     pub scanout: DrmScanout,
 }
 
-/// Open `card_path` once and build one [`DrmScanout`] per connected
-/// connector with a usable mode, each on a distinct crtc and sharing a dup
-/// of the single card fd.
+/// Open `card_path` once and build one [`DrmScanout`] per connected connector with a usable
+/// mode, each on a distinct crtc and sharing a dup of the single card fd.
 ///
-/// Sharing one open file description is required — libseat refuses a second
-/// `open` of an already-open node — and it also means every crtc's
-/// page-flip completions arrive on one event stream, drained once and
-/// routed by crtc. A connector with no free crtc / mode is logged and
-/// skipped; `Err` only when no output at all could be brought up.
+/// Sharing one open file description is required — libseat refuses a second `open` of an
+/// already-open node — and it also means every crtc's page-flip completions arrive on one
+/// event stream, drained once and routed by crtc. A connector with no free crtc / mode is
+/// logged and skipped; `Err` only when no output at all could be brought up.
 ///
-/// Primary card only: connectors on secondary GPUs need their own card fd
-/// and GPU-to-GPU buffer handling. The returned [`CardHandle`] stays open
-/// on the loop thread so later hotplugs need no second `session.open`.
+/// Primary card only: connectors on secondary GPUs need their own card fd and GPU-to-GPU
+/// buffer handling. The returned [`CardHandle`] stays open on the loop thread so later hotplugs need no second `session.open`.
 pub fn open_all_scanouts<S: Session>(
     session: &mut S,
     card_path: &Path,
@@ -928,10 +855,9 @@ pub fn open_all_scanouts<S: Session>(
     Ok((card, builds))
 }
 
-/// Pick a crtc for `conn_info` not already in `used`: the current encoder's
-/// crtc if free, else one allowed by the connector's possible encoders
-/// (correct routing on multi-head GPUs), else any free crtc. `None` when
-/// every crtc is taken, and the extra connector is skipped.
+/// Pick a crtc for `conn_info` not already in `used`: the current encoder's crtc if free, else
+/// one allowed by the connector's possible encoders (correct routing on multi-head GPUs), else
+/// any free crtc. `None` when every crtc is taken, and the extra connector is skipped.
 fn pick_crtc(
     card: &Card,
     res: &drm_re::control::ResourceHandles,
@@ -962,10 +888,9 @@ fn pick_crtc(
     res.crtcs().iter().copied().find(|c| !used.contains(c))
 }
 
-/// Choose a scanout mode: trust the first *reasonable* mode (>= 1024 wide),
-/// since the kernel lists the EDID-preferred one first. The PREFERRED flag
-/// itself is not trusted — virtio-gpu flags a 640x480 default while
-/// advertising modes up to 5120x2160 — and the fallback caps at 1920x1080.
+/// Choose a scanout mode: trust the first *reasonable* mode (>= 1024 wide), since the kernel
+/// lists the EDID-preferred one first. The PREFERRED flag itself is not trusted — virtio-gpu
+/// flags a 640x480 default while advertising modes up to 5120x2160 — and the fallback caps at 1920x1080.
 fn pick_mode(modes: &[Mode]) -> Option<Mode> {
     for m in modes {
         let (w, h) = m.size();
@@ -994,8 +919,7 @@ fn pick_mode(modes: &[Mode]) -> Option<Mode> {
         .copied()
 }
 
-/// Classic left-pointing arrow cursor. `'#'` = black outline, `'.'` =
-/// white fill, space = transparent. The hot-spot is the top-left tip.
+/// Classic left-pointing arrow cursor. `'#'` = black outline, `'.'` = white fill, space = transparent. The hot-spot is the top-left tip.
 const CURSOR: [&str; 18] = [
     "#                ",
     "##               ",
@@ -1017,9 +941,8 @@ const CURSOR: [&str; 18] = [
     "       ##        ",
 ];
 
-/// Paint the arrow into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`,
-/// little-endian). Transparent everywhere the bitmap is blank. `pitch`
-/// is the buffer's row stride in bytes.
+/// Paint the arrow into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian).
+/// Transparent everywhere the bitmap is blank. `pitch` is the buffer's row stride in bytes.
 fn paint_cursor_argb(dst: &mut [u8], pitch: usize) {
     for b in dst.iter_mut() {
         *b = 0; // fully transparent
@@ -1042,9 +965,8 @@ fn paint_cursor_argb(dst: &mut [u8], pitch: usize) {
     }
 }
 
-/// Composite the software cursor into an XRGB8888 buffer at `(px, py)`
-/// (the hot-spot). Bytes are little-endian XRGB: `[B, G, R, X]`. Only
-/// used when the hardware cursor plane is unavailable.
+/// Composite the software cursor into an XRGB8888 buffer at `(px, py)` (the hot-spot). Bytes
+/// are little-endian XRGB: `[B, G, R, X]`. Only used when the hardware cursor plane is unavailable.
 fn draw_cursor(dst: &mut [u8], pitch: usize, dw: usize, dh: usize, px: i32, py: i32) {
     for (row, line) in CURSOR.iter().enumerate() {
         let y = py + row as i32;
@@ -1127,8 +1049,7 @@ mod tests {
 
     #[test]
     fn cursor_routing_single_output_is_global_coords() {
-        // One output at the origin contains every in-bounds point, so
-        // routing always selects index 0.
+        // One output at the origin contains every in-bounds point, so routing always selects index 0.
         let rects = [(0, 0, 1920u32, 1080u32)];
         assert_eq!(output_index_at(&rects, 0, 0), Some(0));
         assert_eq!(output_index_at(&rects, 1919, 1079), Some(0));
@@ -1137,9 +1058,7 @@ mod tests {
 
     #[test]
     fn cursor_routing_picks_output_under_pointer() {
-        // Two 1920x1080 outputs side by side: [0,1920) -> output 0,
-        // [1920,3840) -> output 1. This is what decides which crtc's
-        // cursor plane a pointer move drives.
+        // Two 1920x1080 outputs side by side: [0,1920) -> output 0, [1920,3840) -> output 1 — decides which crtc's cursor plane a pointer move drives.
         let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1920u32, 1080u32)];
         assert_eq!(output_index_at(&rects, 10, 10), Some(0));
         assert_eq!(output_index_at(&rects, 1919, 500), Some(0));
@@ -1150,8 +1069,7 @@ mod tests {
 
     #[test]
     fn cursor_routing_gap_between_mismatched_heights_is_none() {
-        // A shorter second output leaves a gap below it; a point in that
-        // gap belongs to no output and must not panic / mis-route.
+        // A shorter second output leaves a gap below it; a point in that gap belongs to no output and must not panic / mis-route.
         let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
         assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
         assert_eq!(output_index_at(&rects, 2000, 800), None); // below output 1
