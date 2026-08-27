@@ -53,11 +53,12 @@ pub const UI_SCALES: &[(&str, f64)] = &[
 
 /// Map a UI-scale factor to the closest offered label (defaults to "100%").
 fn ui_scale_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "100%" rather
+    // than panic the pane.
     UI_SCALES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
         .map(|(label, _)| *label)
         .unwrap_or("100%")
 }
@@ -81,11 +82,12 @@ pub const TEXT_SIZES: &[(&str, f64)] = &[
 /// "Default"). Shared with the Accessibility pane, which offers the same
 /// text-size control over the same [`AppearancePrefs::text_scale`] field.
 pub fn text_size_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "Default"
+    // rather than panic the pane.
     TEXT_SIZES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
         .map(|(label, _)| *label)
         .unwrap_or("Default")
 }
@@ -270,39 +272,38 @@ impl Widget for AppearancePane {
 
         let mut changed = false;
 
-        if let Some(name) = Self::read_str(state, root, THEME_KEY) {
-            if AppearancePrefs::THEMES.contains(&name.as_str()) && name != self.prefs.theme {
-                self.prefs.theme = name;
-                changed = true;
-            }
+        if let Some(name) = Self::read_str(state, root, THEME_KEY)
+            && AppearancePrefs::THEMES.contains(&name.as_str())
+            && name != self.prefs.theme
+        {
+            self.prefs.theme = name;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY) {
-            if let Some(scale) = text_size_scale(&label) {
-                if (scale - self.prefs.text_scale).abs() > f64::EPSILON {
-                    self.prefs.text_scale = scale;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY)
+            && let Some(scale) = text_size_scale(&label)
+            && (scale - self.prefs.text_scale).abs() > f64::EPSILON
+        {
+            self.prefs.text_scale = scale;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY) {
-            if let Some(factor) = ui_scale_factor(&label) {
-                if (factor - self.prefs.ui_scale).abs() > f64::EPSILON {
-                    self.prefs.ui_scale = factor;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY)
+            && let Some(factor) = ui_scale_factor(&label)
+            && (factor - self.prefs.ui_scale).abs() > f64::EPSILON
+        {
+            self.prefs.ui_scale = factor;
+            changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY) {
-            if b != self.prefs.high_contrast {
-                self.prefs.high_contrast = b;
-                changed = true;
-            }
+        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY)
+            && b != self.prefs.high_contrast
+        {
+            self.prefs.high_contrast = b;
+            changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY) {
-            if b != self.prefs.reduce_motion {
-                self.prefs.reduce_motion = b;
-                changed = true;
-            }
+        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY)
+            && b != self.prefs.reduce_motion
+        {
+            self.prefs.reduce_motion = b;
+            changed = true;
         }
 
         if changed {
@@ -345,12 +346,11 @@ impl Widget for AppearancePane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -379,15 +379,13 @@ impl Widget for AppearancePane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+            );
         }
     }
 

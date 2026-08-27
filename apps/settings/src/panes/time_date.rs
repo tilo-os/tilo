@@ -84,10 +84,10 @@ fn timezone() -> String {
     }
     // `/etc/localtime` is usually a symlink into zoneinfo; derive the zone
     // from its target when `/etc/timezone` is absent (common on Fedora).
-    if let Ok(target) = fs::read_link("/etc/localtime") {
-        if let Some(idx) = target.to_string_lossy().find("zoneinfo/") {
-            return target.to_string_lossy()[idx + "zoneinfo/".len()..].to_string();
-        }
+    if let Ok(target) = fs::read_link("/etc/localtime")
+        && let Some(idx) = target.to_string_lossy().find("zoneinfo/")
+    {
+        return target.to_string_lossy()[idx + "zoneinfo/".len()..].to_string();
     }
     "Europe/Amsterdam".to_string()
 }
@@ -213,29 +213,27 @@ impl Widget for TimeDatePane {
         }
 
         // Automatic-time toggle → timedatectl set-ntp.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY) {
-            if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                if *b != self.last_auto {
-                    self.last_auto = *b;
-                    if let Err(e) = self.ntp.set_ntp(*b) {
-                        warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
-                    }
-                }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY)
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_auto
+        {
+            self.last_auto = *b;
+            if let Err(e) = self.ntp.set_ntp(*b) {
+                warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
             }
         }
 
         // 24-hour preference → re-render the live clock AND persist to the
         // shared locale so Region & Formats and every consumer stay in sync
         // and the choice survives a restart.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY) {
-            if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                if *b != self.last_h24 {
-                    self.last_h24 = *b;
-                    self.h24 = *b;
-                    self.structure_dirty = true;
-                    (self.persist_format)(*b);
-                }
-            }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY)
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_h24
+        {
+            self.last_h24 = *b;
+            self.h24 = *b;
+            self.structure_dirty = true;
+            (self.persist_format)(*b);
         }
 
         if let Some(c) = &mut self.composed {
@@ -274,12 +272,11 @@ impl Widget for TimeDatePane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -308,22 +305,21 @@ impl Widget for TimeDatePane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
