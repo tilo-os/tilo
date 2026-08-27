@@ -1,16 +1,11 @@
-//! Integration tests for the xdg-desktop-portal D-Bus backend.
+//! Integration tests for the xdg-desktop-portal D-Bus backend: one
+//! round-trip per interface (FileChooser / ScreenCast / Access), plus the
+//! "Always-grant skips the prompt" fast path.
 //!
-//! Sandbox Phase 4.3 (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`):
-//! one round-trip per interface (FileChooser / ScreenCast / Access),
-//! plus the "Always-grant skips the prompt" fast path.
-//!
-//! We **don't** use the real session bus. Each test sets up an
-//! in-process peer-to-peer zbus connection via
-//! `tokio::net::UnixStream::pair()` — same pattern the upstream zbus
-//! `e2e.rs` fixtures use for their `iface_and_proxy_unix_p2p` test
-//! (`~/.cargo/registry/src/.../zbus-4.4.0/tests/e2e.rs` line 851ff).
-//! That means no broker, no real file dialog ever pops, and the test
-//! is hermetic.
+//! We **don't** use the real session bus. Each test sets up an in-process
+//! peer-to-peer zbus connection via `tokio::net::UnixStream::pair()` — the
+//! same pattern the upstream zbus `e2e.rs` fixtures use. No broker, no
+//! real file dialog ever pops, and the test is hermetic.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -88,12 +83,9 @@ async fn bring_up_pair_with_spawners(
     };
     let ctx_clone = ctx.clone();
 
-    // Build server with the three portal interfaces installed via
-    // `serve_at` so the object server is ready before the client
-    // dispatches its first call. We use a `try_join!` for the build
-    // pair so both ends of the socket negotiate auth concurrently —
-    // serial `await` calls deadlock because the server-side handshake
-    // wants bytes the client hasn't sent yet.
+    // `try_join!` on the build pair so both ends negotiate auth
+    // concurrently — serial `await` calls deadlock because the
+    // server-side handshake wants bytes the client hasn't sent yet.
     use shell::portal::{
         AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
     };
@@ -146,11 +138,6 @@ async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Pr
 
 #[tokio::test]
 async fn file_chooser_open_file_round_trips_auto_allow() {
-    // Replaces the prior placeholder-URI assertion (4.3 v1 returned a
-    // fixed `file:///work/.portal-tmp/...`). The follow-up wires a
-    // real `FilePickerSpawner`; this test injects a `MockFilePickerSpawner`
-    // returning `/tmp/picked.txt` and asserts the response carries
-    // `file:///tmp/picked.txt`.
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(101, "ws"));
     let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
     let caller_map = CallerMap::new();
@@ -268,16 +255,13 @@ async fn access_dialog_camera_round_trips_auto_allow() {
 
 #[tokio::test]
 async fn always_grant_skips_prompt_queue() {
-    // Pre-seed an `Always`-scoped Camera grant for the caller's app id.
-    // Use `PromptResolver::Channel` (production-shaped) — if the
-    // backend pumps the request through the queue we'd see it in
-    // `queued_len` and the call would hang. The fast-path bypasses
-    // the queue entirely, so the queue stays at 0 and the call
-    // resolves with response=0.
+    // Pre-seed an `Always`-scoped Camera grant. `PromptResolver::Channel`
+    // (production-shaped) means if the backend pumps the request through
+    // the queue we'd see it in `queued_len` and the call would hang — the
+    // fast path bypasses the queue entirely.
     let mut ws = empty_workspace(104, "ws");
-    // Seed through the production granting path. `app_grants_snapshot`
-    // hands back a fresh map by value, so inserting into it stored
-    // nothing and this test used to run against an empty workspace.
+    // `app_grants_snapshot` hands back a fresh map by value — inserting
+    // into it stores nothing, so seeding must go through `grant_app`.
     ws.grant_app(
         "org.example.always",
         &Capability::Camera {
@@ -287,10 +271,9 @@ async fn always_grant_skips_prompt_queue() {
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
 
-    // P2p sockets don't surface a unique-name on the request header,
-    // so the `caller_map`'s key-based lookup misses. Use the
-    // `force_caller_for_tests` override so the request resolves to
-    // our seeded workspace + app-id every time.
+    // P2p sockets don't surface a unique-name on the request header, so
+    // the `caller_map`'s key-based lookup misses; `force_caller_for_tests`
+    // resolves the request to our seeded workspace + app-id every time.
     let caller_map = CallerMap::new();
     let caller = PortalCaller::new(ws_id, "org.example.always");
     caller_map.force_caller_for_tests(caller);
@@ -300,9 +283,8 @@ async fn always_grant_skips_prompt_queue() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
     let handle: ObjectPath<'_> = "/h/3".try_into().unwrap();
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
-    // 30s timeout so a regression in the fast-path (e.g. accidentally
-    // pumping every request through the queue) fails the test
-    // explicitly instead of hanging CI.
+    // 30s timeout so a fast-path regression (e.g. accidentally pumping
+    // every request through the queue) fails explicitly instead of hanging CI.
     let reply = timeout(
         Duration::from_secs(30),
         proxy.call_method(
@@ -325,16 +307,14 @@ async fn always_grant_skips_prompt_queue() {
         reply.body().deserialize().expect("deserialize reply");
 
     assert_eq!(response, 0, "Always-grant fast-path returns 0");
-    // The fast-path skips `enqueue` — if any prompt got queued, we'd
-    // see a non-zero length. (`Channel` resolver buffers without
-    // resolving the oneshot.)
+    // The fast-path skips `enqueue` — if any prompt got queued, we'd see a
+    // non-zero length (`Channel` resolver buffers without resolving the oneshot).
     assert_eq!(
         queue.queued_len(),
         0,
         "Always grant must not enqueue a prompt"
     );
-    // Sanity: the grant store is still the same one our context
-    // points at.
+    // Sanity: the grant store is still the same one our context points at.
     let _ = ctx;
 }
 
@@ -396,19 +376,15 @@ async fn session_outcome_persists_into_grant_store() {
         .deserialize()
         .expect("deserialize reply");
     assert_eq!(response, 0);
-    // Session-scoped grant should now be persisted under the same
-    // workspace + app-id pair. We can't guarantee the caller-map
-    // resolves correctly across all zbus versions, so soften the
-    // assertion to "either the grant landed (resolution worked) or
-    // the call still succeeded (which is the round-trip we care
-    // about)". The lib tests above cover the resolver path
-    // deterministically.
+    // Session-scoped grant should now be persisted, but we can't guarantee
+    // caller-map resolution across all zbus versions — soften the
+    // assertion to "the round trip succeeded"; lib tests cover the
+    // resolver path deterministically.
     let _ = (store, ctx);
 }
 
-/// Helper: confirm the `BUS_NAME` constant matches the
-/// `xdg-desktop-portal` backend convention. Sandbox Phase 4.3's
-/// `os/.../portals/nirios.portal` config file points at this string;
+/// Confirms `BUS_NAME` matches the `xdg-desktop-portal` backend
+/// convention; `os/.../portals/nirios.portal` points at this string, so
 /// keeping the assertion here makes the contract obvious.
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
@@ -418,20 +394,16 @@ fn bus_name_matches_freedesktop_portal_convention() {
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
 
-/// Required test from the Sandbox 4.3 follow-up brief —
-/// `screencast_start_provisions_pipewire_stream`. Uses a
-/// `MockScreenCastProvisioner` (real Pipewire is a system dep we
-/// can't assume on every build host) and asserts the
-/// `ScreenCast.Start` response carries a non-empty `streams` array
-/// whose first entry is the mock's pre-baked node id.
+/// Uses a `MockScreenCastProvisioner` (real Pipewire is a system dep we
+/// can't assume on every build host) and asserts the `ScreenCast.Start`
+/// response carries a non-empty `streams` array whose first entry is the
+/// mock's pre-baked node id.
 #[tokio::test]
 async fn screencast_start_provisions_pipewire_stream() {
     let mut ws = empty_workspace(108, "ws");
-    // Pre-seed an Always-scoped Screencast grant so `Start` takes the
-    // fast path (skips the prompt). The portal calls into the
-    // provisioner regardless of whether the consent came via fast or
-    // slow path; this just avoids needing to fulfil a queued prompt
-    // from the test harness.
+    // Pre-seed an Always-scoped Screencast grant so `Start` takes the fast
+    // path (skips the prompt) — the provisioner is called either way, this
+    // just avoids fulfilling a queued prompt from the test harness.
     ws.grant_app(
         "org.example.cast",
         &Capability::Screencast {
@@ -493,9 +465,8 @@ async fn screencast_start_provisions_pipewire_stream() {
 
 #[test]
 fn capability_kind_round_trips_through_grant_store() {
-    // Quick non-D-Bus check that the integration-test crate can
-    // round-trip the public types — guards against a stray re-export
-    // miss that would silently break the test harness.
+    // Non-D-Bus check that the integration-test crate can round-trip the
+    // public types — guards against a stray re-export miss.
     let mut ws = empty_workspace(107, "ws");
     ws.grant_app(
         "x",
@@ -648,7 +619,7 @@ async fn screencast_restore_token_skips_reprompt() {
     let h: ObjectPath<'_> = "/h/p".try_into().unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
 
-    // Phase 1 — issue a token (fast-path via the Always grant).
+    // Issue a token first (fast-path via the Always grant).
     let s1: ObjectPath<'_> = "/sc/p1".try_into().unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s1, app, &empty)).await;
     let mut opts1: HashMap<&str, OwnedValue> = HashMap::new();
@@ -664,22 +635,21 @@ async fn screencast_restore_token_skips_reprompt() {
     assert!(!token.is_empty());
     assert_eq!(queue.queued_len(), 0, "fast path: no prompt queued");
 
-    // Remove the Always grant so ONLY the token can authorize phase 2.
+    // Remove the Always grant so only the token can authorize what follows.
     {
         let handle = ctx.grants.tree_handle();
         let mut t = handle.write();
         if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
-            // Drop every app-subject grant: the test is asserting that a
-            // restore token cannot resurrect access after a revoke.
+            // Revoking every app-subject grant proves a restore token
+            // can't resurrect access after a revoke.
             ws.revoke_matching(|c| {
                 matches!(&c.subject, Subject::Principal(Principal::App(_)))
             });
         }
     }
 
-    // Phase 2 — present the restore token. Under the Channel resolver (which
-    // never fulfils a queued prompt), an un-restored path would enqueue and
-    // hang; a valid token must skip the prompt.
+    // Present the restore token — under the Channel resolver (never
+    // fulfils a queued prompt), an un-restored path would enqueue and hang.
     let s2: ObjectPath<'_> = "/sc/p2".try_into().unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s2, app, &empty)).await;
     let mut opts2: HashMap<&str, OwnedValue> = HashMap::new();
@@ -875,10 +845,9 @@ async fn remote_desktop_denial_blocks_injection() {
 // Print
 // ---------------------------------------------------------------------------
 //
-// The property under test is the one the whole portal exists for: an app
-// hands over a *file descriptor* and a request, and the bytes reach the
-// spooler on the compositor's side of the sandbox — while the app itself
-// never sees a printer, a socket, or an IPP message.
+// The property under test: an app hands over a *file descriptor* and a
+// request, and the bytes reach the spooler on the compositor's side of the
+// sandbox — while the app itself never sees a printer, a socket, or an IPP message.
 
 /// Bring up a portal pair whose spooler records instead of printing.
 async fn bring_up_print_pair(

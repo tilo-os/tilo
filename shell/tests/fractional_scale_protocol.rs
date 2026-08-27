@@ -259,7 +259,6 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
 
     let mut app = ClientAppState::default();
 
-    // 1. Registry walk — need the compositor + fractional-scale manager.
     pump(
         &conn,
         &mut event_queue,
@@ -270,15 +269,14 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
         "registry walk",
     );
 
-    // 2. Create a surface, mint a fractional-scale object for it, commit.
     let compositor = app.compositor.clone().expect("wl_compositor bound");
     let manager = app.fractional_manager.clone().expect("manager bound");
     let surface = compositor.create_surface(&qh, ());
     let _fractional = manager.get_fractional_scale(&surface, &qh, ());
     surface.commit();
 
-    // 3. The commit runs `CompositorHandler::commit`, which pushes the
-    //    display scale as the preferred fractional scale.
+    // The commit runs `CompositorHandler::commit`, which pushes the display
+    // scale as the preferred fractional scale.
     pump(
         &conn,
         &mut event_queue,

@@ -93,25 +93,15 @@ impl StripViewport {
     /// The leftmost border **between two windows** that the user can
     /// actually see a space at.
     ///
-    /// Two things this deliberately excludes.
-    ///
-    /// A seam lying exactly on an edge of the screen is not a space you
-    /// can see: the window on its far side is entirely off the display.
-    /// That is not a corner case — a full-width window puts its trailing
-    /// border precisely on the right edge, which is the resting state of
-    /// a default strip. So the bound is strict, and that case falls
-    /// through to [`Self::next_seam_rightwards`], which lands the window
-    /// immediately after the one filling the screen.
-    ///
-    /// And the seam after the *last* window, which is a border between a
-    /// window and open space rather than between two windows. It is
-    /// still where "rightwards" terminates — see
-    /// [`Self::next_seam_rightwards`] — just not something to call
-    /// visible.
+    /// Excludes a seam sitting exactly on the screen edge — the window on
+    /// its far side is entirely off-display, which is the resting state
+    /// of a full-width window — so that case falls through to
+    /// [`Self::next_seam_rightwards`] instead. Also excludes the seam
+    /// after the *last* window: a border against open space, not between
+    /// two windows, though it is still where "rightwards" terminates.
     ///
     /// Leftmost rather than nearest-to-centre: the strip reads left to
-    /// right, so the first gap you can see is the one you would point at
-    /// if asked where the space between the windows is.
+    /// right, so the first gap you can see is the one you'd point at.
     pub fn visible_seam(&self) -> Option<Seam> {
         let seams = self.seams();
         let between_windows = seams.len().saturating_sub(1);
@@ -125,10 +115,10 @@ impl StripViewport {
     /// window goes when no space between windows is visible, which is
     /// the ordinary case for a full-width window.
     ///
-    /// Falls back to the rightmost seam when every seam is already
-    /// behind the viewport (the user has panned into the empty space
-    /// past the last window): "rightwards" runs out at the end of the
-    /// strip, and that end is still a seam.
+    /// Falls back to the rightmost seam when every seam is behind the
+    /// viewport (panned into the empty space past the last window):
+    /// "rightwards" runs out at the end of the strip, and that end is
+    /// still a seam.
     pub fn next_seam_rightwards(&self) -> Option<Seam> {
         let seams = self.seams();
         seams
@@ -217,14 +207,12 @@ pub fn note_placement_for_launch(
 /// [`note_placement_for_launch`] for a launch whose window identities
 /// cannot be derived from its id.
 ///
-/// A `.qpkg`'s wayland app-id follows its package id by convention, so
-/// the qOS path derives both from one string. A host application's
-/// cannot be derived from anything qOS controls — the `.desktop` entry
-/// states it, or the toolkit picks the desktop-file id, or a Flatpak
-/// reports its application id — so the caller that read the entry
-/// passes them in. Without this a foreign toplevel matches no note and
-/// lands wherever the default puts it, which is the bug: the user asked
-/// for it somewhere specific and the window ignored them.
+/// A `.qpkg`'s wayland app-id follows its package id by convention, but a
+/// host application's cannot be derived from anything qOS controls — the
+/// caller that read the `.desktop` entry or Flatpak application id passes
+/// it in instead. Without this a foreign toplevel matches no note and
+/// lands wherever the default puts it, ignoring where the user asked for
+/// it.
 pub fn note_placement_for_launch_identities(
     key: &str,
     identities: &[String],
@@ -238,16 +226,16 @@ pub fn note_placement_for_launch_identities(
 /// [`note_placement_for_launch`], with an explicit destination allowed to
 /// override the rule.
 ///
-/// The rule infers where a window belongs from what is selected. That is
-/// the right answer when the user did not say — but the "+" on a group's
-/// tab strip *does* say, and naming a destination has to beat inferring
-/// one. Notably [`OpenTarget::Here`] lands a tab in a single-window group,
-/// which the rule would never do (it opens beside instead, so a lone
+/// The rule infers where a window belongs from what is selected — right
+/// when the user did not say, but the "+" on a group's tab strip *does*
+/// say, and a named destination has to beat inferring one. Notably
+/// [`OpenTarget::Here`] lands a tab in a single-window group, which the
+/// rule would never do on its own (it opens beside instead, so a lone
 /// window never silently acquires a tab bar).
 ///
 /// A target naming a group that has since closed falls back to the rule
 /// rather than to `NewGroup`, so a stale aim degrades to the ordinary
-/// behaviour instead of to an arbitrary one.
+/// behaviour instead of an arbitrary one.
 pub fn note_placement_for_launch_targeted(
     package_id: &str,
     tree: &WorkspaceTree,

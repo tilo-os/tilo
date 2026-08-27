@@ -2,36 +2,21 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.ScreenCast.xml`.
 //!
-//! The screencast handshake is a session state machine the frontend
-//! (`xdg-desktop-portal`) drives on behalf of a sandboxed app:
+//! `xdg-desktop-portal` drives a per-session state machine on behalf of a
+//! sandboxed app: `CreateSession` allocates it; `SelectSources` records
+//! what to capture and is where the consent prompt fires (a valid
+//! `restore_token` pre-approves the session and skips it); `Start`
+//! re-checks consent (unless restored), provisions a real PipeWire node
+//! per selected source, and — when the session asked to persist — returns
+//! a fresh `restore_token` so the next share can skip the prompt.
 //!
-//! 1. `CreateSession(handle, session_handle, app_id, options)` — allocates
-//!    a session object. We record it keyed by `session_handle` so the
-//!    later steps can carry the negotiated selection.
-//! 2. `SelectSources(handle, session_handle, app_id, options)` — the app
-//!    declares *what* it wants to capture (`types` = monitor|window|virtual,
-//!    `cursor_mode` = hidden|embedded|metadata, `multiple`, `persist_mode`,
-//!    and — for a re-share — a `restore_token`). This is where we surface
-//!    the consent prompt (`flow::resolve` with `CapabilityKind::Screencast`)
-//!    and stash the selection on the session. A valid `restore_token`
-//!    short-circuits the prompt so a persisted share doesn't re-ask.
-//! 3. `Start(handle, session_handle, app_id, parent_window, options)` —
-//!    final commit. Re-checks consent (unless restored), provisions a real
-//!    PipeWire node per selected source, and returns the streams with their
-//!    node ids + `size`/`source_type`/`position` props. When the session
-//!    asked to persist, a fresh `restore_token` (+ `persist_mode`) is
-//!    returned so the next share can skip the prompt.
+//! `OpenPipeWireRemote` is a frontend-interface method in the reference
+//! architecture; we expose it on the backend too so a qOS-native frontend
+//! (and the test harness) can get a real, scoped remote fd directly from
+//! the compositor's provisioner.
 //!
-//! `OpenPipeWireRemote(session_handle, app_id, options)` hands the app the
-//! fd of a PipeWire remote it can attach the provisioned nodes to. In the
-//! reference xdg-desktop-portal architecture this method lives on the
-//! *frontend* interface; we expose it on the backend too so a qOS-native
-//! frontend (and the test harness) can obtain a real, scoped remote fd
-//! directly from the compositor's provisioner.
-//!
-//! The provisioner abstraction ([`ScreenCastStreamProvisioner`]) lets tests
-//! use a [`MockScreenCastProvisioner`]; production wires the real PipeWire
-//! connection that captures the compositor's rendered output.
+//! [`ScreenCastStreamProvisioner`] lets tests substitute a
+//! [`MockScreenCastProvisioner`] for the real PipeWire connection.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -1,4 +1,4 @@
-//! Track D2 — idle detection + DPMS blanking + session-lock state machine.
+//! Idle detection + DPMS blanking + session-lock state machine.
 //!
 //! This module is the **pure-logic** core of the compositor's
 //! power-management and lock behaviour. It owns no hardware and performs
@@ -33,18 +33,14 @@
 //! `ext-session-lock-v1` is a *client*-driven protocol: a client binds the
 //! global and supplies the lock surface(s) the compositor shows. The
 //! compositor serves that global (see
-//! [`crate::compositor::state::SessionLockHooks`] and the `SessionLockHandler`
-//! impl on `State`) so a conforming lock client — or `loginctl lock-session`
-//! routed through one — can drive the session lock through the standard
-//! protocol. But qOS renders its *own* lock UI as chrome via
-//! [`crate::compositor::lock_screen`] rather than compositing a client lock
-//! surface: the shell already draws its chrome directly
-//! ([`crate::compositor::frame::FrameBuilder`]) and foreign apps are adopted
-//! as tabs / streamed. So a protocol `lock` request folds into the same
-//! authoritative locked state this machine tracks, and the compositor
-//! captures input in its own loop + paints the overlay + authenticates —
-//! there is no external surface to coordinate. Authentication is the missing
-//! piece the overlay adds: unlock now requires a verified password (see
+//! [`crate::compositor::state::SessionLockHooks`]) so a conforming lock
+//! client — or `loginctl lock-session` routed through one — can drive
+//! the session lock through the standard protocol. But qOS renders its
+//! *own* lock UI as chrome via [`crate::compositor::lock_screen`] rather
+//! than compositing a client lock surface, so a protocol `lock` request
+//! just folds into the same authoritative locked state this machine
+//! tracks. Authentication is the missing piece the overlay adds: unlock
+//! now requires a verified password (see
 //! [`crate::compositor::lock_controller`]), not merely a keypress.
 
 use std::time::{Duration, Instant};

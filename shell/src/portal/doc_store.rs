@@ -2,77 +2,56 @@
 //!
 //! ## Why a grant is not enough
 //!
-//! A capability recorded on a workspace is what the *launcher* reads.
-//! It becomes `--ro-bind-try <p> <p>` (or `--bind-try`) plus a matching
-//! Landlock rule, and both are decided once, when the app starts —
-//! `crates/packaging/launcher/src/capabilities.rs` is explicit that the
-//! two enforcement layers are derived from one plan so they cannot
-//! disagree. That is the right shape, and it has one consequence: a
-//! grant made *after* the app started changes nothing about the
-//! namespace it is already living in.
-//!
-//! An app under `--unshare-all` has its own mount namespace. Nothing
-//! outside can add a mount to it. `mount --bind` on the host does not
-//! propagate; the app's `/` is not the host's `/`. So a portal that
-//! hands back `/home/you/notes.md` hands back a path that resolves to
-//! `ENOENT` inside the caller, and the app reports that the file it
-//! just watched the user choose does not exist.
+//! A capability recorded on a workspace is what the *launcher* reads,
+//! decided once when the app starts (`--ro-bind-try` / Landlock, from
+//! one plan so the two enforcement layers can't disagree). A grant made
+//! *after* the app started changes nothing about the namespace it's
+//! already living in: an app under `--unshare-all` has its own mount
+//! namespace, and a host `mount --bind` does not propagate into it. A
+//! portal that hands back `/home/you/notes.md` hands back a path that
+//! resolves to `ENOENT` inside the caller.
 //!
 //! ## The three candidate mechanisms
 //!
-//! **A launch-time grant** is what already exists, and it is what makes
-//! `doc_open.rs` work: grant, *then* start the app. It cannot serve a
-//! running app, which is exactly the case the portal is for.
+//! **A launch-time grant** is what already exists (`doc_open.rs`):
+//! grant, *then* start the app. Can't serve a running app — exactly the
+//! case the portal is for.
 //!
 //! **A live re-bind** would mean entering the app's mount and user
-//! namespaces and mounting from the inside. Something has to hold
-//! `CAP_SYS_ADMIN` in that user namespace to do it, which means a
-//! helper process living inside the sandbox whose whole job is to mount
-//! host paths on request. That helper is then the most valuable target
-//! in the sandbox: compromise its protocol and you have arbitrary host
-//! mounts, from inside the thing the sandbox exists to contain. It
-//! trades a confinement boundary for a convenience.
+//! namespaces to mount from inside, which needs a `CAP_SYS_ADMIN`
+//! helper living inside the sandbox. That helper becomes the most
+//! valuable target in the sandbox — compromise its protocol and you
+//! have arbitrary host mounts from inside the thing meant to contain
+//! them. It trades a confinement boundary for convenience.
 //!
 //! **A document store** — this module — mounts one filesystem the
 //! compositor owns, before any app starts, and binds a per-app subtree
-//! of it into each sandbox. The mount topology is then fixed for the
-//! app's whole life and never changes again. What changes is the
-//! *contents* of that filesystem, which the compositor edits from
-//! outside, and which appear inside immediately because it is the same
-//! filesystem rather than a new mount. This is how `xdg-document-portal`
-//! solves the same problem, and it is the mechanism used here.
+//! into each sandbox. The mount topology is fixed for the app's whole
+//! life; what changes is the *contents*, edited by the compositor from
+//! outside and visible inside immediately since it's the same
+//! filesystem. This is how `xdg-document-portal` solves the same
+//! problem.
 //!
 //! ## What it means for confinement
 //!
-//! The bind is unconditional: every sandbox gets `/run/qos/documents`,
-//! whether or not the user has ever picked a file for it. That is a
-//! widening of the launch profile, and it is worth being precise about
-//! how much.
-//!
-//! At launch the app's subtree is **empty**. There is no ambient
-//! authority in it: the app cannot enumerate documents belonging to
-//! another app, because the bind is of its own subtree and not of the
-//! store root. It cannot guess its way to one, because a handle it was
-//! not given is not in its subtree at all — the confinement is the
-//! mount topology, not a secret. And it cannot keep one, because the
-//! entry is removed when the grant is.
-//!
-//! So what the app gains is: exactly the files a human chose for it in
-//! a dialog the app does not draw, does not aim, and cannot read. That
-//! is strictly narrower than the alternative the portal replaces, which
-//! granted `Scope::FsPath("/")` on an *Always* click — the entire
-//! filesystem, permanently, from one dialog.
+//! The bind is unconditional: every sandbox gets `/run/qos/documents`
+//! whether or not the user has picked a file for it yet. At launch the
+//! app's subtree is **empty** — no ambient authority: the app can't
+//! enumerate another app's documents (the bind is of its own subtree,
+//! not the store root), can't guess its way to one (a handle it wasn't
+//! given isn't in its subtree at all), and can't keep one after the
+//! grant is removed. Strictly narrower than the portal it replaces,
+//! which granted `Scope::FsPath("/")` permanently on one *Always* click.
 //!
 //! ## When the store cannot be mounted
 //!
 //! FUSE may be unavailable — no `/dev/fuse`, no permission, no
-//! `fusermount3`. The honest failure is to say so: [`HostPathStore`]
-//! serves callers that share the compositor's own namespace (built-in
-//! apps, development runs, tests) by handing back the real path, which
-//! for those callers is genuinely reachable. It does **not** pretend to
-//! serve a confined caller. `documents_reach_confined_apps()` is what
-//! the compositor logs at startup, so "file open silently doesn't work
-//! for sandboxed apps" is a line in the journal rather than a mystery.
+//! `fusermount3`. [`HostPathStore`] serves callers that share the
+//! compositor's own namespace (built-in apps, dev runs, tests) by
+//! handing back the real path; it does **not** pretend to serve a
+//! confined caller. `documents_reach_confined_apps()` is what the
+//! compositor logs at startup, so "file open silently doesn't work for
+//! sandboxed apps" is a line in the journal, not a mystery.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

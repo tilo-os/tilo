@@ -1,91 +1,25 @@
 //! Giving a peer's window a real window here.
 //!
-//! # The beat
+//! This OS replicates *documents*, not screens: a room carries state and
+//! every member runs their own app against it. So a
+//! [`TileContent::PeerWindow`] tab arriving in the room document is not a
+//! request to show a remote window — it is news that the room has one
+//! open, and the honest local answer is to open one too.
 //!
-//! Someone in the room opens the word processor. It appears on the other
-//! person's screen too, and when the first types the second sees the
-//! words. That second half is what settles what the first half has to be.
+//! The tab carries only the app id and the peer's own name for it
+//! (`WorkspaceTree::project_owned_contents` writes a tab's *existence*,
+//! never who has it open); the app's own state travels separately, per
+//! record, over the collaboration broker's channels. Starting a local
+//! instance answers to the capability model like any launch: [`admits`]
+//! checks the room's **owner** for `Write` on `ResourceRef::App(id)`, and
+//! the launch goes through [`crate::shell::launcher`] with the room's own
+//! grants — no wider sandbox than a launch from the palette gets.
 //!
-//! This OS replicates *documents*, not screens. A room carries state and
-//! every member runs their own app against it — which is why two word
-//! processors in one room converge, and why a picture of somebody else's
-//! word processor could not host the beat that follows it. So a tab
-//! arriving in the room document is not a request to show a remote
-//! window; it is news that the room has one open, and the honest local
-//! answer is to open one too.
-//!
-//! # What arrives, and what it is enough for
-//!
-//! [`TileContent::PeerWindow`] — the app id, and the peer's own name for
-//! it. That is all the room document carries about a window, deliberately:
-//! see `WorkspaceTree::project_owned_contents`, which writes a tab's
-//! *existence* and never who has it open or where they have scrolled.
-//!
-//! It is enough. The app id says which app, the workspace says which
-//! room, and the app's own state travels per record over the collaboration
-//! broker's `(app_id, cluster_id, record_id)` channels — not through here.
-//! Two instances of one app launched into one room find each other over
-//! that path whether or not this module exists; what this module supplies
-//! is the second instance. A record id in the tab would be a fourth copy
-//! of a fact three layers already hold, and `plan/rooms.md` is explicit
-//! that a room learns *that* a document is in it and nothing about who has
-//! it open.
-//!
-//! # What authorises it
-//!
-//! A peer opening a window causes a process to start on this machine.
-//! That has to answer to the capability model rather than route around it,
-//! and it does, in the model's own terms:
-//!
-//! - **Which room.** A payload for a room this machine is not in never
-//!   reaches the tree at all (`WorkspaceTree::apply_room_changes` returns
-//!   before it stores anything), and the entries in it are per-owner
-//!   write-checked there too. So by the time a `PeerWindow` exists, the
-//!   local user is a member of that room and the tab is an entry its
-//!   owner wrote. Membership is the local user's own consent: they
-//!   accepted the invite.
-//! - **Which app.** [`admits`] asks the room whether the app may be
-//!   launched in it, with the verb the rest of the OS already uses for
-//!   that act — `Write` on `ResourceRef::App(id)`, from
-//!   [`crate::shell::search::visibility::required_capability`]: *"launching
-//!   an app puts a tab in the workspace, which is a mutation of the room's
-//!   contents"*. Asked of the room's **owner**, who is *"the one principal
-//!   whose authority is not itself a capability"* — the root the room's
-//!   governance descends from, replicated into `Workspace::owner` with the
-//!   capabilities beside it. A room with no owner recorded authorises
-//!   nothing.
-//!
-//!   The practical effect is that a `Restrict` on `Scope::App(x)` in a
-//!   room stops x being started here by anybody's window, and a room whose
-//!   governance has not arrived yet starts nothing at all.
-//! - **What it may then reach.** Nothing new. The launch goes through
-//!   [`crate::shell::launcher`] like every other, so the app gets the
-//!   room's own capability list and `bwrap` binds it exactly one writable
-//!   directory, `<data home>/qos-rooms/<room>/<pkg>`. An app started this
-//!   way is inside the same sandbox as one started from the palette, with
-//!   the same grants — there is no path here that widens either.
-//!
-//! # One window per tab
-//!
-//! The launch leaves a placement note naming the tab
-//! ([`Placement::IntoTab`]), so the toplevel that comes back is bound into
-//! the tab the room already has rather than minting a second one beside
-//! it. Once bound, the tile is a [`TileContent::Foreign`] on this
-//! machine's own surface, and `WorkspaceTree::localise_tile` keeps it
-//! there against the peer's continued re-projection of theirs.
-//!
-//! It cannot echo back into the room: the projection writes only tabs this
-//! machine owns, and a peer's tab is by construction not one of them. So
-//! the local instance is invisible to the room, and the two machines do
-//! not take turns opening windows at each other.
-//!
-//! # Deciding once
-//!
-//! `PeerWindow::note` is both the sentence on the card and the record that
-//! a decision was made. An empty note is an unexamined tab; writing one is
-//! what stops a refusal being re-stated, or a launch re-started, on every
-//! sync round. A tab that is still a card is therefore always showing the
-//! reason it is one.
+//! The launch binds into the existing tab ([`Placement::IntoTab`]) rather
+//! than minting a new one beside it, and cannot echo back into the room
+//! (the projection writes only tabs this machine owns). `PeerWindow::note`
+//! both labels the card and records that a decision was made, so a
+//! refusal or a launch is not re-run on every sync round.
 
 use crate::compositor::tab_binding::Placement;
 use crate::shell::launcher;
@@ -106,17 +40,15 @@ struct Pending {
 }
 
 /// Examine every peer window this machine has not yet answered for, and
-/// start a local instance of each one it may.
+/// start a local instance of each one it may. Returns whether anything
+/// was decided, so the caller can repaint only when a card's text changed
+/// or a window is on its way.
 ///
-/// Returns whether anything was decided, so the caller can repaint only
-/// when a card's text changed or a window is on its way.
-///
-/// At most one launch per app id per call. The launcher correlates a
+/// At most one launch per app id per call: the launcher correlates a
 /// launch with the window it produces by app id and keeps one note per
-/// package, so two launches of one app in flight at once would have the
-/// second note displace the first and the first window land in the wrong
-/// tab. The tabs left unexamined keep their empty note and are picked up
-/// on the next call — which is why the caller re-runs while
+/// package, so two in flight at once would have the second note displace
+/// the first. Tabs left unexamined keep their empty note and are picked
+/// up on the next call — which is why the caller re-runs while
 /// [`any_pending`] holds rather than once per sync round.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let todo = pending(tree);
@@ -189,16 +121,11 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     };
     let ws_id = ws.id;
     admits(ws, &item.app_id)?;
-    // Whatever a launch from the palette does *around* the launch has to
-    // happen here too, or an app started on the room's behalf is not the
-    // same app the person would have opened from the palette. The file
-    // manager's home grant is the one that bites: without it the window
-    // opens on its own sandbox directory, finds nothing but its dotfiles
-    // and says the folder is empty — which is what a guest's screen
-    // showed while the host's listed the same home's contents.
-    //
-    // After `admits`, so nothing is granted for a launch the room has
-    // just refused.
+    // Whatever a launch from the palette does around the launch has to
+    // happen here too — the file manager's home grant is the one that
+    // bites: without it the window opens on its own sandbox directory and
+    // finds only dotfiles. After `admits`, so nothing is granted for a
+    // launch the room has just refused.
     crate::shell::search::providers::applications::grant_file_manager_home(
         tree,
         ws_id,
@@ -269,46 +196,23 @@ fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
     false
 }
 
-/// Where this machine already has the room's copy of `app_id` on screen
-/// in `ws`, if it does.
+/// Where this machine already has the room's copy of `app_id` on screen in
+/// `ws`, if it does. Returns the coordinates
+/// [`crate::shell::chrome_state::ChromeState::focus_tab`] wants.
 ///
-/// Returns the coordinates [`crate::shell::chrome_state::ChromeState::focus_tab`]
-/// wants: the strip, the group and the tab.
+/// Without this, a person who already has a peer-started instance of an
+/// app open (via [`examine`]) and then opens the same app themselves from
+/// the palette gets a second process and a second group showing the same
+/// document — and because the new tab is one this machine owns, it
+/// projects into the room and every other member's [`examine`] starts an
+/// instance of it too, one apiece. A launch that finds this returns to
+/// the existing window instead.
 ///
-/// # What this is for
-///
-/// A person joins a room where somebody already has the word processor
-/// open. [`examine`] starts a local instance for them, bound into the
-/// peer's tab, and they now have a working word processor on screen.
-/// If they then open the word processor themselves — from the palette,
-/// not knowing or caring that the room already had one — they get a
-/// second process, a second group, and two windows side by side showing
-/// the same document, because it is the same room and therefore the same
-/// record.
-///
-/// That is not two windows in the sense the strip means. It is one
-/// window drawn twice, and it also does not stay a local problem: the
-/// second tab is one *this* machine owns, so it projects into the room,
-/// and every other member's [`examine`] then starts an instance of it
-/// too. One person opening an app the room already had turns into a
-/// window apiece for everybody, and a third member makes it three.
-///
-/// So a launch that finds this returns to the window that is already
-/// there instead of starting another.
-///
-/// # Why only a peer's tab counts
-///
-/// The tab has to be one this machine does *not* own. Two windows of one
-/// app that the user opened themselves are two windows they asked for —
-/// two terminals in a workspace is an ordinary thing to want, and
-/// `placement_for_toplevel` is written for a client that opens several
-/// toplevels. What is being collapsed here is narrower: this machine
-/// opening its own instance twice for one room, once because a peer had
-/// the app open and once because the user asked.
-///
-/// A tab still showing a card counts as well, as long as it has been
-/// answered for (`note` non-empty): the instance is starting, and a
-/// launch during that window would race it and produce the same pair.
+/// Only counts a tab this machine does *not* own — two windows the user
+/// opened themselves (e.g. two terminals) are two windows they asked for,
+/// not this collapse. A tab still showing a card counts too, as long as
+/// it has been answered for (`note` non-empty): the instance is starting,
+/// and a launch during that window would race it into the same pair.
 pub fn opened_for_the_room(
     ws: &Workspace,
     app_id: &str,
@@ -410,16 +314,11 @@ mod tests {
     /// A file manager started because a peer had one open can see the
     /// user's home, exactly as one opened from the palette can.
     ///
-    /// Every app is given one directory of its own and nothing else it
-    /// was not granted. For the app whose entire subject is the user's
-    /// files that means opening on a folder holding nothing but its own
-    /// dotfiles and reporting, accurately, that it is empty — which is
-    /// what a guest's screen showed while the host's listed the same
-    /// home's contents. The grant used to be minted only on the palette
-    /// path, and a peer's window does not come through it.
-    ///
-    /// Asserted through `examine` — the path a peer's window actually
-    /// takes — and against `Workspace::allows`, the same call the
+    /// Every app is given one directory of its own and nothing else it was
+    /// not granted; without this grant the file manager opens on a folder
+    /// holding nothing but its own dotfiles and accurately reports it as
+    /// empty. Asserted through `examine` — the path a peer's window
+    /// actually takes — and against `Workspace::allows`, the same call the
     /// sandbox's own capability resolution bottoms out in.
     #[test]
     #[serial_test::serial(process_env)]

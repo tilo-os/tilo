@@ -1,24 +1,18 @@
 //! End-to-end: an app asks the portal for a file, a human clicks
-//! through the dialog, and the app reads the bytes.
+//! through the dialog, and the app reads the bytes. Nothing here is
+//! mocked past the point where mocking would hide the bug this exists
+//! to prevent:
 //!
-//! Nothing here is mocked past the point where mocking would hide the
-//! bug this exists to prevent:
-//!
-//! - The **D-Bus call is real**. `FileChooserBackend` is registered on a
-//!   zbus object server and driven through a `Proxy`, so the request
-//!   travels the same wire an app's does. (The transport is a
-//!   socket-pair rather than a broker — same pattern `portal_test.rs`
-//!   uses, and the same code path on both sides.)
-//! - The **queue is real**. `FilePickerQueue` is the production
-//!   `FilePickerSpawner`, not `MockFilePickerSpawner`.
-//! - The **pump is real**. `ShellOverlayHost::pump_file_picker` is the
+//! - **D-Bus is real**: `FileChooserBackend` is driven through a zbus
+//!   `Proxy` over a socket-pair, the same wire an app's call travels.
+//! - **The queue is real**: `FilePickerQueue` is the production
+//!   `FilePickerSpawner`, not a mock.
+//! - **The pump is real**: `ShellOverlayHost::pump_file_picker` is the
 //!   method the compositor calls every frame.
-//! - The **widget is real**. The dialog is `ui::widget::FilePicker`,
-//!   listing an actual directory, and the test clicks it by hit-testing
-//!   the rect the widget itself computed — not by calling a setter.
-//! - The **files are real**. Bytes are written to a temp dir, and the
-//!   assertion is that the path the app was handed can be opened and
-//!   read back.
+//! - **The widget is real**: the test clicks `ui::widget::FilePicker`
+//!   by hit-testing the rect the widget itself computed.
+//! - **The files are real**: bytes are written to a temp dir and read
+//!   back through the path the app was handed.
 //!
 //! The one thing that is *not* a real frame loop is the driving: the
 //! D-Bus method parks on a oneshot, so the test spawns the call and
@@ -261,10 +255,9 @@ async fn pump_until(
 /// Await a spawned portal call while still turning the pump.
 ///
 /// The pump is what answers the call, so awaiting one without running
-/// the other is a deadlock — the same deadlock this whole branch is
-/// about, reproduced in the harness. Every wait on a portal response
-/// goes through here so a test can never accidentally stop the
-/// compositor and then wonder why the app never heard back.
+/// the other is a deadlock. Every wait on a portal response goes
+/// through here so a test can never accidentally stop the compositor
+/// and then wonder why the app never heard back.
 async fn await_response(
     host: &mut ShellOverlayHost,
     what: &str,
@@ -493,8 +486,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     let handed = path_of_uri(&uris_of(&results)[0]);
     assert_eq!(handed, fresh.join("notes.md"));
 
-    // The app writes. This is the half that used to hang: a running
-    // editor saving raised a second prompt nobody drained.
+    // The app writes.
     std::fs::write(&handed, BYTES)
         .unwrap_or_else(|e| panic!("the app cannot write {}: {e}", handed.display()));
     assert_eq!(
@@ -526,8 +518,8 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     );
 }
 
-/// Cancel releases the caller. The failure this guards is the original
-/// bug's shape: a request that never comes back.
+/// Cancel releases the caller rather than leaving a request that never
+/// comes back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);

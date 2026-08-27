@@ -83,10 +83,9 @@ impl QsActions for RecordingDispatcher {
     }
 }
 
-/// Shared recording dispatcher so the test can read calls back after
-/// the dispatcher is moved into the host. The host owns a
-/// `Box<dyn QsActions>`, so we wrap the recorder in an `Rc` and hand
-/// out a separate clone for read-back.
+/// Shared recording dispatcher so the test can read calls back after the
+/// dispatcher is moved into the host's `Box<dyn QsActions>` — wraps the
+/// recorder in an `Rc` and hands out a separate clone for read-back.
 #[derive(Default, Clone)]
 struct SharedRecorder(std::rc::Rc<RecordingDispatcher>);
 
@@ -159,11 +158,10 @@ fn minimal_tree() -> WorkspaceTree {
     }
 }
 
-/// Lay out the host into a 1600x900 viewport, returning the taffy
-/// node id + tree so the test can call `handle_event` afterwards. The
-/// host's `self.rect` is set as a side-effect of `apply_layout`, so
-/// geometry helpers like `quick_settings_slider_geometry` can be
-/// called after this returns.
+/// Lay out the host into a 1600x900 viewport, returning the taffy node id
+/// + tree so the test can call `handle_event` afterwards; `apply_layout`
+/// sets `self.rect` as a side-effect, so geometry helpers like
+/// `quick_settings_slider_geometry` work after this returns.
 fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     use taffy::{Dimension, Style};
     let theme = Theme::dark();
@@ -209,13 +207,9 @@ fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (Taff
 /// `(x, y)` through the host's `handle_event`. Must be called after
 /// [`layout_host`].
 ///
-/// The release matters. Toggle cards and the power chip dispatch on
-/// press, but the sliders deliberately hold their value until the button
-/// comes up: while a drag is live only the fill follows the pointer, and
-/// the value is pushed to the OS once, on release, so dragging the knob
-/// across the bar cannot spawn one `brightnessctl`/`wpctl` per frame. A
-/// press without a release is a grab the user never let go of, and the
-/// panel is right not to commit it.
+/// The release matters: sliders hold their value until button-up (so
+/// dragging the knob doesn't spawn one `brightnessctl`/`wpctl` per frame),
+/// while toggles and the power chip dispatch on press.
 fn click_at(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     taffy: &TaffyTree<()>,
@@ -332,8 +326,8 @@ fn wifi_toggle_click_routes_to_set_wifi() {
     host.force_quick_settings_settled();
     let (taffy, host_node) = layout_host(&mut host);
     let card = host.quick_settings_toggle_geometry(0);
-    // Click slightly off the chevron (which would drill-in to wifi
-    // list); the bottom-left corner of the card maps to the toggle hit.
+    // Slightly off the chevron (which would drill in to the wifi list);
+    // the card's bottom-left maps to the toggle hit.
     let click_x = card.x0 + 24.0;
     let click_y = card.y1 - 16.0;
     click_at(&mut host, &taffy, host_node, click_x, click_y);
@@ -404,11 +398,8 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
-    // Two rows: a secured network we are not on, and the one we are
-    // already connected to. They take different branches, and this
-    // previously asserted only that clicking the first called
-    // `connect_wifi` — which stopped being true when the pane grew a
-    // passphrase prompt, and the test had been red since.
+    // Two rows: a secured network not yet joined, and one already
+    // connected — they take different click branches.
     let scanned = vec![
         WifiNetwork { ssid: "hallway-2g".into(), signal: 71, secure: true, connected: false },
         WifiNetwork { ssid: "studio-5g".into(), signal: 92, secure: true, connected: true },
@@ -428,9 +419,8 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
     let row_y = |i: usize| rect.y0 + 56.0 + i as f64 * 56.0 + 28.0;
 
-    // Row 0 — secured, not joined. Joining needs a passphrase, so the
-    // pane must ask for one rather than firing a connect that would
-    // fail silently.
+    // Row 0 — secured, not joined: must prompt for a passphrase rather
+    // than firing a connect that would fail silently.
     click_at(&mut host, &taffy, host_node, click_x, row_y(0));
     {
         let st = chrome.borrow();
@@ -450,8 +440,8 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
         recorder.0.calls()
     );
 
-    // Dismiss the prompt, then click row 1 — already connected, so no
-    // passphrase is needed and the click connects directly.
+    // Dismiss the prompt; row 1 is already connected, so the click
+    // connects directly with no passphrase needed.
     {
         let mut st = chrome.borrow_mut();
         st.quick_settings.wifi_password = None;

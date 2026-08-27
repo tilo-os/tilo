@@ -2,14 +2,8 @@
 //! [`WorkspaceTreeReplica`], drives the `tokio` runtime that hosts the
 //! actor, and exposes a small handle the shell calls into to drain
 //! incoming `NetEvent`s and forward replica replies back out as
-//! `NetCmd::Publish`s.
-//!
-//! v1 wires the actor into the shell's startup path behind an opt-in
-//! flag (`--enable-peer-sync`). Tasks 3.2 + 3.3 add cursor-presence
-//! pumping and palette commands on top.
-//!
-//! Plan reference: `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`,
-//! Phase 3 Task 3.1.
+//! `NetCmd::Publish`s. Wired into the shell's startup path behind an
+//! opt-in flag (`--enable-peer-sync`).
 
 use std::sync::{Arc, Mutex};
 
@@ -26,60 +20,36 @@ use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 
-/// Default workspace topic id that v1 publishes/subscribes on. Per-
-/// workspace routing is a Phase 3 follow-up — every shell currently
-/// shares the same gossipsub topic so a v1 LAN demo "just works"
-/// without per-workspace negotiation.
+/// Default workspace topic id. Every shell currently shares the same
+/// gossipsub topic rather than negotiating per-workspace routing.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
 /// Largest app-document snapshot this shell will put on the gossip
 /// topic, in bytes.
 ///
-/// # Where the number comes from
+/// libp2p gossipsub caps one RPC at 64 KiB
+/// ([`crate::network::behaviour::NiriosBehaviour::new`] doesn't raise
+/// it), so a larger publish is rejected by the transport rather than
+/// truncated. The real budget is tighter still: the actor serialises a
+/// [`NeighbourMsg`] with `serde_json`, which writes a `Vec<u8>` as an
+/// array of decimal numbers (up to `"255,"`, 4 chars, per byte), so a
+/// snapshot costs up to **4x its size** on the wire —
+/// `snapshot_at_the_cap_fits_a_gossipsub_rpc` pins this against
+/// worst-case bytes rather than this comment's arithmetic. 14 KiB of
+/// document expands to at most 56 KiB of JSON, leaving ~9 KiB for the
+/// envelope (variant tag, room uuid, a record id that may be a full
+/// path, gossipsub's own protobuf framing). Moving to the `postcard`
+/// encoding `crate::network::protocol`'s round-trip tests already use
+/// would make the payload roughly 1:1 and raise this to ~60 KiB — a
+/// wire-format change every peer has to agree on, so a deliberate
+/// decision rather than a constant to edit.
 ///
-/// libp2p gossipsub caps one RPC at 64 KiB and
-/// [`crate::network::behaviour::NiriosBehaviour::new`] does not raise
-/// it, so a larger publish is rejected by the transport rather than
-/// truncated.
-///
-/// The budget is far tighter than that ceiling suggests, because the
-/// actor serialises a [`NeighbourMsg`] with `serde_json`
-/// (`crate::network::actor`), and serde_json writes a `Vec<u8>` as an
-/// array of decimal numbers — up to four characters (`"255,"`) per
-/// byte. A snapshot therefore costs up to **4x its size** on the wire,
-/// and the naive "64 KiB minus a little" reading of the limit is wrong
-/// by a factor of four. `snapshot_at_the_cap_fits_a_gossipsub_rpc`
-/// pins this against worst-case bytes rather than against the
-/// arithmetic in this comment, which is how the earlier figure here was
-/// caught.
-///
-/// So: 14 KiB of document expands to at most 56 KiB of JSON, leaving
-/// ~9 KiB for the envelope — the variant tag, the room uuid, a record
-/// id that may be a full path, and gossipsub's own protobuf framing
-/// (topic, signature, author key, sequence number).
-///
-/// Moving the publish path to the `postcard` encoding that
-/// `crate::network::protocol`'s own round-trip tests already use would
-/// make the payload roughly 1:1 and raise this to ~60 KiB. That is a
-/// wire-format change every peer has to agree on, so it is a decision
-/// to take deliberately rather than a constant to edit.
-///
-/// # Why a cap rather than a bigger pipe
-///
-/// A document has no upper bound, so no ceiling makes this correct in
-/// general — raising the gossipsub limit would move the failure, not
-/// remove it, and would do so on a **broadcast** medium where every
-/// peer in the room pays for every byte. The bounded case is worth
-/// having anyway because it is the common one: a document that fits is
-/// a document that converges, immediately, over transport that already
-/// exists.
-///
-/// Past this size the right carrier is a direct peer-to-peer stream
-/// rather than gossip — the substrate for one is already in
-/// [`crate::network::surface_stream`], which video frames use for the
-/// same reason (they are large, and they concern one peer rather than
-/// the room). Wiring a snapshot onto it is the follow-up this constant
-/// marks the boundary of.
+/// A cap rather than a bigger pipe because a document has no upper
+/// bound — raising the gossipsub limit moves the failure rather than
+/// removing it, on a **broadcast** medium where every peer pays for
+/// every byte. Past this size the right carrier is a direct
+/// peer-to-peer stream via [`crate::network::surface_stream`], which
+/// video frames already use for the same reason.
 pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
 
 /// Default on-disk path of the machine's device key, from which the
@@ -103,9 +73,9 @@ pub fn peer_key_path() -> std::path::PathBuf {
 
 /// Transport addresses the swarm binds on startup.
 ///
-/// Loopback is listed first so a two-session demonstration on one
-/// machine has a dialable address that does not depend on which
-/// interface is up; the wildcard covers the LAN case.
+/// Loopback is listed first so two sessions on one machine have a
+/// dialable address that does not depend on which interface is up; the
+/// wildcard covers the LAN case.
 const LISTEN_ADDRS: [&str; 2] = ["/ip4/127.0.0.1/tcp/0", "/ip4/0.0.0.0/tcp/0"];
 
 /// How often a shell asks the rooms it is in for anything it is
@@ -186,7 +156,7 @@ pub struct ShellNetwork {
     /// connected app via [`super::collab_broker::BrokerHandle::fanout_event`].
     /// See [`Self::inbound_app_crdt_handle`].
     inbound_app_crdt: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    /// Phase 3 buffer of inbound *signed* app-CRDT envelopes pushed
+    /// Buffer of inbound *signed* app-CRDT envelopes pushed
     /// by [`Self::tick`] when a
     /// `NeighbourMsg::AppCrdtIncrementalSigned` arrives. The
     /// `collab_broker` drainer pulls envelopes out of here, runs them
@@ -212,14 +182,14 @@ pub struct ShellNetwork {
     /// [`Self::note_snapshot_request`] for why the pairing lives here
     /// rather than in the frame.
     snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
-    /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
-    /// The broker's drainer reads these, consults its local op log,
+    /// Buffer of inbound cooperative-scrollback *requests*. The
+    /// broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
     /// `ScrollbackResponse` back over gossipsub. See
     /// [`Self::inbound_scrollback_request_handle`].
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
-    /// Phase 6 buffer of inbound cooperative-scrollback *responses*.
-    /// The broker's drainer pulls answers out of here and forwards
+    /// Buffer of inbound cooperative-scrollback *responses*. The
+    /// broker's drainer pulls answers out of here and forwards
     /// them to the local app that originally asked, as a
     /// `CollabEvent::ScrollbackBatch`. See
     /// [`Self::inbound_scrollback_response_handle`].
@@ -596,16 +566,12 @@ impl ShellNetwork {
     ///
     /// An app addresses its traffic by `(app_id, cluster_id,
     /// record_id)` and the cluster is the room's uuid, so this is the
-    /// same question `apply_room_changes` asks of a tree payload
-    /// before it stores anything — and it gets the same answer here.
-    /// Without it the only filter on an inbound app document was the
-    /// self-echo test, which is a `DefaultHasher` fold: fine for
-    /// suppressing your own publishes, and not something to hang an
-    /// admission decision on (`plan/collaboration.md` §4).
-    ///
-    /// A `cluster_id` that is not a uuid is not a room, so it is not
-    /// one of ours: refusing on a parse failure is the fail-closed
-    /// direction.
+    /// same question `apply_room_changes` asks of a tree payload before
+    /// it stores anything. Without it the only filter on an inbound app
+    /// document was the self-echo test, a `DefaultHasher` fold — fine
+    /// for suppressing your own publishes, not something to hang an
+    /// admission decision on. A `cluster_id` that fails to parse as a
+    /// uuid is not a room, so refusing it is the fail-closed direction.
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
             tracing::info!(
@@ -659,7 +625,7 @@ impl ShellNetwork {
     }
 
     /// Shared handle to the inbound-signed-app-CRDT buffer.
-    /// Mirror of [`Self::inbound_app_crdt_handle`] for the Phase 3
+    /// Mirror of [`Self::inbound_app_crdt_handle`] for the
     /// signed-envelope path. The broker drainer pulls envelopes off
     /// this buffer, validates them, and fans the payload out as
     /// `CollabEvent::SignedCRDTIncremental`.
@@ -822,33 +788,21 @@ impl ShellNetwork {
 
     /// Record that somebody in `cluster_id` needs a whole document.
     ///
-    /// Called when a peer announces its arrival. Arrival is the only
-    /// thing that makes a snapshot worth its size on a broadcast topic:
-    /// a peer that already shares history is served by the deltas, and
-    /// a peer that does not cannot use them at all.
+    /// Called when a peer announces its arrival — arrival is the only
+    /// thing that makes a snapshot worth its size on a broadcast topic,
+    /// since a peer that already shares history is served by deltas.
     ///
-    /// # Why the pairing is reconstructed here
-    ///
-    /// `CollabRequest::SyncCRDT` is not reliably a join reply. It is one
-    /// when the toolkit answers an `Arrived`, and it is also what an app
-    /// sends to feed same-host fan-out and the undo snapshot — whether a
-    /// commit produces one is a property of the toolkit build, not
-    /// something visible in the frame. Republishing whatever arrives
-    /// therefore risks a whole document on the room topic per commit:
-    /// unbounded, growing with the session, and redundant with the delta
-    /// that already carries the same edit to anyone who shares the
-    /// history.
-    ///
-    /// The broker cannot tell those apart by looking, but it does see
-    /// the *request* — a peer's `Arrived` passes through its own drain on
-    /// the way to local apps. So the arrival arms the room and the next
-    /// whole document for it goes out. Which one that turns out to be
-    /// does not matter: any full state serves a peer that has none, so
-    /// consuming the arming on a commit's snapshot answers the join just
-    /// as well as replying to it directly.
-    ///
-    /// Gating here rather than trusting the sender is what keeps the
-    /// rate bounded no matter which way the toolkit sends.
+    /// `CollabRequest::SyncCRDT` is not reliably a join reply — it's also
+    /// what an app sends for same-host fan-out and undo snapshots,
+    /// indistinguishable in the frame — so republishing whatever arrives
+    /// would risk a whole document per commit: unbounded and redundant
+    /// with the delta. The broker can't tell those apart by looking, but
+    /// it does see the `Arrived` request, so arrival arms the room and
+    /// the *next* whole document (from either source) answers it; which
+    /// one that turns out to be doesn't matter, since any full state
+    /// serves a peer that has none. Gating here rather than trusting the
+    /// sender keeps the rate bounded no matter which way the toolkit
+    /// sends.
     pub fn note_snapshot_request(&self, cluster_id: &str) {
         if cluster_id.is_empty() {
             return;
@@ -906,8 +860,8 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_scrollback_response)
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackRequest` to the
-    /// default workspace topic. The broker calls this when a local
+    /// Publish a `NeighbourMsg::ScrollbackRequest` to the default
+    /// workspace topic. The broker calls this when a local
     /// app's `FetchScrollback` returned `exhausted=true` with an
     /// empty batch (the broker has nothing more in-memory, but the
     /// app still wants the range). `try_send` failures are
@@ -930,8 +884,8 @@ impl ShellNetwork {
         });
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackResponse`. The
-    /// broker calls this when it sees a `ScrollbackRequest` for an
+    /// Publish a `NeighbourMsg::ScrollbackResponse`. The broker calls
+    /// this when it sees a `ScrollbackRequest` for an
     /// artifact whose log it has matching ops for.
     pub fn publish_scrollback_response(
         &self,
@@ -987,10 +941,9 @@ impl ShellNetwork {
     }
 
     /// Subscribe the actor to the default workspace topic, registering
-    /// our `event_tx` as the per-workspace event sink. v1 uses a
-    /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
-    /// lands in a Phase 3 follow-up. Returns whether the command was
-    /// successfully queued.
+    /// our `event_tx` as the per-workspace event sink. Uses a single
+    /// topic ([`DEFAULT_WS_TOPIC`]); no per-workspace routing yet.
+    /// Returns whether the command was successfully queued.
     pub fn join_default_workspace(&self) -> bool {
         self.cmd_tx
             .try_send(NetCmd::JoinWorkspace {
@@ -1289,9 +1242,7 @@ impl ShellNetwork {
             .expect("event_rx mutex must not be poisoned");
         while let Ok(event) = event_rx.try_recv() {
             // A peer arriving is the one moment we know for certain
-            // there is someone new to be caught up by. Documented in
-            // `plan/collaboration.md` §5 and previously not done —
-            // `PeerJoined` fell through the `if let` below unhandled.
+            // there is someone new to be caught up by.
             if let NetEvent::PeerJoined { .. } = event {
                 self.publish_sync_requests();
                 continue;
@@ -1401,10 +1352,10 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // Phase 3 signed path. Mirrors the legacy
-                // `AppCrdtIncremental` routing: skip self-publishes,
-                // then push onto the signed-inbound queue for the
-                // broker drainer to validate + fan.
+                // Signed path, mirroring the plain `AppCrdtIncremental`
+                // routing: skip self-publishes, then push onto the
+                // signed-inbound queue for the broker drainer to
+                // validate + fan.
                 if let NeighbourMsg::AppCrdtIncrementalSigned {
                     peer: peer_hash,
                     ref app_id,
@@ -1446,9 +1397,9 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // Phase 6 cooperative scrollback. Skip self-echoes
-                // (we already have the answer) and route requests +
-                // responses to their dedicated buffers.
+                // Cooperative scrollback: skip self-echoes (we already
+                // have the answer) and route requests + responses to
+                // their dedicated buffers.
                 if let NeighbourMsg::ScrollbackRequest {
                     artifact,
                     before_seq,
@@ -1517,9 +1468,9 @@ impl Drop for ShellNetwork {
 
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
 /// a caller-owned receiver, bypassing the libp2p actor entirely. Tests
-/// use this to assert that `publish_presence` (and future Phase 3
-/// publishers) emit the expected `NetCmd::Publish` shapes without
-/// having to spin up a real swarm. Not exposed outside `cfg(test)`.
+/// use this to assert that publishers emit the expected
+/// `NetCmd::Publish` shapes without spinning up a real swarm. Not
+/// exposed outside `cfg(test)`.
 ///
 /// `pub(crate)` so the broker's own tests can drive the inbound side of the
 /// peer bridge — `handle_app_crdt_message` into the drain thread — which is
@@ -2180,11 +2131,10 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_incremental_emits_a_publish_command() {
-        // Phase 2 bridge: the broker should be able to forward a
-        // local `SyncIncremental` as a `NeighbourMsg::AppCrdtIncremental`.
-        // Verify the wrapping is correct (peer id stamped, payload
-        // round-trips verbatim, default workspace topic) without
-        // spinning up libp2p.
+        // The broker forwards a local `SyncIncremental` as a
+        // `NeighbourMsg::AppCrdtIncremental`. Verify the wrapping is
+        // correct (peer id stamped, payload round-trips verbatim,
+        // default workspace topic) without spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         net.publish_app_crdt_incremental(
@@ -2247,29 +2197,15 @@ mod tests {
         assert_eq!(buf[0].data, vec![0x01, 0x02]);
     }
 
-    /// Document why a real network test (two `ShellNetwork`s + a real
-    /// libp2p mesh) isn't covered here:
-    ///
-    /// - `ShellNetwork::spawn` builds a tokio runtime and binds a
-    ///   real TCP listener via `libp2p::SwarmBuilder`. Two parallel
-    ///   spawns in the same test process compete for the same
-    ///   ports unless we plumb `0.0.0.0:0` end-to-end (which the
-    ///   current builder doesn't expose). The existing peer-sync
-    ///   integration test (`tests/peer_sync_test.rs`) uses the
-    ///   in-process `Hub` for the same reason.
-    /// - The actor-level encoder/decoder loop already round-trips
-    ///   every `NeighbourMsg` variant via `protocol::tests::*` (see
-    ///   the `app_crdt_incremental_round_trips` test below the
-    ///   enum) so the wire format itself is covered.
-    /// - The replica/match-arm side of `AppCrdtIncremental` is a
-    ///   no-op (the bridge code is in `ShellNetwork::tick` above
-    ///   and routes into the inbound buffer), so the unit tests
-    ///   above are sufficient to assert routing.
-    ///
-    /// A real two-host test belongs in the headless-integration
-    /// harness (`tests/peer_sync_test.rs` follow-up) once that
-    /// harness supports app-level CRDT injection. The two unit
-    /// tests above are the contract for now.
+    /// No real network test (two `ShellNetwork`s + a real libp2p mesh)
+    /// here: `ShellNetwork::spawn` binds a real TCP listener, and two
+    /// parallel spawns in one test process compete for ports unless
+    /// `0.0.0.0:0` is plumbed end-to-end, which the builder doesn't
+    /// expose (`tests/peer_sync_test.rs` uses the in-process `Hub`
+    /// instead, for the same reason). The wire format itself is already
+    /// covered by `protocol::tests::*`, and the replica/match-arm side
+    /// of `AppCrdtIncremental` is a no-op here, so the unit tests above
+    /// are sufficient to assert routing.
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
         use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
@@ -2286,8 +2222,7 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_signed_emits_a_publish_command() {
-        // Phase 3 outbound bridge: the broker forwards a validated
-        // `SignedSyncIncremental` as a
+        // The broker forwards a validated `SignedSyncIncremental` as a
         // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
         // is correct (peer id stamped, envelope round-trips verbatim,
         // default workspace topic) without spinning up libp2p.
@@ -2358,10 +2293,9 @@ mod tests {
 
     #[test]
     fn active_ws_for_publish_returns_default_topic() {
-        // v1: publishes go to the single default workspace topic. This
-        // contract is asserted explicitly so per-workspace routing
-        // (Phase 3 follow-up) gets a tripping test rather than a
-        // silent behaviour change.
+        // Publishes go to the single default workspace topic. Asserted
+        // explicitly so adding per-workspace routing later gets a
+        // tripping test rather than a silent behaviour change.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);

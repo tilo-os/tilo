@@ -10,14 +10,10 @@
 //!
 //! On top of the XDG-config bootstrap, this hook also provisions a
 //! single-device signing identity at `<config>/qos/identity/primary.json`
-//! when none is present. That file is what `runtime-identity::load`
-//! reads inside sandboxed apps (via the `QOS_USER_IDENTITY` env var
-//! set by the launcher), and its absence is what previously caused
-//! every app to sit at "no signing identity" — join_channel then
-//! carried empty identity bytes and no signed op could be minted.
-//! The record is encoded by `ui::widget::identity_flow::IdentityRecord`,
-//! the same type the interactive ceremony writes, so both paths mint
-//! the same shape.
+//! when none is present — the file `runtime-identity::load` reads inside
+//! sandboxed apps via the launcher's `QOS_USER_IDENTITY` env var. It's
+//! encoded by `ui::widget::identity_flow::IdentityRecord`, the same type
+//! the interactive ceremony writes, so both paths mint the same shape.
 //!
 //! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` for
 //! the boot chain and `CLAUDE.md`'s "Boot chain" section for the
@@ -111,9 +107,7 @@ pub fn run_as(
     );
 
     // Identity provisioning happens in the user's session, never here as
-    // root. See `run_as` for why. Minting into root's tree produced a key the
-    // user could not read and a session that logged "no identity found" —
-    // refusing loudly is better than writing it to the wrong home.
+    // root — see the doc comment on `run_as` for why.
     if uid == 0 {
         tracing::info!(
             "firstboot: running as root, so no signing identity is minted here — \
@@ -125,9 +119,8 @@ pub fn run_as(
     // Create a fresh single-device Ed25519 record if none exists.
     // Best-effort — a failure to write the identity does NOT prevent the
     // compositor from continuing to boot; without a real record apps fall
-    // back to unsigned collab ops, which is the pre-existing behaviour. Any
-    // subsequent enrolment / rotation goes through the identity-flow
-    // ceremony in `ui::widget::identity_flow`.
+    // back to unsigned collab ops. Any subsequent enrolment / rotation goes
+    // through the identity-flow ceremony in `ui::widget::identity_flow`.
     if let Some(identity_dir) = resolve_identity_dir(xdg_config_home, home) {
         match ensure_primary_identity(&identity_dir) {
             Ok(ProvisionOutcome::Existing) => {
@@ -323,9 +316,7 @@ mod tests {
     #[test]
     fn run_is_idempotent_on_existing_dir() {
         let tmp = TmpDir::new("idempotent");
-        // First call creates the dir.
         run_with_env(Some(OsString::from(tmp.path())), None).expect("first run ok");
-        // Second call must not error out.
         run_with_env(Some(OsString::from(tmp.path())), None).expect("second run ok");
         let expected = tmp.path().join("quick-desktop");
         assert!(expected.exists());
@@ -373,10 +364,8 @@ mod tests {
             .expect("dalek verify must succeed against derived pubkey");
     }
 
-    /// Running as root must not mint an identity. The system unit that used
-    /// to call this ran before login, so the key landed in `/root/.config`
-    /// owned by root — unreadable by the person it belonged to, and the
-    /// session then booted with no identity at all.
+    /// Running as root must not mint an identity — see `run_as`'s doc
+    /// comment for why.
     #[test]
     fn root_does_not_mint_an_identity() {
         let tmp = TmpDir::new("root-refuses");

@@ -1,55 +1,17 @@
-//! Foreign-surface buffer readback — Peer-sync Phase 4 v2.
+//! Foreign-surface buffer readback.
 //!
-//! Phase 4 v1 ([`crate::network::streaming`] + [`crate::network::encoder`])
-//! plumbed the H.264 encode loop end-to-end against a *synthesised* RGBA
-//! gradient so the round-trip could be verified before the real
-//! foreign-surface path landed. v2 closes that gap: the compositor's
-//! `CompositorHandler::commit` hook calls into a [`SurfaceTracker`] which
-//! pulls the surface's most-recent `wl_buffer` and stages it as a flat
-//! RGBA vector that the streaming task drains per encode tick.
+//! The compositor's `CompositorHandler::commit` hook calls into a
+//! [`SurfaceTracker`], which pulls the surface's most-recent `wl_buffer`
+//! and stages it as a flat RGBA vector that the streaming task drains per
+//! encode tick.
 //!
-//! ## Two layers
-//!
-//! 1. **Pure logic.** [`buffer_to_rgba`] takes a `&WlBuffer` and, when it's
-//!    a `wl_shm` buffer, calls smithay's [`with_buffer_contents`] to read
-//!    the bytes + dimensions + stride + format out of the pool. The byte
-//!    swizzle that converts `Argb8888`/`Xrgb8888` (the only two formats
-//!    smithay's [`ShmState`] advertises by default) into RGBA is itself
-//!    extracted as [`swizzle_to_rgba`] so the unit tests can exercise it
-//!    without a wayland connection. The dmabuf path is deferred — Phase 4
-//!    v2 logs and returns [`ReadbackError::DmaBufUnsupported`].
-//! 2. **State plumbing.** [`SurfaceTracker`] is a small `HashMap` keyed on
-//!    [`SurfaceId`] that holds the latest RGBA frame per shared surface.
-//!    The compositor's commit handler funnels into
-//!    [`SurfaceTracker::on_commit`]; the streaming task drains with
-//!    [`SurfaceTracker::take_latest`] which returns the buffer **and
-//!    empties the slot** so a follow-up tick without a new commit produces
-//!    `None` (the throttle then skips the encode).
-//!
-//! ## Allocation discipline
-//!
-//! Per the plan's "no allocation per encode tick" rule, the tracker keeps
-//! one `Vec<u8>` per surface and reuses it across commits — re-growing only
-//! on a dimension change. `take_latest` `mem::take`s the vec so the caller
-//! owns the bytes for the encode call, and a freshly emptied `Vec<u8>` slot
-//! takes its place ready for the next commit. The next commit grows that
-//! emptied vec back to the buffer size in one allocation; steady-state
-//! after the second commit per surface is zero per-tick allocations from
-//! the tracker side. The encoder copies its inputs internally, so the
-//! caller can hand the vec straight to [`crate::network::H264Encoder::encode`]
-//! without an extra clone.
-//!
-//! ## Safety
-//!
-//! [`with_buffer_contents`] hands the closure a raw `*const u8` pointing
-//! into the client's shm pool, plus the byte length. Smithay's contract is
-//! that the pointer is valid for the closure's entire lifetime; the client
-//! cannot resize or unmap the pool while the closure runs (the wayland
-//! event loop is single-threaded with respect to a given client). We
-//! materialise a `&[u8]` from `ptr.add(offset)` for the swizzle pass and
-//! drop it before the closure returns. The lone `unsafe` block in this
-//! file is the `slice::from_raw_parts` call inside the closure; everything
-//! else is safe Rust.
+//! [`buffer_to_rgba`] reads a `wl_shm` buffer via smithay's
+//! [`with_buffer_contents`] and swizzles `Argb8888`/`Xrgb8888` (the only
+//! two formats smithay's [`ShmState`] advertises by default) into RGBA;
+//! the dmabuf path isn't handled here and returns
+//! [`ReadbackError::DmaBufUnsupported`]. [`SurfaceTracker`] reuses one
+//! `Vec<u8>` per surface across commits so steady-state readback is
+//! allocation-free after the second commit.
 
 use crate::network::protocol::SurfaceId;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -68,7 +30,6 @@ use std::collections::HashMap;
 pub enum ReadbackError {
     /// The buffer isn't a `wl_shm` buffer — smithay's
     /// [`with_buffer_contents`] returned [`BufferAccessError::NotManaged`].
-    /// The dmabuf import path is Phase 4 v3 territory.
     DmaBufUnsupported,
     /// The buffer's shm `Format` isn't one of the two
     /// [`ShmState`](smithay::wayland::shm::ShmState) advertises by default
@@ -126,14 +87,13 @@ impl From<BufferAccessError> for ReadbackError {
 /// appended RGBA tail on `out`.
 ///
 /// `src` must be exactly `width * 4` bytes long. Extracted as a free
-/// function so the unit tests can exercise every supported format without
-/// having to construct a `wl_shm::WlBuffer` (which requires a live
-/// wayland-server `Display`).
+/// function so unit tests can exercise every supported format without a
+/// live wayland-server `Display`.
 ///
 /// Wayland convention: pixel byte order is **little-endian** with the
-/// format name reading the high-order byte first. So `Argb8888` on the
-/// wire is `[B, G, R, A]`; `Xrgb8888` is `[B, G, R, X]` with `X` forced
-/// to `0xFF` on the way out so the H.264 round-trip's
+/// format name reading the high-order byte first, so `Argb8888` on the
+/// wire is `[B, G, R, A]` and `Xrgb8888` is `[B, G, R, X]`, with `X`
+/// forced to `0xFF` on the way out so the H.264 round-trip's
 /// alpha-compare assertion stays well-defined.
 pub fn swizzle_row_to_rgba(
     format: wl_shm::Format,
@@ -141,11 +101,10 @@ pub fn swizzle_row_to_rgba(
     width: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), ReadbackError> {
-    // D-5: the previous guard was a bare `debug_assert_eq!` which
-    // compiles out in release. `chunks_exact(4)` then silently
-    // swallows trailing bytes, so a hostile / buggy client could
-    // sneak padding bytes into the wire — surface that as a
-    // structured `InvalidDimensions` error in both debug and release.
+    // A bare `debug_assert_eq!` compiles out in release, and
+    // `chunks_exact(4)` then silently swallows trailing bytes — a
+    // hostile/buggy client could sneak padding bytes into the wire.
+    // Surface this as a structured error in both debug and release.
     let expected = width.saturating_mul(4);
     if src.len() != expected {
         tracing::error!(
@@ -270,15 +229,13 @@ pub fn buffer_to_rgba(buffer: &WlBuffer, out: &mut Vec<u8>) -> Result<(u32, u32)
 ///
 /// The DMABUF direct path avoids the CPU-side readback + swizzle costs
 /// (~4 ms per 720p frame) by handing the DMABUF fd straight into the
-/// encoder. The SHM readback path is the fallback that this module has
-/// always implemented.
+/// encoder; SHM readback is the fallback.
 ///
-/// The `PeerSurfaceMetrics::set_capture_path` hook uses this enum's
-/// mirror in `diagnostics.rs`; the two enums are kept in sync via the
-/// [`CapturePath::to_metrics_path`] helper.
+/// Kept in sync with the mirror enum in `diagnostics.rs` via
+/// [`CapturePath::to_metrics_path`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CapturePath {
-    /// SHM pool readback + CPU-side swizzle — the historical path.
+    /// SHM pool readback + CPU-side swizzle.
     ShmReadback,
     /// DMABUF fd handed directly to the encoder — zero-copy.
     DmabufDirect,
@@ -300,47 +257,29 @@ impl CapturePath {
 /// One instance per `State` (see `crate::compositor::state::State`). The
 /// compositor's `CompositorHandler::commit` hook calls
 /// [`Self::on_commit`] for every committed foreign surface whose
-/// `SurfaceId` is registered in [`crate::shell::state::Workspace::shared_surfaces`].
-/// The streaming task drains via [`Self::take_latest`] per encode tick.
+/// `SurfaceId` is registered in
+/// [`crate::shell::state::Workspace::shared_surfaces`]. The streaming
+/// task drains via [`Self::take_latest`] per encode tick.
 ///
-/// ## Allocation discipline
+/// The internal map reuses one `Vec<u8>` per surface across commits —
+/// `take_latest` swaps in a fresh empty `Vec` and hands the previous one
+/// to the caller, so steady state is one allocation per (commit, take)
+/// cycle, the minimum achievable without aliasing into smithay's mmap.
 ///
-/// The internal map stores `Vec<u8>` per surface and reuses each vec
-/// across commits. `take_latest` swaps in a fresh empty `Vec` (which
-/// allocates only its inline header, not the heap data) and hands the
-/// previous one to the caller. The next commit grows the fresh vec; the
-/// **previous** vec leaves the tracker on the encode path. Steady state:
-/// one alloc per surface per (commit, take) cycle, which is the minimum
-/// achievable without unsafely aliasing into smithay's mmap.
-///
-/// ## Errors
-///
-/// `on_commit` returns the [`ReadbackError`] verbatim so the caller can
-/// decide whether to drop the frame (e.g. on `DmaBufUnsupported` — that's
-/// expected, the dmabuf v3 path will eventually handle it) or escalate.
-/// Phase 4 v2 logs at `tracing::warn!` in the commit handler.
-///
-/// ## DMABUF path tracking
-///
-/// The tracker also exposes [`Self::note_capture_path`] so the
-/// compositor's commit hook can record which route (SHM readback vs.
-/// DMABUF direct) the current buffer took. Counters exposed via
-/// [`Self::dmabuf_direct_count`] / [`Self::shm_readback_count`] are used
-/// by the `dmabuf_direct_path_is_taken_when_buffer_is_dmabuf`
-/// integration test.
+/// [`Self::note_capture_path`] records which route (SHM readback vs.
+/// DMABUF direct) a commit took; [`Self::dmabuf_direct_count`] /
+/// [`Self::shm_readback_count`] expose the counters.
 #[derive(Default)]
 pub struct SurfaceTracker {
     latest: HashMap<SurfaceId, SurfaceBuffer>,
     /// Per-surface most-recently attached [`Dmabuf`]. Populated by the
     /// compositor commit hook when it detects a DMABUF-backed
-    /// `wl_buffer` and stashes the Dmabuf reference here for the
-    /// encoder's next drain.
+    /// `wl_buffer`, for the encoder's next drain.
     ///
     /// `Dmabuf` is `Arc`-backed inside smithay, so the map entry is a
-    /// cheap Arc clone — the shared inner keeps every plane's
-    /// `OwnedFd` alive for as long as any handle exists. Draining via
-    /// [`Self::take_latest_dmabuf`] hands the ownership over to the
-    /// encoder without extra fd dupes.
+    /// cheap Arc clone that keeps every plane's `OwnedFd` alive as long
+    /// as any handle exists. [`Self::take_latest_dmabuf`] hands
+    /// ownership to the encoder without extra fd dupes.
     latest_dmabufs: HashMap<SurfaceId, Dmabuf>,
     /// Per-surface last-observed capture path. `None` before the first
     /// commit lands.
@@ -372,18 +311,12 @@ impl SurfaceTracker {
     /// On error the slot is left empty (so a subsequent `take_latest`
     /// returns `None`); the caller decides whether to log + drop or
     /// retry.
-    ///
-    /// The `trace`-level `capture.on_commit` span makes this method
-    /// visible in the profile-pass output (see the demo binary's
-    /// `latency-profile.txt`). Producing the SHM readback is the
-    /// dominant cost per frame on the send side.
     #[tracing::instrument(level = "trace", skip(self, buffer), fields(surface_id))]
     pub fn on_commit(
         &mut self,
         surface_id: SurfaceId,
         buffer: &WlBuffer,
     ) -> Result<(u32, u32), ReadbackError> {
-        // Pull (or create) the slot's storage vec.
         let entry = self
             .latest
             .entry(surface_id)
@@ -395,9 +328,6 @@ impl SurfaceTracker {
                 Ok((w, h))
             }
             Err(err) => {
-                // Leave the slot drained on error so `take_latest`
-                // returns `None`. The caller decides whether to forget
-                // the slot entirely.
                 entry.rgba.clear();
                 entry.width = 0;
                 entry.height = 0;
@@ -429,13 +359,9 @@ impl SurfaceTracker {
         })
     }
 
-    /// Non-draining borrow of the most-recent staged RGBA.
-    ///
-    /// The compositor's per-commit share-session tick hook uses this
-    /// to feed the encoder without draining the render-side consumer.
-    /// Copies out the bytes; the tracker slot is left populated so a
-    /// subsequent [`Self::take_latest`] (from the render loop or a
-    /// parallel share session) still finds the frame.
+    /// Non-draining borrow of the most-recent staged RGBA. Copies out
+    /// the bytes; the tracker slot is left populated so a subsequent
+    /// [`Self::take_latest`] still finds the frame.
     ///
     /// Returns `None` when no frame has been staged since the last
     /// `take_latest`, or when the slot was last touched by a failed
@@ -460,14 +386,12 @@ impl SurfaceTracker {
         self.last_capture_path.remove(&surface_id);
     }
 
-    /// Stash the DMABUF attached to the surface's latest commit. The
-    /// compositor commit hook calls this after
-    /// [`smithay::wayland::dmabuf::get_dmabuf`] returns `Ok` for the
-    /// buffer. Replaces any previously-staged DMABUF for the same
-    /// surface (drop-oldest, mirrors the SHM `on_commit` behaviour).
+    /// Stash the DMABUF attached to the surface's latest commit. Called
+    /// after [`smithay::wayland::dmabuf::get_dmabuf`] returns `Ok`.
+    /// Replaces any previously-staged DMABUF for the same surface.
     ///
-    /// The `Dmabuf` type is `Arc`-backed — cloning it keeps every plane
-    /// fd alive without duplicating them.
+    /// `Dmabuf` is `Arc`-backed — cloning it keeps every plane fd alive
+    /// without duplicating them.
     pub fn note_dmabuf_committed(&mut self, surface_id: SurfaceId, dmabuf: Dmabuf) {
         self.latest_dmabufs.insert(surface_id, dmabuf);
     }
@@ -476,10 +400,9 @@ impl SurfaceTracker {
     /// the entry so a follow-up drain without a fresh commit returns
     /// `None`. Symmetric with [`Self::take_latest`] on the SHM side.
     ///
-    /// The compositor commit hook calls this immediately after
-    /// [`Self::note_dmabuf_committed`] so the encoder can build a
-    /// `FrameInput::DmabufFd` from the returned handle's planes /
-    /// strides / offsets.
+    /// Called immediately after [`Self::note_dmabuf_committed`] so the
+    /// encoder can build a `FrameInput::DmabufFd` from the returned
+    /// handle's planes/strides/offsets.
     pub fn take_latest_dmabuf(&mut self, surface_id: SurfaceId) -> Option<Dmabuf> {
         self.latest_dmabufs.remove(&surface_id)
     }
@@ -529,40 +452,34 @@ impl SurfaceTracker {
     /// readback path. The compositor's commit hook calls this instead of
     /// [`Self::on_commit`] when it wants automatic path detection.
     ///
-    /// Detection logic: check whether smithay treats the buffer as an
-    /// SHM buffer (via `with_buffer_contents`'s `NotManaged` = dmabuf).
-    /// If SHM, run the existing readback path. If DMABUF, return the
-    /// tentative `CapturePath::DmabufDirect` — the caller is
-    /// responsible for pulling the `Dmabuf` off the buffer via
-    /// [`smithay::wayland::dmabuf::get_dmabuf`], stashing it via
-    /// [`Self::note_dmabuf_committed`], and recording the path via
-    /// [`Self::note_capture_path`] only after the encoder actually
-    /// consumed the DMABUF (so metrics reflect real zero-copy, not
-    /// "we tried but the encoder rejected it").
+    /// On DMABUF, returns the tentative `CapturePath::DmabufDirect`; the
+    /// caller must pull the `Dmabuf` via
+    /// [`smithay::wayland::dmabuf::get_dmabuf`], stash it via
+    /// [`Self::note_dmabuf_committed`], and only call
+    /// [`Self::note_capture_path`] once the encoder actually consumes
+    /// it — so metrics reflect real zero-copy, not an attempt the
+    /// encoder rejected.
     ///
-    /// Returns the tentative path plus the SHM readback result (which
-    /// is `Err(DmaBufUnsupported)` on the DMABUF branch and untouched
-    /// on the SHM branch).
+    /// Returns the tentative path plus the SHM readback result (`Err`
+    /// on the DMABUF branch, untouched on the SHM branch).
     pub fn on_commit_with_path_detection(
         &mut self,
         surface_id: SurfaceId,
         buffer: &WlBuffer,
     ) -> (CapturePath, Result<(u32, u32), ReadbackError>) {
-        // Try SHM readback first — if the buffer is DMABUF, smithay
-        // returns `BufferAccessError::NotManaged` which surfaces as
-        // `ReadbackError::DmaBufUnsupported`. That's our signal to
-        // hand the DMABUF branch to the caller for zero-copy import.
+        // If the buffer is DMABUF, smithay returns
+        // `BufferAccessError::NotManaged`, surfaced as
+        // `DmaBufUnsupported` — our signal to hand the DMABUF branch to
+        // the caller.
         let result = self.on_commit(surface_id, buffer);
         let path = match &result {
             Err(ReadbackError::DmaBufUnsupported) => CapturePath::DmabufDirect,
             _ => CapturePath::ShmReadback,
         };
-        // NOTE: SHM readbacks still bump the counter here because the
-        // path was actually taken end-to-end (bytes are in the
-        // tracker). DMABUF-direct's counter is bumped by the caller
-        // *after* the encoder accepts the fd — a rejected DMABUF
-        // frame that falls back to SHM must not be double-counted as
-        // "direct".
+        // SHM readbacks bump the counter here since the path was taken
+        // end-to-end. DMABUF-direct's counter is bumped by the caller
+        // only after the encoder accepts the fd, so a rejected DMABUF
+        // frame that falls back to SHM isn't double-counted as "direct".
         if matches!(path, CapturePath::ShmReadback) {
             self.note_capture_path(surface_id, path);
         }
@@ -580,15 +497,13 @@ impl SurfaceTracker {
     /// Identical to [`Self::forget`]; named separately so the wire-up
     /// from [`crate::compositor::state::State::toplevel_destroyed`]
     /// reads as "drop this surface's tracker buffer entirely" rather
-    /// than the ambiguous "forget", which a casual reader could mistake
-    /// for a no-op variant of `take_latest`.
+    /// than the ambiguous "forget".
     ///
-    /// C-7 fix: before this method (and the matching call in
-    /// `toplevel_destroyed`), a client that destroyed its toplevel
-    /// without a prior `attach NULL` left its `width*height*4`-byte
-    /// `Vec<u8>` slot allocated in the tracker forever — a per-surface
-    /// memory leak that compounded across long sessions with many
-    /// short-lived toplevels.
+    /// Without this call, a client that destroys its toplevel without a
+    /// prior `attach NULL` leaves its `width*height*4`-byte `Vec<u8>`
+    /// slot allocated in the tracker forever — a per-surface memory leak
+    /// that compounds across long sessions with many short-lived
+    /// toplevels.
     pub fn drop_surface(&mut self, surface_id: SurfaceId) {
         self.latest.remove(&surface_id);
         self.latest_dmabufs.remove(&surface_id);
@@ -611,12 +526,9 @@ impl SurfaceTracker {
     /// matching shm buffer.
     ///
     /// Lives behind `#[cfg(test)]` because no production caller should
-    /// be skipping the wl_buffer pull. The mock keeps the
-    /// production path on the *egress* side intact —
-    /// [`Self::take_latest`] is the same function the streaming task
-    /// calls — which is the rule Phase 4 v2's spec calls out
-    /// ("the mock must use the real production code path through
-    /// `SurfaceTracker::take_latest`").
+    /// be skipping the wl_buffer pull. The mock keeps the production
+    /// path on the *egress* side intact — [`Self::take_latest`] is the
+    /// same function the streaming task calls.
     #[cfg(test)]
     pub(crate) fn deposit_for_test(
         &mut self,
@@ -651,11 +563,9 @@ impl SurfaceBuffer {
 /// for direct hand-off to [`crate::network::H264Encoder::encode`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakenFrame {
-    /// Pixel rows, RGBA, row-major, no padding.
+    /// Row-major, no padding.
     pub rgba: Vec<u8>,
-    /// Width in pixels.
     pub width: u32,
-    /// Height in pixels.
     pub height: u32,
 }
 
@@ -717,17 +627,9 @@ mod tests {
         }
     }
 
-    /// D-5 regression: the length-mismatch guard was `debug_assert_eq!`
-    /// which compiles out in release builds. `chunks_exact(4)` then
-    /// silently swallows trailing bytes — a hostile / buggy client
-    /// could ship a row whose stride includes padding and have those
-    /// bytes disappear into the swizzle. Replace with an explicit
-    /// early-return that runs in both debug and release.
     #[test]
     fn swizzle_to_rgba_returns_early_on_mismatched_lengths() {
-        // src.len() == 10, but width * 4 == 8. The old code would
-        // happily process the first two pixels and drop the trailing
-        // 2 bytes; the fix bails out before writing to `out`.
+        // src.len() == 10, but width * 4 == 8.
         let src = [0u8; 10];
         let mut out: Vec<u8> = Vec::new();
         let result = swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out);
@@ -796,14 +698,9 @@ mod tests {
         assert!(tracker.take_latest(9).is_none());
     }
 
-    /// C-7 regression: `drop_surface` is the explicit
-    /// "client tore down its toplevel; reclaim the per-surface buffer"
-    /// entry point called from
-    /// `compositor::state::State::toplevel_destroyed`. Pre-fix, that
-    /// destroy hook only removed the foreign tab from the workspace
-    /// tree — the `SurfaceTracker`'s `Vec<u8>` slot survived, leaking
-    /// `width*height*4` bytes per destroyed surface. Verifies the
-    /// new path actually empties the slot.
+    /// `drop_surface` is the "client tore down its toplevel; reclaim
+    /// the per-surface buffer" entry point. Verifies the slot is
+    /// actually emptied, not just cleared.
     #[test]
     fn drop_surface_removes_buffer() {
         let mut tracker = SurfaceTracker::new();

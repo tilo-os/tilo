@@ -48,9 +48,9 @@ impl OpenH264Backend {
                 reason: "openh264 does not support HDR (10-bit, PQ/HLG)".to_string(),
             });
         }
-        // Bitrate from the caller (kbps) → openh264's bps. Prior wiring
-        // called ::new() and inherited the library's 120 kbps default,
-        // which skip-framed most of the stream on any real workload.
+        // Bitrate from the caller (kbps) → openh264's bps, floored well
+        // above the library's 120 kbps default, which skip-frames most
+        // of the stream on any real workload.
         let bitrate_bps = (init.bitrate_kbps as u32).saturating_mul(1000).max(500_000);
         let inner = H264Encoder::new_with_bitrate_bps(
             init.width,

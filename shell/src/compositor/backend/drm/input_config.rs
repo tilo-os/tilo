@@ -1,12 +1,5 @@
 //! Pointer and keyboard device policy, and the settings behind it.
 //!
-//! The Settings app has always written `input.natural_scroll`,
-//! `input.tap_to_click`, `input.pointer_speed` and `input.key_repeat` into
-//! the shared store, and the compositor has always ignored them — there
-//! was no libinput device configuration anywhere in the tree, so a
-//! touchpad on a bare-TTY session came up with libinput's own defaults and
-//! nothing the user set had any effect.
-//!
 //! This module holds the decision half. It takes the persisted settings
 //! plus what one libinput device can actually do, and produces the exact
 //! set of `config_*` values to apply. [`super::runtime`] holds the thin

@@ -8,32 +8,20 @@
 //! "no app with that id", "no display yet", "qos-launcher missing" —
 //! surfaces here as a notification.
 //!
-//! ## Apps that are not here yet
+//! This provider also offers apps the machine's configured registries
+//! describe but does not have installed (see [`crate::shell::catalogue`])
+//! — same wording, same subtitle shape, same activation, same group as
+//! an installed app. There is deliberately no second "not installed"
+//! group: from the user's side nothing different is happening, they
+//! asked to open an app and an app opens; fetching it first is just a
+//! step on the way.
 //!
-//! What this provider offers is installed apps **plus** whatever the
-//! machine's configured registries describe and it does not have (see
-//! [`crate::shell::catalogue`]). Both become the same row: the same
-//! `Open <App>` wording, the same subtitle shape, the same activation,
-//! in the same group.
-//!
-//! That sameness is the design, not an oversight, and it is why this
-//! lives in the existing provider rather than a second one. A second
-//! provider would be a second group, with its own header — a visible
-//! "here is the other kind of app" section, which is exactly the
-//! distinction there is no reason to draw. From where the user is
-//! standing nothing different is happening: they asked to open an app,
-//! and an app opens. Fetching it first is a step on the way, in the
-//! same sense that reading a manifest off disk is a step on the way
-//! for an app that is already here.
-//!
-//! One consequence has to be honoured rather than designed around: an
-//! app that has to be fetched takes seconds, not milliseconds. Silence
-//! across those seconds is indistinguishable from an activation that
-//! did nothing, so an open that needs a fetch — and only that one —
-//! raises a standing indication that it is loading, retired when the
-//! app's window appears (or replaced by the reason it could not).
-//! Nothing the user reads names the fetch: they asked to open an app,
-//! not to acquire one, and how the bytes got here is the OS's business.
+//! One consequence has to be honoured: fetching an app takes seconds,
+//! not milliseconds, and silence across that wait reads as a dead
+//! keystroke. So a fetch-requiring open raises a standing "loading"
+//! notice, retired when the app's window appears (or replaced by why it
+//! could not). Nothing names the fetch — the user asked to open an app,
+//! not to acquire one.
 
 use std::rc::Rc;
 
@@ -52,14 +40,13 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// How much an app the machine does not have yet gives up against one
 /// it does.
 ///
-/// Exactly one point: enough that an app you have wins a *tie* against
-/// one you don't, and nothing more. Every band in [`match_score`] is at
-/// least five points apart, so this can never drag a better match below
-/// a worse one — typing an available app's name outright still beats a
-/// vague fuzzy hit on an installed one, which is what naming an app
-/// means. The two alternatives are both worse: ranking the lists
-/// separately, or pushing not-installed apps below every installed one,
-/// each make "the app I actually named" lose to "an app I happen to
+/// Exactly one point: enough that an app you have wins a tie against
+/// one you don't, and no more. Every band in [`match_score`] is at
+/// least five points apart, so this can't drag a better match below a
+/// worse one — typing an available app's name outright still beats a
+/// vague fuzzy hit on an installed one. Ranking the lists separately,
+/// or sinking every not-installed app below every installed one, would
+/// both make "the app I actually named" lose to "an app I happen to
 /// have".
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 
@@ -116,14 +103,14 @@ impl ApplicationsProvider {
             // The category, when the publisher declared one, is the more
             // useful second line than the version: it tells you what kind
             // of app the row will open.
-            // Where the window will land leads the line. It is the one
-            // part of a launch row that changes with context, and a user
-            // who opened the palette from a specific group's "+" needs to
-            // see that the pick honours that group before they commit.
             let detail = match app.category.as_deref() {
                 Some(cat) => format!("{cat} · {}", app.package_id),
                 None => format!("{} · {}", app.package_id, app.version),
             };
+            // Where the window will land leads the line: it's the one
+            // part of a launch row that changes with context, so a user
+            // who opened the palette from a group's "+" sees the pick
+            // honours that group before they commit.
             let subtitle = format!("{} · {detail}", open_target.result_hint());
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
@@ -195,15 +182,12 @@ impl ApplicationsProvider {
                 subtitle: Some(subtitle),
                 score: score - NOT_INSTALLED_TIEBREAK,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                    // Everything decided on the frame thread is decided
-                    // *now*, while the user's selection and the layout
-                    // they were looking at are both still true. The
-                    // window may be a minute away — long enough for the
-                    // active workspace to have changed — so the room
-                    // and the grants are captured here and carried to
-                    // the launch rather than read again when it
-                    // happens. Opening an app somewhere means opening
-                    // it where you asked.
+                    // Decided now, while the user's selection and the
+                    // layout they were looking at are both still true —
+                    // the window may be a minute away, so the room and
+                    // grants are captured here rather than re-read at
+                    // launch. Opening an app somewhere means opening it
+                    // where you asked.
                     let context = {
                         let st = chrome.borrow();
                         let tree = st.tree();
@@ -234,19 +218,10 @@ impl ApplicationsProvider {
                         return Ok(());
                     };
                     // The palette closes the instant this returns, so
-                    // this is the only thing standing between the user
-                    // and an apparently dead Enter key — and the wait
-                    // is seconds, not milliseconds.
-                    //
-                    // Raised *before* the work starts, so the
-                    // acknowledgement is on screen on the same frame as
-                    // the keystroke rather than whenever the first byte
-                    // lands. It says the app is loading and nothing
-                    // about how, because the user asked to open an app
-                    // and not to acquire one. It is retired by the
-                    // app's window appearing, not by a timer, so the
-                    // indication covers the whole wait and ends on
-                    // something the user can see.
+                    // this notice is what stands between the user and an
+                    // apparently dead Enter key while the fetch runs.
+                    // Raised before the work starts; retired by the
+                    // app's window appearing, not a timer.
                     let notice = {
                         let mut st = chrome.borrow_mut();
                         let id = st.push_notification_full(
@@ -276,49 +251,29 @@ impl ApplicationsProvider {
     }
 }
 
-/// Launch an installed package into the workspace the user is looking
-/// at, reporting a pre-fork failure as a notification.
-///
-/// Shared by the Applications row and by the catalog's post-install
-/// launch, so "the app opens" means one thing: the same placement, the
-/// same grants, the same room. The app opens into the active workspace —
-/// that workspace's grants become its sandbox, and its id becomes the
-/// collaboration room it joins — so opening the same app in two
-/// workspaces gives two independent sessions.
-///
-/// The grants are published immediately before the launch rather than
-/// cached: a grant made a moment ago in the permissions UI must reach
-/// this launch, and a revoked one must not.
 /// The package id of the file manager qOS ships as a system app.
 pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 
 /// Give the system file manager the user's home before it starts.
 ///
 /// Every app gets one directory of its own, with `HOME` pointed inside
-/// it, and nothing else it was not granted. That is right for an app
-/// that edits its own documents and wrong for the one whose entire
-/// subject is the user's files: it opens on a folder containing nothing
-/// but its own dotfiles and reports, accurately, zero items.
+/// it, and nothing else it was not granted — right for an app editing
+/// its own documents, wrong for the one whose entire subject is the
+/// user's files.
 ///
-/// The grant is not a hole in that model, it is the model being used.
-/// It goes through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
-/// the permission prompt and the file-chooser portal write to, so it is
-/// a capability on the workspace like any other: it appears in the
-/// permissions UI, it can be revoked there, and it expires with the
-/// session rather than persisting. What it changes is who decides —
-/// the OS, for the file manager it ships, instead of a dialog asking the
-/// user to approve the file manager's access to files on first sight of
-/// an empty window.
+/// Not a hole in that model, it's the model being used: the grant goes
+/// through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
+/// the permission prompt and the file-chooser portal write to, so it's a
+/// capability on the workspace like any other — visible and revocable in
+/// the permissions UI, and scoped to the session. What changes is who
+/// decides: the OS, for the file manager it ships, instead of a dialog
+/// asking the user to approve access to an empty window.
 ///
-/// It names one package id rather than a rule about categories or
-/// manifests deliberately. A rule that could be satisfied by a
-/// third-party package would be a way to ask for the user's home by
-/// declaring the right thing about yourself; qOS ships exactly one file
-/// manager, and naming it is the narrower statement.
-///
-/// Write, not read: renaming, deleting and creating folders are what a
-/// file manager is for, and a read-only grant would leave its toolbar
-/// full of affordances that fail.
+/// Names one package id rather than a category rule deliberately — a
+/// rule a third-party package could satisfy would let it ask for the
+/// user's home by declaring the right thing about itself. Write, not
+/// read: renaming, deleting and creating folders are what a file
+/// manager is for.
 fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
     let ws_id = {
         let st = chrome.borrow();
@@ -337,43 +292,36 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
     }
 }
 
-/// [`grant_user_home_to_file_manager`] against a tree, for the launches
-/// that do not come from the palette.
+/// [`grant_user_home_to_file_manager`] against a tree, for launches that
+/// don't come from the palette.
 ///
-/// The file manager is started by more than one path — the palette, and
+/// The file manager can start from more than one path — the palette, and
 /// [`crate::shell::peer_windows`] when a peer's window says the room has
-/// one open. Only the first used to mint the grant, so a file manager
-/// started on the room's behalf opened on its own sandbox directory and
-/// reported, accurately, that it was empty. The grant is a precondition
-/// of the app being usable at all, so it belongs with the launch rather
-/// than with the palette that happened to be the first caller.
+/// one open. The grant is a precondition of the app being usable at all,
+/// so it belongs with the launch rather than with whichever caller
+/// happens to be first.
 ///
 /// Returns whether a grant was added, so a caller with a repaint to do
-/// can skip it when there was nothing to change.
+/// can skip it when nothing changed.
 ///
 /// # Minted per machine, and why that is not yet enough
 ///
 /// Every member mints their own, because the path names *this* machine's
-/// home and is meaningless on anybody else's. A member who only received
-/// a copy of somebody else's still got no `QOS_USER_HOME`
-/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`, which exports
-/// it only when the local `$HOME` is covered by a granted bind) and so
-/// still opened on their sandbox directory.
+/// home and is meaningless on anybody else's — a member who only
+/// received a copy of somebody else's grant still got no `QOS_USER_HOME`
+/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`) and opened on
+/// their own sandbox directory.
 ///
 /// This deliberately does **not** mirror the grant into the room
-/// document the way `GrantStoreHandle::insert` does. That is not
-/// sufficient to keep it off the wire, and the remaining hole is worth
-/// stating plainly rather than leaving to be rediscovered: the workspace
-/// projection writes `ws.capabilities` wholesale
-/// (`WorkspaceTree`'s doc write, `state.rs`), so the grant reaches every
-/// peer on the next persist regardless. A peer's sandbox then honours a
-/// path naming *this* machine's home directory.
-///
-/// Closing it needs a capability the projection knows not to ship — and
-/// one the doc-driven rebuild of `ws.capabilities` knows not to sweep,
-/// since that rebuild replaces the list with whatever the document holds.
-/// Both halves are a change to the capability model, not to this
-/// function, so it is recorded here rather than half-done.
+/// document the way `GrantStoreHandle::insert` does — but that alone
+/// isn't sufficient to keep it off the wire: the workspace projection
+/// writes `ws.capabilities` wholesale (`WorkspaceTree`'s doc write,
+/// `state.rs`), so the grant reaches every peer on the next persist
+/// regardless, and a peer's sandbox then honours a path naming *this*
+/// machine's home. Closing it needs a capability the projection knows
+/// not to ship, and one the doc-driven rebuild of `ws.capabilities`
+/// knows not to sweep — both a change to the capability model, not to
+/// this function, so it's recorded here rather than half-done.
 pub(crate) fn grant_file_manager_home(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
@@ -411,6 +359,19 @@ pub(crate) fn grant_file_manager_home(
     true
 }
 
+/// Launch an installed package into the workspace the user is looking
+/// at, reporting a pre-fork failure as a notification.
+///
+/// Shared by the Applications row and by the catalog's post-install
+/// launch, so "the app opens" means one thing: the same placement, the
+/// same grants, the same room. The app opens into the active workspace —
+/// that workspace's grants become its sandbox, and its id becomes the
+/// collaboration room it joins — so opening the same app in two
+/// workspaces gives two independent sessions.
+///
+/// The grants are published immediately before the launch rather than
+/// cached: a grant made a moment ago in the permissions UI must reach
+/// this launch, and a revoked one must not.
 pub(crate) fn launch_installed_app(
     chrome: &Chrome,
     package_id: &str,
@@ -435,21 +396,13 @@ pub(crate) fn launch_installed_app(
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
         return Ok(());
     }
-    // Say that the app is opening, before the work starts, so the
-    // acknowledgement is on screen on the same frame as the keystroke.
-    //
-    // The window is seconds away — it is a process to start, a wayland
-    // connection to make and a first frame to draw — and it is not shown
-    // until it has something in it, precisely so nobody is handed an
-    // empty frame to look at. That leaves this notification as the only
-    // thing standing between the user and an apparently dead Enter key,
-    // which is why a plain launch raises it and not just the path that
-    // has to fetch the app first.
-    //
-    // It is retired by the window appearing rather than by a timer
-    // (`ShellOverlayHost::retire_notices_for_opened_windows`), so the
-    // indication covers exactly the wait and ends on something the
-    // person can see.
+    // Say the app is opening before the work starts, so the
+    // acknowledgement lands on the same frame as the keystroke. The
+    // window is seconds away — nothing is shown until it has a frame to
+    // draw — so this notice is the only thing standing between the user
+    // and an apparently dead Enter key. Retired by the window appearing
+    // (`ShellOverlayHost::retire_notices_for_opened_windows`), not a
+    // timer.
     let notice = {
         let mut st = chrome.borrow_mut();
         let id = st.push_notification_full(
@@ -466,14 +419,10 @@ pub(crate) fn launch_installed_app(
     let launched = {
         let st = chrome.borrow();
         let tree = st.tree();
-        // Where the window goes is decided here, while the user's
-        // selection and the layout they were looking at are both still
+        // Decided here, while the user's selection and layout are still
         // true — the window itself maps seconds later, on another
-        // process. See `crate::shell::placement`.
-        //
-        // An explicit target beats the rule: the "+" on a group's tab
-        // strip names the destination, and that is a stronger statement
-        // of intent than any inference from what happens to be selected.
+        // process. An explicit target (the tab strip's "+") beats the
+        // placement rule's inference from what's currently selected.
         crate::shell::placement::note_placement_for_launch_targeted(
             package_id,
             &tree,
@@ -485,13 +434,11 @@ pub(crate) fn launch_installed_app(
             launcher::launch_in_workspace(package_id, ws)
         })
     };
-    // The launch itself is non-blocking: everything past resolution
-    // happens on a worker thread. Only the pre-fork failures land here;
-    // the rest arrive as launch events the chrome drains each frame.
-    //
-    // No active workspace means there is no room and no grant to launch
-    // into, so there is nothing to start — reported the same way a
-    // resolution failure is.
+    // The launch itself is non-blocking — everything past resolution
+    // happens on a worker thread; only pre-fork failures land here, the
+    // rest arrive as launch events drained each frame. No active
+    // workspace means no room and no grant to launch into, so there's
+    // nothing to start.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     if let Err(err) = outcome {
         let message = err.user_message();
@@ -569,13 +516,11 @@ impl SearchProvider for ApplicationsProvider {
 /// identity: "office" should offer every office app, but never above an
 /// app whose own name or id the user actually typed.
 ///
-/// Package ids are scored by how completely they were named, not as one
-/// flat "contains". `dev.qos.hex-editor` typed as `hex-editor` is the
-/// app's identity spelled out in full and has to score like a name
-/// match: the display name is "Hex Editor", so the hyphenated id is
-/// often the only exact handle a user - or a script - has for it.
-/// Scoring that the same 25 as an incidental substring let a file called
-/// `hex-editor.rs` outrank the app itself.
+/// Package ids are scored by how completely they were named, not as a
+/// flat "contains": `dev.qos.hex-editor` typed as `hex-editor` is the
+/// app's identity spelled out in full and must score like a name match
+/// — scoring it the same as an incidental substring would let a file
+/// called `hex-editor.rs` outrank the app itself.
 pub(crate) fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str>) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
@@ -717,8 +662,7 @@ mod tests {
         let out = p.results_for("dev.qos", vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")], OpenTarget::Beside);
         assert_eq!(out.len(), 1, "only the matching package: {out:?}");
         // A shared id *prefix* names a publisher, not an app, so it
-        // stays below a name match. It is no longer lumped in with an
-        // incidental substring, hence 60 rather than the old flat 25.
+        // stays below a name match.
         assert_eq!(out[0].score, 60);
         let by_name = p.results_for("hello", vec![app("dev.qos.hello", "Hello")], OpenTarget::Beside);
         assert!(
@@ -730,11 +674,6 @@ mod tests {
     /// `hex-editor` is the whole identity of `dev.qos.hex-editor`, and
     /// the only exact handle for it - the display name is "Hex Editor",
     /// which no amount of typing the id will prefix-match.
-    ///
-    /// This came out of a sweep: the app scored 25 on a bare `contains`
-    /// while a source file called `hex-editor.rs` scored the top of the
-    /// files provider's scale, so Enter opened the file and the app
-    /// never launched.
     #[test]
     fn the_id_last_segment_is_an_identity_match() {
         let p = ApplicationsProvider::new();

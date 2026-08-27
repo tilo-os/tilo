@@ -3,45 +3,31 @@
 //! The lock screen ([`crate::compositor::lock_controller::LockController`])
 //! must prove the person at the keyboard is the session owner before it
 //! clears the lock. This module is the **injection seam** for that proof:
-//! the [`PasswordVerifier`] trait abstracts "is this password correct for
-//! this user?" so the compositor's lock state machine can be driven with a
-//! deterministic fake in tests while the shipped binary talks to the real
-//! auth stack.
+//! [`PasswordVerifier`] abstracts "is this password correct for this user?"
+//! so the lock state machine can be driven with a deterministic fake in
+//! tests while the shipped binary talks to the real auth stack.
 //!
-//! # Real vs. injected
-//!
-//! * [`GreetdVerifier`] — the **real** path. It reuses the greeter's greetd
-//!   conversation ([`greeter::greetd_client::verify_password`]), which runs
-//!   the same PAM stack login does but stops at the authoritative
-//!   `Success`/`Error` instead of starting a session. This is why unlock and
-//!   login share one non-leaky failure message.
-//! * [`FixedVerifier`] — the **injected** path for headless tests and
-//!   display-less dev sessions, selected by `QOS_LOCK_TEST_PASSWORD`. It
-//!   compares against a known constant with no I/O, so the lock/unlock state
-//!   machine is exercised on the real code path without a PAM/greetd socket.
-//!   It is a developer-build affordance: `QOS_LOCK_TEST_PASSWORD` and
-//!   `QOS_UNLOCK_HELPER` are both read only when
-//!   [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`] is set, so a shipped
-//!   `--release` binary cannot be talked into accepting a password of the
-//!   caller's choosing. See that module for why the environment is not a
-//!   trust boundary here.
+//! * [`GreetdVerifier`] — the real path. Reuses the greeter's greetd
+//!   conversation, which runs the same PAM stack login does but stops at
+//!   the authoritative `Success`/`Error` instead of starting a session —
+//!   why unlock and login share one non-leaky failure message.
+//! * [`FixedVerifier`] — the injected path for headless tests, selected by
+//!   `QOS_LOCK_TEST_PASSWORD`. Compares against a known constant with no
+//!   I/O. Read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
+//!   is set, so a `--release` binary cannot be talked into accepting a
+//!   caller-chosen password.
 //!
 //! [`verifier_from_env`] picks between them. The default when neither is
-//! configured is **fail-closed** ([`UnavailableVerifier`]): if there is no
-//! way to verify a credential, no password is ever accepted — a lock with no
-//! verifier stays locked rather than silently letting anyone in.
-//!
-//! # In-session verify (`HelperVerifier`)
+//! configured is fail-closed ([`UnavailableVerifier`]): no verifier means
+//! no password is ever accepted.
 //!
 //! A *running* session exposes no greetd socket, so [`GreetdVerifier`] is
 //! only reachable during login. To verify the logged-in user's password
-//! *inside* a live session, [`HelperVerifier`] spawns the small privileged
-//! [`qos-unlock-helper`] binary: it passes the username on argv, the password
-//! on the helper's **stdin** (never argv, so it never lands in
-//! `/proc/*/cmdline`), and maps the helper's exit code to a verify result.
-//! The compositor itself links no PAM — the helper is the only piece that
-//! touches the auth stack, keeping the compositor's attack surface small.
-//! Any failure to run the check is fail-closed and non-leaky.
+//! inside a live session, [`HelperVerifier`] spawns the privileged
+//! [`qos-unlock-helper`] binary: username on argv, password on **stdin**
+//! (never argv, so it never lands in `/proc/*/cmdline`), exit code mapped
+//! to a verify result. The compositor itself links no PAM — the helper is
+//! the only piece that touches the auth stack.
 //!
 //! [`qos-unlock-helper`]: ../../../../crates/session/qos-unlock-helper
 
@@ -287,18 +273,6 @@ pub enum VerifierChoice {
 /// when it is `false` the two developer variables are not consulted at all,
 /// whatever they contain. Passing it in rather than reading the `cfg` here
 /// is what lets the release-build behaviour be tested from a debug test run.
-///
-/// Priority order:
-///
-/// 1. (dev builds only) `QOS_LOCK_TEST_PASSWORD` set → [`VerifierChoice::Fixed`].
-/// 2. (dev builds only) `QOS_UNLOCK_HELPER` set → [`VerifierChoice::Helper`]
-///    on that path, for a helper installed somewhere other than the default.
-/// 3. [`DEFAULT_UNLOCK_HELPER`] exists on disk → [`VerifierChoice::Helper`]
-///    (the **real in-session PAM path**, on the OS image and on a host that
-///    installed the session RPM).
-/// 4. `GREETD_SOCK` set → [`VerifierChoice::Greetd`] (login-time greetd path;
-///    a live session has no such socket, so this is effectively login-only).
-/// 5. else → [`VerifierChoice::Unavailable`] (fail-closed).
 pub fn select_verifier(
     dev_overrides: bool,
     test_password: Option<String>,

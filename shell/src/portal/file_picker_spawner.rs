@@ -1,11 +1,8 @@
 //! Abstraction for "spawn a file-picker overlay" — used by
 //! [`super::file_chooser::FileChooserBackend`] to surface a real
-//! dialog without coupling to the shell's chrome.
-//!
-//! Sandbox Phase 4.3 follow-up: the FileChooser backend was returning
-//! a placeholder URI on `Allow`. This trait lets the backend hand off
-//! the rendering + selection to whichever surface owns the caller's
-//! workspace chrome.
+//! dialog without coupling to the shell's chrome. This trait lets the
+//! backend hand off rendering + selection to whichever surface owns the
+//! caller's workspace chrome.
 //!
 //! Two production implementors are imagined:
 //!   - The hosted-mode chrome — pushes a [`ui::widget::FilePicker`]
@@ -112,8 +109,7 @@ pub struct FilePickerRequest {
     /// Identity of the requesting app — host can show "{app_id} wants
     /// to open a file" in the dialog header.
     pub caller: PortalCaller,
-    /// User-facing dialog title (provided by the calling app — usually
-    /// "Open File" or similar).
+    /// User-facing dialog title, provided by the calling app.
     pub title: String,
     /// `true` for `SaveFile` / `SaveFiles` flows, `false` for `OpenFile`.
     /// Affects the action-button label ("Save" vs "Open").
@@ -123,7 +119,6 @@ pub struct FilePickerRequest {
     pub multiple: bool,
     /// The app's preferred label for the confirm button ("Import").
     pub accept_label: Option<String>,
-    /// Suggested filename for a Save dialog.
     pub current_name: Option<String>,
     /// File-type filters the app offered. Empty means "any file".
     pub filters: Vec<PickerFilter>,

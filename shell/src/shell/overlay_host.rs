@@ -8,10 +8,6 @@
 //! just gates their visibility and paints a scrim when at least one is
 //! showing.
 //!
-//! Phase 3 scope: ⌘K opens the command palette primitive. Overview /
-//! quick-settings / workspace-settings wiring lands in follow-up tasks
-//! alongside their click-surfaces.
-//!
 //! Key routing: `handle_event` consumes the palette-toggle and Esc
 //! presses before propagating to the wrapped content. When the palette
 //! is open, it also gets first crack at every event so typing-into-
@@ -298,8 +294,7 @@ pub struct ShellOverlayHost {
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced to the user. Off by default; the compositor flips this
     /// to `true` when booted with `--enable-peer-sync`. Toggled via
-    /// [`Self::with_peer_sync_enabled`]. Phase 3 Task 3.3 of
-    /// `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+    /// [`Self::with_peer_sync_enabled`].
     peer_sync_enabled: bool,
     /// Queue of peer-sync palette actions emitted by
     /// [`Self::dispatch_palette_command`] when the user picks `/invite`
@@ -476,13 +471,6 @@ pub enum PeerSyncPromptButton {
     PasteToken,
 }
 
-/// Total duration of the desktop ↔ overview crossfade. The concept wraps
-/// the two views in `AnimatePresence mode="wait"` with `duration: 0.2`
-/// per side (`App.tsx:427-487`) — the outgoing view runs its exit first,
-/// then the incoming runs its enter, for ~400 ms end-to-end. We split
-/// `overview_t` ∈ [0, 1] into two halves inside the draw path: the first
-/// half shrinks/fades the desktop out, the second half grows/fades the
-/// overview in.
 /// Rows the palette asks the registry for, shared round-robin between
 /// the matching kinds. See
 /// [`crate::shell::search::SearchRegistry::query_grouped`].
@@ -681,21 +669,11 @@ fn draw_invite_person_row(
     rect.y0 + 2.0 + name_size as f64 + 6.0 + sub_size as f64
 }
 
-/// The fingerprint, and what it is for, on one line.
-///
-/// Drawn as a chip rather than as running text: it is the one thing on
-/// the card a person is expected to compare character by character with
-/// somebody else's screen, and running prose is not something anybody
-/// reads that way. Returns the y it ends at.
 #[allow(clippy::too_many_arguments)]
-/// The invite code, drawn as the field it is.
-///
-/// It used to be a small chip with a sentence beside it explaining what
-/// it was for. The sentence did no work — it did not say what to do with
-/// the code, and a caption is not how an interface tells you that a
-/// field is readable and copyable. The field says it by being one:
-/// full width, set large, in the face that makes a code legible
-/// character by character.
+/// The invite code, drawn as the field it is: full width, set large, in
+/// the face that makes a code legible character by character — not a
+/// caption, which is not how an interface says a field is readable and
+/// copyable.
 fn draw_invite_code(
     scene: &mut Scene,
     transform: Affine,
@@ -934,39 +912,31 @@ const OVERVIEW_TRANSITION_MS: u64 = 400;
 /// single f32.
 const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
 
-/// Clamp range for the viewport-driven sidebar width. The slot used to
-/// be a hard-coded `360 px`; user feedback (2026-05-25) was that at
-/// 1080p fullscreen this read as "slightly too wide" while the curve /
-/// disc fraction itself was the right size. Solution: derive the slot
-/// from the live viewport height (scales naturally between laptop
-/// 13" and 4K monitors) and let the disc's `apply_layout` recompute
-/// its `diameter_px` to keep the visible-arc curvature identical
-/// across widths.
+/// Clamp range for the viewport-driven sidebar width, scaling between
+/// laptop and 4K viewports so the disc's `apply_layout` can recompute
+/// `diameter_px` and keep the visible-arc curvature identical across
+/// widths.
 ///
-/// `SIDEBAR_WIDTH_MAX_PX` doubles as the *fixed* extra-left-padding
-/// the content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`),
-/// so the sidebar is never wider than the gutter content reserves.
-/// Result: on small viewports the sidebar narrows; the gutter still
-/// has a (slightly larger) constant width, leaving wallpaper breathing
-/// room between the sidebar's right edge and the content's left edge.
+/// `SIDEBAR_WIDTH_MAX_PX` doubles as the *fixed* extra-left-padding the
+/// content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`), so
+/// the sidebar is never wider than the gutter content reserves.
 const SIDEBAR_WIDTH_MIN_PX: f32 = 220.0;
 const SIDEBAR_WIDTH_MAX_PX: f32 = 320.0;
 const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
 
 /// Compute the sidebar width for a given viewport height. `0.26 * h`
-/// at 1080p gives ~281 px (down from the prior fixed 360), at 1440p
-/// gives ~374 → clamped to 320, at 720p gives ~187 → clamped to 220.
-/// First-frame callers (before any layout pass) pass `0.0` and get
-/// the lower bound, which is a fine seed: the slot reflows on the
-/// next frame once `ShellOverlayHost::rect` is known.
+/// gives ~281 px at 1080p, ~374 → clamped to 320 at 1440p, ~187 →
+/// clamped to 220 at 720p. First-frame callers (before any layout pass)
+/// pass `0.0` and get the lower bound, which is a fine seed: the slot
+/// reflows on the next frame once `ShellOverlayHost::rect` is known.
 fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
     (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION).clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
 }
 
 /// Wallpaper gutter between the wheel disc's right edge and the first
-/// window. 2026-06-24 user feedback: with the strip's leading inset equal
-/// to the wheel width exactly, the radial switcher butted into the first
-/// window; the gap reads as separation between canvas chrome and content.
+/// window. Without it, a leading inset equal to the wheel width exactly
+/// makes the radial switcher butt into the first window instead of
+/// reading as separation between canvas chrome and content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
 /// Wallpaper gutter at the far edge of a display, matching
@@ -1056,29 +1026,18 @@ const INVITED_ROW_ALPHA: f32 = 0.55;
 /// Alpha applied to the collaborator and QuickSettings popover surfaces.
 ///
 /// Opaque, and it defers to the toolkit's own chrome constant so a
-/// popover cannot drift away from the bar it hangs off again. This used
-/// to be a literal `0.80` on the grounds that the concept called for
-/// `bg-slate-900/80 backdrop-blur-md`; the pinned vello has no backdrop
-/// filter, so what shipped was the tint without the blur, which is not
-/// glass but a loss of contrast that varies with whatever the user has
-/// open behind it. A 2026-08 report put it plainly: the transparency
-/// looked bad.
-///
-/// The palette and the workspace-settings modal already went opaque for
-/// the same reason after the 2026-07-09 report ("too transparent — looks
-/// terrible"); see [`MODAL_SURFACE_ALPHA`]. The popover was the one
-/// surface left behind.
+/// popover cannot drift away from the bar it hangs off. The pinned Vello
+/// has no backdrop filter, so a translucent tint here would be a loss of
+/// contrast rather than glass.
 pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
-/// surfaces. Concept §4.1 / §5.1 specified `bg-slate-900/70`, but at that
-/// alpha the palette reads as translucent chrome bleeding through
-/// whatever's underneath — legibility of long rows drops sharply against
-/// a busy desktop backdrop (2026-07-09 user report: "search bar is too
-/// transparent"). We now paint the palette solid and rely on the scrim
-/// below to sell the "page-on-top-of-page" affordance instead. The same
-/// value backs the workspace-settings modal; app content that inherits
-/// this tint (file viewer, etc.) picks up the same lift for free.
+/// surfaces. The design calls for `bg-slate-900/70`, but at that alpha the
+/// palette reads as translucent chrome bleeding through, dropping
+/// legibility of long rows against a busy backdrop — so it paints solid
+/// and the scrim beneath sells the "page-on-top-of-page" affordance
+/// instead. Also backs the workspace-settings modal; app content that
+/// inherits this tint (file viewer, etc.) picks up the same lift for free.
 pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
@@ -1092,22 +1051,18 @@ pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
 /// Alpha applied to the scrim painted beneath the GlobalSearch palette and
-/// the Overview view. Concept §5.1 specifies `bg-black/30` here too, and
-/// this constant used to take it literally on the grounds that both
-/// surfaces sit on a stronger glass tint than the WorkspaceSettings
-/// modal. That reasoning is about the *card*; the scrim's job is the
-/// *background*, and there it does not hold. A window card in this shell
-/// is `bg-white`, and 0.30 leaves it at 178 grey — a bright field
-/// abutting a slate-900 palette, which is what a 2026-07-30 report
-/// described as the palette having no dim behind it and meeting window
-/// content at a jarring edge.
+/// the Overview view. A literal `0.30` scrim reasons about the *card*
+/// (both surfaces sit on a stronger glass tint than the WorkspaceSettings
+/// modal); the scrim's job is the *background*, and there that reasoning
+/// does not hold — a `bg-white` window card at 0.30 leaves it at 178 grey,
+/// a bright field abutting a slate-900 palette with no dim behind it.
 ///
-/// So this takes the same un-blurred lift [`MODAL_SCRIM_ALPHA`] already
-/// documents, for the same reason: the pinned Vello has no
-/// `push_blur_layer`, so an un-blurred fill has to go heavier to read
-/// like the concept's blurred one. Same value as the modal, because both
-/// are the same gesture — put a page on top of the page.
-/// Pinned by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
+/// So this takes the same un-blurred lift [`MODAL_SCRIM_ALPHA`] documents,
+/// for the same reason: the pinned Vello has no `push_blur_layer`, so an
+/// un-blurred fill has to go heavier to read like the concept's blurred
+/// one. Same value as the modal — both are the same gesture, a page on
+/// top of the page. Pinned by
+/// `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
 /// A cheap value that changes exactly when what a tab should be showing
@@ -1148,24 +1103,22 @@ fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
 
 impl ShellOverlayHost {
     /// Display name painted in the General tab's collaborator tile when
-    /// no `me` collaborator is seeded in the active workspace. Pinned
-    /// to `"Me"` so the adjacent indigo "You" badge doesn't duplicate
-    /// the row label (the "You [You]" artefact spotted in the
-    /// 2026-05-04 critical-UI-inspection sweep). When the local user
-    /// signs in for real, `c.name` from the seeded collaborator wins.
+    /// no `me` collaborator is seeded in the active workspace. Pinned to
+    /// `"Me"` so the adjacent indigo "You" badge doesn't duplicate the row
+    /// label as "You [You]". When the local user signs in for real,
+    /// `c.name` from the seeded collaborator wins.
     pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
 
     pub fn new(content: Box<dyn Widget>) -> Self {
-        // Palette entries are now produced by the search registry on
-        // every keystroke (`refresh_search_results`). The registry ships
-        // with in-shell providers: `actions` (the old chrome-command
-        // rows), `applications` (installed packages — picking a row
-        // launches one), `notes` and `editor` (each text app's own
-        // Automerge body, which is also what `Ctrl+K` narrows to),
-        // `records` (every record any app wrote, each row saying which
-        // room it lives in — activating one brings it into this room),
-        // `files` (walkdir + tantivy content index). New providers slot
-        // in via `SearchRegistry::register`; the palette picks up their
+        // Palette entries are produced by the search registry on every
+        // keystroke (`refresh_search_results`). In-shell providers:
+        // `actions` (chrome-command rows), `applications` (installed
+        // packages — picking a row launches one), `notes` and `editor`
+        // (each text app's own Automerge body, also what `Ctrl+K`
+        // narrows to), `records` (every record any app wrote, each row
+        // saying which room it lives in), `files` (walkdir + tantivy
+        // content index). New providers slot in via
+        // `SearchRegistry::register`; the palette picks up their
         // resource-kind chips automatically.
         let mut palette = CommandPalette::new();
         palette.set_bypass_fuzzy(true);
@@ -1581,8 +1534,7 @@ impl ShellOverlayHost {
     /// can pick to issue an invite token (copied to clipboard by the
     /// compositor) or paste one in to dial a remote workspace. Off
     /// by default; the compositor flips this on when booted with
-    /// `--enable-peer-sync` so a v1 demo without the flag stays
-    /// behaviour-identical to before Phase 3 Task 3.3.
+    /// `--enable-peer-sync`.
     ///
     /// Idempotent: calling it twice with `true` only appends the rows
     /// once. The rows can't be removed once added — toggling back to
@@ -1623,10 +1575,9 @@ impl ShellOverlayHost {
 
     /// Install the closure that carries out [`PeerSyncRequest`]s.
     ///
-    /// Without one, `/invite` and `/connect` have nowhere to go — which
-    /// is what they had before: the palette pushed an action onto a
-    /// queue no production code drained, so both commands were inert in
-    /// a running session however the flag was set.
+    /// Without one, `/invite` and `/connect` have nowhere to go: the
+    /// palette pushes an action onto a queue nothing drains, so both
+    /// commands stay inert in a running session however the flag is set.
     pub fn with_peer_sync_bridge(
         mut self,
         bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
@@ -2040,18 +1991,6 @@ impl ShellOverlayHost {
         self
     }
 
-    /// Register the per-strip [`GroupRow`] raw pointers harvested at build
-    /// time. The host uses these each frame in
-    /// [`Self::reconcile_active_group_off_closing`] to feed the data-layer
-    /// reconciler without re-walking the widget tree.
-    ///
-    /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
-    /// the content subtree this host wraps. The caller (currently
-    /// [`build_nirios_overlay_host_with_chrome`]) is responsible for
-    /// upholding that invariant by capturing the pointer immediately after
-    /// `Box::new(strip_row)` and passing the same `Box` into the content
-    /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
-    /// the heap address stable.
     /// Tell the host which displays it is painting across. The compositor
     /// calls this through `FrameBuilder` whenever the output set or a mode
     /// changes; the host forwards the derived per-display strip widths to
@@ -2121,6 +2060,18 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// Register the per-strip [`GroupRow`] raw pointers harvested at build
+    /// time. The host uses these each frame in
+    /// [`Self::reconcile_active_group_off_closing`] to feed the data-layer
+    /// reconciler without re-walking the widget tree.
+    ///
+    /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
+    /// the content subtree this host wraps. The caller (currently
+    /// [`build_nirios_overlay_host_with_chrome`]) is responsible for
+    /// upholding that invariant by capturing the pointer immediately after
+    /// `Box::new(strip_row)` and passing the same `Box` into the content
+    /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
+    /// the heap address stable.
     pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
         self.group_row_ptrs = ptrs;
         self
@@ -2286,27 +2237,12 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Per-tick wire-up for the data-layer active-group reconciler.
-    ///
-    /// Walks the captured [`GroupRow`] pointers, harvests the set of
-    /// [`UiWindowGroup`] ids whose [`UiWindowGroup::is_closing`] returns
-    /// true grouped by strip, and feeds each non-empty set into
-    /// [`crate::shell::state::WorkspaceTree::nudge_active_group_off_closing`].
-    /// Strips with no closing groups are skipped — the reconciler is a
-    /// no-op there anyway, and the early-return saves a chrome borrow per
-    /// quiescent strip.
-    ///
-    /// Without this hook the active-group pointer would dwell on a closing
-    /// group for the duration of the 180 ms close fade, sending focus,
-    /// keyboard input, and presence broadcasts to a fading-away corpse.
-    /// Called from [`Widget::update`] so it runs every frame the App
-    /// pumps.
     /// Per-frame diff of the live `WorkspaceTree` against every
     /// `GroupRow`'s current children. Returns `true` if the row
     /// shape actually changed (so callers can propagate a redraw
     /// signal).
     ///
-    /// Closes #263: chrome bumps its revision on every structural
+    /// Chrome bumps its revision on every structural
     /// mutation (workspace add, group insert, tab close, file
     /// drop, …), but the live `GroupRow` widgets cache their
     /// children in `groups: Vec<WindowGroup>` — without this poll
@@ -2486,10 +2422,10 @@ impl ShellOverlayHost {
         };
         // Only apply the scene override when the fullscreen group actually
         // exists in the *rendered* tree. The live client tree (which the xdg
-        // handler mutates) and this rendered tree are not yet unified (Phase
-        // 4), so a fullscreen id we don't host must be treated as "no
-        // fullscreen" — otherwise every strip would hide around a group that
-        // isn't here and blank the shell.
+        // handler mutates) and this rendered tree are not yet unified, so a
+        // fullscreen id we don't host must be treated as "no fullscreen" —
+        // otherwise every strip would hide around a group that isn't here
+        // and blank the shell.
         let owned = fs_group.is_some_and(|gid| {
             self.group_row_ptrs
                 .values()
@@ -2560,9 +2496,7 @@ impl ShellOverlayHost {
     /// the persisted tree. Without this hook the on-screen flip — driven
     /// by the tab-bar Maximize2 glyph or the floating restore / close-while-
     /// maximized chrome — would live only on the widget instance and reset
-    /// to the pre-toggle value on the next shell restart (audit task #105;
-    /// the widget already toggled in-memory before this commit, this is the
-    /// missing writeback).
+    /// to the pre-toggle value on the next shell restart.
     ///
     /// Idempotent and cheap: groups with no pending change are skipped, and
     /// the chrome borrow is only taken when at least one flip needs writing.
@@ -2623,9 +2557,9 @@ impl ShellOverlayHost {
                     }
                 }
             }
-            // Unit C of #157: mirror the maximize flip into the
-            // automerge doc so peer-sync observes the change. Tolerant
-            // of the doc not yet carrying this group — see
+            // Mirror the maximize flip into the automerge doc so
+            // peer-sync observes the change. Tolerant of the doc not
+            // yet carrying this group — see
             // `WorkspaceTree::doc_set_maximized` doc-comment.
             tree.doc_set_maximized(group_id, new_value);
         }
@@ -2688,9 +2622,7 @@ impl ShellOverlayHost {
         // (ws, strip, group) triples so we can stamp
         // `tree.active_strip` / `tree.active_group` after the tab-id
         // writeback — otherwise the palette scope (Ctrl+K) stays anchored
-        // to whichever group was active before, which is the 2026-07-09
-        // "Ctrl+K scopes to Notes when I just clicked Terminal in its
-        // own group" regression.
+        // to whichever group was active before.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         {
             let mut tree = st.tree_mut();
@@ -2714,10 +2646,7 @@ impl ShellOverlayHost {
                                 // `group.active_tab = <phantom-id>`,
                                 // and the next draw would silently
                                 // drop the whole group because the
-                                // active-tab lookup finds nothing —
-                                // the 2026-07-09 "files window
-                                // completely disappears after Ctrl+K"
-                                // repro.
+                                // active-tab lookup finds nothing.
                                 let tab_exists = group.tabs.iter().any(|t| t.id == w.tab_id);
                                 if !tab_exists {
                                     continue;
@@ -2740,23 +2669,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that mirrors any per-frame resize-handle gesture
-    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks
-    /// the captured [`GroupRow`] pointers, drains every group's
-    /// [`UiWindowGroup::take_pending_width_change`] one-shot, and writes
-    /// the new value into the matching `WindowGroup::width` slot of the
-    /// persisted tree as `WindowWidth::Fraction(per-mille)`.
-    ///
-    /// The gesture is a pixel drag but what gets stored is the share of
-    /// the display it landed on, which is what lets the width survive a
-    /// restart onto a different monitor and replicate to a peer whose
-    /// screen is a different size.
-    ///
-    /// Without this hook a resize-drag is in-memory only and resets to
-    /// the pre-drag width on the next shell restart. Mirrors
-    /// [`Self::harvest_pending_maximize_changes`] in shape; both run
-    /// inside [`Widget::update`] every frame, but each is gated on a
-    /// non-empty pending pile so quiescent frames cost a single map walk.
     /// Give every live window group the same share of its strip, and
     /// mirror it to the persisted tree the way a width drag does.
     ///
@@ -3291,7 +3203,7 @@ impl ShellOverlayHost {
         chrome.borrow_mut().set_strip_viewport(viewport);
     }
 
-    /// Per-tick wire-up for cross-strip tab drag-drop (#151).
+    /// Per-tick wire-up for cross-strip tab drag-drop.
     ///
     /// Walks the captured [`GroupRow`] pointers, drains each row's
     /// [`GroupRow::take_pending_cross_strip_detach`] one-shot, and routes
@@ -3336,7 +3248,7 @@ impl ShellOverlayHost {
         if self.group_row_ptrs.is_empty() {
             return;
         }
-        // Phase 1 — drain every source row, snapshot every other row's
+        // First, drain every source row, snapshot every other row's
         // rect. We have to drain first because subsequent
         // `accept_cross_strip_drop` calls borrow the destination row
         // mutably, which would conflict with holding any reference to
@@ -3357,7 +3269,7 @@ impl ShellOverlayHost {
         if detaches.is_empty() {
             return;
         }
-        // Phase 2 — for each detach, hit-test the release point's `y`
+        // Then, for each detach, hit-test the release point's `y`
         // against every other strip's rect and pick the first match.
         // We bias on `y` only: strips span the full content width, so a
         // release at any `x` inside a strip's vertical band is "in that
@@ -3374,7 +3286,7 @@ impl ShellOverlayHost {
                 .map(|(sid, _)| *sid)
                 // No other strip matched — return to source.
                 .unwrap_or(src_strip_id);
-            // SAFETY: same contract as Phase 1's drain. We're mutating a
+            // SAFETY: same contract as the drain above. We're mutating a
             // single row at a time and never aliasing across rows.
             let &dest_ptr = match self.group_row_ptrs.get(&dest_strip_id) {
                 Some(p) => p,
@@ -3401,33 +3313,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up that owns the `pending_grants` queue's lifecycle.
-    ///
-    /// Phase 4 Task 4.2 wires the prompt at the *widget* level — the
-    /// portal D-Bus backend (Phase 4 Task 4.3) pushes grant requests
-    /// onto `chrome.pending_grants`; this method:
-    ///
-    ///  1. Latches a fresh [`PermissionPrompt`] when one is needed
-    ///     and no widget is currently held (`front()` is `Some` and
-    ///     `self.permission_prompt` is `None`).
-    ///  2. Drains the front entry and applies the user's choice
-    ///     when the held widget reports a `pending_choice`. The
-    ///     `Allow` path is a no-op on the workspace's grants map
-    ///     (Once doesn't persist); `Session` and `Always` push a
-    ///     scope-tagged copy of the requested capability into the
-    ///     active workspace's `grants` map. `Deny` is a no-op.
-    ///  3. Clears the held widget so the next frame either re-latches
-    ///     for the next queue entry or paints nothing.
-    ///
-    /// Owner-only escalation: when the active user isn't the
-    /// workspace owner, the widget's `Always` button is rendered
-    /// disabled and click-through-the-rect is dropped — so by the
-    /// time we observe a `Some(PromptChoice::Always)` here, the
-    /// widget has already vetted the click against `is_owner`. The
-    /// pump's only safety check is that the queue's `front()` still
-    /// matches the prompt's `app_id` before draining (defends
-    /// against an out-of-band push that swapped the head of the
-    /// queue between frames).
     /// Drain the app-launcher's worker-thread reports and turn the ones
     /// the user needs to know about into notifications.
     ///
@@ -3775,13 +3660,10 @@ impl ShellOverlayHost {
     /// Move everything the portal's prompt queue has buffered onto the
     /// chrome's queue, so the next `pump_permission_prompt` surfaces it.
     ///
-    /// This is the step that was missing: `PromptQueueHandle::drain` had
-    /// no production caller, so a `PromptResolver::Channel` queue filled
-    /// up and nothing ever emptied it. Every entry owns the reply sender
-    /// for a D-Bus method that is parked on `rx.await`, which is why the
-    /// senders travel onto `pending_grants` rather than being dropped
-    /// here — dropping one answers deny, and a user who has not been
-    /// asked yet has not denied anything.
+    /// Every entry owns the reply sender for a D-Bus method parked on
+    /// `rx.await`, which is why the senders travel onto `pending_grants`
+    /// rather than being dropped here — dropping one answers deny, and a
+    /// user who has not been asked yet has not denied anything.
     ///
     /// Returns whether anything moved, so the caller can mark the frame
     /// dirty and repaint with the prompt on screen.
@@ -3879,7 +3761,7 @@ impl ShellOverlayHost {
     /// Test-only one-shot dispatch: lets integration tests invoke the
     /// per-frame cross-strip drag-drop router from outside `update`
     /// without spinning up a full `App` render loop. Mirrors what
-    /// [`Widget::update`] runs each frame for #151.
+    /// [`Widget::update`] runs each frame.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_cross_strip_dispatch_for_tests(&mut self) {
         self.dispatch_cross_strip_detaches();
@@ -3936,14 +3818,6 @@ impl ShellOverlayHost {
         self.scroll_active_group_into_view();
     }
 
-    /// Mutable access to a strip's live [`GroupRow`], so a harness can read
-    /// `scroll_x` / handle geometry and drive the reorder / resize / scroll
-    /// gestures through the real widget.
-    ///
-    /// Deliberately *not* gated on `debug_assertions`: the `shots` binary
-    /// drives scenarios through this and is built in release for the OS
-    /// image, so gating it breaks the image build while every debug build
-    /// and test still passes.
     /// The sidebar wheel disc, downcast back out of the `Box<dyn Widget>`
     /// the host holds it in.
     ///
@@ -4091,10 +3965,6 @@ impl ShellOverlayHost {
     /// multiple groups in one strip — e.g. a 4-tab drag-out should leave
     /// the strip with two groups (3 in source, 1 in new), not one.
     ///
-    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
-    /// were captured from a `Box<GroupRow>` we own through the content
-    /// tree, the host outlives the content, and `&self` here keeps the
-    /// reconcile sweeps from racing the read.
     /// Test-only accessor for a strip's `GroupRow` rect, in screen-space
     /// coords. Returns `None` if no `GroupRow` was registered for the
     /// given strip, or `Rect::ZERO` if the row hasn't seen a layout pass
@@ -4140,6 +4010,10 @@ impl ShellOverlayHost {
         None
     }
 
+    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
+    /// were captured from a `Box<GroupRow>` we own through the content
+    /// tree, the host outlives the content, and `&self` here keeps the
+    /// reconcile sweeps from racing the read.
     pub fn groups_per_strip(&self) -> Vec<(StripId, Vec<(u64, Vec<u64>)>)> {
         let mut out = Vec::with_capacity(self.group_row_ptrs.len());
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -4166,9 +4040,7 @@ impl ShellOverlayHost {
     ///
     /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tab strip
     /// is the modal's only visible nav, and clicking a pill must mutate
-    /// `chrome.ws_settings_tab` directly. Pre-2-A the click branch in
-    /// `handle_event` was missing, so users could only switch tabs via
-    /// the keyboard focus trap.
+    /// `chrome.ws_settings_tab` directly.
     pub fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
         let idx = match tab {
             WsTab::General => 0,
@@ -4394,14 +4266,6 @@ impl ShellOverlayHost {
         self.palette_layout_dirty = true;
     }
 
-    /// Hit-test a click position against every strip's group rects and
-    /// stamp `tree.active_strip` / `tree.active_group` to the group the
-    /// cursor is over. Runs on every left-press inside the desktop
-    /// content area — matches every other DE where clicking a window
-    /// (any part of it, not just its titlebar) focuses that window.
-    ///
-    /// No-op when no group contains the point (click landed on empty
-    /// wallpaper, the topbar, the wheel disc, etc.).
     /// Walk every widget-side [`GroupRow`] and mirror any group that
     /// exists in the widget but NOT in the persisted tree into the
     /// tree. Used to close the writeback gap for
@@ -5231,11 +5095,8 @@ impl ShellOverlayHost {
 
     /// The workspace-settings "Copy" button next to the invite link.
     ///
-    /// Shared by the draw pass and the click router. It previously
-    /// existed only inside the draw pass, was never registered as a hit
-    /// rect, and never called the clipboard — a painted rectangle that
-    /// looked like the primary action of the whole tab and did nothing
-    /// when pressed.
+    /// Shared by the draw pass and the click router, so the rect that
+    /// paints the button is the rect that can be clicked.
     fn ws_settings_copy_rect(&self) -> Rect {
         let rect = self.ws_settings_rect();
         // Mirrors the draw pass: body_y = rect.y0 + 168, invite_y = body_y + 80.
@@ -5449,12 +5310,6 @@ impl ShellOverlayHost {
     /// Modal grows when Roles / Files tabs are active so the longer per-
     /// app permission grid + file list fit without overflowing into the
     /// workspace area below; click-detection geometry stays in sync.
-    ///
-    /// 2026-06-24 audit lifted the resting width 520 → 720 and the
-    /// tab-expanded height 520 → 600 so the General/Roles/Files/
-    /// Permissions/Collaborators row + collaborators block read as a
-    /// proper modal sheet instead of a cramped popover dwarfed by the
-    /// 1600×900 viewport.
     fn ws_settings_rect(&self) -> Rect {
         let modal_w = 720.0_f64;
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
@@ -5815,13 +5670,13 @@ impl ShellOverlayHost {
     /// cursor is over an open palette / collaborators dropdown / quick-
     /// settings popover / workspace-settings modal — not just `Pressed`.
     /// Without this gate, `Released` and `CursorMoved` events fall through
-    /// to the wrapped content (#7, B-2) and light up tab pills, hover
-    /// affordances, or stray drag-loop continuations underneath the modal.
+    /// to the wrapped content and light up tab pills, hover affordances,
+    /// or stray drag-loop continuations underneath the modal.
     ///
     /// `pub(crate)` because the same predicate is reused by the
-    /// palette-focus / WS-settings-pill click branches in Wave 2 (Unit
-    /// 2-A) — keeping it a method on `ShellOverlayHost` lets those branches
-    /// stay in sync with the rect helpers above.
+    /// palette-focus / WS-settings-pill click branches — keeping it a
+    /// method on `ShellOverlayHost` lets those branches stay in sync with
+    /// the rect helpers above.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         (self.palette_visible && self.palette.get_rect().contains(p))
@@ -5907,7 +5762,7 @@ impl Widget for ShellOverlayHost {
         // before this frame's draw reads it.
         self.pump_peer_sync();
         // Diff the live tree against each `GroupRow`'s current
-        // children. Closes #263 — every structural mutation in the
+        // children. Every structural mutation in the
         // persisted `WorkspaceTree` bumps `chrome.revision`; if our
         // cached value disagrees the tree has changed shape and the
         // live rows need to splice new groups in (or drop removed
@@ -5938,7 +5793,7 @@ impl Widget for ShellOverlayHost {
         // persisted `WorkspaceTree`. Drains the per-group take-pattern
         // accessor; runs after `content.update` for the same reason as
         // the close-reconciler above (clicks observed this frame must
-        // be visible to the harvest). Audit task #105.
+        // be visible to the harvest).
         self.harvest_pending_maximize_changes();
         // Mirror any in-frame resize-handle gestures (press-drag-release on
         // the right edge of a `WindowGroup`) into the persisted
@@ -5978,8 +5833,7 @@ impl Widget for ShellOverlayHost {
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
         // `active_tab` stays pointing at whatever tab was constructed
-        // first — the 2026-07-09 "Ctrl+K searches in the first app of
-        // the group, not the active one" bug. Also stamps
+        // first. Also stamps
         // `tree.active_group` / `tree.active_strip` on group focus so
         // the search-scope narrowing has an honest anchor.
         self.harvest_active_tab_writeback();
@@ -5994,7 +5848,7 @@ impl Widget for ShellOverlayHost {
         // the scroll reconciler above: `active_group` is settled for this
         // frame by the time both of them read it.
         self.mark_focused_group();
-        // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
+        // Cross-strip tab drag-drop: drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
         // release point (or back into source if no strip matched).
@@ -6016,7 +5870,7 @@ impl Widget for ShellOverlayHost {
         // Mount a file-chooser dialog for any queued portal request, and
         // resolve one the user just finished with.
         let picker_dirty = self.pump_file_picker();
-        // Sandbox Phase 4 Task 4.2: drive the permission-prompt pump.
+        // Drive the permission-prompt pump.
         // Latches a fresh widget for the front of `chrome.pending_grants`,
         // and drains entries when the user clicks an action button.
         // Idempotent — runs every frame regardless of queue state.
@@ -6084,8 +5938,7 @@ impl Widget for ShellOverlayHost {
         // floats below the shell's top bar like a popover. The widget's
         // own `build_layout` defaults to a narrow 360 px footprint —
         // override to 640 px here so the palette reads as a proper
-        // centered modal sheet, not a top-right anchored popover (2026-
-        // 06-24 audit pinned this as the most visible chrome regression).
+        // centered modal sheet, not a top-right anchored popover.
         let mut palette_style = taffy.style(palette_node).unwrap().clone();
         palette_style.position = Position::Absolute;
         // Adaptive width: 70 % of viewport, clamped to [560, 640]. At
@@ -6093,9 +5946,7 @@ impl Widget for ShellOverlayHost {
         // side); at 1280+ it caps at 640. Lower bound is the minimum
         // that still fits the filter strip's eight pills (WORKSPACE
         // / ALL / DOCS / CODE / IMG / VID / FULL TEXT) without the
-        // last pill bleeding into the close glyph. Caught by
-        // `shots --sweep` on 2026-06-27 — the fixed 640 was clipping
-        // hard against the 800×600 viewport's right edge.
+        // last pill bleeding into the close glyph.
         let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
         // `self.rect` is last frame's post-layout rect, so the very
         // first layout sizes the card off a zero-width host and lands on
@@ -6197,12 +6048,12 @@ impl Widget for ShellOverlayHost {
         // breathing-room gap) into every GroupRow's `leading_inset`
         // BEFORE the content tree lays out, so the strip reserves the
         // canvas-x the wheel disc is about to render into AND a
-        // 16 px wallpaper gutter to its right. 2026-06-24 user
-        // feedback: with the inset == wheel_w exactly, the radial
-        // switcher's right edge butted into the first window — the
-        // small gap reads as visual separation between the canvas
-        // chrome (wheel) and the workspace's actual content. Skipped
-        // when there's no sidebar (no wheel ⇒ no gutter to reserve).
+        // 16 px wallpaper gutter to its right. With the inset equal to
+        // wheel_w exactly, the radial switcher's right edge butts into
+        // the first window — the small gap reads as visual separation
+        // between the canvas chrome (wheel) and the workspace's actual
+        // content. Skipped when there's no sidebar (no wheel ⇒ no
+        // gutter to reserve).
         let wheel_w = if self.sidebar.is_some() {
             sidebar_width_for_viewport(self.rect.height() as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
         } else {
@@ -6236,9 +6087,8 @@ impl Widget for ShellOverlayHost {
         self.palette
             .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
-            // 2026-06-24 user spec: "the radial wheel on the left is
-            // fixed in place – it should be part of the workspace and
-            // scroll with the rest of the desktop". The wheel disc
+            // The radial wheel on the left is fixed in place and should
+            // scroll with the rest of the desktop. The wheel disc
             // lives in the overlay layer (absolute-positioned above
             // the content) so we can't make it a sibling of the
             // GroupRow; instead, shift its origin by the active
@@ -6312,11 +6162,6 @@ impl Widget for ShellOverlayHost {
         // the same enter/exit the workspace-settings modal plays, run
         // off `overview_t` — one motion language for the shell's
         // floating surfaces.
-        //
-        // The previous form crossfaded the desktop out entirely and
-        // painted a flat slate ground behind the overview. That is what
-        // made it read as a separate page: for the length of the
-        // animation the machine you were working on ceased to exist.
         let (overview_alpha, overview_dy, overview_scale) = overview_panel_curve(t);
 
         // Scale pivot = scene centre (so the shrink/zoom feels anchored
@@ -6335,15 +6180,13 @@ impl Widget for ShellOverlayHost {
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Floating sidebar wheel: above the desktop content, below every
-        // overlay — including the scrims. It used to paint after the
-        // overview, which put an undimmed disc on top of the dim while
-        // the rest of the desktop receded behind it; the wheel is part
-        // of the desktop, so it dims with the desktop.
+        // overlay — including the scrims. The wheel is part of the
+        // desktop, so it dims with the desktop.
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        // Sandbox Phase 4 Task 4.2: inline permission prompt. Painted
+        // Inline permission prompt. Painted
         // as a thin bar at the top of the content viewport (just below
         // the topbar) when `chrome.pending_grants.front().is_some()`.
         // Sits above the desktop content but below the overlay layer
@@ -6421,7 +6264,7 @@ impl Widget for ShellOverlayHost {
             // Clear cached pill rects so a click during the close fade
             // (flag already false, modal still painting) can't flip
             // tabs. Mirrors the `add_workspace_rect = Rect::ZERO`
-            // pattern above (#6, B-7).
+            // pattern above.
             self.ws_settings_tab_pill_rects = [Rect::ZERO; 3];
             self.permissions_revoke_rects.clear();
             self.grant_composer_rects = None;
@@ -6739,14 +6582,11 @@ impl Widget for ShellOverlayHost {
         // it.
         if let Some(active) = self.file_picker.as_mut() {
             // Through `fill_scrim`, at the same strength every other
-            // modal dims with. Filling with the raw token instead — as
-            // this did — paints it at full opacity, and the token is
-            // documented as opaque precisely because "the strength of
-            // the dim belongs to whatever is being lifted". The result
-            // was the black hole that comment warns about: a file dialog
-            // floating on a void, with the desktop and the very document
-            // the file was going into erased behind it, so nothing on
-            // screen said what had asked or where the file would land.
+            // modal dims with — filling with the raw token instead paints
+            // it at full opacity, leaving a file dialog floating on a
+            // void with the desktop and the document the file was going
+            // into erased behind it, so nothing on screen says what had
+            // asked or where the file would land.
             fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
             active.widget.set_rect(file_picker_rect(self.rect));
             active
@@ -6979,16 +6819,14 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Modal event-absorb gate (#7, B-2). The per-overlay `Pressed`
-        // branches further down handle outside-click-close + inside-rect-
-        // swallow for `MouseInput { state: Pressed }`, but `Released` and
-        // `CursorMoved` (and `MouseWheel`) used to fall straight through to
-        // `self.content.handle_event` — letting hovers light up tab pills
-        // under the modal, drags continue receiving CursorMoved across the
-        // palette, etc. Absorb every non-Pressed pointer event whose cursor
-        // is over an open overlay. `Pressed` is intentionally excluded so
-        // the existing scope-pill / slider / name-rect logic still gets to
-        // run for clicks *inside* the rect.
+        // Modal event-absorb gate. The per-overlay `Pressed` branches
+        // further down handle outside-click-close + inside-rect-swallow
+        // for `MouseInput { state: Pressed }`. Absorb every other
+        // non-Pressed pointer event whose cursor is over an open
+        // overlay, so a hover cannot light up a tab pill or a drag
+        // continue receiving `CursorMoved` underneath it. `Pressed` is
+        // intentionally excluded so the existing scope-pill / slider /
+        // name-rect logic still gets to run for clicks *inside* the rect.
         let is_absorbable_pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -7032,7 +6870,7 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Sandbox Phase 4 Task 4.2: forward pointer events to the
+        // Forward pointer events to the
         // permission prompt before anything else. The widget's own
         // `handle_event` updates `pending_choice`; the per-frame
         // pump (`pump_permission_prompt`) drains the choice + applies
@@ -7459,14 +7297,10 @@ impl Widget for ShellOverlayHost {
                 // or Ctrl modifier) — move focus between the strips of
                 // the current workspace.
                 //
-                // Strips had no binding at all: the only switch function
-                // in the tree was reachable from a debug-only simulator
-                // that built a scratch copy of the workspace tree and
-                // threw it away, so no key, gesture or click could move
-                // between them. Workspaces already own the unshifted
-                // Up/Down on both modifiers, and strips are a different
-                // level of the same model rather than a variant of the
-                // same move, so they take the shifted pair.
+                // Workspaces already own the unshifted Up/Down on both
+                // modifiers, and strips are a different level of the same
+                // model rather than a variant of the same move, so they
+                // take the shifted pair.
                 if shift_down
                     && matches!(
                         logical_key,
@@ -8301,10 +8135,7 @@ impl Widget for ShellOverlayHost {
                             return;
                         }
                     }
-                    // Copy the workspace invite link. The button was
-                    // painted but never routed, so the most prominent
-                    // control on the General tab did nothing at all when
-                    // pressed.
+                    // Copy the workspace invite link.
                     let on_general = self
                         .chrome
                         .as_ref()
@@ -8584,9 +8415,7 @@ impl Widget for ShellOverlayHost {
         // the WINDOW BODY (as opposed to a tab pill) never updates the
         // tree's active-group pointer, so the palette scope
         // (`ChromeState::active_tab_id`) stays anchored to whatever
-        // group was active before the detach — the 2026-07-09
-        // "Ctrl+K scoped to Notes even though I clicked Files in its
-        // own group" regression.
+        // group was active before the detach.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: winit::event::MouseButton::Left,
@@ -8700,8 +8529,7 @@ impl Widget for ShellOverlayHost {
         // `GroupRow::split_tab_into_new_group` on drag-detach) back
         // into the persisted tree before `resync_strips_from_tree`
         // runs — otherwise resync sees "widget has X, tree doesn't"
-        // and evicts X, which was the 2026-07-09 "window group
-        // disappears after Ctrl+K" repro.
+        // and evicts X.
         self.harvest_widget_only_groups_into_tree();
         // Pump the chrome-revision diff here too — the shots driver's
         // `relayout()` path skips `update()` entirely (it only takes
@@ -8902,10 +8730,8 @@ impl ActiveFilePicker {
 }
 
 /// Build a human-readable label for the inline permission prompt
-/// from a [`Capability`] payload. Phase 4 Task 4.2 only needs a
-/// single-line description per variant — i18n keys land alongside
-/// the portal layer in Task 4.3 when the strings start surfacing
-/// to end-users.
+/// from a [`Capability`] payload. i18n keys land alongside the
+/// portal layer once the strings start surfacing to end-users.
 fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
@@ -8948,12 +8774,8 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
 /// Gates the permission prompt's "Always" button and the Workspace
 /// Settings Permissions tab's Revoke buttons.
 ///
-/// This used to return `true` unconditionally, which made every local
-/// user the owner of every workspace — including ones a peer had shared
-/// with them — so "only the owner may grant permanently" and "only the
-/// owner may revoke" were not enforced at all. It now asks the
-/// workspace, which answers from the capability model: the recorded
-/// owner, or anyone the owner has given `Admin` over the room.
+/// Asks the workspace, which answers from the capability model: the
+/// recorded owner, or anyone the owner has given `Admin` over the room.
 ///
 /// A workspace with no owner recorded has no administrators. That is
 /// the fail-closed direction, and the load path
@@ -9354,12 +9176,11 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
 /// settings, the collaborators popover, the workspace-settings sheet, the
 /// peer-sync card.
 ///
-/// This reached into `neutral[1]` — the ramp slot that happens to be
-/// slate-900 on the dark palette. A ramp slot is a colour; the surface
-/// tokens are a promise about contrast that each theme keeps in its own
-/// way, and only the latter survives a theme its author never saw.
-/// Panels now take the theme's own popover tier, which is what makes
-/// them the same material as the bar they hang off (HIG §9.2).
+/// A ramp slot is a colour; the surface tokens are a promise about
+/// contrast that each theme keeps in its own way, and only the latter
+/// survives a theme its author never saw. Panels take the theme's own
+/// popover tier, which is what makes them the same material as the bar
+/// they hang off (HIG §9.2).
 fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
@@ -10055,8 +9876,8 @@ impl ShellOverlayHost {
 
         // Single source of truth — `ws_settings_rect()` owns the
         // centered-modal geometry; hit-tests reach for the same
-        // helper so a width bump (2026-06-24: 520→720, h 360→440)
-        // can't desync the painted card vs the clickable bounds.
+        // helper so a width bump can't desync the painted card vs
+        // the clickable bounds.
         let rect = self.ws_settings_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
         // Settings modal surface — concept §4.1: `bg-slate-900/70
@@ -10107,13 +9928,8 @@ impl ShellOverlayHost {
         );
 
         // Tab routing reads the typed `ws_settings_tab` field on chrome
-        // state. Previously this branched on a magic-string side-channel
-        // through `editing_workspace_name` (`"__roles_tab__"` /
-        // `"__files_tab__"`), which leaked literal placeholder strings
-        // into the General Name input whenever a non-General tab was
-        // requested through that path. The typed enum keeps tab routing
-        // and the name-edit buffer fully orthogonal — concept ref
-        // `WorkspaceSettingsModal.tsx:50-95`.
+        // state, which keeps tab routing and the name-edit buffer fully
+        // orthogonal — concept ref `WorkspaceSettingsModal.tsx:50-95`.
         let active_tab = state.ws_settings_tab;
 
         // Tab strip. Every pill is a real destination: a host who has
@@ -10135,10 +9951,8 @@ impl ShellOverlayHost {
             if active {
                 // Concept ref `WorkspaceSettingsModal.tsx:62-79` —
                 // `bg-white/10 text-white` for the active row in the nav.
-                // We were painting `surfaces.overlay` (black/80) here,
-                // which read as a heavy black tab over the slate-900/70
-                // modal surface. `surface_white_10` matches the concept's
-                // subtle white-on-glass treatment. Pinned by
+                // `surface_white_10` matches the concept's subtle
+                // white-on-glass treatment. Pinned by
                 // `tests::ws_settings_active_tab_pill_uses_white_overlay`.
                 scene.fill(
                     Fill::NonZero,
@@ -10259,9 +10073,7 @@ impl ShellOverlayHost {
         // Defensive gate: every non-General arm above already returns,
         // so this is unreachable today — but a new `WsTab` variant
         // added without a matching arm would otherwise fall through and
-        // paint the General body over the new pane (the pre-T5 symptom
-        // was the "Press Esc to close" hint + Name label bleeding into
-        // ws-settings-roles.png).
+        // paint the General body over the new pane.
         if !matches!(active_tab, WsTab::General) {
             return;
         }
@@ -10317,7 +10129,7 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
         }
 
-        // T4 — Invite link + collaborator grid (concept TSX
+        // Invite link + collaborator grid (concept TSX
         // WorkspaceSettingsModal.tsx:99-180). Reuses
         // chrome.workspace_settings.invite_link if non-empty; otherwise a
         // stable placeholder URL. Two indigo-500 fills (Copy button +
@@ -10382,8 +10194,8 @@ impl ShellOverlayHost {
             ),
         );
         // "Copied" replaces the label for a moment after a successful
-        // copy. Without it the button was indistinguishable from a
-        // button that had done nothing, which is what it used to be.
+        // copy. Without it the button is indistinguishable from a
+        // button that did nothing.
         let copy_label = if self
             .ws_invite_copied_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
@@ -10626,29 +10438,17 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// The filter band inside the search card: multi-select kind chips
-    /// on the left, the mutually-exclusive scope switch on the right.
-    ///
-    /// One row, on the card's own content inset, so it lines up with the
-    /// query field above it and the result rows below it. The band it
-    /// paints into belongs to the palette
-    /// ([`ui::widget::command_palette::CommandPalette::filter_strip_rect`]),
-    /// which is why the alignment holds without the shell re-deriving
-    /// any insets.
     /// Geometry of the peer-sync card — the token prompt and the
     /// issued-invite readout share one surface, so one rect owns both
     /// the paint and the hit-test.
     fn peer_sync_rect(&self) -> Rect {
-        // Narrower than it was. The card used to be sized around a
-        // token that filled whatever width it was given; what it holds
-        // now is a name, a line of state and a fingerprint, and a
-        // surface three times wider than its content reads as one that
-        // failed to load rather than one that is finished.
+        // Sized to what the card actually holds — a name, a line of
+        // state, a fingerprint — not to a token that would fill
+        // whatever width it was given; a surface much wider than its
+        // content reads as one that failed to load rather than one
+        // that is finished.
         let w = (self.rect.width() * 0.42).clamp(400.0, 520.0);
-        // Each face is as tall as what it has to say. The card used to
-        // be one fixed height because the token filled whatever it was
-        // given; with the token gone, a fixed height is mostly empty
-        // surface around three lines of text.
+        // Each face is as tall as what it has to say.
         let h = if self.invite_composer_open() {
             210.0_f64
         } else if self.connect_prompt_open() {
@@ -11224,9 +11024,9 @@ impl ShellOverlayHost {
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
         for i in 0..3 {
             let tile = self.quick_settings_action_geometry(i);
-            // Control role: 12 px. This was a literal 16, which is
-            // the one step the radius scale deliberately omits — so
-            // these tiles matched nothing else on screen.
+            // Control role: 12 px — the radius scale deliberately
+            // omits 16, so a literal 16 here would match nothing
+            // else on screen.
             let tile_rr = RoundedRect::from_rect(
                 tile,
                 ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
@@ -11242,9 +11042,8 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
 
             // Glyph: lucide Settings / Camera / Power. Slot 0 ships
-            // Settings2; slots 1 and 2 now resolve to the canonical
-            // lucide `Camera` and `Power` paths (added 2026-05-07 to
-            // close the audit-doc placeholder-ring follow-up).
+            // Settings2; slots 1 and 2 resolve to the canonical lucide
+            // `Camera` and `Power` paths.
             let glyph_color = if i == 2 {
                 colors.semantic.danger
             } else {
@@ -11292,10 +11091,8 @@ impl ShellOverlayHost {
         let slider_values = [qs.brightness, qs.volume];
         for i in 0..2 {
             let (bar, row_y) = self.quick_settings_slider_geometry(i);
-            // Leading icon. Both rows used to draw the same grey ring —
-            // a placeholder standing in for two different controls, so
-            // nothing on the card said which slider was brightness and
-            // which was volume.
+            // Leading icon — says which slider is brightness and
+            // which is volume.
             let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
             let icon_cy = row_y + 12.0;
             let icon_rect = Rect::new(icon_x - 7.0, icon_cy - 7.0, icon_x + 7.0, icon_cy + 7.0);
@@ -13374,8 +13171,7 @@ mod palette_dispatch_tests {
 
     /// `peer.invite` / `peer.connect` must not register as known
     /// commands when the peer-sync flag is off — defence-in-depth in
-    /// case a stale row lingers across a flag toggle. Pinned by Phase 3
-    /// Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+    /// case a stale row lingers across a flag toggle.
     #[test]
     fn peer_sync_palette_ids_ignored_when_flag_off() {
         let (mut h, _chrome) = host_with_chrome();
@@ -13760,11 +13556,11 @@ mod palette_dispatch_tests {
 
     /// The indication is continuous, and there is only ever one of it.
     ///
-    /// An open that takes seconds used to have its one piece of feedback
-    /// retired the moment the launcher process forked — seconds before
-    /// anything was on screen — leaving somebody watching an empty desktop
-    /// wondering whether their keystroke had registered. So it has to
-    /// stand until there is something to look at.
+    /// It has to stand until there is something to look at: an open that
+    /// takes seconds forks the launcher process well before anything is
+    /// on screen, and retiring on that fork would leave somebody
+    /// watching an empty desktop wondering whether their keystroke had
+    /// registered.
     ///
     /// But it must also stand down as soon as there is. Once the window's
     /// own place is saying which app is coming, a notification in the
@@ -13926,17 +13722,10 @@ mod two_workspace_host_tests {
 
     /// Switching workspace moves nothing.
     ///
-    /// The shell used to translate its whole content tree one viewport
-    /// off-axis on every switch and ease it back over 260 ms. That tree
-    /// carries the wallpaper and the top bar as well as the strips, so
-    /// what actually travelled was the entire screen — the first frame
-    /// of a switch rendered empty, and the desktop then flew back into
-    /// place. The content is simply the new workspace on the next frame
-    /// now.
-    ///
-    /// `needs_animation_frame` is the signal that drove those redraws,
-    /// so a switch leaving the host idle is the property that says no
-    /// such animation exists to be reintroduced by accident.
+    /// `needs_animation_frame` is the signal that would drive a
+    /// full-tree slide animation if one existed, so a switch leaving
+    /// the host idle is the property that says no such animation
+    /// exists to be reintroduced by accident.
     #[test]
     fn switching_workspace_animates_nothing() {
         let (mut h, chrome) = host_with_two_workspaces();
@@ -14097,11 +13886,9 @@ mod two_workspace_host_tests {
 #[cfg(test)]
 mod me_tile_fallback_tests {
     //! Pin the General-tab "me" collaborator fallback to a label that
-    //! doesn't duplicate the adjacent "You" badge. The 2026-05-04
-    //! inspection caught the General tab painting `You [You]` when no
-    //! local-user collaborator was seeded — the fallback is the only
-    //! contributor to that text, so a single string-equality assertion
-    //! is enough.
+    //! doesn't duplicate the adjacent "You" badge — the fallback is the
+    //! only contributor to that text, so a single string-equality
+    //! assertion is enough.
     use super::*;
 
     #[test]
@@ -14187,8 +13974,7 @@ mod modal_curve_tests {
         // Deterministic proof (no wall-clock sleep) that the palette
         // FADES out rather than popping: sample the transition's openness
         // at explicit instants across the close window. Openness must be
-        // strictly between 0 and 1 mid-flight — the pre-refactor bool
-        // gate jumped straight to invisible.
+        // strictly between 0 and 1 mid-flight.
         let mut t = ui::Transition::open();
         t.set_open(
             false,
@@ -14282,7 +14068,7 @@ mod modal_curve_tests {
 
 #[cfg(test)]
 mod overlay_event_absorb_tests {
-    //! Pin the modal event-absorb gate (#7, B-2). The host must short-
+    //! Pin the modal event-absorb gate. The host must short-
     //! circuit every pointer event whose cursor is over an open overlay so
     //! `Released` and `CursorMoved` can't leak through to the underlying
     //! content widget — hovers under the palette must NOT light up tab
@@ -14921,19 +14707,13 @@ mod overlay_event_absorb_tests {
 
 #[cfg(test)]
 mod tests {
-    //! Wave 2 / Unit 2-A pins (#6, B-7).
-    //!
     //! 1. `toggle_palette_focuses_input` — opening the global-search
     //!    palette via the live Ctrl+K production path must focus the
     //!    palette's input *and* clear any residual query, so the user
-    //!    can start typing immediately. Pre-2-A the palette opened with
-    //!    `is_focused = false` and a stale query, swallowing every
-    //!    keystroke until the user clicked the input first.
+    //!    can start typing immediately.
     //! 2. `ws_settings_pill_click_switches_tab` — clicking the Files
     //!    pill in the WS-settings tab strip must mutate
-    //!    `chrome.ws_settings_tab` to `WsTab::Files`. Pre-2-A the click
-    //!    fell through to the name-input commit branch and the only
-    //!    way to switch tabs was via the keyboard focus trap.
+    //!    `chrome.ws_settings_tab` to `WsTab::Files`.
     //!
     //! Both tests drive `host.handle_event(...)` with real winit
     //! `WindowEvent`s — they observe chrome state mutations through
@@ -16018,9 +15798,6 @@ mod tests {
     ///      pill_rect` accessor,
     ///   4. dispatches a real `MouseInput::Pressed` via `handle_event`
     ///      at that rect's centre.
-    /// Pre-2-A the click branch was missing — the click would fall
-    /// through to the name-input commit path and `ws_settings_tab`
-    /// would stay `WsTab::General`.
     #[test]
     fn ws_settings_pill_click_switches_tab() {
         let mut h = build_harness();
@@ -16068,8 +15845,6 @@ mod tests {
         );
     }
 
-    /// Wave 3 / Unit 3-A pin (#5).
-    ///
     /// Concept §4.1 specifies `bg-black/30 backdrop-blur-[1px]` for the
     /// modal scrim. Without the 1-px blur the perceived dimming drops
     /// below what the design intended, so the rendered alpha must be
@@ -16089,15 +15864,10 @@ mod tests {
         );
     }
 
-    /// Issue #127 / polish-sweep pin.
-    ///
     /// Concept ref `WorkspaceSettingsModal.tsx:62-79` — the active nav
-    /// row is tinted `bg-white/10 text-white`. The earlier draw painted
-    /// `surfaces.overlay` (`black/80`), which read as a heavy black tab
-    /// over the slate-900/70 modal surface. The fix swaps the fill to
-    /// `surface_white_10`; this pin keeps the token byte aligned with
-    /// the Tailwind `white/10` literal so a future refactor that
-    /// renames or retypes the token surfaces here loudly.
+    /// row is tinted `bg-white/10 text-white`. This pin keeps the token
+    /// byte aligned with the Tailwind `white/10` literal so a future
+    /// refactor that renames or retypes the token surfaces here loudly.
     #[test]
     fn ws_settings_active_tab_pill_uses_white_overlay() {
         let tokens = ui::tokens::Tokens::dark();
@@ -16115,10 +15885,9 @@ mod tests {
 
     /// The palette scrim has to actually dim bright window content.
     ///
-    /// Concept §5.1 says `bg-black/30`, and this used to be pinned at a
-    /// literal 0.30. But the concept's scrim is blurred and the pinned
-    /// Vello has no `push_blur_layer`, so an un-blurred fill has to go
-    /// heavier to read the same — exactly the compensation
+    /// The concept's scrim is blurred and the pinned Vello has no
+    /// `push_blur_layer`, so an un-blurred fill has to go heavier to
+    /// read the same — exactly the compensation
     /// [`MODAL_SCRIM_ALPHA`] already documents and is already tested for
     /// below. At 0.30 a `bg-white` window card behind the palette stays
     /// at 178 grey; at 0.45 it drops to 141, which is what makes the
@@ -16176,11 +15945,7 @@ mod tests {
         }
     }
 
-    /// Wave 3 / Unit 3-A pin (#5).
-    ///
     /// Extracted-helper coverage for the click-focuses-group logic.
-    /// Regression pins for the 2026-07-09 "Ctrl+K scoped to Notes when
-    /// I clicked Files in its own group" report.
     #[test]
     fn pick_group_at_returns_containing_group() {
         let strip = StripId::from(7);
@@ -16227,17 +15992,11 @@ mod tests {
 
     /// The companion to `palette_scrim_alpha_matches_concept`.
     ///
-    /// Concept §4.1 originally called for `bg-slate-900/70` on the modal
-    /// surface, and this test used to pin the alpha at `<= 0.85` so a
-    /// fully opaque surface didn't defeat the "page-on-page" affordance
-    /// the scrim was meant to carry.
-    ///
-    /// 2026-07-09 user report ("search bar / file viewer are too
-    /// transparent — looks terrible") flipped the trade-off. Legibility
-    /// against a busy desktop backdrop wins over the concept's tint
-    /// depth: [`MODAL_SURFACE_ALPHA`] now lifts to `>= 0.90` so the
-    /// palette reads as solid chrome with just a hint of the wallpaper's
-    /// tint. The scrim below still carries the mode-shift affordance.
+    /// Legibility against a busy desktop backdrop wins over the
+    /// concept's tint depth: [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90`
+    /// so the palette reads as solid chrome with just a hint of the
+    /// wallpaper's tint. The scrim below still carries the mode-shift
+    /// affordance.
     #[test]
     fn palette_surface_alpha_lifts_off_desktop() {
         assert!(
@@ -16253,8 +16012,7 @@ mod tests {
 
 #[cfg(test)]
 mod maximize_harvest_tests {
-    //! Unit coverage for the per-frame `WindowGroup::maximized` writeback
-    //! (audit task #105).
+    //! Unit coverage for the per-frame `WindowGroup::maximized` writeback.
     //!
     //! The integration test in `tests/maximize_persist_wireup_test.rs`
     //! drives the full click pipeline; this in-crate sibling exercises
@@ -16325,7 +16083,7 @@ mod maximize_harvest_tests {
     /// and ticking the harvest must mirror the new value into the
     /// persisted `WorkspaceTree`. Without the harvest hook the persisted
     /// state stays at `false` regardless of how often the user clicks
-    /// the maximize glyph (the regression #105 closes).
+    /// the maximize glyph.
     #[test]
     fn harvest_writes_pending_maximize_change_through_to_tree() {
         let (tree, strip_id, group_id) = one_group_tree(false);
@@ -16454,7 +16212,7 @@ mod maximize_harvest_tests {
 
 #[cfg(test)]
 mod resync_strips_tests {
-    //! #263 regression coverage: a `chrome.bump()` after pushing fresh
+    //! A `chrome.bump()` after pushing fresh
     //! `WindowGroup`s into the persisted tree must propagate to the
     //! live `GroupRow` widgets on the next `take_structure_dirty`
     //! tick, even when the harness has never called `update()`. The
@@ -16647,10 +16405,7 @@ mod resync_strips_tests {
 mod peer_cursor_tests {
     //! A peer caret on screen must mean a peer is connected.
     //!
-    //! The desktop used to paint an unconditional stand-in peer beside
-    //! the real roster, so a solo session — and every screenshot and
-    //! recording taken of one — showed a collaborator who did not
-    //! exist. These tests pin both halves of the invariant on the
+    //! These tests pin both halves of the invariant on the
     //! production paint path: nothing is drawn for an empty roster, and
     //! a real peer is still drawn.
     use super::*;
@@ -16701,26 +16456,13 @@ mod peer_cursor_tests {
         tree
     }
 
-    /// The key the collaboration layer publishes a workspace's pointers
-    /// under, and the one `draw_real_peers` looks them up by.
     /// The key an app in this workspace actually publishes presence
     /// under — the workspace's **room**, read off the tree rather than
     /// spelled out here.
-    ///
-    /// It used to be `tree.active.raw()`, the local workspace handle,
-    /// which is a different string from the one `visible_peers` looks
-    /// up. So the helper below reported zero for every input, real peer
-    /// included — which fails the one test that is supposed to catch
-    /// exactly that, and quietly makes the two no-peer assertions pass
-    /// for the wrong reason.
     fn active_key(tree: &WorkspaceTree) -> PresenceKey {
-        // The **room**, not the local `WorkspaceId`. The room is what
-        // the launcher stamps into an app as `QOS_WORKSPACE_ID` and
-        // therefore what an app publishes presence under, and it is
-        // what `visible_peers` looks up by. Naming the local handle
-        // here wrote a key nobody reads: the two no-peer assertions
-        // stayed green on a lookup that could never match, and only
-        // this module's one positive test could tell.
+        // The room is what the launcher stamps into an app as
+        // `QOS_WORKSPACE_ID`, not the local `WorkspaceId` — naming the
+        // local handle here would write a key nobody reads.
         let room = tree
             .workspaces
             .iter()
@@ -16856,12 +16598,12 @@ mod roster_rows {
     /// A row says what its participant may do here, and where the room
     /// says nothing it says nothing.
     ///
-    /// The agent's role is the verb on the capability that admitted it,
-    /// which the roster used to discard — so the one row whose entire
-    /// authority *is* a grant showed no sign of what the grant was. The
-    /// peer's comes from the room's own list too, carried on the
-    /// `Collaborator` the presence path writes; a peer the room has
-    /// recorded nothing about gets no chip rather than a default.
+    /// The agent's role is the verb on the capability that admitted
+    /// it — the one row whose entire authority *is* a grant would
+    /// otherwise show no sign of what the grant was. The peer's comes
+    /// from the room's own list too, carried on the `Collaborator` the
+    /// presence path writes; a peer the room has recorded nothing about
+    /// gets no chip rather than a default.
     #[test]
     fn a_row_carries_the_role_the_room_recorded_and_no_other() {
         let mut tree = tree_with_room();

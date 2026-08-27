@@ -491,10 +491,6 @@ impl TestClient {
     }
 
     /// Fail unless this client is talking to the qOS compositor.
-    ///
-    /// The guard against the failure mode that made the original bug
-    /// invisible: a clipboard suite that silently ran against the developer's
-    /// GNOME session would prove nothing about qOS.
     fn assert_is_qos_compositor(&mut self) {
         self.roundtrip();
         assert_eq!(
@@ -1229,19 +1225,11 @@ fn write_and_close(fd: OwnedFd, text: &str) {
 
 /// A real toolkit must find every global it treats as mandatory.
 ///
-/// GTK checks for `wl_data_device_manager` alongside `wl_compositor` and
-/// `wl_shm` while opening the display, and refuses the display outright when
-/// any of them is missing — it does not degrade to a session without a
-/// clipboard, it falls back to an X11 that does not exist here and the
-/// application fails to start at all. So the absence of this one global did
-/// not merely break copy and paste: it stopped every GTK program on the
-/// machine from opening a window, with only
-/// `Gdk-WARNING: The Wayland compositor does not provide one or more of the
-/// required interfaces` to say so.
-///
-/// Nothing in-tree noticed because qOS's own toolkit never asked for it. This
-/// asserts the whole set a foreign toolkit needs, on the socket a sandboxed
-/// app is given, so that class of failure cannot come back silently.
+/// GTK refuses the display outright if `wl_data_device_manager` is missing —
+/// it does not degrade to a clipboard-less session, it stops every GTK
+/// program on the machine from opening a window at all. qOS's own toolkit
+/// never asks for it, so nothing in-tree would notice; this asserts the full
+/// set a foreign toolkit needs, on the socket a sandboxed app is given.
 #[test]
 fn compositor_advertises_the_globals_a_toolkit_requires() {
     let compositor = Compositor::start();
@@ -1274,11 +1262,6 @@ fn compositor_advertises_the_globals_a_toolkit_requires() {
 }
 
 /// The headline case: copy in one process, paste in another.
-///
-/// Before the compositor advertised `wl_data_device_manager` this was simply
-/// impossible — there was no protocol for a client to set a selection on, and
-/// `ui`'s in-process buffer made it look like it worked inside either process
-/// alone.
 #[test]
 fn clipboard_crosses_from_one_client_to_another() {
     let compositor = Compositor::start();
@@ -1379,10 +1362,6 @@ fn clipboard_crosses_from_a_client_to_in_process_chrome() {
 
 /// Middle-click paste: the primary selection is a separate buffer from the
 /// clipboard, and both must survive the trip between processes.
-///
-/// `clipboard_copy_primary` / `clipboard_paste_primary` were silent no-ops
-/// before this, so the terminal's select-to-copy behaviour never left the
-/// process it ran in.
 #[test]
 fn primary_selection_crosses_between_processes_and_does_not_alias_the_clipboard() {
     let compositor = Compositor::start();
@@ -1493,7 +1472,7 @@ fn data_control_is_privileged_socket_only() {
     }
     // The ordinary, focus-gated selection protocols must still be there, or
     // the assertion above would be satisfied by a compositor with no clipboard
-    // at all — which is exactly the state this work started from.
+    // at all.
     assert!(sandboxed.has_global("wl_data_device_manager"));
     assert!(sandboxed.has_global("zwp_primary_selection_device_manager_v1"));
 

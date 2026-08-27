@@ -71,14 +71,10 @@ impl SnapshotAssertion {
     /// read from the environment.
     ///
     /// This module's own tests need to exercise both sides of that
-    /// decision, and they used to do it by setting and removing
-    /// `UPDATE_SNAPSHOTS` in the process. That is the same process the
-    /// golden-pinned tests run in, so `UPDATE_SNAPSHOTS=1 cargo test`
-    /// raced: whichever unit test removed the variable first turned the
-    /// refresh off for every golden that had not been reached yet, and
-    /// the run ended in snapshot diffs with no sign of why. Reading the
-    /// environment exactly once, at the real call site, keeps that
-    /// coupling from existing.
+    /// decision, and the environment is process-global — reading it
+    /// directly here would race other tests over `UPDATE_SNAPSHOTS`.
+    /// Reading it exactly once, at [`Self::assert`]'s call site, avoids
+    /// that coupling.
     pub fn assert_with(self, update: bool) {
         if !self.rendered_png.exists() {
             panic!(

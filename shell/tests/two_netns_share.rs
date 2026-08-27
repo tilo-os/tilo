@@ -58,16 +58,13 @@
 //!
 //! # Why not automated in-tree?
 //!
-//! - `ip netns add` needs `CAP_NET_ADMIN`. `unshare -Urn` gives us a
-//!   private user namespace with cap-in-userns, but veth pairs bridged
-//!   between two user-namespaces are hard to arrange without a
-//!   privileged parent.
-//! - CI runners in this repo aren't root — the default `cargo test`
-//!   would fail on the setup.
-//! - The `#[ignore]` gating means default `cargo test` runs skip this,
-//!   but `--include-ignored` runs the in-process variant (real UDP,
-//!   shared netns) which still exercises the substream + framing
-//!   contract end-to-end.
+//! - `ip netns add` needs `CAP_NET_ADMIN`; `unshare -Urn` gives a private
+//!   user namespace, but veth pairs bridged between two user-namespaces
+//!   are hard to arrange without a privileged parent.
+//! - CI runners here aren't root — default `cargo test` would fail on setup.
+//! - `#[ignore]` means default runs skip this; `--include-ignored` runs
+//!   the in-process variant instead (real UDP, shared netns), still
+//!   exercising the substream + framing contract end-to-end.
 
 use std::net::UdpSocket;
 use std::sync::Arc;
@@ -126,15 +123,13 @@ impl RemoteInputSink for HostInputRecorder {
     }
 }
 
-/// The default (non-`#[ignore]`d) test: run both host and viewer as
-/// threads in the same process, wired to real UDP loopback sockets.
-/// Exercises the SurfaceStream framing + latency measurement path
-/// end-to-end without requiring privileged netns setup.
+/// Runs host and viewer as threads in the same process over real UDP
+/// loopback sockets, exercising the SurfaceStream framing + latency
+/// measurement path end-to-end without privileged netns setup.
 ///
-/// Marked `#[ignore]` so `cargo test` runs bypass it — the full
-/// pipeline test needs 3 seconds of encode + decode + measurement,
-/// which is more than we want in a hot inner-loop. Run explicitly with
-/// `cargo test -p shell --test two_netns_share -- --include-ignored`
+/// `#[ignore]`d by default — the 3-second measurement window is more
+/// than we want in a hot inner loop. Run explicitly with
+/// `cargo test -p shell --test two_netns_share -- --include-ignored`,
 /// or use the netns-exec variants documented in the module header.
 #[test]
 #[ignore = "3-second measurement window; run with --include-ignored"]
@@ -170,7 +165,6 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     let host_stop = stop.clone();
     let host_input_ts_c = host_input_ts.clone();
     let host_thread = thread::spawn(move || {
-        // Video sender socket: sends frame packets to viewer's addr.
         let video_send = UdpSocket::bind("127.0.0.1:0").expect("host video-send socket");
         video_send
             .set_nonblocking(true)
@@ -187,11 +181,9 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         };
 
         while !host_stop.load(Ordering::Acquire) {
-            // Deposit a gradient + encode.
             host_session.deposit_captured_rgba(gradient());
             let now = Instant::now();
             let _ = host_session.encode_next_frame(now);
-            // Drain the sender's per-subscriber queue onto the wire.
             while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER) {
                 let bytes = frame.encode();
                 // UDP is bounded per packet — fragment into chunks
@@ -206,7 +198,6 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
                 }
             }
 
-            // Drain any inbound input packets (viewer echoing).
             let mut buf = [0u8; 512];
             while let Ok((n, _from)) = input_sock_host.recv_from(&mut buf) {
                 if let Ok(ev) = serde_json::from_slice::<InputEvent>(&buf[..n]) {
@@ -233,11 +224,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         video_sock_viewer
             .set_nonblocking(true)
             .expect("nonblocking video-in");
-        // Reuse the video-receive socket for outgoing input packets
-        // so the source address is stable — the host's `route_input`
-        // doesn't authenticate the source, but bidirectional traffic
-        // on a fixed pair is closer to real-world QUIC substream
-        // semantics.
+        // Separate socket for outgoing input packets.
         let input_send = UdpSocket::bind("127.0.0.1:0").expect("viewer input-send socket");
         let origin = session_for_origin.origin();
 
@@ -250,34 +237,27 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         let mut input_count = 0u32;
 
         while !viewer_stop.load(Ordering::Acquire) {
-            // Read raw bytes off the wire and feed the framer.
             while let Ok((n, _from)) = video_sock_viewer.recv_from(&mut recv_buf) {
                 rx.push_bytes(&recv_buf[..n]);
             }
 
-            // Extract every complete frame + measure latency.
             let events = match rx.drain() {
                 Ok(e) => e,
                 Err(_) => continue,
             };
             for ev in events {
                 if let ReceiverEvent::Frame(frame) = ev {
-                    // Every frame: decode + increment counter.
                     let _decoded: Option<_> = decoder.decode(&frame.payload);
                     recv_count.fetch_add(1, Ordering::AcqRel);
-                    // Latency = now - the *host's* capture ts encoded
-                    // into the frame's payload isn't available on the
-                    // SurfaceStream layer (we only have sequence /
-                    // keyframe). The e2e latency is instead measured
-                    // relative to the session's shared origin; a
-                    // production two-host measurement needs a clock
-                    // sync handshake, but in-process both sides share
-                    // `session.origin()`.
+                    // The frame doesn't carry the host's capture timestamp
+                    // (SurfaceStream only has sequence/keyframe), so latency
+                    // is measured relative to the session's shared origin
+                    // instead of a real host→viewer clock — valid
+                    // in-process since both sides share `session.origin()`;
+                    // two real hosts would need a clock-sync handshake.
                     let now_ns = origin.elapsed().as_nanos() as u64;
                     let elapsed_since_start_ns = now_ns;
-                    // For diagnostic purposes we track the raw
-                    // now-since-origin; the assertion below uses this
-                    // to verify latency never runs away.
+                    // Diagnostic only — not currently asserted on.
                     latency_samples.push(elapsed_since_start_ns);
                 }
             }
@@ -311,10 +291,9 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
 
     let received = received_count.load(Ordering::Acquire);
 
-    // Assert ≥ 10 fps sustained.
-    // Note: on the shared runner the openh264 SW encoder + the
-    // 33-ms tick sleep sustain ~25-30 fps in practice; the 10-fps
-    // floor is a conservative guard against CI scheduling noise.
+    // On the shared runner the openh264 SW encoder + the 33-ms tick
+    // sleep sustain ~25-30 fps in practice; the 10-fps floor is a
+    // conservative guard against CI scheduling noise.
     assert!(
         received >= 30,
         "expected ≥ 10 fps × 3 s = 30 frames, got {received}",

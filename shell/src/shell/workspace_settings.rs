@@ -1,16 +1,5 @@
 //! `WorkspaceSettings` — the modal opened from the TopBar's
-//! workspace-name button. Three tabs: **General** (identity + invite),
-//! **Members** (who is in the workspace, and with what authority) and
-//! **Permissions** (every capability the workspace has granted, plus
-//! the affordance to grant one).
-//!
-//! The modal is a retained-mode shell widget: it owns its `ws_id` +
-//! active tab, and mutates a borrowed `&mut Workspace` when the caller
-//! invokes one of its mutator methods. Rendering sits on
-//! `overlay::Modal` + `FocusTrap` so tabbing within the dialog is
-//! trapped and the scrim dismisses it.
-//!
-//! ## One model, one panel
+//! workspace-name button, with General / Members / Permissions tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
 //! — the single list that `decide_capability` consults, that the
@@ -93,16 +82,15 @@ impl WsTab {
     }
 }
 
-/// The WorkspaceSettings modal state.
 /// The workspace's invite URL.
 ///
-/// One definition: the settings modal used to format this string in two
-/// places, once here and once inline in the compositor's draw pass, with
-/// a comment explaining that the widget was not reachable from there.
+/// Kept in one place so this and the compositor's inline copy in the draw
+/// pass can't drift out of agreement.
 pub fn invite_link(ws: &Workspace) -> String {
     format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
 
+/// The WorkspaceSettings modal state.
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
@@ -142,7 +130,6 @@ impl WorkspaceSettings {
         &self.focus_trap
     }
 
-    /// Switch the active tab.
     pub fn select_tab(&mut self, tab: WsTab) {
         self.active_tab = tab;
     }
@@ -153,7 +140,6 @@ impl WorkspaceSettings {
         self.select_tab(tab);
     }
 
-    /// Currently-active tab.
     pub fn active_tab(&self) -> WsTab {
         self.active_tab
     }
@@ -2229,9 +2215,7 @@ mod tab_tests {
     #[test]
     fn permissions_tab_is_reachable_on_a_workspace_with_no_grants() {
         // A host who wants to grant something before any grant exists
-        // has to be able to reach the tab that grants it. The tab was
-        // previously filtered out until a grant already existed, which
-        // made the panel unusable for its main purpose.
+        // has to be able to reach the tab that grants it.
         let ws = Workspace::new(WorkspaceId::default(), "no-grants");
         assert!(!ws.has_app_grants());
         assert!(WsTab::all().contains(&WsTab::Permissions));

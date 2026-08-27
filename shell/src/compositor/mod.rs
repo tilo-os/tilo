@@ -1,24 +1,21 @@
-//! Compositor entry point — Phase 1 of the real Wayland compositor plan.
+//! Compositor entry point.
 //!
 //! The shell binary supports two run modes:
 //!
-//! - [`Mode::Native`] — the default as of Phase 7. Spins up a real
-//!   smithay-driven Wayland server (auto-binds `wayland-N`), advertises the
-//!   compositor / xdg-shell / shm / seat / output globals, and paints chrome
-//!   through the vello+wgpu backend wired up in Phase 4. This is what
-//!   `cargo run -p quick-desktop` does with no flags.
+//! - [`Mode::Native`] — the default. Spins up a real smithay-driven
+//!   Wayland server (auto-binds `wayland-N`), advertises the compositor
+//!   / xdg-shell / shm / seat / output globals, and paints chrome
+//!   through the vello+wgpu backend. This is what `cargo run -p
+//!   quick-desktop` does with no flags.
 //! - [`Mode::Hosted`] — the legacy `winit`-on-host iced loop, kept as an
 //!   explicit dev opt-in via `--mode hosted`. Useful when no DRM/KMS or
 //!   spare Wayland session is available (e.g. running inside another
 //!   compositor that you don't want to nest into).
 //!
 //! Mode selection is driven by a single `--mode <hosted|native>` (or
-//! `--mode=<...>`) command-line flag. Anything unrecognised — including the
-//! flag being absent — falls back to [`Mode::Native`] (the Phase 7 default
-//! flip). `--mode hosted` is the explicit opt-in for the legacy path.
-//!
-//! See `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-//! (Phases 1 and 7) for the full design intent.
+//! `--mode=<...>`) command-line flag. Anything unrecognised — including
+//! the flag being absent — falls back to [`Mode::Native`]. `--mode
+//! hosted` is the explicit opt-in for the legacy path.
 
 pub mod backend;
 pub mod bridge;
@@ -51,27 +48,22 @@ pub mod test_control;
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Default. Render inside an existing X11/Wayland host session via winit.
+    /// The legacy `winit`-on-host iced loop, kept as an explicit dev
+    /// opt-in via `--mode hosted`.
     Hosted,
-    /// Future smithay-on-TTY compositor. Currently a stub — see
-    /// [`native::run`].
+    /// Default. Real smithay-driven Wayland server — see [`native::run`].
     Native,
 }
 
 /// Which backend `Mode::Native` should drive. Mirrors `--mode` in shape:
 /// a single `--backend <winit|drm>` (or `--backend=<...>`) flag, with any
 /// unknown value (or absence) falling back to [`BackendKind::Winit`].
-///
-/// `Drm` is a Phase 5 skeleton — the flag is wired through so the
-/// follow-up TTY implementation plugs in without touching the shell
-/// entry point. See [`backend::DrmBackend`] for the deferred work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     /// Default. Host on an existing Wayland/X11 session via `winit`.
     Winit,
-    /// Phase 5 stub: drive a TTY directly via DRM/KMS + libinput.
-    /// Currently errors at construction with a "not yet implemented"
-    /// message — see [`backend::DrmBackend`].
+    /// Drive a TTY directly via DRM/KMS + libinput — see
+    /// [`backend::DrmBackend`].
     Drm,
     /// Display-free wgpu-offscreen backend. No window, no event loop,
     /// no GPU surface — paints into an offscreen texture via
@@ -251,12 +243,11 @@ pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.iter().any(|a| *a == "--provision-identity")
 }
 
-/// Process-global wrapper around [`parse_portals`]. Sandbox Phase 4.3:
-/// callers opt in via `--enable-portals` to spin up the
-/// `xdg-desktop-portal` D-Bus backend (FileChooser / ScreenCast /
-/// Access). v1 default OFF — the same opt-in shape `parse_peer_sync`
-/// uses, so the hosted entry point keeps working bit-for-bit without
-/// the flag.
+/// Process-global wrapper around [`parse_portals`]. Callers opt in via
+/// `--enable-portals` to spin up the `xdg-desktop-portal` D-Bus backend
+/// (FileChooser / ScreenCast / Access). v1 default OFF — the same
+/// opt-in shape `parse_peer_sync` uses, so the hosted entry point keeps
+/// working bit-for-bit without the flag.
 pub fn parse_portals_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
@@ -273,9 +264,9 @@ pub fn parse_portals(args: &[&str]) -> bool {
 
 /// Pure, testable mode parser. Accepts both `--mode <value>` and
 /// `--mode=<value>` forms. Unknown values (and a missing flag) default to
-/// [`Mode::Native`] (the Phase 7 flip) so the compositor never refuses to
-/// start over a typo. `--mode hosted` is the explicit dev opt-in for the
-/// legacy iced-on-winit path.
+/// [`Mode::Native`] so the compositor never refuses to start over a typo.
+/// `--mode hosted` is the explicit dev opt-in for the legacy
+/// iced-on-winit path.
 pub fn parse_mode(args: &[&str]) -> Mode {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
@@ -342,8 +333,8 @@ mod tests {
 
     #[test]
     fn no_flag_defaults_native() {
-        // Phase 7 flip: the default is `Native` so `cargo run -p
-        // quick-desktop` (no flags) boots the real smithay server.
+        // `cargo run -p quick-desktop` (no flags) boots the real
+        // smithay server.
         assert!(matches!(parse_mode(&[]), Mode::Native));
     }
 
@@ -359,18 +350,18 @@ mod tests {
 
     #[test]
     fn dash_dash_mode_hosted_returns_hosted() {
-        // `--mode hosted` is the Phase 7 explicit dev opt-in for the
-        // legacy iced-on-winit path; this guards that the hosted
-        // fallback path stays reachable from the CLI.
+        // `--mode hosted` is the explicit dev opt-in for the legacy
+        // iced-on-winit path; this guards that the hosted fallback
+        // path stays reachable from the CLI.
         assert!(matches!(parse_mode(&["--mode", "hosted"]), Mode::Hosted));
         assert!(matches!(parse_mode(&["--mode=hosted"]), Mode::Hosted));
     }
 
     #[test]
     fn unrecognized_value_defaults_native() {
-        // Phase 7 flip: a typo no longer silently demotes to the
-        // hosted iced path; it falls through to the real Wayland
-        // server. The hosted path is opt-in (`--mode hosted`).
+        // A typo doesn't demote to the hosted iced path — it falls
+        // through to the real Wayland server. The hosted path is
+        // opt-in (`--mode hosted`).
         assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Native));
     }
 
@@ -455,7 +446,7 @@ mod tests {
         ));
     }
 
-    // ---- Subtask A: --portal-server-only -----------------------------
+    // ---- --portal-server-only -----------------------------------------
 
     #[test]
     fn portal_server_only_default_false() {
@@ -484,7 +475,7 @@ mod tests {
         ]));
     }
 
-    // ---- Subtask B: --firstboot -------------------------------------
+    // ---- --firstboot ---------------------------------------------------
 
     #[test]
     fn firstboot_default_false() {
@@ -500,7 +491,7 @@ mod tests {
         assert!(parse_firstboot(&["--mode=native", "--firstboot"]));
     }
 
-    // ---- Subtask C: peer-sync marker file ---------------------------
+    // ---- peer-sync marker file -----------------------------------------
 
     struct FakeMarker {
         present: bool,

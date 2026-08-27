@@ -1,24 +1,14 @@
 //! Files provider — searches the user's home directory for files and
 //! directories.
 //!
-//! Two backends coexist behind a shared façade:
-//!
-//! - **`in_memory`** — a boot-time walk of `~` that caches every visible
-//!   path and its size, kept warm for name-substring / fuzzy-subsequence
-//!   queries. Cheap (no on-disk state), immediately available.
-//! - **`tantivy` (via [`super::super::files_index`])** — a persistent
-//!   Bloomtail/BM25 index over file **contents** so a query like
-//!   "protocol registry" finds a file whose *body* contains those
-//!   words, not just its name. The index lives at
-//!   `~/.cache/qos/files-index`, is rebuilt incrementally in the
-//!   background, and answers content queries in the O(matches) range.
-//!
-//! Both backends produce [`SearchResult`]s of kind [`ResourceKind::File`]
-//! or [`ResourceKind::Folder`]. The palette's Enter callback routes a
-//! file through [`crate::shell::doc_open`], which resolves the extension
-//! to the installed package that declares it and launches that package
-//! into the active workspace; directories and unclaimed types fall back
-//! to the desktop's default handler.
+//! Two backends behind a shared façade: an in-memory boot-time walk of `~`
+//! for name/fuzzy-subsequence queries, and a persistent tantivy index (see
+//! [`super::super::files_index`]) over file *contents* at
+//! `~/.cache/qos/files-index`, rebuilt incrementally in the background.
+//! The palette's Enter callback routes a hit through
+//! [`crate::shell::doc_open`], which resolves the extension to the
+//! installed package that opens it; directories and unclaimed types fall
+//! back to the desktop's default handler.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -32,11 +22,8 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 /// Skip these paths anywhere in the tree — they explode the index without
-/// adding user-visible files. `.git` also serves as a reasonable heuristic
-/// for "the user cares about the parent, not the internals".
-///
-/// A pattern with a `/` matches that many consecutive path components; see
-/// [`should_skip`].
+/// adding user-visible files. A pattern with a `/` matches that many
+/// consecutive path components; see [`should_skip`].
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -57,13 +44,8 @@ const SKIP_DIRS: &[&str] = &[
     "dist",
     "Downloads/tmp",
     ".steam",
-    // Package and SDK caches. Same category as `node_modules` and
-    // `.cargo` above — tens of thousands of paths of somebody else's
-    // code, fetched rather than written, and reachable through the file
-    // explorer for the rare occasion someone wants one. Left in the
-    // index they crowd out the trees the user actually works in: this
-    // machine's Android SDK and Go module cache between them supplied
-    // most of the answers to `open`.
+    // Package/SDK caches — same category as node_modules/.cargo above:
+    // fetched code that crowds out the trees the user actually works in.
     "go/pkg/mod",
     "Android/Sdk",
     "bin/cache",
@@ -90,15 +72,11 @@ struct NameIndex {
     generation: u64,
 }
 
-/// The entries that matched the previous needle.
-///
-/// Every keystroke re-runs this provider, and a full home index is
-/// 50 000 paths — scanning all of them per character costs far more
-/// than a frame. Match sets only ever shrink as the needle grows
-/// (`starts_with`, `contains` and subsequence matching are all monotone
-/// under extending the needle), so extending a query only has to
-/// re-score what already matched. Typing a word costs one full scan
-/// instead of one per character.
+/// The entries that matched the previous needle. Match sets only shrink as
+/// the needle grows (`starts_with`, `contains` and subsequence matching are
+/// all monotone under extension), so extending a query re-scores only what
+/// already matched — one full scan of the 50k-path index per word rather
+/// than per character.
 struct NarrowCache {
     needle: String,
     candidates: Vec<usize>,
@@ -203,20 +181,11 @@ impl SearchProvider for FilesProvider {
         let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut out: Vec<SearchResult> = Vec::new();
 
-        // Filename hits from the in-memory index.
-        //
-        // Score the whole index, then keep the best `MAX_RESULTS` — not
-        // the first `MAX_RESULTS` the walker happened to reach. Stopping
-        // at the first N made the ranking depend on directory traversal
-        // order: a query answered by a hundred equally-scoring files
-        // showed whichever hundred sat alphabetically first under
-        // whichever tree the walk entered first, and any better hit
-        // further down the walk was simply never scored. Ranking is only
-        // ranking if every candidate is in the comparison.
-        //
-        // Ranking the candidates by (score, path) instead of collecting
-        // `SearchResult`s keeps this cheap: no callback allocation and
-        // no `PathBuf` clone for the entries that lose.
+        // Score the whole index, then keep the best `MAX_RESULTS` — taking
+        // the first N instead would make ranking depend on directory
+        // traversal order. Ranking by (score, path) rather than collecting
+        // `SearchResult`s avoids a callback allocation and a `PathBuf` clone
+        // for every entry that loses.
         if let Ok(guard) = self.name_index.lock() {
             // Narrow from the previous match set when this needle
             // extends the previous one; otherwise sweep the index.
@@ -265,15 +234,10 @@ impl SearchProvider for FilesProvider {
                     generation: guard.generation,
                 });
             }
-            // Best score first; among equals the shallower path wins.
-            // With four signals feeding the score a tie now means the
-            // two paths really are equally good answers, so the tiebreak
-            // is doing much less work than it used to — but it still has
-            // to be there, and depth is the one signal that tracks how
-            // much a file belongs to the user rather than to something
-            // they fetched: `~/notes` over `~/src/vendor/pkg/generated`.
-            // The final compare on the path itself makes this a total
-            // order, so the partition below is deterministic.
+            // Best score first, shallower path among equals (depth tracks
+            // "the user's file" vs "something fetched"). The final compare
+            // on path makes this a total order, so the partition below is
+            // deterministic.
             let cmp = |a: &(i32, usize, usize), b: &(i32, usize, usize)| {
                 b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| {
                     guard.entries[a.2]
@@ -282,12 +246,10 @@ impl SearchProvider for FilesProvider {
                         .cmp(&guard.entries[b.2].facts.lower)
                 })
             };
-            // Partition out the best `MAX_RESULTS`, then order only
-            // those. Sorting the whole candidate set costs
-            // O(n log n) string comparisons on every keystroke — 84 ms
-            // on a full 50 000-entry index, five frames of lag per
-            // character — and then throws all but forty of them away.
-            // Selection is linear and the sort that follows is over
+            // Partition out the best `MAX_RESULTS`, then order only those:
+            // sorting the whole candidate set costs 84 ms on a full 50 000-
+            // entry index (five frames per character) to then discard all
+            // but forty. Selection is linear; the sort that follows is over
             // forty items.
             let k = MAX_RESULTS.min(ranked.len());
             if k < ranked.len() {
@@ -334,12 +296,10 @@ impl SearchProvider for FilesProvider {
             }
         }
 
-        // Final ordering across both backends: score first, then the
-        // shallower path. Content hits arrive from the index clamped
-        // into a narrow band, so a query answered mostly by content ties
-        // almost everything — and a tie the provider leaves unordered
-        // becomes an arbitrary order somewhere downstream. Sort it here,
-        // where the paths are still at hand.
+        // Final ordering across both backends: score, then shallower path.
+        // Content hits arrive clamped into a narrow band, so a content-heavy
+        // query ties almost everything, and a tie left unordered here
+        // becomes an arbitrary order downstream.
         out.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
@@ -387,57 +347,18 @@ fn file_title(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Bounds for a content hit.
-///
-/// The band deliberately sits at the level of a *path-only* name hit
-/// ([`STRUCT_PATH_SUBSTRING`]): "the word is somewhere in the body" and
-/// "the word is somewhere up the directory path" say about as much about
-/// what a file is. Both rank below every match on the filename itself,
-/// and both can outrank a filename match that the vendored-content
-/// penalty has pushed down — a `.ttf` shipped inside a game's data set
-/// is a weaker answer than a document that discusses the word.
-///
-/// The index reports raw BM25 relevance, which has no upper bound: a
-/// term repeated through a large file scores arbitrarily high, and left
-/// unbounded it dwarfs every other provider's whole scale.
+/// Bounds for a content hit. The band sits at the level of a path-only name
+/// hit ([`STRUCT_PATH_SUBSTRING`]) — both rank below any filename match, and
+/// both can outrank one the vendored-content penalty pushed down. Clamped
+/// because the index reports raw BM25, which is unbounded and would
+/// otherwise dwarf every other provider's scale.
 const CONTENT_SCORE_MIN: i32 = 20;
 const CONTENT_SCORE_MAX: i32 = 40;
 
-// ---------------------------------------------------------------------
-// Ranking
-// ---------------------------------------------------------------------
-//
-// A filename match is not one fact but several, and the previous scorer
-// collapsed them into four steps — leaf-prefix 120, leaf-substring 80,
-// path-substring 45, fuzzy 20. Every name beginning with the needle tied
-// at the ceiling, so the palette filled with whichever directory held
-// the most of them and the only thing separating them was path depth.
-// Typing `open` answered with six OpenTTD font and data files from one
-// game directory, all at 120.
-//
-// The replacement keeps the same 0..=120 range but spends it on four
-// independent signals, so a tie now means the two paths really are
-// equally good answers:
-//
-// - **Structure** (0..=88): *where* the needle landed in the name, read
-//   in words rather than characters. Matching a whole word beats
-//   matching the start of a longer word, which beats matching inside
-//   one. This is the signal that separates `open.txt` from `openttd`.
-// - **Length ratio** (0..=16): how much of the name the needle
-//   accounts for. Four characters of a sixteen-character name is a
-//   weaker claim than four characters of five.
-// - **Recency** (0..=16): the file's mtime, in bands. The strongest
-//   real-world relevance signal there is, and bounded low enough that a
-//   freshly-unpacked archive cannot take over the palette.
-// - **Provenance penalty** (0..=-28): fonts, packaged data, compiled
-//   objects, lockfiles, minified bundles and copies of other people's
-//   source.
-// - **Depth penalty** (0..=-15): how far the path is buried, free for
-//   the first few levels. Catches the application payloads no list of
-//   extensions or directory names will ever cover.
-//
-// Both penalties are *ranking* signals, never filters — the floor is 1,
-// so anything that matches at all is still findable.
+// Four independent signals feed the score: structure (where the needle
+// landed in the name), length ratio, recency, and provenance/depth
+// penalties. Both penalties are *ranking* signals, never filters — the
+// floor is 1, so anything that matches at all is still findable.
 
 /// Structural tiers, strongest first. The needle either matched the leaf
 /// (the filename) or, failing that, somewhere up the path.
@@ -479,18 +400,12 @@ const PENALTY_GENERATED_LEAF: i32 = 20;
 /// overstates the case: the file is a poor answer, not a non-answer.
 const PENALTY_MAX: i32 = 28;
 
-/// Path components a file may sit under before depth starts counting
-/// against it, and the deduction per component past that.
-///
-/// Somebody's own work lives a few levels down — `~/Documents/x.md`,
-/// `~/Development/proj/src/x.rs`. An application's payload does not:
-/// `~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg` is seven
-/// levels in, and no extension or directory name marks it as anything but
-/// an ordinary sound file. Depth is the one signal that separates the two
-/// without a list of names to keep up to date, so it is worth a modest
-/// deduction as well as its long-standing job as the tiebreak. Free for
-/// the first [`DEPTH_FREE`] components so ordinary project layouts pay
-/// nothing.
+/// Path components a file may sit under before depth counts against it, and
+/// the deduction per component past that. Depth is the one signal that
+/// separates somebody's own work (`~/Documents/x.md`) from an application's
+/// payload (seven levels into a game's data set) without a name list to
+/// maintain. Free for the first [`DEPTH_FREE`] components so ordinary
+/// project layouts pay nothing.
 const DEPTH_FREE: usize = 4;
 const PENALTY_PER_LEVEL: i32 = 3;
 const PENALTY_DEPTH_MAX: i32 = 15;
@@ -559,14 +474,10 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
         )
 }
 
-/// Everything about one path that the score depends on but the needle
-/// does not: the tokenised filename, the vendored-content deduction and
-/// the recency band.
-///
-/// Precomputed by the walker, which is what keeps the palette on the
-/// right side of a frame. A keystroke re-scores tens of thousands of
-/// entries, so it must not tokenise a filename or `stat` a file — both
-/// happen exactly once, on the background thread, per index generation.
+/// Everything a path's score depends on that the needle does not.
+/// Precomputed by the walker: a keystroke re-scores tens of thousands of
+/// entries, so it must never tokenise a filename or `stat` a file — both
+/// happen once per index generation, on the background thread.
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
@@ -616,13 +527,11 @@ fn leaf_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Length of `leaf` up to a recognised extension.
-///
-/// "Recognised" is deliberately narrow: short and alphanumeric, with
-/// something in front of it. A version-numbered directory like
-/// `openttd-jgrpp-0.72.3-linux-generic-amd64` has a dot in it and no
-/// extension, and treating `3-linux-generic-amd64` as one would make the
-/// stem — the denominator of the length ratio — nonsense.
+/// Length of `leaf` up to a recognised extension. "Recognised" is
+/// deliberately narrow (short, alphanumeric, something in front): a
+/// version-numbered directory like `openttd-jgrpp-0.72.3-linux-generic-amd64`
+/// has a dot but no extension, and treating the tail as one would make the
+/// stem — the length ratio's denominator — nonsense.
 fn stem_len(leaf_lower: &str) -> usize {
     let Some(dot) = leaf_lower.rfind('.') else {
         return leaf_lower.len();
@@ -646,15 +555,11 @@ fn extension_of(leaf_lower: &str, stem_len: usize) -> Option<&str> {
     (stem_len < leaf_lower.len()).then(|| &leaf_lower[stem_len + 1..])
 }
 
-/// Split a filename into words, returning byte ranges into its
-/// lowercased form.
-///
-/// Words break on `-`, `_`, `.`, space and camelCase. camelCase needs the
-/// original case, and offsets are only shared between the two spellings
-/// when lowercasing preserved every byte length — true for ASCII and for
-/// every accented Latin name, false for a handful of forms that grow a
-/// byte (`İ` → `i̇`). Where it is false the camelCase pass is skipped and
-/// the separator split, which needs no case information, still applies.
+/// Split a filename into words, returning byte ranges into its lowercased
+/// form. Words break on `-`, `_`, `.`, space and camelCase; the camelCase
+/// pass needs the original case, so it is skipped when lowercasing changed
+/// any byte length (`İ` → `i̇`) and the offsets no longer line up. The
+/// separator split needs no case information and always applies.
 fn tokenize(leaf_orig: &str, leaf_lower: &str) -> Vec<(u16, u16)> {
     if leaf_lower.is_empty() || leaf_lower.len() > u16::MAX as usize {
         return Vec::new();
@@ -736,15 +641,11 @@ fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
     p.min(PENALTY_MAX)
 }
 
-/// mtime → bounded score contribution.
-///
-/// Bands, not a continuous curve: the distinction that matters is
-/// "today / this week / this month / this quarter / this year / older",
-/// and bands keep the contribution reproducible without pinning a clock.
-/// Capped at [`RECENCY_MAX`] out of [`MAX_SCORE`] so recency reorders
-/// near-equals without ever outvoting what the name says — a freshly
-/// unpacked archive gives thousands of files today's mtime, and none of
-/// them should lead the palette on that account.
+/// mtime → bounded score contribution. Bands rather than a continuous curve
+/// keep the contribution reproducible without pinning a clock. Capped at
+/// [`RECENCY_MAX`] of [`MAX_SCORE`] so recency reorders near-equals but
+/// never outvotes the name — a freshly unpacked archive gives thousands of
+/// files today's mtime.
 fn recency_score(modified: Option<SystemTime>) -> i32 {
     let Some(m) = modified else {
         return 0;
@@ -766,14 +667,11 @@ fn recency_score(modified: Option<SystemTime>) -> i32 {
     }
 }
 
-/// Score `facts` against an already-lowercased needle, or `None` if it
-/// does not match at all.
-///
-/// Monotone in the needle: if a longer needle matches, so does every
-/// prefix of it. Every tier below is either "the needle occurs in this
-/// string" or "the needle is a subsequence of it", and both survive
-/// dropping characters from the end. That is what makes the narrowing
-/// cache in [`FilesProvider::query`] sound.
+/// Score `facts` against an already-lowercased needle, or `None` if it does
+/// not match. Monotone in the needle — every tier is either "occurs in" or
+/// "is a subsequence of", both of which survive dropping trailing
+/// characters, which is what makes [`FilesProvider::query`]'s narrowing
+/// cache sound.
 fn name_score(needle_lower: &str, facts: &NameFacts) -> Option<i32> {
     if needle_lower.is_empty() {
         return None;
@@ -845,12 +743,10 @@ fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -
     best
 }
 
-/// Tier for a match that missed the filename but landed somewhere up the
-/// path, plus the length to measure the ratio against.
-///
-/// Reached only when the full path is already known to contain the
-/// needle, so the per-component tokenising here runs on a handful of
-/// entries per keystroke rather than on the whole index.
+/// Tier for a match that missed the filename but landed up the path, plus
+/// the length to measure the ratio against. Reached only when the path is
+/// already known to contain the needle, so the per-component tokenising
+/// runs on a handful of entries per keystroke, not the whole index.
 fn path_tier(needle: &str, lower_path: &str) -> (i32, usize) {
     let parent = lower_path
         .rsplit_once('/')
@@ -895,20 +791,11 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
     true
 }
 
-/// Open a palette hit.
-///
-/// A file whose type an installed app declares is opened *by that app*,
-/// through the same launch the palette's Applications rows take — so it
-/// lands in the active workspace with that workspace's capabilities and
-/// its collaboration room, and the compositor adopts its window like any
-/// other. See [`crate::shell::doc_open`].
-///
-/// Everything else falls back to the desktop's default handler:
-/// directories (which are not a launch — the file manager navigates
-/// them), and file types nothing installed claims. A document type with
-/// no installed editor is reported rather than silently handed to
-/// `xdg-open`, because "you have no editor for this" is a fact the user
-/// can act on and a silent no-op is not.
+/// Open a palette hit. A file whose type an installed app declares is opened
+/// by that app via [`crate::shell::doc_open`], landing in the active
+/// workspace with its capabilities and room. Directories and unclaimed types
+/// fall back to the desktop's default handler; a document type with no
+/// installed editor is reported rather than silently handed to `xdg-open`.
 fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
     use crate::shell::doc_open::{self, DocumentTarget};
     if is_dir {
@@ -952,27 +839,12 @@ fn spawn_open(path: &Path, _is_dir: bool) {
         .ok();
 }
 
-/// Build the name index, giving every part of `~` a share of it.
-///
-/// The cap matters more than it looks. A single unpacked game is tens of
-/// thousands of paths — this machine's `~/Spiele` alone walks to 31 168 —
-/// and a straight depth-first walk that stops at [`MAX_ENTRIES`] spent
-/// the whole index on `~/Spiele` and part of `~/Development`, indexing
-/// **none** of the trees the user's own documents live in. The palette
-/// then could not answer with those documents at any score, because they
-/// were never candidates: a query for `open` returned forty game sound
-/// effects while the `openapi.json` the user had edited that week was
-/// not in the index at all. No amount of ranking fixes a candidate set
-/// that excludes the answer.
-///
-/// So the walk is breadth-first: every path at depth *n* is indexed
-/// before any path at depth *n+1*. Depth-first spends the budget on
-/// whichever branch it entered first and never returns; breadth-first
-/// spends it on the shallowest paths in the whole of `~`, which is both
-/// the fair division between trees and the right priority within one —
-/// a file three levels down is more likely to be what someone meant than
-/// anything eight levels down, which is the same judgement [`DEPTH_FREE`]
-/// encodes in the score.
+/// Build the name index, giving every part of `~` a share of it. The walk is
+/// breadth-first because a single unpacked game is tens of thousands of
+/// paths (`~/Spiele` alone walks to 31 168): depth-first would spend
+/// [`MAX_ENTRIES`] on whichever branch it entered first and exclude whole
+/// trees, while breadth-first spends the budget on the shallowest paths
+/// across all of `~` — the same priority [`DEPTH_FREE`] encodes in the score.
 fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
     if let Ok(mut guard) = index.lock() {
@@ -1006,11 +878,9 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
                 continue;
             }
             // `DirEntry::file_type` is free on Linux (it comes off the
-            // `d_type` the readdir already returned); `metadata` is the
-            // one stat, and it happens here on the background thread so
-            // that a keystroke never touches the disk. The mtime band is
-            // folded into the entry's facts and read as an integer
-            // thereafter.
+            // `d_type` readdir already returned); `metadata` is the one stat,
+            // taken here on the background thread so a keystroke never
+            // touches the disk.
             let is_dir = child.file_type().map(|t| t.is_dir()).unwrap_or(false);
             let modified = child.metadata().ok().and_then(|m| m.modified().ok());
             if is_dir && depth + 1 < MAX_DEPTH {
@@ -1035,14 +905,10 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
     entries
 }
 
-/// Does any pattern in [`SKIP_DIRS`] match this path, and is any
-/// component hidden?
-///
-/// Patterns are matched a component at a time, and a pattern containing a
-/// `/` has to match that many consecutive components. The list has always
-/// carried multi-component patterns (`.config/gnome`, `Downloads/tmp`) and
-/// the old single-component equality test could never match one, so they
-/// silently did nothing.
+/// Does any pattern in [`SKIP_DIRS`] match this path, or is any component
+/// hidden? Patterns match a component at a time, and one containing `/`
+/// must match that many consecutive components — the list carries
+/// multi-component patterns (`.config/gnome`, `Downloads/tmp`).
 fn should_skip(path: &Path, home: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(home) else {
         return false;
@@ -1114,12 +980,6 @@ mod tests {
         assert_eq!(name_score("xzq", &facts("~/notes/todo.md")), None);
     }
 
-    /// The complaint the whole scorer exists to answer.
-    ///
-    /// Typing `open` returned 33 files and the top six were OpenTTD's
-    /// fonts and data blobs, because a four-tier score put every name
-    /// beginning with `open` on the ceiling and let directory order pick
-    /// the winners. A document the user actually wrote has to lead them.
     #[test]
     fn a_document_outranks_the_font_assets_of_a_game() {
         const GAME: &str = "~/Spiele/openttd-jgrpp-0.72.3-linux-generic-amd64";
@@ -1210,7 +1070,7 @@ mod tests {
     }
 
     /// Four characters of a sixteen-character name is a weaker claim
-    /// than four characters of five, and the old scorer could not say so.
+    /// than four characters of five.
     #[test]
     fn an_exact_filename_match_clearly_wins() {
         let exact = name_score("open", &facts("~/a/open.md")).unwrap();
@@ -1280,7 +1140,6 @@ mod tests {
         );
     }
 
-    /// Recency is the signal the old scorer ignored entirely.
     #[test]
     fn recency_separates_two_files_with_the_same_name() {
         let fresh = name_score("report", &aged_facts("~/a/report.md", 0)).unwrap();
@@ -1423,14 +1282,8 @@ mod tests {
         );
     }
 
-    /// The property a depth-first walk did not have.
-    ///
-    /// With the budget exhausted, a depth-first walk had indexed one
-    /// branch deeply and the rest not at all — on the machine this was
-    /// reported from, `~/Spiele` and part of `~/Development`, and none of
-    /// the trees the user's documents were in. Breadth-first spends the
-    /// same budget on the shallowest paths everywhere, so every top-level
-    /// tree is represented and the answer is at least a candidate.
+    /// Breadth-first spends the budget on the shallowest paths
+    /// everywhere, so every top-level tree is represented.
     #[test]
     fn the_walk_indexes_every_tree_before_it_runs_out() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -1612,13 +1465,10 @@ mod tests {
             .collect()
     }
 
-    /// Typing a word must cost one sweep of the index, not one per
-    /// character.
-    ///
-    /// Asserted on entries *examined* rather than elapsed time: the work
-    /// is what the design controls, and a count means the same thing in
-    /// a debug build, a release build and on a loaded CI box. (For scale:
-    /// one sweep of this 50 000-entry index measures 6.1 ms in release.)
+    /// Typing a word must cost one sweep of the index, not one per character.
+    /// Asserted on entries *examined* rather than elapsed time, so the count
+    /// means the same in debug, release and on a loaded CI box. (One sweep of
+    /// this 50 000-entry index measures 6.1 ms in release.)
     #[test]
     fn typing_a_word_narrows_instead_of_re_sweeping() {
         // A corpus where each further character genuinely rules entries

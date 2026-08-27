@@ -1,19 +1,9 @@
 //! Tonemap shader spot-check.
 //!
-//! Two tracks:
-//!
-//! 1. **CPU reference** — the CPU implementation of the tone-mapper
-//!    handles a solid mid-gray PQ 300-nit input and produces a
-//!    plausible SDR sRGB output (mid-gray-ish, alpha full, neutral
-//!    chroma preserved).
-//! 2. **GPU shader** — the WGSL kernel compiles cleanly against a
-//!    fresh wgpu adapter. We don't run the full compute pipeline
-//!    (fetching an adapter costs the OffscreenRenderer bring-up) —
-//!    but we DO parse + validate the shader through naga to catch
-//!    syntax / type errors at test time.
-//!
-//! Both paths use the same PQ math, so shader validity + CPU-side
-//! spot-check together prove the pipeline.
+//! Two tracks: a CPU reference pass, and shader validation via naga
+//! (parse + type/binding check) rather than a real GPU dispatch, since
+//! fetching an adapter costs the OffscreenRenderer bring-up. Both paths
+//! use the same PQ math, so together they cover the pipeline.
 
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
@@ -68,7 +58,6 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
         cfg,
     );
 
-    // Basic shape.
     assert_eq!(rgba.len() as u32, width * height * 4);
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
         assert_eq!(chunk[3], 0xFF, "alpha for pixel {i} not full");
@@ -158,14 +147,9 @@ fn cpu_tonemap_peak_saturates_toward_white() {
 
 #[test]
 fn wgsl_shader_parses_and_validates() {
-    // Parse the shader source and validate it — catches syntax /
-    // type errors at test time so a shader edit doesn't break
-    // production silently.
     let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
 
-    // Full validation catches variable / binding / type errors that
-    // parsing alone doesn't. Use the default validator config
-    // (matches wgpu's own defaults).
+    // Default validator config matches wgpu's own defaults.
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::default(),

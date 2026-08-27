@@ -1,73 +1,25 @@
 //! Opening a document in the application that owns it.
 //!
-//! Activating a file — from the file explorer, from a search result, or
-//! from anywhere else — is a launch like any other: the app starts as a
-//! sandboxed process in the active workspace, with that workspace's
-//! capabilities and its collaboration room. The only thing that makes it
-//! a *document* open is which app is chosen and what argument it gets.
+//! Activating a file is a launch like any other — the app starts
+//! sandboxed in the active workspace, with that workspace's
+//! capabilities and collaboration room. Two registries answer half of
+//! "who owns `.odt`" each: [`qdoc`] knows which extensions are editable
+//! documents (and nothing about installed packages); app manifests
+//! (`[providers].ext` in `qos-app.toml`) name the installed owner.
+//! [`resolve`] reports both halves, because they fail differently: no
+//! app at all vs. no editor installed.
 //!
-//! ## Who owns `.odt`
+//! A path handed to an app as a launch argument is not in its sandbox
+//! namespace by virtue of being named, so [`open_in_workspace`] records
+//! a read-only, session-scoped capability for exactly that path before
+//! launching — the same route the permission prompt and the file-drop
+//! router grant through.
 //!
-//! Two registries answer half the question each, and this module is the
-//! join.
-//!
-//! [`qdoc`] is the format registry. It knows which extensions are
-//! editable documents and which codec parses them, and it deliberately
-//! knows nothing about installed packages — it is a library, and the
-//! same `.odt` is the same document whether or not anything is installed
-//! to edit it.
-//!
-//! The **app manifests** name the owner. `[providers].ext` in
-//! `qos-app.toml` is a package declaring "I open these file types"; it
-//! travels with the package, so installing an app is what teaches this
-//! desktop to open its types and uninstalling it is what un-teaches
-//! that. There is deliberately no table of extensions in the compositor:
-//! a hard-coded one would be wrong the moment anybody installs anything.
-//!
-//! [`resolve`] reports both halves, because they fail differently. An
-//! extension nothing claims is "no app for this"; a *document* extension
-//! nothing claims is "you have no editor installed", which is a
-//! different sentence to show a user and a different thing to fix.
-//!
-//! ## The path and the permission are two decisions
-//!
-//! `qos-launcher` binds what the manifest declares plus what the
-//! capability file allows. A path handed to an app as an argument is not
-//! in its namespace by virtue of being named — the app starts, opens the
-//! path, and gets `ENOENT` or `EACCES`.
-//!
-//! So opening a document has to grant it too. [`open_in_workspace`]
-//! records a read capability for exactly that path, addressed to exactly
-//! that package, before it launches — the same `GrantStoreHandle` the
-//! permission prompt and the file-drop router write through, so it
-//! reaches the sandbox by the same route as any other grant and shows up
-//! in the permissions UI like any other grant.
-//!
-//! The grant is read-only and session-scoped, matching what dropping a
-//! file onto a workspace already does
-//! (`ChromeState::grant_dropped_file_access`): the least privilege that
-//! satisfies "let this app open this file now". Opening a document is
-//! not a promise to let the app write it — an editor that saves will
-//! raise a write prompt, which is the correct place for the user to be
-//! asked.
-//!
-//! ## Opening what is already open
-//!
-//! Activating the same document twice must not start a second copy of
-//! its app, and answering "is this already open?" needs the document to
-//! have an identity. It has one: a file *is* a record whose identity is
-//! its path ([`ui::record::RecordId::for_file`]), so two spellings of
-//! one path are one record and the question is a lookup rather than a
-//! guess from window titles.
-//!
-//! [`OPEN_DOCUMENTS`] is the answer's other half — which window arrived
-//! for which record. A launch and the window it produces are correlated
-//! the same way the placement note is: the launch leaves a note against
-//! the package, and the first toplevel that package adopts claims it
-//! ([`claim_surface_for_document`], called from
-//! [`crate::compositor::tab_binding::adopt_toplevel`]). A record whose
-//! window has since closed is *not* open — the note is dropped and the
-//! next open launches for real.
+//! Activating an already-open document must not start a second copy. A
+//! file's identity is its path ([`ui::record::RecordId::for_file`]);
+//! [`OPEN_DOCUMENTS`] tracks that identity against the window each
+//! launch produced, and a record whose window has since closed is not
+//! "open".
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -213,22 +165,13 @@ pub fn resolve(path: &Path) -> DocumentTarget {
 /// Open `path` in the application that declares its extension, in the
 /// chrome's active workspace.
 ///
-/// The one open path. Every surface that activates a file — the search
-/// palette's file rows, the file explorer, a file dropped onto a window
-/// group — comes through here, so a document opened from any of them
-/// lands in the same sandbox with the same capabilities and the same
-/// identity as one opened from any other.
-///
-/// If the document is already open, its window is focused and nothing is
-/// launched (see the module docs). Otherwise a session-scoped read
-/// capability for the path is recorded, and then
-/// [`launcher::launch_document_in_workspace`] starts the app — the same
-/// launch the palette's Applications rows take, so the app gets the
-/// workspace's grants and its collaboration room like any other launch.
+/// The one open path — the search palette, the file explorer, and a
+/// file dropped onto a window group all come through here, so a
+/// document lands in the same sandbox with the same identity no matter
+/// which surface activated it.
 ///
 /// `Err(OpenError::NoHandler)` means nothing installed claims the type;
-/// callers decide whether to fall back to the desktop's default handler
-/// or to say so.
+/// callers decide whether to fall back to a default handler or say so.
 pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
     open(path, chrome, None)
 }
@@ -320,24 +263,9 @@ fn open(
 
 /// Where the window of a document opened from another surface lands.
 ///
-/// **This is a seam, not a rule.** Where a window goes is the window
-/// manager's decision and it is being written down in one place
-/// elsewhere (`shell::placement::note_placement_for_launch`, on the
-/// `window-placement` branch). This module needs an answer today, so it
-/// applies the rule already documented on
-/// [`crate::compositor::tab_binding::Placement::TabIn`] — a document
-/// opened from somewhere else belongs *with* whatever asked for it, same
-/// task, so a tab in the focused group rather than a new column.
-///
-/// It is deliberately the only place this module decides placement, so
-/// replacing it with the call to the shared rule is a one-function
-/// change:
-///
-/// ```ignore
-/// crate::shell::placement::note_placement_for_launch(&app.package_id, &tree, None);
-/// ```
-///
-/// (in place of the `set_pending_placement` call in [`open`]).
+/// A document opened elsewhere belongs *with* whatever asked for it —
+/// same task, so a tab in the focused group rather than a new column
+/// ([`crate::compositor::tab_binding::Placement::TabIn`]).
 fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
     focused_group(chrome).map(Placement::TabIn)
 }
@@ -366,15 +294,12 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
 
 /// Tell the user, by name, that a file could not be opened.
 ///
-/// Every surface that can open a file reports a failed open through here,
-/// because the failure is the same fact wherever the open came from: this
-/// file, and nothing installed opens it. Doing nothing is not an option —
-/// a silent activation is indistinguishable from a broken desktop, and it
-/// is the one outcome the user cannot act on.
+/// Silent failure is indistinguishable from a broken desktop, so every
+/// surface that can open a file reports through here rather than
+/// swallowing the error.
 ///
-/// `surface` is the part of the desktop the user was in when they asked
-/// (`"Files"` for the palette's file rows), or `None` when the answer is
-/// simply the shell's.
+/// `surface` names where the user was (`"Files"` for the palette), or
+/// `None` for the shell's own attempts.
 pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: Option<&str>) {
     use crate::shell::notification::{Notification, NotificationSeverity};
     let name = path
@@ -468,15 +393,14 @@ pub fn clear_open_documents() {
 /// Attribute a freshly-adopted toplevel to the document it was launched
 /// for, if it was launched for one.
 ///
-/// Called from [`crate::compositor::tab_binding::adopt_toplevel`], beside
-/// the placement lookup, and correlated the same way: by the client's
-/// wayland app-id against the package we launched. The oldest unclaimed
-/// note for that package wins, which is launch order — the best available
-/// answer when one app is opening two documents at once, and a
-/// deterministic one rather than a race.
+/// Matches by wayland app-id against the launched package; the oldest
+/// unclaimed note wins, which is launch order — the best available
+/// answer when one app opens two documents at once, and deterministic
+/// rather than a race.
 ///
-/// Idempotent per surface: adoption can run more than once for a window,
-/// and a surface that already holds a note must not steal a second.
+/// Idempotent per surface: adoption can run more than once for a
+/// window, and a surface that already holds a note must not steal a
+/// second.
 pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
     let mut open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
     if open.iter().any(|d| d.surface == Some(surface_id)) {

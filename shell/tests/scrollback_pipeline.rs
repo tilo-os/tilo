@@ -1,6 +1,6 @@
-//! Phase 6 end-to-end: in-memory scrollback + host-driven compaction
-//! flowing through the broker, plus the cooperative scrollback path
-//! that bridges through a `ShellNetwork` mock.
+//! End-to-end: in-memory scrollback + host-driven compaction flowing
+//! through the broker, plus the cooperative scrollback path that
+//! bridges through a `ShellNetwork` mock.
 //!
 //! The three flagship scenarios:
 //!
@@ -72,20 +72,18 @@ fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent>
 /// Read fan-out events until `want` signed increments have arrived, or
 /// `timeout` elapses. Returns everything read.
 ///
-/// `drain_events` cannot be used to answer "has the broker finished
-/// recording the editor's ops": it stops at the first read that times
-/// out, which is the first scheduling gap rather than the end of the
-/// stream. The two connections in these scenarios are served by
-/// independent reader threads with no ordering between them, so a
-/// `FetchScrollback` sent after a quiet socket can still be answered
-/// from a half-written op log — and `scrollback_for` faithfully returns
-/// the tail of whatever is there, so the test reads `[3, 4, 5]` where it
-/// wanted `[8, 9, 10]` and blames paging.
+/// `drain_events` alone can't answer "has the broker finished recording
+/// the editor's ops": it stops at the first read that times out, which
+/// is the first scheduling gap, not the end of the stream. The two
+/// connections here are served by independent reader threads with no
+/// ordering between them, so a `FetchScrollback` sent after a quiet
+/// socket can still be answered from a half-written op log — the test
+/// reads `[3, 4, 5]` where it wanted `[8, 9, 10]` and blames paging.
 ///
 /// Waiting on the count the scenario actually depends on removes the
-/// guess. The deadline is generous because it is a backstop, not a
-/// pacing device: on a machine that is not loaded this returns as soon
-/// as the last event lands.
+/// guess. The deadline is generous because it's a backstop, not a
+/// pacing device — on an unloaded machine this returns as soon as the
+/// last event lands.
 fn drain_until_signed(
     stream: &mut UnixStream,
     want: usize,
@@ -94,14 +92,12 @@ fn drain_until_signed(
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let mut signed = 0usize;
-    // A `None` that came back without spending its budget is a closed
-    // or desynchronised stream, not a slow broker: `read_event` cannot
-    // tell the two apart, but a timeout by definition consumes the
-    // whole `remain` it was given. Retrying that in a tight loop would
-    // burn a core until the backstop expires — on the loaded machine
-    // this helper exists to survive, that is the worst possible way to
-    // fail. Give up after a few and let the caller's assertion report
-    // what it actually saw.
+    // A `None` that came back without spending its budget is a
+    // closed or desynchronised stream, not a slow broker — a
+    // timeout by definition consumes the whole `remain` it was
+    // given. Retrying that in a tight loop would burn a core until
+    // the backstop expires, so give up after a few and let the
+    // caller's assertion report what it actually saw.
     let mut fruitless = 0usize;
     while signed < want {
         let remain = deadline.saturating_duration_since(Instant::now());
@@ -565,8 +561,8 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
 #[test]
 fn compaction_op_class_rejected_for_editor() {
     // Defence-in-depth: an Editor attestation must NOT carry a
-    // Compaction op past the validator. Phase 6 pins compaction to
-    // the channel owner; the role table enforces it.
+    // Compaction op past the validator. Compaction is pinned to the
+    // channel owner; the role table enforces it.
     let socket = unique_socket("editor-cant-compact");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -639,21 +635,18 @@ fn compaction_op_class_rejected_for_editor() {
 #[test]
 fn cooperative_scrollback_round_trip() {
     // Two brokers in process:
+    //   - Broker A ("requesting") has an EMPTY op log for an artifact. A
+    //     local app issues FetchScrollback → the broker replies (empty +
+    //     exhausted) AND publishes a gossipsub ScrollbackRequest.
+    //   - Broker B ("responding") holds ops for the same artifact. We
+    //     simulate B by calling `handle_scrollback_response_message` on
+    //     A's ShellNetwork directly, injecting the response without a
+    //     real libp2p mesh (the wire-level round trip is covered by
+    //     `protocol.rs::round_trips`).
     //
-    //   - Broker A (the "requesting" host) has an EMPTY op log for
-    //     an artifact. A local app issues FetchScrollback → the
-    //     broker replies (empty + exhausted) AND publishes a
-    //     gossipsub ScrollbackRequest.
-    //   - Broker B (the "responding" host) holds ops for the same
-    //     artifact. We simulate B by calling
-    //     `handle_scrollback_response_message` on A's ShellNetwork
-    //     directly — that injects the network-side response without
-    //     standing up a real libp2p mesh (the actor-level wire is
-    //     covered by the round_trips test in `protocol.rs`).
-    //
-    // The contract we assert: after a synthetic response arrives,
-    // broker A's local app receives a follow-up ScrollbackBatch
-    // with the responder's ops.
+    // Contract asserted: after a synthetic response arrives, broker A's
+    // local app receives a follow-up ScrollbackBatch with the
+    // responder's ops.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
@@ -705,12 +698,11 @@ fn cooperative_scrollback_round_trip() {
         other => panic!("expected ScrollbackBatch, got {other:?}"),
     }
 
-    // Simulate the response that would come over gossipsub. Build
-    // two valid signed ops against the same channel state so the
-    // app can verify the round-trip ergonomics (the broker doesn't
-    // validate cooperative responses against the signature pipeline
-    // in v1; the signature lives on the SignedOp and the receiving
-    // app validates on render — out of scope here).
+    // Simulate the response that would come over gossipsub. Two valid
+    // signed ops against the same channel state (the broker doesn't
+    // validate cooperative responses against the signature pipeline in
+    // v1 — that happens when the receiving app renders them, out of
+    // scope here).
     let synthetic_ops = vec![
         Box::new(signed_op(
             &owner_sk,
@@ -769,20 +761,15 @@ fn cooperative_scrollback_round_trip() {
 
 #[test]
 fn cooperative_request_published_when_local_empty() {
-    // Variant of the round-trip test that asserts the *outbound*
-    // half: when a local FetchScrollback finds nothing, the broker
-    // publishes a NeighbourMsg::ScrollbackRequest. We assert this by
-    // letting the broker's `publish_scrollback_request` go through
-    // the actor's command channel — the request never reaches a real
-    // peer (no libp2p mesh), but the actor's send loop logs the
-    // attempt and ShellNetwork::tick is a no-op.
+    // Variant of the round-trip test asserting the *outbound* half: when
+    // a local FetchScrollback finds nothing, the broker publishes a
+    // NeighbourMsg::ScrollbackRequest. We let `publish_scrollback_request`
+    // go through the actor's command channel — the request never reaches
+    // a real peer (no libp2p mesh), but the send loop logs the attempt.
     //
-    // The simplest assertion shape: spawn the broker WITH peer-sync
-    // wired (so the outbound path is enabled), issue a FetchScrollback
-    // for an unknown artifact, and observe the local reply is
-    // (empty, exhausted=true). The fact that the broker compiled +
-    // ran the publish call without crashing is the contract; the
-    // protocol's wire-level round-trip is independently tested in
+    // Contract asserted: the broker compiles and runs the publish call
+    // without crashing, and the local reply is (empty, exhausted=true).
+    // The wire-level round trip is independently tested in
     // `network/protocol.rs::scrollback_request_round_trips_*`.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
@@ -835,19 +822,14 @@ fn cooperative_request_published_when_local_empty() {
 #[test]
 fn cooperative_responder_answers_when_log_has_match() {
     // Inverse of the requester-side path: when an inbound network
-    // ScrollbackRequest arrives at a broker whose local op log DOES
-    // hold the range, the drain thread publishes a ScrollbackResponse.
+    // ScrollbackRequest arrives at a broker whose local op log DOES hold
+    // the range, the drain thread publishes a ScrollbackResponse.
     //
-    // We simulate the inbound request by injecting it into
-    // ShellNetwork's request buffer (the same hook the actor's
-    // receive path uses) and then check the actor's command channel
-    // for a corresponding Publish.
-    //
-    // Note: with a real spawned ShellNetwork the cmd_rx is owned by
-    // the runtime; we use the test-only constructor in network.rs to
-    // observe the publish directly. The drain thread lives inside
-    // the broker, so we drop in the broker-internal queues by reaching
-    // through the ShellNetwork's accessors.
+    // We inject the request into ShellNetwork's request buffer (the same
+    // hook the actor's receive path uses); with a real spawned
+    // ShellNetwork the cmd_rx is owned by the runtime, so we use the
+    // test-only constructor in network.rs to observe the publish
+    // directly.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
@@ -899,19 +881,14 @@ fn cooperative_responder_answers_when_log_has_match() {
     // Give the broker a moment to record into the log.
     std::thread::sleep(Duration::from_millis(150));
 
-    // Inject an inbound ScrollbackRequest (as if from gossipsub).
-    // The drain thread reads it, consults the local op log, and
-    // (because we have matching ops) calls
-    // `publish_scrollback_response` — which dispatches to the actor.
-    // We can't observe the actor's outbound command channel directly
-    // from a spawned ShellNetwork; instead we check the responder
-    // side delivers a follow-up via the existing buffer.
-    //
-    // The simplest end-to-end shape: connect a second local app,
-    // inject the request, then on a separate fake "remote" path —
-    // the response — re-inject the response into the same broker.
-    // Skip that and just assert the request is consumed (no panic +
-    // request buffer drains).
+    // Inject an inbound ScrollbackRequest (as if from gossipsub). The
+    // drain thread reads it, consults the local op log, and (since we
+    // have matching ops) calls `publish_scrollback_response`, which
+    // dispatches to the actor. We can't observe the actor's outbound
+    // command channel directly from a spawned ShellNetwork, so this
+    // just asserts the request is consumed — no panic, request buffer
+    // drains — rather than chasing the response through a second fake
+    // peer.
     let handle_req = net.inbound_scrollback_request_handle();
     net.handle_scrollback_request_message(123u64, artifact, 10, 50);
     // Drain wakes every 100 ms.

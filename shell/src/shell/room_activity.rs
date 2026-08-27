@@ -1,71 +1,30 @@
 //! Room activity — everything that has happened to this workspace, by
 //! everyone, in one filterable pane.
 //!
-//! # What a room's history actually is here
+//! The room's own state lives in [`WorkspaceTree::doc`], a **tree-wide**
+//! automerge document whose `workspaces` list holds every workspace on this
+//! machine, with real authors and timestamps. [`ui::HistorySource`] turns
+//! that graph into rows and [`ui::ActivityTimeline`] draws them; this module
+//! is the join between the two, the room vocabulary, and the sheet's geometry.
 //!
-//! A workspace is a collaboration room, and the room's own state lives in
-//! [`WorkspaceTree::doc`] — an automerge document carrying each workspace's
-//! name, its room id, its owner, its capability grants, and its strips,
-//! window groups and tabs. Every mirror in `state.rs` named `doc_*` writes
-//! into it, peers merge into it, and it is therefore a real change graph with
-//! real authors and (since those mirrors commit through
-//! [`WorkspaceTree::commit_room_change`]) real timestamps.
+//! Because the document is tree-wide, a change belongs to one workspace, to
+//! several at once (a cache flush rewrites the whole list), or to none (the
+//! active-workspace pointer). [`RoomScope`] decides which are shown — default
+//! this room only — so a pane titled with one room's name never renders
+//! another room's governance under it.
 //!
-//! That graph is what this pane renders. [`ui::HistorySource`] turns it into
-//! rows and [`ui::ActivityTimeline`] draws them; this module is the join
-//! between the two plus the room-specific vocabulary, the filters the shell
-//! owns, and the sheet's geometry.
-//!
-//! # One document, several rooms
-//!
-//! [`WorkspaceTree::doc`] is **tree-wide**: a single automerge document whose
-//! `workspaces` list holds every workspace on this machine. A change in it
-//! therefore belongs to a particular workspace (a grant, a rename, a window
-//! opened), to several at once (a cache flush rewrites the whole list), or to
-//! none (the active-workspace pointer lives at the document root).
-//!
-//! So a pane titled with one room's name cannot simply render the whole
-//! document — that would put another room's governance under this room's
-//! heading. Each row is attributed to the workspace whose subtree the change
-//! touched, and [`RoomScope`] decides which of them are shown. The default is
-//! this room only; widening to the whole tree is explicit, and says so in the
-//! header.
-//!
-//! # What it deliberately does not show
-//!
-//! Not the contents of the documents open inside the room. An app's document
-//! lives in that app's own process; the compositor's broker
-//! ([`crate::shell::collab_broker`]) routes its CRDT deltas between peers as
-//! opaque bytes keyed by `(app_id, cluster_id)` and never materialises them —
-//! it could not describe an edit to a note if it wanted to. Naming per-app
-//! documents here would mean inventing a data source. A room's own history is
-//! what the shell can honestly account for, so a room's own history is what
-//! this shows; per-document history is the app's to present, over its own
-//! document (see `apps/word-processor/src/history_panel.rs`).
-//!
-//! # Grouping and names
-//!
-//! A room's history is a flood like any other CRDT history — a flush that
-//! rewrites the workspace list is a dozen changes on its own — so the pane shows
-//! [`ui::group_entries`]'s bands and expands to individual changes on demand. A
-//! band that nobody named still describes itself honestly ("8 permission changes
-//! over 3 min"); a band someone named shows the name, and says who wrote it.
-//!
-//! Names live in the room document (`ui::history_groups`), beside the changes
-//! they name, so a peer that syncs the room gets the names with it and a name
-//! survives a restart. Two people naming overlapping runs at once converges —
-//! see `ui::widget::history_group::group_entries` for exactly what to.
-//!
-//! # Restore
+//! Deliberately not shown: the contents of documents open inside the room.
+//! The compositor's broker ([`crate::shell::collab_broker`]) routes their
+//! CRDT deltas as opaque bytes and never materialises them, so a room's own
+//! history is what the shell can honestly account for; per-document history
+//! is the app's own to present.
 //!
 //! A row's `[Revert]` writes the delta from now back to that version as a
-//! **new forward change**, through the same [`ui::state::write_revert_patches`]
-//! primitive the per-document scrubber uses. History is appended to, never
-//! rewritten: the reverted-past versions stay in the graph and the revert is
-//! itself the newest row. Governance rows (a grant, a revoke, an owner change)
-//! carry [`OpClass::Govern`], which [`ui::widget::op_class_is_revertible`]
-//! declares non-revertible — an owner counters a governance act with another
-//! one rather than quietly rewinding it — so those rows never offer the chip.
+//! **new forward change**, through [`ui::state::write_revert_patches`] —
+//! history is appended to, never rewritten. Governance rows carry
+//! [`OpClass::Govern`], which [`ui::widget::op_class_is_revertible`] declares
+//! non-revertible: an owner counters a governance act with another one
+//! rather than rewinding it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -96,13 +55,9 @@ const SHEET_MAX_W: f64 = 560.0;
 /// thin to be worth preserving, which is the point at which the HIG's
 /// content-panel rule says show one thing at a time.
 const SHEET_MIN_W: f64 = 360.0;
-/// Viewport width under which the sheet goes full-bleed.
 const FULL_BLEED_UNDER: f64 = 720.0;
-/// Inset from the viewport edges.
 const SHEET_INSET: f64 = 16.0;
-/// Height of the pane's own header (title + subtitle).
 const HEADER_H: f64 = 58.0;
-/// Height of one row of the shell-owned filter chips.
 const CHIP_ROW_H: f64 = 30.0;
 
 /// How far back the pane is showing. Maps onto
@@ -296,22 +251,18 @@ impl RoomActivityPane {
         self.now_override.unwrap_or_else(SystemTime::now)
     }
 
-    /// Read-only access to the rows the pane derived, unfiltered.
     pub fn entries(&self) -> &[HistoryEntry] {
         self.timeline.entries()
     }
 
-    /// Rows currently on screen, after every filter.
     pub fn visible_len(&self) -> usize {
         self.timeline.visible_len()
     }
 
-    /// Borrow a visible row.
     pub fn visible_entry(&self, i: usize) -> Option<&HistoryEntry> {
         self.timeline.visible_entry(i)
     }
 
-    /// The contributors that actually appear in the room's history.
     pub fn contributors(&self) -> &[String] {
         &self.contributors
     }

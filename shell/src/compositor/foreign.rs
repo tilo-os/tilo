@@ -2,8 +2,8 @@
 //!
 //! An external client that binds our `wl_compositor` + `xdg_wm_base` gets
 //! its toplevel adopted into the workspace tab tree by
-//! [`crate::compositor::tab_binding::adopt_toplevel`]. This module is what
-//! turns that bookkeeping entry into *pixels on screen*:
+//! [`crate::compositor::tab_binding::adopt_toplevel`]. This module turns
+//! that bookkeeping entry into pixels on screen:
 //!
 //! ```text
 //!  client commit
@@ -20,48 +20,25 @@
 //!                                            widget rect ─┴─► xdg_toplevel.configure
 //! ```
 //!
-//! ## Why a widget rather than a post-pass blit
+//! Hosted as a [`ui::widget::AppWidget`] (not a post-pass blit) so
+//! placement, clipping, rounded-corner masking, fades and "only the
+//! active tab paints" share the same code path every other tile uses.
+//! [`ForeignSurfaceWidget::needs_animation_frame`] reports `true` only
+//! when the store holds an undrawn frame, so an idle client costs one
+//! `Mutex` lock + one `HashMap` lookup per tick and zero paints.
 //!
-//! The tab's on-screen rectangle is owned by the shell's widget tree
-//! (`WindowGroup` → `TileHost`). Hosting the foreign surface *as* a
-//! [`ui::widget::AppWidget`] means placement, clipping, rounded-corner
-//! masking, spawn/close fades and "only the active tab paints" all come
-//! from the same code path every other tile uses — instead of a second,
-//! parallel geometry calculation that would drift out of sync. The widget
-//! also publishes its own laid-out rect back into the store, which is what
-//! the `xdg_toplevel.configure` sizing pass reads.
-//!
-//! ## Repaint gating
-//!
-//! [`ForeignSurfaceWidget::needs_animation_frame`] reports `true` exactly
-//! when the store holds a frame the widget has not drawn yet. The native
-//! render loop's existing `needs_animation_frame()` condition therefore
-//! wakes the compositor for a new client frame and for nothing else — an
-//! idle client costs one `Mutex` lock + one `HashMap` lookup per tick and
-//! zero paints. `ui::widget::WindowGroup::needs_animation_frame` only
-//! consults the *active* host, so a background tab whose client renders
-//! continuously cannot pin the paint loop either.
-//!
-//! ## Buffer formats
-//!
-//! - `wl_shm` `Argb8888` / `Xrgb8888`: handled by
-//!   [`crate::compositor::surface_readback::buffer_to_rgba`].
-//! - dmabuf: two routes, tried in order by
-//!   [`ForeignFrameStore::capture_dmabuf`].
-//!   1. **GPU** — EGL wraps the client's buffer as a texture and the GPU
-//!      reads it back ([`crate::compositor::gpu_import`]). This is the
-//!      route that works for a Vulkan client, whose device-local
-//!      swapchain images refuse `mmap` outright.
-//!   2. **CPU mmap** — [`import_dmabuf_rgba`] maps the plane fd
-//!      directly. Correct for the CPU-visible linear buffers a GBM/EGL
-//!      client allocates, and the only route on a box with no usable
-//!      EGL device.
-//!
-//!   The compositor only ever advertises single-plane RGBA under
-//!   `Modifier::Linear` (see `State::new`), so both routes cover the
-//!   whole advertised set. A buffer neither route can read is
-//!   **rejected with a visible on-tile message** carrying both
-//!   failures, never silently painted as a stale or blank frame.
+//! Buffer formats: `wl_shm` `Argb8888`/`Xrgb8888` goes through
+//! [`crate::compositor::surface_readback::buffer_to_rgba`]. dmabuf tries
+//! two routes in order via [`ForeignFrameStore::capture_dmabuf`]: GPU
+//! (EGL wraps the buffer as a texture, [`crate::compositor::gpu_import`]
+//! reads it back — the only route that works for a Vulkan client, whose
+//! device-local swapchain images refuse `mmap`), then CPU mmap
+//! ([`import_dmabuf_rgba`], for GBM/EGL clients' CPU-visible linear
+//! buffers, or a box with no usable EGL device). The compositor only
+//! advertises single-plane RGBA under `Modifier::Linear`, so both routes
+//! cover the whole advertised set; a buffer neither route can read is
+//! **rejected with a visible on-tile message**, never silently painted
+//! as stale or blank.
 
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
@@ -853,32 +830,22 @@ impl ForeignFrameStore {
     /// latch the answer once it does.
     ///
     /// Read by [`ForeignSurfaceWidget::presented`], which the shell's
-    /// window group consults before painting anything at all — so this
-    /// is the predicate deciding when a launched app's window turns up.
+    /// window group consults before painting anything at all — the
+    /// predicate deciding when a launched app's window turns up.
     ///
-    /// Three ways to become presentable, in the order they are checked:
-    ///
-    /// - **A capture failed.** Then there is something to say, and the
-    ///   tile says it. An app that cannot be shown must not be silently
-    ///   invisible.
-    /// - **A frame has landed that answers the tab.** Not merely a frame:
-    ///   the first buffer a client commits is the size *it* chose, because
-    ///   the compositor's opening configure carries no size and the real
-    ///   one is only sent once the tab has been laid out. Painting that
-    ///   first buffer means [`ForeignSurfaceWidget::fit_rect`] scales it
-    ///   to fit — the app appears magnified, then snaps down to 1:1 when
-    ///   the correctly-sized buffer arrives a moment later. Waiting for a
-    ///   frame sized to the tab is what makes an opened window keep the
-    ///   size it opened at. What counts as sized to the tab is [`fills`],
-    ///   which also admits a client that kept a strip of that size for
-    ///   decorations it draws itself — a client the decoration protocol
-    ///   could not talk out of it — because otherwise the answer never
-    ///   comes and the window waits out the grace below.
-    /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
-    ///   this cannot strand a window: an app that never presents, or one
-    ///   whose buffers never match its tab, becomes visible anyway and
-    ///   shows whatever it has — including the placeholder naming it.
-    ///   A window nobody can see is a window nobody can close.
+    /// Three ways to become presentable: **a capture failed** (something
+    /// to say, so the tile says it — an app that cannot be shown must not
+    /// be silently invisible); **a frame has landed that answers the
+    /// tab**, i.e. is sized to it per [`fills`] (the first buffer a
+    /// client commits is whatever size it picked, since the opening
+    /// configure carries no size — painting that would scale it via
+    /// [`ForeignSurfaceWidget::fit_rect`], magnified then snapping to 1:1
+    /// a moment later, so waiting for a tab-sized frame is what makes an
+    /// opened window keep the size it opened at); or **[`PRESENT_GRACE`]
+    /// has passed** — the backstop that keeps a window from being
+    /// stranded: an app that never presents becomes visible anyway,
+    /// showing whatever it has (including the placeholder naming it),
+    /// because a window nobody can see is a window nobody can close.
     ///
     /// `tile` is the rect the tab occupies, from the widget that is about
     /// to draw. A degenerate one means the tab has not been laid out yet,
@@ -895,10 +862,7 @@ impl ForeignFrameStore {
             }
             e.presented = true;
             // Reaching the backstop is a defect every time: the window was
-            // a hole in the strip for the whole grace period. On screen
-            // that is indistinguishable from an app that was simply slow
-            // — which is how a client short by its own title bar went
-            // unnoticed while it delayed every launch on this machine.
+            // a hole in the strip for the whole grace period.
             if backstop {
                 tracing::warn!(
                     target: "shell::compositor::foreign",
@@ -955,33 +919,23 @@ const OPENING_CONFIGURE_GRACE: Duration = Duration::from_millis(250);
 /// Whether a `w`x`h` buffer is this client's answer to the tab it was
 /// configured into, rather than the size it picked before being asked.
 ///
-/// Two ways to be an answer, because there are two kinds of client.
-///
-/// **It covers the tab.** [`ForeignSurfaceWidget::fit_rect`] scales
-/// uniformly by the smaller of the two ratios, so a buffer covers the
-/// tile exactly when its aspect ratio matches. Sizes are not compared
-/// directly because they need not be equal to look right: a buffer
-/// twice the tile in both axes is drawn at exactly the tile, sharper
-/// and in the same place.
-///
-/// **It fits inside the tab and matches one of its axes.** A client
-/// that draws its own frame keeps the title bar out of the size it was
-/// given and commits the remainder, so it answers one axis exactly and
-/// comes up short on the other — forever, because there is no later
-/// buffer in which it gives that strip back. Configured 670x668, such a
-/// client commits 670x633, which under the covering test alone is not
-/// an answer at all, and its window waits out [`PRESENT_GRACE`] — ten
-/// seconds of empty tab over an app that painted in two. That was every
-/// winit client on this compositor until it began advertising
-/// `zxdg_decoration_manager_v1` and answering `ServerSide` (see
-/// `State`'s `XdgDecorationHandler`), which is the real fix — a client
-/// told the compositor decorates keeps nothing back and is admitted by
-/// the covering arm above with no band left under it. This arm remains
-/// as the backstop for clients negotiation cannot reach: one that never
-/// binds the global, or a toolkit that decorates itself regardless of
-/// the answer. Overflowing either axis still disqualifies the buffer —
-/// a client's own idea of its size is not derived from the tab and does
-/// not fit inside it.
+/// Two ways to be an answer. **It covers the tab**:
+/// [`ForeignSurfaceWidget::fit_rect`] scales uniformly by the smaller of
+/// the two ratios, so a buffer covers the tile exactly when its aspect
+/// ratio matches — sizes aren't compared directly since they need not be
+/// equal to look right (a buffer twice the tile in both axes draws at
+/// exactly the tile, sharper, same place). **Or it fits inside the tab
+/// and matches one of its axes**: a client that draws its own frame
+/// keeps the title bar out of the size it was given and commits the
+/// remainder, answering one axis exactly and coming up short on the
+/// other forever (e.g. configured 670x668, commits 670x633) — under the
+/// covering test alone that's not an answer, so its window would wait
+/// out the full [`PRESENT_GRACE`] over an app that in fact painted
+/// almost immediately. This arm is the backstop for clients whose
+/// decoration negotiation the compositor can't complete (one that never
+/// binds `zxdg_decoration_manager_v1`, or a toolkit that decorates
+/// itself regardless of the answer); overflowing either axis still
+/// disqualifies the buffer.
 ///
 /// The half-percent tolerance absorbs the rounding in the logical-size
 /// configure (a 1-px disagreement at 1400 px is 0.07%) without admitting
@@ -1109,6 +1063,19 @@ impl ForeignSurfaceWidget {
         true
     }
 
+    /// Whether this surface's window is still being held back, and so
+    /// the shell has to keep asking.
+    ///
+    /// The frame counter alone cannot carry this: a client that has
+    /// committed nothing leaves it at zero, matching the cache, so the
+    /// strip is judged unchanged and never re-recorded, and the ten
+    /// second backstop in [`ForeignFrameStore::mark_presented`] is only
+    /// ever read from a draw. Without this the window would sit invisible
+    /// until some unrelated repaint happened to come along.
+    fn awaiting_first_paint(&self) -> bool {
+        !store().is_presented(self.surface_id)
+    }
+
     /// Destination rect for the client image inside `self.rect`,
     /// preserving aspect ratio and anchoring the result at the tile's
     /// top-left corner.
@@ -1116,33 +1083,17 @@ impl ForeignSurfaceWidget {
     /// A correctly-configured client renders at exactly the tab size, in
     /// which case this is the identity fit. A letterbox band only shows
     /// during the frame or two between a resize configure and the
-    /// client's answering commit — better than a stretched image.
+    /// client's answering commit.
     ///
-    /// The anchor is the load-bearing part. Pointer input reaches the
-    /// client by subtracting the tile origin from the global cursor
-    /// (`client_input::surface_local`), so the client's pixels have to be
-    /// painted from that same origin or the two disagree: a frame that is
-    /// momentarily the wrong size would otherwise be *centred*, sliding
-    /// every pixel the user is looking at by half the mismatch while
-    /// input carried on addressing the un-slid position. Anchoring costs
-    /// nothing when the sizes match (the centring term is zero) and keeps
-    /// paint and input on one origin when they don't, so a press always
-    /// lands on the row it appears to land on.
-    /// Whether this surface's window is still being held back, and so
-    /// the shell has to keep asking.
-    ///
-    /// The frame counter alone cannot carry this. A client that has
-    /// committed nothing leaves it at zero, matching the cache, so the
-    /// strip is judged unchanged and never re-recorded — and the ten
-    /// second backstop in [`ForeignFrameStore::mark_presented`] is only
-    /// ever read from a draw. The window would sit invisible until some
-    /// unrelated repaint happened to come along, which is not something
-    /// to leave to chance for the case whose whole purpose is to make
-    /// sure a window cannot be stranded.
-    fn awaiting_first_paint(&self) -> bool {
-        !store().is_presented(self.surface_id)
-    }
-
+    /// The anchor is load-bearing: pointer input reaches the client by
+    /// subtracting the tile origin from the global cursor
+    /// (`client_input::surface_local`), so the client's pixels must be
+    /// painted from that same origin or the two disagree — a momentarily
+    /// wrong-sized frame would otherwise be drawn *centred*, sliding
+    /// every pixel the user sees by half the mismatch while input kept
+    /// addressing the un-slid position. Anchoring costs nothing when
+    /// sizes match and keeps paint and input on one origin when they
+    /// don't, so a press always lands on the row it appears to land on.
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -1826,11 +1777,9 @@ mod tests {
         store().forget(id);
     }
 
-    /// What a person reads on a window's own card is the app's name.
-    ///
-    /// Never the wayland app-id: `dev.qos.file-explorer` is a machine
-    /// identifier the user did not choose and does not recognise, and it
-    /// is what used to be on screen for the whole of a cold open.
+    /// What a person reads on a window's own card is the app's name,
+    /// never the wayland app-id: `dev.qos.file-explorer` is a machine
+    /// identifier the user did not choose and does not recognise.
     #[test]
     fn a_card_in_a_windows_place_names_the_app_not_its_id() {
         let w = ForeignSurfaceWidget::new(sid(53), "dev.qos.never-launched-fixture".into());
@@ -2129,18 +2078,13 @@ mod tests {
     }
 
     /// A surface asks for frames until it has drawn, and after that only
-    /// when a newer one is waiting.
-    ///
-    /// The first half is the rule `0b3e2451c` ("Keep asking about a
-    /// window that has not drawn, so it cannot be stranded") set out to
-    /// establish, and this test predates it — it used to assert the
-    /// opposite. A client whose first buffer has not arrived is the one
-    /// case where nothing else will wake the paint loop, so a widget
-    /// that fell silent there left the window blank for good.
-    ///
-    /// The second half is why the rule is not simply "always": an app
-    /// that has something on screen and nothing newer to show must not
-    /// hold the paint loop awake.
+    /// when a newer one is waiting. The first half matters because a
+    /// client whose first buffer has not arrived is the one case where
+    /// nothing else will wake the paint loop — a widget that fell silent
+    /// there would leave the window blank for good. The second half is
+    /// why the rule isn't simply "always": an app with something on
+    /// screen and nothing newer to show must not hold the paint loop
+    /// awake.
     #[test]
     fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
         let id = sid(7);
@@ -2241,13 +2185,9 @@ mod tests {
         assert!(foreign_tabs(&rendered).is_empty());
     }
 
-    /// One window, one tab — wherever in the tree that tab happens to sit.
-    ///
-    /// The mirror used to ask "is this surface in the workspace the user is
-    /// looking at?" and treat "no" as "not adopted yet". A window in any other
-    /// workspace therefore got adopted a second time the moment the user
-    /// switched away from it, and the desktop grew a duplicate of an
-    /// application nobody had opened twice.
+    /// One window, one tab — wherever in the tree that tab happens to
+    /// sit, including a workspace other than the one the user is
+    /// currently looking at.
     #[test]
     fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
         let mut source = WorkspaceTree::bootstrap_demo();
@@ -2459,9 +2399,8 @@ mod tests {
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         let t = &foreign_tabs(&rendered)[0];
         assert_eq!(t.app_id, "io.example.late");
-        // The identifier propagates; the *title* is humanised from it —
-        // Files used to appear as `app` and the word processor as
-        // `word-processor`, machine identifiers nobody chose.
+        // The identifier propagates; the *title* is humanised from it
+        // rather than shown as a machine identifier nobody chose.
         assert_eq!(
             t.title, "Late",
             "a tab wears a name, not the last segment of an app id"

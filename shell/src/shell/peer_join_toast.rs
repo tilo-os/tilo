@@ -231,7 +231,6 @@ mod tests {
         let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(10));
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].title, "alice joined");
-        // bob is still buffered.
         assert_eq!(q.pending(), 1);
     }
 

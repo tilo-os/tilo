@@ -409,8 +409,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
 }
 
 /// The magnifier chip in a tab's window decoration must open the search bar
-/// *scoped to that app* — the same thing Ctrl+K does. It used to only toggle a
-/// local focus ring on the group, so clicking it appeared to do nothing.
+/// *scoped to that app* — the same thing Ctrl+K does.
 #[test]
 fn tab_search_chip_opens_palette_scoped_to_that_app() {
     use shell::shell::chrome_state::SearchScope;
@@ -461,9 +460,7 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
 
 /// Clicking a tab's Expand chip must take the window *genuinely* full screen:
 /// the radial workspace switcher (sidebar wheel) and the top bar both get out
-/// of the way, and the promoted group covers the whole output. Expand used to
-/// only flex-grow the group inside its own strip, so the wheel and top bar kept
-/// painting over/next to it — "it isn't properly full screen".
+/// of the way, and the promoted group covers the whole output.
 #[test]
 fn expand_takes_the_group_genuinely_fullscreen() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
@@ -522,9 +519,6 @@ fn expand_takes_the_group_genuinely_fullscreen() {
 /// A lone window group has no *inter*-group resize handle, so its only resize
 /// affordance is the grip on its own right edge. Dragging that must widen the
 /// group both on screen (the laid-out rect) and in the persisted tree.
-/// Regression for "resizing windows doesn't work": the drag used to update the
-/// width field without flagging the layout dirty, so the baked taffy length
-/// stayed put and nothing moved.
 #[test]
 fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100]);
@@ -589,9 +583,7 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
 /// A group focused in the *same frame it appeared* must still be panned into
 /// view. A freshly adopted Wayland client is exactly this: `adopt_toplevel`
 /// creates the group and focuses it, and on that frame the group has no rect
-/// yet, so the row cannot pan. The reconcile used to record "already handled"
-/// regardless and never retry — leaving a newly launched window off the output
-/// whenever the strip's existing window filled it.
+/// yet, so the row cannot pan.
 #[test]
 fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     // One full-width group fills the strip; a second group therefore starts
@@ -777,8 +769,7 @@ fn switching_workspace_swaps_the_rendered_strips() {
     // follow `tree.active`: after a switch the host's live rows are
     // B's — this is what makes every window gesture (the Alt+Shift
     // jump, clicks, focus-follow) act on the workspace the user is
-    // looking at, instead of the boot workspace forever (the
-    // "jump only works in Home" bug, 2026-08-22).
+    // looking at, instead of the boot workspace forever.
     let (mut tree, strip_a, _) = single_strip_tree(&[100, 200]);
     let ws_b_id = WorkspaceId::new();
     let strip_b = StripId::new();
@@ -864,8 +855,8 @@ fn switching_workspace_swaps_the_rendered_strips() {
 
 #[test]
 fn wheel_over_strip_does_not_move_it() {
-    // Hard boundary (2026-08-22): a bare wheel never moves the strip —
-    // scrolling is for content inside a window. The view travels only
+    // Hard boundary: a bare wheel never moves the strip — scrolling is
+    // for content inside a window. The view travels only
     // through focus changes and the shell's Alt-modified wheel
     // gestures (which route through `client_input`, not this widget
     // path).

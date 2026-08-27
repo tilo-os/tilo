@@ -1,38 +1,20 @@
 //! Starting applications qOS did not package.
 //!
-//! The counterpart to [`crate::shell::launcher`], which starts `.qpkg`
-//! packages. Both end up execing `qos-launcher` on a worker thread and
-//! reporting through the same [`launcher::LaunchEvent`] queue, so the
-//! chrome drains one stream of launch outcomes rather than two. What
-//! differs is the subcommand and, with it, everything about the process
-//! that comes out the other end.
+//! Counterpart to [`crate::shell::launcher`], which starts `.qpkg`
+//! packages; both exec `qos-launcher` and report through the same
+//! [`launcher::LaunchEvent`] queue.
 //!
-//! ## What a host launch is not
+//! `qos-launcher run-host` builds **no sandbox**: a `.desktop` entry names
+//! a command line, not a set of permissions, and nesting a Flatpak's own
+//! sandbox inside qOS's baseline filter just fails to start rather than
+//! confining twice (see `launcher::host`). A host app therefore gets no
+//! room id, no capability file, no per-room state directory — `launch`
+//! takes no `RoomId` because passing one would misstate what it's subject to.
 //!
-//! `qos-launcher run-host` builds **no sandbox**. It cannot: a
-//! `.desktop` entry names a command line, not a set of permissions, so
-//! there is nothing to derive binds, a seccomp profile or a Landlock
-//! ruleset from. For a Flatpak it is worse than under-specified —
-//! `flatpak run` needs `unshare`/`mount`/`pivot_root` to build its own
-//! sandbox and qOS's baseline filter denies all three, so nesting the
-//! two produces an app that fails to start rather than one confined
-//! twice. See `launcher::host` for the full argument.
-//!
-//! Consequently a host app gets **no room id, no capability file and no
-//! per-room state directory**, and this module never passes any of
-//! them. `launch` takes no `RoomId` for that reason: there is no room
-//! to pass, and an argument that looked like one would be a lie about
-//! what the process is subject to.
-//!
-//! ## Telling them apart
-//!
-//! The palette puts host apps under their own
-//! [`ResourceKind::HostApplication`] chip and group header, their tabs
-//! are labelled from the same scan, and the launcher prints an
-//! UNCONFINED notice naming each one it starts. The risk being managed
-//! is not escape — there was never a sandbox to escape — but a user who
-//! cannot tell which of the two kinds of application they are looking
-//! at.
+//! The palette labels host apps under [`ResourceKind::HostApplication`]
+//! and the launcher logs an UNCONFINED notice for each — managing the risk
+//! of a user unable to tell which kind of app they're looking at, since
+//! there was never a sandbox to escape.
 //!
 //! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
@@ -42,16 +24,13 @@ use desktop_entry::{DesktopEntry, EntrySource};
 
 use crate::shell::launcher::{self, LaunchError};
 
-/// One host application the palette can offer.
-///
-/// A projection of [`DesktopEntry`] holding only what the shell needs,
-/// so the search provider can be tested against a fixed list without a
-/// filesystem full of `.desktop` files.
+/// One host application the palette can offer — a projection of
+/// [`DesktopEntry`] holding only what the shell needs, so the provider can
+/// be tested against a fixed list without real `.desktop` files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostApp {
-    /// Desktop-file id — `com.spotify.Client`, `org.gnome.Nautilus`.
-    /// The identity `run-host` resolves and the handle window
-    /// correlation matches on.
+    /// Desktop-file id (`com.spotify.Client`, `org.gnome.Nautilus`) — the
+    /// identity `run-host` resolves and window correlation matches on.
     pub desktop_id: String,
     pub name: String,
     /// `Flatpak` or `System`, shown in the row so provenance is visible
@@ -107,16 +86,14 @@ pub fn find(desktop_id: &str) -> Option<HostApp> {
         .map(HostApp::from_entry)
 }
 
-/// Render the `qos-launcher run-host` invocation for `app`.
+/// Render the `qos-launcher run-host` invocation for `app`. Pure — no I/O,
+/// no spawning — so the exact command is assertable without a process
+/// appearing.
 ///
-/// Pure — no I/O, no spawning — so the exact command a launch would use
-/// is assertable without a process appearing.
-///
-/// There is no `--workspace-id` and no `--capabilities`, and their
-/// absence is the point: a host app is in no room and confined by
-/// nothing qOS controls, so passing either would assert something
-/// false. Compare [`launcher::build_launch_command`], which passes
-/// both.
+/// No `--workspace-id` and no `--capabilities`: a host app is in no room
+/// and confined by nothing qOS controls, so passing either would assert
+/// something false. Compare [`launcher::build_launch_command`], which
+/// passes both.
 pub fn build_launch_command(
     app: &HostApp,
     launcher_bin: &Path,
@@ -153,12 +130,10 @@ pub fn launch(desktop_id: &str) -> Result<HostApp, LaunchError> {
     launch_with_document(desktop_id, None)
 }
 
-/// [`launch`], additionally asking the app to open `document`.
-///
-/// The path expands the entry's own `%f`/`%F`/`%u`/`%U` field codes.
-/// Unlike a qOS launch there is no grant to make alongside it: the app
-/// already has the user's filesystem, which is exactly what makes it a
-/// host app.
+/// [`launch`], additionally asking the app to open `document` — the path
+/// expands the entry's own `%f`/`%F`/`%u`/`%U` field codes. Unlike a qOS
+/// launch there is no grant to make alongside it: the app already has the
+/// user's filesystem, which is exactly what makes it a host app.
 pub fn launch_with_document(
     desktop_id: &str,
     document: Option<&Path>,
@@ -170,20 +145,17 @@ pub fn launch_with_document(
     let launcher_bin = launcher::resolve_launcher_bin()?;
     let command = build_launch_command(&app, &launcher_bin, &socket, document);
 
-    // The same note the qOS path leaves, so a window arriving in a
-    // moment can be put where the user asked for it and labelled with
-    // the app's real name rather than a raw wayland app-id.
+    // Same note the qOS path leaves, so an arriving window lands where
+    // asked and is labelled with the app's real name, not a raw wayland app-id.
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
     Ok(app)
 }
 
-/// Where a host app's window should land, recorded before the launch.
-///
-/// A foreign toplevel arrives with an `app_id` qOS did not mint, so the
-/// note is keyed on every identity the entry says its window might use
-/// — `StartupWMClass` first, then the desktop-file id, then the Flatpak
-/// application id.
+/// Where a host app's window should land, recorded before the launch. A
+/// foreign toplevel arrives with an `app_id` qOS didn't mint, so the note
+/// is keyed on every identity the entry might use (`StartupWMClass`,
+/// desktop-file id, Flatpak app id).
 pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::Placement) {
     launcher::set_pending_placement_for_identities(
         &app.desktop_id,
@@ -193,10 +165,9 @@ pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::
 }
 
 /// Host application whose window would announce itself as `app_id`.
-///
 /// Consulted when a foreign toplevel is adopted, so its tab shows
-/// "Spotify" rather than "spotify" — and so the compositor can tell a
-/// host app's window from a qOS app's at all.
+/// "Spotify" not "spotify" — and so the compositor can tell a host app's
+/// window from a qOS app's at all.
 pub fn app_for_window_id(app_id: &str) -> Option<HostApp> {
     let needle = app_id.trim();
     if needle.is_empty() {
@@ -280,9 +251,8 @@ mod tests {
     fn the_host_scan_returns_entries_with_usable_identities() {
         invalidate_cache();
         let apps = host_apps();
-        // A machine with no desktop entries at all is a legitimate
-        // state (a minimal container), so this asserts the *shape* of
-        // whatever was found rather than a count.
+        // No desktop entries is a legitimate state (a minimal container),
+        // so assert shape, not count.
         for app in apps.iter().take(50) {
             assert!(!app.desktop_id.is_empty());
             assert!(!app.name.is_empty(), "{} has no name", app.desktop_id);
