@@ -149,10 +149,8 @@ impl BatteryInfo {
                 let ty = read_trim(&dir.join("type")).unwrap_or_default();
                 match ty.as_str() {
                     "Battery" if battery_dir.is_none() => battery_dir = Some(dir),
-                    "Mains" => {
-                        if read_trim(&dir.join("online")).as_deref() == Some("1") {
-                            on_ac = true;
-                        }
+                    "Mains" if read_trim(&dir.join("online")).as_deref() == Some("1") => {
+                        on_ac = true;
                     }
                     _ => {}
                 }
@@ -415,80 +413,74 @@ impl Widget for PowerPane {
         }
 
         // Power profile → dispatch on change, guarded so it doesn't re-fire.
-        if let Some(label) = read_str(state, root, PROFILE_KEY) {
-            if let Some(p) = profile_from_label(&label) {
-                if p != self.last_profile {
-                    self.last_profile = p;
-                    self.profile = p;
-                    if let Err(e) = self.dispatcher.set_power_profile(p) {
-                        warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
-                    }
-                }
+        if let Some(label) = read_str(state, root, PROFILE_KEY)
+            && let Some(p) = profile_from_label(&label)
+            && p != self.last_profile
+        {
+            self.last_profile = p;
+            self.profile = p;
+            if let Err(e) = self.dispatcher.set_power_profile(p) {
+                warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
             }
         }
 
         // Auto-suspend → persist on change.
-        if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY) {
-            if b != self.last_prefs.auto_suspend {
-                self.last_prefs.auto_suspend = b;
-                self.prefs.auto_suspend = b;
-                self.persist();
-            }
+        if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
+            && b != self.last_prefs.auto_suspend
+        {
+            self.last_prefs.auto_suspend = b;
+            self.prefs.auto_suspend = b;
+            self.persist();
         }
 
         // Screen-blank timeout → persist on change.
-        if let Some(label) = read_str(state, root, BLANK_KEY) {
-            if let Some(m) = blank_from_label(&label) {
-                if m != self.last_prefs.blank_minutes {
-                    self.last_prefs.blank_minutes = m;
-                    self.prefs.blank_minutes = m;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, BLANK_KEY)
+            && let Some(m) = blank_from_label(&label)
+            && m != self.last_prefs.blank_minutes
+        {
+            self.last_prefs.blank_minutes = m;
+            self.prefs.blank_minutes = m;
+            self.persist();
         }
 
         // Idle-suspend timeout → persist on change.
-        if let Some(label) = read_str(state, root, SUSPEND_KEY) {
-            if let Some(m) = suspend_from_label(&label) {
-                if m != self.last_prefs.suspend_minutes {
-                    self.last_prefs.suspend_minutes = m;
-                    self.prefs.suspend_minutes = m;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, SUSPEND_KEY)
+            && let Some(m) = suspend_from_label(&label)
+            && m != self.last_prefs.suspend_minutes
+        {
+            self.last_prefs.suspend_minutes = m;
+            self.prefs.suspend_minutes = m;
+            self.persist();
         }
 
         // Lid-close action → persist on change.
-        if let Some(label) = read_str(state, root, LID_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.lid_close_action {
-                    self.last_prefs.lid_close_action = a;
-                    self.prefs.lid_close_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, LID_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.lid_close_action
+        {
+            self.last_prefs.lid_close_action = a;
+            self.prefs.lid_close_action = a;
+            self.persist();
         }
 
         // Power-key action → persist on change.
-        if let Some(label) = read_str(state, root, POWER_KEY_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.power_key_action {
-                    self.last_prefs.power_key_action = a;
-                    self.prefs.power_key_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, POWER_KEY_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.power_key_action
+        {
+            self.last_prefs.power_key_action = a;
+            self.prefs.power_key_action = a;
+            self.persist();
         }
 
         // Critical-battery action → persist on change.
-        if let Some(label) = read_str(state, root, CRITICAL_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.critical_action {
-                    self.last_prefs.critical_action = a;
-                    self.prefs.critical_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, CRITICAL_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.critical_action
+        {
+            self.last_prefs.critical_action = a;
+            self.prefs.critical_action = a;
+            self.persist();
         }
 
         if let Some(c) = &mut self.composed {
@@ -527,12 +519,11 @@ impl Widget for PowerPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -561,15 +552,13 @@ impl Widget for PowerPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+            );
         }
     }
 

@@ -697,22 +697,21 @@ impl AudioPane {
     /// rest doesn't re-fire. Routes through the injected [`GraphControl`].
     fn dispatch_stream(&mut self, state: &AutoCommit, root: &ObjId, s: &AudioStream) {
         // Route: match the chosen label to a device serial (or follow default).
-        if let Some(choice) = read_str(state, root, stream_sink_key(s.id).as_str()) {
-            if self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str()) {
-                self.last_stream_sink.insert(s.id, choice.clone());
-                let result = if choice == FOLLOW_DEFAULT {
-                    self.gctl.unroute_stream(s.id)
-                } else {
-                    let devices =
-                        if s.playback { &self.graph.sinks } else { &self.graph.sources };
-                    match devices.iter().find(|d| d.description == choice) {
-                        Some(dev) => self.gctl.route_stream(s.id, dev.serial),
-                        None => Ok(()),
-                    }
-                };
-                if let Err(e) = result {
-                    warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %e, "audio pane stream route failed");
+        if let Some(choice) = read_str(state, root, stream_sink_key(s.id).as_str())
+            && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
+        {
+            self.last_stream_sink.insert(s.id, choice.clone());
+            let result = if choice == FOLLOW_DEFAULT {
+                self.gctl.unroute_stream(s.id)
+            } else {
+                let devices = if s.playback { &self.graph.sinks } else { &self.graph.sources };
+                match devices.iter().find(|d| d.description == choice) {
+                    Some(dev) => self.gctl.route_stream(s.id, dev.serial),
+                    None => Ok(()),
                 }
+            };
+            if let Err(e) = result {
+                warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %e, "audio pane stream route failed");
             }
         }
         // Per-app volume.
@@ -726,12 +725,12 @@ impl AudioPane {
             }
         }
         // Per-app mute.
-        if let Some(b) = read_bool(state, root, stream_muted_key(s.id).as_str()) {
-            if self.last_stream_mute.get(&s.id).copied() != Some(b) {
-                self.last_stream_mute.insert(s.id, b);
-                if let Err(e) = self.gctl.set_node_mute(s.id, b) {
-                    warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
-                }
+        if let Some(b) = read_bool(state, root, stream_muted_key(s.id).as_str())
+            && self.last_stream_mute.get(&s.id).copied() != Some(b)
+        {
+            self.last_stream_mute.insert(s.id, b);
+            if let Err(e) = self.gctl.set_node_mute(s.id, b) {
+                warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
             }
         }
     }
@@ -852,64 +851,62 @@ impl Widget for AudioPane {
                 }
             }
         }
-        if let Some(b) = read_bool(state, root, MUTED_KEY) {
-            if b != self.last_muted {
-                self.last_muted = b;
-                if let Err(e) = self.dispatcher.toggle_mute() {
-                    warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
-                }
+        if let Some(b) = read_bool(state, root, MUTED_KEY)
+            && b != self.last_muted
+        {
+            self.last_muted = b;
+            if let Err(e) = self.dispatcher.toggle_mute() {
+                warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
             }
         }
         // System-sound preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY) {
-            if b != self.last_prefs.event_sounds {
-                self.last_prefs.event_sounds = b;
-                Self::persist_audio(|a| a.event_sounds = b);
-            }
+        if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY)
+            && b != self.last_prefs.event_sounds
+        {
+            self.last_prefs.event_sounds = b;
+            Self::persist_audio(|a| a.event_sounds = b);
         }
-        if let Some(b) = read_bool(state, root, CHAT_JOIN_KEY) {
-            if b != self.last_prefs.chat_join {
-                self.last_prefs.chat_join = b;
-                Self::persist_audio(|a| a.chat_join = b);
-            }
+        if let Some(b) = read_bool(state, root, CHAT_JOIN_KEY)
+            && b != self.last_prefs.chat_join
+        {
+            self.last_prefs.chat_join = b;
+            Self::persist_audio(|a| a.chat_join = b);
         }
-        if let Some(b) = read_bool(state, root, CHAT_LEAVE_KEY) {
-            if b != self.last_prefs.chat_leave {
-                self.last_prefs.chat_leave = b;
-                Self::persist_audio(|a| a.chat_leave = b);
-            }
+        if let Some(b) = read_bool(state, root, CHAT_LEAVE_KEY)
+            && b != self.last_prefs.chat_leave
+        {
+            self.last_prefs.chat_leave = b;
+            Self::persist_audio(|a| a.chat_leave = b);
         }
         // Output-device (sink) selection → wpctl set-default, guarded so a
         // selection at rest doesn't re-fire.
-        if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY) {
-            if self.last_sink.as_deref() != Some(name.as_str()) {
-                if let Some(id) = self.devices.sink_id(&name) {
-                    // Persist the chosen default sink so it is remembered across
-                    // sessions (the preferred output stays selected).
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        Self::persist_audio(|a| a.output_device = Some(nm));
-                    }
-                    self.last_sink = Some(name);
-                    if let Err(e) = self.device.set_default(id) {
-                        warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
-                    }
-                }
+        if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY)
+            && self.last_sink.as_deref() != Some(name.as_str())
+            && let Some(id) = self.devices.sink_id(&name)
+        {
+            // Persist the chosen default sink so it is remembered across
+            // sessions (the preferred output stays selected).
+            if self.persist_prefs {
+                let nm = name.clone();
+                Self::persist_audio(|a| a.output_device = Some(nm));
+            }
+            self.last_sink = Some(name);
+            if let Err(e) = self.device.set_default(id) {
+                warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
             }
         }
         // Input-device (source) selection → wpctl set-default.
-        if let Some(name) = read_str(state, root, INPUT_DEVICE_KEY) {
-            if self.last_source.as_deref() != Some(name.as_str()) {
-                if let Some(id) = self.devices.source_id(&name) {
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        Self::persist_audio(|a| a.input_device = Some(nm));
-                    }
-                    self.last_source = Some(name);
-                    if let Err(e) = self.device.set_default(id) {
-                        warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
-                    }
-                }
+        if let Some(name) = read_str(state, root, INPUT_DEVICE_KEY)
+            && self.last_source.as_deref() != Some(name.as_str())
+            && let Some(id) = self.devices.source_id(&name)
+        {
+            if self.persist_prefs {
+                let nm = name.clone();
+                Self::persist_audio(|a| a.input_device = Some(nm));
+            }
+            self.last_source = Some(name);
+            if let Err(e) = self.device.set_default(id) {
+                warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
             }
         }
         // Per-application streams: seed each stream's route/volume/mute keys
@@ -964,12 +961,11 @@ impl Widget for AudioPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -998,22 +994,21 @@ impl Widget for AudioPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 

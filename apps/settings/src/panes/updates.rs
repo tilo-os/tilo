@@ -11,11 +11,10 @@
 //!   the staged deployment via [`Rebooter`] (`systemctl reboot`).
 //! - **Automatic updates** enables or disables the update timer itself
 //!   ([`UpdateControl`]), and shows the timer's real state rather than a
-//!   stored preference. It used to write a preference file nothing read, so
-//!   switching updates off left the timer running.
+//!   stored preference, which can drift from what the machine is actually
+//!   doing.
 //! - **Roll back** makes the previous image the one this machine boots, after
-//!   showing what a rollback does not undo. The pane's help text used to
-//!   promise this of a system that had no rollback in it at all.
+//!   showing what a rollback does not undo.
 //! - **Release channel** is still a durable preference in the shared store
 //!   ([`crate::prefs::SystemPrefs`]).
 //
@@ -137,17 +136,9 @@ pub trait Rebooter: Send + Sync {
     fn reboot(&self) -> Result<(), String>;
 }
 
-/// The two things this pane claimed to do and did not.
-///
-/// **The automatic-updates switch.** It wrote a preference file and nothing
-/// read it, so turning updates off left the timer running. There is no
-/// preference to keep in step with the timer: the timer *is* the setting, so
-/// this reads and writes it directly and the switch shows what the machine
-/// will actually do.
-///
-/// **Rolling back.** The pane's own help text said "if something is wrong you
-/// can roll back to the previous image at boot", of a system that had no
-/// rollback anywhere in it. It does now, and this is the control.
+/// Drives the update timer and rollback for real. There is no preference to
+/// keep in step with the timer: the timer *is* the setting, so this reads and
+/// writes it directly and the switch shows what the machine will actually do.
 ///
 /// A trait rather than direct `Command` calls for the reason [`Rebooter`] is
 /// one: a test for "the switch turns the timer off" that turns the developer's
@@ -372,9 +363,8 @@ pub struct UpdatesPane {
     /// not undo; cleared when they leave the pane's structure alone long
     /// enough to rebuild.
     rollback_armed: bool,
-    /// The last thing that went wrong, shown in the pane. Actions that fail
-    /// used to warn into the journal, which for a settings switch is the same
-    /// as failing silently.
+    /// The last thing that went wrong, shown in the pane — a failed action
+    /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
     needs_seed: bool,
@@ -395,10 +385,9 @@ impl UpdatesPane {
         let status = status_provider();
         let control: Arc<dyn UpdateControl> = Arc::new(RealUpdateControl);
         let mut prefs = SystemPrefs::load().updates;
-        // The timer is the setting. The stored preference is kept only so an
-        // existing file does not have to be migrated, and it is overwritten by
-        // what the machine actually reports — a switch showing a preference
-        // nothing acts on is the defect this replaces.
+        // The timer is the setting; the stored preference exists only so an
+        // existing file need not be migrated, and is immediately overwritten
+        // by what the machine actually reports.
         let timer_enabled = control.timer_enabled();
         if let Some(on) = timer_enabled {
             prefs.auto = on;
@@ -735,55 +724,56 @@ impl Widget for UpdatesPane {
         }
 
         // Release channel → persist on change.
-        if let Some(ch) = read_str(state, root, CHANNEL_KEY) {
-            if CHANNELS.contains(&ch.as_str()) && ch != self.last_prefs.channel {
-                self.last_prefs.channel = ch.clone();
-                self.prefs.channel = ch;
-                self.persist();
-            }
+        if let Some(ch) = read_str(state, root, CHANNEL_KEY)
+            && CHANNELS.contains(&ch.as_str())
+            && ch != self.last_prefs.channel
+        {
+            self.last_prefs.channel = ch.clone();
+            self.prefs.channel = ch;
+            self.persist();
         }
 
         // Automatic updates → drive the timer, then report what the timer
-        // actually says. Persisting the preference is secondary and happens
-        // only when the machine agreed: a stored `auto = false` beside a
-        // running timer is precisely the state this pane used to leave behind.
-        if let Some(b) = read_bool_opt(state, root, AUTO_KEY) {
-            if b != self.last_prefs.auto {
-                self.last_prefs.auto = b;
-                match self.control.set_timer(b) {
-                    Ok(()) => {
-                        // Read it back rather than assuming. `systemctl enable`
-                        // can succeed on a unit that is masked or static, and
-                        // the switch has to show what the machine will do.
-                        self.timer_enabled = self.control.timer_enabled();
-                        let effective = self.timer_enabled.unwrap_or(b);
-                        self.prefs.auto = effective;
-                        self.notice = (effective != b).then(|| {
-                            format!(
-                                "Automatic updates are still {}. The system did \
-                                 not accept the change.",
-                                if effective { "on" } else { "off" }
-                            )
-                        });
-                        self.persist();
-                    }
-                    Err(e) => {
-                        warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
-                        self.notice = Some(format!("Automatic updates could not be changed: {e}"));
-                        // Put the switch back where the machine actually is.
-                        self.timer_enabled = self.control.timer_enabled();
-                        let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
-                        self.prefs.auto = effective;
-                        self.last_prefs.auto = effective;
-                        let _ = state.put(
-                            root,
-                            AUTO_KEY,
-                            automerge::ScalarValue::Boolean(effective),
-                        );
-                    }
+        // actually says. Persisting the preference happens only once the
+        // machine agrees, so the stored value never claims a state the timer
+        // isn't actually in.
+        if let Some(b) = read_bool_opt(state, root, AUTO_KEY)
+            && b != self.last_prefs.auto
+        {
+            self.last_prefs.auto = b;
+            match self.control.set_timer(b) {
+                Ok(()) => {
+                    // Read it back rather than assuming. `systemctl enable`
+                    // can succeed on a unit that is masked or static, and
+                    // the switch has to show what the machine will do.
+                    self.timer_enabled = self.control.timer_enabled();
+                    let effective = self.timer_enabled.unwrap_or(b);
+                    self.prefs.auto = effective;
+                    self.notice = (effective != b).then(|| {
+                        format!(
+                            "Automatic updates are still {}. The system did \
+                             not accept the change.",
+                            if effective { "on" } else { "off" }
+                        )
+                    });
+                    self.persist();
                 }
-                self.structure_dirty = true;
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
+                    self.notice = Some(format!("Automatic updates could not be changed: {e}"));
+                    // Put the switch back where the machine actually is.
+                    self.timer_enabled = self.control.timer_enabled();
+                    let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
+                    self.prefs.auto = effective;
+                    self.last_prefs.auto = effective;
+                    let _ = state.put(
+                        root,
+                        AUTO_KEY,
+                        automerge::ScalarValue::Boolean(effective),
+                    );
+                }
             }
+            self.structure_dirty = true;
         }
 
         // Roll back, in two steps. The first only opens the explanation.
@@ -856,12 +846,11 @@ impl Widget for UpdatesPane {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -890,22 +879,21 @@ impl Widget for UpdatesPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -1089,7 +1077,7 @@ mod tests {
         assert_eq!(pane.prefs().channel, "Nightly");
     }
 
-    // ---- the two things this pane claimed and did not do --------------------
+    // ---- timer + rollback control -------------------------------------------
 
     /// A machine, recorded. `timer` is what `systemctl is-enabled` would say.
     struct FakeControl {
@@ -1163,9 +1151,8 @@ mod tests {
         )
     }
 
-    /// The switch shows the timer, not a stored preference. It used to open
-    /// showing whatever the preferences file said, which on a machine whose
-    /// timer had been changed by any other means was simply wrong.
+    /// The switch shows the timer, not a stored preference, even when the two
+    /// disagree.
     #[test]
     fn the_switch_opens_showing_what_the_timer_actually_is() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_reads");
@@ -1188,18 +1175,15 @@ mod tests {
             Arc::new(RecordingRebooter::default()),
             control,
         );
-        assert_eq!(
+        assert!(
             pane.prefs().auto,
-            true,
             "the machine's timer wins over a stale preference; showing the \
              preference is how a switch comes to lie about the system"
         );
         assert_eq!(pane.timer_enabled(), Some(true));
     }
 
-    /// Turning the switch off turns the timer off. This is the assertion the
-    /// pane could not have passed before: it wrote a CRDT field and a
-    /// preferences file, and the timer kept running.
+    /// Turning the switch off turns the timer off.
     #[test]
     fn turning_automatic_updates_off_disables_the_timer() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_off");
@@ -1276,8 +1260,7 @@ mod tests {
     }
 
     /// Rolling back takes two clicks, and the first one only shows what a
-    /// rollback does not undo. The pane used to promise this feature in its
-    /// help text and not have it at all.
+    /// rollback does not undo.
     #[test]
     fn rolling_back_needs_a_confirmation_and_then_acts() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback");
@@ -1346,9 +1329,8 @@ mod tests {
         );
     }
 
-    /// The help text used to promise a rollback the system did not have. It
-    /// must not promise it again in a form nothing implements — so assert on
-    /// what the pane renders, not on a comment.
+    /// The help text must never promise a capability the pane does not offer
+    /// — assert on what the pane renders, not on a comment.
     #[test]
     fn the_help_text_does_not_promise_what_is_not_offered() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_help_text");

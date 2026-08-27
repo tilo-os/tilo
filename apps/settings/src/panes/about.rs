@@ -157,12 +157,12 @@ pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
 /// Pull the CPU model from `/proc/cpuinfo` — the first `model name` line.
 pub(crate) fn parse_cpu_model(contents: &str) -> Option<String> {
     for line in contents.lines() {
-        if let Some((key, val)) = line.split_once(':') {
-            if key.trim() == "model name" {
-                let v = val.trim();
-                if !v.is_empty() {
-                    return Some(v.to_string());
-                }
+        if let Some((key, val)) = line.split_once(':')
+            && key.trim() == "model name"
+        {
+            let v = val.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
             }
         }
     }
