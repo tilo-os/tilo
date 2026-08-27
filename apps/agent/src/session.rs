@@ -351,6 +351,17 @@ impl Session {
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
             Instruction::Heading => self.make_heading(&blocks, at)?,
+            // Naming a surveyed operation by address: dispatching it needs
+            // the per-app editors and registry a multi-app session brings,
+            // which this single-document one does not have yet.
+            Instruction::Perform { id, .. } => {
+                let reply = format!("{}: I can't perform {id} from here yet.", self.cfg.name);
+                let ins = &blocks[at];
+                self.edit(
+                    &ins.id,
+                    wp::splice_text_action(RegionKind::Body, &ins.id, 0, ins.text.chars().count(), &reply),
+                )?;
+            }
             Instruction::Unknown(what) => {
                 let reply = format!(
                     "{}: I can't \"{what}\" yet. I can: table, caption, heading.",

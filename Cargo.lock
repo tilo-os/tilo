@@ -242,6 +242,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "chat",
  "clap",
  "hex",
  "qdoc",
