@@ -1,6 +1,6 @@
 //! Peer-sync wire protocol: a single tagged enum (`NeighbourMsg`) carrying every
 //! cross-host payload (CRDT sync, presence, surface frames, remote input,
-//! capability negotiation). Transport bindings (libp2p gossipsub, in-process
+//! capability negotiation). Transport bindings (Iroh gossip, in-process
 //! [`crate::network::hub::Hub`]) operate on it without inspecting the payload.
 
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ pub enum NeighbourMsg {
     /// room left for `"av1"`/`"h265"`).
     SurfaceStreamStart {
         surface: SurfaceId,
-        /// Hashed libp2p `PeerId` of the owner; distinguishes concurrent shares in the
+        /// Hashed Iroh `PeerId` of the owner; distinguishes concurrent shares in the
         /// same workspace.
         source_peer: PeerId,
         width: u32,
@@ -106,7 +106,7 @@ pub enum NeighbourMsg {
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
     /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
-    /// (owner vanishes from gossipsub) still relies on.
+    /// (owner vanishes from gossip) still relies on.
     SurfaceStreamEnd {
         surface: SurfaceId,
         source_peer: PeerId,
@@ -123,7 +123,7 @@ pub enum NeighbourMsg {
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
     /// Periodic liveness beacon — Actor publishes one per joined workspace every
-    /// 5s; receivers evict peers silent for 15s. `peer` is the hashed libp2p
+    /// 5s; receivers evict peers silent for 15s. `peer` is the hashed Iroh
     /// `PeerId`; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
     /// App-level CRDT incremental — bridges app-side Automerge change blobs from
@@ -149,7 +149,7 @@ pub enum NeighbourMsg {
         /// untouched.
         data: Vec<u8>,
     },
-    /// A signed CRDT envelope crossing the libp2p boundary; recipients route it
+    /// A signed CRDT envelope crossing the Iroh boundary; recipients route it
     /// into the local broker's validation pipeline
     /// (`collab_types::validate_inbound_op`) before fan-out.
     ///
@@ -158,8 +158,8 @@ pub enum NeighbourMsg {
     /// back to unsigned, advisory-only fan-out). Boxed so this variant doesn't
     /// bloat `NeighbourMsg`'s stack size — postcard's wire shape is unaffected.
     AppCrdtIncrementalSigned {
-        /// Hashed libp2p `PeerId` of the publisher; used to filter self-published
-        /// gossipsub echoes.
+        /// Hashed Iroh `PeerId` of the publisher; used to filter self-published
+        /// gossip echoes.
         peer: PeerId,
         /// App-id of the originating app, same routing key as
         /// [`NeighbourMsg::AppCrdtIncremental`]. `#[serde(default)]` so envelopes
@@ -190,7 +190,7 @@ pub enum NeighbourMsg {
     /// so a peer stays visible to the whole room rather than only to apps with
     /// the same document open.
     AppPresence {
-        /// Hashed libp2p `PeerId` of the publisher; receiving shells drop their own
+        /// Hashed Iroh `PeerId` of the publisher; receiving shells drop their own
         /// echoes on it, and it's what the frame is attributed to once delivered.
         peer: PeerId,
         /// App-id of the originating app — first half of the delivery
@@ -217,13 +217,13 @@ pub enum NeighbourMsg {
     /// triggers one snapshot per arriving peer, not addressed specifically to
     /// them — merging is idempotent/commutative, so anyone converges from it.
     ///
-    /// Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`]: a document
-    /// has no upper bound but a gossipsub RPC does (64 KiB, unraised libp2p
-    /// default), so publishing above the cap fails loudly rather than
-    /// half-converging.
+    /// Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`] to limit
+    /// serialization and fan-out memory. A document has no upper bound, so
+    /// publishing above the application cap fails loudly rather than making
+    /// the collaboration actor unresponsive.
     AppCrdtSnapshot {
-        /// Hashed libp2p `PeerId` of the publisher; receiving shells drop their own
-        /// gossipsub echoes on it, as on every App* variant.
+        /// Hashed Iroh `PeerId` of the publisher; receiving shells drop their own
+        /// gossip echoes on it, as on every App* variant.
         peer: PeerId,
         /// App-id of the originating app — first routing-key component.
         #[serde(default)]
@@ -240,7 +240,7 @@ pub enum NeighbourMsg {
         /// `automerge::Automerge::save()` output for that record, opaque to every hop.
         data: Vec<u8>,
     },
-    /// Cooperative scrollback request, broadcast over gossipsub when a peer's
+    /// Cooperative scrollback request, broadcast over gossip when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
     /// Any peer holding the range replies with
     /// [`NeighbourMsg::ScrollbackResponse`].
@@ -258,7 +258,7 @@ pub enum NeighbourMsg {
         /// Page size cap, matching `CollabRequest::FetchScrollback::max` so the
         /// cooperative path doesn't re-cap.
         max: u16,
-        /// Hashed libp2p peer id of the requester; receivers use it to skip their
+        /// Hashed Iroh peer id of the requester; receivers use it to skip their
         /// own echoed requests.
         requester: PeerId,
     },
@@ -275,7 +275,7 @@ pub enum NeighbourMsg {
         /// The page of validated ops the responder is sharing; empty means "I don't
         /// have the range either" and is treated as a non-answer.
         ops: Vec<Box<collab_types::SignedOp>>,
-        /// Hashed libp2p peer id of the answering broker.
+        /// Hashed Iroh peer id of the answering broker.
         responder: PeerId,
     },
 }
