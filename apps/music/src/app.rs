@@ -4350,11 +4350,12 @@ mod tests {
     }
 
     #[test]
-    fn offline_home_fetch_reports_unavailable_and_stops_the_skeleton() {
-        // The real default startup: an empty library, network allowed. Whatever
-        // backend the worker binds to (offline sample, or live with no network
-        // reachable here) cannot serve Home, and the app must settle on its
-        // honest empty state rather than shimmer a loading skeleton forever.
+    fn a_home_fetch_always_settles_and_stops_the_skeleton() {
+        // The guarantee is that Home settles — loaded or unavailable — and stops
+        // animating. Which of the two happens depends on whether the machine
+        // running the test can reach the network, and `live` is on by default,
+        // so asserting specifically on the failure path made this pass only on
+        // an offline machine.
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
@@ -4377,16 +4378,18 @@ mod tests {
         let mut settled = false;
         for _ in 0..300 {
             app.drain_worker();
-            if app.home_failed {
+            // Either outcome ends the skeleton; only "still in flight" does not.
+            if !app.home_is_loading() {
                 settled = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(settled, "the offline Home fetch reports unavailable");
         assert!(
-            !app.home_is_loading(),
-            "Home stops loading — no endless skeleton / frame spin"
+            settled,
+            "Home settled within 3s — no endless skeleton. loaded={} failed={}",
+            app.home.is_some(),
+            app.home_failed
         );
         assert!(
             !app.needs_animation_frame(),
@@ -4798,6 +4801,16 @@ mod tests {
     /// fakesink, never a weakened assertion).
     #[cfg(all(feature = "live", feature = "audio"))]
     #[test]
+    // Streams a real track end to end through yt-dlp and a live audio server, so
+    // it depends on a third party being reachable and on that video still
+    // existing. It self-skips when the tools are missing, which made it pass on
+    // CI and fail on a developer machine that has them but cannot reach the
+    // network — the environment decided the result, not the code.
+    //
+    // Opt in with `cargo nextest run -p music --run-ignored all -E
+    // 'test(full_track_plays_past_one_minute)'` when changing the stream
+    // resolver; that is when it has something to say.
+    #[ignore = "streams a real track over the network; opt in with --run-ignored"]
     fn full_track_plays_past_one_minute() {
         use std::time::Duration;
         if !ytdlp_present() {
