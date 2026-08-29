@@ -2421,6 +2421,9 @@ mod tests {
     }
 
     #[test]
+    // ROUND(PI(),2) is expected to be 3.14; that is the assertion, not an
+    // approximation of the constant.
+    #[allow(clippy::approx_constant)]
     fn math_functions() {
         let m = run(&[
             ("A1", "=POWER(2,10)"),
