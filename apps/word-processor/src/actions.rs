@@ -1,33 +1,19 @@
 //! The word processor's exported **actions** and the **resource tree** it
 //! publishes to Ctrl+K.
 //!
-//! Every document-mutating operation the editor performs on its shared `qdoc`
-//! rich-text document — a text splice, a formatting mark, a paragraph attribute,
-//! a structural insert/delete — is a [`WordProcessorAction`]: a small
-//! serializable value that deterministically mutates the CRDT. Because the
-//! document already lives in the shared `AutoCommit` (the canonical `qdoc`
-//! schema under `ROOT` — see [`crate::EditorDoc`]), an action replicates and
-//! replays for free, and the exact same [`EncodedAction`] is what the on-screen
-//! affordances (the formatting toolbar, the paragraph panel, the structure
-//! menus) dispatch and what the Ctrl+K palette dispatches — one source of truth,
-//! one replay path.
+//! Every document-mutating operation — a text splice, a formatting mark, a
+//! paragraph attribute, a structural insert/delete — is a [`WordProcessorAction`]:
+//! a small serializable value that deterministically mutates the shared `qdoc`
+//! document. The same [`EncodedAction`] is what toolbar/panel/menu affordances
+//! dispatch and what Ctrl+K dispatches — one source of truth, one replay path.
+//! Presentation (caret, selection, scroll/zoom, open panel) stays out of the
+//! document and never becomes an action.
 //!
-//! Presentation — the caret, the selection, scroll/zoom, which tool or panel is
-//! open, the live per-keystroke edit buffer before it is committed — stays out
-//! of the document and never becomes an action.
-//!
-//! ## Determinism contract
-//!
-//! [`Action::apply`] is pure with respect to its payload: it never reads the
-//! wall-clock or the RNG. Every offset, id and value the mutation needs is
-//! carried in the payload, minted at *authoring* time. Newly-created block ids
-//! (a table's cells, an inserted image, a page break's fresh paragraph) are
-//! minted **inside** `apply` from a [`seeded_id_gen`](qdoc::model::seeded_id_gen)
-//! — deterministic because the executor pins the Automerge actor from the
-//! action's id, so `{actor}.{counter}` reproduces byte-identically on every
-//! replica. Sets of blocks/spans are sorted before iterating, so a replay emits
-//! the identical op sequence. A malformed payload (an unknown block id) is a
-//! **no-op**, not an error, so a bad replay can't wedge a peer.
+//! **Determinism contract**: [`Action::apply`] never reads the wall-clock or the
+//! RNG. New block ids are minted *inside* `apply` from a deterministic
+//! [`seeded_id_gen`](qdoc::model::seeded_id_gen); sets of blocks/spans are sorted
+//! before iterating, so a replay emits the identical op sequence. A malformed
+//! payload is a **no-op**, never an error, so a bad replay can't wedge a peer.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -103,12 +89,10 @@ pub struct Span {
 
 /// Every collaborative, document-mutating operation the word processor exports.
 ///
-/// The set is deliberately positional: each variant names the exact block ids
-/// and character offsets it touches, so [`Action::apply`] is a pure write and a
-/// replay reproduces the identical change. Live per-keystroke typing is *not*
-/// here — it splices directly into the per-block CRDT `Text` (the ephemeral
-/// live-edit path); a discrete text edit (Find & Replace, a scripted splice) is
-/// [`Self::SpliceText`].
+/// Deliberately positional: each variant names the exact block ids and offsets
+/// it touches, so [`Action::apply`] is a pure, replayable write. Live per-
+/// keystroke typing is *not* here (it splices directly into the CRDT `Text`); a
+/// discrete text edit (Find & Replace, a scripted splice) is [`Self::SpliceText`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WordProcessorAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
@@ -141,11 +125,9 @@ pub enum WordProcessorAction {
         level: Option<i64>,
         ordered: Option<bool>,
     },
-    /// Apply a named paragraph style to each of `blocks`: set the `style` attr,
-    /// and — when the style implies a structural kind (a built-in) — the block
-    /// `kind` / `level` / `ordered` too. One action so a style pick is a single
-    /// replayable operation / one undo boundary (rather than a kind write and a
-    /// style write racing as two changes).
+    /// Apply a named paragraph style to `blocks`: set the `style` attr, and — for
+    /// a built-in style — the structural `kind`/`level`/`ordered` too, as one
+    /// action/undo boundary (not a kind write racing a separate style write).
     ApplyNamedStyle {
         blocks: Vec<String>,
         style: String,
@@ -254,9 +236,9 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
     // Header/Footer: no `remove_mark_in` op — clear the mark directly on the
     // region block's Text object (mirrors the body `remove_mark`'s
     // `unmark(.., ExpandMark::After)`).
-    if let Some(container) = region_container_obj(dm.doc, c, region) {
-        if let Some(obj) = region_block_obj(dm.doc, &container, &span.block) {
-            if let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+    if let Some(container) = region_container_obj(dm.doc, c, region)
+        && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
+            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
                 dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
             {
                 let _ = dm.doc.unmark(
@@ -267,8 +249,6 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
                     automerge::marks::ExpandMark::After,
                 );
             }
-        }
-    }
 }
 
 fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, value: &AttrVal) {
@@ -756,11 +736,10 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     // a resource each, deleting every cell of the table.
     let mut table_ids: Vec<String> = Vec::new();
     for b in snap.blocks.iter().filter(|b| b.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table") {
-            if !table_ids.contains(tid) {
+        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table")
+            && !table_ids.contains(tid) {
                 table_ids.push(tid.clone());
             }
-        }
     }
     for tid in &table_ids {
         let cells: Vec<String> = snap
@@ -1017,11 +996,9 @@ mod tests {
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action. Uses a paragraph-style
-    /// change — a structural `kind` write the host's snapshot-diff undo reverts
-    /// (inline formatting *marks* are, by design, not undo-tracked by the
-    /// toolkit, so a bold toggle would not round-trip through Ctrl+Z).
+    /// mutates the document and records exactly one undo boundary, reverted
+    /// precisely by Ctrl+Z. Uses a paragraph-style change (a structural `kind`
+    /// write) since inline formatting *marks* are, by design, not undo-tracked.
     #[test]
     fn action_records_one_undo_boundary_and_reverts() {
         let (mut state, ids) = seeded("Title\n");
