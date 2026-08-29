@@ -90,7 +90,7 @@ static DRAG_WINDOW: Mutex<Option<Weak<Window>>> = Mutex::new(None);
 /// with no drag support, [`start_file_drag`] reports that it started
 /// nothing rather than pretending.
 pub fn set_drag_window(window: &std::sync::Arc<Window>) {
-    *DRAG_WINDOW.lock().unwrap_or_else(|e| e.into_inner()) =
+    *DRAG_WINDOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
         Some(std::sync::Arc::downgrade(window));
 }
 
@@ -184,7 +184,7 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
 /// something that is not a file on disk.
 pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     let window = {
-        let slot = DRAG_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = DRAG_WINDOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.as_ref().and_then(Weak::upgrade)
     };
     let Some(window) = window else {

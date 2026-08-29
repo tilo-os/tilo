@@ -161,7 +161,7 @@ impl FrameBuilder {
             text_renderer: TextRenderer::new(),
             last_room_epoch: 0,
             theme,
-            viewport: (viewport.0 as f64, viewport.1 as f64),
+            viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
                 // The broker fans every local app's frame to the whole room
@@ -228,7 +228,7 @@ impl FrameBuilder {
         self.root_node = Some(root);
     }
 
-    /// Run compute_layout + apply_layout against the current tree. Animation
+    /// Run `compute_layout` + `apply_layout` against the current tree. Animation
     /// state is preserved since the taffy tree isn't rebuilt — only layout
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
@@ -519,7 +519,7 @@ impl FrameBuilder {
     /// `relayout` (the wrapper root node carries an explicit extent). Used
     /// by the compositor's `BackendEvent::OutputResized` handler.
     pub fn set_viewport(&mut self, viewport: (u32, u32)) {
-        self.viewport = (viewport.0 as f64, viewport.1 as f64);
+        self.viewport = (f64::from(viewport.0), f64::from(viewport.1));
         self.rebuild_layout_tree();
     }
 
@@ -534,8 +534,8 @@ impl FrameBuilder {
     /// pipeline. Returns whether it was consumed.
     ///
     /// The compositor's `Modifiers`, `AutoCommit` doc, `ObjId` and focus
-    /// cursor live outside the FrameBuilder — each consumer owns its own —
-    /// passed in rather than stored, so the FrameBuilder stays a pure
+    /// cursor live outside the `FrameBuilder` — each consumer owns its own —
+    /// passed in rather than stored, so the `FrameBuilder` stays a pure
     /// layout/paint core shared by both. Both `ShellDriver::dispatch` and
     /// the compositor's `pump_test_control_conn` route through this one method.
     pub fn dispatch_event(
@@ -570,15 +570,14 @@ impl FrameBuilder {
         // new widget's. Without this, clicking a focusable widget would set
         // `focus_target` but the widget itself would never see
         // `set_focus(true)`, leaving rendering in the unfocused state.
-        if let Some(new_id) = focus_target {
-            if prior_focus != Some(new_id) {
-                if let Some(old_id) = prior_focus {
-                    if let Some(&w_ptr) = self.node_map.get(&old_id) {
+        if let Some(new_id) = focus_target
+            && prior_focus != Some(new_id) {
+                if let Some(old_id) = prior_focus
+                    && let Some(&w_ptr) = self.node_map.get(&old_id) {
                         unsafe {
                             (*w_ptr).set_focus(false);
                         }
                     }
-                }
                 if let Some(&w_ptr) = self.node_map.get(&new_id) {
                     unsafe {
                         (*w_ptr).set_focus(true);
@@ -586,7 +585,6 @@ impl FrameBuilder {
                 }
                 *focus = Some(new_id);
             }
-        }
         handled
     }
 
@@ -713,7 +711,7 @@ pub fn walk_widget(
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
-            name.clone()
+            name
         } else {
             format!("{parent_path}/{name}")
         };

@@ -505,10 +505,10 @@ fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
 
 /// One-line annotation preview for the palette label.
 fn anno_label(a: &Annotation) -> String {
-    let body = if !a.note.trim().is_empty() {
-        a.note.trim()
-    } else {
+    let body = if a.note.trim().is_empty() {
         a.excerpt.trim()
+    } else {
+        a.note.trim()
     };
     let mut t: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.chars().count() > 48 {

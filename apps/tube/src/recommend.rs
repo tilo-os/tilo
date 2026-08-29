@@ -1,7 +1,7 @@
 //! Recommendations model — how Tube decides what to show without an account.
 //!
-//! YouTube's personalised home needs the user's Google cookies (ToS / ban
-//! risk). Tube mirrors **NewPipe / Piped** instead: three no-auth signals —
+//! `YouTube`'s personalised home needs the user's Google cookies (`ToS` / ban
+//! risk). Tube mirrors **`NewPipe` / Piped** instead: three no-auth signals —
 //! subscriptions feed (fan-out + interleave, [`fan_out_subscription_feed`]),
 //! region trending, and per-video related — all exposed on
 //! [`crate::backend::YtBackend`]. This module holds the backend-agnostic

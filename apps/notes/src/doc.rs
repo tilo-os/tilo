@@ -44,7 +44,7 @@ impl NotesDoc {
     }
 
     /// Get-or-create the per-page Map for `id`. Returns the page Map's
-    /// ObjId. Does not touch the page's fields.
+    /// `ObjId`. Does not touch the page's fields.
     pub fn ensure_page(doc: &mut AutoCommit, id: PageId) -> ObjId {
         let pages = Self::pages_map(doc);
         let key = id.to_string();
@@ -71,7 +71,7 @@ impl NotesDoc {
         put_if_changed(doc, &page, "parent", parent_str);
 
         // order (int)
-        put_if_changed(doc, &page, "order", meta.order as i64);
+        put_if_changed(doc, &page, "order", i64::from(meta.order));
     }
 
     /// Remove a page's entry from the shared doc. Called when a page is
@@ -147,7 +147,7 @@ impl NotesDoc {
         })
     }
 
-    /// The `Text` ObjId for block `index` in a `blocks` List, if that
+    /// The `Text` `ObjId` for block `index` in a `blocks` List, if that
     /// block exists and has a Text body.
     pub fn block_text_obj(doc: &AutoCommit, blocks: &ObjId, index: usize) -> Option<ObjId> {
         let block = match doc.get(blocks, index) {
@@ -175,7 +175,7 @@ impl NotesDoc {
     }
 
     /// Append a new block `{ kind, text }` to a `blocks` List and return
-    /// the new block's `text` ObjId (already seeded with `text`).
+    /// the new block's `text` `ObjId` (already seeded with `text`).
     pub fn push_block(doc: &mut AutoCommit, blocks: &ObjId, kind: &str, text: &str) -> ObjId {
         let index = doc.length(blocks);
         let block = doc

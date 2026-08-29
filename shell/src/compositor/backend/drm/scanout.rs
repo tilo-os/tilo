@@ -1,7 +1,7 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two dumb buffers ping-ponged via `page_flip`, falling back to dirty_framebuffer/set_crtc.
+//! two dumb buffers ping-ponged via `page_flip`, falling back to `dirty_framebuffer/set_crtc`.
 //! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
 //! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
 
@@ -49,7 +49,7 @@ impl Card {
     /// `dev_t` of the underlying `cardN` node for stable per-connector `OutputId`s; best-effort (`0` on `fstat` failure — connector id still disambiguates).
     fn dev_id(&self) -> u64 {
         match smithay::reexports::rustix::fs::fstat(&self.0) {
-            Ok(st) => st.st_rdev as u64,
+            Ok(st) => st.st_rdev,
             Err(e) => {
                 tracing::debug!("DRM scanout: fstat for dev_id failed: {e}");
                 0
@@ -296,11 +296,10 @@ impl CursorPlanes {
         };
         let id = self.outputs[i].id;
         if self.active != Some(id) {
-            if let Some(prev) = self.active {
-                if let Some(o) = self.outputs.iter().find(|o| o.id == prev) {
+            if let Some(prev) = self.active
+                && let Some(o) = self.outputs.iter().find(|o| o.id == prev) {
                     o.mover.hide();
                 }
-            }
             self.active = Some(id);
         }
         let (ox, oy, _, _) = self.outputs[i].rect;
@@ -327,7 +326,7 @@ pub struct DrmScanout {
     front: usize,
     /// True between requesting a page flip and draining its completion; guards against queuing a second flip before the first retires (kernel rejects with `EBUSY`).
     flip_pending: bool,
-    /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to dirty_framebuffer/set_crtc.
+    /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
     use_pageflip: bool,
     width: u32,
     height: u32,
@@ -354,7 +353,7 @@ impl DrmScanout {
         match card.acquire_master_lock() {
             Ok(()) => tracing::info!("DRM scanout: acquired DRM master"),
             Err(e) => {
-                tracing::warn!("DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES")
+                tracing::warn!("DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES");
             }
         }
         Ok(card)
@@ -371,14 +370,12 @@ impl DrmScanout {
         // First connected connector that advertises a mode.
         let mut chosen: Option<(connector::Info, Mode)> = None;
         for &ch in res.connectors() {
-            if let Ok(info) = card.get_connector(ch, true) {
-                if info.state() == connector::State::Connected {
-                    if let Some(m) = pick_mode(info.modes()) {
+            if let Ok(info) = card.get_connector(ch, true)
+                && info.state() == connector::State::Connected
+                    && let Some(m) = pick_mode(info.modes()) {
                         chosen = Some((info, m));
                         break;
                     }
-                }
-            }
         }
         let (conn_info, mode) = chosen.ok_or("no connected connector with a usable mode")?;
         let connector = conn_info.handle();
@@ -403,7 +400,7 @@ impl DrmScanout {
         mode: Mode,
     ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
-        let (width, height) = (mw as u32, mh as u32);
+        let (width, height) = (u32::from(mw), u32::from(mh));
 
         // Cleared to black so the frames before the first paint aren't garbage.
         let mut buf0 = card
@@ -497,8 +494,8 @@ impl DrmScanout {
         let (_, _, vtotal) = self.mode.vsync();
         crate::compositor::pacing::interval_from_mode_timing(
             self.mode.clock(),
-            htotal as u32,
-            vtotal as u32,
+            u32::from(htotal),
+            u32::from(vtotal),
         )
         // Rounded rate as a fallback when the raw timing is unusable.
         .or_else(|| crate::compositor::pacing::interval_from_hz(self.mode.vrefresh()))
@@ -536,8 +533,8 @@ impl DrmScanout {
             );
         }
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
-        if self.hw_cursor_active {
-            if let Some(buf) = self.cursor_buffer.as_ref() {
+        if self.hw_cursor_active
+            && let Some(buf) = self.cursor_buffer.as_ref() {
                 #[allow(deprecated)]
                 if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
                     tracing::warn!(
@@ -547,7 +544,6 @@ impl DrmScanout {
                     self.hw_cursor_active = false;
                 }
             }
-        }
     }
 
     /// A [`HwCursor`] mover for the runtime's input handler, holding a dup of the card fd so
@@ -612,11 +608,10 @@ impl DrmScanout {
             let dst = map.as_mut();
             fill(dst, pitch);
             // Software fallback only — the hardware plane composites itself and must not also be drawn into the frame.
-            if !self.hw_cursor_active {
-                if let Some((px, py)) = cursor {
+            if !self.hw_cursor_active
+                && let Some((px, py)) = cursor {
                     draw_cursor(dst, pitch, dw, dh, px as i32, py as i32);
                 }
-            }
         }
 
         if self.use_pageflip {
@@ -630,7 +625,7 @@ impl DrmScanout {
         }
     }
 
-    /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to dirty_framebuffer.
+    /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) {
         match self
             .card
@@ -817,11 +812,9 @@ fn pick_crtc(
         .current_encoder()
         .and_then(|e| card.get_encoder(e).ok())
         .and_then(|e| e.crtc())
-    {
-        if !used.contains(&c) {
+        && !used.contains(&c) {
             return Some(c);
         }
-    }
     for &eh in conn_info.encoders() {
         if let Ok(enc) = card.get_encoder(eh) {
             for c in res.filter_crtcs(enc.possible_crtcs()) {
@@ -857,7 +850,7 @@ fn pick_mode(modes: &[Mode]) -> Option<Mode> {
                 })
                 .max_by_key(|m| {
                     let (w, h) = m.size();
-                    (w as u32) * (h as u32)
+                    u32::from(w) * u32::from(h)
                 })
         })
         .or_else(|| modes.first())

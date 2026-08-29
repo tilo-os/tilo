@@ -20,7 +20,7 @@ pub type Addr = (Col, Row);
 /// Convert a zero-based column index to spreadsheet letters.
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`.
 pub fn col_to_letters(col: Col) -> String {
-    let mut n = col as i64 + 1; // 1-based for the bijective base-26
+    let mut n = i64::from(col) + 1; // 1-based for the bijective base-26
     let mut out = Vec::new();
     while n > 0 {
         let rem = ((n - 1) % 26) as u8;
@@ -498,10 +498,10 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
             CellFormat::Date(s) => serial_to_date(*n, s),
             CellFormat::Time(s) => serial_to_time(*n, s),
             CellFormat::Boolean => {
-                if *n != 0.0 {
-                    "TRUE".into()
-                } else {
+                if *n == 0.0 {
                     "FALSE".into()
+                } else {
+                    "TRUE".into()
                 }
             }
         },
@@ -529,7 +529,7 @@ pub fn format_number_general(n: f64) -> String {
         return format!("{}", n as i64);
     }
     // Trim trailing zeros from a fixed-precision rendering.
-    let s = format!("{:.10}", n);
+    let s = format!("{n:.10}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     trimmed.to_string()
 }
@@ -591,7 +591,7 @@ fn grouped_parts(abs: f64, decimals: usize, group_sep: char) -> (String, Option<
     // Round half away from zero so e.g. JPY 1234.5 -> 1235, matching Excel.
     let factor = 10f64.powi(decimals as i32);
     let rounded = (abs * factor + 0.5).floor() / factor;
-    let s = format!("{:.*}", decimals, rounded);
+    let s = format!("{rounded:.decimals$}");
     let (int_part, frac_part) = match s.split_once('.') {
         Some((i, f)) => (i.to_string(), Some(f.to_string())),
         None => (s, None),
@@ -600,7 +600,7 @@ fn grouped_parts(abs: f64, decimals: usize, group_sep: char) -> (String, Option<
     let digits: Vec<char> = int_part.chars().collect();
     let len = digits.len();
     for (idx, ch) in digits.iter().enumerate() {
-        if idx > 0 && (len - idx) % 3 == 0 {
+        if idx > 0 && (len - idx).is_multiple_of(3) {
             grouped.push(group_sep);
         }
         grouped.push(*ch);
@@ -610,16 +610,16 @@ fn grouped_parts(abs: f64, decimals: usize, group_sep: char) -> (String, Option<
 
 /// Convert an Excel-style serial date (days since 1899-12-30) into a string
 /// in the chosen style. Uses a civil-calendar algorithm (Howard Hinnant's
-/// days_from_civil inverse) so it's correct across centuries without a
+/// `days_from_civil` inverse) so it's correct across centuries without a
 /// chrono dependency.
 pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
     // Excel epoch 1899-12-30 corresponds to Unix day -25569.
     let days = serial.floor() as i64 - 25569;
     let (y, m, d) = civil_from_days(days);
     match style {
-        DateStyle::Iso => format!("{:04}-{:02}-{:02}", y, m, d),
-        DateStyle::Us => format!("{:02}/{:02}/{:04}", m, d, y),
-        DateStyle::Eu => format!("{:02}/{:02}/{:04}", d, m, y),
+        DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
+        DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
+        DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
         DateStyle::Long => format!("{:02} {} {:04}", d, month_abbrev(m), y),
     }
 }
@@ -631,14 +631,14 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
     match style {
-        TimeStyle::H24 => format!("{:02}:{:02}", h, mi),
+        TimeStyle::H24 => format!("{h:02}:{mi:02}"),
         TimeStyle::H12 => {
             let suffix = if h < 12 { "AM" } else { "PM" };
             let h12 = match h % 12 {
                 0 => 12,
                 x => x,
             };
-            format!("{}:{:02} {}", h12, mi, suffix)
+            format!("{h12}:{mi:02} {suffix}")
         }
     }
 }
@@ -678,12 +678,11 @@ pub fn now_serial() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
+        .map_or(0.0, |d| d.as_secs_f64());
     secs / 86400.0 + 25569.0
 }
 
-/// Inverse of days_from_civil: days since Unix epoch -> (year, month, day).
+/// Inverse of `days_from_civil`: days since Unix epoch -> (year, month, day).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -701,9 +700,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64; // [0, 399]
-    let mp = if m > 2 { m - 3 } else { m + 9 } as i64; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
+    let yoe = y - era * 400; // [0, 399]
+    let mp = i64::from(if m > 2 { m - 3 } else { m + 9 }); // [0, 11]
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146097 + doe - 719468
 }

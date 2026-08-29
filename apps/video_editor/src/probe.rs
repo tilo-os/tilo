@@ -9,12 +9,12 @@
 //!     pixel dimensions from the video track's `tkhd`, the codec four-CC from
 //!     `stsd`, the kind from `hdlr`, and the frame rate from the video track's
 //!     sample count over the movie duration.
-//!   * **Matroska / WebM** (EBML): duration from the `Info` segment's
+//!   * **Matroska / `WebM`** (EBML): duration from the `Info` segment's
 //!     `Duration` × `TimestampScale`, pixel dimensions from the first video
 //!     `TrackEntry`, and the kind from the track types present.
 //!   * **MP3** (MPEG-1/2/2.5 Layer III): duration from a `Xing`/`Info` VBR
 //!     header when present (exact frame count), else a CBR estimate from the
-//!     first frame's bitrate over the audio byte length; ID3v2 tags are skipped.
+//!     first frame's bitrate over the audio byte length; `ID3v2` tags are skipped.
 //!   * **WAV** (RIFF/WAVE): channels / sample-rate / bit-depth from `fmt `, and
 //!     the duration from the `data` chunk size over the byte rate.
 //!   * **PNG / JPEG**: pixel dimensions from the header (`IHDR` / `SOFn`).
@@ -22,7 +22,7 @@
 //! Anything we can't parse degrades honestly: the kind is guessed from the
 //! extension and the numeric fields stay zero / unknown, rather than fabricated.
 //! Under `--features decode` the caller can additionally confirm duration
-//! against the real GStreamer pipeline, but the container parse here is already
+//! against the real `GStreamer` pipeline, but the container parse here is already
 //! real and is what the default build relies on.
 
 use std::path::Path;
@@ -80,26 +80,22 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> ProbedMedia {
         let (w, h) = jpeg_dimensions(data).unwrap_or((0, 0));
         return image_probe(w, h, "jpeg");
     }
-    if is_wav(data) {
-        if let Some(p) = parse_wav(data) {
+    if is_wav(data)
+        && let Some(p) = parse_wav(data) {
             return p;
         }
-    }
-    if is_isobmff(data) {
-        if let Some(p) = parse_isobmff(data) {
+    if is_isobmff(data)
+        && let Some(p) = parse_isobmff(data) {
             return p;
         }
-    }
-    if is_ebml(data) {
-        if let Some(p) = parse_ebml(data) {
+    if is_ebml(data)
+        && let Some(p) = parse_ebml(data) {
             return p;
         }
-    }
-    if looks_like_mp3(data, path) {
-        if let Some(p) = parse_mp3(data) {
+    if looks_like_mp3(data, path)
+        && let Some(p) = parse_mp3(data) {
             return p;
         }
-    }
     // Unknown container: honest fallback from the extension, no invented metadata.
     fallback_from_extension(path)
 }
@@ -165,7 +161,7 @@ fn is_ebml(d: &[u8]) -> bool {
     // Both Matroska and WebM open with the EBML header magic `1A 45 DF A3`.
     d.len() >= 4 && d[0..4] == [0x1A, 0x45, 0xDF, 0xA3]
 }
-/// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an ID3v2
+/// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an `ID3v2`
 /// tag, or a raw MPEG audio frame sync in the first bytes. Extension-only files
 /// still fall through to the frame-sync scan, so a mislabelled file is rejected
 /// rather than reported with fabricated numbers.
@@ -228,8 +224,8 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
             (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
             // SOF payload: precision(1) height(2) width(2) ...
-            let h = be_u16(&d[i + 5..i + 7]) as u32;
-            let w = be_u16(&d[i + 7..i + 9]) as u32;
+            let h = u32::from(be_u16(&d[i + 5..i + 7]));
+            let w = u32::from(be_u16(&d[i + 7..i + 9]));
             return Some((w, h));
         }
         i += 2 + seg_len;
@@ -271,7 +267,7 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     if byte_rate == 0 {
         return None;
     }
-    let duration = data_len as f64 / byte_rate as f64;
+    let duration = f64::from(data_len) / f64::from(byte_rate);
     let codec = match audio_format {
         1 => "pcm".to_string(),
         3 => "float".to_string(),
@@ -301,7 +297,7 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i + 8 <= data.len() {
-        let size32 = be_u32(&data[i..i + 4]) as u64;
+        let size32 = u64::from(be_u32(&data[i..i + 4]));
         let typ = [data[i + 4], data[i + 5], data[i + 6], data[i + 7]];
         let (header, total) = if size32 == 1 {
             if i + 16 > data.len() {
@@ -365,7 +361,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
     // Movie duration from mvhd.
     let (timescale, duration_units) = child(moov, b"mvhd").and_then(mvhd_time).unwrap_or((0, 0));
     let duration = if timescale > 0 {
-        duration_units as f64 / timescale as f64
+        duration_units as f64 / f64::from(timescale)
     } else {
         0.0
     };
@@ -404,13 +400,12 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
             // fps ≈ video sample count / movie duration.
             let samples = stbl.and_then(|s| child(s, b"stsz")).and_then(stsz_count);
             if let (Some(n), true) = (samples, duration > 0.0) {
-                fps = n as f64 / duration;
+                fps = f64::from(n) / duration;
             }
-        } else if is_audio && codec == "unknown" && !saw_video {
-            if let Some(c) = track_codec {
+        } else if is_audio && codec == "unknown" && !saw_video
+            && let Some(c) = track_codec {
                 codec = c;
             }
-        }
     }
 
     kind = if saw_video {
@@ -454,7 +449,7 @@ fn mvhd_time(body: &[u8]) -> Option<(u32, u64)> {
             return None;
         }
         let ts = be_u32(&body[12..16]);
-        let dur = be_u32(&body[16..20]) as u64;
+        let dur = u64::from(be_u32(&body[16..20]));
         Some((ts, dur))
     }
 }
@@ -526,12 +521,12 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         return None;
     }
     let mut value: u64 = if keep_marker {
-        first as u64
+        u64::from(first)
     } else {
-        (first & (0xFFu8 >> len)) as u64
+        u64::from(first & (0xFFu8 >> len))
     };
     for k in 1..len {
-        value = (value << 8) | d[i + k] as u64;
+        value = (value << 8) | u64::from(d[i + k]);
     }
     Some((value, len))
 }
@@ -575,13 +570,13 @@ fn ebml_find(d: &[u8], id: u64) -> Option<&[u8]> {
 
 /// Big-endian unsigned integer from an EBML element payload (1..8 bytes).
 fn ebml_uint(d: &[u8]) -> u64 {
-    d.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64)
+    d.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
 }
 
 /// IEEE float from an EBML element payload (4 or 8 bytes; 0 otherwise).
 fn ebml_float(d: &[u8]) -> Option<f64> {
     match d.len() {
-        4 => Some(f32::from_be_bytes([d[0], d[1], d[2], d[3]]) as f64),
+        4 => Some(f64::from(f32::from_be_bytes([d[0], d[1], d[2], d[3]]))),
         8 => Some(f64::from_be_bytes([
             d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
         ])),
@@ -603,8 +598,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
     let duration = info
         .and_then(|i| ebml_find(i, EBML_DURATION))
         .and_then(ebml_float)
-        .map(|units| units * timescale as f64 / 1e9)
-        .unwrap_or(0.0);
+        .map_or(0.0, |units| units * timescale as f64 / 1e9);
 
     // Kind + dimensions from the first video/audio track entry.
     let mut saw_video = false;
@@ -619,16 +613,13 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
             match ebml_find(entry, EBML_TRACK_TYPE).map(ebml_uint) {
                 Some(1) => {
                     saw_video = true;
-                    if width == 0 {
-                        if let Some(video) = ebml_find(entry, EBML_VIDEO) {
+                    if width == 0
+                        && let Some(video) = ebml_find(entry, EBML_VIDEO) {
                             width = ebml_find(video, EBML_PIXEL_WIDTH)
-                                .map(ebml_uint)
-                                .unwrap_or(0) as u32;
+                                .map_or(0, ebml_uint) as u32;
                             height = ebml_find(video, EBML_PIXEL_HEIGHT)
-                                .map(ebml_uint)
-                                .unwrap_or(0) as u32;
+                                .map_or(0, ebml_uint) as u32;
                         }
-                    }
                 }
                 Some(2) => saw_audio = true,
                 _ => {}
@@ -654,7 +645,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
 
 // ---- MP3 (MPEG-1/2/2.5 Layer III) -----------------------------------------
 
-/// Read a 4-byte ID3v2 syncsafe integer (7 bits per byte).
+/// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
 fn syncsafe(b: &[u8]) -> usize {
     ((b[0] as usize & 0x7F) << 21)
         | ((b[1] as usize & 0x7F) << 14)
@@ -730,12 +721,11 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
     while scan <= limit {
-        if d[scan] == 0xFF && (d[scan + 1] & 0xE0) == 0xE0 {
-            if let Some(h) = parse_mp3_frame_header(&d[scan..]) {
+        if d[scan] == 0xFF && (d[scan + 1] & 0xE0) == 0xE0
+            && let Some(h) = parse_mp3_frame_header(&d[scan..]) {
                 header = Some((scan, h));
                 break;
             }
-        }
         scan += 1;
         if scan - off > 200_000 {
             break; // no frame in a sane window
@@ -758,8 +748,8 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     {
         let flags = be_u32(&d[xing_at + 4..xing_at + 8]);
         if flags & 0x1 != 0 {
-            let frames = be_u32(&d[xing_at + 8..xing_at + 12]) as f64;
-            let duration = frames * h.samples_per_frame as f64 / h.sample_rate as f64;
+            let frames = f64::from(be_u32(&d[xing_at + 8..xing_at + 12]));
+            let duration = frames * f64::from(h.samples_per_frame) / f64::from(h.sample_rate);
             return Some(mp3_probe(duration));
         }
     }
@@ -769,7 +759,7 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
         return Some(mp3_probe(0.0));
     }
     let audio_bytes = d.len().saturating_sub(frame_off);
-    let duration = (audio_bytes as f64 * 8.0) / h.bitrate_bps as f64;
+    let duration = (audio_bytes as f64 * 8.0) / f64::from(h.bitrate_bps);
     Some(mp3_probe(duration))
 }
 

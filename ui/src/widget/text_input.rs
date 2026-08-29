@@ -398,14 +398,14 @@ impl TextInput {
         if self.plain {
             0.0
         } else {
-            theme.padding_standard as f64
+            f64::from(theme.padding_standard)
         }
     }
 
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
-        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (text_y, line_height)
     }
@@ -460,7 +460,7 @@ impl TextInput {
             let x0 = self.x_in_row(r, lo);
             let mut x1 = self.x_in_row(r, hi);
             if spans_break && hi == r.end {
-                x1 += (self.effective_font_size() as f64) * 0.4;
+                x1 += f64::from(self.effective_font_size()) * 0.4;
             }
             if x1 - x0 < 0.5 {
                 continue;
@@ -481,7 +481,7 @@ impl TextInput {
     }
 
     fn line_height(&self) -> f64 {
-        (self.effective_font_size() * LINE_HEIGHT_RATIO) as f64
+        f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
     }
 
     /// Falls back to one row when nothing has been laid out yet.
@@ -538,7 +538,7 @@ impl TextInput {
 
     fn caret_rect_ml(&self, byte: usize) -> Rect {
         let (i, x) = self.locate_ml(byte);
-        let y = self.lines.get(i).map(|r| r.y).unwrap_or(0.0);
+        let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
         let cy = self.rect.y0 + ML_PAD_Y + y - self.scroll_y;
         Rect::new(cx, cy, cx + CARET_WIDTH, cy + self.line_height())
@@ -622,7 +622,7 @@ impl TextInput {
         let mut para_start = 0usize;
         loop {
             let rel_nl = self.text[para_start..].find('\n');
-            let para_end = rel_nl.map(|i| para_start + i).unwrap_or(self.text.len());
+            let para_end = rel_nl.map_or(self.text.len(), |i| para_start + i);
             self.wrap_paragraph(
                 tr,
                 size,
@@ -662,8 +662,8 @@ impl TextInput {
         let cum: Vec<f64> = boundaries
             .iter()
             .map(|&b| {
-                self.measure_str(tr, &self.display_slice(start, start + b), size)
-                    .0 as f64
+                f64::from(self.measure_str(tr, &self.display_slice(start, start + b), size)
+                    .0)
             })
             .collect();
         let nchars = boundaries.len() - 1;
@@ -767,7 +767,7 @@ impl TextInput {
         self.refresh_highlight();
 
         let (caret_row, _) = self.locate_ml(self.cursor_pos);
-        let caret_top = self.lines.get(caret_row).map(|r| r.y).unwrap_or(0.0);
+        let caret_top = self.lines.get(caret_row).map_or(0.0, |r| r.y);
         let caret_bot = caret_top + lh;
         let view_h = self.rect.height() - ML_PAD_Y * 2.0;
         let caret_moved = self.last_scroll_caret != Some(self.cursor_pos);
@@ -894,7 +894,7 @@ impl TextInput {
 
         if gutter_w > 0.0 {
             for (ry, num, current) in &gutter_nums {
-                let w = self.measure_str(tr, num, size).0 as f64;
+                let w = f64::from(self.measure_str(tr, num, size).0);
                 let x = self.rect.x0 + gutter_w - GUTTER_PAD_R - w;
                 let origin = transform
                     * Affine::translate((x, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
@@ -1024,7 +1024,7 @@ impl TextInput {
         }
     }
 
-    /// Bypasses `draw_with_presence` — only safe on local-mode TextInputs
+    /// Bypasses `draw_with_presence` — only safe on local-mode `TextInputs`
     /// with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
@@ -1139,7 +1139,7 @@ impl TextInput {
         }
         let lines = self.text.bytes().filter(|&b| b == b'\n').count() + 1;
         let digits = ((lines as f64).log10().floor() as usize + 1).max(2);
-        let adv = self.effective_font_size() as f64 * GUTTER_DIGIT_RATIO;
+        let adv = f64::from(self.effective_font_size()) * GUTTER_DIGIT_RATIO;
         GUTTER_PAD_L + digits as f64 * adv + GUTTER_PAD_R
     }
 
@@ -1158,7 +1158,7 @@ impl TextInput {
         // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
         let mut sig: u64 = 0xcbf29ce484222325;
         for &b in self.text.as_bytes() {
-            sig ^= b as u64;
+            sig ^= u64::from(b);
             sig = sig.wrapping_mul(0x100000001b3);
         }
         sig ^= self.text.len() as u64;
@@ -1352,8 +1352,7 @@ impl TextInput {
     fn outdent(&mut self, width: usize, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         let line_start = self.text[..self.cursor_pos]
             .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
+            .map_or(0, |i| i + 1);
         let w = if width == 0 { 1 } else { width };
         let mut remove = 0usize;
         for c in self.text[line_start..].chars() {
@@ -1383,12 +1382,12 @@ impl TextInput {
         self.dirty = true;
     }
 
-    /// For BlockEditor's cross-block drag coordinator.
+    /// For `BlockEditor`'s cross-block drag coordinator.
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
     }
 
-    /// For BlockEditor's cross-block drag coordinator, painting a selection
+    /// For `BlockEditor`'s cross-block drag coordinator, painting a selection
     /// band on a block being dragged through without it being the click
     /// target. `anchor == cursor` clears.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
@@ -1402,7 +1401,7 @@ impl TextInput {
         self.cursor_pos = c;
     }
 
-    /// Public counterpart to `cursor_from_x`, for BlockEditor's cross-block drag.
+    /// Public counterpart to `cursor_from_x`, for `BlockEditor`'s cross-block drag.
     pub fn byte_at_x(&self, logical_x: f64) -> usize {
         self.cursor_from_x(logical_x)
     }
@@ -1457,13 +1456,13 @@ impl TextInput {
     /// (matches every native editor's right-click-on-a-word behaviour).
     fn open_context_menu(&mut self, pos: [f32; 2]) {
         if !self.has_selection() {
-            let byte = self.resolve_cursor(Point::new(pos[0] as f64, pos[1] as f64));
+            let byte = self.resolve_cursor(Point::new(f64::from(pos[0]), f64::from(pos[1])));
             let (start, end) = word_boundaries(&self.text, byte);
-            if start != end {
+            if start == end {
+                self.cursor_pos = byte.min(self.text.len());
+            } else {
                 self.selection_anchor = Some(start);
                 self.cursor_pos = end;
-            } else {
-                self.cursor_pos = byte.min(self.text.len());
             }
         }
 
@@ -1621,17 +1620,17 @@ impl Widget for TextInput {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1650,7 +1649,7 @@ impl Widget for TextInput {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 400.0,
         });
-        let avail_w = (width as f64 - self.ml_left() - ML_PAD_X).max(1.0);
+        let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         self.build_lines(text_renderer, avail_w);
         taffy::Size {
             width,
@@ -1666,7 +1665,7 @@ impl Widget for TextInput {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             let bg_color = if self.disabled {
                 // One step darker than the raised form-field fill, to read as "inert".
@@ -1709,12 +1708,12 @@ impl Widget for TextInput {
         }
 
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
-        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.
             0.0
         } else {
-            theme.padding_standard as f64
+            f64::from(theme.padding_standard)
         };
 
         // `char_x_positions` stays keyed by real-text byte offsets; measured
@@ -1725,16 +1724,16 @@ impl Widget for TextInput {
         self.char_x_positions.resize(self.text.len() + 1, 0.0);
         for (byte_idx, _) in self.text.char_indices() {
             let (w, _) = self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
-            self.char_x_positions[byte_idx] = w as f64;
+            self.char_x_positions[byte_idx] = f64::from(w);
         }
         let (total_w, _) = self.measure_str(text_renderer, &display, text_size);
-        self.char_x_positions[self.text.len()] = total_w as f64;
+        self.char_x_positions[self.text.len()] = f64::from(total_w);
 
         let cursor_pos = self.cursor_pos.min(self.text.len());
         let cursor_x_offset = if cursor_pos < self.char_x_positions.len() {
             self.char_x_positions[cursor_pos]
         } else {
-            total_w as f64
+            f64::from(total_w)
         };
 
         let visible_width = self.rect.width() - padding_x * 2.0;
@@ -1853,7 +1852,7 @@ impl Widget for TextInput {
             {
                 let dy = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => {
-                        -(*y as f64) * self.line_height()
+                        -f64::from(*y) * self.line_height()
                     }
                     winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
@@ -2180,7 +2179,7 @@ impl Widget for TextInput {
                     }
                     _ => {
                         if let Some(t) = text
-                            && !t.as_str().chars().all(|c| c.is_control())
+                            && !t.as_str().chars().all(char::is_control)
                         {
                             self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                             *handled = true;
@@ -2193,7 +2192,7 @@ impl Widget for TextInput {
                     return;
                 }
                 let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
-                if !t.chars().all(|c| c.is_control()) {
+                if !t.chars().all(char::is_control) {
                     self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                     *handled = true;
                 }
@@ -2202,7 +2201,7 @@ impl Widget for TextInput {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TextInput"
     }
 
@@ -2341,7 +2340,7 @@ impl Widget for TextInput {
                 );
             }
             if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list.iter() {
+                for (user, caret) in list {
                     let name = presence.display_name(user);
                     presence.draw_peer_caret_labeled(
                         scene,
@@ -2356,7 +2355,7 @@ impl Widget for TextInput {
             }
 
             if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list.iter() {
+                for (user, range) in list {
                     for r in self.selection_rects(theme, range.start, range.end) {
                         presence.draw_peer_selection(scene, theme, transform, user, r);
                     }

@@ -103,8 +103,7 @@ impl NavGestureRecognizer {
         let now = Instant::now();
         let idle = self
             .last_scroll
-            .map(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS)
-            .unwrap_or(true);
+            .is_none_or(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS);
         self.last_scroll = Some(now);
         if phase == GesturePhase::Begin || idle {
             self.reset_swipe();
@@ -241,8 +240,7 @@ impl DragSelect {
         let multi = !shift
             && self
                 .last_click
-                .map(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS)
-                .unwrap_or(false)
+                .is_some_and(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS)
             && self.last_pos.distance(pos) < MULTI_CLICK_DIST;
         self.click_count = if multi {
             (self.click_count + 1).min(3)

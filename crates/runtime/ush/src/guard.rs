@@ -93,7 +93,7 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
                 // A path not in the namespace needs no rule — it's already unreachable;
                 // refusing to start over it would make an absent optional directory fatal.
                 Err(e) => {
-                    tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path")
+                    tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path");
                 }
             }
         }
@@ -264,9 +264,7 @@ pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<Pat
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(quarantine_dir)?;
     let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unnamed".into());
+        .file_name().map_or_else(|| "unnamed".into(), |n| n.to_string_lossy().into_owned());
     // Keep the original location in the stored name: restoring has to put it
     // back where it came from, and a bare basename cannot say where that was.
     let encoded = path.to_string_lossy().replace('/', "%2F");
@@ -306,7 +304,7 @@ pub fn quarantine_list(quarantine_dir: &Path) -> Vec<QuarantineEntry> {
             Some(QuarantineEntry {
                 at: at.parse().ok()?,
                 original: PathBuf::from(encoded.replace("%2F", "/")),
-                bytes: e.metadata().ok().map(|m| m.len()).unwrap_or(0),
+                bytes: e.metadata().ok().map_or(0, |m| m.len()),
                 stored_at,
             })
         })

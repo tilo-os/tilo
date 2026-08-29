@@ -55,8 +55,8 @@ pub fn peer_salt_from_keypair(kp: &libp2p::identity::Keypair) -> u16 {
     let h = fnv1a_64(&bytes);
     // Fold the 64-bit hash down to 16 bits by XOR'ing the four 16-bit
     // slices — keeps every output bit a function of every input bit, roughly uniform collisions.
-    let h16 = (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16);
-    h16
+    
+    (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16)
 }
 
 /// Fold a `PeerId` to the `u64` the wire carries as an **opaque liveness
@@ -76,7 +76,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = FNV_OFFSET;
     for b in bytes {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(FNV_PRIME);
     }
     h
@@ -157,7 +157,7 @@ fn read_device_keypair(path: &std::path::Path) -> std::io::Result<libp2p::identi
 fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
     let kp = libp2p::identity::Keypair::from_protobuf_encoding(bytes).ok()?;
     let ed = kp.try_into_ed25519().ok()?;
-    Some(ed.secret().as_ref().try_into().ok()?)
+    ed.secret().as_ref().try_into().ok()
 }
 
 /// Expand a seed into the libp2p keypair — same 32 bytes, same public key, so the `PeerId` is a function of the device key alone.

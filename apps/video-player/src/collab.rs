@@ -8,8 +8,8 @@
 //! `CollabRequest::SyncIncremental`, so a peer that joins the workspace simply
 //! starts following.
 //!
-//! This module holds only the CRDT-drive logic (host_step / ingest /
-//! follow_step), so it is fully unit-testable without a live socket; the app
+//! This module holds only the CRDT-drive logic (`host_step` / ingest /
+//! `follow_step`), so it is fully unit-testable without a live socket; the app
 //! ([`crate::app`]) owns the `CollaborationManager` and pumps bytes between it
 //! and this state.
 
@@ -29,7 +29,7 @@ impl Role {
     /// Host), so two instances on a shared workspace pick complementary roles.
     pub fn from_env() -> Self {
         match std::env::var("QOS_PLAYER_ROLE").ok().as_deref() {
-            Some("follower") | Some("Follower") => Role::Follower,
+            Some("follower" | "Follower") => Role::Follower,
             _ => Role::Host,
         }
     }

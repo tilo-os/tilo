@@ -328,7 +328,7 @@ impl Widget for Card {
                     flex_direction: FlexDirection::Column,
                     align_items: Some(AlignItems::Stretch),
                     gap: Size {
-                        width: length(0.0),
+                        width: length(0.0_f32),
                         height: length(CARD_GAP),
                     },
                     padding: taffy::Rect {
@@ -347,17 +347,17 @@ impl Widget for Card {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
@@ -439,7 +439,7 @@ impl Widget for Card {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -470,7 +470,7 @@ impl Widget for Card {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InstallerCard"
     }
 
@@ -755,23 +755,20 @@ impl InstallerApp {
         }
         // Hostname / timezone seed with sensible defaults so the fields
         // aren't blank (and validation passes out of the box).
-        if state.get(root, HOSTNAME_PATH).ok().flatten().is_none() {
-            if let Ok(obj) = state.put_object(root, HOSTNAME_PATH, ObjType::Text) {
+        if state.get(root, HOSTNAME_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, HOSTNAME_PATH, ObjType::Text) {
                 let _ = state.splice_text(&obj, 0, 0, DEFAULT_HOSTNAME);
             }
-        }
-        if state.get(root, TIMEZONE_PATH).ok().flatten().is_none() {
-            if let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text) {
+        if state.get(root, TIMEZONE_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text) {
                 let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
             }
-        }
         // Keyboard layout seeds with the current selection (default or a
         // shot-injected one), so the picker + preview aren't blank.
-        if state.get(root, KEYMAP_PATH).ok().flatten().is_none() {
-            if let Ok(obj) = state.put_object(root, KEYMAP_PATH, ObjType::Text) {
+        if state.get(root, KEYMAP_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, KEYMAP_PATH, ObjType::Text) {
                 let _ = state.splice_text(&obj, 0, 0, &self.keymap);
             }
-        }
         // The TPM2 PIN is a Text object so the masked TextInput can splice
         // into it like every other field; it starts empty (no PIN).
         if state.get(root, PIN_PATH).ok().flatten().is_none() {
@@ -917,41 +914,38 @@ impl InstallerApp {
             .as_ref()
             .and_then(|s| s.lock().ok().and_then(|g| g.clone()));
 
-        match proxy {
-            Some(proxy) => {
-                // Worker thread: stream each line back as an External event.
-                std::thread::spawn(move || {
-                    let result =
-                        crate::install::run_install(&disk, &user, &password, &opts, |line| {
-                            let _ = proxy.send_event(UserEvent::External(line));
-                        });
-                    let terminal = match result {
-                        Ok(true) => CTRL_DONE.to_string(),
-                        Ok(false) => CTRL_FAIL.to_string(),
-                        Err(e) => {
-                            let _ = proxy.send_event(UserEvent::External(format!(
-                                "error: failed to launch installer: {e}"
-                            )));
-                            CTRL_FAIL.to_string()
-                        }
-                    };
-                    let _ = proxy.send_event(UserEvent::External(terminal));
-                });
-            }
-            None => {
-                // Synchronous fallback (blocks the caller).
-                let mut lines = std::mem::take(&mut self.status_lines);
-                let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
-                    lines.push(line)
-                });
-                self.status_lines = lines;
-                match result {
-                    Ok(true) => self.mark_install_done(),
-                    Ok(false) => self.mark_install_failed(None),
-                    Err(e) => self.mark_install_failed(Some(format!(
-                        "error: failed to launch installer: {e}"
-                    ))),
-                }
+        if let Some(proxy) = proxy {
+            // Worker thread: stream each line back as an External event.
+            std::thread::spawn(move || {
+                let result =
+                    crate::install::run_install(&disk, &user, &password, &opts, |line| {
+                        let _ = proxy.send_event(UserEvent::External(line));
+                    });
+                let terminal = match result {
+                    Ok(true) => CTRL_DONE.to_string(),
+                    Ok(false) => CTRL_FAIL.to_string(),
+                    Err(e) => {
+                        let _ = proxy.send_event(UserEvent::External(format!(
+                            "error: failed to launch installer: {e}"
+                        )));
+                        CTRL_FAIL.to_string()
+                    }
+                };
+                let _ = proxy.send_event(UserEvent::External(terminal));
+            });
+        } else {
+            // Synchronous fallback (blocks the caller).
+            let mut lines = std::mem::take(&mut self.status_lines);
+            let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
+                lines.push(line);
+            });
+            self.status_lines = lines;
+            match result {
+                Ok(true) => self.mark_install_done(),
+                Ok(false) => self.mark_install_failed(None),
+                Err(e) => self.mark_install_failed(Some(format!(
+                    "error: failed to launch installer: {e}"
+                ))),
             }
         }
     }
@@ -994,7 +988,7 @@ impl InstallerApp {
         let sm = theme.tokens.typography.scale.sm;
 
         let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
-            STEP_LABELS.iter().map(|s| s.to_string()).collect(),
+            STEP_LABELS.iter().map(std::string::ToString::to_string).collect(),
             step_index(self.step),
         ))];
 
@@ -1077,7 +1071,7 @@ impl InstallerApp {
 
                 children.push(Box::new(Text::new("Filesystem").with_size(base)));
                 children.push(Box::new(SegChoice::new(
-                    FILESYSTEMS.iter().map(|s| s.to_string()).collect(),
+                    FILESYSTEMS.iter().map(std::string::ToString::to_string).collect(),
                     (0..FILESYSTEMS.len()).map(fs_path).collect(),
                     self.selected_fs,
                 )));
@@ -1090,9 +1084,9 @@ impl InstallerApp {
                 children.push(Box::new(Text::new("Disk encryption").with_size(base)));
                 children.push(Box::new(
                     SegChoice::new(
-                        ENCRYPT_LABELS.iter().map(|s| s.to_string()).collect(),
+                        ENCRYPT_LABELS.iter().map(std::string::ToString::to_string).collect(),
                         (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
-                        if self.encrypt { 1 } else { 0 },
+                        usize::from(self.encrypt),
                     )
                     .with_test_id("encryption_choice"),
                 ));
@@ -1126,9 +1120,9 @@ impl InstallerApp {
                     children.push(Box::new(Text::new("Security key").with_size(base)));
                     children.push(Box::new(
                         SegChoice::new(
-                            FIDO2_LABELS.iter().map(|s| s.to_string()).collect(),
+                            FIDO2_LABELS.iter().map(std::string::ToString::to_string).collect(),
                             (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
-                            if self.fido2 { 1 } else { 0 },
+                            usize::from(self.fido2),
                         )
                         .with_test_id("fido2_choice"),
                     ));
@@ -1362,7 +1356,7 @@ fn default_timezones() -> Vec<String> {
         "Pacific/Auckland",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(std::string::ToString::to_string)
     .collect()
 }
 
@@ -1454,12 +1448,10 @@ impl Widget for InstallerApp {
                         self.recovery_ack = false;
                         if let Some((Value::Object(ObjType::Text), pobj)) =
                             state.get(root, PIN_PATH).ok().flatten()
-                        {
-                            if let Ok(cur) = state.text(&pobj) {
+                            && let Ok(cur) = state.text(&pobj) {
                                 let _ =
                                     state.splice_text(&pobj, 0, cur.chars().count() as isize, "");
                             }
-                        }
                         self.pin.clear();
                     }
                     self.dirty_structure = true;
@@ -1547,8 +1539,8 @@ impl Widget for InstallerApp {
                     justify_content: Some(JustifyContent::Center),
                     align_items: Some(AlignItems::Center),
                     size: Size {
-                        width: percent(1.0),
-                        height: percent(1.0),
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
                     },
                     ..Default::default()
                 },
@@ -1556,25 +1548,23 @@ impl Widget for InstallerApp {
             )
             .unwrap();
 
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&card_node) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+                && let Some(&card_node) = children.first() {
                     c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
                 }
-            }
-        }
     }
 
     fn draw(
@@ -1609,9 +1599,9 @@ impl Widget for InstallerApp {
         // selects an option (and the Dropdown marks the event handled) —
         // without forwarding first we'd also raise `NEXT` and skip the
         // step out from under the user.
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&card_node) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+                && let Some(&card_node) = children.first() {
                     c.handle_event(
                         event,
                         scale_factor,
@@ -1624,15 +1614,13 @@ impl Widget for InstallerApp {
                         taffy,
                     );
                 }
-            }
-        }
 
         // Enter advances only when no inner field consumed it: Begin on
         // Review, Next on Disk/Account/Options. We mark the event handled
         // so the App runs its post-event `sync` (which detects the rising
         // edge).
-        if !*handled {
-            if let WindowEvent::KeyboardInput {
+        if !*handled
+            && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Named(NamedKey::Enter),
@@ -1659,7 +1647,6 @@ impl Widget for InstallerApp {
                     Step::Install => {}
                 }
             }
-        }
     }
 
     fn on_external_event(&mut self, payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
@@ -1699,8 +1686,7 @@ impl Widget for InstallerApp {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         mine || child
     }
 
@@ -1720,7 +1706,7 @@ impl Widget for InstallerApp {
             .is_some_and(|c| c.wants_pointer_capture())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InstallerApp"
     }
 

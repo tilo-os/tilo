@@ -122,20 +122,13 @@ struct StoredConfig {
 
 /// Mail's in-memory account list: the accounts plus which one is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub struct AccountStore {
     pub accounts: Vec<Account>,
     /// Index of the account whose mailbox is currently shown. Clamped on read.
     pub active: usize,
 }
 
-impl Default for AccountStore {
-    fn default() -> Self {
-        Self {
-            accounts: Vec::new(),
-            active: 0,
-        }
-    }
-}
 
 impl AccountStore {
     pub fn new() -> Self {

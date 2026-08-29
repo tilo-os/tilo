@@ -100,8 +100,8 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let t: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
 
     let is_boundary = |i: usize| -> bool {
         if i == 0 {

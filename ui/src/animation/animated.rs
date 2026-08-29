@@ -16,15 +16,15 @@ impl Lerp for f32 {
 
 impl Lerp for f64 {
     fn lerp(self, b: f64, t: f32) -> f64 {
-        self + (b - self) * t as f64
+        self + (b - self) * f64::from(t)
     }
 }
 
 impl Lerp for vello::peniko::Color {
     fn lerp(self, other: Self, t: f32) -> Self {
         let lerp_u8 = |a: u8, b: u8, t: f32| -> u8 {
-            let a = a as f32;
-            let b = b as f32;
+            let a = f32::from(a);
+            let b = f32::from(b);
             (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
         };
         vello::peniko::Color::from_rgba8(
@@ -125,7 +125,7 @@ fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
 /// Delegates to [`Curve::EaseOut`] so there is exactly one home for the
 /// formula — retune it there and every fade/slide/spawn/snap follows.
 pub fn ease_out(t: f64) -> f64 {
-    Curve::EaseOut.apply(t as f32) as f64
+    f64::from(Curve::EaseOut.apply(t as f32))
 }
 
 /// A driver that interpolates `from -> to` over `duration` using `curve`,

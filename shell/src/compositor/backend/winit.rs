@@ -53,15 +53,12 @@ fn initial_size() -> (u32, u32) {
         .split_once(['x', 'X'])
         .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
         .filter(|(w, h): &(u32, u32)| *w > 0 && *h > 0);
-    match parsed {
-        Some(size) => size,
-        None => {
-            eprintln!(
-                "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
-                 using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"
-            );
-            (INITIAL_WIDTH, INITIAL_HEIGHT)
-        }
+    if let Some(size) = parsed { size } else {
+        eprintln!(
+            "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
+             using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"
+        );
+        (INITIAL_WIDTH, INITIAL_HEIGHT)
     }
 }
 
@@ -446,8 +443,7 @@ impl ApplicationHandler for Inner {
                 let incoming_scale = self
                     .window
                     .as_ref()
-                    .map(|w| w.scale_factor() as f32)
-                    .unwrap_or(1.0);
+                    .map_or(1.0, |w| w.scale_factor() as f32);
                 if self.outputs.first().is_some_and(|o| {
                     o.size == (size.width, size.height) && o.scale == incoming_scale
                 }) {

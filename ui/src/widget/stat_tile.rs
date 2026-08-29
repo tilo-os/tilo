@@ -63,10 +63,10 @@ impl Trend {
 
 /// The tile height with a delta line vs. without.
 fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
-    let caption = theme.tokens.typography.scale.sm as f64;
-    let value = theme.tokens.typography.scale.x2l as f64;
+    let caption = f64::from(theme.tokens.typography.scale.sm);
+    let value = f64::from(theme.tokens.typography.scale.x2l);
     let delta = if has_delta {
-        6.0 + theme.tokens.typography.scale.sm as f64
+        6.0 + f64::from(theme.tokens.typography.scale.sm)
     } else {
         0.0
     };
@@ -91,7 +91,7 @@ fn paint_stat_tile(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let card = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
+    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
         transform,
@@ -131,7 +131,7 @@ fn paint_stat_tile(
         icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
     }
 
-    y += caption_size as f64 + 6.0;
+    y += f64::from(caption_size) + 6.0;
 
     text_renderer.draw_text(
         scene,
@@ -141,15 +141,15 @@ fn paint_stat_tile(
         transform * Affine::translate((x, y)),
         None,
     );
-    y += value_size as f64 + 6.0;
+    y += f64::from(value_size) + 6.0;
 
     if let Some((delta_text, trend)) = delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
-            let ar = Rect::new(dx, y, dx + delta_size as f64, y + delta_size as f64);
+            let ar = Rect::new(dx, y, dx + f64::from(delta_size), y + f64::from(delta_size));
             arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
-            dx += delta_size as f64 + 2.0;
+            dx += f64::from(delta_size) + 2.0;
         }
         text_renderer.draw_text(
             scene,
@@ -260,7 +260,7 @@ impl Widget for StatTile {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -280,10 +280,10 @@ impl Widget for StatTile {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -325,7 +325,7 @@ impl Widget for StatTile {
         // Stat tiles are informational — no input handling.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StatTile"
     }
 

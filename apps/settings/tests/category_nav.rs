@@ -161,11 +161,10 @@ fn click_navigates_to(target: Category) {
     }
 
     let rect =
-        row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {:?}", target));
+        row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
         rect.width() > 0.0 && rect.height() > 0.0,
-        "row {:?} has a real rect",
-        target
+        "row {target:?} has a real rect"
     );
 
     let mut doc = AutoCommit::new();
@@ -211,8 +210,7 @@ fn click_navigates_to(target: Category) {
     assert_eq!(
         app.selected(),
         target,
-        "after click+sync the selection must be {:?} (read back via the production path)",
-        target
+        "after click+sync the selection must be {target:?} (read back via the production path)"
     );
     assert!(
         app.take_structure_dirty(),
@@ -225,8 +223,7 @@ fn click_navigates_to(target: Category) {
     // The rebuilt sidebar highlights the clicked category and ONLY it.
     assert!(
         row_is_active(&app, target.label()),
-        "the {:?} row must be active after navigating to it",
-        target
+        "the {target:?} row must be active after navigating to it"
     );
     assert!(
         !row_is_active(&app, Category::DEFAULT.label()),
@@ -235,15 +232,13 @@ fn click_navigates_to(target: Category) {
     assert_eq!(
         active_row_count(&app),
         1,
-        "exactly one sidebar row may be active after navigating to {:?}",
-        target
+        "exactly one sidebar row may be active after navigating to {target:?}"
     );
 
     // The rebuilt composition (with the new category's content pane) paints.
     assert!(
         renders_something(&mut app),
-        "the {:?} content pane must render after navigating to it",
-        target
+        "the {target:?} content pane must render after navigating to it"
     );
 }
 

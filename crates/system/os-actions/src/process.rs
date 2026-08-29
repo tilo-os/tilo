@@ -43,8 +43,7 @@ fn path_lookup(binary: &str) -> bool {
     fn is_executable_file(p: &std::path::Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
 
     if binary.is_empty() {

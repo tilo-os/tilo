@@ -288,7 +288,7 @@ impl Engine {
 
     /// Local image references, sorted, for the create-form image combobox.
     pub fn image_references(&self) -> Vec<String> {
-        let mut refs: Vec<String> = self.images.iter().map(|i| i.reference()).collect();
+        let mut refs: Vec<String> = self.images.iter().map(Image::reference).collect();
         refs.sort();
         refs.dedup();
         refs

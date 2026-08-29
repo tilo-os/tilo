@@ -101,22 +101,20 @@ impl StoreDoc {
             if let Ok(Some((Value::Object(ObjType::Map), installed))) = doc.get(&store, "installed")
             {
                 for key in doc.keys(&installed) {
-                    if let Ok(Some((Value::Scalar(v), _))) = doc.get(&installed, key.as_str()) {
-                        if let ScalarValue::Str(s) = v.as_ref() {
+                    if let Ok(Some((Value::Scalar(v), _))) = doc.get(&installed, key.as_str())
+                        && let ScalarValue::Str(s) = v.as_ref() {
                             snap.installed.insert(key, s.to_string());
                         }
-                    }
                 }
             }
             if let Ok(Some((Value::Object(ObjType::Map), installing))) =
                 doc.get(&store, "installing")
             {
                 for key in doc.keys(&installing) {
-                    if let Ok(Some((Value::Scalar(v), _))) = doc.get(&installing, key.as_str()) {
-                        if let Some(f) = scalar_to_f64(v.as_ref()) {
+                    if let Ok(Some((Value::Scalar(v), _))) = doc.get(&installing, key.as_str())
+                        && let Some(f) = scalar_to_f64(v.as_ref()) {
                             snap.installing.insert(key, f);
                         }
-                    }
                 }
             }
         }

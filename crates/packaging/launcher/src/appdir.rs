@@ -86,7 +86,7 @@ fn hex_digest(raw: &str) -> String {
     // a directory name.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in raw.as_bytes() {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{h:016x}")
@@ -95,11 +95,10 @@ fn hex_digest(raw: &str) -> String {
 /// The user's data home, as the *launcher's* own environment describes
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+        && !xdg.is_empty() {
             return Some(PathBuf::from(xdg));
         }
-    }
     let home = std::env::var_os("HOME")?;
     if home.is_empty() {
         return None;

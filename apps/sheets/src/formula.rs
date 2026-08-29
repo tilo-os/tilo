@@ -222,12 +222,11 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
                 k += 1;
             }
             let is_call = k < chars.len() && chars[k] == '(';
-            if !prev_numish && !is_call {
-                if let Some(shifted) = offset_ref_token(&token, dcol, drow) {
+            if !prev_numish && !is_call
+                && let Some(shifted) = offset_ref_token(&token, dcol, drow) {
                     out.push_str(&shifted);
                     continue;
                 }
-            }
             out.push_str(&token);
             continue;
         }
@@ -266,7 +265,7 @@ fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
     if i == ds || i != bytes.len() {
         return None;
     }
-    let col = crate::model::letters_to_col(letters)? as i64;
+    let col = i64::from(crate::model::letters_to_col(letters)?);
     let row: i64 = tok[ds..i].parse().ok()?; // 1-based
     let new_col = if col_abs { col } else { (col + dcol).max(0) };
     let new_row = if row_abs { row } else { (row + drow).max(1) };
@@ -752,7 +751,7 @@ impl<'a> Engine<'a> {
         let Some(ord) = ord else {
             return CellValue::Error(FormulaError::Value);
         };
-        use std::cmp::Ordering::*;
+        use std::cmp::Ordering::{Equal, Less, Greater};
         let res = match op {
             BinOp::Eq => ord == Equal,
             BinOp::Ne => ord != Equal,
@@ -828,7 +827,7 @@ impl<'a> Engine<'a> {
                     ns.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     let mid = ns.len() / 2;
                     let m = if ns.len() % 2 == 0 {
-                        (ns[mid - 1] + ns[mid]) / 2.0
+                        f64::midpoint(ns[mid - 1], ns[mid])
                     } else {
                         ns[mid]
                     };
@@ -842,7 +841,7 @@ impl<'a> Engine<'a> {
                     if ns.is_empty() {
                         CellValue::Number(0.0)
                     } else {
-                        CellValue::Number(ns.iter().cloned().fold(f64::INFINITY, f64::min))
+                        CellValue::Number(ns.iter().copied().fold(f64::INFINITY, f64::min))
                     }
                 }
                 Err(e) => e,
@@ -852,7 +851,7 @@ impl<'a> Engine<'a> {
                     if ns.is_empty() {
                         CellValue::Number(0.0)
                     } else {
-                        CellValue::Number(ns.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                        CellValue::Number(ns.iter().copied().fold(f64::NEG_INFINITY, f64::max))
                     }
                 }
                 Err(e) => e,
@@ -867,7 +866,7 @@ impl<'a> Engine<'a> {
                         }
                     }
                 }
-                CellValue::Number(n as f64)
+                CellValue::Number(f64::from(n))
             }
             "COUNTA" => {
                 // Count of non-empty cells.
@@ -879,7 +878,7 @@ impl<'a> Engine<'a> {
                         }
                     }
                 }
-                CellValue::Number(n as f64)
+                CellValue::Number(f64::from(n))
             }
             "IF" => {
                 if args.len() < 2 {
@@ -983,13 +982,13 @@ impl<'a> Engine<'a> {
                     None => CellValue::Error(FormulaError::Value),
                 }
             }
-            "ABS" => self.unary_num(args, |n| n.abs()),
-            "SQRT" => self.unary_num(args, |n| n.sqrt()),
-            "INT" => self.unary_num(args, |n| n.floor()),
-            "SIGN" => self.unary_num(args, |n| n.signum()),
-            "EXP" => self.unary_num(args, |n| n.exp()),
-            "LN" => self.unary_num(args, |n| n.ln()),
-            "LOG10" => self.unary_num(args, |n| n.log10()),
+            "ABS" => self.unary_num(args, f64::abs),
+            "SQRT" => self.unary_num(args, f64::sqrt),
+            "INT" => self.unary_num(args, f64::floor),
+            "SIGN" => self.unary_num(args, f64::signum),
+            "EXP" => self.unary_num(args, f64::exp),
+            "LN" => self.unary_num(args, f64::ln),
+            "LOG10" => self.unary_num(args, f64::log10),
             "LOG" => {
                 let v = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)));
                 if v.is_error() {
@@ -1016,14 +1015,14 @@ impl<'a> Engine<'a> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "FLOOR" => self.unary_num(args, |n| n.floor()),
-            "CEILING" => self.unary_num(args, |n| n.ceil()),
+            "FLOOR" => self.unary_num(args, f64::floor),
+            "CEILING" => self.unary_num(args, f64::ceil),
             "LEN" => {
                 let v = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())));
                 CellValue::Number(v.to_plain_string().chars().count() as f64)
             }
-            "UPPER" => self.unary_text(args, |s| s.to_uppercase()),
-            "LOWER" => self.unary_text(args, |s| s.to_lowercase()),
+            "UPPER" => self.unary_text(args, str::to_uppercase),
+            "LOWER" => self.unary_text(args, str::to_lowercase),
             "TRIM" => self.unary_text(args, |s| s.trim().to_string()),
             "LEFT" => self.substr_fn(args, true),
             "RIGHT" => self.substr_fn(args, false),
@@ -1093,7 +1092,7 @@ impl<'a> Engine<'a> {
                     .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
                 match s.chars().next() {
-                    Some(c) => CellValue::Number(c as u32 as f64),
+                    Some(c) => CellValue::Number(f64::from(c as u32)),
                     None => CellValue::Error(FormulaError::Value),
                 }
             }
@@ -1124,7 +1123,7 @@ impl<'a> Engine<'a> {
                         }
                     }
                 }
-                CellValue::Number(n as f64)
+                CellValue::Number(f64::from(n))
             }
             "COUNTIFS" => match self.criteria_mask(args) {
                 Ok(mask) => CellValue::Number(mask.iter().filter(|b| **b).count() as f64),
@@ -1139,11 +1138,10 @@ impl<'a> Engine<'a> {
                     Ok(mask) => {
                         let mut total = 0.0;
                         for (i, keep) in mask.iter().enumerate() {
-                            if *keep {
-                                if let Some(n) = vals.get(i).and_then(|v| v.as_number()) {
+                            if *keep
+                                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
                                     total += n;
                                 }
-                            }
                         }
                         CellValue::Number(total)
                     }
@@ -1159,12 +1157,11 @@ impl<'a> Engine<'a> {
                     Ok(mask) => {
                         let (mut sum, mut cnt) = (0.0, 0usize);
                         for (i, keep) in mask.iter().enumerate() {
-                            if *keep {
-                                if let Some(n) = vals.get(i).and_then(|v| v.as_number()) {
+                            if *keep
+                                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
                                     sum += n;
                                     cnt += 1;
                                 }
-                            }
                         }
                         if cnt == 0 {
                             CellValue::Error(FormulaError::Div0)
@@ -1228,8 +1225,8 @@ impl<'a> Engine<'a> {
             "TODAY" => CellValue::Number(crate::model::now_serial().floor()),
             "NOW" => CellValue::Number(crate::model::now_serial()),
             "YEAR" => self.date_part(args, |(y, _, _)| y as f64),
-            "MONTH" => self.date_part(args, |(_, m, _)| m as f64),
-            "DAY" => self.date_part(args, |(_, _, d)| d as f64),
+            "MONTH" => self.date_part(args, |(_, m, _)| f64::from(m)),
+            "DAY" => self.date_part(args, |(_, _, d)| f64::from(d)),
             "HOUR" => self.time_part(args, 0),
             "MINUTE" => self.time_part(args, 1),
             "SECOND" => self.time_part(args, 2),
@@ -1245,14 +1242,13 @@ impl<'a> Engine<'a> {
                 let t = args
                     .get(1)
                     .and_then(|a| self.eval_expr(a).as_number())
-                    .map(|x| x as i64)
-                    .unwrap_or(1);
+                    .map_or(1, |x| x as i64);
                 let out = match t {
                     2 => ((wd + 5) % 7) + 1, // Mon=1..Sun=7
                     3 => (wd + 5) % 7,       // Mon=0..Sun=6
                     _ => wd,                 // Sun=1..Sat=7
                 };
-                CellValue::Number(out as f64)
+                CellValue::Number(f64::from(out))
             }
             _ => CellValue::Error(FormulaError::Name),
         }
@@ -1387,7 +1383,7 @@ impl<'a> Engine<'a> {
         CellValue::Text(chars[start..end].iter().collect())
     }
 
-    /// SUMIF(range, criterion, [sum_range]).
+    /// SUMIF(range, criterion, [`sum_range`]).
     fn sumif(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
             return CellValue::Error(FormulaError::Error);
@@ -1401,11 +1397,10 @@ impl<'a> Engine<'a> {
         };
         let mut total = 0.0;
         for (i, v) in probe.iter().enumerate() {
-            if criterion_matches(v, &crit) {
-                if let Some(n) = sum_vals.get(i).and_then(|x| x.as_number()) {
+            if criterion_matches(v, &crit)
+                && let Some(n) = sum_vals.get(i).and_then(super::model::CellValue::as_number) {
                     total += n;
                 }
-            }
         }
         CellValue::Number(total)
     }
@@ -1421,7 +1416,7 @@ impl<'a> Engine<'a> {
         CellValue::Number(n as f64)
     }
 
-    /// AVERAGEIF(range, criterion, [average_range]).
+    /// AVERAGEIF(range, criterion, [`average_range`]).
     fn averageif(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
             return CellValue::Error(FormulaError::Error);
@@ -1435,12 +1430,11 @@ impl<'a> Engine<'a> {
         };
         let (mut sum, mut cnt) = (0.0, 0usize);
         for (i, v) in probe.iter().enumerate() {
-            if criterion_matches(v, &crit) {
-                if let Some(n) = vals.get(i).and_then(|x| x.as_number()) {
+            if criterion_matches(v, &crit)
+                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
                     sum += n;
                     cnt += 1;
                 }
-            }
         }
         if cnt == 0 {
             CellValue::Error(FormulaError::Div0)
@@ -1516,7 +1510,7 @@ impl<'a> Engine<'a> {
         CellValue::Text(out)
     }
 
-    /// REPLACE(old_text, start, num_chars, new_text) — positional replacement.
+    /// `REPLACE(old_text`, start, `num_chars`, `new_text`) — positional replacement.
     fn replace_fn(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 4 {
             return CellValue::Error(FormulaError::Error);
@@ -1544,8 +1538,7 @@ impl<'a> Engine<'a> {
         let start = args
             .get(2)
             .and_then(|a| self.eval_expr(a).as_number())
-            .map(|n| n as usize)
-            .unwrap_or(1)
+            .map_or(1, |n| n as usize)
             .max(1)
             - 1;
         let (h, n) = if case_sensitive {
@@ -1567,7 +1560,7 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// TEXTJOIN(delimiter, ignore_empty, values…).
+    /// TEXTJOIN(delimiter, `ignore_empty`, values…).
     fn textjoin(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
             return CellValue::Error(FormulaError::Error);
@@ -1589,7 +1582,7 @@ impl<'a> Engine<'a> {
         CellValue::Text(parts.join(&delim))
     }
 
-    /// VLOOKUP(lookup, table, col_index, [range_lookup]). Exact match when
+    /// VLOOKUP(lookup, table, `col_index`, [`range_lookup`]). Exact match when
     /// `range_lookup` is FALSE; otherwise an ascending approximate match.
     fn vlookup(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
@@ -1609,19 +1602,16 @@ impl<'a> Engine<'a> {
         if col_index < 1 {
             return CellValue::Error(FormulaError::Value);
         }
-        let target_col = tl.0 as i64 + col_index - 1;
-        if target_col > br.0 as i64 {
+        let target_col = i64::from(tl.0) + col_index - 1;
+        if target_col > i64::from(br.0) {
             return CellValue::Error(FormulaError::Ref);
         }
         let approx = args
             .get(3)
-            .map(|a| {
+            .is_none_or(|a| {
                 self.eval_expr(a)
-                    .as_number()
-                    .map(|n| n != 0.0)
-                    .unwrap_or(true)
-            })
-            .unwrap_or(true);
+                    .as_number() != Some(0.0)
+            });
         let mut best: Option<u32> = None;
         for r in tl.1..=br.1 {
             let probe = self.eval_cell((tl.0, r));
@@ -1641,7 +1631,7 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// HLOOKUP(lookup, table, row_index, [range_lookup]).
+    /// HLOOKUP(lookup, table, `row_index`, [`range_lookup`]).
     fn hlookup(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
             return CellValue::Error(FormulaError::Error);
@@ -1660,19 +1650,16 @@ impl<'a> Engine<'a> {
         if row_index < 1 {
             return CellValue::Error(FormulaError::Value);
         }
-        let target_row = tl.1 as i64 + row_index - 1;
-        if target_row > br.1 as i64 {
+        let target_row = i64::from(tl.1) + row_index - 1;
+        if target_row > i64::from(br.1) {
             return CellValue::Error(FormulaError::Ref);
         }
         let approx = args
             .get(3)
-            .map(|a| {
+            .is_none_or(|a| {
                 self.eval_expr(a)
-                    .as_number()
-                    .map(|n| n != 0.0)
-                    .unwrap_or(true)
-            })
-            .unwrap_or(true);
+                    .as_number() != Some(0.0)
+            });
         let mut best: Option<u32> = None;
         for c in tl.0..=br.0 {
             let probe = self.eval_cell((c, tl.1));
@@ -1692,7 +1679,7 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// INDEX(range, row_num, [col_num]). A single-row or single-column range
+    /// INDEX(range, `row_num`, [`col_num`]). A single-row or single-column range
     /// takes one index; a rectangle takes both.
     fn index_fn(&mut self, args: &[Expr]) -> CellValue {
         let Some((tl, br)) = args.first().and_then(range_bounds) else {
@@ -1717,15 +1704,15 @@ impl<'a> Engine<'a> {
         if row_i < 1 || col_i < 1 {
             return CellValue::Error(FormulaError::Value);
         }
-        let cc = tl.0 as i64 + col_i - 1;
-        let rr = tl.1 as i64 + row_i - 1;
-        if cc > br.0 as i64 || rr > br.1 as i64 {
+        let cc = i64::from(tl.0) + col_i - 1;
+        let rr = i64::from(tl.1) + row_i - 1;
+        if cc > i64::from(br.0) || rr > i64::from(br.1) {
             return CellValue::Error(FormulaError::Ref);
         }
         self.eval_cell((cc as u32, rr as u32))
     }
 
-    /// MATCH(lookup, range, [match_type]). `0` exact, `1` largest ≤ (ascending,
+    /// MATCH(lookup, range, [`match_type`]). `0` exact, `1` largest ≤ (ascending,
     /// default), `-1` smallest ≥ (descending).
     fn match_fn(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
@@ -1738,8 +1725,7 @@ impl<'a> Engine<'a> {
         let match_type = args
             .get(2)
             .and_then(|a| self.eval_expr(a).as_number())
-            .map(|n| n as i64)
-            .unwrap_or(1);
+            .map_or(1, |n| n as i64);
         let cells: Vec<Addr> = if br.1 == tl.1 {
             (tl.0..=br.0).map(|c| (c, tl.1)).collect()
         } else {
@@ -1985,12 +1971,11 @@ fn format_number_code(n: f64, code: &str) -> String {
     let decimals = code
         .split('.')
         .nth(1)
-        .map(|frac| frac.chars().filter(|c| *c == '0' || *c == '#').count())
-        .unwrap_or(0);
+        .map_or(0, |frac| frac.chars().filter(|c| *c == '0' || *c == '#').count());
     let mut out = if grouping {
         crate::model::format_thousands(value, decimals)
     } else {
-        format!("{:.*}", decimals, value)
+        format!("{value:.decimals$}")
     };
     if percent {
         out.push('%');
@@ -2027,7 +2012,7 @@ fn format_date_code(serial: f64, code: &str) -> String {
             out.push_str(if hh < 12 { "AM" } else { "PM" });
             i += 5;
         } else if starts(i, "yyyy") {
-            out.push_str(&format!("{:04}", y));
+            out.push_str(&format!("{y:04}"));
             i += 4;
             time_ctx = false;
         } else if starts(i, "yy") {
@@ -2041,38 +2026,38 @@ fn format_date_code(serial: f64, code: &str) -> String {
             out.push_str(month_abbrev_local(m));
             i += 3;
         } else if starts(i, "hh") {
-            out.push_str(&format!("{:02}", disp_h));
+            out.push_str(&format!("{disp_h:02}"));
             i += 2;
             time_ctx = true;
         } else if starts(i, "h") {
-            out.push_str(&format!("{}", disp_h));
+            out.push_str(&format!("{disp_h}"));
             i += 1;
             time_ctx = true;
         } else if starts(i, "ss") {
-            out.push_str(&format!("{:02}", ss));
+            out.push_str(&format!("{ss:02}"));
             i += 2;
         } else if starts(i, "dd") {
-            out.push_str(&format!("{:02}", d));
+            out.push_str(&format!("{d:02}"));
             i += 2;
             time_ctx = false;
         } else if starts(i, "d") {
-            out.push_str(&format!("{}", d));
+            out.push_str(&format!("{d}"));
             i += 1;
             time_ctx = false;
         } else if starts(i, "mm") {
             if time_ctx {
-                out.push_str(&format!("{:02}", mi));
+                out.push_str(&format!("{mi:02}"));
                 time_ctx = false;
             } else {
-                out.push_str(&format!("{:02}", m));
+                out.push_str(&format!("{m:02}"));
             }
             i += 2;
         } else if starts(i, "m") {
             if time_ctx {
-                out.push_str(&format!("{}", mi));
+                out.push_str(&format!("{mi}"));
                 time_ctx = false;
             } else {
-                out.push_str(&format!("{}", m));
+                out.push_str(&format!("{m}"));
             }
             i += 1;
         } else {
@@ -2109,11 +2094,10 @@ fn parse_literal(raw: &str) -> CellValue {
         return CellValue::Number(n);
     }
     // Accept a leading currency/percent for convenience.
-    if let Some(p) = trimmed.strip_suffix('%') {
-        if let Ok(n) = p.trim().parse::<f64>() {
+    if let Some(p) = trimmed.strip_suffix('%')
+        && let Ok(n) = p.trim().parse::<f64>() {
             return CellValue::Number(n / 100.0);
         }
-    }
     match trimmed.to_uppercase().as_str() {
         "TRUE" => CellValue::Bool(true),
         "FALSE" => CellValue::Bool(false),
@@ -2200,8 +2184,7 @@ fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => Unit::Scalar,
         Expr::Ref(addr) => formats
             .get(addr)
-            .map(|f| unit_of_format(*f))
-            .unwrap_or(Unit::Scalar),
+            .map_or(Unit::Scalar, |f| unit_of_format(*f)),
         Expr::Range(_, _) => Unit::Scalar,
         Expr::Unary(_, inner) => unit_of(inner, formats),
         Expr::Binary(op, l, r) => {
@@ -2215,7 +2198,7 @@ fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
 
 /// Combine two operand units under a binary operator.
 fn combine(op: BinOp, l: Unit, r: Unit) -> Unit {
-    use BinOp::*;
+    use BinOp::{Eq, Ne, Lt, Gt, Le, Ge, Concat, Div, Mul, Pow, Add, Sub};
     // Comparisons and concat yield bare scalars/booleans/text.
     if matches!(op, Eq | Ne | Lt | Gt | Le | Ge | Concat) {
         return Unit::Scalar;
@@ -2290,8 +2273,7 @@ fn arg_units(arg: &Expr, formats: &HashMap<Addr, CellFormat>) -> Vec<Unit> {
                     out.push(
                         formats
                             .get(&(c, r))
-                            .map(|f| unit_of_format(*f))
-                            .unwrap_or(Unit::Scalar),
+                            .map_or(Unit::Scalar, |f| unit_of_format(*f)),
                     );
                 }
             }

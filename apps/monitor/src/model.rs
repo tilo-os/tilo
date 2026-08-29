@@ -212,7 +212,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 2.4 + 2.0 * (t * 0.17).sin().max(0.0) + 0.8 * (t * 0.6).sin();
-                (mb.max(0.05) * 1_000_000.0) as f32
+                (mb.max(0.05) * 1_000_000.0)
             }),
         );
         let net_tx_hist = Ring::from_iter(
@@ -220,7 +220,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 0.8 + 0.9 * (t * 0.11 + 1.0).sin().max(0.0);
-                (mb.max(0.02) * 1_000_000.0) as f32
+                (mb.max(0.02) * 1_000_000.0)
             }),
         );
         let disk_read_hist = Ring::from_iter(
@@ -228,7 +228,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (3.0 * (t * 0.27).sin()).max(0.0) + 0.4 * (t * 0.9).cos().abs();
-                (mb.max(0.0) * 1_000_000.0) as f32
+                (mb.max(0.0) * 1_000_000.0)
             }),
         );
         let disk_write_hist = Ring::from_iter(
@@ -236,7 +236,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (2.0 * (t * 0.19 + 2.0).sin()).max(0.0);
-                (mb.max(0.0) * 1_000_000.0) as f32
+                (mb.max(0.0) * 1_000_000.0)
             }),
         );
 
@@ -273,7 +273,7 @@ impl MonitorModel {
     /// the first refresh. Histories are pre-filled with zeros so the
     /// charts don't visibly "grow in" from the left edge.
     pub fn empty() -> Self {
-        let z = || Ring::from_iter(HISTORY, std::iter::repeat(0.0).take(HISTORY));
+        let z = || Ring::from_iter(HISTORY, std::iter::repeat_n(0.0, HISTORY));
         let metrics = Metrics {
             cpu_brand: "CPU".into(),
             host: "localhost".into(),
@@ -566,7 +566,7 @@ fn sample_processes() -> Vec<ProcessInfo> {
                     mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
                 };
                 // Deterministic run time from the pid so rows differ but are stable.
-                let run_secs = 37 + (pids[i] as u64 * 7) % 90_000;
+                let run_secs = 37 + (u64::from(pids[i]) * 7) % 90_000;
                 let open_files = if *kernel {
                     None
                 } else {
@@ -634,9 +634,9 @@ pub fn fmt_bytes(b: u64) -> String {
 /// Human-readable throughput: 0 / 84 KB/s / 2.4 MB/s (decimal, like most
 /// network tools).
 pub fn fmt_rate(bytes_per_sec: f32) -> String {
-    let bps = bytes_per_sec.max(0.0) as f64;
+    let bps = f64::from(bytes_per_sec.max(0.0));
     if bps < 1000.0 {
-        format!("{:.0} B/s", bps)
+        format!("{bps:.0} B/s")
     } else if bps < 1_000_000.0 {
         format!("{:.0} KB/s", bps / 1000.0)
     } else if bps < 1_000_000_000.0 {
@@ -653,11 +653,11 @@ pub fn fmt_uptime(secs: u64) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     if d > 0 {
-        format!("{}d {}h {}m", d, h, m)
+        format!("{d}d {h}h {m}m")
     } else if h > 0 {
-        format!("{}h {}m {}s", h, m, s)
+        format!("{h}h {m}m {s}s")
     } else {
-        format!("{}m {}s", m, s)
+        format!("{m}m {s}s")
     }
 }
 

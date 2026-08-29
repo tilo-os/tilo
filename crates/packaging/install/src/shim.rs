@@ -121,14 +121,13 @@ pub fn locate_shim_source() -> PathBuf {
     if let Some(over) = std::env::var_os("QOS_CLI_SHIM_PATH") {
         return PathBuf::from(over);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent() {
             let sib = parent.join("qos-cli-shim");
             if sib.exists() {
                 return sib;
             }
         }
-    }
     let system = PathBuf::from("/usr/libexec/qos-cli-shim");
     if system.exists() {
         return system;

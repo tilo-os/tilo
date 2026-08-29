@@ -4,7 +4,7 @@
 //! (see [`crate::validate`]), then bound into the signed root via
 //! canonical postcard encoding so on-wire bytes are stable across TOML
 //! formatting differences. Field renames map kebab-case TOML keys to
-//! Rust snake_case.
+//! Rust `snake_case`.
 
 use std::path::PathBuf;
 
@@ -76,7 +76,7 @@ pub struct Package {
 }
 
 /// Per-arch minimum-feature-level requirements; every field is
-/// optional (a publisher who only ships x86_64 leaves aarch64 unset).
+/// optional (a publisher who only ships `x86_64` leaves aarch64 unset).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IsaRequirements {
     #[serde(default)]
@@ -139,7 +139,7 @@ impl IsaLevel {
     }
 }
 
-/// x86-64 microarchitecture feature levels per the SysV psABI x86-64
+/// x86-64 microarchitecture feature levels per the `SysV` psABI x86-64
 /// supplement. Each level is a strict superset of the previous.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

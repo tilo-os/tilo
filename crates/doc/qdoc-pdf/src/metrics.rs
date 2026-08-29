@@ -1,19 +1,19 @@
 //! Glyph-width metrics for the two base-14 fonts we use (Helvetica and
-//! Helvetica-Bold). Widths are in 1000-unit em space, indexed by WinAnsi byte.
+//! Helvetica-Bold). Widths are in 1000-unit em space, indexed by `WinAnsi` byte.
 //!
 //! These are the standard Adobe AFM advance widths. They let us word-wrap text
 //! accurately without embedding a font program — the viewer ships its own
 //! Helvetica, but we still need the widths to know where to break lines.
 
-/// Helvetica advance widths (AFM `WX`) for WinAnsi byte values 0..=255.
+/// Helvetica advance widths (AFM `WX`) for `WinAnsi` byte values 0..=255.
 /// Bytes with no glyph use the Helvetica default of 0; unknown printable
 /// positions fall back to the space width via [`char_width`].
 pub static HELVETICA: [u16; 256] = build_helvetica();
 
-/// Helvetica-Bold advance widths for WinAnsi byte values 0..=255.
+/// Helvetica-Bold advance widths for `WinAnsi` byte values 0..=255.
 pub static HELVETICA_BOLD: [u16; 256] = build_helvetica_bold();
 
-/// Advance width (in 1000-em units) of one WinAnsi byte in the given table.
+/// Advance width (in 1000-em units) of one `WinAnsi` byte in the given table.
 #[inline]
 pub fn byte_width(table: &[u16; 256], b: u8) -> u16 {
     let w = table[b as usize];
@@ -26,9 +26,9 @@ pub fn byte_width(table: &[u16; 256], b: u8) -> u16 {
     }
 }
 
-/// Width of a WinAnsi byte slice at `font_size` points, in points.
+/// Width of a `WinAnsi` byte slice at `font_size` points, in points.
 pub fn text_width(table: &[u16; 256], bytes: &[u8], font_size: f32) -> f32 {
-    let units: u32 = bytes.iter().map(|&b| byte_width(table, b) as u32).sum();
+    let units: u32 = bytes.iter().map(|&b| u32::from(byte_width(table, b))).sum();
     (units as f32) * font_size / 1000.0
 }
 

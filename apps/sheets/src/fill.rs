@@ -274,12 +274,12 @@ fn text_number_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>
                 let p = len + j;
                 let n = series_at(&nums, p).round() as i64;
                 let num_str = if width > 1 && n >= 0 {
-                    format!("{:0width$}", n, width = width)
+                    format!("{n:0width$}")
                 } else {
                     n.to_string()
                 };
                 FillOut {
-                    raw: format!("{}{}", prefix, num_str),
+                    raw: format!("{prefix}{num_str}"),
                     fmt: pattern[p % len].fmt,
                 }
             })
@@ -343,7 +343,7 @@ fn num_to_raw(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);
     }
-    let s = format!("{:.10}", n);
+    let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
@@ -361,7 +361,7 @@ fn monthly_step(serials: &[f64]) -> Option<i64> {
     if ymd.iter().any(|(_, _, d)| *d != d0) {
         return None;
     }
-    let months: Vec<i64> = ymd.iter().map(|(y, m, _)| y * 12 + *m as i64).collect();
+    let months: Vec<i64> = ymd.iter().map(|(y, m, _)| y * 12 + i64::from(*m)).collect();
     let step = months[1] - months[0];
     if step == 0 {
         return None;
@@ -375,7 +375,7 @@ fn monthly_step(serials: &[f64]) -> Option<i64> {
 /// Add `add` months to `(y, m, d)` and return the resulting Excel serial,
 /// clamping the day into the target month (`31 Jan` + 1 month → `28/29 Feb`).
 fn add_months(y: i64, m: u32, d: u32, add: i64) -> f64 {
-    let total = y * 12 + (m as i64 - 1) + add;
+    let total = y * 12 + (i64::from(m) - 1) + add;
     let ny = total.div_euclid(12);
     let nm = total.rem_euclid(12) as u32 + 1;
     let dd = d.min(days_in_month(ny, nm));

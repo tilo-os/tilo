@@ -822,7 +822,7 @@ mod tests {
                 "{} dispatches nothing the app can encode",
                 cap.id
             );
-            let advertised: BTreeSet<String> = cap.actions.iter().map(|a| a.to_string()).collect();
+            let advertised: BTreeSet<String> = cap.actions.iter().map(std::string::ToString::to_string).collect();
             assert_eq!(
                 advertised, built,
                 "{} advertises {:?} but dispatches {:?}",
@@ -935,13 +935,13 @@ mod tests {
             Block {
                 id: "x".into(),
                 kind: "cell".into(),
-                text: "".into(),
+                text: String::new(),
                 attrs: c1,
             },
             Block {
                 id: "y".into(),
                 kind: "cell".into(),
-                text: "".into(),
+                text: String::new(),
                 attrs: c0,
             },
         ];

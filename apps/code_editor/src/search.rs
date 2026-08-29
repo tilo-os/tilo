@@ -303,7 +303,7 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     let hay: Vec<char> = if query.case_sensitive {
         line.chars().collect()
     } else {
-        line.chars().flat_map(|c| c.to_lowercase()).collect()
+        line.chars().flat_map(char::to_lowercase).collect()
     };
     let needle: Vec<char> = if query.case_sensitive {
         query.needle.chars().collect()
@@ -311,7 +311,7 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
         query
             .needle
             .chars()
-            .flat_map(|c| c.to_lowercase())
+            .flat_map(char::to_lowercase)
             .collect()
     };
     // Case folding can change length (`ß` → `ss`), which would desynchronise
@@ -333,13 +333,12 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + needle.len() <= hay.len() {
-        if hay[i..i + needle.len()] == needle[..] {
-            if !query.whole_word || is_word_bounded(&hay, i, needle.len()) {
+        if hay[i..i + needle.len()] == needle[..]
+            && (!query.whole_word || is_word_bounded(&hay, i, needle.len())) {
                 out.push((i, needle.len()));
                 i += needle.len();
                 continue;
             }
-        }
         i += 1;
     }
     out
@@ -381,9 +380,7 @@ fn clip_preview(line: &str, col: usize) -> (String, usize) {
 /// `path` written relative to `root`, for the results list. Falls back to the
 /// full path when the file is somehow outside the root.
 pub fn relative_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+    path.strip_prefix(root).map_or_else(|_| path.to_string_lossy().to_string(), |p| p.to_string_lossy().to_string())
 }
 
 #[cfg(test)]

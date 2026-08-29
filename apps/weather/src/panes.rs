@@ -79,10 +79,10 @@ fn leaf(
 fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     let l = taffy.layout(node).unwrap();
     Rect::new(
-        origin.x + l.location.x as f64,
-        origin.y + l.location.y as f64,
-        origin.x + l.location.x as f64 + l.size.width as f64,
-        origin.y + l.location.y as f64 + l.size.height as f64,
+        origin.x + f64::from(l.location.x),
+        origin.y + f64::from(l.location.y),
+        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
     )
 }
 
@@ -95,7 +95,7 @@ impl Widget for OverviewPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, self as *mut dyn Widget)
+        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -144,7 +144,7 @@ impl Widget for OverviewPane {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WeatherOverview"
     }
 
@@ -166,7 +166,7 @@ impl Widget for DetailPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, self as *mut dyn Widget)
+        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -210,7 +210,7 @@ impl Widget for DetailPane {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WeatherDetail"
     }
 

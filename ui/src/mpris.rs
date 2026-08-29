@@ -212,7 +212,7 @@ impl MprisHandle {
         out
     }
 
-    /// Publish the current player state to the bus, emitting PropertiesChanged
+    /// Publish the current player state to the bus, emitting `PropertiesChanged`
     /// for whatever changed. Cheap and deduped: identical/insignificant updates
     /// are dropped so the bus isn't spammed each frame.
     pub fn publish(&mut self, snap: PlayerSnapshot) {
@@ -271,37 +271,32 @@ mod imp {
     pub(super) fn build_metadata(snap: &PlayerSnapshot) -> HashMap<String, OwnedValue> {
         let mut m: HashMap<String, OwnedValue> = HashMap::new();
         let path = super::track_object_path(&snap.track_id);
-        if let Ok(op) = ObjectPath::try_from(path) {
-            if let Ok(v) = OwnedValue::try_from(Value::from(op)) {
+        if let Ok(op) = ObjectPath::try_from(path)
+            && let Ok(v) = OwnedValue::try_from(Value::from(op)) {
                 m.insert("mpris:trackid".into(), v);
             }
-        }
-        if snap.length_us > 0 {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us)) {
+        if snap.length_us > 0
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us)) {
                 m.insert("mpris:length".into(), v);
             }
-        }
-        if !snap.art_url.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone())) {
+        if !snap.art_url.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone())) {
                 m.insert("mpris:artUrl".into(), v);
             }
-        }
-        if !snap.title.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone())) {
+        if !snap.title.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone())) {
                 m.insert("xesam:title".into(), v);
             }
-        }
         if !snap.artist.is_empty() {
             let artists = vec![snap.artist.clone()];
             if let Ok(v) = OwnedValue::try_from(Value::from(artists)) {
                 m.insert("xesam:artist".into(), v);
             }
         }
-        if !snap.album.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone())) {
+        if !snap.album.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone())) {
                 m.insert("xesam:album".into(), v);
             }
-        }
         m
     }
 
@@ -466,7 +461,7 @@ mod imp {
         Ok(())
     }
 
-    /// Emit PropertiesChanged for whichever served properties changed between
+    /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot.
     pub(super) async fn apply_update(
         connection: &zbus::Connection,
@@ -539,11 +534,11 @@ mod imp {
         let root = RootIface {
             cmd: cmd_tx.clone(),
             identity: config.identity.clone(),
-            desktop_entry: config.desktop_entry.clone(),
+            desktop_entry: config.desktop_entry,
         };
         let player = PlayerIface {
             snap: initial.clone(),
-            cmd: cmd_tx.clone(),
+            cmd: cmd_tx,
         };
         if rt.block_on(serve(&connection, player, root)).is_err() {
             return None;

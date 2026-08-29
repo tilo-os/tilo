@@ -275,11 +275,10 @@ impl Action for SlidesAction {
                 // A deck always keeps at least one slide. The count is read from
                 // the document's base state, so the guard evaluates identically
                 // on every replica.
-                if let Some(deck) = SlidesDoc::load(doc) {
-                    if deck.slides.len() > 1 && *idx < deck.slides.len() {
+                if let Some(deck) = SlidesDoc::load(doc)
+                    && deck.slides.len() > 1 && *idx < deck.slides.len() {
                         SlidesDoc::remove_slide(doc, *idx);
                     }
-                }
             }
             SlidesAction::MoveSlide { from, to } => {
                 SlidesDoc::move_slide(doc, *from, *to);

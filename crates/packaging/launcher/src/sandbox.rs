@@ -519,7 +519,7 @@ pub fn egress_decision(
         && std::env::var(crate::run::NET_GATE_ENV).is_ok_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(|p| p.hosts()),
+            hosts = ?decision.policy().map(super::netgate::EgressPolicy::hosts),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
             crate::run::NET_GATE_ENV,
@@ -693,11 +693,10 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
             continue;
         };
         for kv in rest.split(',') {
-            if let Some(path) = kv.strip_prefix("path=") {
-                if !path.is_empty() {
+            if let Some(path) = kv.strip_prefix("path=")
+                && !path.is_empty() {
                     return Some(path.to_string());
                 }
-            }
         }
     }
     None

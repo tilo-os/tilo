@@ -20,7 +20,7 @@
 //! | [`Scope::FsPath`] | [`Verb::Read`] | `--ro-bind-try <p> <p>` + a Landlock read rule |
 //! | [`Scope::FsPath`] | [`Verb::Write`] | `--bind-try <p> <p>` + a Landlock read/write rule |
 //! | [`Scope::Device`] `"camera"` | any | the host's `/dev/video*` nodes are bound |
-//! | [`Scope::Device`] `"microphone"` | any | the PipeWire socket + `/dev/snd` are bound |
+//! | [`Scope::Device`] `"microphone"` | any | the `PipeWire` socket + `/dev/snd` are bound |
 //! | [`Scope::Device`] `"screencast"` | any | nothing — brokered by the portal, not a bind |
 //! | [`Scope::NetHost`] `"*"` | any | the network namespace is shared instead of isolated |
 //! | [`Scope::NetHost`] a host | any | the namespace stays isolated and egress is brokered through [`crate::netgate`] |
@@ -339,12 +339,10 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
         }
         "microphone" => {
             let mut out = Vec::new();
-            let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
+            let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
                     // SAFETY: getuid always succeeds.
                     PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
-                });
+                }, PathBuf::from);
             let pipewire = runtime_dir.join("pipewire-0");
             if pipewire.exists() {
                 out.push(pipewire);
@@ -397,8 +395,7 @@ pub fn load_capability_file(path: &Path) -> Vec<CapOverride> {
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

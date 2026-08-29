@@ -495,16 +495,13 @@ impl SidebarWheelDisc {
     /// the drag rather than stopping it dead.
     fn aim_follow_spring(&mut self, from_hint: f32, to: f32) {
         let params = SpringPresets::default().tracking;
-        match self.rotation_spring.as_mut() {
-            Some(s) => {
-                s.set_params(params);
-                s.set_target(to);
-            }
-            None => {
-                let mut s = Spring::new(from_hint, params);
-                s.set_target(to);
-                self.rotation_spring = Some(s);
-            }
+        if let Some(s) = self.rotation_spring.as_mut() {
+            s.set_params(params);
+            s.set_target(to);
+        } else {
+            let mut s = Spring::new(from_hint, params);
+            s.set_target(to);
+            self.rotation_spring = Some(s);
         }
     }
 
@@ -514,16 +511,13 @@ impl SidebarWheelDisc {
     /// already-updated `rotation_deg` would report settled in one frame.
     fn aim_settle_spring(&mut self, from_hint: f32, to: f32) {
         let params = SpringPresets::default().heavy;
-        match self.rotation_spring.as_mut() {
-            Some(s) => {
-                s.set_params(params);
-                s.set_target(to);
-            }
-            None => {
-                let mut s = Spring::new(from_hint, params);
-                s.set_target(to);
-                self.rotation_spring = Some(s);
-            }
+        if let Some(s) = self.rotation_spring.as_mut() {
+            s.set_params(params);
+            s.set_target(to);
+        } else {
+            let mut s = Spring::new(from_hint, params);
+            s.set_target(to);
+            self.rotation_spring = Some(s);
         }
         self.settle_origin = self.rotation_spring.clone();
     }
@@ -533,7 +527,7 @@ impl SidebarWheelDisc {
     fn center(&self) -> Point {
         let radius = self.diameter_px / 2.0;
         let cx = self.rect.x0 - radius * (1.0 - VISIBLE_RADIUS_FRACTION);
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         Point::new(cx, cy)
     }
 
@@ -625,12 +619,12 @@ impl SidebarWheelDisc {
         );
         // 0.01° granularity: fine enough to invalidate every visible tick,
         // coarse enough to ignore float noise at rest.
-        let rotation_centi_deg = (self.visual_rotation_deg() as f64 * 100.0).round() as i64;
+        let rotation_centi_deg = (f64::from(self.visual_rotation_deg()) * 100.0).round() as i64;
         // FNV-1a over spoke labels, avoiding a Vec clone just to detect renames.
         let mut h: u64 = 0xcbf29ce484222325;
         for spoke in &self.spokes {
             for b in spoke.text.as_bytes() {
-                h ^= *b as u64;
+                h ^= u64::from(*b);
                 h = h.wrapping_mul(0x100000001b3);
             }
             // Separator byte so "ab"+"c" and "a"+"bc" hash differently.
@@ -759,7 +753,7 @@ impl Widget for SidebarWheelDisc {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -774,11 +768,11 @@ impl Widget for SidebarWheelDisc {
         let l = taffy.layout(node).unwrap();
         // Trimmed vertically by `SLOT_VERTICAL_INSET_FRAC` at both ends
         // so the wheel reads as inset rather than edge-to-edge.
-        let x0 = origin.x + l.location.x as f64;
-        let y0_raw = origin.y + l.location.y as f64;
-        let h_raw = l.size.height as f64;
+        let x0 = origin.x + f64::from(l.location.x);
+        let y0_raw = origin.y + f64::from(l.location.y);
+        let h_raw = f64::from(l.size.height);
         let inset_v = h_raw * SLOT_VERTICAL_INSET_FRAC;
-        let w = l.size.width as f64;
+        let w = f64::from(l.size.width);
         let y0 = y0_raw + inset_v;
         let y1 = y0_raw + h_raw - inset_v;
         self.rect = match self.summon_at {
@@ -812,8 +806,7 @@ impl Widget for SidebarWheelDisc {
             && self
                 .rotation_spring
                 .as_ref()
-                .map(|s| s.is_settled())
-                .unwrap_or(true);
+                .is_none_or(ui::Spring::is_settled);
         if at_rest {
             self.rotation_deg = self.rotation_for_idx(self.active_idx);
             if let Some(spring) = self.rotation_spring.as_mut() {
@@ -1009,9 +1002,9 @@ impl Widget for SidebarWheelDisc {
 
         if !self.spokes.is_empty() {
             let n = self.spokes.len();
-            let n_i = n as i32;
-            let gap = self.spoke_gap_deg() as f64;
-            let rot = self.visual_residual_deg() as f64;
+            let _n_i = n as i32;
+            let gap = f64::from(self.spoke_gap_deg());
+            let rot = f64::from(self.visual_residual_deg());
             let slots = slot_reach(sweep, gap);
             let body_opacity = body_hue.components[3].clamp(0.0, 1.0);
             let wedge_alpha = ACTIVE_WEDGE_ALPHA
@@ -1019,7 +1012,7 @@ impl Widget for SidebarWheelDisc {
 
             let slot_idx = self.slot_indices(slots);
             for k in -slots..=slots {
-                let mid_deg = rot + k as f64 * gap;
+                let mid_deg = rot + f64::from(k) * gap;
                 let mid = mid_deg.to_radians();
                 let a0 = mid - (gap / 2.0).to_radians();
                 let a1 = mid + (gap / 2.0).to_radians();
@@ -1114,14 +1107,14 @@ impl Widget for SidebarWheelDisc {
         let names_fit = chip_w >= LABEL_MIN_W;
         if !self.spokes.is_empty() {
             let n = self.spokes.len();
-            let n_i = n as i32;
-            let gap = self.spoke_gap_deg() as f64;
-            let rot = self.visual_residual_deg() as f64;
+            let _n_i = n as i32;
+            let gap = f64::from(self.spoke_gap_deg());
+            let rot = f64::from(self.visual_residual_deg());
             let slots = slot_reach(sweep, gap);
 
             let slot_idx = self.slot_indices(slots);
             for k in -slots..=slots {
-                let mid_deg = rot + k as f64 * gap;
+                let mid_deg = rot + f64::from(k) * gap;
                 let mid = mid_deg.to_radians();
                 if mid.abs() > sweep {
                     continue;
@@ -1205,7 +1198,7 @@ impl Widget for SidebarWheelDisc {
                 // the surface with the sector.
                 if let Some(ws_id) = self.spokes[idx].workspace_id {
                     let key = PresenceKey::Workspace {
-                        id: format!("{}", ws_id),
+                        id: format!("{ws_id}"),
                     };
                     let peers = presence.peers_on(&key);
                     if !peers.is_empty() {
@@ -1295,8 +1288,7 @@ impl Widget for SidebarWheelDisc {
                 if self.plus_rect.area() > 0.0
                     && self
                         .last_cursor_pos
-                        .map(|p| self.plus_rect.contains(p))
-                        .unwrap_or(false)
+                        .is_some_and(|p| self.plus_rect.contains(p))
                 {
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().add_workspace("Untitled");
@@ -1333,8 +1325,8 @@ impl Widget for SidebarWheelDisc {
                     (Some(h), _) => h,
                     (None, Some(p)) => p,
                     (None, None) => Point::new(
-                        (self.rect.x0 + self.rect.x1) / 2.0,
-                        (self.rect.y0 + self.rect.y1) / 2.0,
+                        f64::midpoint(self.rect.x0, self.rect.x1),
+                        f64::midpoint(self.rect.y0, self.rect.y1),
                     ),
                 };
                 if self.hit_visible_arc(anchor) {
@@ -1396,8 +1388,7 @@ impl Widget for SidebarWheelDisc {
                 // accidentally rotate the wheel.
                 if !self
                     .last_cursor_pos
-                    .map(|p| self.hit_visible_arc(p))
-                    .unwrap_or(false)
+                    .is_some_and(|p| self.hit_visible_arc(p))
                 {
                     return;
                 }
@@ -1444,8 +1435,7 @@ impl Widget for SidebarWheelDisc {
         let spring_active = self
             .rotation_spring
             .as_ref()
-            .map(|s| !s.is_settled())
-            .unwrap_or(false);
+            .is_some_and(|s| !s.is_settled());
         spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
@@ -1457,8 +1447,7 @@ impl Widget for SidebarWheelDisc {
         let now = std::time::Instant::now();
         let dt = self
             .last_update_at
-            .map(|prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0))
-            .unwrap_or(1.0 / 60.0);
+            .map_or(1.0 / 60.0, |prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0));
         self.last_update_at = Some(now);
         let mut keep = self.advance(dt);
         // Clears the sub-detent residual `wheel_accumulator` once the
@@ -1486,7 +1475,7 @@ impl Widget for SidebarWheelDisc {
         keep
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SidebarWheelDisc"
     }
 
@@ -1508,7 +1497,7 @@ impl Widget for SidebarWheelDisc {
 
     /// Without this override the default leaf impl returns `true` every
     /// frame, defeating the host's "skip redraw on hover-only
-    /// CursorMoved" gate.
+    /// `CursorMoved`" gate.
     fn needs_redraw(&self) -> bool {
         // Dirty when the live fingerprint differs from the cached one, or a
         // spring is in flight — needed for a drag's first frame, where the
@@ -1518,8 +1507,7 @@ impl Widget for SidebarWheelDisc {
         let spring_in_flight = self
             .rotation_spring
             .as_ref()
-            .map(|s| !s.is_settled())
-            .unwrap_or(false);
+            .is_some_and(|s| !s.is_settled());
         spring_in_flight
             || !self.cached_fp.is_populated()
             || self.current_fingerprint() != self.cached_fp
@@ -1590,8 +1578,7 @@ impl SidebarWheelDisc {
         let velocity = self
             .rotation_spring
             .as_ref()
-            .map(|s| s.velocity())
-            .unwrap_or(0.0);
+            .map_or(0.0, ui::Spring::velocity);
 
         let target = if self.drag_raw_deg > hi {
             hi

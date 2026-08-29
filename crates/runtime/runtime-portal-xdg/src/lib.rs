@@ -179,7 +179,7 @@ pub struct ScreenCast;
 /// One captured screen source, as returned by the portal.
 #[derive(Debug, Clone)]
 pub struct ScreenCastStream {
-    /// PipeWire node id the app can dial to receive frames.
+    /// `PipeWire` node id the app can dial to receive frames.
     pub pipewire_node_id: u32,
     /// Optional stable id the portal assigns so the app can correlate streams
     /// across restarts.
@@ -280,8 +280,7 @@ fn monotonic_id() -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis());
     format!("{epoch:x}-{n:x}")
 }
 

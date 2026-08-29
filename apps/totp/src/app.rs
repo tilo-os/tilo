@@ -289,7 +289,7 @@ impl AuthenticatorApp {
 
     /// Act on one outcome drained from the Add-account modal. A save is a
     /// document mutation dispatched as an [`TotpAction::AddAccount`]
-    /// (crate::actions::TotpAction); the colour slot and list order are pinned at
+    /// (`crate::actions::TotpAction`); the colour slot and list order are pinned at
     /// authoring time so replay is deterministic.
     fn apply_add_panel_event(&mut self, ev: AddPanelEvent, state: &mut AutoCommit) {
         match ev {
@@ -445,7 +445,7 @@ impl AuthenticatorApp {
 
         // Add button.
         let hovered = self.add_btn_rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(self.add_btn_rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.add_btn_rect, f64::from(theme.tokens.radii.md));
         let bg = if hovered {
             theme.accent_hover
         } else {
@@ -461,8 +461,8 @@ impl AuthenticatorApp {
             Color::WHITE,
             transform
                 * Affine::translate((
-                    self.add_btn_rect.center().x - tw as f64 / 2.0,
-                    self.add_btn_rect.center().y - th as f64 / 2.0,
+                    self.add_btn_rect.center().x - f64::from(tw) / 2.0,
+                    self.add_btn_rect.center().y - f64::from(th) / 2.0,
                 )),
             None,
             TextWeight::Semibold,
@@ -477,7 +477,7 @@ impl AuthenticatorApp {
             &PresenceCtx::empty(),
         );
         if self.search.value().is_empty() {
-            let pad = theme.padding_standard as f64;
+            let pad = f64::from(theme.padding_standard);
             text_renderer.draw_text(
                 scene,
                 "Search accounts\u{2026}",
@@ -508,7 +508,7 @@ impl AuthenticatorApp {
         }
         let size = 14.0;
         let (tw, _th) = text_renderer.measure_weighted(msg, size, None, TextWeight::Medium);
-        let w = tw as f64 + 40.0;
+        let w = f64::from(tw) + 40.0;
         let h = 40.0;
         let cx = self.rect.center().x;
         let y1 = self.rect.y1 - 28.0;
@@ -528,8 +528,8 @@ impl AuthenticatorApp {
             Color::WHITE,
             transform
                 * Affine::translate((
-                    cx - tw as f64 / 2.0,
-                    pill.center().y - size as f64 / 2.0 - 1.0,
+                    cx - f64::from(tw) / 2.0,
+                    pill.center().y - f64::from(size) / 2.0 - 1.0,
                 )),
             None,
             TextWeight::Medium,
@@ -581,20 +581,20 @@ impl Widget for AuthenticatorApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.root_node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
             x0,
             y0,
-            x0 + layout.size.width as f64,
-            y0 + layout.size.height as f64,
+            x0 + f64::from(layout.size.width),
+            y0 + f64::from(layout.size.height),
         );
 
         self.header_rect = Rect::new(
@@ -863,16 +863,15 @@ impl Widget for AuthenticatorApp {
     /// filter so the account is revealed in the list even if a search term was
     /// active. Selection is app-local presentation, so the doc args are unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::TotpSearchProvider::parse_action_id(action_id) {
-            if self.vault.get(id).is_some() {
+        if let Some(id) = crate::search_provider::TotpSearchProvider::parse_action_id(action_id)
+            && self.vault.get(id).is_some() {
                 self.selected = Some(id);
                 self.search.set_text("");
                 self.list_dirty = true;
             }
-        }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AuthenticatorApp"
     }
 
@@ -1011,8 +1010,7 @@ mod tests {
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
         if crate::storage::vault_path()
-            .map(|p| !p.exists())
-            .unwrap_or(true)
+            .map_or(true, |p| !p.exists())
         {
             assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
         }
@@ -1162,7 +1160,7 @@ mod tests {
 
         // Inject the portal outcome and let the per-frame sync drain it — the
         // exact channel the off-thread portal worker feeds.
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(img.clone())));
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(img)));
         app.sync(&mut state.doc, &state.root);
 
         assert!(

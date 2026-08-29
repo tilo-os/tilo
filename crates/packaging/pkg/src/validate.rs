@@ -105,13 +105,11 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
                 EntrypointType::Both => {
                     ep.gui_bin
                         .as_ref()
-                        .map(|p| !p.as_os_str().is_empty())
-                        .unwrap_or(false)
+                        .is_some_and(|p| !p.as_os_str().is_empty())
                         || ep
                             .cli_bin
                             .as_ref()
-                            .map(|p| !p.as_os_str().is_empty())
-                            .unwrap_or(false)
+                            .is_some_and(|p| !p.as_os_str().is_empty())
                         || !ep.bin.as_os_str().is_empty()
                 }
             };
@@ -124,8 +122,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
                 && m.cli
                     .as_ref()
-                    .map(|c| c.commands.is_empty())
-                    .unwrap_or(true)
+                    .map_or(true, |c| c.commands.is_empty())
             {
                 // A CLI entrypoint with no commands is fine — still runnable via `qos-install run <id>`, no error.
             }

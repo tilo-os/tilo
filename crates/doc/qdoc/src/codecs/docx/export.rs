@@ -57,7 +57,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // sectPr is emitted when header/footer refs or columns need it; OOXML orders header/footer refs before w:cols.
     let sectpr = if hf_parts.any() || !cols.is_empty() {
         format!(
-            r#"<w:sectPr>{}{}</w:sectPr>"#,
+            r"<w:sectPr>{}{}</w:sectPr>",
             super::headers::section_references(&hf_parts),
             cols
         )
@@ -190,7 +190,59 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
     let need_styles_wireup = has_styles && !had_styles_part;
 
-    if !had_content_types {
+    if had_content_types {
+        let mut overrides: Vec<(&str, &str)> = Vec::new();
+        if has_lists && !had_numbering {
+            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
+        }
+        if need_styles_wireup {
+            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
+        }
+        if need_core_wireup {
+            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
+        }
+        if need_app_wireup {
+            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
+        }
+        if need_header_wireup {
+            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
+        }
+        if need_footer_wireup {
+            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
+        }
+        if need_footnotes_wireup {
+            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
+        }
+        if need_endnotes_wireup {
+            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
+        }
+        if need_comments_wireup {
+            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
+        }
+        let image_defaults = images.content_type_defaults();
+        if (!overrides.is_empty() || !image_defaults.is_empty())
+            && let Some(ct) = c.get("[Content_Types].xml") {
+                let mut s = String::from_utf8_lossy(ct).into_owned();
+                for (part, ovr) in overrides {
+                    if !s.contains(part) {
+                        inject_before(&mut s, "</Types>", ovr);
+                    }
+                }
+                // Image content-type `Default`s — dedup on `Extension="<ext>"`.
+                for img in &images.images {
+                    let probe = format!(r#"Extension="{}""#, img.ext);
+                    if !s.contains(&probe) {
+                        let (_, media) = image_ext_and_media(&img.bytes);
+                        let def = format!(
+                            r#"<Default Extension="{}" ContentType="{}"/>"#,
+                            img.ext, media
+                        );
+                        inject_before(&mut s, "</Types>", &def);
+                    }
+                }
+                c.set("[Content_Types].xml", s.into_bytes());
+            }
+    } else {
         let mut ct = CONTENT_TYPES_BASE.to_string();
         if has_lists {
             ct.push_str(NUMBERING_OVERRIDE);
@@ -224,59 +276,6 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
-    } else {
-        let mut overrides: Vec<(&str, &str)> = Vec::new();
-        if has_lists && !had_numbering {
-            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
-        }
-        if need_styles_wireup {
-            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
-        }
-        if need_core_wireup {
-            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
-        }
-        if need_app_wireup {
-            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
-        }
-        if need_header_wireup {
-            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
-        }
-        if need_footer_wireup {
-            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
-        }
-        if need_footnotes_wireup {
-            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
-        }
-        if need_endnotes_wireup {
-            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
-        }
-        if need_comments_wireup {
-            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
-        }
-        let image_defaults = images.content_type_defaults();
-        if !overrides.is_empty() || !image_defaults.is_empty() {
-            if let Some(ct) = c.get("[Content_Types].xml") {
-                let mut s = String::from_utf8_lossy(ct).into_owned();
-                for (part, ovr) in overrides {
-                    if !s.contains(part) {
-                        inject_before(&mut s, "</Types>", ovr);
-                    }
-                }
-                // Image content-type `Default`s — dedup on `Extension="<ext>"`.
-                for img in &images.images {
-                    let probe = format!(r#"Extension="{}""#, img.ext);
-                    if !s.contains(&probe) {
-                        let (_, media) = image_ext_and_media(&img.bytes);
-                        let def = format!(
-                            r#"<Default Extension="{}" ContentType="{}"/>"#,
-                            img.ext, media
-                        );
-                        inject_before(&mut s, "</Types>", &def);
-                    }
-                }
-                c.set("[Content_Types].xml", s.into_bytes());
-            }
-        }
     }
 
     // docProps relationships live in the root rels, not the document's; generated fresh or injected into an existing part.
@@ -289,8 +288,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             inject_before(&mut s, "</Relationships>", APP_REL);
         }
         c.set("_rels/.rels", s.into_bytes());
-    } else if need_core_wireup || need_app_wireup {
-        if let Some(rels) = c.get("_rels/.rels") {
+    } else if (need_core_wireup || need_app_wireup)
+        && let Some(rels) = c.get("_rels/.rels") {
             let mut s = String::from_utf8_lossy(rels).into_owned();
             if need_core_wireup && !s.contains("Target=\"docProps/core.xml\"") {
                 inject_before(&mut s, "</Relationships>", CORE_REL);
@@ -300,7 +299,6 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             c.set("_rels/.rels", s.into_bytes());
         }
-    }
 
     // Needed once there's a numbering, freshly-synthesised styles, a header/footer, and/or a notes part.
     if has_lists
@@ -403,63 +401,59 @@ fn merge_styles_xml(
     styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
     doc_lang: Option<&str>,
 ) -> Vec<u8> {
-    match existing {
-        Some(bytes) => {
-            let present = style_ids_in(bytes);
-            let mut defs = String::new();
-            for id in refs {
-                if present.contains(id) {
-                    continue;
-                }
-                if let Some(props) = styles.get(id) {
-                    defs.push_str(&para_style_def_xml(id, props));
-                }
+    if let Some(bytes) = existing {
+        let present = style_ids_in(bytes);
+        let mut defs = String::new();
+        for id in refs {
+            if present.contains(id) {
+                continue;
             }
-            let has_doc_defaults = bytes
-                .windows(b"<w:docDefaults".len())
-                .any(|w| w == b"<w:docDefaults");
-            let defaults_inject = match doc_lang {
-                Some(lang) if !has_doc_defaults => doc_defaults_lang_xml(lang),
-                _ => String::new(),
-            };
-            if defs.is_empty() && defaults_inject.is_empty() {
-                return bytes.to_vec();
+            if let Some(props) = styles.get(id) {
+                defs.push_str(&para_style_def_xml(id, props));
             }
-            let mut s = String::from_utf8_lossy(bytes).into_owned();
-            if !defs.is_empty() {
-                inject_before(&mut s, "</w:styles>", &defs);
-            }
-            // docDefaults must precede every `<w:style>`, so inject after the `<w:styles>` open tag.
-            if !defaults_inject.is_empty() {
-                inject_after_styles_open(&mut s, &defaults_inject);
-            }
-            s.into_bytes()
         }
-        None => {
-            let mut s = STYLES_XML_OPEN.to_string();
-            if let Some(lang) = doc_lang {
-                s.push_str(&doc_defaults_lang_xml(lang));
-            }
-            for id in refs {
-                if let Some(props) = styles.get(id) {
-                    s.push_str(&para_style_def_xml(id, props));
-                }
-            }
-            s.push_str("</w:styles>");
-            s.into_bytes()
+        let has_doc_defaults = bytes
+            .windows(b"<w:docDefaults".len())
+            .any(|w| w == b"<w:docDefaults");
+        let defaults_inject = match doc_lang {
+            Some(lang) if !has_doc_defaults => doc_defaults_lang_xml(lang),
+            _ => String::new(),
+        };
+        if defs.is_empty() && defaults_inject.is_empty() {
+            return bytes.to_vec();
         }
+        let mut s = String::from_utf8_lossy(bytes).into_owned();
+        if !defs.is_empty() {
+            inject_before(&mut s, "</w:styles>", &defs);
+        }
+        // docDefaults must precede every `<w:style>`, so inject after the `<w:styles>` open tag.
+        if !defaults_inject.is_empty() {
+            inject_after_styles_open(&mut s, &defaults_inject);
+        }
+        s.into_bytes()
+    } else {
+        let mut s = STYLES_XML_OPEN.to_string();
+        if let Some(lang) = doc_lang {
+            s.push_str(&doc_defaults_lang_xml(lang));
+        }
+        for id in refs {
+            if let Some(props) = styles.get(id) {
+                s.push_str(&para_style_def_xml(id, props));
+            }
+        }
+        s.push_str("</w:styles>");
+        s.into_bytes()
     }
 }
 
 /// Insert `frag` right after the `<w:styles …>` open tag, so `<w:docDefaults>` lands ahead
 /// of every `<w:style>` as the schema requires.
 fn inject_after_styles_open(s: &mut String, frag: &str) {
-    if let Some(open) = s.find("<w:styles") {
-        if let Some(rel_close) = s[open..].find('>') {
+    if let Some(open) = s.find("<w:styles")
+        && let Some(rel_close) = s[open..].find('>') {
             let pos = open + rel_close + 1;
             s.insert_str(pos, frag);
         }
-    }
 }
 
 /// The `w:styleId` values already declared, so merging doesn't redefine them.
@@ -720,7 +714,7 @@ fn note_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> 
     marks
         .iter()
         .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
-        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
@@ -748,7 +742,7 @@ fn comment_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<Strin
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -758,7 +752,7 @@ fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String>
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -769,7 +763,7 @@ fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<Stri
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -779,7 +773,7 @@ fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -793,7 +787,7 @@ fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String>
         .and_then(|m| m.value.as_str())
         .and_then(|v| {
             v.strip_prefix(crate::schema::CROSS_REF_PREFIX)
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
         })
 }
 
@@ -832,7 +826,7 @@ fn change_at(
         marks
             .iter()
             .find(|m| m.name == name && i >= m.start && i < m.end)
-            .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+            .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
     };
     if let Some(id) = find(crate::schema::MARK_INS) {
         return Some((crate::snapshot::ChangeKind::Ins, id));
@@ -942,15 +936,14 @@ fn render_runs(
         emit_comment_boundaries(&mut out, i);
         emit_bookmark_boundaries(&mut out, i);
         // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
-        if chars[i] == crate::schema::FIELD_PLACEHOLDER {
-            if let Some(note_id) = note_ref_at(marks, i) {
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER
+            && let Some(note_id) = note_ref_at(marks, i) {
                 if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
                     out.push_str(&run);
                 }
                 i += 1;
                 continue;
             }
-        }
         let active = marks_at(i, marks);
         let active_change = change_at(marks, i);
         let active_xref = cross_ref_at(marks, i);
@@ -1267,7 +1260,7 @@ fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) 
             "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
             "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
             "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
-            _ => r#"<wp:wrapNone/>"#.to_string(),
+            _ => r"<wp:wrapNone/>".to_string(),
         };
         Some(format!(
             r#"<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="{rel_from}"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="{rel_from_v}"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{wrap}{graphic}</wp:anchor></w:drawing></w:r>"#
@@ -1406,12 +1399,11 @@ fn build_document_xml(
             _ => {
                 // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
                 let mut ppr_inner = String::new();
-                if let Some(AttrVal::Str(sid)) = b.attrs.get("style") {
-                    if snap.styles.contains_key(sid) {
+                if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
+                    && snap.styles.contains_key(sid) {
                         ppr_inner.push_str(&format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid)));
                         named_refs.insert(sid.clone());
                     }
-                }
                 ppr_inner.push_str(&jc_xml(b));
                 ppr_inner.push_str(&spacing_xml(b));
                 let ppr = if ppr_inner.is_empty() {
@@ -1579,7 +1571,7 @@ mod tests {
         };
         assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
         assert_eq!(
-            snap.blobs.get(&blob_hash).map(|b| b.as_slice()),
+            snap.blobs.get(&blob_hash).map(std::vec::Vec::as_slice),
             Some(&TINY_PNG[..]),
             "blob bytes survive"
         );
@@ -1830,8 +1822,7 @@ mod tests {
         assert_eq!(
             (bm.range.1, bm.range.2),
             (4, 9),
-            "bookmark range over 'intro': {:?}",
-            bm
+            "bookmark range over 'intro': {bm:?}"
         );
         let tb = snap
             .blocks
@@ -2021,8 +2012,8 @@ mod tests {
             {
                 let mut dm = d.as_mut();
                 dm.set_attr(&id, "table", "T1");
-                dm.set_attr(&id, "row", r as i64);
-                dm.set_attr(&id, "col", c as i64);
+                dm.set_attr(&id, "row", i64::from(r));
+                dm.set_attr(&id, "col", i64::from(c));
             }
             prev = Some(id);
         }
@@ -2345,7 +2336,7 @@ mod tests {
         assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
         assert_eq!(
             footer[0].text,
-            format!("Page {}", FIELD_PLACEHOLDER),
+            format!("Page {FIELD_PLACEHOLDER}"),
             "placeholder kept: {:?}",
             footer[0].text
         );
@@ -2418,7 +2409,7 @@ mod tests {
         // "p. " + a single placeholder; the cached "7" result is dropped.
         assert_eq!(
             header[0].text,
-            format!("p. {}", FIELD_PLACEHOLDER),
+            format!("p. {FIELD_PLACEHOLDER}"),
             "complex field → one placeholder: {:?}",
             header[0].text
         );
@@ -2464,7 +2455,7 @@ mod tests {
         let p = &snap.blocks[0];
         assert_eq!(
             p.text,
-            format!("see {}ref", FIELD_PLACEHOLDER),
+            format!("see {FIELD_PLACEHOLDER}ref"),
             "placeholder spliced inline: {:?}",
             p.text
         );

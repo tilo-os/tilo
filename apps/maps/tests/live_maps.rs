@@ -12,8 +12,8 @@
 //! green by self-skipping. They are NOT `#[ignore]`d, so they compile with every
 //! build and are trivially runnable:
 //!
-//!   MAPS_LIVE=1 \
-//!   qos-build test -p maps --test live_maps -- --nocapture --test-threads 1
+//!   `MAPS_LIVE=1` \
+//!   qos-build test -p maps --test `live_maps` -- --nocapture --test-threads 1
 //!
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
 //! written (default: `apps/maps/live-out/`).
@@ -36,13 +36,12 @@ const VP: (u32, u32) = (700, 780);
 /// map attribution (bottom-right). Everything sampled here is pure basemap.
 fn map_region() -> Rect {
     let (w, h) = VP;
-    Rect::new(30.0, 110.0, (w as f64) - 90.0, (h as f64) - 90.0)
+    Rect::new(30.0, 110.0, f64::from(w) - 90.0, f64::from(h) - 90.0)
 }
 
 fn live_enabled() -> bool {
     std::env::var("MAPS_LIVE")
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false)
+        .is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 fn skip(name: &str) {
@@ -79,7 +78,7 @@ fn cached_pngs(dir: &std::path::Path) -> (usize, Option<Vec<u8>>) {
             let p = e.path();
             if p.is_dir() {
                 walk(&p, out);
-            } else if p.extension().map(|x| x == "png").unwrap_or(false) {
+            } else if p.extension().is_some_and(|x| x == "png") {
                 out.push(p);
             }
         }
@@ -372,7 +371,7 @@ fn frame_pixel_helpers_detect_uniform_vs_varied() {
         width: w,
         height: h,
     };
-    let region = Rect::new(0.0, 0.0, w as f64, h as f64);
+    let region = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
     assert!(uniform.is_uniform(region));
     assert_eq!(uniform.distinct_colors(region, 1), 1);
 

@@ -322,8 +322,7 @@ fn search_field_is_a_top_level_focusable() {
     let has_text_input = h.focus_order.iter().any(|&id| {
         h.node_map
             .get(&id)
-            .map(|&w| unsafe { (*w).name() == "TextInput" })
-            .unwrap_or(false)
+            .is_some_and(|&w| unsafe { (*w).name() == "TextInput" })
     });
     assert!(
         has_text_input,

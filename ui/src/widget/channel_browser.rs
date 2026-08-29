@@ -250,7 +250,7 @@ impl ChannelBrowser {
         true
     }
 
-    /// Sort key: (space_name asc, !is_pinned, last_activity desc).
+    /// Sort key: (`space_name` asc, !`is_pinned`, `last_activity` desc).
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
@@ -311,7 +311,7 @@ impl ChannelBrowser {
     }
 
     /// Yields `(visible_index, row_rect, space_header)`; a header is
-    /// emitted whenever the space_name changes.
+    /// emitted whenever the `space_name` changes.
     fn iter_row_layout(&self) -> Vec<(usize, Rect, Option<Rect>)> {
         let mut out = Vec::with_capacity(self.visible.len());
         let mut y = self.list_top_y();
@@ -321,14 +321,14 @@ impl ChannelBrowser {
         let mut last_space: Option<&str> = None;
         for (vi, &ei) in self.visible.iter().enumerate() {
             let space = self.entries[ei].space_name.as_str();
-            let header = if Some(space) != last_space {
+            let header = if Some(space) == last_space {
+                None
+            } else {
                 last_space = Some(space);
                 let h0 = y;
                 let h1 = (y + SPACE_HEADER_HEIGHT).min(max_y);
                 y = h1;
                 Some(Rect::new(x0, h0, x1, h1))
-            } else {
-                None
             };
             if y >= max_y {
                 break;
@@ -366,7 +366,7 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let row = self.input_row_rect();
-        let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -397,7 +397,7 @@ impl ChannelBrowser {
         } else {
             theme.tokens.colors.text_primary
         };
-        let text_y = row.y0 + (row.height() - text_size as f64) / 2.0;
+        let text_y = row.y0 + (row.height() - f64::from(text_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             display,
@@ -427,7 +427,7 @@ impl ChannelBrowser {
         self.pill_rects.clear();
         let mut x = strip.x0;
         let pill_h = (strip.height() - 8.0).max(24.0);
-        let cy = (strip.y0 + strip.y1) / 2.0;
+        let cy = f64::midpoint(strip.y0, strip.y1);
 
         let mut paint_pill = |label: &str,
                               active: bool,
@@ -435,7 +435,7 @@ impl ChannelBrowser {
                               x: &mut f64,
                               rects: &mut Vec<(String, Rect)>| {
             let (lw, _) = text_renderer.measure(label, pill_text_size, None);
-            let pill_w = lw as f64 + 20.0;
+            let pill_w = f64::from(lw) + 20.0;
             let rect = Rect::new(*x, cy - pill_h / 2.0, *x + pill_w, cy + pill_h / 2.0);
             let body = if active { active_fill } else { idle_fill };
             let color = if active { active_text } else { idle_text };
@@ -449,8 +449,8 @@ impl ChannelBrowser {
                 color,
                 transform
                     * Affine::translate((
-                        rect.x0 + (rect.width() - lw2 as f64) / 2.0,
-                        rect.y0 + (rect.height() - lh2 as f64) / 2.0,
+                        rect.x0 + (rect.width() - f64::from(lw2)) / 2.0,
+                        rect.y0 + (rect.height() - f64::from(lh2)) / 2.0,
                     )),
                 None,
             );
@@ -493,7 +493,7 @@ impl ChannelBrowser {
         now: SystemTime,
     ) {
         if is_selected {
-            let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -528,7 +528,7 @@ impl ChannelBrowser {
         );
 
         let text_size = theme.tokens.typography.scale.sm;
-        let cy = (row.y0 + row.y1) / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         let mut x_cursor = band.x1 + 8.0;
 
         if entry.is_pinned {
@@ -538,10 +538,10 @@ impl ChannelBrowser {
                 PIN_GLYPH,
                 text_size,
                 theme.tokens.colors.accent[5],
-                transform * Affine::translate((x_cursor, cy - text_size as f64 / 2.0)),
+                transform * Affine::translate((x_cursor, cy - f64::from(text_size) / 2.0)),
                 None,
             );
-            x_cursor += gw as f64 + 4.0;
+            x_cursor += f64::from(gw) + 4.0;
         }
 
         text_renderer.draw_text(
@@ -549,16 +549,16 @@ impl ChannelBrowser {
             entry.name.as_str(),
             text_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((x_cursor, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((x_cursor, cy - f64::from(text_size) / 2.0)),
             None,
         );
         let (nw, _) = text_renderer.measure(entry.name.as_str(), text_size, None);
-        x_cursor += nw as f64 + 8.0;
+        x_cursor += f64::from(nw) + 8.0;
 
         if let Some(role) = &entry.role_label {
             let chip_text_size = (text_size - 2.0).max(10.0);
             let (lw, _) = text_renderer.measure(role, chip_text_size, None);
-            let chip_w = (lw as f64 + 12.0).min(ROLE_CHIP_W);
+            let chip_w = (f64::from(lw) + 12.0).min(ROLE_CHIP_W);
             let chip_h = (row.height() - 16.0).max(16.0);
             let chip = Rect::new(
                 x_cursor,
@@ -589,8 +589,8 @@ impl ChannelBrowser {
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        chip.x0 + (chip.width() - lw2 as f64) / 2.0,
-                        chip.y0 + (chip.height() - lh2 as f64) / 2.0,
+                        chip.x0 + (chip.width() - f64::from(lw2)) / 2.0,
+                        chip.y0 + (chip.height() - f64::from(lh2)) / 2.0,
                     )),
                 None,
             );
@@ -599,13 +599,13 @@ impl ChannelBrowser {
         // Right-aligned before the unread badge slot.
         let rel = crate::widget::history::format_relative_time(entry.last_activity, now);
         let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - UNREAD_SLOT_W - 4.0 - tw as f64;
+        let time_x = row.x1 - UNREAD_SLOT_W - 4.0 - f64::from(tw);
         text_renderer.draw_text(
             scene,
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((time_x, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((time_x, cy - f64::from(text_size) / 2.0)),
             None,
         );
 
@@ -617,7 +617,7 @@ impl ChannelBrowser {
             };
             let badge_text_size = (text_size - 2.0).max(10.0);
             let (bw, _) = text_renderer.measure(&badge_text, badge_text_size, None);
-            let badge_w = (bw as f64 + 12.0).max(20.0);
+            let badge_w = (f64::from(bw) + 12.0).max(20.0);
             let badge_h = (row.height() - 18.0).max(16.0);
             let badge = Rect::new(
                 row.x1 - 6.0 - badge_w,
@@ -641,8 +641,8 @@ impl ChannelBrowser {
                 theme.tokens.colors.text_primary,
                 transform
                     * Affine::translate((
-                        badge.x0 + (badge.width() - lw as f64) / 2.0,
-                        badge.y0 + (badge.height() - lh as f64) / 2.0,
+                        badge.x0 + (badge.width() - f64::from(lw)) / 2.0,
+                        badge.y0 + (badge.height() - f64::from(lh)) / 2.0,
                     )),
                 None,
             );
@@ -678,13 +678,13 @@ impl ChannelBrowser {
             &band,
         );
         let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-        let cy = (header_rect.y0 + header_rect.y1) / 2.0;
+        let cy = f64::midpoint(header_rect.y0, header_rect.y1);
         text_renderer.draw_text(
             scene,
             space_name,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((band.x1 + 6.0, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((band.x1 + 6.0, cy - f64::from(text_size) / 2.0)),
             None,
         );
     }
@@ -719,7 +719,7 @@ impl ChannelBrowser {
         let chip_border = theme.tokens.colors.border_white_10;
         let dim = theme.tokens.colors.text_dim;
         let chip_h = (footer.height() - 14.0).max(14.0);
-        let cy = (footer.y0 + footer.y1) / 2.0;
+        let cy = f64::midpoint(footer.y0, footer.y1);
 
         let mut x = footer.x0 + 4.0;
         for (key, label) in [
@@ -728,7 +728,7 @@ impl ChannelBrowser {
             ("Esc", "Close"),
         ] {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
-            let chip_w = kw as f64 + 10.0;
+            let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
             scene.fill(
@@ -746,8 +746,8 @@ impl ChannelBrowser {
                 dim,
                 transform
                     * Affine::translate((
-                        chip_rect.x0 + (chip_rect.width() - kw as f64) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - kh as f64) / 2.0,
+                        chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
+                        chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
                     )),
                 None,
             );
@@ -758,10 +758,10 @@ impl ChannelBrowser {
                 label,
                 chip_text_size,
                 dim,
-                transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+                transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
                 None,
             );
-            x += lw as f64 + 12.0;
+            x += f64::from(lw) + 12.0;
         }
     }
 
@@ -773,8 +773,7 @@ impl ChannelBrowser {
                 .space_pills()
                 .iter()
                 .position(|n| n == name)
-                .map(|i| i + 1)
-                .unwrap_or(0),
+                .map_or(0, |i| i + 1),
         }
     }
 
@@ -796,8 +795,8 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let t: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
     let mut qi = 0usize;
     let mut matches = 0i32;
     let mut gaps = 0i32;
@@ -850,7 +849,7 @@ impl Widget for ChannelBrowser {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -858,10 +857,10 @@ impl Widget for ChannelBrowser {
         let l = taffy.layout(node).unwrap();
         let prev = self.rect;
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if prev != self.rect {
             self.dirty = true;
@@ -876,7 +875,7 @@ impl Widget for ChannelBrowser {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -900,14 +899,14 @@ impl Widget for ChannelBrowser {
             let size = theme.tokens.typography.scale.sm;
             let (w, h) = text_renderer.measure(label, size, None);
             let top = self.list_top_y();
-            let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-            let cy = (top + self.footer_rect().y0) / 2.0;
+            let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+            let cy = f64::midpoint(top, self.footer_rect().y0);
             text_renderer.draw_text(
                 scene,
                 label,
                 size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((cx - w as f64 / 2.0, cy - h as f64 / 2.0)),
+                transform * Affine::translate((cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0)),
                 None,
             );
             self.draw_footer(scene, transform, text_renderer, theme);
@@ -1155,7 +1154,7 @@ impl Widget for ChannelBrowser {
                 "x" | "X" => {
                     let r = self.query_selection.range();
                     if !r.is_empty() {
-                        clipboard_copy(&self.query[r.clone()]);
+                        clipboard_copy(&self.query[r]);
                         self.delete_query_selection();
                     }
                     *handled = true;
@@ -1183,7 +1182,7 @@ impl Widget for ChannelBrowser {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ChannelBrowser"
     }
 

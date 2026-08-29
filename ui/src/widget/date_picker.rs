@@ -119,8 +119,7 @@ impl DatePicker {
         let (y, m) = self.month_view;
         // Falls back to column 0 on an invalid year range.
         NaiveDate::from_ymd_opt(y, m, 1)
-            .map(|d| d.weekday().num_days_from_monday() as usize)
-            .unwrap_or(0)
+            .map_or(0, |d| d.weekday().num_days_from_monday() as usize)
     }
 
     /// Shared by the taffy [`Widget::apply_layout`] path and the
@@ -200,17 +199,17 @@ impl Widget for DatePicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.set_rect(Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         ));
     }
 
@@ -241,16 +240,16 @@ impl Widget for DatePicker {
                 transform,
                 tokens.colors.border_focus,
                 None,
-                &RoundedRect::from_rect(self.rect, tokens.radii.md as f64),
+                &RoundedRect::from_rect(self.rect, f64::from(tokens.radii.md)),
             );
         }
 
         let (y, m) = self.month_view;
         let month_name = month_name_en(m);
-        let header_label = format!("{} {}", month_name, y);
+        let header_label = format!("{month_name} {y}");
         let (label_w, _) = text_renderer.measure(&header_label, text_size, None);
-        let label_x = self.rect.center().x - (label_w as f64) / 2.0;
-        let label_y = self.rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0;
+        let label_x = self.rect.center().x - f64::from(label_w) / 2.0;
+        let label_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             &header_label,
@@ -270,8 +269,8 @@ impl Widget for DatePicker {
             text_color,
             transform
                 * Affine::translate((
-                    self.prev_button_rect.center().x - (lw as f64) / 2.0,
-                    self.prev_button_rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0,
+                    self.prev_button_rect.center().x - f64::from(lw) / 2.0,
+                    self.prev_button_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0,
                 )),
             None,
         );
@@ -282,14 +281,14 @@ impl Widget for DatePicker {
             text_color,
             transform
                 * Affine::translate((
-                    self.next_button_rect.center().x - (rw as f64) / 2.0,
-                    self.next_button_rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0,
+                    self.next_button_rect.center().x - f64::from(rw) / 2.0,
+                    self.next_button_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0,
                 )),
             None,
         );
 
         let cell_w = self.rect.width() / GRID_COLS as f64;
-        let weekday_y = self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - text_size as f64) / 2.0;
+        let weekday_y = self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - f64::from(text_size)) / 2.0;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
             let (lw, _) = text_renderer.measure(label, text_size, None);
             let cx = self.rect.x0 + col as f64 * cell_w + cell_w / 2.0;
@@ -298,7 +297,7 @@ impl Widget for DatePicker {
                 label,
                 text_size,
                 dim_color,
-                transform * Affine::translate((cx - (lw as f64) / 2.0, weekday_y)),
+                transform * Affine::translate((cx - f64::from(lw) / 2.0, weekday_y)),
                 None,
             );
         }
@@ -319,7 +318,7 @@ impl Widget for DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, tokens.radii.sm as f64);
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -339,7 +338,7 @@ impl Widget for DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, tokens.radii.sm as f64);
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -360,8 +359,8 @@ impl Widget for DatePicker {
                 dim_color
             };
             let (tw, _) = text_renderer.measure(&day_str, text_size, None);
-            let tx = cell_rect.center().x - (tw as f64) / 2.0;
-            let ty = cell_rect.y0 + (cell_rect.height() - text_size as f64) / 2.0;
+            let tx = cell_rect.center().x - f64::from(tw) / 2.0;
+            let ty = cell_rect.y0 + (cell_rect.height() - f64::from(text_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &day_str,
@@ -422,7 +421,7 @@ impl Widget for DatePicker {
                         self.advance_month();
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         let d = self.selected;
                         if let Some(cb) = self.on_change.as_mut() {
                             cb(d);
@@ -472,7 +471,7 @@ impl Widget for DatePicker {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DatePicker"
     }
     fn test_id(&self) -> Option<&str> {

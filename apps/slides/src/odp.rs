@@ -1,7 +1,7 @@
-//! LibreOffice **OpenDocument Presentation** (`.odp`) read + write for the
+//! `LibreOffice` **`OpenDocument` Presentation** (`.odp`) read + write for the
 //! slides deck model.
 //!
-//! An ODP file is an OpenDocument package: a ZIP archive whose first entry is
+//! An ODP file is an `OpenDocument` package: a ZIP archive whose first entry is
 //! an uncompressed `mimetype`, alongside `content.xml` (the slides), plus the
 //! usual `styles.xml`, `meta.xml` and `META-INF/manifest.xml`. This module
 //! mirrors how `crates/doc/qdoc` handles `.odt` (ZIP + `content.xml`), but maps
@@ -10,7 +10,7 @@
 //! [`Deck`]/[`Slide`]/[`Element`](crate::model) model and back.
 //!
 //! Fidelity: every element is emitted as its native ODF drawing object (so the
-//! file opens and renders in LibreOffice Impress) **and** carries the exact
+//! file opens and renders in `LibreOffice` Impress) **and** carries the exact
 //! model fields in a private `qslides:` namespace, so the app's own importer
 //! reconstructs the deck losslessly (a full `model → .odp → model` round-trip
 //! is identity — see the test at the bottom). A foreign `.odp` that lacks the
@@ -23,7 +23,7 @@ use crate::model::{
 };
 
 /// Physical page size we map the 1280×720 slide space onto (16:9, 25.4 cm
-/// wide — LibreOffice's default widescreen page). Only the ODF-native `svg:*`
+/// wide — `LibreOffice`'s default widescreen page). Only the ODF-native `svg:*`
 /// geometry uses centimetres; the model's own units travel verbatim in the
 /// `qslides:` attributes, so the round-trip never depends on this scale.
 const PAGE_W_CM: f64 = 25.4;
@@ -233,7 +233,7 @@ fn xml_attr(s: &str) -> String {
 }
 
 /// Resolve an XML entity reference — a numeric `&#NN;` / `&#xNN;` or one of the
-/// five predefined named entities — back to its character. quick_xml delivers
+/// five predefined named entities — back to its character. `quick_xml` delivers
 /// these as standalone `GeneralRef` events (splitting the text run), so the read
 /// loop folds them back in through this. An unknown named entity resolves to
 /// `None` (a deck we author only ever emits the predefined five, via `xml_text`).
@@ -308,11 +308,10 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p {
-                    if let Some(ch) = resolve_entity(&r) {
+                if in_text_p
+                    && let Some(ch) = resolve_entity(&r) {
                         p_buf.push(ch);
                     }
-                }
                 continue;
             }
             Ok(Event::End(end)) => {
@@ -391,7 +390,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
 fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element {
     let f = |k: &[u8]| attr(e, k);
     let num = |k: &[u8], d: f64| f(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
-    let boolean = |k: &[u8]| f(k).map(|v| v == "true").unwrap_or(false);
+    let boolean = |k: &[u8]| f(k).is_some_and(|v| v == "true");
     Element {
         id: f(b"qslides:id").unwrap_or_else(crate::model::new_id),
         kind: ElementKind::from_str(kind),
@@ -419,7 +418,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 #[cfg(test)]

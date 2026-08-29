@@ -28,12 +28,12 @@ impl FormatProvider for RtfCodec {
         let s = head
             .iter()
             .take_while(|b| b.is_ascii())
-            .cloned()
+            .copied()
             .collect::<Vec<u8>>();
         let trimmed = s
             .iter()
             .skip_while(|b| b.is_ascii_whitespace())
-            .cloned()
+            .copied()
             .collect::<Vec<u8>>();
         if trimmed.starts_with(b"{\\rtf") {
             Confidence::High
@@ -294,9 +294,9 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
     while idx < tokens.len() {
         let tok = &tokens[idx];
 
-        if skip_depth.is_none() {
-            if let Token::Control(w, _) = tok {
-                if w == "colortbl" {
+        if skip_depth.is_none()
+            && let Token::Control(w, _) = tok
+                && w == "colortbl" {
                     let mut j = idx + 1;
                     let mut inner_depth = 1; // we are inside the colortbl's group
                     let start = j;
@@ -315,8 +315,6 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     idx = j;
                     continue;
                 }
-            }
-        }
 
         match tok {
             Token::GroupOpen => {
@@ -328,11 +326,10 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                 if stack.len() > 1 {
                     stack.pop();
                 }
-                if let Some(sd) = skip_depth {
-                    if depth == sd {
+                if let Some(sd) = skip_depth
+                    && depth == sd {
                         skip_depth = None;
                     }
-                }
                 depth = depth.saturating_sub(1);
             }
             Token::Symbol(sym) => {
@@ -434,8 +431,8 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     idx += 1;
                     continue;
                 }
-                let u = (*cu as i64 & 0xffff) as u16;
-                let ch = char::from_u32(u as u32).unwrap_or('\u{fffd}');
+                let u = (i64::from(*cu) & 0xffff) as u16;
+                let ch = char::from_u32(u32::from(u)).unwrap_or('\u{fffd}');
                 push_char(
                     doc,
                     &mut prev_block,
@@ -610,7 +607,7 @@ fn push_text(
         });
     }
     if let Some(hp) = cs.fs_halfpt {
-        let pt = (hp / 2).max(0) as i64;
+        let pt = i64::from((hp / 2).max(0));
         pending.push(PendingMark {
             block: id,
             start,

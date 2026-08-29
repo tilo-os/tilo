@@ -1,7 +1,7 @@
 //! Where the bytes come from, and how to reach them.
 //!
 //! A [`Source`] is a codec-agnostic reference to playable media. It resolves to
-//! a GStreamer URI for the decode backend, and to a plain byte reader for the
+//! a `GStreamer` URI for the decode backend, and to a plain byte reader for the
 //! prefetch path. Crucially a [`Source::Workspace`] path points **through** the
 //! P2P FUSE mount at `/var/workspace` — reading it pulls the bytes down on
 //! demand (projection-first, hydration-on-read), so a consumer must never
@@ -36,9 +36,7 @@ impl Source {
     /// The FUSE mount root, honouring the `$QOS_WORKSPACE_ROOT` override so a
     /// test / dev host without a real mount can point at a scratch directory.
     pub fn workspace_root() -> PathBuf {
-        std::env::var_os("QOS_WORKSPACE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(WORKSPACE_ROOT))
+        std::env::var_os("QOS_WORKSPACE_ROOT").map_or_else(|| PathBuf::from(WORKSPACE_ROOT), PathBuf::from)
     }
 
     /// The absolute on-disk path these bytes resolve to, for the local and
@@ -64,19 +62,16 @@ impl Source {
     pub fn is_ready(&self) -> bool {
         match self {
             Source::Remote { .. } => true,
-            _ => self.abs_path().map(|p| p.exists()).unwrap_or(false),
+            _ => self.abs_path().is_some_and(|p| p.exists()),
         }
     }
 
-    /// The URI to hand a GStreamer `playbin`. File variants become `file://`
+    /// The URI to hand a `GStreamer` `playbin`. File variants become `file://`
     /// URIs on their resolved absolute path; a remote source passes through.
     pub fn to_uri(&self) -> String {
-        match self {
-            Source::Remote { url } => url.clone(),
-            _ => {
-                let abs = self.abs_path().unwrap_or_default();
-                path_to_file_uri(&abs)
-            }
+        if let Source::Remote { url } = self { url.clone() } else {
+            let abs = self.abs_path().unwrap_or_default();
+            path_to_file_uri(&abs)
         }
     }
 
@@ -85,16 +80,13 @@ impl Source {
     /// is the FUSE mount — the read is what triggers hydration). Remote returns
     /// an error: it is streamed by the decode pipeline, not byte-copied here.
     pub fn open_reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
-        match self {
-            Source::Remote { .. } => Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "remote sources are streamed by the decode pipeline, not read here",
-            )),
-            _ => {
-                let abs = self.abs_path().expect("file variant has an abs path");
-                let f = std::fs::File::open(abs)?;
-                Ok(Box::new(f))
-            }
+        if let Source::Remote { .. } = self { Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "remote sources are streamed by the decode pipeline, not read here",
+        )) } else {
+            let abs = self.abs_path().expect("file variant has an abs path");
+            let f = std::fs::File::open(abs)?;
+            Ok(Box::new(f))
         }
     }
 

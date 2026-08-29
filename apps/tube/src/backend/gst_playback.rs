@@ -43,7 +43,7 @@ pub enum Pull {
     Err(String),
 }
 
-/// A running GStreamer playback session. Drop (or [`GstPlayback::stop`]) tears
+/// A running `GStreamer` playback session. Drop (or [`GstPlayback::stop`]) tears
 /// the pipeline down.
 pub struct GstPlayback {
     /// The `playbin` (or, in tests, a parsed pipeline). Both are `GstPipeline`
@@ -53,7 +53,7 @@ pub struct GstPlayback {
 }
 
 impl GstPlayback {
-    /// Initialise GStreamer. Idempotent; safe to call repeatedly.
+    /// Initialise `GStreamer`. Idempotent; safe to call repeatedly.
     pub fn init() -> Result<(), String> {
         gst::init().map_err(|e| format!("gst init: {e}"))
     }
@@ -167,7 +167,7 @@ impl Drop for GstPlayback {
 }
 
 /// Copy one RGBA sample out of the appsink into an owned, tightly-packed buffer,
-/// honouring GStreamer's row stride (which may be padded past `width * 4`).
+/// honouring `GStreamer`'s row stride (which may be padded past `width * 4`).
 fn frame_from_sample(sample: &gst::Sample) -> Result<Frame, String> {
     let caps = sample.caps().ok_or("sample has no caps")?;
     let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| "bad VideoInfo".to_string())?;

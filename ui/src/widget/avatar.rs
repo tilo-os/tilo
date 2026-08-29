@@ -31,7 +31,7 @@ pub struct Avatar {
     size: f32,
     rect: Rect,
     /// Scene cache. Avatars have no hover/press/focus visuals, so the
-    /// cache invalidates only when the rect size changes (apply_layout).
+    /// cache invalidates only when the rect size changes (`apply_layout`).
     cached: vello::Scene,
     dirty: bool,
     /// Rect the cache was emitted at — compared by size; pure
@@ -96,8 +96,8 @@ impl Avatar {
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
 
-        let iw = img.width.max(1) as f64;
-        let ih = img.height.max(1) as f64;
+        let iw = f64::from(img.width.max(1));
+        let ih = f64::from(img.height.max(1));
         let sx = self.rect.width() / iw;
         let sy = self.rect.height() / ih;
         let brush_transform =
@@ -146,8 +146,8 @@ impl Avatar {
         let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
         let (tw, th) =
             text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
-        let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        let tx = centre.x - f64::from(tw) / 2.0;
+        let ty = centre.y - f64::from(th) / 2.0;
         text_renderer.draw_text_weighted(
             scene,
             &initials,
@@ -168,7 +168,7 @@ impl Avatar {
     /// threshold shift of a couple of palette entries.
     pub fn initial_ink(fill: Color) -> Color {
         let c = fill.to_rgba8();
-        let l = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32;
+        let l = 0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b);
         if l > 140.0 {
             Color::from_rgb8(0x14, 0x16, 0x1a)
         } else {
@@ -246,8 +246,8 @@ impl Avatar {
         let text_size = (rect.width().min(rect.height()) as f32) * 0.36;
         let (tw, th) =
             text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
-        let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        let tx = centre.x - f64::from(tw) / 2.0;
+        let ty = centre.y - f64::from(th) / 2.0;
         text_renderer.draw_text_weighted(
             scene,
             &label,
@@ -326,8 +326,8 @@ impl Avatar {
         let text_size = self.size * 0.4;
         let (tw, th) =
             text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
-        let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        let tx = centre.x - f64::from(tw) / 2.0;
+        let ty = centre.y - f64::from(th) / 2.0;
         text_renderer.draw_text_weighted(
             scene,
             &self.initials,
@@ -359,17 +359,17 @@ impl Widget for Avatar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
@@ -443,7 +443,7 @@ impl Widget for Avatar {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Avatar"
     }
 

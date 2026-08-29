@@ -830,7 +830,7 @@ fn serve_http(
 /// spelling of loopback can't slip past a test for another.
 fn canonical_ip(addr: IpAddr) -> IpAddr {
     match addr {
-        IpAddr::V6(v6) => v6.to_ipv4().map(IpAddr::V4).unwrap_or(addr),
+        IpAddr::V6(v6) => v6.to_ipv4().map_or(addr, IpAddr::V4),
         v4 => v4,
     }
 }

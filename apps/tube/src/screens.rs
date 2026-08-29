@@ -75,7 +75,7 @@ pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
     SelectedStyle::on(theme.accent_hover)
 }
 
-/// "On" status pill (SponsorBlock / DeArrow indicators in the top bar). The
+/// "On" status pill (`SponsorBlock` / `DeArrow` indicators in the top bar). The
 /// old design put accent-blue text on a translucent accent wash (3.4:1). We
 /// keep the recognisable accent tint but strengthen it into an opaque fill and
 /// contrast the foreground against the result.
@@ -153,12 +153,12 @@ fn pill(
     row.push(text_c(label, 14.0, fg))
         .surface(Surface {
             fill: bg,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .hover_surface(Surface {
             fill: Some(hover_bg),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .on_click(bus, action)
@@ -173,7 +173,7 @@ fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: Some((1.0, theme.border_standard)),
         })
         .push(icon(leading, 16.0, theme.text_primary))
@@ -205,7 +205,7 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .push(icon(IconKind::Menu, 20.0, theme.text_primary))
         .surface(Surface {
             fill: None,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .hover_surface(hover_pill_surface(theme))
@@ -250,8 +250,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
             .push_if(
                 model
                     .channel(&v.channel_id)
-                    .map(|c| c.verified)
-                    .unwrap_or(false),
+                    .is_some_and(|c| c.verified),
                 icon(IconKind::Check, 12.0, theme.text_dim),
             ),
     );
@@ -293,7 +292,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         .pad(6.0)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
@@ -324,7 +323,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
         .align(Align::Start)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
@@ -417,7 +416,7 @@ fn skeleton_card(theme: &Theme) -> Flex {
             theme,
             Len::Fill,
             THUMB_H,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
         ))
         .push(
             Flex::row()
@@ -461,7 +460,7 @@ fn nav_item(
             sel.fg,
             Surface {
                 fill: Some(sel.bg),
-                radius: theme.tokens.radii.lg as f64,
+                radius: f64::from(theme.tokens.radii.lg),
                 border: None,
             },
         )
@@ -470,7 +469,7 @@ fn nav_item(
             theme.text_dim,
             Surface {
                 fill: None,
-                radius: theme.tokens.radii.lg as f64,
+                radius: f64::from(theme.tokens.radii.lg),
                 border: None,
             },
         )
@@ -483,7 +482,7 @@ fn nav_item(
     } else {
         Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         }
     };
@@ -524,7 +523,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 .justify(Justify::Center)
                 .surface(Surface {
                     fill: Some(theme.accent_primary),
-                    radius: theme.tokens.radii.lg as f64,
+                    radius: f64::from(theme.tokens.radii.lg),
                     border: None,
                 })
                 .push(icon(IconKind::Play, 22.0, Color::WHITE)),
@@ -585,7 +584,7 @@ fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .push(icon(IconKind::Back, 20.0, theme.text_primary))
         .surface(Surface {
             fill: None,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .hover_surface(hover_pill_surface(theme))
@@ -618,7 +617,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: Some((1.0, theme.border_standard)),
         })
         .push(icon(IconKind::Search, 18.0, theme.text_dim))
@@ -657,7 +656,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
 /// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
 /// backend has actually returned real data; a dim "Sample" (or "Connecting…")
 /// otherwise, so the user always knows whether the catalogue on screen is real
-/// YouTube data or the bundled offline sample.
+/// `YouTube` data or the bundled offline sample.
 fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
     let live = model.data_source.live;
     let (dot, fg, label) = if live {
@@ -681,7 +680,7 @@ fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .push(Flex::row().fixed(8.0, 8.0).surface(Surface {
@@ -709,7 +708,7 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
             sel.fg,
             Surface {
                 fill: Some(sel.bg),
-                radius: theme.tokens.radii.full as f64,
+                radius: f64::from(theme.tokens.radii.full),
                 border: None,
             },
             theme.tokens.colors.accent.stops[3],
@@ -726,7 +725,7 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
         .surface(resting)
         .hover_surface(Surface {
             fill: Some(hover_bg),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .on_click(bus, action)
@@ -807,7 +806,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
                     .pad(6.0)
                     .hover_surface(Surface {
                         fill: Some(hover_fill(theme)),
-                        radius: theme.tokens.radii.lg as f64,
+                        radius: f64::from(theme.tokens.radii.lg),
                         border: None,
                     })
                     .on_click(bus, Action::OpenChannel(ch.id.clone()))
@@ -953,7 +952,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
         .id(&format!("playlist_card_{}", p.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         })
         .on_click(bus, Action::OpenPlaylist(p.id.clone()))
@@ -993,7 +992,7 @@ fn creator_card(
         .id(&format!("creator_card_{}", c.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::OpenChannel(c.id.clone()))
@@ -1206,7 +1205,7 @@ pub fn channel(
     let subscribed = model.is_subscribed(id);
 
     // Real banner image when the store has it, else the seed gradient.
-    let banner = ImageBox::new(&ch.seed, 160.0, theme.tokens.radii.lg as f64, None)
+    let banner = ImageBox::new(&ch.seed, 160.0, f64::from(theme.tokens.radii.lg), None)
         .source(imgs.store_handle(), &ch.banner_url);
 
     let header = Flex::row()
@@ -1359,7 +1358,7 @@ pub fn watch(
     {
         let qualities: Vec<String> = crate::app::QUALITIES
             .iter()
-            .map(|q| q.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let sel = crate::app::QUALITIES
             .iter()
@@ -1413,12 +1412,12 @@ pub fn watch(
                         .align(Align::Center)
                         .surface(Surface {
                             fill: Some(Color::from_rgba8(0, 0, 0, 200)),
-                            radius: theme.tokens.radii.full as f64,
+                            radius: f64::from(theme.tokens.radii.full),
                             border: Some((1.0, Color::from_rgba8(255, 255, 255, 40))),
                         })
                         .hover_surface(Surface {
                             fill: Some(theme.accent_primary),
-                            radius: theme.tokens.radii.full as f64,
+                            radius: f64::from(theme.tokens.radii.full),
                             border: None,
                         })
                         .on_click(bus, Action::SkipSegment(s.end))
@@ -1494,9 +1493,7 @@ pub fn watch(
     // until it lands.
     if model.settings.return_dislike_enabled {
         let label = model
-            .dislikes_of(&v.id)
-            .map(human_count)
-            .unwrap_or_else(|| "—".to_string());
+            .dislikes_of(&v.id).map_or_else(|| "—".to_string(), human_count);
         meta = meta.push(stat_pill(theme, &label, IconKind::Dislike).id("dislike_pill"));
     }
     let meta = meta.push(
@@ -1651,7 +1648,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_standard)),
         })
         .on_click(
@@ -1760,7 +1757,7 @@ fn setting_row(theme: &Theme, title: &str, desc: &str, control: impl IntoElement
 
 /// A settings row whose label + description dim when `active` is false — used to
 /// show that a sub-setting is currently gated by a master switch (e.g. the
-/// DeArrow title/thumbnail toggles while DeArrow itself is off), so its state
+/// `DeArrow` title/thumbnail toggles while `DeArrow` itself is off), so its state
 /// stays reviewable without looking live.
 fn setting_row_gated(
     theme: &Theme,
@@ -1813,7 +1810,7 @@ fn vspace(px: f32) -> Flex {
     Flex::row().fill_w().h(Len::Px(px))
 }
 
-/// A clickable three-state mode selector for a SponsorBlock category. Cycles
+/// A clickable three-state mode selector for a `SponsorBlock` category. Cycles
 /// Auto-skip → Show → Off on click. The label + fill reflect the *stored*
 /// per-category mode (independent of the master switch) so the user always sees
 /// their choice.
@@ -1836,12 +1833,12 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         .align(Align::Center)
         .surface(Surface {
             fill,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .on_click(bus, Action::ToggleCategory(cat))
@@ -2032,7 +2029,7 @@ fn palette_row(
     let meta = if is_channel {
         format!("Channel · {}", hit.creator)
     } else {
-        format!("{} · {}", hit.creator, clock(hit.length_secs as f64))
+        format!("{} · {}", hit.creator, clock(f64::from(hit.length_secs)))
     };
     Flex::row()
         .id(&format!("palette_row_{index}"))
@@ -2042,7 +2039,7 @@ fn palette_row(
         .align(Align::Center)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::ActivateHit(hit.deep_link.clone()))
@@ -2097,7 +2094,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_focus)),
         })
         .push(icon(IconKind::Search, 18.0, theme.accent_primary))
@@ -2139,7 +2136,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         .pad(14.0)
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.raised),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: Some((1.0, theme.border_standard)),
         })
         // Swallow clicks on the card chrome so they don't reach the scrim and

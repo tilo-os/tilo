@@ -61,7 +61,7 @@ struct SearchBarLayout {
 }
 
 fn vcenter(rect: Rect, size: f32) -> f64 {
-    rect.y0 + (rect.height() - size as f64) / 2.0
+    rect.y0 + (rect.height() - f64::from(size)) / 2.0
 }
 
 /// Truncate `text` with an ellipsis so it fits within `max` px on one line.
@@ -88,7 +88,7 @@ impl PdfApp {
 
     fn toolbar_layout(&self) -> ToolbarLayout {
         let tb = self.toolbar_rect;
-        let cy = (tb.y0 + tb.y1) / 2.0;
+        let cy = f64::midpoint(tb.y0, tb.y1);
         let w = tb.width();
         let compact = w < 640.0;
         let bw = 34.0;
@@ -127,7 +127,7 @@ impl PdfApp {
         // ---- centre: tools, centred in the remaining span ----
         let n = Tool::ALL.len() as f64;
         let tools_w = n * bw + (n - 1.0) * gap;
-        let centre = (left_end + right_start) / 2.0;
+        let centre = f64::midpoint(left_end, right_start);
         let mut tx = (centre - tools_w / 2.0).max(left_end + 8.0);
         let mut tools = Vec::new();
         for t in Tool::ALL {
@@ -235,7 +235,7 @@ impl PdfApp {
         let s = self.search_rect;
         let pad = 16.0;
         let gap = 8.0;
-        let cy = (s.y0 + s.y1) / 2.0;
+        let cy = f64::midpoint(s.y0, s.y1);
         let field_top = s.y0 + 8.0;
         let field_bot = s.y1 - 8.0;
         let field_left = s.x0 + pad;
@@ -245,8 +245,8 @@ impl PdfApp {
         let chip = |w: f64, x1: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
 
         // Right cluster: [Case] [Whole word], packed against the right edge.
-        let case_w = tr.measure("Case", 11.0, None).0 as f64 + 22.0;
-        let ww_w = tr.measure("Whole word", 11.0, None).0 as f64 + 22.0;
+        let case_w = f64::from(tr.measure("Case", 11.0, None).0) + 22.0;
+        let ww_w = f64::from(tr.measure("Whole word", 11.0, None).0) + 22.0;
         let whole_word = chip(ww_w, s.x1 - pad);
         let case = chip(case_w, whole_word.x0 - gap);
         let chips_left = case.x0;
@@ -254,9 +254,9 @@ impl PdfApp {
         // Counter (full/compact) + hint measurements.
         let full = self.counter_text(false);
         let short = self.counter_text(true);
-        let counter_full_w = if full.is_empty() { 0.0 } else { tr.measure(&full, 12.0, None).0 as f64 };
-        let counter_short_w = if short.is_empty() { 0.0 } else { tr.measure(&short, 12.0, None).0 as f64 };
-        let hint_w = tr.measure(SEARCH_HINT, 10.5, None).0 as f64;
+        let counter_full_w = if full.is_empty() { 0.0 } else { f64::from(tr.measure(&full, 12.0, None).0) };
+        let counter_short_w = if short.is_empty() { 0.0 } else { f64::from(tr.measure(&short, 12.0, None).0) };
+        let hint_w = f64::from(tr.measure(SEARCH_HINT, 10.5, None).0);
 
         // Show the hint only when the field + full counter still clear the
         // toggles with room to spare.
@@ -306,15 +306,15 @@ impl PdfApp {
         let hovering = hovered.is_some();
         match hovered {
             Some((label, anchor)) => {
-                if self.tooltip.label() != label {
+                if self.tooltip.label() == label {
+                    self.tooltip_anchor = anchor;
+                    // Advance time so the reveal delay can elapse across frames.
+                    self.tooltip.tick(std::time::Duration::from_millis(120));
+                } else {
                     // Fresh anchor — rebuild and restart the hover timer.
                     self.tooltip = Tooltip::new(label).with_delay(std::time::Duration::from_millis(350));
                     self.tooltip.on_hover_enter(std::time::Duration::ZERO);
                     self.tooltip_anchor = anchor;
-                } else {
-                    self.tooltip_anchor = anchor;
-                    // Advance time so the reveal delay can elapse across frames.
-                    self.tooltip.tick(std::time::Duration::from_millis(120));
                 }
             }
             None => {
@@ -627,20 +627,20 @@ impl PdfApp {
         x = x.clamp(self.rect.x0 + 2.0, self.rect.x1 - w - 2.0);
         y = y.clamp(self.rect.y0 + 2.0, self.rect.y1 - h - 2.0);
         let panel = Rect::new(x, y, x + w, y + h);
-        let shape = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
         // Soft shadow (a slightly-offset translucent slab behind the panel).
-        let sh = RoundedRect::new(panel.x0, panel.y0 + 3.0, panel.x1, panel.y1 + 3.0, theme.tokens.radii.md as f64);
+        let sh = RoundedRect::new(panel.x0, panel.y0 + 3.0, panel.x1, panel.y1 + 3.0, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 60), None, &sh);
         scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
 
         let item = Rect::new(panel.x0 + 4.0, panel.y0 + 4.0, panel.x1 - 4.0, panel.y0 + 4.0 + item_h);
         if item.contains(self.last_mouse) {
-            scene.fill(Fill::NonZero, base, c.surface_white_10, None, &RoundedRect::from_rect(item, theme.tokens.radii.sm as f64));
+            scene.fill(Fill::NonZero, base, c.surface_white_10, None, &RoundedRect::from_rect(item, f64::from(theme.tokens.radii.sm)));
         }
         // Trash glyph + label.
         let gx = item.x0 + 14.0;
-        let gy = (item.y0 + item.y1) / 2.0;
+        let gy = f64::midpoint(item.y0, item.y1);
         let lid = Line::new((gx - 5.0, gy - 5.0), (gx + 5.0, gy - 5.0));
         scene.stroke(&Stroke::new(1.4), base, c.semantic.danger, None, &lid);
         let body = Rect::new(gx - 4.0, gy - 4.0, gx + 4.0, gy + 6.0);
@@ -664,8 +664,8 @@ impl PdfApp {
     /// and — if the last open failed — the reason.
     fn draw_empty_state(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, canvas: Rect) {
         let c = &theme.tokens.colors;
-        let cx = (canvas.x0 + canvas.x1) / 2.0;
-        let cy = (canvas.y0 + canvas.y1) / 2.0;
+        let cx = f64::midpoint(canvas.x0, canvas.x1);
+        let cy = f64::midpoint(canvas.y0, canvas.y1);
 
         // Outlined page glyph with a folded corner.
         let gw = 78.0;
@@ -683,7 +683,7 @@ impl PdfApp {
         };
         scene.fill(Fill::NonZero, base, c.surface_white_10, None, &fold);
         for i in 0..3 {
-            let ly = g.y0 + 44.0 + i as f64 * 12.0;
+            let ly = g.y0 + 44.0 + f64::from(i) * 12.0;
             scene.stroke(&Stroke::new(2.0), base, c.border_standard, None, &Line::new((g.x0 + 16.0, ly), (g.x1 - 16.0, ly)));
         }
 
@@ -697,7 +697,7 @@ impl PdfApp {
             title,
             16.0,
             theme.text_primary,
-            base * Affine::translate((cx - tw as f64 / 2.0, cy + 34.0)),
+            base * Affine::translate((cx - f64::from(tw) / 2.0, cy + 34.0)),
             None,
             TextWeight::Semibold,
         );
@@ -707,14 +707,14 @@ impl PdfApp {
             sub,
             12.5,
             theme.text_dim,
-            base * Affine::translate((cx - sw as f64 / 2.0, cy + 58.0)),
+            base * Affine::translate((cx - f64::from(sw) / 2.0, cy + 58.0)),
             Some((canvas.width() - 80.0) as f32),
         );
 
         // Primary action: open a document from within the app.
         let btn = self.empty_open_button_rect();
         let hot = btn.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(btn, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
         if hot {
             scene.fill(Fill::NonZero, base, c.surface_white_10, None, &shape);
@@ -724,9 +724,9 @@ impl PdfApp {
         let (lw, _) = tr.measure(label, 13.0, None);
         let gsz = 16.0;
         let gap = 8.0;
-        let group_w = gsz + gap + lw as f64;
+        let group_w = gsz + gap + f64::from(lw);
         let gx = btn.x0 + (btn.width() - group_w) / 2.0;
-        let gcy = (btn.y0 + btn.y1) / 2.0;
+        let gcy = f64::midpoint(btn.y0, btn.y1);
         draw_folder_glyph(scene, base, Rect::new(gx, gcy - gsz / 2.0, gx + gsz, gcy + gsz / 2.0), Color::WHITE);
         tr.draw_text_weighted(
             scene,
@@ -794,8 +794,8 @@ impl PdfApp {
         }
 
         // Drag preview.
-        if let Some(d) = &self.drag {
-            if let Some(origin) = origins.get(d.page.saturating_sub(1)) {
+        if let Some(d) = &self.drag
+            && let Some(origin) = origins.get(d.page.saturating_sub(1)) {
                 let col = render::swatch_color(theme, self.swatch);
                 match d.tool {
                     Tool::Highlight => {
@@ -809,8 +809,8 @@ impl PdfApp {
                         scene.fill(Fill::NonZero, base, render::alpha(col, 80), None, &scr);
                         scene.stroke(&Stroke::new(1.0), base, col, None, &scr);
                     }
-                    Tool::Ink => {
-                        if d.points.len() >= 2 {
+                    Tool::Ink
+                        if d.points.len() >= 2 => {
                             let mut path = BezPath::new();
                             let p0 = Point::new(origin.x + d.points[0].0 * self.zoom(), origin.y + d.points[0].1 * self.zoom());
                             path.move_to(p0);
@@ -819,11 +819,9 @@ impl PdfApp {
                             }
                             scene.stroke(&Stroke::new((2.4 * self.zoom()).max(1.5)), base, col, None, &path);
                         }
-                    }
                     _ => {}
                 }
             }
-        }
 
         scene.pop_layer();
 
@@ -850,8 +848,8 @@ impl PdfApp {
 
         // Image-region marquee (Shift + Select): a translucent accent rectangle
         // with a dashed border, drawn even when the page has no text layer.
-        if let Some(region) = self.region {
-            if region.page == page_num {
+        if let Some(region) = self.region
+            && region.page == page_num {
                 let sr = to_screen(&region.rect());
                 scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 40), None, &sr);
                 scene.stroke(
@@ -862,7 +860,6 @@ impl PdfApp {
                     &sr,
                 );
             }
-        }
 
         let Some(layer) = self.raster_text.get(&page_num) else { return };
 
@@ -884,15 +881,14 @@ impl PdfApp {
         }
 
         // Live selection.
-        if let Some(sel) = self.selection {
-            if sel.page == page_num && sel.is_active() {
+        if let Some(sel) = self.selection
+            && sel.page == page_num && sel.is_active() {
                 let (a, b) = sel.range();
                 for band in layer.bands_for_range(a, b) {
                     let sr = to_screen(&band);
                     scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 70), None, &sr);
                 }
             }
-        }
     }
 
     /// The floating selection HUD — the shared `ui::SelectionHud`, identical to
@@ -914,8 +910,8 @@ impl PdfApp {
         if self.raster.is_none() {
             let z = self.zoom();
             let origins = self.page_origins();
-            if let Some(sel) = self.selection {
-                if let Some(origin) = origins.get(sel.page.saturating_sub(1)) {
+            if let Some(sel) = self.selection
+                && let Some(origin) = origins.get(sel.page.saturating_sub(1)) {
                     for r in self.selection_page_bands() {
                         let sr = Rect::new(
                             origin.x + r.x * z,
@@ -926,10 +922,9 @@ impl PdfApp {
                         scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 70), None, &sr);
                     }
                 }
-            }
         }
         // Anchor above the top edge of the selection, horizontally centred on it.
-        let anchor = Point::new((bounds_rect.x0 + bounds_rect.x1) / 2.0, bounds_rect.y0);
+        let anchor = Point::new(f64::midpoint(bounds_rect.x0, bounds_rect.x1), bounds_rect.y0);
         let c = &theme.tokens.colors;
         let style = ui::ReaderHudStyle {
             surface: c.surfaces.raised,
@@ -975,13 +970,13 @@ impl PdfApp {
         let size = theme.tokens.typography.scale.sm;
         let (tw, _) = tr.measure(note, size, None);
         let pad_x = 14.0;
-        let w = (tw as f64 + 2.0 * pad_x).min(self.canvas_rect.width() - 24.0);
+        let w = (f64::from(tw) + 2.0 * pad_x).min(self.canvas_rect.width() - 24.0);
         let h = 30.0;
-        let cx = (self.canvas_rect.x0 + self.canvas_rect.x1) / 2.0;
+        let cx = f64::midpoint(self.canvas_rect.x0, self.canvas_rect.x1);
         let y1 = self.canvas_rect.y1 - 18.0;
         let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        let shape = RoundedRect::from_rect(r, theme.tokens.radii.full as f64);
-        let sh = RoundedRect::new(r.x0, r.y0 + 3.0, r.x1, r.y1 + 3.0, theme.tokens.radii.full as f64);
+        let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.full));
+        let sh = RoundedRect::new(r.x0, r.y0 + 3.0, r.x1, r.y1 + 3.0, f64::from(theme.tokens.radii.full));
         scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 70), None, &sh);
         scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
@@ -1092,7 +1087,7 @@ impl PdfApp {
         if annotate {
             for (s, r) in &lay.swatches {
                 let col = render::swatch_color(theme, *s);
-                let center = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+                let center = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
                 let active = *s == self.swatch;
                 let rad = if active { 8.0 } else { 6.5 };
                 scene.fill(Fill::NonZero, base, col, None, &Circle::new(center, rad));
@@ -1115,7 +1110,7 @@ impl PdfApp {
                 &zlabel,
                 12.0,
                 theme.text_primary,
-                base * Affine::translate(((lay.zoom_label.x0 + lay.zoom_label.x1) / 2.0 - zw as f64 / 2.0, vcenter(lay.zoom_label, 12.0))),
+                base * Affine::translate((f64::midpoint(lay.zoom_label.x0, lay.zoom_label.x1) - f64::from(zw) / 2.0, vcenter(lay.zoom_label, 12.0))),
                 None,
             );
         }
@@ -1133,7 +1128,7 @@ impl PdfApp {
             fit_txt,
             11.0,
             if fit_active { Color::WHITE } else { theme.text_dim },
-            base * Affine::translate(((lay.fit.x0 + lay.fit.x1) / 2.0 - fw as f64 / 2.0, vcenter(lay.fit, 11.0))),
+            base * Affine::translate((f64::midpoint(lay.fit.x0, lay.fit.x1) - f64::from(fw) / 2.0, vcenter(lay.fit, 11.0))),
             None,
         );
 
@@ -1147,7 +1142,7 @@ impl PdfApp {
     }
 
     fn icon_button_bg(&self, scene: &mut Scene, base: Affine, theme: &Theme, r: Rect, active: bool, hovered: bool) {
-        let shape = RoundedRect::from_rect(r.inflate(-2.0, -2.0), theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(r.inflate(-2.0, -2.0), f64::from(theme.tokens.radii.md));
         if active {
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
         } else if hovered {
@@ -1167,7 +1162,7 @@ impl PdfApp {
 
         let lay = self.search_layout(tr);
         let field = lay.field;
-        let field_shape = RoundedRect::from_rect(field, theme.tokens.radii.md as f64);
+        let field_shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, c.surfaces.base, None, &field_shape);
         scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &field_shape);
         draw_search_glyph(scene, base, Rect::new(field.x0, field.y0, field.x0 + 30.0, field.y1), theme.text_dim);
@@ -1186,7 +1181,7 @@ impl PdfApp {
         // field so a long query never paints the caret over the counter).
         if !self.query.is_empty() {
             let (qw, _) = tr.measure(&self.query, 13.0, None);
-            let cx = (field.x0 + 32.0 + qw as f64 + 1.0).min(field.x1 - 4.0);
+            let cx = (field.x0 + 32.0 + f64::from(qw) + 1.0).min(field.x1 - 4.0);
             let caret = Rect::new(cx, field.y0 + 6.0, cx + 1.5, field.y1 - 6.0);
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &caret);
         }
@@ -1212,14 +1207,14 @@ impl PdfApp {
         ] {
             let fill = if active { theme.accent_primary } else { c.surface_white_10 };
             let txt = if active { Color::WHITE } else { theme.text_dim };
-            scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(r, theme.tokens.radii.full as f64));
+            scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(r, f64::from(theme.tokens.radii.full)));
             let (lw, _) = tr.measure(label, 11.0, None);
             tr.draw_text(
                 scene,
                 label,
                 11.0,
                 txt,
-                base * Affine::translate(((r.x0 + r.x1) / 2.0 - lw as f64 / 2.0, vcenter(r, 11.0))),
+                base * Affine::translate((f64::midpoint(r.x0, r.x1) - f64::from(lw) / 2.0, vcenter(r, 11.0))),
                 None,
             );
             hits.push((hit, r));
@@ -1329,29 +1324,29 @@ impl PdfApp {
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
         // The body shows the live edit buffer while this comment is focused.
         let editing_body = self.editing.as_ref().filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
-        let body_text = editing_body.map(|e| e.text()).unwrap_or(cm.body.as_str());
+        let body_text = editing_body.map_or(cm.body.as_str(), Editing::text);
         let body_probe = if body_text.is_empty() { "M" } else { body_text };
         let (_, bh) = tr.measure(body_probe, 12.0, Some(inner_w as f32 - 16.0));
         // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
         // and a 12px bottom pad. Mirrors `comment_header_layout`'s `body_top`.
-        let mut card_h = 24.0 + 6.0 + bh as f64 + 12.0;
+        let mut card_h = 24.0 + 6.0 + f64::from(bh) + 12.0;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
         for r in &cm.replies {
             let (_, rh) = tr.measure(&r.body, 11.0, Some(inner_w as f32 - 36.0));
-            reply_heights.push(rh as f64);
-            card_h += 16.0 + rh as f64 + 8.0;
+            reply_heights.push(f64::from(rh));
+            card_h += 16.0 + f64::from(rh) + 8.0;
         }
         // Reply-compose row: a slim "Reply" affordance, or the open field.
         let composing = self.editing.as_ref().filter(|e| e.target == EditTarget::Reply(cm.id.clone()));
         let compose_h = if let Some(e) = composing {
             let probe = if e.text().is_empty() { "M" } else { e.text() };
             let (_, fh) = tr.measure(probe, 11.5, Some(inner_w as f32 - 40.0));
-            8.0 + (fh as f64).max(15.0) + 16.0
+            8.0 + f64::from(fh).max(15.0) + 16.0
         } else {
             8.0 + 24.0
         };
         card_h += compose_h;
-        CommentMetrics { card_h, body_h: bh as f64, reply_heights, compose_h }
+        CommentMetrics { card_h, body_h: f64::from(bh), reply_heights, compose_h }
     }
 
     /// Content-relative layout of the active sidebar list as
@@ -1402,8 +1397,8 @@ impl PdfApp {
         let (items, content_h) = self.sidebar_item_layout(tr);
         let max_scroll = (content_h - viewport).max(0.0);
 
-        if let Some(id) = self.sidebar_reveal.take() {
-            if let Some((_, top, h)) = items.iter().find(|(iid, _, _)| iid == &id) {
+        if let Some(id) = self.sidebar_reveal.take()
+            && let Some((_, top, h)) = items.iter().find(|(iid, _, _)| iid == &id) {
                 // `top` is content-relative-from-list-origin; bring it just
                 // inside the viewport.
                 let list_origin = match self.sidebar_tab {
@@ -1419,7 +1414,6 @@ impl PdfApp {
                     self.sidebar_scroll = rel_bot - viewport;
                 }
             }
-        }
         self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max_scroll);
     }
 
@@ -1439,7 +1433,7 @@ impl PdfApp {
         let header = if total == 0 {
             "No comments yet".to_string()
         } else {
-            format!("{} threads · {} open", total, open)
+            format!("{total} threads · {open} open")
         };
         tr.draw_text(
             scene,
@@ -1454,8 +1448,7 @@ impl PdfApp {
             let selected = self
                 .selected_anno
                 .as_deref()
-                .map(|sa| cm.anno_id.as_deref() == Some(sa))
-                .unwrap_or(false);
+                .is_some_and(|sa| cm.anno_id.as_deref() == Some(sa));
             let m = self.comment_metrics(tr, cm, inner_w);
             let card_h = m.card_h;
             let card = Rect::new(body.x0 + pad, y, body.x1 - pad, y + card_h);
@@ -1469,9 +1462,9 @@ impl PdfApp {
 
             // card bg
             let bg = if selected { render::alpha(theme.accent_primary, 28) } else { c.surfaces.base };
-            scene.fill(Fill::NonZero, base, bg, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
+            scene.fill(Fill::NonZero, base, bg, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
             let border = if selected { theme.accent_primary } else { c.border_standard };
-            scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
+            scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
 
             // Header row: avatar + author name (bounded so it never runs under
             // the chips) + resolve chip + delete button, laid out so nothing
@@ -1492,9 +1485,9 @@ impl PdfApp {
             let del = hdr.del;
             let del_hot = del.contains(self.last_mouse);
             if del_hot {
-                scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, theme.tokens.radii.sm as f64));
+                scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, f64::from(theme.tokens.radii.sm)));
             }
-            let dc = Point::new((del.x0 + del.x1) / 2.0, (del.y0 + del.y1) / 2.0);
+            let dc = Point::new(f64::midpoint(del.x0, del.x1), f64::midpoint(del.y0, del.y1));
             let dcol = if del_hot { c.semantic.danger } else { theme.text_dim };
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y - 4.0), (dc.x + 4.0, dc.y + 4.0)));
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)));
@@ -1506,14 +1499,14 @@ impl PdfApp {
             } else {
                 ("Resolve", c.surface_white_10, theme.text_dim)
             };
-            scene.fill(Fill::NonZero, base, chip_fill, None, &RoundedRect::from_rect(chip, theme.tokens.radii.full as f64));
+            scene.fill(Fill::NonZero, base, chip_fill, None, &RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full)));
             let (cw2, _) = tr.measure(chip_label, 9.5, None);
             tr.draw_text(
                 scene,
                 chip_label,
                 9.5,
                 chip_text,
-                base * Affine::translate(((chip.x0 + chip.x1) / 2.0 - cw2 as f64 / 2.0, vcenter(chip, 9.5))),
+                base * Affine::translate((f64::midpoint(chip.x0, chip.x1) - f64::from(cw2) / 2.0, vcenter(chip, 9.5))),
                 None,
             );
             hits.push((SidebarHit::Resolve(cm.id.clone()), chip));
@@ -1525,7 +1518,7 @@ impl PdfApp {
             let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
             let body_hit = Rect::new(body_x - 4.0, body_top - 4.0, card.x1 - 10.0, body_top + m.body_h + 6.0);
             if editing_body {
-                scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(body_hit, theme.tokens.radii.sm as f64));
+                scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(body_hit, f64::from(theme.tokens.radii.sm)));
                 *edit_rect = body_hit;
                 // The shared multiline TextInput owns the text, caret, and
                 // selection while this comment is focused. It's positioned so
@@ -1578,8 +1571,8 @@ impl PdfApp {
             if composing {
                 let field_h = m.compose_h - 8.0;
                 let field = Rect::new(card.x0 + 12.0, compose_top, card.x1 - 12.0, compose_top + field_h);
-                scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &RoundedRect::from_rect(field, theme.tokens.radii.sm as f64));
-                scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(field, theme.tokens.radii.sm as f64));
+                scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm)));
+                scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm)));
                 *edit_rect = field;
                 let rwrap = (field.width() - 20.0) as f32;
                 let tx = field.x0 + 10.0;
@@ -1597,7 +1590,7 @@ impl PdfApp {
                 let btn = Rect::new(card.x0 + 12.0, compose_top, card.x1 - 12.0, compose_top + 22.0);
                 let hot = btn.contains(self.last_mouse);
                 if hot {
-                    scene.fill(Fill::NonZero, base, c.surface_white_5, None, &RoundedRect::from_rect(btn, theme.tokens.radii.sm as f64));
+                    scene.fill(Fill::NonZero, base, c.surface_white_5, None, &RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.sm)));
                 }
                 tr.draw_text(
                     scene,
@@ -1622,13 +1615,13 @@ impl PdfApp {
             let row = Rect::new(body.x0 + 6.0, y, body.x1 - 6.0, y + 30.0);
             let current = item.page == self.current_page;
             if current {
-                scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 30), None, &RoundedRect::from_rect(row, theme.tokens.radii.md as f64));
+                scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 30), None, &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)));
                 let bar = Rect::new(row.x0, row.y0 + 4.0, row.x0 + 2.5, row.y1 - 4.0);
                 scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
             } else if row.contains(self.last_mouse) {
-                scene.fill(Fill::NonZero, base, theme.tokens.colors.surface_white_5, None, &RoundedRect::from_rect(row, theme.tokens.radii.md as f64));
+                scene.fill(Fill::NonZero, base, theme.tokens.colors.surface_white_5, None, &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)));
             }
-            let indent = pad + item.level as f64 * 16.0;
+            let indent = pad + f64::from(item.level) * 16.0;
             let weight = if item.level == 0 { TextWeight::Semibold } else { TextWeight::Regular };
             let col = if current { theme.text_primary } else if item.level == 0 { theme.text_primary } else { theme.text_dim };
             tr.draw_text_weighted(
@@ -1647,7 +1640,7 @@ impl PdfApp {
                 &pnum,
                 11.0,
                 theme.text_dim,
-                base * Affine::translate((row.x1 - 10.0 - pw as f64, vcenter(row, 11.0))),
+                base * Affine::translate((row.x1 - 10.0 - f64::from(pw), vcenter(row, 11.0))),
                 None,
             );
             hits.push((SidebarHit::Outline(item.page), row));
@@ -1692,7 +1685,7 @@ impl PdfApp {
             Rect::new(tgl.x0 + half, tgl.y0, tgl.x1, tgl.y1),
         ];
         let seg_labels = ["Type", "Draw"];
-        let sel = if self.sig_mode == SigMode::Draw { 1 } else { 0 };
+        let sel = usize::from(self.sig_mode == SigMode::Draw);
         ToggleGroup::paint(
             scene,
             base,
@@ -1712,8 +1705,8 @@ impl PdfApp {
         self.sig_pad_rect = Rect::ZERO;
         match self.sig_mode {
             SigMode::Type => {
-                scene.fill(Fill::NonZero, base, c.surfaces.base, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
-                scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
+                scene.fill(Fill::NonZero, base, c.surfaces.base, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
+                scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
                 tr.draw_text(scene, "SIGNING AS", 9.0, theme.text_dim, base * Affine::translate((card.x0 + 12.0, card.y0 + 9.0)), None);
                 let editing_signer = self.is_editing(&EditTarget::Signer);
                 let name_x = card.x0 + 12.0;
@@ -1725,7 +1718,7 @@ impl PdfApp {
                     self.signer_name.clone()
                 };
                 if editing_signer {
-                    scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(name_hit, theme.tokens.radii.sm as f64));
+                    scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(name_hit, f64::from(theme.tokens.radii.sm)));
                     *edit_rect = name_hit;
                     draw_inline_editor(
                         &mut self.editing.as_mut().unwrap().input,
@@ -1747,16 +1740,16 @@ impl PdfApp {
             }
             SigMode::Draw => {
                 // The draw pad: the user drags here to draw their signature.
-                scene.fill(Fill::NonZero, base, c.surfaces.base, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
+                scene.fill(Fill::NonZero, base, c.surfaces.base, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
                 let armed = self.sig_stroke.is_some();
                 let border = if armed { theme.border_focus } else { c.border_standard };
-                scene.stroke(&Stroke::new(1.2), base, border, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
+                scene.stroke(&Stroke::new(1.2), base, border, None, &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)));
                 self.sig_pad_rect = card;
                 let ink_area = card.inflate(-10.0, -10.0);
                 if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
                     let hint = "Draw your signature here";
                     let (hw, _) = tr.measure(hint, 12.0, None);
-                    tr.draw_text(scene, hint, 12.0, theme.text_dim, base * Affine::translate(((card.x0 + card.x1) / 2.0 - hw as f64 / 2.0, vcenter(card, 12.0))), None);
+                    tr.draw_text(scene, hint, 12.0, theme.text_dim, base * Affine::translate((f64::midpoint(card.x0, card.x1) - f64::from(hw) / 2.0, vcenter(card, 12.0))), None);
                 } else {
                     // Draw the committed strokes plus the in-progress one.
                     let mut strokes = self.sig_strokes.clone();
@@ -1768,7 +1761,7 @@ impl PdfApp {
                 // Clear link (top-right), only when there is something to clear.
                 if !self.sig_strokes.is_empty() {
                     let (cw, _) = tr.measure("Clear", 10.5, None);
-                    let clr = Rect::new(card.x1 - 12.0 - cw as f64 - 8.0, card.y0 + 4.0, card.x1 - 6.0, card.y0 + 22.0);
+                    let clr = Rect::new(card.x1 - 12.0 - f64::from(cw) - 8.0, card.y0 + 4.0, card.x1 - 6.0, card.y0 + 22.0);
                     let hot = clr.contains(self.last_mouse);
                     tr.draw_text(scene, "Clear", 10.5, if hot { theme.accent_primary } else { theme.text_dim }, base * Affine::translate((clr.x0 + 6.0, clr.y0 + 3.0)), None);
                     hits.push((SidebarHit::SigClear, clr));
@@ -1782,7 +1775,7 @@ impl PdfApp {
         let arming = self.tool == Tool::Sign;
         let ready = self.composed_ink().is_some();
         let fill = if arming { theme.accent_primary } else { c.surface_white_10 };
-        scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(add, theme.tokens.radii.md as f64));
+        scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(add, f64::from(theme.tokens.radii.md)));
         let label = if arming {
             "Click a page to place signature"
         } else if !ready {
@@ -1803,7 +1796,7 @@ impl PdfApp {
             label,
             12.0,
             label_col,
-            base * Affine::translate(((add.x0 + add.x1) / 2.0 - lw as f64 / 2.0, vcenter(add, 12.0))),
+            base * Affine::translate((f64::midpoint(add.x0, add.x1) - f64::from(lw) / 2.0, vcenter(add, 12.0))),
             None,
             TextWeight::Semibold,
         );
@@ -1824,9 +1817,9 @@ impl PdfApp {
             }
             let selected = self.selected_sig.as_deref() == Some(s.id.as_str());
             let bg = if selected { render::alpha(theme.accent_primary, 28) } else { c.surfaces.base };
-            scene.fill(Fill::NonZero, base, bg, None, &RoundedRect::from_rect(row, theme.tokens.radii.md as f64));
+            scene.fill(Fill::NonZero, base, bg, None, &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)));
             let border = if selected { theme.accent_primary } else { c.border_standard };
-            scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(row, theme.tokens.radii.md as f64));
+            scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)));
             let sg = Rect::new(row.x0 + 8.0, row.y0 + 8.0, row.x0 + 64.0, row.y1 - 8.0);
             render::draw_signature_preview(scene, tr, base, theme.text_primary, sg, &s.ink, &s.signer);
             tr.draw_text_weighted(scene, &s.signer, 12.0, theme.text_primary, base * Affine::translate((sg.x1 + 12.0, row.y0 + 9.0)), None, TextWeight::Semibold);
@@ -1836,9 +1829,9 @@ impl PdfApp {
             let del = Rect::new(row.x1 - 10.0 - 18.0, row.y0 + 8.0, row.x1 - 10.0, row.y0 + 26.0);
             let del_hot = del.contains(self.last_mouse);
             if del_hot {
-                scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, theme.tokens.radii.sm as f64));
+                scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, f64::from(theme.tokens.radii.sm)));
             }
-            let dc = Point::new((del.x0 + del.x1) / 2.0, (del.y0 + del.y1) / 2.0);
+            let dc = Point::new(f64::midpoint(del.x0, del.x1), f64::midpoint(del.y0, del.y1));
             let dcol = if del_hot { c.semantic.danger } else { theme.text_dim };
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y - 4.0), (dc.x + 4.0, dc.y + 4.0)));
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)));
@@ -1871,7 +1864,7 @@ impl PdfApp {
         let text_size = 12.5f32;
         let chev = 26.0;
         let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
-        let cx = (canvas.x0 + canvas.x1) / 2.0;
+        let cx = f64::midpoint(canvas.x0, canvas.x1);
         let by = canvas.y1 - 16.0 - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
@@ -1881,7 +1874,7 @@ impl PdfApp {
         let over = self.shots_page_bubble || zone.contains(self.last_mouse) || rect.contains(self.last_mouse);
         self.page_bubble.set_hover(over, now);
 
-        let alpha = self.page_bubble.alpha(now) as f32;
+        let alpha = self.page_bubble.alpha(now);
         if alpha <= 0.0 {
             return;
         }
@@ -1895,7 +1888,7 @@ impl PdfApp {
         ui::status_bubble::draw_pill(scene, base, tr, theme, rect, &label, text_size);
         let prev_hot = self.bubble_prev.contains(self.last_mouse);
         let next_hot = self.bubble_next.contains(self.last_mouse);
-        let cyy = (rect.y0 + rect.y1) / 2.0;
+        let cyy = f64::midpoint(rect.y0, rect.y1);
         let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
         let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
         ui::status_bubble::draw_chevron(scene, base, pc, if prev_hot { theme.text_primary } else { theme.text_dim }, true);
@@ -1965,7 +1958,7 @@ fn draw_tool_icon(scene: &mut Scene, base: Affine, tool: Tool, btn: Rect, color:
             let sq = Rect::new(r.x0 + 1.0, r.y0 + 1.0, r.x1 - 1.0, r.y1 - 1.0);
             scene.stroke(&Stroke::new(1.8), base, color, None, &RoundedRect::from_rect(sq, 2.0));
             for i in 0..3 {
-                let ly = sq.y0 + 4.0 + i as f64 * 4.0;
+                let ly = sq.y0 + 4.0 + f64::from(i) * 4.0;
                 scene.stroke(&Stroke::new(1.4), base, color, None, &Line::new((sq.x0 + 3.0, ly), (sq.x1 - 3.0, ly)));
             }
         }
@@ -1989,14 +1982,14 @@ fn draw_tool_icon(scene: &mut Scene, base: Affine, tool: Tool, btn: Rect, color:
 }
 
 fn draw_plus(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
-    let c = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+    let c = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
     let l = 6.0;
     scene.stroke(&Stroke::new(2.0), base, color, None, &Line::new((c.x - l, c.y), (c.x + l, c.y)));
     scene.stroke(&Stroke::new(2.0), base, color, None, &Line::new((c.x, c.y - l), (c.x, c.y + l)));
 }
 
 fn draw_minus(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
-    let c = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+    let c = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
     let l = 6.0;
     scene.stroke(&Stroke::new(2.0), base, color, None, &Line::new((c.x - l, c.y), (c.x + l, c.y)));
 }
@@ -2021,7 +2014,7 @@ fn draw_folder_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color
 /// A "save" glyph: a down arrow dropping into an open tray, within `bounds`.
 fn draw_save_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color) {
     let r = bounds.inflate(-1.0, -1.0);
-    let cx = (r.x0 + r.x1) / 2.0;
+    let cx = f64::midpoint(r.x0, r.x1);
     // Down arrow (shaft + head) in the upper two-thirds.
     let top = r.y0 + 1.0;
     let mid = r.y0 + r.height() * 0.52;
@@ -2045,7 +2038,7 @@ fn draw_save_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color) 
 }
 
 fn draw_search_glyph(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
-    let c = Point::new((btn.x0 + btn.x1) / 2.0 - 1.5, (btn.y0 + btn.y1) / 2.0 - 1.5);
+    let c = Point::new(f64::midpoint(btn.x0, btn.x1) - 1.5, f64::midpoint(btn.y0, btn.y1) - 1.5);
     scene.stroke(&Stroke::new(1.8), base, color, None, &Circle::new(c, 5.0));
     scene.stroke(&Stroke::new(1.8), base, color, None, &Line::new((c.x + 3.6, c.y + 3.6), (c.x + 7.0, c.y + 7.0)));
 }
@@ -2068,7 +2061,7 @@ fn draw_rail_glyph(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
 
 /// Draw the active inline-editor [`TextInput`] so its wrapped text lands at
 /// `text_origin` with wrap width `wrap`. The multiline widget insets its
-/// content by ML_PAD (10px horizontal, 8px vertical), so the field rect is
+/// content by `ML_PAD` (10px horizontal, 8px vertical), so the field rect is
 /// expanded by that inset to align the first glyph with where the static text
 /// draws. The widget renders its own caret + selection highlight; the app
 /// draws the surrounding focus box.
@@ -2089,7 +2082,7 @@ fn draw_inline_editor(
     let rect = Rect::new(
         text_origin.x - ML_PAD_X,
         text_origin.y - ML_PAD_Y,
-        text_origin.x + wrap as f64 + ML_PAD_X,
+        text_origin.x + f64::from(wrap) + ML_PAD_X,
         text_origin.y + text_h.max(15.0) + ML_PAD_Y,
     );
     input.apply_layout_external(rect);
@@ -2101,7 +2094,7 @@ fn draw_avatar(scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &T
     // the hue (deterministic per initial) + shape + centred glyph stay
     // consistent with every other app's roster.
     let rect = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
-    let initial: String = name.chars().next().map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+    let initial: String = name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_string());
     let color = Avatar::color_for_initials(&initial, theme);
     Avatar::draw_at(scene, base, rect, &initial, color, theme, tr);
 }

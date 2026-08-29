@@ -126,7 +126,7 @@ pub fn write_qpkg_bytes(id: PackageId, store: &MemoryBlobStore) -> Vec<u8> {
     let collection = store.get(&signed_dec.payload_root_hash).unwrap().unwrap();
     tar_append(&mut tar, "collection.qcl", &collection);
     for (h, b) in store.iter() {
-        let name = format!("blobs/{}", h);
+        let name = format!("blobs/{h}");
         tar_append(&mut tar, &name, b);
     }
     let inner = tar.into_inner().unwrap();

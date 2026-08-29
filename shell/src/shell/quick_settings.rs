@@ -3,7 +3,7 @@
 //! WiFi/Bluetooth drill-in via `nav_stack`). `wifi_ssid`/`bluetooth_device`
 //! populate the toggle-card sub-line, falling back to "Not connected" when off or unset.
 
-/// A single frame in the QuickSettings navigation stack.
+/// A single frame in the `QuickSettings` navigation stack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
     Root,
@@ -13,7 +13,7 @@ pub enum QsLevel {
     BluetoothDetails(String),
 }
 
-/// A WiFi entry in the drill-in list. `signal` is a strength bucket
+/// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
 /// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
 /// `connected` flags the active-radio dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,7 +86,7 @@ impl PowerProfile {
     }
 }
 
-/// Logical state for the QuickSettings popover.
+/// Logical state for the `QuickSettings` popover.
 pub struct QuickSettings {
     brightness: f32,
     volume: f32,

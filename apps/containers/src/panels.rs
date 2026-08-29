@@ -77,7 +77,7 @@ impl ContainersApp {
         let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
         if expanded {
             if self.hovered(tgl) {
-                draw::fill_round(scene, tgl, theme.tokens.radii.sm as f64, c.surface_white_10);
+                draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.surface_white_10);
             }
             // "«" collapse glyph
             draw::text(
@@ -97,7 +97,7 @@ impl ContainersApp {
                 draw::fill_round(
                     scene,
                     ctgl,
-                    theme.tokens.radii.sm as f64,
+                    f64::from(theme.tokens.radii.sm),
                     c.surface_white_10,
                 );
             }
@@ -132,11 +132,11 @@ impl ContainersApp {
                 draw::fill_round(
                     scene,
                     item,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     draw::with_alpha(c.accent[5], 46),
                 );
             } else if self.hovered(item) {
-                draw::fill_round(scene, item, theme.tokens.radii.md as f64, c.surface_white_5);
+                draw::fill_round(scene, item, f64::from(theme.tokens.radii.md), c.surface_white_5);
             }
             let fg = if active { c.accent[6] } else { c.text_dim };
             draw::icon(
@@ -169,7 +169,7 @@ impl ContainersApp {
                 let count_str = count.to_string();
                 let (cw, _) = tr.measure(&count_str, theme.tokens.typography.scale.xs, None);
                 let chip = Rect::new(
-                    item.x1 - 14.0 - cw as f64,
+                    item.x1 - 14.0 - f64::from(cw),
                     item.center().y - 8.0,
                     item.x1 - 6.0,
                     item.center().y + 8.0,
@@ -299,7 +299,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 btn,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if hov { c.accent[4] } else { c.accent[5] },
             );
             draw::icon(
@@ -380,8 +380,7 @@ impl ContainersApp {
             |known, available, id, _, _| {
                 node_map
                     .get(&id)
-                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
-                    .unwrap_or(taffy::Size::ZERO)
+                    .map_or(taffy::Size::ZERO, |&p| unsafe { (*p).measure(known, available, tr) })
             },
         );
         self.search_field
@@ -569,13 +568,13 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 inner,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 draw::with_alpha(c.accent[5], 40),
             );
             draw::stroke_round(
                 scene,
                 inner,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 1.0,
                 draw::with_alpha(c.accent[5], 110),
             );
@@ -583,7 +582,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 inner,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 c.surface_white_5,
             );
         }
@@ -776,7 +775,7 @@ impl ContainersApp {
                 draw::fill_round(
                     scene,
                     btn,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     draw::with_alpha(color, 46),
                 );
             }
@@ -865,7 +864,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 close,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 c.surface_white_10,
             );
         }
@@ -900,7 +899,7 @@ impl ContainersApp {
                 tab.label(),
                 theme.tokens.typography.scale.sm,
                 fg,
-                Point::new(trect.center().x - lw as f64 / 2.0, trect.center().y - 7.0),
+                Point::new(trect.center().x - f64::from(lw) / 2.0, trect.center().y - 7.0),
                 if active {
                     TextWeight::Semibold
                 } else {
@@ -909,9 +908,9 @@ impl ContainersApp {
             );
             if active {
                 let underline = Rect::new(
-                    trect.center().x - lw as f64 / 2.0 - 4.0,
+                    trect.center().x - f64::from(lw) / 2.0 - 4.0,
                     trect.y1 - 2.5,
-                    trect.center().x + lw as f64 / 2.0 + 4.0,
+                    trect.center().x + f64::from(lw) / 2.0 + 4.0,
                     trect.y1,
                 );
                 draw::fill_round(scene, underline, 1.0, c.accent[5]);
@@ -973,7 +972,7 @@ impl ContainersApp {
                 None,
                 TextWeight::Semibold,
             );
-            let bw = lw as f64 + 38.0;
+            let bw = f64::from(lw) + 38.0;
             let btn = Rect::new(
                 x,
                 toolbar.center().y - 15.0,
@@ -984,7 +983,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 btn,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if hov {
                     draw::with_alpha(color, 60)
                 } else {
@@ -994,7 +993,7 @@ impl ContainersApp {
             draw::stroke_round(
                 scene,
                 btn,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 1.0,
                 draw::with_alpha(color, 120),
             );
@@ -1041,13 +1040,13 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let term_bg = c.neutral[0];
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, theme.tokens.radii.md as f64, term_bg);
+        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
         if container.logs.is_empty() {
             self.draw_empty(scene, tr, theme, inner, "No log output yet.");
             return;
         }
         let mono = theme.tokens.typography.scale.xs;
-        let line_h = (mono * 1.5) as f64;
+        let line_h = f64::from(mono * 1.5);
         let visible = ((inner.height() - 16.0) / line_h).floor() as usize;
         let total = container.logs.len();
         let content_h = total as f64 * line_h;
@@ -1071,7 +1070,7 @@ impl ContainersApp {
         }
         self.draw_scrollbar(scene, theme, inner, self.detail_scroll, content_h);
         // tail indicator
-        let tail = format!("{} lines", total);
+        let tail = format!("{total} lines");
         draw::text(
             scene,
             tr,
@@ -1106,11 +1105,11 @@ impl ContainersApp {
                      color: Color,
                      y: f64| {
             let card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + 72.0);
-            draw::fill_round(scene, card, theme.tokens.radii.md as f64, c.surfaces.base);
+            draw::fill_round(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
             draw::stroke_round(
                 scene,
                 card,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 1.0,
                 c.border_standard,
             );
@@ -1187,11 +1186,11 @@ impl ContainersApp {
             body.x0 + PAD + card_w,
             y + rows.len() as f64 * 30.0 + 12.0,
         );
-        draw::fill_round(scene, card, theme.tokens.radii.md as f64, c.surfaces.base);
+        draw::fill_round(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
         draw::stroke_round(
             scene,
             card,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             1.0,
             c.border_standard,
         );
@@ -1218,7 +1217,7 @@ impl ContainersApp {
                 v,
                 theme.tokens.typography.scale.sm,
                 c.text_primary,
-                Point::new(card.x1 - 14.0 - vw as f64, ry + 6.0),
+                Point::new(card.x1 - 14.0 - f64::from(vw), ry + 6.0),
                 TextWeight::Semibold,
             );
             if i + 1 < rows.len() {
@@ -1345,7 +1344,7 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, theme.tokens.radii.md as f64, c.neutral[0]);
+        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.neutral[0]);
         let mono = theme.tokens.typography.scale.sm;
         let mut y = inner.y0 + 14.0;
         let prompt_lines = [
@@ -1375,14 +1374,14 @@ impl ContainersApp {
                 Point::new(inner.x0 + 14.0, y),
                 TextWeight::Regular,
             );
-            y += (mono * 1.6) as f64;
+            y += f64::from(mono * 1.6);
         }
         // blinking caret
         let caret = Rect::new(
             inner.x0 + 14.0 + 30.0,
-            y - (mono * 1.6) as f64,
+            y - f64::from(mono * 1.6),
             inner.x0 + 14.0 + 38.0,
-            y - (mono * 1.6) as f64 + mono as f64,
+            y - f64::from(mono * 1.6) + f64::from(mono),
         );
         scene.fill(
             Fill::NonZero,
@@ -1404,7 +1403,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 btn,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if hov { c.accent[4] } else { c.accent[5] },
             );
             draw::icon(
@@ -1476,7 +1475,7 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             banner,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
         );
         let disk = format!(
@@ -1522,7 +1521,7 @@ impl ContainersApp {
                     draw::fill_round(
                         scene,
                         inner,
-                        theme.tokens.radii.md as f64,
+                        f64::from(theme.tokens.radii.md),
                         c.surface_white_5,
                     );
                 }
@@ -1574,7 +1573,7 @@ impl ContainersApp {
                     &size,
                     theme.tokens.typography.scale.base,
                     c.text_primary,
-                    Point::new(meta_right - sw as f64, row.center().y - 16.0),
+                    Point::new(meta_right - f64::from(sw), row.center().y - 16.0),
                     TextWeight::Semibold,
                 );
                 draw::text(
@@ -1674,7 +1673,7 @@ impl ContainersApp {
                 draw::fill_round(
                     scene,
                     btn,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     draw::with_alpha(color, 46),
                 );
             }
@@ -1724,7 +1723,7 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             banner,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
         );
         let in_use = self
@@ -1767,7 +1766,7 @@ impl ContainersApp {
                     draw::fill_round(
                         scene,
                         inner,
-                        theme.tokens.radii.md as f64,
+                        f64::from(theme.tokens.radii.md),
                         c.surface_white_5,
                     );
                 }
@@ -1838,7 +1837,7 @@ impl ContainersApp {
                     draw::fill_round(
                         scene,
                         btn,
-                        theme.tokens.radii.md as f64,
+                        f64::from(theme.tokens.radii.md),
                         draw::with_alpha(c.semantic.danger, 46),
                     );
                 }
@@ -1937,11 +1936,11 @@ impl ContainersApp {
                 continue;
             }
             let hov = self.hovered(card);
-            draw::fill_round(scene, card, theme.tokens.radii.lg as f64, c.surfaces.raised);
+            draw::fill_round(scene, card, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
             draw::stroke_round(
                 scene,
                 card,
-                theme.tokens.radii.lg as f64,
+                f64::from(theme.tokens.radii.lg),
                 1.0,
                 if hov {
                     c.border_focus
@@ -2002,7 +2001,7 @@ impl ContainersApp {
             draw::fill_round(
                 scene,
                 btn,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if bhov { c.accent[4] } else { c.accent[5] },
             );
             draw::icon(
@@ -2066,13 +2065,13 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             modal,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         draw::stroke_round(
             scene,
             modal,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             1.0,
             c.border_standard,
         );
@@ -2113,11 +2112,11 @@ impl ContainersApp {
                 TextWeight::Medium,
             );
             let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            draw::fill_round(scene, input, theme.tokens.radii.md as f64, c.surfaces.base);
+            draw::fill_round(scene, input, f64::from(theme.tokens.radii.md), c.surfaces.base);
             draw::stroke_round(
                 scene,
                 input,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if focused { 2.0 } else { 1.0 },
                 if focused {
                     c.border_focus
@@ -2158,7 +2157,7 @@ impl ContainersApp {
             }
             if focused {
                 let (vw, _) = tr.measure(value, theme.tokens.typography.scale.sm, None);
-                let cx = (input.x0 + 12.0 + vw as f64).min(input.x0 + 12.0 + text_w);
+                let cx = (input.x0 + 12.0 + f64::from(vw)).min(input.x0 + 12.0 + text_w);
                 let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
             }
@@ -2198,7 +2197,7 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             cancel,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             if self.hovered(cancel) {
                 c.surface_white_10
             } else {
@@ -2217,7 +2216,7 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             create,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             if self.hovered(create) {
                 c.accent[4]
             } else {
@@ -2237,12 +2236,11 @@ impl ContainersApp {
         self.push_hit(create, Hit::CreateSubmit);
 
         // Image suggestion dropdown — drawn LAST so it overlays the rows below.
-        if self.combo.open {
-            if let Some(input) = combo_input {
+        if self.combo.open
+            && let Some(input) = combo_input {
                 let typed = view.create[CreateField::Image.index()].clone();
                 self.draw_image_dropdown(scene, tr, theme, input, &typed);
             }
-        }
     }
 
     /// The combobox suggestion dropdown: locally-installed image references
@@ -2268,11 +2266,11 @@ impl ContainersApp {
         };
         let panel = Rect::new(input.x0, input.y1 + 4.0, input.x1, input.y1 + 4.0 + panel_h);
         // An opaque popover surface so the suggestions sit above the fields.
-        draw::fill_round(scene, panel, theme.tokens.radii.md as f64, c.neutral[2]);
+        draw::fill_round(scene, panel, f64::from(theme.tokens.radii.md), c.neutral[2]);
         draw::stroke_round(
             scene,
             panel,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             1.0,
             c.border_focus,
         );
@@ -2297,7 +2295,7 @@ impl ContainersApp {
                 draw::fill_round(
                     scene,
                     row,
-                    theme.tokens.radii.sm as f64,
+                    f64::from(theme.tokens.radii.sm),
                     draw::with_alpha(c.accent[5], if hl { 60 } else { 36 }),
                 );
             }
@@ -2352,19 +2350,19 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             modal,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         draw::stroke_round(
             scene,
             modal,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             1.0,
             c.border_standard,
         );
 
         // Header: spinner-ish dot + reference + state.
-        let state_color = if let Some(_) = &pull.failed {
+        let state_color = if pull.failed.is_some() {
             c.semantic.danger
         } else if pull.done {
             c.semantic.success
@@ -2406,9 +2404,9 @@ impl ContainersApp {
             modal.x1 - 16.0,
             modal.y1 - 60.0,
         );
-        draw::fill_round(scene, body, theme.tokens.radii.md as f64, c.neutral[0]);
+        draw::fill_round(scene, body, f64::from(theme.tokens.radii.md), c.neutral[0]);
         let mono = theme.tokens.typography.scale.xs;
-        let line_h = (mono * 1.5) as f64;
+        let line_h = f64::from(mono * 1.5);
         let visible = ((body.height() - 16.0) / line_h).floor() as usize;
         let start = pull.lines.len().saturating_sub(visible);
         let mut y = body.y0 + 10.0;
@@ -2436,7 +2434,7 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             close,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             if self.hovered(close) {
                 c.accent[4]
             } else {
@@ -2474,7 +2472,7 @@ impl ContainersApp {
             c.semantic.success
         };
         let (tw, _) = tr.measure(&toast.message, theme.tokens.typography.scale.sm, None);
-        let w = (tw as f64 + 64.0).min(full.width() - 48.0);
+        let w = (f64::from(tw) + 64.0).min(full.width() - 48.0);
         let h = 44.0;
         let toast_rect = Rect::new(
             full.center().x - w / 2.0,
@@ -2485,13 +2483,13 @@ impl ContainersApp {
         draw::fill_round(
             scene,
             toast_rect,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             c.neutral[2],
         );
         draw::stroke_round(
             scene,
             toast_rect,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             1.0,
             draw::with_alpha(accent, 160),
         );
@@ -2524,7 +2522,7 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let (w, _) = tr.measure(msg, theme.tokens.typography.scale.base, None);
-        let p = Point::new(area.center().x - w as f64 / 2.0, area.center().y - 8.0);
+        let p = Point::new(area.center().x - f64::from(w) / 2.0, area.center().y - 8.0);
         draw::text(
             scene,
             tr,
@@ -2560,7 +2558,7 @@ impl ContainersApp {
             title,
             scale.lg,
             c.text_primary,
-            Point::new(cx - tw as f64 / 2.0, cy - 22.0),
+            Point::new(cx - f64::from(tw) / 2.0, cy - 22.0),
             TextWeight::Semibold,
         );
         let (sw, _) = tr.measure(subtitle, scale.sm, None);
@@ -2570,7 +2568,7 @@ impl ContainersApp {
             subtitle,
             scale.sm,
             c.text_dim,
-            Point::new(cx - sw as f64 / 2.0, cy + 4.0),
+            Point::new(cx - f64::from(sw) / 2.0, cy + 4.0),
             TextWeight::Regular,
         );
     }
@@ -2690,9 +2688,7 @@ impl ContainersApp {
                 if action.is_destructive() {
                     let name = self
                         .engine
-                        .find(&id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| id.clone());
+                        .find(&id).map_or_else(|| id.clone(), |c| c.name.clone());
                     self.confirm = Some(crate::app::Confirm {
                         name,
                         verb: "Remove container".into(),
@@ -2784,10 +2780,10 @@ impl ContainersApp {
             Hit::CreateField(field) => {
                 self.create_focus = field.index();
                 // Focusing a non-image field closes the suggestion dropdown.
-                if field != CreateField::Image {
-                    self.combo.close();
-                } else {
+                if field == CreateField::Image {
                     self.combo.open = true;
+                } else {
+                    self.combo.close();
                 }
             }
             Hit::ComboToggle => {
@@ -2887,44 +2883,41 @@ impl ContainersApp {
         }
 
         // Global shortcuts.
-        match &key.logical_key {
-            Key::Character(ch) => {
-                let s = ch.to_lowercase();
-                match s.as_str() {
-                    "1" => {
-                        ViewDoc::set_section(doc, Section::Containers);
-                        *handled = true;
-                    }
-                    "2" => {
-                        ViewDoc::set_section(doc, Section::Images);
-                        *handled = true;
-                    }
-                    "3" => {
-                        ViewDoc::set_section(doc, Section::Volumes);
-                        *handled = true;
-                    }
-                    "4" => {
-                        ViewDoc::set_section(doc, Section::Distrobox);
-                        *handled = true;
-                    }
-                    "/" => {
-                        self.open_container_palette();
-                        *handled = true;
-                    }
-                    "n" => {
-                        self.create_open = true;
-                        self.create_focus = CreateField::Image.index();
-                        *handled = true;
-                    }
-                    "b" => {
-                        self.toggle_sidebar();
-                        self.structure_dirty = true;
-                        *handled = true;
-                    }
-                    _ => {}
+        if let Key::Character(ch) = &key.logical_key {
+            let s = ch.to_lowercase();
+            match s.as_str() {
+                "1" => {
+                    ViewDoc::set_section(doc, Section::Containers);
+                    *handled = true;
                 }
+                "2" => {
+                    ViewDoc::set_section(doc, Section::Images);
+                    *handled = true;
+                }
+                "3" => {
+                    ViewDoc::set_section(doc, Section::Volumes);
+                    *handled = true;
+                }
+                "4" => {
+                    ViewDoc::set_section(doc, Section::Distrobox);
+                    *handled = true;
+                }
+                "/" => {
+                    self.open_container_palette();
+                    *handled = true;
+                }
+                "n" => {
+                    self.create_open = true;
+                    self.create_focus = CreateField::Image.index();
+                    *handled = true;
+                }
+                "b" => {
+                    self.toggle_sidebar();
+                    self.structure_dirty = true;
+                    *handled = true;
+                }
+                _ => {}
             }
-            _ => {}
         }
         self.refresh_view(doc);
     }

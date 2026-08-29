@@ -140,7 +140,7 @@ impl QsRefresh {
                     }
                     out.push(reading);
                 }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         out

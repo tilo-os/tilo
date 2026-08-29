@@ -31,7 +31,7 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
 /// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets
-/// OffscreenRenderers keep the context alive past process-stack frames;
+/// `OffscreenRenderers` keep the context alive past process-stack frames;
 /// `Mutex` because `RenderContext::device(...)` takes `&mut self`.
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
@@ -79,7 +79,7 @@ impl std::error::Error for OffscreenError {
 pub struct OffscreenRenderer {
     pub width: u32,
     pub height: u32,
-    /// Shared with every other OffscreenRenderer in the process — see
+    /// Shared with every other `OffscreenRenderer` in the process — see
     /// [`SHARED_RENDER_CONTEXT`].
     context: Arc<Mutex<RenderContext>>,
     dev_id: usize,
@@ -141,7 +141,7 @@ impl OffscreenRenderer {
         let unpadded = width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = (padded_bytes_per_row * height) as u64;
+        let readback_size = u64::from(padded_bytes_per_row * height);
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-ui-offscreen-readback"),
             size: readback_size,

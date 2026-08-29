@@ -110,9 +110,9 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
     Color::from_rgba8(
-        (a.r as f32 * (1.0 - t) + b.r as f32 * t) as u8,
-        (a.g as f32 * (1.0 - t) + b.g as f32 * t) as u8,
-        (a.b as f32 * (1.0 - t) + b.b as f32 * t) as u8,
+        (f32::from(a.r) * (1.0 - t) + f32::from(b.r) * t) as u8,
+        (f32::from(a.g) * (1.0 - t) + f32::from(b.g) * t) as u8,
+        (f32::from(a.b) * (1.0 - t) + f32::from(b.b) * t) as u8,
         255,
     )
 }
@@ -146,7 +146,7 @@ pub fn text_center(
     size: f32,
     color: Color,
 ) {
-    let w = text_w(tr, s, size) as f64;
+    let w = f64::from(text_w(tr, s, size));
     tr.draw_text(
         scene,
         s,
@@ -167,7 +167,7 @@ pub fn text_right(
     size: f32,
     color: Color,
 ) {
-    let w = text_w(tr, s, size) as f64;
+    let w = f64::from(text_w(tr, s, size));
     tr.draw_text(
         scene,
         s,
@@ -187,7 +187,7 @@ pub fn text_in(
     size: f32,
     color: Color,
 ) {
-    let y = rect.y0 + (rect.height() - size as f64 * 1.2) / 2.0;
+    let y = rect.y0 + (rect.height() - f64::from(size) * 1.2) / 2.0;
     text_center(scene, tr, rect.center().x, y, s, size, color);
 }
 
@@ -600,7 +600,7 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             let r = h * 0.92;
             circle_stroke(scene, t, cx, cy, r, color, w);
             for k in 0..6 {
-                let a = k as f64 * std::f64::consts::PI / 3.0 + 0.35;
+                let a = f64::from(k) * std::f64::consts::PI / 3.0 + 0.35;
                 let a2 = a + 2.0 * std::f64::consts::PI / 3.0;
                 let x0 = cx + r * a.cos();
                 let y0 = cy + r * a.sin();
@@ -631,7 +631,7 @@ fn arc_up(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, 
     let mut p = BezPath::new();
     let steps = 14;
     for i in 0..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         let ang = std::f64::consts::PI * (1.0 + frac); // pi..2pi (upper half)
         let x = cx + r * ang.cos();
         let y = cy + r * ang.sin();
@@ -656,7 +656,7 @@ fn star(
 ) {
     let mut p = BezPath::new();
     for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
         let rr = if i % 2 == 0 { r } else { r * 0.45 };
         let x = cx + rr * ang.cos();
         let y = cy + rr * ang.sin();

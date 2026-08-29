@@ -210,7 +210,7 @@ impl Pane {
         }
     }
     fn screen_y(&self, ly: f32) -> f64 {
-        self.y + (ly - self.win_start) as f64
+        self.y + f64::from(ly - self.win_start)
     }
 }
 
@@ -798,8 +798,7 @@ impl BooksApp {
     fn num_chapters(&self) -> usize {
         self.library
             .get(self.book_idx)
-            .map(|b| b.chapters.len())
-            .unwrap_or(0)
+            .map_or(0, |b| b.chapters.len())
     }
 
     // --- Responsive layout: the contents/annotations rails collapse to
@@ -1433,24 +1432,18 @@ impl BooksApp {
     /// Import the `.epub` at `path` into the library and open it in the reader.
     /// Re-opening a book already on the shelf just re-opens it (no duplicate).
     fn import_and_open(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        match content::import_path(doc, path) {
-            Some(book) => {
-                let id = book.id.clone();
-                self.library_paths.insert(id.clone(), path.to_path_buf());
-                let i = match self.library.iter().position(|b| b.id == id) {
-                    Some(i) => i,
-                    None => {
-                        self.library.push(book);
-                        self.library.len() - 1
-                    }
-                };
-                self.load_error = None;
-                self.open_book_at(doc, i);
-            }
-            None => {
-                self.load_error = Some("That file couldn't be opened as a book.".into());
-                self.dirty = true;
-            }
+        if let Some(book) = content::import_path(doc, path) {
+            let id = book.id.clone();
+            self.library_paths.insert(id.clone(), path.to_path_buf());
+            let i = if let Some(i) = self.library.iter().position(|b| b.id == id) { i } else {
+                self.library.push(book);
+                self.library.len() - 1
+            };
+            self.load_error = None;
+            self.open_book_at(doc, i);
+        } else {
+            self.load_error = Some("That file couldn't be opened as a book.".into());
+            self.dirty = true;
         }
     }
 
@@ -1548,7 +1541,7 @@ impl BooksApp {
                         && !self.settings.mode.is_continuous()
                         && let Some(l) = self.layout.as_ref()
                     {
-                        self.scroll_y = l.pages.get(self.page).copied().unwrap_or(0.0) as f64;
+                        self.scroll_y = f64::from(l.pages.get(self.page).copied().unwrap_or(0.0));
                     }
                     self.bump_setting(doc, |s| s.mode = mode);
                     // Two-up halves the column width → relayout on the next draw.
@@ -1585,18 +1578,18 @@ impl BooksApp {
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
-                s.font_scale = (s.font_scale + 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX)
+                s.font_scale = (s.font_scale + 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
             }),
             Action::FontDec => self.bump_setting(doc, |s| {
-                s.font_scale = (s.font_scale - 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX)
+                s.font_scale = (s.font_scale - 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
             }),
             Action::SpacingInc => self.bump_setting(doc, |s| {
                 s.line_spacing =
-                    (s.line_spacing + 0.1).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX)
+                    (s.line_spacing + 0.1).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
             }),
             Action::SpacingDec => self.bump_setting(doc, |s| {
                 s.line_spacing =
-                    (s.line_spacing - 0.1).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX)
+                    (s.line_spacing - 0.1).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
             }),
             Action::CycleFont => {
                 // Cycle through the fonts offered in quick settings.
@@ -1855,8 +1848,7 @@ impl BooksApp {
                     let pos = sc
                         .iter()
                         .position(|s| s.id == id)
-                        .map(|p| p + 1)
-                        .unwrap_or(sc.len());
+                        .map_or(sc.len(), |p| p + 1);
                     sc.insert(pos, dup);
                     BooksDoc::write_schemes(doc, &sc);
                     self.editing_scheme = Some(new_id);
@@ -1898,8 +1890,7 @@ impl BooksApp {
                     .schemes
                     .iter()
                     .find(|s| s.id == id)
-                    .map(|s| s.slots()[slot].1)
-                    .unwrap_or([0x80, 0x80, 0x80]);
+                    .map_or([0x80, 0x80, 0x80], |s| s.slots()[slot].1);
                 self.picker = Some(ColorPick::from_rgb(PickTarget::Slot(id, slot), cur));
                 self.pick_drag = None;
             }
@@ -2014,8 +2005,7 @@ impl BooksApp {
                 // Render the rename field in the font's own face, so the name
                 // is typeset in the typeface it selects while you edit it.
                 let fam = entry
-                    .map(|e| font_choice(&e.kind))
-                    .unwrap_or(FontChoice::SansSerif);
+                    .map_or(FontChoice::SansSerif, |e| font_choice(&e.kind));
                 let mut field = EditableLabel::new(&name)
                     .with_font_size(16.0)
                     .with_font_family(fam);
@@ -2655,8 +2645,8 @@ impl BooksApp {
         }
         // In a gap between words: snap to the nearest run edge.
         let nearest = line.iter().min_by(|a, b| {
-            let da = (p.x - (a.x0 + a.x1) / 2.0).abs();
-            let db = (p.x - (b.x0 + b.x1) / 2.0).abs();
+            let da = (p.x - f64::midpoint(a.x0, a.x1)).abs();
+            let db = (p.x - f64::midpoint(b.x0, b.x1)).abs();
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })?;
         let ch = if p.x < nearest.x0 {
@@ -2722,8 +2712,7 @@ impl BooksApp {
         self.layout
             .as_ref()
             .and_then(|l| l.blocks.iter().find(|b| b.index == block))
-            .map(|b| b.char_len)
-            .unwrap_or(0)
+            .map_or(0, |b| b.char_len)
     }
 
     fn doc_next_char(&self, p: DocPos) -> DocPos {
@@ -3073,17 +3062,17 @@ impl Widget for BooksApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // The allocated width is now known — reconcile both rails so a
         // breakpoint crossing adopts the new default (docked ⇒ open, overlay ⇒
@@ -3318,7 +3307,7 @@ impl Widget for BooksApp {
                             // Shift+click extends the live selection (or starts
                             // one at the pressed caret) to the press.
                             if let Some(dp) = self.press_doc {
-                                let anchor = self.sel.map(|s| s.anchor).unwrap_or(dp);
+                                let anchor = self.sel.map_or(dp, |s| s.anchor);
                                 let sel = TextSel { anchor, head: dp };
                                 self.sel = Some(sel);
                                 self.selected_block = Some(sel.ordered().0.block);
@@ -3416,7 +3405,7 @@ impl Widget for BooksApp {
                 // only the vertical is negated to make a downward scroll "forward".
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
-                        ((*x as f64) * WHEEL_LINE_PX, (-*y as f64) * WHEEL_LINE_PX)
+                        (f64::from(*x) * WHEEL_LINE_PX, f64::from(-*y) * WHEEL_LINE_PX)
                     }
                     MouseScrollDelta::PixelDelta(p) => (p.x, -p.y),
                 };
@@ -3436,7 +3425,7 @@ impl Widget for BooksApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BooksApp"
     }
 
@@ -3514,7 +3503,7 @@ impl BooksApp {
                 self.scroll_to_cursor = true;
                 true
             }
-            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let orig = self.shelf_order.get(cursor).copied().unwrap_or(0);
                 self.dispatch(Action::OpenBook(orig), doc);
                 true
@@ -3616,7 +3605,7 @@ impl BooksApp {
         // While composing a note, characters feed the note text.
         if self.composing.is_some() {
             match key {
-                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
                     return self.edit_note_text(doc, NoteEdit::Done);
                 }
                 Key::Named(NamedKey::Backspace) => {
@@ -3659,7 +3648,7 @@ impl BooksApp {
                 self.dispatch(Action::PrevPage, doc);
                 true
             }
-            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
+            Key::Named(NamedKey::PageDown | NamedKey::Space) => {
                 self.dispatch(Action::NextPage, doc);
                 true
             }
@@ -3859,11 +3848,11 @@ impl BooksApp {
                 scene,
                 t,
                 rect,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 theme.accent_primary,
             );
         } else if hover {
-            paint::fill_round(scene, t, rect, theme.tokens.radii.md as f64, theme.bg_hover);
+            paint::fill_round(scene, t, rect, f64::from(theme.tokens.radii.md), theme.bg_hover);
         }
         let icon_col = if active {
             Color::from_rgb8(248, 248, 252)
@@ -3903,7 +3892,7 @@ impl BooksApp {
         with_plus: bool,
         action: Action,
     ) {
-        let radius = (rect.height() / 2.0).min(theme.tokens.radii.lg as f64 + 4.0);
+        let radius = (rect.height() / 2.0).min(f64::from(theme.tokens.radii.lg) + 4.0);
         paint::fill_round(scene, t, rect, radius, theme.accent_primary);
         if self.is_hover(rect) {
             // A soft white veil is the hover state on a filled accent surface.
@@ -3912,9 +3901,9 @@ impl BooksApp {
         let ink = Color::from_rgb8(250, 250, 252);
         let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
         let glyph = if with_plus { 16.0 + 9.0 } else { 0.0 };
-        let group_w = glyph + lw as f64;
+        let group_w = glyph + f64::from(lw);
         let gx = rect.x0 + (rect.width() - group_w) / 2.0;
-        let cy = (rect.y0 + rect.y1) / 2.0;
+        let cy = f64::midpoint(rect.y0, rect.y1);
         if with_plus {
             paint::plus(
                 scene,
@@ -4004,8 +3993,7 @@ impl BooksApp {
                 "{}\u{2502}",
                 self.num_edit
                     .as_ref()
-                    .map(|(_, b)| b.as_str())
-                    .unwrap_or("")
+                    .map_or("", |(_, b)| b.as_str())
             )
         } else {
             value.to_string()
@@ -4023,7 +4011,7 @@ impl BooksApp {
             &disp,
             12.5,
             c.text_primary,
-            t * Affine::translate((vx + (vslot_w - vw as f64) / 2.0, cy - 7.0)),
+            t * Affine::translate((vx + (vslot_w - f64::from(vw)) / 2.0, cy - 7.0)),
             None,
             TextWeight::Medium,
         );
@@ -4052,7 +4040,7 @@ impl BooksApp {
     ) -> f64 {
         let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
         let pad = 12.0;
-        let w = tw as f64 + pad * 2.0;
+        let w = f64::from(tw) + pad * 2.0;
         let rect = Rect::new(x, y, x + w, y + h);
         let hover = action.is_some() && self.is_hover(rect);
         let c = &theme.tokens.colors;
@@ -4069,7 +4057,7 @@ impl BooksApp {
         } else {
             c.text_primary
         };
-        let ty = y + (h - size as f64) / 2.0;
+        let ty = y + (h - f64::from(size)) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -4138,7 +4126,7 @@ impl BooksApp {
         let btn_cy = r.y0 + (TOP_BAR - 34.0) / 2.0;
         let open_label = "Open book";
         let (olw, _) = tr.measure_weighted(open_label, 14.0, None, TextWeight::Semibold);
-        let open_w = olw as f64 + 25.0 + 32.0;
+        let open_w = f64::from(olw) + 25.0 + 32.0;
         let open_x = r.x1 - 22.0 - open_w;
         self.accent_button(
             scene,
@@ -4158,7 +4146,7 @@ impl BooksApp {
             // Sort dropdown.
             let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
             let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
-            let sb_w = slw as f64 + 26.0 + 20.0;
+            let sb_w = f64::from(slw) + 26.0 + 20.0;
             rx -= sb_w;
             let sbtn = Rect::new(rx, cy, rx + sb_w, cy + 30.0);
             let shover = self.sort_menu || self.is_hover(sbtn);
@@ -4222,7 +4210,7 @@ impl BooksApp {
             );
             let hl = "Hide read";
             let (hlw, _) = tr.measure_weighted(hl, 13.0, None, TextWeight::Medium);
-            rx -= 8.0 + hlw as f64;
+            rx -= 8.0 + f64::from(hlw);
             tr.draw_text_weighted(
                 scene,
                 hl,
@@ -4247,7 +4235,7 @@ impl BooksApp {
 
         // Everything hidden by the "hide read" filter.
         if order.is_empty() {
-            let cx = (r.x0 + r.x1) / 2.0;
+            let cx = f64::midpoint(r.x0, r.x1);
             let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
             let head = "All books are finished";
             let (hw, _) = tr.measure_weighted(head, 18.0, None, TextWeight::Semibold);
@@ -4256,7 +4244,7 @@ impl BooksApp {
                 head,
                 18.0,
                 c.text_primary,
-                t * Affine::translate((cx - hw as f64 / 2.0, cy - 20.0)),
+                t * Affine::translate((cx - f64::from(hw) / 2.0, cy - 20.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -4267,7 +4255,7 @@ impl BooksApp {
                 hint,
                 13.0,
                 c.text_dim,
-                t * Affine::translate((cx - tw2 as f64 / 2.0, cy + 8.0)),
+                t * Affine::translate((cx - f64::from(tw2) / 2.0, cy + 8.0)),
                 None,
             );
             if self.sort_menu {
@@ -4343,8 +4331,7 @@ impl BooksApp {
             let shared = self
                 .library_paths
                 .get(&book.id)
-                .map(|p| is_shared(p))
-                .unwrap_or(false);
+                .is_some_and(|p| is_shared(p));
             self.draw_book_card(
                 scene, t, tr, theme, book, orig, x, y, card_w, cover_h, focused, shared,
             );
@@ -4396,7 +4383,7 @@ impl BooksApp {
         c: &ui::tokens::colors::Colors,
     ) {
         let r = self.rect;
-        let cx = (r.x0 + r.x1) / 2.0;
+        let cx = f64::midpoint(r.x0, r.x1);
         // Compose the block around a comfortable optical centre (a touch above
         // true centre reads better for a stacked call-to-action).
         let cy = r.y0 + TOP_BAR + (r.y1 - r.y0 - TOP_BAR) * 0.42;
@@ -4440,7 +4427,7 @@ impl BooksApp {
             head,
             24.0,
             c.text_primary,
-            t * Affine::translate((cx - hw as f64 / 2.0, cy - 34.0)),
+            t * Affine::translate((cx - f64::from(hw) / 2.0, cy - 34.0)),
             None,
             TextWeight::Bold,
         );
@@ -4460,7 +4447,7 @@ impl BooksApp {
         // Primary call to action.
         let cta_label = "Open a book…";
         let (clw, _) = tr.measure_weighted(cta_label, 14.0, None, TextWeight::Semibold);
-        let cta_w = clw as f64 + 25.0 + 44.0;
+        let cta_w = f64::from(clw) + 25.0 + 44.0;
         let cta_h = 44.0;
         let cta_y = cy + 62.0;
         self.accent_button(
@@ -4483,7 +4470,7 @@ impl BooksApp {
             hint,
             12.5,
             c.text_dim.with_alpha_factor(0.75),
-            t * Affine::translate((cx - thw as f64 / 2.0, cta_y + cta_h + 20.0)),
+            t * Affine::translate((cx - f64::from(thw) / 2.0, cta_y + cta_h + 20.0)),
             None,
         );
 
@@ -4496,7 +4483,7 @@ impl BooksApp {
                 12.5,
                 c.semantic.danger,
                 t * Affine::translate((
-                    cx - ew.min(body_w as f32) as f64 / 2.0,
+                    cx - f64::from(ew.min(body_w as f32)) / 2.0,
                     cta_y + cta_h + 44.0,
                 )),
                 Some(body_w as f32),
@@ -4525,7 +4512,7 @@ impl BooksApp {
                     .then(title(a).cmp(&title(b)))
             }),
             LibrarySort::Recent => {
-                idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b))))
+                idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b))));
             }
             LibrarySort::Progress => idx.sort_by(|&a, &b| {
                 frac(b)
@@ -4566,14 +4553,14 @@ impl BooksApp {
             scene,
             t,
             menu,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             menu,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -4689,7 +4676,7 @@ impl BooksApp {
                 let pill = Rect::new(
                     x + 16.0,
                     y + 16.0,
-                    x + 16.0 + pw as f64 + 18.0,
+                    x + 16.0 + f64::from(pw) + 18.0,
                     y + 16.0 + 20.0,
                 );
                 paint::fill_round(scene, t, pill, 10.0, ink.with_alpha_factor(0.18));
@@ -4755,7 +4742,7 @@ impl BooksApp {
             };
             let (lw, _) = tr.measure_weighted(label, 11.0, None, TextWeight::Semibold);
             let gly = if glyph { 16.0 } else { 0.0 };
-            let pw = 16.0 + gly + lw as f64;
+            let pw = 16.0 + gly + f64::from(lw);
             let py = y + 14.0;
             let pill = Rect::new(x + w - 14.0 - pw, py, x + w - 14.0, py + 20.0);
             paint::fill_round(scene, t, pill, 10.0, bg);
@@ -4825,7 +4812,7 @@ impl BooksApp {
             let badge = Rect::new(
                 x + 2.0,
                 meta_y + 50.0,
-                x + 2.0 + lw as f64 + 16.0,
+                x + 2.0 + f64::from(lw) + 16.0,
                 meta_y + 50.0 + 18.0,
             );
             paint::fill_round(scene, t, badge, 9.0, c.surfaces.overlay);
@@ -4856,7 +4843,7 @@ impl BooksApp {
             if !shared {
                 let sl = "Share";
                 let (slw, _) = tr.measure_weighted(sl, 12.0, None, TextWeight::Semibold);
-                let sw = slw as f64 + 16.0 + 22.0;
+                let sw = f64::from(slw) + 16.0 + 22.0;
                 let sx = right - sw;
                 let sr = Rect::new(sx, by, sx + sw, by + sh);
                 paint::fill_round(scene, t, sr, sh / 2.0, theme.accent_primary);
@@ -4972,7 +4959,7 @@ impl BooksApp {
             title,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - tw as f64 / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((cx - f64::from(tw) / 2.0, disc_cy + disc_r + 16.0)),
             None,
             TextWeight::Semibold,
         );
@@ -4983,7 +4970,7 @@ impl BooksApp {
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((cx - hw as f64 / 2.0, disc_cy + disc_r + 38.0)),
+            t * Affine::translate((cx - f64::from(hw) / 2.0, disc_cy + disc_r + 38.0)),
             None,
         );
 
@@ -5002,8 +4989,7 @@ impl BooksApp {
         self.book_idx = self.book_idx.min(lib.len().saturating_sub(1));
         let nchap = lib
             .get(self.book_idx)
-            .map(|b| b.chapters.len())
-            .unwrap_or(0);
+            .map_or(0, |b| b.chapters.len());
         self.chapter = self.chapter.min(nchap.saturating_sub(1));
 
         // ---- geometry of the three columns ------------------------------
@@ -5057,7 +5043,7 @@ impl BooksApp {
         // the column the pages are shown in, so the layout key carries it.
         let gutter: f64 = if framed { 48.0 } else { 30.0 };
         let column_w = if mode == ReadMode::TwoUp {
-            (((full_content_w as f64 - gutter) / 2.0).max(80.0)) as f32
+            (((f64::from(full_content_w) - gutter) / 2.0).max(80.0)) as f32
         } else {
             full_content_w
         };
@@ -5109,9 +5095,9 @@ impl BooksApp {
         // next layout) can clamp itself, and resolve a pending end-scroll after
         // a backward chapter roll. Keep `page` synced to the scroll so progress
         // and the page locator stay meaningful.
-        self.flow_extent = (layout.total_height as f64, content_h as f64);
+        self.flow_extent = (f64::from(layout.total_height), f64::from(content_h));
         if mode.is_continuous() {
-            let max_scroll = (layout.total_height as f64 - content_h as f64).max(0.0);
+            let max_scroll = (f64::from(layout.total_height) - f64::from(content_h)).max(0.0);
             if self.pending_scroll_end {
                 self.scroll_y = max_scroll;
                 self.pending_scroll_end = false;
@@ -5120,7 +5106,7 @@ impl BooksApp {
             self.page = layout
                 .pages
                 .iter()
-                .rposition(|&py| py as f64 <= self.scroll_y + 0.5)
+                .rposition(|&py| f64::from(py) <= self.scroll_y + 0.5)
                 .unwrap_or(0);
         } else {
             self.pending_scroll_end = false;
@@ -5164,7 +5150,7 @@ impl BooksApp {
                 });
                 if self.page + 1 < layout.page_count() {
                     let (rs, re) = win_for(self.page + 1);
-                    let rx = full_content_x + column_w as f64 + gutter;
+                    let rx = full_content_x + f64::from(column_w) + gutter;
                     panes.push(Pane {
                         x: rx,
                         y: content_y,
@@ -5197,8 +5183,7 @@ impl BooksApp {
                 .blocks
                 .iter()
                 .find(|b| b.lines.iter().any(|l| l.y >= ts - 0.5 && l.y < te))
-                .map(|b| b.index)
-                .unwrap_or(0)
+                .map_or(0, |b| b.index)
         };
 
         // ---- page surface ------------------------------------------------
@@ -5240,7 +5225,7 @@ impl BooksApp {
                 scene,
                 t,
                 Point::new(content_x, paper_y + 42.0),
-                Point::new(content_x + content_w as f64, paper_y + 42.0),
+                Point::new(content_x + f64::from(content_w), paper_y + 42.0),
                 palette.rule,
                 1.0,
             );
@@ -5277,17 +5262,17 @@ impl BooksApp {
             (true, Some(pt)) => pt.visual(now, paper_w),
             _ => (0.0, 1.0),
         };
-        let content_t = if turn_dx != 0.0 {
-            t * Affine::translate((turn_dx, 0.0))
-        } else {
+        let content_t = if turn_dx == 0.0 {
             t
+        } else {
+            t * Affine::translate((turn_dx, 0.0))
         };
         if turning {
             let clip = Rect::new(
                 paper_x + 1.0,
                 content_y - 3.0,
                 paper_x + paper_w - 1.0,
-                content_y + content_h as f64 + 3.0,
+                content_y + f64::from(content_h) + 3.0,
             );
             scene.push_layer(
                 Fill::NonZero,
@@ -5304,8 +5289,8 @@ impl BooksApp {
                 let clip = Rect::new(
                     pane.x - 8.0,
                     content_y - 2.0,
-                    pane.x + pane.w as f64 + 8.0,
-                    content_y + content_h as f64 + 2.0,
+                    pane.x + f64::from(pane.w) + 8.0,
+                    content_y + f64::from(content_h) + 2.0,
                 );
                 scene.push_layer(
                     Fill::NonZero,
@@ -5382,7 +5367,7 @@ impl BooksApp {
         let pbar = Rect::new(
             full_content_x,
             paper_y + paper_h - 16.0,
-            full_content_x + full_content_w as f64,
+            full_content_x + f64::from(full_content_w),
             paper_y + paper_h - 13.0,
         );
         paint::progress(scene, t, pbar, frac, palette.rule, palette.accent);
@@ -5450,7 +5435,7 @@ impl BooksApp {
                 continue;
             }
             let by0 = pane.screen_y(visible.first().unwrap().y) - 3.0;
-            let by1 = pane.screen_y(visible.last().unwrap().y) + b.line_height as f64;
+            let by1 = pane.screen_y(visible.last().unwrap().y) + f64::from(b.line_height);
             for a in annos
                 .iter()
                 .filter(|a| a.chapter == chapter && a.block == b.index)
@@ -5459,9 +5444,9 @@ impl BooksApp {
                     AnnoKind::Highlight => {}
                     AnnoKind::Note => {
                         let band = Rect::new(
-                            content_x + b.indent as f64 - 4.0,
+                            content_x + f64::from(b.indent) - 4.0,
                             by0,
-                            content_x + content_w as f64,
+                            content_x + f64::from(content_w),
                             by1,
                         );
                         paint::fill_round(
@@ -5472,13 +5457,13 @@ impl BooksApp {
                             palette.highlight_fill(a.color).with_alpha_factor(0.5),
                         );
                         let bar = Rect::new(
-                            content_x + b.indent as f64 - 10.0,
+                            content_x + f64::from(b.indent) - 10.0,
                             by0,
-                            content_x + b.indent as f64 - 6.0,
+                            content_x + f64::from(b.indent) - 6.0,
                             by1,
                         );
                         paint::fill_rect(scene, t, bar, ReaderPalette::highlight_swatch(a.color));
-                        let gx = content_x + content_w as f64 + 6.0;
+                        let gx = content_x + f64::from(content_w) + 6.0;
                         paint::note(
                             scene,
                             t,
@@ -5488,7 +5473,7 @@ impl BooksApp {
                         );
                     }
                     AnnoKind::Bookmark => {
-                        let gx = content_x + content_w as f64 + 6.0;
+                        let gx = content_x + f64::from(content_w) + 6.0;
                         paint::bookmark(
                             scene,
                             t,
@@ -5514,7 +5499,7 @@ impl BooksApp {
             if matches!(b.kind, LayoutKind::Separator) {
                 continue;
             }
-            let indent = b.indent as f64;
+            let indent = f64::from(b.indent);
             let block_ranged: Vec<&Annotation> = ranged
                 .iter()
                 .copied()
@@ -5525,7 +5510,7 @@ impl BooksApp {
                     continue;
                 }
                 let ly = pane.screen_y(l.y);
-                let lh = b.line_height as f64;
+                let lh = f64::from(b.line_height);
                 let mut sel_band: Option<(f64, f64)> = None;
                 let mut hi_span: Vec<Option<(f64, f64)>> = vec![None; block_ranged.len()];
                 for run in &l.runs {
@@ -5540,8 +5525,8 @@ impl BooksApp {
                         base_family.clone()
                     };
                     let (w, _) = tr.measure_font(&run.text, b.size, None, weight, run.italic, &fam);
-                    let x0 = content_x + indent + run.x as f64;
-                    let x1 = x0 + w as f64;
+                    let x0 = content_x + indent + f64::from(run.x);
+                    let x1 = x0 + f64::from(w);
                     self.sel_runs.push(SelRun {
                         block: b.index,
                         x0,
@@ -5585,7 +5570,7 @@ impl BooksApp {
                         };
                         if lo < hi {
                             let (bx0, bx1) =
-                                run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
+                                run_sub_x(x0, f64::from(w), run.char_start, run.char_len, lo, hi);
                             grow(&mut sel_band, bx0, bx1);
                         }
                     }
@@ -5594,7 +5579,7 @@ impl BooksApp {
                         let hi = a.end.min(run_end);
                         if lo < hi {
                             let (bx0, bx1) =
-                                run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
+                                run_sub_x(x0, f64::from(w), run.char_start, run.char_len, lo, hi);
                             grow(&mut hi_span[i], bx0, bx1);
                         }
                     }
@@ -5629,7 +5614,7 @@ impl BooksApp {
                     let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                     paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.30));
                     if sel_anchor.is_none() {
-                        sel_anchor = Some(((mnx + mxx) / 2.0, ly));
+                        sel_anchor = Some((f64::midpoint(mnx, mxx), ly));
                     }
                 }
             }
@@ -5674,14 +5659,14 @@ impl BooksApp {
                         .collect();
                     if let (Some(f), Some(la)) = (visible.first(), visible.last()) {
                         let y0 = pane.screen_y(f.y);
-                        let y1 = pane.screen_y(la.y) + b.line_height as f64;
+                        let y1 = pane.screen_y(la.y) + f64::from(b.line_height);
                         let bar = Rect::new(content_x + 10.0, y0, content_x + 13.5, y1);
                         paint::fill_rect(scene, t, bar, palette.rule);
                     }
                 }
                 LayoutKind::Separator if pane.shows(b.top, b.line_height) => {
-                    let cy = pane.screen_y(b.top) + b.line_height as f64 / 2.0;
-                    let cx = content_x + content_w as f64 / 2.0;
+                    let cy = pane.screen_y(b.top) + f64::from(b.line_height) / 2.0;
+                    let cx = content_x + f64::from(content_w) / 2.0;
                     paint::line(
                         scene,
                         t,
@@ -5702,7 +5687,7 @@ impl BooksApp {
                     bullet,
                     b.size,
                     palette.ink_dim,
-                    t * Affine::translate((content_x + b.indent as f64 - 20.0, ly)),
+                    t * Affine::translate((content_x + f64::from(b.indent) - 20.0, ly)),
                     None,
                 );
             }
@@ -5718,7 +5703,7 @@ impl BooksApp {
                     } else {
                         TextWeight::Regular
                     };
-                    let x = content_x + b.indent as f64 + run.x as f64;
+                    let x = content_x + f64::from(b.indent) + f64::from(run.x);
                     let fam = if mono {
                         FontChoice::Monospace
                     } else {
@@ -5730,8 +5715,8 @@ impl BooksApp {
                         let chip = Rect::new(
                             x - 3.0,
                             ly - 1.0,
-                            x + cw as f64 + 3.0,
-                            ly + b.size as f64 + 3.0,
+                            x + f64::from(cw) + 3.0,
+                            ly + f64::from(b.size) + 3.0,
                         );
                         paint::fill_round(scene, t, chip, 3.0, palette.code_bg);
                     }
@@ -5800,9 +5785,7 @@ impl BooksApp {
             })
             .collect();
         // Anchor above the selection; fall back to the page centre near the top.
-        let anchor_pt = anchor
-            .map(|(x, y)| Point::new(x, y))
-            .unwrap_or_else(|| Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0));
+        let anchor_pt = anchor.map_or_else(|| Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0), |(x, y)| Point::new(x, y));
         let bounds = Rect::new(self.rect.x0, body_y0, self.rect.x1, body_y1);
         let hud = ui::SelectionHud::draw(
             scene,
@@ -5874,10 +5857,10 @@ impl BooksApp {
         let (_, eh) = tr.measure(&excerpt, 12.0, Some(inner_w));
         let note_disp = format!("{}\u{2502}", a.note);
         let (_, nh) = tr.measure(&note_disp, 13.5, Some(inner_w));
-        let note_h = (nh as f64).max(20.0);
-        let ch = 34.0 + eh as f64 + 10.0 + note_h + 16.0 + 40.0 + pad;
+        let note_h = f64::from(nh).max(20.0);
+        let ch = 34.0 + f64::from(eh) + 10.0 + note_h + 16.0 + 40.0 + pad;
 
-        let cx = (r.x0 + r.x1) / 2.0;
+        let cx = f64::midpoint(r.x0, r.x1);
         let x0 = (cx - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
         let top_lim = r.y0 + TOP_BAR + 8.0;
         let bot_lim = r.y1 - 16.0;
@@ -5893,14 +5876,14 @@ impl BooksApp {
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.border_focus,
             1.4,
         );
@@ -5935,7 +5918,7 @@ impl BooksApp {
             t * Affine::translate((ix0, y)),
             Some(inner_w),
         );
-        y += eh as f64 + 10.0;
+        y += f64::from(eh) + 10.0;
         // Live note text with caret.
         tr.draw_text(
             scene,
@@ -5947,9 +5930,9 @@ impl BooksApp {
         );
         y += note_h + 16.0;
         // Delete + Save.
-        let del_w = tr
+        let del_w = f64::from(tr
             .measure_weighted("Delete", 12.5, None, TextWeight::Medium)
-            .0 as f64
+            .0)
             + 24.0;
         let del = Rect::new(ix0, y, ix0 + del_w, y + 32.0);
         let del_hover = self.is_hover(del);
@@ -5975,9 +5958,9 @@ impl BooksApp {
         );
         self.push_hit(del, Action::Delete(id));
 
-        let save_w = tr
+        let save_w = f64::from(tr
             .measure_weighted("Save", 13.0, None, TextWeight::Semibold)
-            .0 as f64
+            .0)
             + 40.0;
         let save = Rect::new(x0 + cw - pad - save_w, y, x0 + cw - pad, y + 32.0);
         paint::fill_round(scene, t, save, 16.0, theme.accent_primary);
@@ -6024,7 +6007,7 @@ impl BooksApp {
                 .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
                 .collect();
             hl_rows.sort_by_key(|a| (a.block, a.start));
-            let color = hl_rows.first().map(|a| a.color).unwrap_or(self.hi_color);
+            let color = hl_rows.first().map_or(self.hi_color, |a| a.color);
             let mut excerpt = String::new();
             for a in &hl_rows {
                 if a.excerpt.trim().is_empty() {
@@ -6040,7 +6023,7 @@ impl BooksApp {
         let excerpt_disp = if excerpt.is_empty() {
             "Highlighted passage".to_string()
         } else {
-            format!("\u{201C}{}\u{201D}", excerpt)
+            format!("\u{201C}{excerpt}\u{201D}")
         };
         let comments = self.comments_in_group(group);
 
@@ -6065,7 +6048,7 @@ impl BooksApp {
         for a in &comments {
             let d = disp_of(a, self.composing == Some(a.id));
             let (_, h) = tr.measure(&d, 13.0, Some(text_w));
-            rows_h.push((h as f64).max(18.0) + 16.0);
+            rows_h.push(f64::from(h).max(18.0) + 16.0);
         }
 
         let header_h = 28.0;
@@ -6073,15 +6056,15 @@ impl BooksApp {
         let comments_total: f64 =
             rows_h.iter().sum::<f64>() + comments_gap * comments.len().max(1) as f64;
         let add_h = 34.0;
-        let ch = pad + header_h + 8.0 + eh as f64 + 12.0 + comments_total + add_h + pad;
+        let ch = pad + header_h + 8.0 + f64::from(eh) + 12.0 + comments_total + add_h + pad;
 
         // Anchor to the highlight's on-page bounds; fall back to the page centre.
         let (ax, atop, abot) = match self.comment_anchor {
-            Some((x0, y0, x1, y1)) => ((x0 + x1) / 2.0, y0, y1),
+            Some((x0, y0, x1, y1)) => (f64::midpoint(x0, x1), y0, y1),
             None => (
-                (r.x0 + r.x1) / 2.0,
-                (r.y0 + r.y1) / 2.0,
-                (r.y0 + r.y1) / 2.0,
+                f64::midpoint(r.x0, r.x1),
+                f64::midpoint(r.y0, r.y1),
+                f64::midpoint(r.y0, r.y1),
             ),
         };
         let x0 = (ax - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
@@ -6101,14 +6084,14 @@ impl BooksApp {
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.border_focus,
             1.4,
         );
@@ -6160,7 +6143,7 @@ impl BooksApp {
             t * Affine::translate((ix0, y)),
             Some(inner_w),
         );
-        y += eh as f64 + 12.0;
+        y += f64::from(eh) + 12.0;
 
         // Comments — each with inline edit (pencil) + delete (×).
         for (a, rh) in comments.iter().zip(rows_h.iter()) {
@@ -6343,7 +6326,7 @@ impl BooksApp {
         // The reading-settings ("Aa") pill lives in the right cluster; its width
         // is measured up front so the centre title reserves room for it.
         let (aa_tw, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
-        let aa_w = aa_tw as f64 + 26.0;
+        let aa_w = f64::from(aa_tw) + 26.0;
         let mut x = r.x0 + 14.0;
         x += self.icon_button(scene, t, theme, x, cy, s, Ico::Back, false, Action::Back) + 6.0;
         let toc_active = self.toc_open();
@@ -6374,13 +6357,13 @@ impl BooksApp {
             let full_title = ellipsize(tr, &book.title, 16.0, TextWeight::Semibold, avail);
             let (tw, _) = tr.measure_weighted(&full_title, 16.0, None, TextWeight::Semibold);
             // Only show the author if title + author both fit comfortably.
-            let show_author = tw as f64 + aw as f64 <= avail && book.title == full_title;
+            let show_author = f64::from(tw) + f64::from(aw) <= avail && book.title == full_title;
             let total = if show_author {
-                tw as f64 + aw as f64
+                f64::from(tw) + f64::from(aw)
             } else {
-                tw as f64
+                f64::from(tw)
             };
-            let cx = ((left_bound + right_bound) / 2.0 - total / 2.0).max(left_bound);
+            let cx = (f64::midpoint(left_bound, right_bound) - total / 2.0).max(left_bound);
             tr.draw_text_weighted(
                 scene,
                 &full_title,
@@ -6396,7 +6379,7 @@ impl BooksApp {
                     &auth,
                     13.0,
                     c.text_dim,
-                    t * Affine::translate((cx + tw as f64, r.y0 + 18.5)),
+                    t * Affine::translate((cx + f64::from(tw), r.y0 + 18.5)),
                     None,
                 );
             }
@@ -6462,7 +6445,7 @@ impl BooksApp {
             "Aa",
             15.0,
             aa_ink,
-            t * Affine::translate((rx + (aa_w - aa_tw as f64) / 2.0, aa_y + (aa_h - 15.0) / 2.0)),
+            t * Affine::translate((rx + (aa_w - f64::from(aa_tw)) / 2.0, aa_y + (aa_h - 15.0) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -6523,7 +6506,7 @@ impl BooksApp {
         };
 
         let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
-        let cx = (center_x0 + center_x1) / 2.0;
+        let cx = f64::midpoint(center_x0, center_x1);
         let by = r.y1 - 16.0 - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
@@ -6559,7 +6542,7 @@ impl BooksApp {
         ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
         let prev_hot = self.bubble_prev.contains(self.cursor);
         let next_hot = self.bubble_next.contains(self.cursor);
-        let cyy = (rect.y0 + rect.y1) / 2.0;
+        let cyy = f64::midpoint(rect.y0, rect.y1);
         let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
         let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
         ui::status_bubble::draw_chevron(
@@ -6636,9 +6619,9 @@ impl BooksApp {
         let font_pills: Vec<(String, String, f64, bool)> = shown
             .iter()
             .map(|f| {
-                let w = tr
+                let w = f64::from(tr
                     .measure_weighted(&f.name, 12.5, None, TextWeight::Medium)
-                    .0 as f64
+                    .0)
                     + 24.0;
                 (f.id.clone(), f.name.clone(), w, f.id == active_id)
             })
@@ -6651,8 +6634,8 @@ impl BooksApp {
         let scheme_widths: Vec<f64> = scheme_pills
             .iter()
             .map(|p| {
-                tr.measure_weighted(&p.label, 12.5, None, TextWeight::Medium)
-                    .0 as f64
+                f64::from(tr.measure_weighted(&p.label, 12.5, None, TextWeight::Medium)
+                    .0)
                     + 24.0
             })
             .collect();
@@ -6681,14 +6664,14 @@ impl BooksApp {
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -6774,9 +6757,9 @@ impl BooksApp {
         y += 16.0;
         let mut sx = ix0;
         for m in ReadMode::ALL {
-            let w = tr
+            let w = f64::from(tr
                 .measure_weighted(m.label(), 12.5, None, TextWeight::Medium)
-                .0 as f64
+                .0)
                 + 24.0;
             if sx + w > ix1 && sx > ix0 {
                 sx = ix0;
@@ -6930,8 +6913,7 @@ impl BooksApp {
                 "{}\u{2502}",
                 self.num_edit
                     .as_ref()
-                    .map(|(_, b)| b.as_str())
-                    .unwrap_or("")
+                    .map_or("", |(_, b)| b.as_str())
             )
         } else {
             value.to_string()
@@ -6955,7 +6937,7 @@ impl BooksApp {
             13.0,
             c.text_primary,
             t * Affine::translate((
-                minus_x + btn + (value_slot - vw as f64) / 2.0,
+                minus_x + btn + (value_slot - f64::from(vw)) / 2.0,
                 y + (h - 13.0) / 2.0,
             )),
             None,
@@ -7018,13 +7000,13 @@ impl BooksApp {
                     scene,
                     t,
                     row,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     theme.accent_primary.with_alpha_factor(0.16),
                 );
                 let bar = Rect::new(row.x0, row.y0 + 6.0, row.x0 + 3.0, row.y1 - 6.0);
                 paint::fill_round(scene, t, bar, 2.0, theme.accent_primary);
             } else if hover {
-                paint::fill_round(scene, t, row, theme.tokens.radii.md as f64, theme.bg_hover);
+                paint::fill_round(scene, t, row, f64::from(theme.tokens.radii.md), theme.bg_hover);
             }
             let num = format!("{:02}", i + 1);
             tr.draw_text_weighted(
@@ -7100,7 +7082,7 @@ impl BooksApp {
         let badge = Rect::new(
             x0 + 110.0,
             y0 + 14.0,
-            x0 + 110.0 + cw as f64 + 16.0,
+            x0 + 110.0 + f64::from(cw) + 16.0,
             y0 + 14.0 + 18.0,
         );
         paint::fill_round(scene, t, badge, 9.0, c.surfaces.overlay);
@@ -7127,7 +7109,7 @@ impl BooksApp {
             scene,
             t,
             add_rect,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             if hover {
                 theme.bg_hover
             } else {
@@ -7152,7 +7134,7 @@ impl BooksApp {
         let card_x0 = x0 + 16.0;
         let card_x1 = panel_x1 - 16.0;
         let inner_w = (card_x1 - card_x0 - 28.0) as f32;
-        let list = annos.clone();
+        let list = annos;
         for a in &list {
             if y > y1 - 40.0 {
                 break;
@@ -7176,11 +7158,11 @@ impl BooksApp {
                 tr.measure(&note_disp, 12.5, Some(inner_w))
             };
             let card_h = 30.0
-                + eh as f64
+                + f64::from(eh)
                 + if note_disp.is_empty() {
                     0.0
                 } else {
-                    nh as f64 + 12.0
+                    f64::from(nh) + 12.0
                 }
                 + 16.0;
             let card = Rect::new(card_x0, y, card_x1, y + card_h);
@@ -7189,7 +7171,7 @@ impl BooksApp {
                 scene,
                 t,
                 card,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 c.surfaces.raised,
             );
             if composing {
@@ -7197,7 +7179,7 @@ impl BooksApp {
                     scene,
                     t,
                     card,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     theme.border_focus,
                     1.6,
                 );
@@ -7206,7 +7188,7 @@ impl BooksApp {
                     scene,
                     t,
                     card,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     c.border_standard,
                     1.0,
                 );
@@ -7241,7 +7223,7 @@ impl BooksApp {
                 &loc,
                 11.0,
                 c.text_dim,
-                t * Affine::translate((card_x1 - 30.0 - lw as f64, y + 12.0)),
+                t * Affine::translate((card_x1 - 30.0 - f64::from(lw), y + 12.0)),
                 None,
             );
             // Delete is always drawn and hit-registered, not gated on hover —
@@ -7272,7 +7254,7 @@ impl BooksApp {
                     &note_disp,
                     12.5,
                     c.text_primary,
-                    t * Affine::translate((card_x0 + 14.0, y + 30.0 + eh as f64 + 8.0)),
+                    t * Affine::translate((card_x0 + 14.0, y + 30.0 + f64::from(eh) + 8.0)),
                     Some(inner_w),
                 );
             }
@@ -7359,7 +7341,7 @@ impl BooksApp {
         ] {
             let active = self.settings_tab == tab;
             let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            let tab_rect = Rect::new(tx, tabs_y, tx + lw as f64 + 24.0, tabs_y + tab_h);
+            let tab_rect = Rect::new(tx, tabs_y, tx + f64::from(lw) + 24.0, tabs_y + tab_h);
             let hover = self.is_hover(tab_rect);
             let col = if active || hover {
                 c.text_primary
@@ -7383,7 +7365,7 @@ impl BooksApp {
                 let ind = Rect::new(
                     tx + 8.0,
                     tabs_y + tab_h - 3.0,
-                    tx + lw as f64 + 16.0,
+                    tx + f64::from(lw) + 16.0,
                     tabs_y + tab_h,
                 );
                 paint::fill_round(scene, t, ind, 1.5, theme.accent_primary);
@@ -7391,7 +7373,7 @@ impl BooksApp {
             if !active {
                 self.push_hit(tab_rect, Action::SetSettingsTab(tab));
             }
-            tx += lw as f64 + 24.0 + 6.0;
+            tx += f64::from(lw) + 24.0 + 6.0;
         }
         // Divider under the whole tab bar.
         paint::line(
@@ -7455,7 +7437,7 @@ impl BooksApp {
         w: f64,
         mut y: f64,
     ) -> f64 {
-        let radii_md = theme.tokens.radii.md as f64;
+        let radii_md = f64::from(theme.tokens.radii.md);
         let home = std::env::var("HOME").ok();
         let ws = content::workspace_root();
         // Present folders in human terms — never a raw internal mount (HIG §4):
@@ -7557,9 +7539,7 @@ impl BooksApp {
 
             let watched = self.watched_folders.iter().any(|f| f == folder);
             let name = folder
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| pretty(folder));
+                .file_name().map_or_else(|| pretty(folder), |n| n.to_string_lossy().to_string());
             tr.draw_text_weighted(
                 scene,
                 &name,
@@ -7612,7 +7592,7 @@ impl BooksApp {
         w: f64,
         mut y: f64,
     ) -> f64 {
-        let radii_md = theme.tokens.radii.md as f64;
+        let radii_md = f64::from(theme.tokens.radii.md);
         let fonts = self.fonts.clone();
         let default_id = if self.default_font_id.is_empty() {
             fonts.first().map(|f| f.id.clone()).unwrap_or_default()
@@ -7728,14 +7708,14 @@ impl BooksApp {
                 let (nw, _) =
                     tr.measure_font(&f.name, 16.0, None, TextWeight::Semibold, false, &fam);
                 let pencil = Rect::new(
-                    name_x + nw as f64 + 6.0,
+                    name_x + f64::from(nw) + 6.0,
                     y + 12.0,
-                    name_x + nw as f64 + 26.0,
+                    name_x + f64::from(nw) + 26.0,
                     y + 32.0,
                 );
                 paint::pencil(scene, t, pencil, c.text_dim.with_alpha_factor(0.5), 1.3);
                 self.push_hit(
-                    Rect::new(name_x, y + 8.0, name_x + nw as f64 + 30.0, y + 34.0),
+                    Rect::new(name_x, y + 8.0, name_x + f64::from(nw) + 30.0, y + 34.0),
                     Action::BeginRenameFont(f.id.clone()),
                 );
             }
@@ -7805,7 +7785,7 @@ impl BooksApp {
 
         // Add a system font.
         let add = "＋  Add a system font";
-        let aw = tr.measure_weighted(add, 13.0, None, TextWeight::Medium).0 as f64 + 32.0;
+        let aw = f64::from(tr.measure_weighted(add, 13.0, None, TextWeight::Medium).0) + 32.0;
         let arect = Rect::new(x, y, x + aw, y + 36.0);
         paint::fill_round(
             scene,
@@ -7874,14 +7854,14 @@ impl BooksApp {
             scene,
             t,
             menu,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             menu,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -7934,7 +7914,7 @@ impl BooksApp {
         w: f64,
         mut y: f64,
     ) -> f64 {
-        let radii_md = theme.tokens.radii.md as f64;
+        let radii_md = f64::from(theme.tokens.radii.md);
         tr.draw_text_weighted(
             scene,
             "COLOUR SCHEMES",
@@ -7951,9 +7931,9 @@ impl BooksApp {
         // A single button opens the colour picker to choose a background; the
         // scheme is then derived from it.
         let new_label = "＋  New scheme from a colour…";
-        let nw = tr
+        let nw = f64::from(tr
             .measure_weighted(new_label, 13.0, None, TextWeight::Semibold)
-            .0 as f64
+            .0)
             + 34.0;
         let nrect = Rect::new(x, y, x + nw, y + 40.0);
         let nhover = self.is_hover(nrect);
@@ -8097,9 +8077,9 @@ impl BooksApp {
                 paint::close(scene, t, del, dcolh, 1.4);
                 self.push_hit(del, Action::DeleteScheme(s.id.clone()));
                 rx -= 8.0;
-                let ew = tr
+                let ew = f64::from(tr
                     .measure_weighted("Edit", 12.0, None, TextWeight::Medium)
-                    .0 as f64
+                    .0)
                     + 24.0;
                 rx -= ew;
                 self.pill(
@@ -8117,9 +8097,9 @@ impl BooksApp {
                 );
                 rx -= 8.0;
             }
-            let dw = tr
+            let dw = f64::from(tr
                 .measure_weighted("Duplicate", 12.0, None, TextWeight::Medium)
-                .0 as f64
+                .0)
                 + 24.0;
             rx -= dw;
             self.pill(
@@ -8199,14 +8179,14 @@ impl BooksApp {
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -8287,7 +8267,7 @@ impl BooksApp {
                 label,
                 12.0,
                 c.text_dim,
-                t * Affine::translate((sxx + (slot_w - lw as f64) / 2.0, y + 68.0)),
+                t * Affine::translate((sxx + (slot_w - f64::from(lw)) / 2.0, y + 68.0)),
                 None,
             );
             sxx += slot_w + 16.0;
@@ -8329,9 +8309,9 @@ impl BooksApp {
         paint::fill_round(scene, t, chip, 4.0, pal.accent);
         y += 72.0 + 22.0;
 
-        let done_w = tr
+        let done_w = f64::from(tr
             .measure_weighted("Done", 13.0, None, TextWeight::Semibold)
-            .0 as f64
+            .0)
             + 40.0;
         let drect = Rect::new(ix1 - done_w, y, ix1, y + 34.0);
         paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
@@ -8375,14 +8355,14 @@ impl BooksApp {
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -8437,8 +8417,8 @@ impl BooksApp {
         paint::stroke_round(scene, t, sv, 6.0, c.border_standard, 1.0);
         // SV cursor.
         let cur = Point::new(
-            sv.x0 + pick.sat as f64 * sv_size,
-            sv.y0 + (1.0 - pick.val) as f64 * sv_size,
+            sv.x0 + f64::from(pick.sat) * sv_size,
+            sv.y0 + f64::from(1.0 - pick.val) * sv_size,
         );
         paint::circle(scene, t, cur, 7.0, Color::from_rgba8(255, 255, 255, 230));
         let ring = Rect::new(cur.x - 6.0, cur.y - 6.0, cur.x + 6.0, cur.y + 6.0);
@@ -8459,7 +8439,7 @@ impl BooksApp {
             );
         }
         paint::stroke_round(scene, t, hue, 4.0, c.border_standard, 1.0);
-        let hy = hue.y0 + (pick.hue / 360.0) as f64 * sv_size;
+        let hy = hue.y0 + f64::from(pick.hue / 360.0) * sv_size;
         let hmark = Rect::new(hue.x0 - 3.0, hy - 3.0, hue.x1 + 3.0, hy + 3.0);
         paint::stroke_round(scene, t, hmark, 3.0, Color::from_rgb8(250, 250, 252), 2.0);
 
@@ -8518,9 +8498,9 @@ impl BooksApp {
 
         // --- Cancel / Done ---------------------------------------------------
         let btn_y = py0 + ph - 46.0;
-        let done_w = tr
+        let done_w = f64::from(tr
             .measure_weighted("Done", 13.0, None, TextWeight::Semibold)
-            .0 as f64
+            .0)
             + 44.0;
         let drect = Rect::new(ix1 - done_w, btn_y, ix1, btn_y + 34.0);
         paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
@@ -8534,9 +8514,9 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(drect, Action::PickerDone);
-        let can_w = tr
+        let can_w = f64::from(tr
             .measure_weighted("Cancel", 13.0, None, TextWeight::Medium)
-            .0 as f64
+            .0)
             + 30.0;
         let crect = Rect::new(
             ix1 - done_w - 10.0 - can_w,
@@ -8579,14 +8559,14 @@ impl BooksApp {
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             t,
             panel,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
@@ -8627,7 +8607,7 @@ impl BooksApp {
             }
             let rr = Rect::new(px0 + 12.0, fy, px0 + pw - 12.0, fy + row_h - 4.0);
             if self.is_hover(rr) {
-                paint::fill_round(scene, t, rr, theme.tokens.radii.md as f64, theme.bg_hover);
+                paint::fill_round(scene, t, rr, f64::from(theme.tokens.radii.md), theme.bg_hover);
             }
             // Preview each family by rendering its own name in it.
             tr.draw_text_font(
@@ -8713,7 +8693,7 @@ fn ellipsize(
     weight: TextWeight,
     max_w: f64,
 ) -> String {
-    if tr.measure_weighted(text, size, None, weight).0 as f64 <= max_w {
+    if f64::from(tr.measure_weighted(text, size, None, weight).0) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -8724,7 +8704,7 @@ fn ellipsize(
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         let candidate: String = chars[..mid].iter().collect::<String>() + "…";
-        if tr.measure_weighted(&candidate, size, None, weight).0 as f64 <= max_w {
+        if f64::from(tr.measure_weighted(&candidate, size, None, weight).0) <= max_w {
             best = candidate;
             lo = mid;
         } else {
@@ -8737,8 +8717,8 @@ fn ellipsize(
 /// Blit a decoded cover into `rect` with cover-fit cropping and a rounded
 /// clip, so real artwork of any aspect fills the shelf slot cleanly.
 fn blit_cover(scene: &mut Scene, t: Affine, img: PenikoImage, rect: Rect, radius: f64) {
-    let iw = img.width.max(1) as f64;
-    let ih = img.height.max(1) as f64;
+    let iw = f64::from(img.width.max(1));
+    let ih = f64::from(img.height.max(1));
     let (rw, rh) = (rect.width(), rect.height());
     if rw <= 0.0 || rh <= 0.0 {
         return;
@@ -8835,7 +8815,7 @@ fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
         3 => c.semantic.warning,
         _ => c.semantic.danger,
     };
-    let lum = 0.299 * base.r() as f32 + 0.587 * base.g() as f32 + 0.114 * base.b() as f32;
+    let lum = 0.299 * f32::from(base.r()) + 0.587 * f32::from(base.g()) + 0.114 * f32::from(base.b());
     let ink = if lum < 150.0 {
         Color::from_rgb8(248, 248, 250)
     } else {

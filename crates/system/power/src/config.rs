@@ -82,13 +82,12 @@ pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
 
     let auto_suspend = section
         .get("auto_suspend")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
     let suspend_minutes = section
         .get("suspend_minutes")
-        .and_then(|v| v.as_u64())
-        .map(|m| m as u32)
-        .unwrap_or(DEFAULT_SUSPEND_MINUTES);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(DEFAULT_SUSPEND_MINUTES, |m| m as u32);
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
     let idle_suspend = if auto_suspend && suspend_minutes > 0 {
@@ -107,9 +106,8 @@ pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
     let percent = |key: &str, fallback: u8| -> u8 {
         section
             .get(key)
-            .and_then(|v| v.as_u64())
-            .map(|p| p.min(100) as u8)
-            .unwrap_or(fallback)
+            .and_then(serde_json::Value::as_u64)
+            .map_or(fallback, |p| p.min(100) as u8)
     };
 
     PowerPolicy {

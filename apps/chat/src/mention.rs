@@ -119,7 +119,7 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let opens_word = head[..at]
         .chars()
         .next_back()
-        .is_none_or(|c| c.is_whitespace());
+        .is_none_or(char::is_whitespace);
     if !opens_word {
         return None;
     }
@@ -244,7 +244,7 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
         let opens_word = text[..at]
             .chars()
             .next_back()
-            .is_none_or(|c| c.is_whitespace());
+            .is_none_or(char::is_whitespace);
         if !opens_word {
             cursor = at + '@'.len_utf8();
             continue;

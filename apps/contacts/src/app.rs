@@ -279,7 +279,7 @@ fn best_field_in_direction(
             FieldDir::Left | FieldDir::Right => ((c.x - fc.x).abs(), (c.y - fc.y).abs()),
         };
         let score = primary + perp * 2.0;
-        if best.map_or(true, |(bs, _)| score < bs) {
+        if best.is_none_or(|(bs, _)| score < bs) {
             best = Some((score, idx));
         }
     }
@@ -645,16 +645,14 @@ impl ContactsApp {
             let anchor = self
                 .list_rows
                 .iter()
-                .find(|(rid, _)| *rid == id)
-                .map(|(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y))
-                .unwrap_or_else(|| {
+                .find(|(rid, _)| *rid == id).map_or_else(|| {
                     Rect::new(
                         self.list_rect.x0 + 60.0,
                         self.list_rect.y0 + 200.0,
                         self.list_rect.x0 + 60.0,
                         self.list_rect.y0 + 200.0,
                     )
-                });
+                }, |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y));
             self.popup = Some(Popup::ContextMenu { target: id, anchor });
         }
     }
@@ -872,8 +870,7 @@ impl ContactsApp {
         let cur = self
             .selected
             .and_then(|s| ids.iter().position(|x| *x == s))
-            .map(|p| p as isize)
-            .unwrap_or(-1);
+            .map_or(-1, |p| p as isize);
         let next = (cur + delta).clamp(0, ids.len() as isize - 1) as usize;
         self.selected = Some(ids[next]);
         self.detail_scroll = 0.0;
@@ -1415,7 +1412,7 @@ impl ContactsApp {
         let dim = date::days_in_month(year, month);
         let mut cells = Vec::new();
         for d in 1..=dim {
-            let idx = (first_wd + (d - 1)) as f64;
+            let idx = f64::from(first_wd + (d - 1));
             let col = (idx % 7.0).floor();
             let row = (idx / 7.0).floor();
             let cx = panel.x0 + 8.0 + col * cell;
@@ -1582,7 +1579,7 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let rect = self.hit.back;
         let hovered = rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.full as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
         let bg = if hovered {
             c.surfaces.raised
         } else {
@@ -1636,9 +1633,9 @@ impl ContactsApp {
         // on a narrow window the buttons crowd in and it would otherwise bleed
         // under the Import button.
         let count_x = self.rect.x0 + PAD;
-        let count_w = tr
+        let count_w = f64::from(tr
             .measure_weighted(&count, 14.0, None, TextWeight::Semibold)
-            .0 as f64;
+            .0);
         if count_x + count_w < self.hit.import.x0 - 12.0 {
             tr.draw_text_weighted(
                 scene,
@@ -1730,7 +1727,7 @@ impl ContactsApp {
             };
             let selected = self.selected == Some(*id);
             if selected {
-                let bg = RoundedRect::from_rect(rr.inset(-0.0), theme.tokens.radii.md as f64);
+                let bg = RoundedRect::from_rect(rr.inset(-0.0), f64::from(theme.tokens.radii.md));
                 scene.fill(
                     Fill::NonZero,
                     t,
@@ -1965,7 +1962,7 @@ impl ContactsApp {
             let mut bx = x0;
             let by = hy;
             for g in &contact.groups {
-                let tw = tr.measure(g, 11.0, None).0 as f64;
+                let tw = f64::from(tr.measure(g, 11.0, None).0);
                 let bw = tw + 18.0;
                 let br = Rect::new(bx, by, bx + bw, by + 20.0);
                 let shape = RoundedRect::from_rect(br, 10.0);
@@ -2035,7 +2032,9 @@ impl ContactsApp {
             detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &bday.pretty());
             hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
-        if !contact.website.is_empty() {
+        if contact.website.is_empty() {
+            self.website_link = None;
+        } else {
             detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
             // "url" field label on the left, matching the other detail rows.
             tr.draw_text(
@@ -2054,27 +2053,24 @@ impl ContactsApp {
             let needs_new = self
                 .website_link
                 .as_ref()
-                .map(|l| l.url() != contact.website)
-                .unwrap_or(true);
+                .is_none_or(|l| l.url() != contact.website);
             if needs_new {
                 self.website_link = Some(Link::new(&contact.website).with_font_size(14.0));
             }
             let (lw, lh) = tr.measure(&contact.website, 14.0, None);
-            let lw = (lw as f64).min(vw);
-            let lh = (lh as f64).max(20.0);
+            let lw = f64::from(lw).min(vw);
+            let lh = f64::from(lh).max(20.0);
             let lrect = Rect::new(vx, y, vx + lw, y + lh);
             if let Some(link) = self.website_link.as_mut() {
                 link.apply_layout_external(lrect);
                 link.draw(scene, t, tr, theme, presence);
             }
             y += lh + 8.0;
-        } else {
-            self.website_link = None;
         }
         if !contact.notes.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
             let y0 = y;
-            let h = tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1 as f64;
+            let h = f64::from(tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1);
             tr.draw_text(
                 scene,
                 &contact.notes,
@@ -2153,13 +2149,12 @@ impl ContactsApp {
         let fav = self
             .form
             .as_ref()
-            .map(|f| f.draft.favorite)
-            .unwrap_or(false);
+            .is_some_and(|f| f.draft.favorite);
         // Favorite toggle pill.
         {
             let r = self.hit.fav_toggle;
             let hovered = r.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
             let bg = if fav {
                 theme.accent_primary.with_alpha_factor(0.18)
             } else if hovered {
@@ -2300,12 +2295,12 @@ impl ContactsApp {
         // field background first (TextInput::draw), so the placeholder — drawn
         // *after* the input, clipped to the field — sits cleanly on top of that
         // fill and nothing from a neighbouring row can bleed through behind it.
-        for f in self.form.as_mut().unwrap().inputs.iter_mut() {
+        for f in &mut self.form.as_mut().unwrap().inputs {
             f.ti.draw(scene, t, tr, theme, presence);
             if f.ti.value().is_empty() && !f.ti.is_focused() {
                 let r = f.ti.get_rect();
                 if r.width() > 0.0 {
-                    let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+                    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
                     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
                     tr.draw_text(
                         scene,
@@ -2326,7 +2321,7 @@ impl ContactsApp {
             chip(scene, t, tr, theme, *rect, lbl, false);
         }
         for (_target, rect) in &self.hit.remove_btns {
-            let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.md));
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             // minus glyph
             let cy = rect.center().y;
@@ -2345,7 +2340,7 @@ impl ContactsApp {
         // Calendar button.
         {
             let r = self.hit.cal_btn;
-            let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
             scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             draw_calendar_glyph(scene, t, r, theme);
@@ -2395,7 +2390,7 @@ impl ContactsApp {
                 menu_panel(scene, t, theme, panel);
                 // Header: < Month Year >
                 let title = format!("{} {}", date::month_name(*month), year);
-                let tw = tr.measure(&title, 14.0, None).0 as f64;
+                let tw = f64::from(tr.measure(&title, 14.0, None).0);
                 tr.draw_text_weighted(
                     scene,
                     &title,
@@ -2427,7 +2422,7 @@ impl ContactsApp {
                     .unwrap_or_default();
                 for (d, r) in &cells {
                     let hov = r.contains(self.last_mouse);
-                    let is_sel = cur == format!("{:04}-{:02}-{:02}", year, month, d);
+                    let is_sel = cur == format!("{year:04}-{month:02}-{d:02}");
                     if hov || is_sel {
                         let shape =
                             Circle::new(r.center(), (r.width().min(r.height()) / 2.0) - 2.0);
@@ -2439,7 +2434,7 @@ impl ContactsApp {
                         scene.fill(Fill::NonZero, t, col, None, &shape);
                     }
                     let s = d.to_string();
-                    let dw = tr.measure(&s, 12.0, None).0 as f64;
+                    let dw = f64::from(tr.measure(&s, 12.0, None).0);
                     let col = if is_sel { Color::WHITE } else { c.text_primary };
                     tr.draw_text(
                         scene,
@@ -2456,7 +2451,7 @@ impl ContactsApp {
                 menu_panel(scene, t, theme, panel);
                 // The Favorite item's label reflects the target contact's
                 // current state ("Add to favorites" vs "Remove from favorites").
-                let is_fav = self.store.get(*target).map(|c| c.favorite).unwrap_or(false);
+                let is_fav = self.store.get(*target).is_some_and(|c| c.favorite);
                 for (i, r) in rows.iter().enumerate() {
                     let hov = r.contains(self.last_mouse);
                     let action = CONTEXT_ACTIONS[i];
@@ -2523,7 +2518,7 @@ impl ContactsApp {
             let checked = sel.contains(id);
             let hov = row.contains(self.last_mouse);
             if hov {
-                let bg = RoundedRect::from_rect(*row, theme.tokens.radii.md as f64);
+                let bg = RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.md));
                 scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bg);
             }
             draw_checkbox(scene, t, theme, *cb, checked);
@@ -2663,7 +2658,7 @@ impl ContactsApp {
         let name = self
             .store
             .get(id)
-            .map(|c| c.display_name())
+            .map(super::model::Contact::display_name)
             .unwrap_or_default();
         tr.draw_text_weighted(
             scene,
@@ -2703,7 +2698,7 @@ impl ContactsApp {
             theme,
             &ButtonFace::new(del, "Delete")
                 .style(ButtonStyle::Danger)
-                .radius(theme.tokens.radii.md as f64)
+                .radius(f64::from(theme.tokens.radii.md))
                 .text_size(14.0)
                 .weight(TextWeight::Semibold)
                 .hovered(del.contains(m)),
@@ -2893,7 +2888,7 @@ fn detail_field(
         Some(64.0),
     );
     let vw = (x1 - x0 - 78.0).max(40.0);
-    let h = tr.measure(value, 14.0, Some(vw as f32)).1 as f64;
+    let h = f64::from(tr.measure(value, 14.0, Some(vw as f32)).1);
     tr.draw_text(
         scene,
         value,
@@ -2905,7 +2900,7 @@ fn detail_field(
     *y += h.max(20.0) + 8.0;
 }
 
-fn type_label<'a>(draft: &'a Contact, target: TypeTarget) -> &'a str {
+fn type_label(draft: &Contact, target: TypeTarget) -> &str {
     let s = match target {
         TypeTarget::Phone(i) => draft.phones.get(i).map(|p| p.label.as_str()),
         TypeTarget::Email(i) => draft.emails.get(i).map(|e| e.label.as_str()),
@@ -2950,7 +2945,7 @@ fn toolbar_button(
         theme,
         &ButtonFace::new(rect, label)
             .style(style)
-            .radius(theme.tokens.radii.md as f64)
+            .radius(f64::from(theme.tokens.radii.md))
             .text_size(13.0)
             .weight(TextWeight::Medium)
             .hovered(hovered)
@@ -2966,7 +2961,7 @@ fn add_button(
     rect: Rect,
     label: &str,
 ) {
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
     scene.stroke(
         &Stroke::new(1.0),
         t,
@@ -2998,7 +2993,7 @@ fn chip(
         return;
     }
     let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
     let bg = if active {
         theme.accent_primary.with_alpha_factor(0.16)
     } else {
@@ -3026,7 +3021,7 @@ fn chip(
 fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
     let c = &theme.tokens.colors;
     // Soft shadow.
-    let shadow = RoundedRect::from_rect(panel.inset(2.0), theme.tokens.radii.md as f64 + 1.0);
+    let shadow = RoundedRect::from_rect(panel.inset(2.0), f64::from(theme.tokens.radii.md) + 1.0);
     scene.fill(
         Fill::NonZero,
         t,
@@ -3034,7 +3029,7 @@ fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
         None,
         &shadow,
     );
-    let shape = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+    let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
     scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
     scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
 }
@@ -3052,10 +3047,10 @@ fn menu_item(
 ) {
     let c = &theme.tokens.colors;
     if hover {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
     } else if selected {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             t,
@@ -3103,7 +3098,7 @@ fn menu_item_colored(
 /// tick when checked, otherwise a bordered empty box.
 fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checked: bool) {
     let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
     if checked {
         scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
     } else {
@@ -3147,7 +3142,7 @@ fn draw_avatar(
 fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool) {
     let mut path = BezPath::new();
     for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
         let rad = if i % 2 == 0 { r } else { r * 0.42 };
         let p = Point::new(center.x + ang.cos() * rad, center.y + ang.sin() * rad);
         if i == 0 {
@@ -3210,13 +3205,13 @@ fn draw_toast(
     msg: &str,
 ) {
     let c = &theme.tokens.colors;
-    let tw = tr.measure(msg, 13.0, None).0 as f64;
+    let tw = f64::from(tr.measure(msg, 13.0, None).0);
     let w = (tw + 36.0).min(area.width() - 40.0);
     let h = 38.0;
     let x0 = area.center().x - w / 2.0;
     let y0 = area.y1 - h - 20.0;
     let r = Rect::new(x0, y0, x0 + w, y0 + h);
-    let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
     scene.fill(
         Fill::NonZero,
         t,
@@ -3292,11 +3287,10 @@ impl Widget for ContactsApp {
         if heads != self.model_heads {
             self.store.contacts = ContactsDoc::list_contacts(state);
             self.model_heads = heads;
-            if let Some(sel) = self.selected {
-                if self.store.get(sel).is_none() {
+            if let Some(sel) = self.selected
+                && self.store.get(sel).is_none() {
                     self.selected = self.visible_ids().first().copied();
                 }
-            }
             self.relayout = true;
             self.dirty = true;
         }
@@ -3324,17 +3318,17 @@ impl Widget for ContactsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout();
         self.layout_detail_actions();
@@ -3373,13 +3367,11 @@ impl Widget for ContactsApp {
                 let over = self
                     .website_link
                     .as_ref()
-                    .map(|l| l.get_rect().contains(self.last_mouse))
-                    .unwrap_or(false);
-                if let Some(l) = self.website_link.as_mut() {
-                    if l.set_hovered(over) {
+                    .is_some_and(|l| l.get_rect().contains(self.last_mouse));
+                if let Some(l) = self.website_link.as_mut()
+                    && l.set_hovered(over) {
                         self.dirty = true;
                     }
-                }
             }
         }
 
@@ -3390,11 +3382,10 @@ impl Widget for ContactsApp {
         // `handle_key`'s escape branch — and every other key is swallowed so a
         // shortcut behind the scrim can't fire. Pointer interaction still routes
         // to the per-modal handlers below.
-        if self.export_sel.is_some()
+        if (self.export_sel.is_some()
             || self.pending_switch.is_some()
-            || self.confirm_delete.is_some()
-        {
-            if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            || self.confirm_delete.is_some())
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event {
                 if ke.state == ElementState::Pressed
                     && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
                 {
@@ -3413,7 +3404,6 @@ impl Widget for ContactsApp {
                 *handled = true;
                 return;
             }
-        }
         if self.export_sel.is_some() {
             self.handle_export(event, handled);
             return;
@@ -3485,7 +3475,7 @@ impl Widget for ContactsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
                     MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
                 if self.list_rect.contains(self.last_mouse) {
@@ -3529,7 +3519,7 @@ impl Widget for ContactsApp {
         );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ContactsApp"
     }
 
@@ -3562,11 +3552,9 @@ impl Widget for ContactsApp {
     /// app-local presentation, not a shared-doc mutation).
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id)
-        {
-            if self.store.get(id).is_some() {
+            && self.store.get(id).is_some() {
                 self.reveal_contact(id);
             }
-        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -3576,13 +3564,11 @@ impl Widget for ContactsApp {
     /// The pointing-hand cursor over the view-mode website hyperlink; every
     /// other region defers to the default arrow.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.mode == Mode::View {
-            if let Some(l) = &self.website_link {
-                if l.get_rect().contains(point) {
+        if self.mode == Mode::View
+            && let Some(l) = &self.website_link
+                && l.get_rect().contains(point) {
                     return Some(winit::window::CursorIcon::Pointer);
                 }
-            }
-        }
         None
     }
 
@@ -3611,8 +3597,7 @@ impl Widget for ContactsApp {
             || self
                 .form
                 .as_ref()
-                .map(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
-                .unwrap_or(false)
+                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
     }
 
     fn on_commit(&mut self) {
@@ -3653,7 +3638,7 @@ impl ContactsApp {
     }
 
     fn any_text_focused(&self) -> bool {
-        self.search.is_focused() || self.form.as_ref().map(|f| f.any_focused()).unwrap_or(false)
+        self.search.is_focused() || self.form.as_ref().is_some_and(EditForm::any_focused)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3787,8 +3772,7 @@ impl ContactsApp {
                 && self
                     .website_link
                     .as_ref()
-                    .map(|l| l.get_rect().contains(p))
-                    .unwrap_or(false)
+                    .is_some_and(|l| l.get_rect().contains(p))
             {
                 if let Some(l) = self.website_link.as_mut() {
                     l.activate();
@@ -3809,7 +3793,7 @@ impl ContactsApp {
             if self.selected.is_some() {
                 if self.hit.fav.contains(p) {
                     if let Some(id) = self.selected {
-                        let new_fav = !self.store.get(id).map(|c| c.favorite).unwrap_or(false);
+                        let new_fav = !self.store.get(id).is_some_and(|c| c.favorite);
                         self.perform_action(
                             state,
                             crate::actions::set_favorite_action(id.to_string(), new_fav),
@@ -3873,12 +3857,9 @@ impl ContactsApp {
                     .and_then(|i| Birthday::parse(i.ti.value()))
                     .or(f.draft.birthday)
             });
-            let (year, month) = match seed {
-                Some(b) => (b.year().unwrap_or_else(|| date::today().0), b.month()),
-                None => {
-                    let (y, m, _) = date::today();
-                    (y, m)
-                }
+            let (year, month) = if let Some(b) = seed { (b.year().unwrap_or_else(|| date::today().0), b.month()) } else {
+                let (y, m, _) = date::today();
+                (y, m)
             };
             self.popup = Some(Popup::Calendar {
                 year,
@@ -3904,7 +3885,7 @@ impl ContactsApp {
                 d.addresses.push(Address {
                     label: "home".into(),
                     ..Default::default()
-                })
+                });
             });
             *handled = true;
             return;
@@ -3964,11 +3945,10 @@ impl ContactsApp {
         let now = Instant::now();
         let is_double = self
             .last_detail_click
-            .map(|(t0, p0)| {
+            .is_some_and(|(t0, p0)| {
                 now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
                     && p.distance(p0) <= DOUBLE_CLICK_RADIUS
-            })
-            .unwrap_or(false);
+            });
         // Record this click for the next press regardless.
         self.last_detail_click = Some((now, p));
         if !is_double {
@@ -4148,8 +4128,7 @@ impl ContactsApp {
         self.form
             .as_ref()
             .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
-            .map(|i| i.ti.cursor_pos() == 0 && i.ti.selection_range_public().is_none())
-            .unwrap_or(false)
+            .is_some_and(|i| i.ti.cursor_pos() == 0 && i.ti.selection_range_public().is_none())
     }
 
     /// Whether the focused edit-form field has its caret at the very end with
@@ -4159,10 +4138,9 @@ impl ContactsApp {
         self.form
             .as_ref()
             .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
-            .map(|i| {
+            .is_some_and(|i| {
                 i.ti.cursor_pos() == i.ti.value().len() && i.ti.selection_range_public().is_none()
             })
-            .unwrap_or(false)
     }
 
     /// Idiomatic Enter inside the edit form: advance to the next field, or —
@@ -4323,11 +4301,10 @@ impl ContactsApp {
                     self.group_filter = if i == 0 { None } else { Some(opts[i].clone()) };
                     self.list_scroll = 0.0;
                     // Keep selection valid.
-                    if let Some(sel) = self.selected {
-                        if !self.visible_ids().contains(&sel) {
+                    if let Some(sel) = self.selected
+                        && !self.visible_ids().contains(&sel) {
                             self.selected = self.visible_ids().first().copied();
                         }
-                    }
                 }
                 self.relayout = true;
             }
@@ -4347,7 +4324,7 @@ impl ContactsApp {
                             // dispatch), so the list star and the menu label flip
                             // immediately and the change survives a reload.
                             let new_fav =
-                                !self.store.get(target).map(|c| c.favorite).unwrap_or(false);
+                                !self.store.get(target).is_some_and(|c| c.favorite);
                             self.perform_action(
                                 state,
                                 crate::actions::set_favorite_action(target.to_string(), new_fav),
@@ -4395,7 +4372,7 @@ impl ContactsApp {
                     });
                 } else if panel.contains(p) {
                     if let Some((d, _)) = cells.iter().find(|(_, r)| r.contains(p)) {
-                        let iso = format!("{:04}-{:02}-{:02}", year, month, d);
+                        let iso = format!("{year:04}-{month:02}-{d:02}");
                         if let Some(form) = &mut self.form {
                             form.draft.birthday = Birthday::parse(&iso);
                             if let Some(fi) =
@@ -4437,11 +4414,10 @@ impl ContactsApp {
         self.dirty = true;
         let (_panel, del, cancel) = self.confirm_geometry();
         let p = self.last_mouse;
-        if del.contains(p) {
-            if let Some(id) = self.confirm_delete {
+        if del.contains(p)
+            && let Some(id) = self.confirm_delete {
                 self.delete_selected(state, id);
             }
-        }
         // Any press inside the modal (delete already handled above, cancel
         // or scrim) dismisses it.
         self.confirm_delete = None;
@@ -4469,7 +4445,7 @@ impl ContactsApp {
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
                 MouseScrollDelta::PixelDelta(p) => -p.y,
             };
             let g = self.export_geometry();
@@ -4507,15 +4483,14 @@ impl ContactsApp {
         }
         // Row checkbox toggle (whole row is clickable).
         if g.list_body.contains(p) {
-            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p)) {
-                if let Some(set) = &mut self.export_sel {
+            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p))
+                && let Some(set) = &mut self.export_sel {
                     if set.contains(id) {
                         set.remove(id);
                     } else {
                         set.insert(*id);
                     }
                 }
-            }
             return;
         }
         if g.cancel.contains(p) {
@@ -4534,8 +4509,7 @@ impl ContactsApp {
                 .filter(|id| {
                     self.export_sel
                         .as_ref()
-                        .map(|s| s.contains(id))
-                        .unwrap_or(false)
+                        .is_some_and(|s| s.contains(id))
                 })
                 .collect();
             // Close the selection dialog and hand off to the host Save dialog;
@@ -4661,15 +4635,13 @@ impl ContactsApp {
         }
 
         // Ctrl+S saves in edit mode.
-        if ctrl {
-            if let Key::Character(c) = &ke.logical_key {
-                if c.eq_ignore_ascii_case("s") && self.mode == Mode::Edit {
+        if ctrl
+            && let Key::Character(c) = &ke.logical_key
+                && c.eq_ignore_ascii_case("s") && self.mode == Mode::Edit {
                     self.save_edit(state);
                     *handled = true;
                     return;
                 }
-            }
-        }
 
         // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
         // fields (wrapping); the arrow keys move directionally between fields
@@ -4761,7 +4733,7 @@ impl ContactsApp {
                 self.move_selection(-1);
                 *handled = true;
             }
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if let Some(id) = self.selected {
                     self.confirm_delete = Some(id);
                     *handled = true;

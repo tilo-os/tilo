@@ -330,7 +330,7 @@ pub struct A11ySettings {
 /// ignored (colours are assumed opaque for contrast purposes).
 pub fn relative_luminance(c: Color) -> f64 {
     fn channel(v: u8) -> f64 {
-        let s = v as f64 / 255.0;
+        let s = f64::from(v) / 255.0;
         if s <= 0.03928 {
             s / 12.92
         } else {

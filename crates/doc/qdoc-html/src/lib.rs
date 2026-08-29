@@ -315,8 +315,8 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
         }
 
         // Open lists until we reach this item's level.
-        while open.last().map(|&(l, _)| l).unwrap_or(-1) < level {
-            let new_level = open.last().map(|&(l, _)| l + 1).unwrap_or(0).max(0);
+        while open.last().map_or(-1, |&(l, _)| l) < level {
+            let new_level = open.last().map_or(0, |&(l, _)| l + 1).max(0);
             open.push((new_level, ordered));
             open_list(out, item, new_level, ordered, opts, depth);
         }
@@ -647,7 +647,7 @@ fn attr_as_str(val: &AttrVal) -> String {
 
 /// The string payload of a valued mark (link href, color, font family), if any.
 fn mark_str(m: &MarkSpan) -> Option<String> {
-    m.value.as_str().map(|s| s.to_string())
+    m.value.as_str().map(std::string::ToString::to_string)
 }
 
 /// CSS `font-size` for a `size`/`fontSize` mark (Int pt, or numeric string).

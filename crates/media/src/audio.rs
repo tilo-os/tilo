@@ -6,19 +6,19 @@
 //! ## Why a CLI-tool client, not a `libpipewire` binding
 //!
 //! Enumeration reads `pw-dump` (the graph as JSON), routing writes the
-//! WirePlumber `target.object` metadata via `pw-metadata`, and per-node
+//! `WirePlumber` `target.object` metadata via `pw-metadata`, and per-node
 //! volume/mute + the default device go through `wpctl`. Every one of those is
-//! the *native* PipeWire path — the same protocol a graphical mixer speaks —
+//! the *native* `PipeWire` path — the same protocol a graphical mixer speaks —
 //! but reached through the daemon's own command-line tools rather than by
 //! linking `libpipewire-0.3`. That keeps a hermetic build (and the compositor's
-//! distrobox, which has no PipeWire dev stack) able to compile this crate with
+//! distrobox, which has no `PipeWire` dev stack) able to compile this crate with
 //! nothing but the Rust toolchain; the tools are needed only at *runtime*, on a
-//! host that actually has a graph to drive. On a machine with no PipeWire the
+//! host that actually has a graph to drive. On a machine with no `PipeWire` the
 //! enumerator returns an empty graph — never a fabricated device or stream.
 //!
 //! ## The routing mechanism
 //!
-//! WirePlumber exposes "moving streams" as metadata on the `default` metadata
+//! `WirePlumber` exposes "moving streams" as metadata on the `default` metadata
 //! store: setting the key `target.object` on a stream node's id to a target
 //! device's `object.serial` relinks the stream to that device; deleting the key
 //! returns the stream to following the default device. This is exactly what
@@ -39,7 +39,7 @@ use serde_json::Value;
 /// A sink (output) or source (input) device in the audio graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {
-    /// PipeWire node id — the handle `wpctl set-default <id>` takes.
+    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
     pub id: u32,
     /// `object.serial` — the stable handle stream routing (`target.object`)
     /// takes. Distinct from `id`: a device keeps its `node.name` across a
@@ -61,7 +61,7 @@ pub struct AudioDevice {
 /// A per-application stream node (one app's playback or capture).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioStream {
-    /// PipeWire node id — the handle routing / `wpctl set-volume|set-mute`
+    /// `PipeWire` node id — the handle routing / `wpctl set-volume|set-mute`
     /// take.
     pub id: u32,
     pub serial: u32,
@@ -196,7 +196,7 @@ impl GraphDelta {
 // Parsing `pw-dump`
 // ---------------------------------------------------------------------------
 
-/// Coerce a JSON value that PipeWire renders as a bare number (sometimes a
+/// Coerce a JSON value that `PipeWire` renders as a bare number (sometimes a
 /// string) into a `u32` node id / serial.
 fn as_u32(v: &Value) -> Option<u32> {
     v.as_u64()
@@ -204,7 +204,7 @@ fn as_u32(v: &Value) -> Option<u32> {
         .map(|n| n as u32)
 }
 
-/// The perceptual volume `wpctl` shows is the cube root of PipeWire's raw
+/// The perceptual volume `wpctl` shows is the cube root of `PipeWire`'s raw
 /// linear channel volume; invert that so an enumerated `channelVolumes` matches
 /// the slider position a user set. `wpctl set-volume` takes the perceptual
 /// value back, so the round trip is exact.
@@ -225,9 +225,9 @@ fn node_volume_mute(obj: &Value) -> (Option<f32>, Option<bool>) {
     };
     for entry in arr {
         if let Some(cv) = entry.get("channelVolumes").and_then(|c| c.as_array()) {
-            let cv: Vec<f64> = cv.iter().filter_map(|x| x.as_f64()).collect();
+            let cv: Vec<f64> = cv.iter().filter_map(serde_json::Value::as_f64).collect();
             let vol = perceptual_from_channel_volumes(&cv);
-            let mute = entry.get("mute").and_then(|m| m.as_bool());
+            let mute = entry.get("mute").and_then(serde_json::Value::as_bool);
             return (vol, mute);
         }
     }
@@ -394,7 +394,7 @@ pub fn wpctl_set_default_args(node_id: u32) -> Vec<String> {
 }
 
 /// `pw-metadata -n default <stream-id> target.object <serial>` — move a stream
-/// node to a specific device. WirePlumber observes the metadata and relinks the
+/// node to a specific device. `WirePlumber` observes the metadata and relinks the
 /// stream, so this is the real graph edit, not a display hint.
 pub fn pw_metadata_route_args(stream_id: u32, target_serial: u32) -> Vec<String> {
     vec![
@@ -532,7 +532,7 @@ pub trait AudioEnumerator: Send + Sync {
 }
 
 /// Production [`AudioEnumerator`]: `pw-dump` → [`parse_pw_dump`]. Returns an
-/// empty graph when `pw-dump` is missing or fails, so a host with no PipeWire
+/// empty graph when `pw-dump` is missing or fails, so a host with no `PipeWire`
 /// shows nothing rather than fabricated devices.
 pub struct RealEnumerator;
 

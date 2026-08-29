@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
         let serve = collab_bridge::serve(listener, upstream);
         tokio::select! {
             r = serve => r,
-            _ = shutdown_signal() => {
+            () = shutdown_signal() => {
                 tracing::info!("qos-collab-bridge shutting down");
                 let _ = std::fs::remove_file(&listen);
                 Ok(())
@@ -85,9 +85,7 @@ fn default_upstream_path() -> PathBuf {
 }
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
 }
 
 async fn shutdown_signal() {

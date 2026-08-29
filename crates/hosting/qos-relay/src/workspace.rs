@@ -154,7 +154,7 @@ impl WorkspaceRuntime {
         // 1. Live fan-out — prune closed subscribers as we go.
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in self.subscribers.iter() {
+        for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
@@ -175,7 +175,7 @@ impl WorkspaceRuntime {
         // 2. Store-and-forward for offline members. A member is any
         //    pubkey in `membership` that is not the author and not
         //    currently subscribed.
-        for member in self.membership.devices.iter() {
+        for member in &self.membership.devices {
             if member == author {
                 continue;
             }
@@ -195,7 +195,7 @@ impl WorkspaceRuntime {
         //    Suppressed when the origin is itself a peer relay (echo
         //    prevention across a chain of federated relays).
         if from_role == PeerRole::Device {
-            for pr in self.known_peer_relays.iter() {
+            for pr in &self.known_peer_relays {
                 if pr == author {
                     continue;
                 }
@@ -331,7 +331,7 @@ impl WorkspaceRuntime {
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in self.subscribers.iter() {
+        for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }

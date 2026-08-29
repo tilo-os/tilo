@@ -1,4 +1,4 @@
-//! Pure model types for the BlueZ layer.
+//! Pure model types for the `BlueZ` layer.
 //!
 //! Everything here is bus-free so it can be unit-tested without a running `bluetoothd`:
 //! object-path ↔ address conversion, the device shape the UI renders, and the pairing
@@ -8,17 +8,17 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-/// A Bluetooth device as BlueZ describes it on `org.bluez.Device1`.
+/// A Bluetooth device as `BlueZ` describes it on `org.bluez.Device1`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// The BlueZ object path, e.g. `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`. This is the handle
+    /// The `BlueZ` object path, e.g. `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`. This is the handle
     /// every operation takes — addresses are not unique across adapters, paths are.
     pub path: String,
     /// MAC address, e.g. `AA:BB:CC:DD:EE:FF`.
     pub address: String,
     /// `Alias` if set, else `Name`, else the address. Never empty.
     pub name: String,
-    /// Freedesktop icon name BlueZ reports (`audio-headset`, `input-mouse`, …). Empty when the
+    /// Freedesktop icon name `BlueZ` reports (`audio-headset`, `input-mouse`, …). Empty when the
     /// device did not advertise a class.
     pub icon: String,
     pub paired: bool,
@@ -44,14 +44,14 @@ impl DeviceInfo {
             2
         };
         // Negate so a stronger (less negative) RSSI sorts first; unknown strength sorts last.
-        let rssi = self.rssi.map(|r| -r).unwrap_or(i16::MAX);
+        let rssi = self.rssi.map_or(i16::MAX, |r| -r);
         (rank, rssi, self.name.clone())
     }
 }
 
 /// Sort a device list in place into the order [`DeviceInfo::sort_key`] describes.
 pub fn sort_devices(devices: &mut [DeviceInfo]) {
-    devices.sort_by_key(|d| d.sort_key());
+    devices.sort_by_key(DeviceInfo::sort_key);
 }
 
 /// The adapter's own state.
@@ -66,7 +66,7 @@ pub struct AdapterInfo {
     pub pairable: bool,
 }
 
-/// What BlueZ is asking the user during pairing. These map one-to-one onto the
+/// What `BlueZ` is asking the user during pairing. These map one-to-one onto the
 /// `org.bluez.Agent1` methods, carrying exactly what the prompt needs and nothing more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairingPrompt {
@@ -74,7 +74,7 @@ pub enum PairingPrompt {
     /// they match. The most common modern flow.
     ConfirmPasskey { passkey: u32 },
     /// `DisplayPasskey` — we show a number for the user to type on the *other* device.
-    /// `entered` is how many digits BlueZ has seen so far. Informational: nothing to answer.
+    /// `entered` is how many digits `BlueZ` has seen so far. Informational: nothing to answer.
     DisplayPasskey { passkey: u32, entered: u16 },
     /// `DisplayPinCode` — same, but a legacy alphanumeric PIN.
     DisplayPinCode { pin: String },
@@ -92,7 +92,7 @@ pub enum PairingPrompt {
 
 impl PairingPrompt {
     /// Whether the prompt takes an answer at all. `DisplayPasskey` and `DisplayPinCode` are
-    /// one-way: BlueZ has already returned, and the dialog just shows the number until pairing
+    /// one-way: `BlueZ` has already returned, and the dialog just shows the number until pairing
     /// completes or `Cancel` arrives.
     pub fn expects_answer(&self) -> bool {
         !matches!(
@@ -124,7 +124,7 @@ impl PairingPrompt {
 /// A pairing question addressed to the user, with the device it concerns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairingRequest {
-    /// BlueZ object path of the device being paired.
+    /// `BlueZ` object path of the device being paired.
     pub device_path: String,
     /// Best-effort display name for the device. Falls back to the address.
     pub device_name: String,
@@ -136,7 +136,7 @@ pub struct PairingRequest {
 pub enum PairingReply {
     /// Yes / confirmed.
     Accept,
-    /// No — BlueZ is told the request was rejected, which aborts pairing.
+    /// No — `BlueZ` is told the request was rejected, which aborts pairing.
     Reject,
     /// A typed passkey, for [`PairingPrompt::RequestPasskey`].
     Passkey(u32),
@@ -159,7 +159,7 @@ pub fn reply_answers(prompt: &PairingPrompt, reply: &PairingReply) -> bool {
     }
 }
 
-/// Extract a `DeviceInfo` from the property map BlueZ hands out via `ObjectManager` /
+/// Extract a `DeviceInfo` from the property map `BlueZ` hands out via `ObjectManager` /
 /// `PropertiesChanged`. `interfaces` is the `a{sa{sv}}` value for one object path: interface
 /// name → property map. Returns `None` when the object is not a device.
 pub fn device_from_interfaces(

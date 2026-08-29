@@ -206,7 +206,7 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     // there's exactly one writer of the on-disk record — the two provisioning paths can't drift apart in what they store.
     let mut rng = OsRng;
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
     let record = IdentityRecord::from_threshold_identity(
         &identity,

@@ -129,7 +129,7 @@ pub fn text_vcenter(
     y1: f64,
     weight: TextWeight,
 ) {
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
+    let y = y0 + ((y1 - y0) - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, y, weight);
 }
 
@@ -147,8 +147,8 @@ pub fn text_right(
     y1: f64,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
-    text(tr, scene, t, s, size, color, x_right - w as f64, y);
+    let y = y0 + ((y1 - y0) - f64::from(size)) / 2.0;
+    text(tr, scene, t, s, size, color, x_right - f64::from(w), y);
 }
 
 /// Horizontally centred text in `[x0, x1]`, vertically centred in `[y0,y1]`.
@@ -167,8 +167,8 @@ pub fn text_center(
     weight: TextWeight,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - w as f64) / 2.0;
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
+    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
+    let y = y0 + ((y1 - y0) - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, y, weight);
 }
 

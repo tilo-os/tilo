@@ -51,7 +51,7 @@ impl OpenH264Backend {
         // Bitrate from the caller (kbps) → openh264's bps, floored well
         // above the library's 120 kbps default, which skip-frames most
         // of the stream on any real workload.
-        let bitrate_bps = (init.bitrate_kbps as u32).saturating_mul(1000).max(500_000);
+        let bitrate_bps = init.bitrate_kbps.saturating_mul(1000).max(500_000);
         let inner = H264Encoder::new_with_bitrate_bps(
             init.width,
             init.height,

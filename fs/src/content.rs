@@ -25,7 +25,7 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn total_len(&self) -> u64 {
-        self.chunks.iter().map(|c| c.len as u64).sum()
+        self.chunks.iter().map(|c| u64::from(c.len)).sum()
     }
     pub fn encode(&self) -> Vec<u8> {
         postcard::to_allocvec(self).expect("serialize manifest")
@@ -40,7 +40,7 @@ impl Manifest {
 fn gear_table() -> [u64; 256] {
     let mut t = [0u64; 256];
     let mut x: u64 = 0x2545_F491_4F6C_DD1D;
-    for slot in t.iter_mut() {
+    for slot in &mut t {
         // xorshift64
         x ^= x << 13;
         x ^= x >> 7;
@@ -120,7 +120,7 @@ mod tests {
         let data = pseudo(200_000, 99);
         let before: Vec<Vec<u8>> = split(&data).iter().map(|c| c.to_vec()).collect();
 
-        let mut edited = data.clone();
+        let mut edited = data;
         edited[100_000] ^= 0xff; // flip a byte in the middle
         let after: Vec<Vec<u8>> = split(&edited).iter().map(|c| c.to_vec()).collect();
 

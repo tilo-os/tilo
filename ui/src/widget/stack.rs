@@ -105,17 +105,17 @@ impl Widget for Stack {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = vello::kurbo::Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
         let children = taffy.children(node).unwrap();
@@ -172,7 +172,7 @@ impl Widget for Stack {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -186,7 +186,7 @@ impl Widget for Stack {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Stack"
     }
 

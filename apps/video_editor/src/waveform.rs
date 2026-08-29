@@ -97,11 +97,11 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
         for c in 0..ch {
             let o = base + c * bytes_per;
             let v = match (fmt, bits) {
-                (1, 8) => (d[o] as f32 - 128.0) / 128.0,
-                (1, 16) => i16::from_le_bytes([d[o], d[o + 1]]) as f32 / 32768.0,
+                (1, 8) => (f32::from(d[o]) - 128.0) / 128.0,
+                (1, 16) => f32::from(i16::from_le_bytes([d[o], d[o + 1]])) / 32768.0,
                 (1, 24) => {
                     let mut x =
-                        (d[o] as i32) | ((d[o + 1] as i32) << 8) | ((d[o + 2] as i32) << 16);
+                        i32::from(d[o]) | (i32::from(d[o + 1]) << 8) | (i32::from(d[o + 2]) << 16);
                     if x & 0x0080_0000 != 0 {
                         x |= !0x00FF_FFFF;
                     }
@@ -205,7 +205,7 @@ impl WaveformCache {
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
         if matches!(
             self.map.get(&id),
-            Some(Slot::Ready(_)) | Some(Slot::Missing)
+            Some(Slot::Ready(_) | Slot::Missing)
         ) {
             return;
         }

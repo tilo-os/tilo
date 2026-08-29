@@ -39,7 +39,7 @@
 //! # No systemd bus dep
 //!
 //! The service is `Type=notify` and reports readiness via the
-//! `NOTIFY_SOCKET` sd_notify(3) protocol directly — we don't pull in
+//! `NOTIFY_SOCKET` `sd_notify(3)` protocol directly — we don't pull in
 //! `systemd-sys` just for a one-line handshake.
 
 use std::fs;
@@ -98,7 +98,7 @@ fn main() {
     });
 
     let mut last_state: Option<PowerState> = None;
-    for _ in rx {
+    for () in rx {
         let state = read_ac_state();
         if last_state != Some(state) {
             apply_state(state);

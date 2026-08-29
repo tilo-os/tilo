@@ -147,7 +147,6 @@ fn tokenize(src: &str) -> Vec<Token> {
             flush_text!();
             if let Some(close) = raw.strip_prefix('/') {
                 let name = close
-                    .trim()
                     .split_whitespace()
                     .next()
                     .unwrap_or("")
@@ -370,7 +369,7 @@ fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
         match prop.as_str() {
             "color" => out.push(("color", MarkVal::Str(normalize_css_color(val)))),
             "background" | "background-color" => {
-                out.push(("highlight", MarkVal::Str(normalize_css_color(val))))
+                out.push(("highlight", MarkVal::Str(normalize_css_color(val))));
             }
             "font-size" => {
                 let num = val
@@ -385,7 +384,7 @@ fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
                 MarkVal::Str(generic_font_family(val).to_string()),
             )),
             "font-weight" => {
-                if val == "bold" || val.parse::<i32>().map(|w| w >= 600).unwrap_or(false) {
+                if val == "bold" || val.parse::<i32>().is_ok_and(|w| w >= 600) {
                     out.push(("strong", MarkVal::Bool(true)));
                 }
             }
@@ -508,11 +507,10 @@ fn import_html(src: &str, doc: &mut DocMut) {
 
     for tok in tokens {
         if let Some(skip) = &skip_until {
-            if let Token::Close { name } = &tok {
-                if name == skip {
+            if let Token::Close { name } = &tok
+                && name == skip {
                     skip_until = None;
                 }
-            }
             continue;
         }
 
@@ -584,7 +582,7 @@ fn import_html(src: &str, doc: &mut DocMut) {
                     "ol" => lists.push(ListCtx { ordered: true }),
                     "li" => {
                         finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        let ordered = lists.last().map(|l| l.ordered).unwrap_or(false);
+                        let ordered = lists.last().is_some_and(|l| l.ordered);
                         let level = lists.len().saturating_sub(1);
                         let id = open_block(
                             doc,
@@ -874,9 +872,9 @@ fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u32> {
         match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
+            b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
             b'+' => Some(62),
             b'/' => Some(63),
             _ => None,
@@ -1276,7 +1274,7 @@ mod tests {
             other => panic!("expected blob attr, got {other:?}"),
         };
         assert_eq!(
-            snap.blobs.get(&blob).map(|b| b.as_slice()),
+            snap.blobs.get(&blob).map(std::vec::Vec::as_slice),
             Some(b"A".as_slice()),
             "{:?}",
             snap.blobs

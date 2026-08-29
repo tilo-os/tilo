@@ -50,7 +50,7 @@ pub enum Request {
     Collection(String),
     /// Full-text search across remotes via the Flathub API.
     Search(String),
-    /// Fetch the full AppStream detail + download stats for one app.
+    /// Fetch the full `AppStream` detail + download stats for one app.
     Detail(String),
     /// Gated install: `flatpak install <remote> <app-id>`.
     Install { remote: String, app_id: String },
@@ -261,7 +261,7 @@ impl Worker {
             loop {
                 match rx.try_recv() {
                     Ok(m) => msgs.push(m),
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                 }
             }
         }
@@ -311,11 +311,10 @@ fn worker_loop(job_rx: Receiver<Request>, msg_tx: Sender<WorkerMsg>) {
     while let Ok(req) = job_rx.recv() {
         let msg = handle(req);
         // If the UI is gone, stop.
-        if let Some(m) = msg {
-            if msg_tx.send(m).is_err() {
+        if let Some(m) = msg
+            && msg_tx.send(m).is_err() {
                 break;
             }
-        }
     }
 }
 

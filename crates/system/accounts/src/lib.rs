@@ -58,7 +58,7 @@ impl std::fmt::Display for AccountTypeId {
     }
 }
 
-/// Stable identifier for one configured account. Natural keys (an email address, a CalDAV
+/// Stable identifier for one configured account. Natural keys (an email address, a `CalDAV`
 /// login) are fine, but an explicit id means a rename doesn't reshuffle the store or strand
 /// the account's vault secret.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -258,15 +258,14 @@ impl AccountStore {
     /// The active account for a type: the explicitly-selected one, else the type's first
     /// account, else `None`.
     pub fn active(&self, type_id: &AccountTypeId) -> Option<&Account> {
-        if let Some(id) = self.active.get(type_id) {
-            if let Some(a) = self
+        if let Some(id) = self.active.get(type_id)
+            && let Some(a) = self
                 .accounts
                 .iter()
                 .find(|a| &a.id == id && &a.type_id == type_id)
             {
                 return Some(a);
             }
-        }
         self.list(type_id).into_iter().next()
     }
 

@@ -1,5 +1,5 @@
 //! Sidebar shortcuts builder — returns the tiered structure of labelled
-//! destinations matching the `nirios-concept` FilesApp sidebar: a
+//! destinations matching the `nirios-concept` `FilesApp` sidebar: a
 //! **Favorites** group (user xdg-dirs) and a **System** group (root).
 //!
 //! Replaces the flat list that originally mirrored the iced

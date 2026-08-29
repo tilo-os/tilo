@@ -32,8 +32,10 @@ use crate::model::{PageId, Workspace, WorkspaceData};
 /// `AtomicU8` storage detail (encoded by [`SaveStatus::as_u8`]) so the
 /// background thread can publish state to the UI thread without locks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Default)]
 pub enum SaveStatus {
     /// No pending writes, nothing in flight — disk reflects RAM.
+    #[default]
     Saved,
     /// A write has been requested and is queued (still inside the
     /// debounce window) or actively being written.
@@ -43,11 +45,6 @@ pub enum SaveStatus {
     Failed,
 }
 
-impl Default for SaveStatus {
-    fn default() -> Self {
-        SaveStatus::Saved
-    }
-}
 
 impl SaveStatus {
     fn as_u8(self) -> u8 {
@@ -92,7 +89,7 @@ pub fn ensure_layout(root: &Path) -> io::Result<()> {
 
 /// Path of the per-page markdown file for `id`, under `root`.
 pub fn page_file_path(root: &Path, id: PageId) -> PathBuf {
-    root.join(PAGES_DIR).join(format!("{}.md", id))
+    root.join(PAGES_DIR).join(format!("{id}.md"))
 }
 
 /// Path of the automerge save inside `root`.
@@ -162,9 +159,9 @@ pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
     {
         Some((Value::Object(ObjType::Text), id)) => id,
         Some(_) => {
-            return Err(format!("{} key is not a Text object", WORKSPACE_TEXT_KEY));
+            return Err(format!("{WORKSPACE_TEXT_KEY} key is not a Text object"));
         }
-        None => return Err(format!("missing {} key", WORKSPACE_TEXT_KEY)),
+        None => return Err(format!("missing {WORKSPACE_TEXT_KEY} key")),
     };
     let json = doc.text(&text_id).map_err(|e| e.to_string())?;
     let data: WorkspaceData = serde_json::from_str(&json).map_err(|e| e.to_string())?;
@@ -219,8 +216,8 @@ impl Saver {
     pub fn spawn(root: PathBuf, debounce: Duration) -> Self {
         let (tx, rx) = mpsc::channel::<SaverMsg>();
         let pending: Arc<Mutex<Option<Workspace>>> = Arc::new(Mutex::new(None));
-        let pending_thread = pending.clone();
-        let root_thread = root.clone();
+        let pending_thread = pending;
+        let root_thread = root;
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
@@ -313,8 +310,8 @@ impl PageSaver {
         let (tx, rx) = mpsc::channel::<PageSaverMsg>();
         let pending: Arc<Mutex<std::collections::HashMap<PageId, String>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let pending_thread = pending.clone();
-        let root_thread = root.clone();
+        let pending_thread = pending;
+        let root_thread = root;
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
@@ -416,10 +413,10 @@ fn page_saver_loop(
                 if elapsed >= debounce {
                     Duration::ZERO
                 } else {
-                    debounce - elapsed
+                    debounce.checked_sub(elapsed).unwrap()
                 }
             }
-            _ => Duration::from_secs(60 * 60),
+            _ => Duration::from_hours(1),
         };
         let msg = if timeout == Duration::ZERO {
             match rx.try_recv() {
@@ -505,10 +502,10 @@ fn saver_loop(
                 if elapsed >= debounce {
                     Duration::ZERO
                 } else {
-                    debounce - elapsed
+                    debounce.checked_sub(elapsed).unwrap()
                 }
             }
-            _ => Duration::from_secs(60 * 60),
+            _ => Duration::from_hours(1),
         };
         let msg = if timeout == Duration::ZERO {
             // Force an immediate flush — no wait.
@@ -534,12 +531,11 @@ fn saver_loop(
             Some(SaverMsg::Flush) => {
                 let to_write = pending.lock().unwrap().take();
                 let mut ok = true;
-                if let Some(w) = to_write {
-                    if let Err(e) = save_workspace(&root, &w) {
+                if let Some(w) = to_write
+                    && let Err(e) = save_workspace(&root, &w) {
                         tracing::error!(error = %e, "notes: workspace save failed");
                         ok = false;
                     }
-                }
                 last_request = None;
                 let new_status = if ok {
                     SaveStatus::Saved
@@ -553,12 +549,11 @@ fn saver_loop(
                 // Timeout — flush the pending snapshot.
                 let to_write = pending.lock().unwrap().take();
                 let mut ok = true;
-                if let Some(w) = to_write {
-                    if let Err(e) = save_workspace(&root, &w) {
+                if let Some(w) = to_write
+                    && let Err(e) = save_workspace(&root, &w) {
                         tracing::error!(error = %e, "notes: workspace save failed");
                         ok = false;
                     }
-                }
                 last_request = None;
                 let new_status = if ok {
                     SaveStatus::Saved

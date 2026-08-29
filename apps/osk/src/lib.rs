@@ -36,7 +36,7 @@
 //! ## Explicitly out of scope (left as clean seams)
 //! * **Compositor server half** — the `wlr-layer-shell` surface role and the
 //!   compositor side of `virtual-keyboard-v1` / `input-method-v2`.
-//! * **Neural swipe** — the FUTO `swipe-library` (GPL C++ + ExecuTorch `.pte`
+//! * **Neural swipe** — the FUTO `swipe-library` (GPL C++ + `ExecuTorch` `.pte`
 //!   model). Drop a `FutoSwipeModel: SwipeModel` in and the wiring is
 //!   unchanged.
 //!

@@ -64,7 +64,7 @@ impl PublisherAllowlist {
     pub fn get(&self, pubkey: &[u8; 32]) -> Option<&PublisherRow> {
         self.publishers
             .iter()
-            .find(|p| p.pubkey_bytes().map(|b| &b == pubkey).unwrap_or(false))
+            .find(|p| p.pubkey_bytes().is_ok_and(|b| &b == pubkey))
     }
 
     /// The set of pubkeys allowed to authenticate any change

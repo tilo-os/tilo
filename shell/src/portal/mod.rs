@@ -376,7 +376,7 @@ impl PromptQueueHandle {
 
     /// Number of queued prompts — for tests asserting queue length before the pump drains it.
     pub fn queued_len(&self) -> usize {
-        self.pending.lock().map(|q| q.len()).unwrap_or(0)
+        self.pending.lock().map_or(0, |q| q.len())
     }
 
     /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
@@ -394,14 +394,14 @@ pub struct PortalContext {
     pub prompts: PromptQueueHandle,
     /// D-Bus unique-name → `PortalCaller`. Production fills it in when the per-workspace bridge spawns an app; tests poke entries directly.
     pub caller_map: CallerMap,
-    /// The FileChooser backend calls [`FilePickerSpawner::spawn`] on
+    /// The `FileChooser` backend calls [`FilePickerSpawner::spawn`] on
     /// `Allow`; tests pass a [`MockFilePickerSpawner`] with canned paths.
     /// Defaults to [`NullFilePickerSpawner`], which cancels every request (`response=1`).
     pub file_picker: FilePickerSpawnerHandle,
-    /// The ScreenCast backend calls
+    /// The `ScreenCast` backend calls
     /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
-    /// The RemoteDesktop backend hands each granted `Notify*` action here;
+    /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
     /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
     /// How a picked path is made reachable by the app that asked for it —
@@ -413,8 +413,8 @@ pub struct PortalContext {
 }
 
 impl PortalContext {
-    /// Build a context wired with null spawners — FileChooser cancels every
-    /// request, the ScreenCast provisioner returns a synthetic node-id.
+    /// Build a context wired with null spawners — `FileChooser` cancels every
+    /// request, the `ScreenCast` provisioner returns a synthetic node-id.
     /// Used by tests that only care about the response-code path; production always injects real spawners via field initialisers.
     pub fn new_with_null_spawners(
         grants: GrantStoreHandle,
@@ -460,11 +460,10 @@ impl CallerMap {
     }
 
     pub fn lookup(&self, dbus_unique_name: &str) -> Option<PortalCaller> {
-        if let Ok(forced) = self.forced.lock() {
-            if let Some(c) = forced.as_ref() {
+        if let Ok(forced) = self.forced.lock()
+            && let Some(c) = forced.as_ref() {
                 return Some(c.clone());
             }
-        }
         let m = self.inner.lock().ok()?;
         m.get(dbus_unique_name).cloned()
     }
@@ -480,7 +479,7 @@ impl CallerMap {
 /// Shared sub-flow every interface uses: lookup or prompt, return the
 /// outcome. Kept here so "Always-grant skips the prompt" is asserted by one test all three interfaces share.
 pub mod flow {
-    use super::*;
+    use super::{PortalContext, PortalCaller, CapabilityKind, Capability, PromptOutcome, GRANT_ALWAYS, GRANT_ONCE};
 
     pub async fn resolve(
         ctx: &PortalContext,
@@ -496,12 +495,11 @@ pub mod flow {
         match rx.await {
             Ok(outcome) => {
                 // Persist Session/Always — Once is treated as one-shot.
-                if let Some(scope) = outcome.to_scope() {
-                    if !matches!(scope, GRANT_ONCE) {
+                if let Some(scope) = outcome.to_scope()
+                    && !matches!(scope, GRANT_ONCE) {
                         let cap = super::with_scope(cap_template, scope);
                         ctx.grants.insert(&caller, cap);
                     }
-                }
                 outcome
             }
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
@@ -569,7 +567,7 @@ pub async fn serve(
     // `request_name` only makes sense on a real bus — p2p test connections
     // have no broker, so the result is *recorded* (`ServerHandle::owns_name`) rather than swallowed.
     let owns_name = match connection.request_name(BUS_NAME).await {
-        Ok(_) => true,
+        Ok(()) => true,
         Err(e) => {
             tracing::debug!("portal: request_name did not succeed: {e}");
             false

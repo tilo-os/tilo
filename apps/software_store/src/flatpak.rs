@@ -22,7 +22,7 @@
 //! * `POST /search`                         — full-text search
 //! * `GET  /collection/popular/<page>`      — the popular/featured set
 //! * `GET  /collection/recently-updated/<page>`
-//! * `GET  /appstream/<app-id>`             — full AppStream record for the
+//! * `GET  /appstream/<app-id>`             — full `AppStream` record for the
 //!                                            detail page (screenshots, etc.)
 //! * `GET  /stats/<app-id>`                 — download totals (our proxy for
 //!                                            "popularity", since Flathub
@@ -61,7 +61,7 @@ fn flathub_api_base() -> String {
 /// freezing the worker thread forever.
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
     let program = program.to_string();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let out = Command::new(&program)
@@ -278,7 +278,7 @@ pub fn http_post_json(url: &str, body: &str) -> Option<String> {
 /// Hits `POST /search` with `{"query": ...}` and maps each hit into our
 /// [`AppEntry`]. Screenshots / full descriptions are deliberately left
 /// thin here (the search payload is summary-level); the detail page lazily
-/// fetches the full AppStream record via [`appstream`].
+/// fetches the full `AppStream` record via [`appstream`].
 pub fn search(query: &str) -> Option<Vec<AppEntry>> {
     let url = format!("{}/search", flathub_api_base());
     let body = serde_json::json!({ "query": query }).to_string();
@@ -305,7 +305,7 @@ pub fn collection(name: &str, page: u32, per_page: u32) -> Option<Vec<AppEntry>>
     Some(hits.iter().filter_map(entry_from_search_hit).collect())
 }
 
-/// Fetch the full AppStream record for `app_id` and merge it into a richer
+/// Fetch the full `AppStream` record for `app_id` and merge it into a richer
 /// [`AppEntry`] (description, screenshots, permissions, size, version).
 pub fn appstream(app_id: &str) -> Option<AppEntry> {
     let url = format!("{}/appstream/{}", flathub_api_base(), app_id);
@@ -320,7 +320,7 @@ pub fn downloads(app_id: &str) -> Option<u64> {
     let url = format!("{}/stats/{}", flathub_api_base(), app_id);
     let resp = http_get(&url)?;
     let json: serde_json::Value = serde_json::from_str(&resp).ok()?;
-    json.get("installs_total").and_then(|v| v.as_u64())
+    json.get("installs_total").and_then(serde_json::Value::as_u64)
 }
 
 // ---- JSON → model mapping -----------------------------------------
@@ -352,9 +352,8 @@ fn entry_from_search_hit(hit: &serde_json::Value) -> Option<AppEntry> {
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
-        .map(category_from_appstream)
-        .unwrap_or(Category::Productivity);
-    let downloads = hit.get("installs_last_month").and_then(|v| v.as_u64());
+        .map_or(Category::Productivity, category_from_appstream);
+    let downloads = hit.get("installs_last_month").and_then(serde_json::Value::as_u64);
 
     let mut entry = AppEntry::flathub_stub(&id, &name, &developer, &summary, category);
     if let Some(d) = downloads {
@@ -366,7 +365,7 @@ fn entry_from_search_hit(hit: &serde_json::Value) -> Option<AppEntry> {
     Some(entry)
 }
 
-/// Map a full AppStream record into a detailed [`AppEntry`].
+/// Map a full `AppStream` record into a detailed [`AppEntry`].
 fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEntry> {
     let name = json
         .get("name")
@@ -393,8 +392,7 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
-        .map(category_from_appstream)
-        .unwrap_or(Category::Productivity);
+        .map_or(Category::Productivity, category_from_appstream);
 
     let mut entry = AppEntry::flathub_stub(app_id, &name, &developer, &summary, category);
     if !description.is_empty() {
@@ -407,15 +405,13 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
         .get("releases")
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
-    {
-        if let Some(v) = rel.get("version").and_then(|v| v.as_str()) {
+        && let Some(v) = rel.get("version").and_then(|v| v.as_str()) {
             entry.latest_version = v.to_string();
         }
-    }
     if let Some(sz) = json
         .get("bundle")
         .and_then(|b| b.get("installed_size"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
     {
         entry.size_mib = sz as f64 / (1024.0 * 1024.0);
     }
@@ -455,7 +451,7 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
     Some(entry)
 }
 
-/// Strip a minimal set of HTML tags out of an AppStream description so it
+/// Strip a minimal set of HTML tags out of an `AppStream` description so it
 /// renders as plain wrapped paragraphs. Not a full parser — turns `</p>`
 /// and `<br>` into paragraph breaks and drops the rest of the tags.
 fn strip_html(s: &str) -> String {
@@ -496,7 +492,7 @@ fn strip_html(s: &str) -> String {
     collapsed.trim().to_string()
 }
 
-/// Map an AppStream category id to our coarse browse [`Category`].
+/// Map an `AppStream` category id to our coarse browse [`Category`].
 fn category_from_appstream(c: &str) -> Category {
     match c.to_lowercase().as_str() {
         "graphics" | "photography" | "art" => Category::Graphics,
@@ -507,7 +503,7 @@ fn category_from_appstream(c: &str) -> Category {
     }
 }
 
-/// Map an AppStream permission token (e.g. `network`, `filesystem=home`) to
+/// Map an `AppStream` permission token (e.g. `network`, `filesystem=home`) to
 /// a human-readable [`Permission`], flagging the sensitive ones.
 fn permission_from_appstream(p: &str) -> Permission {
     let lp = p.to_lowercase();
@@ -544,13 +540,11 @@ fn monogram_for(name: &str) -> String {
     let first = chars.next().unwrap_or('?').to_uppercase().to_string();
     // Second char from a word boundary if present.
     if let Some(rest) = name
-        .split(|c: char| c == ' ' || c == '-' || c == '.')
+        .split([' ', '-', '.'])
         .nth(1)
-    {
-        if let Some(c2) = rest.chars().next() {
+        && let Some(c2) = rest.chars().next() {
             return format!("{first}{}", c2.to_lowercase());
         }
-    }
     first
 }
 

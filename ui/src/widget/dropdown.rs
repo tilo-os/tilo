@@ -312,17 +312,17 @@ impl Widget for Dropdown {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -334,7 +334,7 @@ impl Widget for Dropdown {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
@@ -368,7 +368,7 @@ impl Widget for Dropdown {
         if !label.is_empty() {
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
             let (_, th) = text_renderer.measure(label, FONT, None);
-            let ty = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
+            let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -414,7 +414,7 @@ impl Widget for Dropdown {
         }
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
-        let shape = RoundedRect::from_rect(list, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.md));
 
         scene.fill(
             Fill::NonZero,
@@ -435,7 +435,7 @@ impl Widget for Dropdown {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
 
         if filtered.is_empty() {
-            let ty = list.y0 + (ITEM_HEIGHT - FONT as f64) / 2.0;
+            let ty = list.y0 + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -446,7 +446,7 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = list.y0 + (vi as f64 * ITEM_HEIGHT) - self.scroll as f64;
+                let row_top = list.y0 + (vi as f64 * ITEM_HEIGHT) - f64::from(self.scroll);
                 let row_bottom = row_top + ITEM_HEIGHT;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < list.y0 || row_top > list.y1 {
@@ -473,7 +473,7 @@ impl Widget for Dropdown {
                 } else {
                     theme.text_primary
                 };
-                let ty = row_top + (ITEM_HEIGHT - FONT as f64) / 2.0;
+                let ty = row_top + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     &self.options[opt_idx],
@@ -518,7 +518,7 @@ impl Widget for Dropdown {
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
                         let vi =
-                            ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT).floor() as isize;
+                            ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor() as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             let vi = vi as usize;
                             if vi != self.highlight {
@@ -540,7 +540,7 @@ impl Widget for Dropdown {
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
                         let vi =
-                            ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT).floor() as isize;
+                            ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor() as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             self.highlight = vi as usize;
                             self.select_highlighted(state, root);
@@ -596,7 +596,7 @@ impl Widget for Dropdown {
                             self.ensure_visible(self.highlight, n);
                             *handled = true;
                         }
-                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                        Key::Named(NamedKey::Enter | NamedKey::Space) => {
                             self.select_highlighted(state, root);
                             *handled = true;
                         }
@@ -612,7 +612,7 @@ impl Widget for Dropdown {
                         }
                         _ => {
                             if let Some(t) = text
-                                && !t.as_str().chars().all(|c| c.is_control())
+                                && !t.as_str().chars().all(char::is_control)
                             {
                                 self.filter.push_str(t.as_str());
                                 self.highlight = 0;
@@ -623,15 +623,10 @@ impl Widget for Dropdown {
                     }
                 } else {
                     // Closed: Enter / Space / Down (or Up) open the list.
-                    match logical_key {
-                        Key::Named(NamedKey::Enter)
-                        | Key::Named(NamedKey::Space)
-                        | Key::Named(NamedKey::ArrowDown)
-                        | Key::Named(NamedKey::ArrowUp) => {
-                            self.do_open();
-                            *handled = true;
-                        }
-                        _ => {}
+                    if let Key::Named(NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown |
+NamedKey::ArrowUp) = logical_key {
+                        self.do_open();
+                        *handled = true;
                     }
                 }
             }
@@ -639,7 +634,7 @@ impl Widget for Dropdown {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Dropdown"
     }
 

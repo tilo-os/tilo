@@ -136,7 +136,7 @@ pub struct VoiceMember {
     /// Camera off / audio-only participant.
     pub audio_only: bool,
     /// True while this person is sharing their screen into the call (portal
-    /// ScreenCast → the shared `TrackKind::Screen`). Shared truth in the CRDT so
+    /// `ScreenCast` → the shared `TrackKind::Screen`). Shared truth in the CRDT so
     /// every peer reserves the featured screen tile and shows "N is sharing"
     /// the instant the share begins — before the first decoded frame arrives.
     pub sharing: bool,

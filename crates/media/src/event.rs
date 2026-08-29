@@ -1,6 +1,6 @@
 //! The toolkit-free frame + event vocabulary the engine speaks.
 //!
-//! Both the real GStreamer backend and the synthesized fallback produce the
+//! Both the real `GStreamer` backend and the synthesized fallback produce the
 //! exact same [`VideoFrame`] (tightly-packed RGBA8) and the same
 //! [`MediaEvent`] stream, so a consumer (`ui::widget::VideoPlayer`) never
 //! branches on which backend is linked.

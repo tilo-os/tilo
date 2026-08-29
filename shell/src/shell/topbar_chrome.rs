@@ -309,8 +309,7 @@ impl TopBarChrome {
             .iter()
             .enumerate()
             .find(|(_, w)| w.id == tree.active)
-            .map(|(i, w)| (i, w.name.clone()))
-            .unwrap_or((0, String::from("Workspace")));
+            .map_or((0, String::from("Workspace")), |(i, w)| (i, w.name.clone()));
         self.workspace_index = idx;
         self.workspace_name = name;
         // Prefer the workspace's own collaborators, falling back to the
@@ -510,7 +509,7 @@ impl TopBarChrome {
         let inset = stroke_w + 0.5;
         let x0 = px(2.0) + inset;
         let x1 = px(18.0) - inset;
-        let frac = (percent as f64 / 100.0).clamp(0.0, 1.0);
+        let frac = (f64::from(percent) / 100.0).clamp(0.0, 1.0);
         if frac > 0.0 {
             // A hairline at 1% would disappear; give any nonzero charge
             // at least a visible sliver so "nearly empty" and "empty"
@@ -600,17 +599,17 @@ impl Widget for TopBarChrome {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -696,8 +695,8 @@ impl Widget for TopBarChrome {
             &shadow_rect,
         );
 
-        let pad_x = tokens.spacing.s3 as f64;
-        let center_y = (self.rect.y0 + self.rect.y1) / 2.0;
+        let pad_x = f64::from(tokens.spacing.s3);
+        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
         let icon_size = 14.0_f64;
 
         // --- Left cluster: overview icon + chevrons + workspace name ---
@@ -723,7 +722,7 @@ impl Widget for TopBarChrome {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += icon_size + tokens.spacing.s3 as f64;
+        x += icon_size + f64::from(tokens.spacing.s3);
 
         // Vertical divider
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
@@ -734,7 +733,7 @@ impl Widget for TopBarChrome {
             None,
             &divider,
         );
-        x += 1.0 + tokens.spacing.s2 as f64;
+        x += 1.0 + f64::from(tokens.spacing.s2);
 
         let chev = 10.0_f64;
         self.up_btn_rect = Rect::new(
@@ -756,7 +755,7 @@ impl Widget for TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + tokens.spacing.s2 as f64;
+        x += chev + f64::from(tokens.spacing.s2);
 
         self.down_btn_rect = Rect::new(
             x - 4.0,
@@ -777,7 +776,7 @@ impl Widget for TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + tokens.spacing.s3 as f64;
+        x += chev + f64::from(tokens.spacing.s3);
 
         let ws_text_size = tokens.typography.scale.sm;
         let ws_label = format!(
@@ -790,11 +789,11 @@ impl Widget for TopBarChrome {
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
         let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
-        let ws_y = center_y - ws_h as f64 / 2.0;
+        let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
             x - 6.0,
             center_y - 12.0,
-            x + ws_w as f64 + 28.0,
+            x + f64::from(ws_w) + 28.0,
             center_y + 12.0,
         );
         self.ws_pill_rect = ws_pill_outer;
@@ -823,7 +822,7 @@ impl Widget for TopBarChrome {
             None,
             ws_weight,
         );
-        let gear_x = x + ws_w as f64 + 6.0;
+        let gear_x = x + f64::from(ws_w) + 6.0;
         let gear_rect = Rect::new(gear_x - 2.0, center_y - 6.0, gear_x + 10.0, center_y + 6.0);
         ui::icons::draw_icon(
             scene,
@@ -837,7 +836,7 @@ impl Widget for TopBarChrome {
         // --- Center cluster: carousel band with 3 dots + active widget ---
         let band_w = 360.0_f64;
         let band_h = 28.0_f64;
-        let band_cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
             band_cx - band_w / 2.0,
             center_y - band_h / 2.0,
@@ -889,7 +888,7 @@ impl Widget for TopBarChrome {
         // Widget content fills the band to the right of the dots.
         let content_x0 = dot_x + 24.0;
         let content_x1 = band.x1 - 12.0;
-        let content_cx = (content_x0 + content_x1) / 2.0;
+        let content_cx = f64::midpoint(content_x0, content_x1);
         match self.center_widget {
             CenterWidget::Clock => {
                 let s = Self::current_clock_string();
@@ -898,8 +897,8 @@ impl Widget for TopBarChrome {
                 // than Regular, so centering would drift otherwise.
                 let weight = self.clock_text_weight();
                 let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
-                let tx = content_cx - tw as f64 / 2.0;
-                let ty = center_y - th as f64 / 2.0;
+                let tx = content_cx - f64::from(tw) / 2.0;
+                let ty = center_y - f64::from(th) / 2.0;
                 text_renderer.draw_text_weighted(
                     scene,
                     &s,
@@ -1016,9 +1015,9 @@ impl Widget for TopBarChrome {
                     time_weight,
                 );
                 let gap = 8.0;
-                let total = pw as f64 + gap + ew as f64 + gap + tw as f64;
+                let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
                 let mut tx = content_cx - total / 2.0;
-                let ty = center_y - ph as f64 / 2.0;
+                let ty = center_y - f64::from(ph) / 2.0;
                 text_renderer.draw_text_weighted(
                     scene,
                     prefix,
@@ -1028,7 +1027,7 @@ impl Widget for TopBarChrome {
                     None,
                     prefix_weight,
                 );
-                tx += pw as f64 + gap;
+                tx += f64::from(pw) + gap;
                 text_renderer.draw_text_weighted(
                     scene,
                     event,
@@ -1038,7 +1037,7 @@ impl Widget for TopBarChrome {
                     None,
                     event_weight,
                 );
-                tx += ew as f64 + gap;
+                tx += f64::from(ew) + gap;
                 text_renderer.draw_text_weighted(
                     scene,
                     time,
@@ -1069,12 +1068,11 @@ impl Widget for TopBarChrome {
         let pct_label = battery_pct.map(|p| format!("{p}%"));
         let pct_w = pct_label
             .as_ref()
-            .map(|s| {
-                text_renderer
+            .map_or(0.0, |s| {
+                f64::from(text_renderer
                     .measure_weighted(s, pct_size, None, TextWeight::Semibold)
-                    .0 as f64
-            })
-            .unwrap_or(0.0);
+                    .0)
+            });
         let mut slots = 0usize;
         if has_volume {
             slots += 1;
@@ -1127,7 +1125,7 @@ impl Widget for TopBarChrome {
             Rect::new(
                 x + (tray_slot - icon_px) / 2.0,
                 center_y - icon_px / 2.0,
-                x + (tray_slot + icon_px) / 2.0,
+                x + f64::midpoint(tray_slot, icon_px),
                 center_y + icon_px / 2.0,
             )
         };
@@ -1247,14 +1245,14 @@ impl Widget for TopBarChrome {
                     } else {
                         bright
                     },
-                    transform * Affine::translate((sx + 3.0, center_y - lh as f64 / 2.0)),
+                    transform * Affine::translate((sx + 3.0, center_y - f64::from(lh) / 2.0)),
                     None,
                     TextWeight::Semibold,
                 );
             }
         }
 
-        rx -= tray_w + tokens.spacing.s4 as f64; // s4 = 16, ≥ 8 px after avatar radius
+        rx -= tray_w + f64::from(tokens.spacing.s4); // s4 = 16, ≥ 8 px after avatar radius
 
         // Snapshotted before drawing, so `avatar_stack_rect` can be
         // populated once the drawn circle count (incl. overflow) is known.
@@ -1317,7 +1315,7 @@ impl Widget for TopBarChrome {
         }
 
         let slot_count =
-            self.collaborator_initials.len() + if self.collaborator_overflow > 0 { 1 } else { 0 };
+            self.collaborator_initials.len() + usize::from(self.collaborator_overflow > 0);
         if slot_count > 0 {
             // Stack grows leftward from `stack_right_x`; each circle is
             // 18 px wide with 4 px overlap, so step = 14 px.
@@ -1337,9 +1335,9 @@ impl Widget for TopBarChrome {
             let chip_r = 7.5_f64;
             let pill_x1 = stack_right_x + 2.0;
             let chip_cx = pill_x1 - 6.0 - chip_r;
-            let label_x = chip_cx - chip_r - 6.0 - label_w as f64;
+            let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
             let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
-            let pill_rr = RoundedRect::from_rect(pill, tokens.radii.sm as f64);
+            let pill_rr = RoundedRect::from_rect(pill, f64::from(tokens.radii.sm));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1352,7 +1350,7 @@ impl Widget for TopBarChrome {
                 label,
                 label_size,
                 colors.text_dim,
-                transform * Affine::translate((label_x, center_y - label_h as f64 / 2.0)),
+                transform * Affine::translate((label_x, center_y - f64::from(label_h) / 2.0)),
                 None,
                 TextWeight::Medium,
             );
@@ -1408,7 +1406,7 @@ impl Widget for TopBarChrome {
                 return;
             }
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f32,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
                 winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 40.0,
             };
             self.center_scroll_accum += dy;
@@ -1489,7 +1487,7 @@ impl Widget for TopBarChrome {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TopBarChrome"
     }
 

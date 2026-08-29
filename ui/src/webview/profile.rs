@@ -1,4 +1,4 @@
-//! Lightweight instrumentation for the WebView pipeline. Off by default;
+//! Lightweight instrumentation for the `WebView` pipeline. Off by default;
 //! enabled by setting `QOS_WEBVIEW_PROFILE` in the environment.
 //!
 //! What it measures, from the engine thread and the widget:
@@ -161,7 +161,7 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
         match frame_dims {
             Some((w, h)) => {
-                eprintln!("[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} frame {w}x{h}")
+                eprintln!("[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} frame {w}x{h}");
             }
             None => eprintln!(
                 "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} PLACEHOLDER (no frame)"
@@ -174,8 +174,7 @@ impl State {
     fn print_summary(&self) {
         let elapsed = self
             .started
-            .map(|s| s.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
+            .map_or(0.0, |s| s.elapsed().as_secs_f64());
         let fps = if elapsed > 0.0 {
             self.frame_count as f64 / elapsed
         } else {

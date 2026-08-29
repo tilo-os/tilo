@@ -152,9 +152,7 @@ pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.qos.browser"];
 /// "nobody" — which would leave the browser unable to render on any
 /// image that didn't ship the file.
 pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
-    let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(JIT_POLICY_PATH));
+    let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV).map_or_else(|| PathBuf::from(JIT_POLICY_PATH), PathBuf::from);
     match std::fs::read_to_string(&policy_path) {
         Ok(list) => crate::hardening::policy_matches(&list, package_id),
         Err(_) => BUILTIN_JIT_ENTITLED.contains(&package_id),
@@ -219,7 +217,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in BLANKET_DENIES {
-        rules.insert(*nr as i64, Vec::new());
+        rules.insert((*nr), Vec::new());
     }
 
     // Write-xor-execute. A page that is writable and executable at the
@@ -244,7 +242,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     if !profile.allows_dynamic_code() {
         for nr in PROT_ARG_SYSCALLS {
             rules.insert(
-                *nr as i64,
+                (*nr),
                 vec![SeccompRule::new(vec![SeccompCondition::new(
                     2,
                     SeccompCmpArgLen::Dword,
@@ -257,7 +255,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
 
     // socket(family, type, protocol) where family == AF_PACKET.
     rules.insert(
-        libc::SYS_socket as i64,
+        libc::SYS_socket,
         vec![SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,

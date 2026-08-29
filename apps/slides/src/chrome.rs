@@ -66,8 +66,8 @@ pub fn text_centered(
     weight: TextWeight,
 ) {
     let (w, h) = tr.measure_weighted(s, font, None, weight);
-    let x = rect.x0 + (rect.width() - w as f64) / 2.0;
-    let y = rect.y0 + (rect.height() - h as f64) / 2.0;
+    let x = rect.x0 + (rect.width() - f64::from(w)) / 2.0;
+    let y = rect.y0 + (rect.height() - f64::from(h)) / 2.0;
     tr.draw_text_weighted(
         scene,
         s,
@@ -93,7 +93,7 @@ pub fn text_vcenter(
     weight: TextWeight,
 ) {
     let (_, h) = tr.measure_weighted(s, font, None, weight);
-    let y = rect.y0 + (rect.height() - h as f64) / 2.0;
+    let y = rect.y0 + (rect.height() - f64::from(h)) / 2.0;
     tr.draw_text_weighted(
         scene,
         s,

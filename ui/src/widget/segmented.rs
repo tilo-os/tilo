@@ -137,7 +137,7 @@ impl Widget for TriStateControl {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -157,10 +157,10 @@ impl Widget for TriStateControl {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_segments();
     }
@@ -176,7 +176,7 @@ impl Widget for TriStateControl {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let radius = theme.tokens.radii.sm as f64;
+        let radius = f64::from(theme.tokens.radii.sm);
         let track = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -231,8 +231,8 @@ impl Widget for TriStateControl {
                 theme.text_dim
             };
             let (tw, _) = text_renderer.measure(&self.labels[i], text_size, None);
-            let cx = self.seg_rects[i].center().x - tw as f64 / 2.0;
-            let cy = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+            let cx = self.seg_rects[i].center().x - f64::from(tw) / 2.0;
+            let cy = self.rect.y0 + (self.rect.height() - f64::from(text_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &self.labels[i],
@@ -280,7 +280,7 @@ impl Widget for TriStateControl {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TriStateControl"
     }
 
@@ -432,7 +432,7 @@ impl Widget for ColorSwatchPicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -452,10 +452,10 @@ impl Widget for ColorSwatchPicker {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_swatches();
     }
@@ -471,7 +471,7 @@ impl Widget for ColorSwatchPicker {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let panel = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let panel = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -549,7 +549,7 @@ impl Widget for ColorSwatchPicker {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ColorSwatchPicker"
     }
 

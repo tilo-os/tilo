@@ -99,8 +99,7 @@ fn canonical_payload(
 fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Issue an invite to `workspace`, signed by `keypair`.

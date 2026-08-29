@@ -139,7 +139,7 @@ enum DropPlan {
 struct RenameState {
     /// The page being renamed.
     page: PageId,
-    /// The active editor. Local-mode TextInput; we drive `set_text`
+    /// The active editor. Local-mode `TextInput`; we drive `set_text`
     /// once when we open it and drain `take_dirty` on commit. The
     /// editor lives in this struct so we can route events to it
     /// without exposing it through the widget tree.
@@ -293,11 +293,10 @@ impl NoteTreeView {
         self.selected = ws.selected();
         // If the page being renamed has disappeared (e.g. a delete
         // happened while in rename mode), close the editor.
-        if let Some(r) = &self.rename {
-            if ws.get(r.page).is_none() {
+        if let Some(r) = &self.rename
+            && ws.get(r.page).is_none() {
                 self.rename = None;
             }
-        }
         self.dirty = true;
     }
 
@@ -613,17 +612,17 @@ impl Widget for NoteTreeView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let resized =
             new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height();
@@ -634,7 +633,7 @@ impl Widget for NoteTreeView {
             self.rect.x1 - NEW_BTN_MARGIN - NEW_BTN_SIZE,
             self.rect.y0 + (HEADER_HEIGHT - NEW_BTN_SIZE) / 2.0,
             self.rect.x1 - NEW_BTN_MARGIN,
-            self.rect.y0 + (HEADER_HEIGHT + NEW_BTN_SIZE) / 2.0,
+            self.rect.y0 + f64::midpoint(HEADER_HEIGHT, NEW_BTN_SIZE),
         );
         // Position each row, offset below the header strip.
         self.row_rects.clear();
@@ -649,8 +648,8 @@ impl Widget for NoteTreeView {
         }
         // If a rename is active, position the embedded editor against
         // the current row rect — it follows the row across resize.
-        if let Some(r) = &mut self.rename {
-            if let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page) {
+        if let Some(r) = &mut self.rename
+            && let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page) {
                 let row_rect = self.row_rects[idx];
                 let glyph_x =
                     row_rect.x0 + ROW_INSET_X + (self.flat_rows[idx].depth as f64) * INDENT_PX;
@@ -662,7 +661,6 @@ impl Widget for NoteTreeView {
                 );
                 r.input.apply_layout_external(editor_rect);
             }
-        }
     }
 
     fn draw(
@@ -688,7 +686,7 @@ impl Widget for NoteTreeView {
         // new-page button on the right. The button is the visible
         // affordance the welcome copy ("add a page from the left")
         // points at.
-        let header_text_y = self.rect.y0 + (HEADER_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+        let header_text_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
         text_renderer.draw_text(
             scene,
             "PAGES",
@@ -704,13 +702,13 @@ impl Widget for NoteTreeView {
             tokens.colors.surface_white_10
         };
         let btn =
-            vello::kurbo::RoundedRect::from_rect(self.new_page_btn_rect, tokens.radii.sm as f64);
+            vello::kurbo::RoundedRect::from_rect(self.new_page_btn_rect, f64::from(tokens.radii.sm));
         scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
         // "+" glyph, centred in the button.
         let plus_size = ROW_TEXT_SIZE + 2.0;
         let (plus_w, _) = text_renderer.measure("+", plus_size, None);
-        let plus_x = self.new_page_btn_rect.center().x - plus_w as f64 / 2.0;
-        let plus_y = self.new_page_btn_rect.center().y - plus_size as f64 / 2.0;
+        let plus_x = self.new_page_btn_rect.center().x - f64::from(plus_w) / 2.0;
+        let plus_y = self.new_page_btn_rect.center().y - f64::from(plus_size) / 2.0;
         text_renderer.draw_text(
             scene,
             "+",
@@ -771,7 +769,7 @@ impl Widget for NoteTreeView {
                     row_rect.y0 + 1.0,
                     row_rect.x1 - ROW_PILL_MARGIN,
                     row_rect.y1 - 1.0,
-                    tokens.radii.md as f64,
+                    f64::from(tokens.radii.md),
                 );
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -798,7 +796,7 @@ impl Widget for NoteTreeView {
             }
             let glyph_x = row_rect.x0 + ROW_INSET_X + (row.depth as f64) * INDENT_PX;
             let label_x = glyph_x + GLYPH_WIDTH;
-            let text_y = row_rect.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+            let text_y = row_rect.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
 
             // Nesting guides: a faint vertical rail at each ancestor depth
             // so the tree structure reads at a glance — this is what makes
@@ -852,7 +850,7 @@ impl Widget for NoteTreeView {
                 // Re-parent: outline the target page so it reads as "drop
                 // in here".
                 if let Some(&rr) = self.row_rects.get(*row) {
-                    let shape = RoundedRect::from_rect(rr.inset(-1.0), tokens.radii.sm as f64);
+                    let shape = RoundedRect::from_rect(rr.inset(-1.0), f64::from(tokens.radii.sm));
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
@@ -895,13 +893,13 @@ impl Widget for NoteTreeView {
         // Floating ghost: a half-transparent copy of the dragged row
         // following the cursor at its grab offset, drawn above the
         // reflowing list.
-        if drag_active {
-            if let (Some(fi), Some(ghost)) = (
+        if drag_active
+            && let (Some(fi), Some(ghost)) = (
                 from_idx,
                 self.drag.ghost_rect(self.rect.x0, self.rect.x1, &metrics),
-            ) {
-                if let Some(row) = self.flat_rows.get(fi) {
-                    let shape = RoundedRect::from_rect(ghost, tokens.radii.sm as f64);
+            )
+                && let Some(row) = self.flat_rows.get(fi) {
+                    let shape = RoundedRect::from_rect(ghost, f64::from(tokens.radii.sm));
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
@@ -917,7 +915,7 @@ impl Widget for NoteTreeView {
                         &shape,
                     );
                     let label_x = ghost.x0 + ROW_INSET_X + GLYPH_WIDTH;
-                    let text_y = ghost.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+                    let text_y = ghost.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
                     text_renderer.draw_text(
                         scene,
                         &row.title,
@@ -927,8 +925,6 @@ impl Widget for NoteTreeView {
                         Some((ghost.x1 - label_x - 4.0) as f32),
                     );
                 }
-            }
-        }
 
         // A single hairline down the sidebar's inner edge separates the
         // page tree from the editor. This replaces the old full-rectangle
@@ -1000,8 +996,8 @@ impl Widget for NoteTreeView {
 
         // Escape aborts an in-flight drag, snapping the list back to its
         // original order (the model is only mutated on a real drop).
-        if self.drag.is_pending() {
-            if let WindowEvent::KeyboardInput {
+        if self.drag.is_pending()
+            && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Named(NamedKey::Escape),
@@ -1016,13 +1012,12 @@ impl Widget for NoteTreeView {
                 *handled = true;
                 return;
             }
-        }
 
         // Commit an in-progress rename when the user presses OUTSIDE its
         // editor (click-away ends editing), then let the same press fall
         // through to select / toggle whatever row it landed on.
-        if self.rename.is_some() {
-            if let WindowEvent::MouseInput {
+        if self.rename.is_some()
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
@@ -1031,17 +1026,15 @@ impl Widget for NoteTreeView {
                 let inside = self
                     .rename
                     .as_ref()
-                    .map(|r| {
+                    .is_some_and(|r| {
                         r.input
                             .get_rect()
                             .contains(self.last_cursor.unwrap_or(Point::ZERO))
-                    })
-                    .unwrap_or(false);
+                    });
                 if !inside {
                     self.commit_rename();
                 }
             }
-        }
 
         // Route everything to the active rename editor first — it
         // owns focus while open. Enter / Escape are handled by us
@@ -1238,12 +1231,11 @@ impl Widget for NoteTreeView {
                     let is_double = self
                         .last_click
                         .as_ref()
-                        .map(|c| {
+                        .is_some_and(|c| {
                             c.page == row_id
                                 && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS
                                 && (c.pos.distance(pt)) < DOUBLE_CLICK_RADIUS_PX
-                        })
-                        .unwrap_or(false);
+                        });
                     self.last_click = Some(ClickRecord {
                         page: row_id,
                         at: now,
@@ -1291,8 +1283,8 @@ impl Widget for NoteTreeView {
                 // Alt-↑ / Alt-↓ — reorder the selected page among its
                 // siblings. Checked before the plain arrow navigation
                 // below so the modifier picks reorder over move-selection.
-                if mods.contains(ModifiersState::ALT) {
-                    if let Some(sel) = self.selected {
+                if mods.contains(ModifiersState::ALT)
+                    && let Some(sel) = self.selected {
                         match logical_key {
                             Key::Named(NamedKey::ArrowUp) => {
                                 self.pending_events
@@ -1309,7 +1301,6 @@ impl Widget for NoteTreeView {
                             _ => {}
                         }
                     }
-                }
                 match logical_key {
                     // Delete removes the selected page. Backspace is
                     // deliberately NOT bound here: the editor and the page
@@ -1356,13 +1347,12 @@ impl Widget for NoteTreeView {
                         }
                     }
                     Key::Named(NamedKey::F2) => {
-                        if let Some(sel) = self.selected {
-                            if let Some(idx) = self.row_index_of(sel) {
+                        if let Some(sel) = self.selected
+                            && let Some(idx) = self.row_index_of(sel) {
                                 let title = self.flat_rows[idx].title.clone();
                                 self.begin_rename(sel, &title);
                                 *handled = true;
                             }
-                        }
                     }
                     _ => {}
                 }
@@ -1371,7 +1361,7 @@ impl Widget for NoteTreeView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NoteTreeView"
     }
 
@@ -1436,7 +1426,7 @@ impl NoteTreeView {
     /// targeting through the real event path.
     #[doc(hidden)]
     pub fn row_center_for_test(&self, idx: usize) -> Option<Point> {
-        self.row_rects.get(idx).map(|r| r.center())
+        self.row_rects.get(idx).map(vello::kurbo::Rect::center)
     }
 
     /// Test hook: the x of the disclosure-triangle hit centre for row `idx`,

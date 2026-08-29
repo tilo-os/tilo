@@ -193,11 +193,10 @@ impl FindBar {
     pub fn open(&mut self, replace: bool, seed: Option<&str>) {
         self.visible = true;
         self.replace_open = replace;
-        if let Some(s) = seed {
-            if !s.is_empty() && !s.contains('\n') {
+        if let Some(s) = seed
+            && !s.is_empty() && !s.contains('\n') {
                 self.find.set_query(s);
             }
-        }
         self.find.set_focused(true);
         self.replace.set_focused(false);
         self.needs_redraw = true;
@@ -428,8 +427,8 @@ impl Widget for FindBar {
                     padding: taffy::Rect {
                         left: length(PAD as f32),
                         right: length(controls_w as f32),
-                        top: length(0.0),
-                        bottom: length(0.0),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
                     },
                     ..Default::default()
                 },
@@ -457,8 +456,8 @@ impl Widget for FindBar {
                         padding: taffy::Rect {
                             left: length(PAD as f32),
                             right: length(replace_controls as f32),
-                            top: length(0.0),
-                            bottom: length(0.0),
+                            top: length(0.0_f32),
+                            bottom: length(0.0_f32),
                         },
                         ..Default::default()
                     },
@@ -486,7 +485,7 @@ impl Widget for FindBar {
                 &rows,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -494,10 +493,10 @@ impl Widget for FindBar {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if !self.visible {
             return;
@@ -509,25 +508,22 @@ impl Widget for FindBar {
         if let Some(&find_row) = rows.first() {
             let rl = taffy.layout(find_row).unwrap();
             let row_origin =
-                Point::new(base.x + rl.location.x as f64, base.y + rl.location.y as f64);
-            if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node) {
-                if let Some(&k) = kids.first() {
+                Point::new(base.x + f64::from(rl.location.x), base.y + f64::from(rl.location.y));
+            if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node)
+                && let Some(&k) = kids.first() {
                     self.find.apply_layout(taffy, k, row_origin);
                 }
-            }
         }
-        if self.replace_open {
-            if let Some(&replace_row) = rows.get(1) {
+        if self.replace_open
+            && let Some(&replace_row) = rows.get(1) {
                 let rl = taffy.layout(replace_row).unwrap();
                 let row_origin =
-                    Point::new(base.x + rl.location.x as f64, base.y + rl.location.y as f64);
-                if let Ok(kids) = taffy.children(replace_row) {
-                    if let Some(&k) = kids.first() {
+                    Point::new(base.x + f64::from(rl.location.x), base.y + f64::from(rl.location.y));
+                if let Ok(kids) = taffy.children(replace_row)
+                    && let Some(&k) = kids.first() {
                         self.replace.apply_layout(taffy, k, row_origin);
                     }
-                }
             }
-        }
     }
 
     fn draw(
@@ -586,7 +582,7 @@ impl Widget for FindBar {
                 &status,
                 12.0,
                 color,
-                transform * Affine::translate((cluster_x0 - GAP - w as f64, find_row_mid - 7.0)),
+                transform * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
                 None,
             );
         }
@@ -716,8 +712,7 @@ impl Widget for FindBar {
             button: MouseButton::Left,
             ..
         } = event
-        {
-            if let Some((b, _)) = self
+            && let Some((b, _)) = self
                 .button_rects
                 .iter()
                 .find(|(_, r)| r.contains(self.hover))
@@ -732,15 +727,14 @@ impl Widget for FindBar {
                 *handled = true;
                 return;
             }
-        }
 
         // Otherwise the fields own it.
         let Ok(rows) = taffy.children(node_id) else {
             return;
         };
-        if let Some(&find_row) = rows.first() {
-            if let Ok(kids) = taffy.children(find_row) {
-                if let Some(&k) = kids.first() {
+        if let Some(&find_row) = rows.first()
+            && let Ok(kids) = taffy.children(find_row)
+                && let Some(&k) = kids.first() {
                     self.find.handle_event(
                         event,
                         scale_factor,
@@ -753,12 +747,10 @@ impl Widget for FindBar {
                         taffy,
                     );
                 }
-            }
-        }
-        if self.replace_open {
-            if let Some(&replace_row) = rows.get(1) {
-                if let Ok(kids) = taffy.children(replace_row) {
-                    if let Some(&k) = kids.first() {
+        if self.replace_open
+            && let Some(&replace_row) = rows.get(1)
+                && let Ok(kids) = taffy.children(replace_row)
+                    && let Some(&k) = kids.first() {
                         self.replace.handle_event(
                             event,
                             scale_factor,
@@ -771,12 +763,9 @@ impl Widget for FindBar {
                             taffy,
                         );
                     }
-                }
-            }
-        }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FindBar"
     }
 

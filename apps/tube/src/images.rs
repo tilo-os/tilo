@@ -55,7 +55,7 @@ pub fn image_store() -> ImageStore {
 #[derive(Clone, Copy)]
 pub struct Imgs<'a>(pub Option<&'a ImageStore>);
 
-impl<'a> Imgs<'a> {
+impl Imgs<'_> {
     /// The hermetic no-store handle (offline / `--shots`).
     pub fn none() -> Self {
         Imgs(None)
@@ -80,6 +80,6 @@ impl<'a> Imgs<'a> {
 
     /// In-flight image loads, so the app can keep redrawing until they settle.
     pub fn pending(&self) -> usize {
-        self.0.map(|s| s.pending()).unwrap_or(0)
+        self.0.map_or(0, ui::ImageStore::pending)
     }
 }

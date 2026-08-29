@@ -192,8 +192,7 @@ fn record_client_text(store: &SharedSelection, target: Target, text: Option<Stri
 fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
     store
         .lock()
-        .map(|s| s.slot(target).compositor_owned)
-        .unwrap_or(false)
+        .is_ok_and(|s| s.slot(target).compositor_owned)
 }
 
 /// A selection change seen but not yet mirrored. smithay raises
@@ -253,11 +252,11 @@ pub struct DragLabel(Arc<Mutex<Option<String>>>);
 
 impl DragLabel {
     pub fn set(&self, label: Option<String>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = label;
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = label;
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
@@ -319,11 +318,10 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 impl ChromeDrag {
     pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
         let mut mime_types = vec![URI_LIST_MIME.to_string()];
-        if let [single] = paths.as_slice() {
-            if let Some(mime) = mime_for_path(single) {
+        if let [single] = paths.as_slice()
+            && let Some(mime) = mime_for_path(single) {
                 mime_types.push(mime.to_string());
             }
-        }
         Self { paths, mime_types }
     }
 
@@ -374,7 +372,7 @@ fn percent_encode_path(path: &str) -> String {
     for b in path.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -406,8 +404,7 @@ fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
 fn is_privileged(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
-        .map(|d| d.privileged)
-        .unwrap_or(false)
+        .is_some_and(|d| d.privileged)
 }
 
 /// Flip `fd` non-blocking. Returns `false` if the kernel refused, in which
@@ -477,20 +474,15 @@ fn read_into_mirror(
                             "selection source exceeded the mirror size limit; dropping it"
                         );
                         record_client_text(&store, target, None);
-                    } else {
-                        match String::from_utf8(std::mem::take(&mut buf)) {
-                            Ok(text) => record_client_text(&store, target, Some(text)),
-                            Err(_) => {
-                                // Owner advertised UTF-8 text then sent something else; mirroring bytes we
-                                // can't render would put mojibake in every paste, so record "nothing" and
-                                // leave the client as authority.
-                                tracing::warn!(
-                                    target: "shell::selection",
-                                    "selection source sent non-UTF-8 bytes for a text mime type"
-                                );
-                                record_client_text(&store, target, None);
-                            }
-                        }
+                    } else if let Ok(text) = String::from_utf8(std::mem::take(&mut buf)) { record_client_text(&store, target, Some(text)) } else {
+                        // Owner advertised UTF-8 text then sent something else; mirroring bytes we
+                        // can't render would put mojibake in every paste, so record "nothing" and
+                        // leave the client as authority.
+                        tracing::warn!(
+                            target: "shell::selection",
+                            "selection source sent non-UTF-8 bytes for a text mime type"
+                        );
+                        record_client_text(&store, target, None);
                     }
                     return Ok(PostAction::Remove);
                 }
@@ -832,11 +824,10 @@ impl ClientDndGrabHandler for State {
             )));
         // Then ask for the name from the URI list the source is already offering —
         // turns "Image" into "photo.png" on screen.
-        if let Some(source) = source.as_ref() {
-            if mimes.iter().any(|m| m == URI_LIST_MIME) {
+        if let Some(source) = source.as_ref()
+            && mimes.iter().any(|m| m == URI_LIST_MIME) {
                 request_dragged_name(source, self.selection.dnd_label.clone());
             }
-        }
         // The drag icon is a client surface with the `dnd_icon` role, but qOS
         // doesn't composite it — the compositor draws its own drag feedback, and a
         // client icon would sit outside the strip layout. Recording it just keeps

@@ -63,8 +63,7 @@ fn suspend_label(minutes: u32) -> &'static str {
     SUSPEND_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
-        .map(|(l, _)| *l)
-        .unwrap_or("15 minutes")
+        .map_or("15 minutes", |(l, _)| *l)
 }
 
 fn suspend_from_label(label: &str) -> Option<u32> {
@@ -101,8 +100,7 @@ fn profile_label(p: PowerProfile) -> &'static str {
     PROFILES
         .iter()
         .find(|(_, pp)| *pp == p)
-        .map(|(l, _)| *l)
-        .unwrap_or("Balanced")
+        .map_or("Balanced", |(l, _)| *l)
 }
 
 fn profile_from_label(label: &str) -> Option<PowerProfile> {
@@ -124,8 +122,7 @@ fn blank_label(minutes: u32) -> &'static str {
     BLANK_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
-        .map(|(l, _)| *l)
-        .unwrap_or("10 minutes")
+        .map_or("10 minutes", |(l, _)| *l)
 }
 
 fn blank_from_label(label: &str) -> Option<u32> {
@@ -537,17 +534,17 @@ impl Widget for PowerPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -616,7 +613,7 @@ impl Widget for PowerPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PowerPane"
     }
 

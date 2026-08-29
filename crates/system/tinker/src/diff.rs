@@ -252,7 +252,7 @@ fn getxattr(path: &Path, name: &str) -> Option<Vec<u8>> {
         libc::lgetxattr(
             cpath.as_ptr(),
             cname.as_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
             buf.len(),
         )
     };

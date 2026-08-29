@@ -1,6 +1,6 @@
 //! The compositor's Bluetooth pairing agent.
 //!
-//! BlueZ asks the desktop a question mid-pairing — "these six digits, do
+//! `BlueZ` asks the desktop a question mid-pairing — "these six digits, do
 //! they match what the headphones are showing?" — and holds the pairing
 //! open until the answer comes back. Whoever answers decides whether a
 //! nearby device gets to inject keystrokes and read audio.
@@ -16,12 +16,11 @@ use std::sync::{Arc, Mutex};
 
 use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
 use qos_bluez::{BluezClient, PairingReply, PairingRequest};
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// The prompt currently on screen, if any, and the channel that answers it.
 ///
-/// One at a time by construction: BlueZ pairs one device at a time, and
+/// One at a time by construction: `BlueZ` pairs one device at a time, and
 /// a second dialog stacking on the first would be a way to trick someone into answering the wrong question.
 #[derive(Default)]
 pub struct PairingState {
@@ -90,7 +89,7 @@ impl PairingPromptHandle {
         true
     }
 
-    /// Dismiss without answering — the user closed it, or BlueZ withdrew the
+    /// Dismiss without answering — the user closed it, or `BlueZ` withdrew the
     /// request. Dropping the channel makes the agent refuse, the only safe reading of "no answer".
     pub fn dismiss(&self) -> bool {
         let Ok(mut s) = self.inner.lock() else {
@@ -100,7 +99,7 @@ impl PairingPromptHandle {
     }
 }
 
-/// A registered agent plus the task pumping its events. Dropping this stops the pump; call [`Self::shutdown`] to also unregister from BlueZ.
+/// A registered agent plus the task pumping its events. Dropping this stops the pump; call [`Self::shutdown`] to also unregister from `BlueZ`.
 pub struct PairingService {
     registration: AgentRegistration,
     pump: tokio::task::JoinHandle<()>,
@@ -108,10 +107,10 @@ pub struct PairingService {
 }
 
 impl PairingService {
-    /// Connect to BlueZ, register the pairing agent, and start feeding
+    /// Connect to `BlueZ`, register the pairing agent, and start feeding
     /// prompts to `handle`.
     ///
-    /// Failing to reach BlueZ is not fatal — a desktop with no Bluetooth is
+    /// Failing to reach `BlueZ` is not fatal — a desktop with no Bluetooth is
     /// a desktop, so the caller logs and continues. What must never happen
     /// is the agent appearing registered when it isn't, since then pairings would silently fail with no prompt.
     pub async fn start(handle: PairingPromptHandle) -> Result<Self, String> {

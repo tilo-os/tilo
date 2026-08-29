@@ -303,7 +303,7 @@ impl PreviewPane {
     // ----- scrolling / zoom input ----------------------------------------
 
     /// Plain wheel scroll (kept for callers that only have a vertical delta —
-    /// e.g. keyboard PageDown mapping). Positive `dy` scrolls down.
+    /// e.g. keyboard `PageDown` mapping). Positive `dy` scrolls down.
     pub fn scroll_by(&mut self, dy: f64) {
         self.viewport.pan_by(0.0, dy);
         self.recompute_current();
@@ -423,11 +423,10 @@ impl PreviewPane {
             self.recompute_current();
             return;
         }
-        if self.selecting {
-            if let Some(b) = self.boundary_at(p) {
+        if self.selecting
+            && let Some(b) = self.boundary_at(p) {
                 self.sel_cursor = b;
             }
-        }
     }
 
     pub fn on_mouse_up(&mut self) {
@@ -516,7 +515,7 @@ impl PreviewPane {
         let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
             let (pw, ph) = self.sizes_px[i];
-            let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
+            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
             let r = Rect::new(
                 self.rect.x0 + THUMB_GAP,
                 y,
@@ -562,11 +561,10 @@ impl PreviewPane {
         let mut out = String::new();
         let mut prev_key: Option<(usize, i64)> = None;
         for cell in &self.cells[lo..hi] {
-            if let Some(k) = prev_key {
-                if k != cell.line_key {
+            if let Some(k) = prev_key
+                && k != cell.line_key {
                     out.push('\n');
                 }
-            }
             out.push_str(&cell.text);
             prev_key = Some(cell.line_key);
         }
@@ -656,7 +654,7 @@ impl PreviewPane {
         let (tw, _) = tr.measure(text, font, None);
         let pad_x = 12.0;
         let h = 26.0;
-        let w = (tw as f64 + pad_x * 2.0).min(main.width() - 20.0);
+        let w = (f64::from(tw) + pad_x * 2.0).min(main.width() - 20.0);
         let x0 = main.x0 + (main.width() - w) * 0.5;
         let y0 = main.y0 + 10.0;
         let banner = Rect::new(x0, y0, x0 + w, y0 + h);
@@ -675,7 +673,7 @@ impl PreviewPane {
             None,
             &RoundedRect::from_rect(banner, 8.0),
         );
-        let ty = y0 + (h - font as f64 * 1.25) / 2.0;
+        let ty = y0 + (h - f64::from(font) * 1.25) / 2.0;
         tr.draw_text(
             scene,
             text,
@@ -810,7 +808,7 @@ impl PreviewPane {
         let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
             let (pw, ph) = self.sizes_px[i];
-            let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
+            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
             let r = Rect::new(
                 self.rect.x0 + THUMB_GAP,
                 y,
@@ -859,7 +857,7 @@ impl PreviewPane {
             .clone()
             .unwrap_or_else(|| "No output".into());
         let (w, _h) = tr.measure(&text, 14.0, None);
-        let x = self.rect.x0 + (self.rect.width() - w as f64) * 0.5;
+        let x = self.rect.x0 + (self.rect.width() - f64::from(w)) * 0.5;
         let y = self.rect.y0 + self.rect.height() * 0.5 - 9.0;
         tr.draw_text(
             scene,
@@ -876,7 +874,7 @@ impl PreviewPane {
 /// viewport kernel's own scaling so wheel feel is identical across apps).
 fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+        MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
         MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
     }
 }

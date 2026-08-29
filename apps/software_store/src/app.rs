@@ -565,8 +565,7 @@ impl SoftwareStore {
     fn is_queued(&self, id: &str) -> bool {
         self.install_start
             .get(id)
-            .map(|start| *start > Instant::now())
-            .unwrap_or(false)
+            .is_some_and(|start| *start > Instant::now())
     }
 
     /// Roll the per-app batch statuses up into an [`UpdateProgress`] for the
@@ -617,8 +616,7 @@ impl SoftwareStore {
         }
         let all_done = self.update_batch.iter().all(|id| {
             self.app_by_id(id)
-                .map(|app| matches!(self.live_state(&app), InstallState::Installed))
-                .unwrap_or(true)
+                .map_or(true, |app| matches!(self.live_state(&app), InstallState::Installed))
         });
         if all_done {
             self.update_batch.clear();
@@ -1016,11 +1014,10 @@ impl SoftwareStore {
         let mut seen = std::collections::HashSet::new();
         let mut out: Vec<&AppEntry> = Vec::new();
         for id in &self.popular_ids {
-            if let Some(a) = self.live_apps.get(id) {
-                if seen.insert(a.id.as_str()) {
+            if let Some(a) = self.live_apps.get(id)
+                && seen.insert(a.id.as_str()) {
                     out.push(a);
                 }
-            }
         }
         // Anything fetched outside the popular collection (e.g. a detail view)
         // trails after, alphabetised, so nothing real is hidden.
@@ -1029,7 +1026,7 @@ impl SoftwareStore {
             .values()
             .filter(|a| !seen.contains(a.id.as_str()))
             .collect();
-        extras.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        extras.sort_by_key(|a| a.name.to_lowercase());
         out.extend(extras);
         out
     }
@@ -1221,7 +1218,7 @@ impl SoftwareStore {
                 &SegmentedFace::new(&rects, &labels, selected)
                     .pill()
                     .hovered(hovered)
-                    .radius(theme.tokens.radii.full as f64)
+                    .radius(f64::from(theme.tokens.radii.full))
                     .text_size(tsize)
                     .left_labels(14.0),
             );
@@ -1447,7 +1444,7 @@ impl SoftwareStore {
             // Three-line hamburger.
             let line_w = 15.0;
             for i in 0..3 {
-                let ly = cyc - 6.0 + i as f64 * 6.0;
+                let ly = cyc - 6.0 + f64::from(i) * 6.0;
                 let line = vello::kurbo::Line::new(
                     Point::new(cx - line_w / 2.0, ly),
                     Point::new(cx + line_w / 2.0, ly),
@@ -1552,7 +1549,7 @@ impl SoftwareStore {
                 TextWeight::Medium,
                 fg,
                 r.x0 + 14.0,
-                r.center().y - ty.base as f64 / 2.0 - 1.0,
+                r.center().y - f64::from(ty.base) / 2.0 - 1.0,
                 None,
             );
             // Updates count badge on the right of the row.
@@ -1990,8 +1987,8 @@ impl SoftwareStore {
             band.x1,
             band.y1,
             vello::kurbo::RoundedRectRadii::new(
-                theme.tokens.radii.xl as f64,
-                theme.tokens.radii.xl as f64,
+                f64::from(theme.tokens.radii.xl),
+                f64::from(theme.tokens.radii.xl),
                 0.0,
                 0.0,
             ),
@@ -2161,7 +2158,7 @@ impl SoftwareStore {
             TextWeight::Medium,
             fg,
             r.x0 + 14.0,
-            r.center().y - size as f64 / 2.0 - 1.0,
+            r.center().y - f64::from(size) / 2.0 - 1.0,
             None,
         );
         targets.push(HitTarget {
@@ -2589,7 +2586,7 @@ impl SoftwareStore {
                 y,
                 Some(width as f32),
             );
-            y += h as f64 + 12.0;
+            y += f64::from(h) + 12.0;
         }
         y += 14.0;
 
@@ -3579,7 +3576,7 @@ impl SoftwareStore {
             TextWeight::Semibold,
             Color::WHITE,
             r.x0 + 20.0,
-            r.center().y - ty.sm as f64 / 2.0 - 1.0,
+            r.center().y - f64::from(ty.sm) / 2.0 - 1.0,
             None,
         );
     }
@@ -3839,7 +3836,7 @@ impl SoftwareStore {
                 TextWeight::Bold,
                 fg,
                 r.x0 + 12.0,
-                r.center().y - ty.sm as f64 / 2.0 - 1.0,
+                r.center().y - f64::from(ty.sm) / 2.0 - 1.0,
                 None,
             );
             draw::text(
@@ -3850,7 +3847,7 @@ impl SoftwareStore {
                 ty.sm,
                 fg,
                 r.x0 + 34.0,
-                r.center().y - ty.sm as f64 / 2.0 - 1.0,
+                r.center().y - f64::from(ty.sm) / 2.0 - 1.0,
                 Some((width - 48.0) as f32),
             );
             y += h + 8.0;
@@ -3907,7 +3904,7 @@ impl SoftwareStore {
         for rv in reviews {
             // Estimate height from the wrapped body.
             let (_, bh) = tr.measure(&rv.body, ty.sm, Some((width - 32.0) as f32));
-            let card_h = 30.0 + bh as f64 + 22.0;
+            let card_h = 30.0 + f64::from(bh) + 22.0;
             let r = Rect::new(x0, y, x0 + width, y + card_h);
             draw::fill_round(
                 scene,
@@ -3934,7 +3931,7 @@ impl SoftwareStore {
                 scene,
                 t,
                 r.x0 + pad + draw::measure(tr, &rv.author, ty.sm).0 + 14.0,
-                r.y0 + 12.0 + ty.sm as f64 / 2.0,
+                r.y0 + 12.0 + f64::from(ty.sm) / 2.0,
                 rv.stars,
                 5.0,
                 2.0,
@@ -4040,8 +4037,8 @@ impl SoftwareStore {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-            if ke.state == winit::event::ElementState::Pressed
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == winit::event::ElementState::Pressed
                 && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
             {
                 self.confirm_pending_ref(state);
@@ -4049,7 +4046,6 @@ impl SoftwareStore {
                 *handled = true;
                 return;
             }
-        }
         self.ensure_ref_dialog();
         self.layout_ref_dialog();
         let (install, cancel) = {
@@ -4093,7 +4089,7 @@ impl SoftwareStore {
         let (_, th) = tr.measure(text, ty.xs, Some(max_w as f32));
         let pad = 10.0;
         let w = max_w + pad * 2.0;
-        let h = th as f64 + pad * 2.0;
+        let h = f64::from(th) + pad * 2.0;
         // Position above-right of cursor, clamped into the window.
         let mut x = self.mouse.x + 14.0;
         let mut yt = self.mouse.y - h - 8.0;
@@ -4213,17 +4209,17 @@ impl Widget for RefBody {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -4314,7 +4310,7 @@ impl Widget for RefBody {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RefBody"
     }
 
@@ -4434,7 +4430,7 @@ impl Widget for SoftwareStore {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -4442,10 +4438,10 @@ impl Widget for SoftwareStore {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // On a breakpoint crossing (window resize), drop any stale drawer
         // preference so the nav returns to the new layout's default.
@@ -4461,16 +4457,14 @@ impl Widget for SoftwareStore {
         _presence: &PresenceCtx,
     ) {
         // Expire the toast + any action error (errors linger a bit longer).
-        if let Some((_, at)) = &self.toast {
-            if at.elapsed() > TOAST_DURATION {
+        if let Some((_, at)) = &self.toast
+            && at.elapsed() > TOAST_DURATION {
                 self.toast = None;
             }
-        }
-        if let Some((_, at)) = &self.action_error {
-            if at.elapsed() > TOAST_DURATION * 2 {
+        if let Some((_, at)) = &self.action_error
+            && at.elapsed() > TOAST_DURATION * 2 {
                 self.action_error = None;
             }
-        }
 
         let c = &theme.tokens.colors;
         // Full background.
@@ -4495,7 +4489,7 @@ impl Widget for SoftwareStore {
         {
             // Detect installs that reached 100% this frame so `needs_commit`
             // can nudge a finalising `sync`.
-            for (_, start) in &self.install_start {
+            for start in self.install_start.values() {
                 if start.elapsed().as_secs_f64() / INSTALL_DURATION.as_secs_f64() >= 1.0 {
                     any_complete = true;
                 }
@@ -4641,7 +4635,7 @@ impl Widget for SoftwareStore {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
@@ -4750,7 +4744,7 @@ impl Widget for SoftwareStore {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SoftwareStore"
     }
 

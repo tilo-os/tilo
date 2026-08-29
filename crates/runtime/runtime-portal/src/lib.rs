@@ -116,7 +116,7 @@ impl UnixCapnpClient {
     }
 
     /// Take the remote bootstrap capability as a typed client, spawning the RPC
-    /// driver task on the current tokio LocalSet (capnp-rpc needs `!Send`
+    /// driver task on the current tokio `LocalSet` (capnp-rpc needs `!Send`
     /// futures, so callers must run this from a `LocalSet`-aware context).
     pub fn bootstrap<C>(mut self) -> C
     where

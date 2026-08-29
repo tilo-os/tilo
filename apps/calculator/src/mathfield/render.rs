@@ -36,8 +36,8 @@ pub fn draw_field(
     let oy = origin.y;
 
     // selection band first (behind glyphs)
-    if let (Some(sel), false) = (selection, sel_gaps.is_empty()) {
-        if !sel.is_empty() {
+    if let (Some(sel), false) = (selection, sel_gaps.is_empty())
+        && !sel.is_empty() {
             let lo = sel.lo();
             let hi = sel.hi();
             let mut x0 = None;
@@ -62,7 +62,6 @@ pub fn draw_field(
                 scene.fill(Fill::NonZero, t, col, None, &band);
             }
         }
-    }
 
     // boxes
     for b in &layout.boxes {
@@ -70,13 +69,12 @@ pub fn draw_field(
     }
 
     // caret bar
-    if show_caret {
-        if let Some(g) = caret {
+    if show_caret
+        && let Some(g) = caret {
             let x = ox + g.x;
             let bar = Rect::new(x - 1.0, oy + g.top, x + 1.0, oy + g.bottom);
             scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
         }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,13 +113,13 @@ fn draw_box(
             // Draw a parenthesis glyph scaled vertically to the box height by
             // stretching the font glyph via an affine on the baseline point.
             let glyph = if *open { "(" } else { ")" };
-            let nat_h = (*size as f64) * 1.25;
+            let nat_h = f64::from(*size) * 1.25;
             let scale = (b.h / nat_h).clamp(1.0, 3.0);
             let pos = Point::new(ox + b.x, oy + b.y + b.baseline);
             let xf = t
                 * Affine::translate((pos.x, pos.y))
                 * Affine::scale_non_uniform(1.0, scale)
-                * Affine::translate((0.0, -(*size as f64) * 1.0));
+                * Affine::translate((0.0, -f64::from(*size) * 1.0));
             tr.draw_text_weighted(
                 scene,
                 glyph,
@@ -151,7 +149,7 @@ fn draw_box(
             let left = ox + b.x;
             let top = oy + b.y;
             let sw = b.w;
-            let thick = ((*size as f64) * 0.085).max(1.4);
+            let thick = (f64::from(*size) * 0.085).max(1.4);
             // Vinculum sits just below the box top, its centreline at `vy`.
             let vy = top + thick * 0.5 + 1.0;
             let apex_x = left + sw;

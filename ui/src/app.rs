@@ -15,7 +15,7 @@ pub enum UserEvent {
         x: f64,
         y: f64,
     },
-    /// CursorMoved → Pressed → Released, dispatched as one unit.
+    /// `CursorMoved` → Pressed → Released, dispatched as one unit.
     Click {
         x: f64,
         y: f64,
@@ -59,8 +59,7 @@ fn perf_enabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
         std::env::var("QUICK_UI_PERF")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
+            .is_ok_and(|s| !s.is_empty())
     })
 }
 
@@ -73,8 +72,7 @@ fn scroll_opt_disabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
         std::env::var("QUICK_UI_NO_SCROLL_OPT")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
+            .is_ok_and(|s| !s.is_empty())
     })
 }
 
@@ -498,7 +496,7 @@ impl App {
         let navigation = self
             .action_palette
             .as_mut()
-            .and_then(|p| p.take_navigation());
+            .and_then(super::action_palette::ActionPalette::take_navigation);
         if let Some(action_id) = navigation {
             let nav_before = self.state.doc.get_heads();
             self.root_widget
@@ -513,8 +511,7 @@ impl App {
         if self
             .action_palette
             .as_ref()
-            .map(|p| !p.is_open())
-            .unwrap_or(false)
+            .is_some_and(|p| !p.is_open())
         {
             self.action_palette = None;
         }
@@ -1172,7 +1169,7 @@ impl App {
         self.root_widget
             .restore_view_state(&crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
-                view_mode: view.view_mode.clone(),
+                view_mode: view.view_mode,
             });
         self.layout_dirty = true;
         self.needs_sync = true;
@@ -1712,14 +1709,11 @@ impl App {
     }
 
     fn navigate_focus(&mut self, direction: Direction) {
-        let current_id = match self.focused_node {
-            Some(id) => id,
-            None => {
-                if !self.focusable_order.is_empty() {
-                    self.set_focused_node(Some(self.focusable_order[0]));
-                }
-                return;
+        let current_id = if let Some(id) = self.focused_node { id } else {
+            if !self.focusable_order.is_empty() {
+                self.set_focused_node(Some(self.focusable_order[0]));
             }
+            return;
         };
         let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) {
             unsafe { (*w_ptr).get_rect() }
@@ -2350,7 +2344,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     // DeviceId is opaque and the dispatch chain never inspects it (same
     // trick `shell::compositor::native` uses headless).
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        let Some(window) = self.window.as_ref().cloned() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         let window_id = window.id();
@@ -2521,7 +2515,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref().cloned() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         if window.id() != window_id {
@@ -2586,13 +2580,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // `recv()` is the backpressure boundary — capacity-2 means
                 // at most one frame of overlap (main building N+1 while
                 // worker presents N).
-                let mut scene = match render.scene_pool.recv() {
-                    Ok(s) => s,
-                    Err(_) => {
-                        tracing::error!("ui-render thread died; closing window");
-                        event_loop.exit();
-                        return;
-                    }
+                let mut scene = if let Ok(s) = render.scene_pool.recv() { s } else {
+                    tracing::error!("ui-render thread died; closing window");
+                    event_loop.exit();
+                    return;
                 };
                 scene.reset();
 
@@ -2662,7 +2653,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         let text_renderer = &mut app.text_renderer;
                         let t0 = std::time::Instant::now();
                         let (logical_w, logical_h) =
-                            crate::scale::logical_size((width, height), scale_factor as f64);
+                            crate::scale::logical_size((width, height), f64::from(scale_factor));
                         app.taffy
                             .compute_layout_with_measure(
                                 root_node,
@@ -2717,8 +2708,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // Widget rects are logical; this transform rasterises at the
                 // physical resolution, so the frame stays crisp at any
                 // fractional scale.
-                let transform = crate::scale::composite_transform(scale_factor as f64);
-                let (vp_w, vp_h) = crate::scale::logical_size((width, height), scale_factor as f64);
+                let transform = crate::scale::composite_transform(f64::from(scale_factor));
+                let (vp_w, vp_h) = crate::scale::logical_size((width, height), f64::from(scale_factor));
                 let window_rect = vello::kurbo::Rect::new(0.0, 0.0, vp_w, vp_h);
                 let prev_vp = app.presence_ctx.push_viewport(window_rect);
                 // No GPU damage clip: vello allocates a fresh `target_texture`
@@ -2749,10 +2740,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 );
 
                 if let Some(ap) = app.action_palette.as_mut() {
-                    let win_w = (width as f64) / (scale_factor as f64);
+                    let win_w = f64::from(width) / f64::from(scale_factor);
                     let card_w = (win_w * 0.6).clamp(360.0, 640.0);
                     let x0 = ((win_w - card_w) / 2.0).max(0.0);
-                    let y0 = (height as f64 / (scale_factor as f64) * 0.12).max(24.0);
+                    let y0 = (f64::from(height) / f64::from(scale_factor) * 0.12).max(24.0);
                     ap.layout(&app.theme, Point::new(x0, y0), card_w);
                     ap.draw(
                         &mut scene,
@@ -2768,8 +2759,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .visible()
                     .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
                 {
-                    let win_w = (width as f64) / (scale_factor as f64);
-                    let win_h = (height as f64) / (scale_factor as f64);
+                    let win_w = f64::from(width) / f64::from(scale_factor);
+                    let win_h = f64::from(height) / f64::from(scale_factor);
                     let viewport = vello::kurbo::Rect::new(0.0, 0.0, win_w, win_h);
                     crate::widget::tooltip::draw_hover_tooltip(
                         &mut scene,
@@ -2785,7 +2776,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if let Some(p) = app.profiler.as_mut() {
                     p.record_since(crate::profiling::Pass::Draw, __prof_draw);
                 }
-                let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
 
                 // Legacy path — `state.collab.cursors` predates PresenceCtx;
                 // kept for apps that still write into it directly.
@@ -2798,7 +2789,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     path.close_path();
 
                     let cursor_transform =
-                        transform * Affine::translate((cursor.x as f64, cursor.y as f64));
+                        transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         cursor_transform,
@@ -2910,15 +2901,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // attached, so this is free on the common no-reader path.
                 if let Some(adapter) = self.a11y_adapter.as_mut() {
                     let app_ref: &App = app;
-                    let scale = scale_factor as f64;
+                    let scale = f64::from(scale_factor);
                     adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
                 }
 
                 // Painted last, after the frame timing was committed above,
                 // so the HUD's own cost never enters its numbers.
-                if app.profiler.as_ref().is_some_and(|p| p.hud_enabled()) {
+                if app.profiler.as_ref().is_some_and(super::profiling::FrameProfiler::hud_enabled) {
                     let (hud_w, hud_h) =
-                        crate::scale::logical_size((width, height), scale_factor as f64);
+                        crate::scale::logical_size((width, height), f64::from(scale_factor));
                     if let Some(p) = app.profiler.as_ref() {
                         p.draw_hud(
                             &mut scene,
@@ -2941,7 +2932,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     return;
                 }
 
-                let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
                 if let Some(_start) = t_frame_start {
                     // On a static frame this reads `shape=0us hit=N miss=0`.
                     let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
@@ -3120,7 +3111,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some(e) = app.state.redo_as(
                                 Some(&app.local_author),
                                 current_focus_idx,
-                                current_meta.clone(),
+                                current_meta,
                             ) {
                                 app.apply_undo_entry(e);
                             }
@@ -3131,7 +3122,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some(e) = app.state.undo_as(
                                 Some(&app.local_author),
                                 current_focus_idx,
-                                current_meta.clone(),
+                                current_meta,
                             ) {
                                 app.apply_undo_entry(e);
                             }
@@ -3142,7 +3133,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some(e) = app.state.redo_as(
                                 Some(&app.local_author),
                                 current_focus_idx,
-                                current_meta.clone(),
+                                current_meta,
                             ) {
                                 app.apply_undo_entry(e);
                             }
@@ -3222,20 +3213,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             let (dx, dy, precise) = match delta {
                                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                                    (*x as f64, *y as f64, false)
+                                    (f64::from(*x), f64::from(*y), false)
                                 }
                             };
                             app.nav_gestures
                                 .on_scroll(dx, dy, map_phase(*phase), precise)
                         }
                         WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
-                            delta.x as f64,
-                            delta.y as f64,
+                            f64::from(delta.x),
+                            f64::from(delta.y),
                             map_phase(*phase),
                             true,
                         ),
                         WindowEvent::Touch(t) => {
-                            let width = window.inner_size().width as f64;
+                            let width = f64::from(window.inner_size().width);
                             app.nav_gestures.on_touch(
                                 t.id,
                                 t.location.x,
@@ -3503,7 +3494,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(window) = self.window.as_ref().cloned() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         let app = &mut self.app;
@@ -5606,8 +5597,8 @@ impl crate::view::FreezeThaw for App {
             .map(|s| ViewRect {
                 x: 0.0,
                 y: 0.0,
-                width: s.width as f64,
-                height: s.height as f64,
+                width: f64::from(s.width),
+                height: f64::from(s.height),
             })
             .unwrap_or_default();
 

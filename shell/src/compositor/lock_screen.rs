@@ -143,7 +143,7 @@ fn draw_lock_widget(
             view.clock,
             clock_size,
             theme.text_primary,
-            Affine::translate((cx - cw as f64 / 2.0, cy - 170.0)),
+            Affine::translate((cx - f64::from(cw) / 2.0, cy - 170.0)),
             None,
         );
     }
@@ -155,7 +155,7 @@ fn draw_lock_widget(
             view.date,
             date_size,
             theme.text_dim,
-            Affine::translate((cx - dw as f64 / 2.0, cy - 120.0)),
+            Affine::translate((cx - f64::from(dw) / 2.0, cy - 120.0)),
             None,
         );
     }
@@ -205,7 +205,7 @@ fn draw_lock_widget(
         title,
         title_size,
         theme.text_primary,
-        Affine::translate((cx - tw as f64 / 2.0, title_y)),
+        Affine::translate((cx - f64::from(tw) / 2.0, title_y)),
         None,
     );
 
@@ -246,8 +246,8 @@ fn draw_lock_widget(
             ph_size,
             theme.text_dim,
             Affine::translate((
-                cx - pw as f64 / 2.0,
-                field_y + field_h / 2.0 + ph_h as f64 / 2.0 - 3.0,
+                cx - f64::from(pw) / 2.0,
+                field_y + field_h / 2.0 + f64::from(ph_h) / 2.0 - 3.0,
             )),
             None,
         );
@@ -284,7 +284,7 @@ fn draw_lock_widget(
             verifying,
             v_size,
             theme.text_dim,
-            Affine::translate((cx - vw as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(vw) / 2.0, line_y)),
             None,
         );
     } else if let Some(err) = view.error {
@@ -295,7 +295,7 @@ fn draw_lock_widget(
             err,
             err_size,
             theme.tokens.colors.semantic.danger,
-            Affine::translate((cx - ew as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(ew) / 2.0, line_y)),
             None,
         );
     } else {
@@ -307,7 +307,7 @@ fn draw_lock_widget(
             hint,
             hint_size,
             theme.text_dim,
-            Affine::translate((cx - hw as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(hw) / 2.0, line_y)),
             None,
         );
     }
@@ -323,7 +323,7 @@ fn draw_lock_widget(
             &label,
             label_size,
             theme.text_dim,
-            Affine::translate((cx - lw as f64 / 2.0, line_y + 34.0)),
+            Affine::translate((cx - f64::from(lw) / 2.0, line_y + 34.0)),
             None,
         );
     }

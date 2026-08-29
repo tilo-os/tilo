@@ -249,7 +249,7 @@ impl FileView {
         CONTENT_PAD_X * self.scale
     }
     fn body_text(&self, theme: &Theme) -> f32 {
-        (theme.tokens.typography.scale.base as f64 * self.scale) as f32
+        (f64::from(theme.tokens.typography.scale.base) * self.scale) as f32
     }
     fn header_text(&self, theme: &Theme) -> f32 {
         theme.tokens.typography.scale.sm
@@ -500,7 +500,7 @@ impl FileView {
                 continue;
             }
             let cr = self.header_col_rect(i);
-            let ty = top + (header_h - hsize as f64) / 2.0;
+            let ty = top + (header_h - f64::from(hsize)) / 2.0;
             tr.draw_text(
                 scene,
                 col.header,
@@ -521,7 +521,7 @@ impl FileView {
                     caret,
                     hsize,
                     tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-                    transform * Affine::translate((cr.x0 + lw as f64 + 4.0, ty)),
+                    transform * Affine::translate((cr.x0 + f64::from(lw) + 4.0, ty)),
                     None,
                 );
             }
@@ -673,8 +673,7 @@ impl FileView {
     fn thumb_key(&self, ctx: &ThumbCtx, entry: &Entry) -> ThumbKey {
         let mtime_ms = entry
             .modified
-            .map(|t| t.timestamp_millis().max(0) as u64)
-            .unwrap_or(0);
+            .map_or(0, |t| t.timestamp_millis().max(0) as u64);
         ThumbKey::of_path_meta(&entry.path, mtime_ms, entry.size, ctx.service.edge())
     }
 
@@ -872,8 +871,8 @@ impl FileView {
         if !ext.is_empty() {
             let fs = (rect.height() * 0.2).clamp(8.0, 13.0) as f32;
             let (w, _) = tr.measure(&ext, fs, None);
-            let tx = rect.x0 + (rect.width() - w as f64) / 2.0;
-            let ty = rect.y1 - pad - fs as f64;
+            let tx = rect.x0 + (rect.width() - f64::from(w)) / 2.0;
+            let ty = rect.y1 - pad - f64::from(fs);
             tr.draw_text(
                 scene,
                 &ext,
@@ -956,13 +955,13 @@ impl FileView {
                         cell.x0 + 6.0,
                         ly - 4.0,
                         cell.x1 - 6.0,
-                        ly + size as f64 + 6.0,
+                        ly + f64::from(size) + 6.0,
                     )));
                 }
             } else {
                 let label = truncate(tr, &entry.name, size, self.cell_w() - 10.0);
                 let (lw, _) = tr.measure(&label, size, None);
-                let lx = cell.x0 + (self.cell_w() - lw as f64) / 2.0;
+                let lx = cell.x0 + (self.cell_w() - f64::from(lw)) / 2.0;
                 tr.draw_text(
                     scene,
                     &label,
@@ -1009,7 +1008,7 @@ impl Widget for FileView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -1021,11 +1020,10 @@ impl Widget for FileView {
     ) -> taffy::Size<f32> {
         let width = known
             .width
-            .map(|w| w as f64)
-            .unwrap_or(match available.width {
-                taffy::AvailableSpace::Definite(w) => w as f64,
+            .map_or(match available.width {
+                taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w() + 2.0 * self.pad_x(),
-            });
+            }, f64::from);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(width);
         }
@@ -1038,10 +1036,10 @@ impl Widget for FileView {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
@@ -1073,8 +1071,8 @@ impl Widget for FileView {
             ViewMode::List => self.draw_list(scene, transform, tr, theme, vp),
             ViewMode::Grid => self.draw_grid(scene, transform, tr, theme, vp),
         }
-        if self.is_focused {
-            if let Some(i) = self.selection.primary() {
+        if self.is_focused
+            && let Some(i) = self.selection.primary() {
                 let r = match self.mode {
                     ViewMode::List => {
                         let row = self.list_row_rect(i);
@@ -1092,7 +1090,6 @@ impl Widget for FileView {
                     );
                 }
             }
-        }
     }
 
     fn handle_event(
@@ -1118,12 +1115,11 @@ impl Widget for FileView {
                 // A held press that travels far enough starts a drag; the app
                 // carries the row(s) and, on release, moves them onto a folder
                 // (or pins a folder to the sidebar).
-                if let Some((start, path, is_dir)) = self.pressed_row.clone() {
-                    if pt.distance(start) > DRAG_THRESHOLD {
+                if let Some((start, path, is_dir)) = self.pressed_row.clone()
+                    && pt.distance(start) > DRAG_THRESHOLD {
                         push(&self.sink, FileCommand::BeginDrag { path, is_dir });
                         self.pressed_row = None;
                     }
-                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1155,8 +1151,8 @@ impl Widget for FileView {
                     // A plain press on any row arms a potential drag (move onto a
                     // folder, or pin a folder to the sidebar). A modifier press is
                     // extending the selection, not starting a drag.
-                    if !ctrl && !shift {
-                        if let Some(entry) = self.entries.get(i) {
+                    if !ctrl && !shift
+                        && let Some(entry) = self.entries.get(i) {
                             self.pressed_row =
                                 Some((self.last_cursor, entry.path.clone(), entry.is_dir));
                             // The app arms the same drag: this view may be
@@ -1170,7 +1166,6 @@ impl Widget for FileView {
                                 },
                             );
                         }
-                    }
                     *handled = true;
                 }
             }
@@ -1205,7 +1200,7 @@ impl Widget for FileView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FileView"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1252,11 +1247,10 @@ impl Widget for FileView {
                 focused: self.is_focused,
                 ..Default::default()
             });
-        if let Some(i) = primary {
-            if i < self.entries.len() {
+        if let Some(i) = primary
+            && i < self.entries.len() {
                 node = node.with_position(i + 1, self.entries.len());
             }
-        }
         Some(node)
     }
 }
@@ -1372,7 +1366,7 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
         return String::new();
     }
     let (w, _) = tr.measure(text, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -1381,7 +1375,7 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
         keep -= 1;
         let candidate: String = chars[..keep].iter().collect::<String>() + "\u{2026}";
         let (cw, _) = tr.measure(&candidate, size, None);
-        if (cw as f64) <= max_w {
+        if f64::from(cw) <= max_w {
             return candidate;
         }
     }

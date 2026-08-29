@@ -246,17 +246,17 @@ impl Widget for RecoveryShareScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 680.0;
         let card_h = 540.0;
@@ -369,7 +369,7 @@ impl Widget for RecoveryShareScreen {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    self.copy_rect.x0 + (self.copy_rect.width() - cw as f64) / 2.0,
+                    self.copy_rect.x0 + (self.copy_rect.width() - f64::from(cw)) / 2.0,
                     self.copy_rect.y0 + (self.copy_rect.height() - 13.0) / 2.0,
                 )),
             None,
@@ -484,7 +484,7 @@ impl Widget for RecoveryShareScreen {
             cont_text_color,
             transform
                 * Affine::translate((
-                    self.continue_rect.x0 + (self.continue_rect.width() - lw as f64) / 2.0,
+                    self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
                     self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -505,7 +505,7 @@ impl Widget for RecoveryShareScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RecoveryShareScreen"
     }
 

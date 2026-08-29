@@ -10,7 +10,7 @@ use notes::markdown::{parse, serialize};
 
 fn round_trip(md: &str) {
     let back = serialize(&parse(md));
-    assert_eq!(back, md, "round-trip failed for {:?}", md);
+    assert_eq!(back, md, "round-trip failed for {md:?}");
 }
 
 #[test]

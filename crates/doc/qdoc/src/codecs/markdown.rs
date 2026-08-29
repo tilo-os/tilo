@@ -208,11 +208,10 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
 /// Normalises a CSS colour to canonical `#rrggbb` (lower-case hex, common keywords, else trimmed passthrough).
 fn normalize_css_color(v: &str) -> String {
     let t = v.trim();
-    if let Some(hex) = t.strip_prefix('#') {
-        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    if let Some(hex) = t.strip_prefix('#')
+        && hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return format!("#{}", hex.to_ascii_lowercase());
         }
-    }
     match t.to_ascii_lowercase().as_str() {
         "red" => "#ff0000".into(),
         "green" => "#008000".into(),
@@ -399,11 +398,10 @@ fn import_md(src: &str, doc: &mut DocMut) {
             Event::Start(Tag::CodeBlock(kind)) => {
                 let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
                 doc.set_attr(&id, "code", true);
-                if let CodeBlockKind::Fenced(lang) = kind {
-                    if !lang.is_empty() {
+                if let CodeBlockKind::Fenced(lang) = kind
+                    && !lang.is_empty() {
                         doc.set_attr(&id, "lang", lang.as_ref());
                     }
-                }
             }
             Event::End(TagEnd::CodeBlock) => cur = None,
             Event::Start(Tag::Strong) => mark_stack.push(("strong", cur_len)),
@@ -461,7 +459,7 @@ fn import_md(src: &str, doc: &mut DocMut) {
             }
             // A hyperlink: models the href as a `link` mark over the linked range (mirrors .odt, so links round-trip and merge).
             Event::Start(Tag::Link { dest_url, .. }) => {
-                link_stack.push((dest_url.to_string(), cur_len))
+                link_stack.push((dest_url.to_string(), cur_len));
             }
             Event::End(TagEnd::Link) => {
                 if let (Some((href, start)), Some(b)) = (link_stack.pop(), cur.as_ref()) {
@@ -923,18 +921,16 @@ fn render_inline_notes(
                 out.push('[');
             }
         }
-        if cur_span.is_none() {
-            if let Some(style) = &span {
+        if cur_span.is_none()
+            && let Some(style) = &span {
                 out.push_str(&format!(r#"<span style="{style}">"#));
                 cur_span = Some(style.clone());
             }
-        }
-        if cur_wrap.is_none() {
-            if let Some(w) = wrap {
+        if cur_wrap.is_none()
+            && let Some(w) = wrap {
                 out.push_str(&format!("<{w}>"));
                 cur_wrap = Some(w);
             }
-        }
         for d in &open_at[i] {
             out.push_str(d);
         }

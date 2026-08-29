@@ -182,8 +182,7 @@ fn have(bin: &str) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Parse `lpstat -p -d` output into [`Printer`]s.
@@ -488,17 +487,17 @@ impl Widget for PrintersPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -567,7 +566,7 @@ impl Widget for PrintersPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PrintersPane"
     }
 
@@ -580,8 +579,7 @@ impl Widget for PrintersPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -701,7 +699,7 @@ this is not a job line\n\
     /// The production display list is the real CUPS list (or empty) — it must
     /// never fall back to the illustrative sample. On a box without CUPS this
     /// is an empty vec; on a box with CUPS it is the real printers. Either way
-    /// it can never contain the sample's fabricated "Office LaserJet".
+    /// it can never contain the sample's fabricated "Office `LaserJet`".
     #[test]
     fn production_list_never_fabricates_the_sample() {
         let real = printers_for_display();

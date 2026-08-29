@@ -50,7 +50,7 @@ pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 /// How long a stationary pointer goes unmentioned before the session
 /// restates it. Presence is gossip: a host that joins after somebody
 /// stopped moving has never heard where they are.
-pub const CURSOR_KEEPALIVE: Duration = Duration::from_millis(1000);
+pub const CURSOR_KEEPALIVE: Duration = Duration::from_secs(1);
 
 /// Should this session put its pointer on the wire again? `last` is
 /// what it last published for this room and when. Pure so the decision
@@ -122,7 +122,7 @@ impl PeerPresence {
                 // Nothing to say if the pointer has never moved.
                 let Some(point) = *sink_cursor
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                 else {
                     return;
                 };
@@ -171,11 +171,11 @@ impl PeerPresence {
         let at = *self
             .cursor
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut last = self
             .last_published
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(at) = cursor_to_publish(
             at,
             last.get(room).copied(),
@@ -309,11 +309,10 @@ pub fn fold_inbound(
             continue;
         };
         // Only rooms this session is in — an access rule.
-        if let PresenceKey::Workspace { id: room } = &key {
-            if !member_of(room) {
+        if let PresenceKey::Workspace { id: room } = &key
+            && !member_of(room) {
                 continue;
             }
-        }
         // Spelled from the handle, never `entry.user`'s unverified claim.
         let user = format!("peer@{}", entry.peer);
 

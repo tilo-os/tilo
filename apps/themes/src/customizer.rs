@@ -72,9 +72,15 @@ pub struct Customizer {
     chip_rects: Vec<(TokenId, Rect)>,
     grid_rect: Rect,
     structure_dirty: bool,
-    /// Last known cursor position (logical px), tracked from CursorMoved
+    /// Last known cursor position (logical px), tracked from `CursorMoved`
     /// so a press — which carries no position — can hit-test the chips.
     cursor: Option<Point>,
+}
+
+impl Default for Customizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Customizer {
@@ -84,7 +90,7 @@ impl Customizer {
             radius_slider: Slider::new("radius_slider", KEY_ED_RADIUS),
             spacing_slider: Slider::new("spacing_slider", KEY_ED_SPACING),
             font_dropdown: Dropdown::new(
-                FONTS.iter().map(|s| s.to_string()).collect(),
+                FONTS.iter().map(std::string::ToString::to_string).collect(),
                 KEY_ED_FONT,
             )
             .with_id("font_dropdown"),
@@ -187,8 +193,8 @@ impl Widget for Customizer {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Row,
                     gap: Size {
-                        width: length(8.0),
-                        height: length(0.0),
+                        width: length(8.0_f32),
+                        height: length(0.0_f32),
                     },
                     size: Size {
                         width: Dimension::percent(1.0),
@@ -208,7 +214,7 @@ impl Widget for Customizer {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     gap: Size {
-                        width: length(0.0),
+                        width: length(0.0_f32),
                         height: length(GAP),
                     },
                     padding: taffy::Rect {
@@ -226,7 +232,7 @@ impl Widget for Customizer {
                 &[grid, picker, radius, spacing, font, actions],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -234,20 +240,20 @@ impl Widget for Customizer {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let o = Point::new(self.rect.x0, self.rect.y0);
 
         if let Some(n) = self.grid_node {
             let gl = taffy.layout(n).unwrap();
             self.grid_rect = Rect::new(
-                o.x + gl.location.x as f64,
-                o.y + gl.location.y as f64,
-                o.x + gl.location.x as f64 + gl.size.width as f64,
-                o.y + gl.location.y as f64 + gl.size.height as f64,
+                o.x + f64::from(gl.location.x),
+                o.y + f64::from(gl.location.y),
+                o.x + f64::from(gl.location.x) + f64::from(gl.size.width),
+                o.y + f64::from(gl.location.y) + f64::from(gl.size.height),
             );
             self.layout_chips();
         }
@@ -265,7 +271,7 @@ impl Widget for Customizer {
         }
         if let Some(n) = self.actions_node {
             let al = taffy.layout(n).unwrap();
-            let ao = Point::new(o.x + al.location.x as f64, o.y + al.location.y as f64);
+            let ao = Point::new(o.x + f64::from(al.location.x), o.y + f64::from(al.location.y));
             if let Ok(children) = taffy.children(n) {
                 for (b, c) in self.buttons.iter_mut().zip(children.iter()) {
                     b.apply_layout(taffy, *c, ao);
@@ -337,8 +343,7 @@ impl Widget for Customizer {
             let col = self
                 .spec
                 .as_ref()
-                .map(|s| s.token(*tok))
-                .unwrap_or([128, 128, 128]);
+                .map_or([128, 128, 128], |s| s.token(*tok));
             draw::fill_rrect(scene, t, *r, 6.0, model::color(col));
             let sel = *tok == self.edit_token;
             let ring = if sel {
@@ -520,14 +525,13 @@ impl Widget for Customizer {
         }
 
         // Chip selection.
-        if self.editable {
-            if let WindowEvent::MouseInput {
+        if self.editable
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some(pt) = self.cursor {
+                && let Some(pt) = self.cursor {
                     for (tok, r) in &self.chip_rects {
                         if r.contains(pt) {
                             crate::doc::put_str(
@@ -541,8 +545,6 @@ impl Widget for Customizer {
                         }
                     }
                 }
-            }
-        }
 
         // Real controls (only when editable).
         if self.editable {
@@ -613,8 +615,8 @@ impl Widget for Customizer {
         }
 
         // Buttons (always active so Duplicate works on presets).
-        if let Some(an) = self.actions_node {
-            if let Ok(bchildren) = taffy.children(an) {
+        if let Some(an) = self.actions_node
+            && let Ok(bchildren) = taffy.children(an) {
                 for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
                     b.handle_event(
                         event,
@@ -632,10 +634,9 @@ impl Widget for Customizer {
                     }
                 }
             }
-        }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Customizer"
     }
     fn get_rect(&self) -> Rect {

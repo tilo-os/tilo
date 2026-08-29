@@ -24,7 +24,7 @@ fn png() -> Vec<u8> {
     v.extend_from_slice(&11u32.to_be_bytes());
     v.extend_from_slice(&[8, 6, 0, 0, 0]);
     v.extend_from_slice(&[0u8; 4]);
-    v.extend(std::iter::repeat(0xA5).take(4096));
+    v.extend(std::iter::repeat_n(0xA5, 4096));
     v
 }
 

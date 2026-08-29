@@ -26,7 +26,7 @@ use crate::theme::Theme;
 use crate::widget::{Button, ButtonFace, Widget};
 
 /// Default time-to-live for a freshly pushed toast.
-pub const DEFAULT_TTL: Duration = Duration::from_millis(3000);
+pub const DEFAULT_TTL: Duration = Duration::from_secs(3);
 
 /// Default maximum number of simultaneous toasts. When the cap is
 /// exceeded by [`ToastStack::push`] the oldest entry is dropped.
@@ -326,7 +326,7 @@ pub fn paint_card(
     if rect.width() <= 0.0 || rect.height() <= 0.0 || a <= 0.0 {
         return hit;
     }
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
     // Drop shadow from the elevation token (not ad-hoc literals), following
@@ -364,7 +364,7 @@ pub fn paint_card(
         transform,
         kind_color(card.kind, theme).with_alpha(a),
         None,
-        &RoundedRect::from_rect(bar, theme.tokens.radii.sm as f64),
+        &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm)),
     );
 
     // Dismiss (X) button — a ghost `Button` face, top-right. Wrapped in an
@@ -416,12 +416,12 @@ pub fn paint_card(
     let has_caption = !card.caption.is_empty();
     let has_body = !card.body.is_empty();
     let cap_h = if has_caption {
-        caption_size as f64 + 4.0
+        f64::from(caption_size) + 4.0
     } else {
         0.0
     };
-    let title_h = title_size as f64 + if has_body { 4.0 } else { 0.0 };
-    let body_h = if has_body { body_size as f64 } else { 0.0 };
+    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
+    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
     let block_h = cap_h + title_h + body_h;
     let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
 
@@ -504,17 +504,17 @@ impl Widget for ToastStack {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -588,7 +588,7 @@ impl Widget for ToastStack {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ToastStack"
     }
 

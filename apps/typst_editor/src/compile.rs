@@ -372,7 +372,7 @@ fn flatten(world: &TypstWorld, d: &SourceDiagnostic) -> Diagnostic {
         col,
         end_line,
         end_col,
-        hints: d.hints.iter().map(|h| h.to_string()).collect(),
+        hints: d.hints.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -389,8 +389,7 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     let col = before
         .rsplit('\n')
         .next()
-        .map(|s| s.chars().count())
-        .unwrap_or(0)
+        .map_or(0, |s| s.chars().count())
         + 1;
     (line, col)
 }
@@ -420,8 +419,8 @@ fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
         height: h,
         // Filled in by the caller from the page frame; a sane default keeps the
         // aspect correct if ever constructed without a frame.
-        width_pt: w as f64,
-        height_pt: h as f64,
+        width_pt: f64::from(w),
+        height_pt: f64::from(h),
     }
 }
 

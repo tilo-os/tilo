@@ -18,7 +18,7 @@
 //!     the CRDT, so collaboration and undo come for free).
 //!   * [`csv`]      — CSV import/export.
 //!   * [`xlsx`]     — Excel `.xlsx` import/export.
-//!   * [`ods`]      — LibreOffice Calc `.ods` import/export.
+//!   * [`ods`]      — `LibreOffice` Calc `.ods` import/export.
 //!   * [`grid`]     — the hand-rolled scrollable, editable cell grid with a
 //!     floating in-cell editor that overflows into empty neighbours.
 //!   * [`app`]      — the root widget composing the formula bar + grid +

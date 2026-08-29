@@ -25,7 +25,7 @@ use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 
 /// Five minutes: long enough to survive reading a paragraph before typing
 /// the next one, short enough that a coffee break shows up as a break.
-pub const DEFAULT_IDLE_GAP: Duration = Duration::from_secs(5 * 60);
+pub const DEFAULT_IDLE_GAP: Duration = Duration::from_mins(5);
 
 /// Ceiling on how many changes one automatic group may hold.
 pub const DEFAULT_MAX_GROUP: usize = 200;
@@ -341,7 +341,7 @@ pub fn group_entries(
             // An end anchor we do not hold means the range runs past the window
             // we loaded. Clamp rather than guess; it is not open, it is longer
             // than what is on screen.
-            Some(e) => (index.get(&e).map(|i| i + 1).unwrap_or(entries.len()), false),
+            Some(e) => (index.get(&e).map_or(entries.len(), |i| i + 1), false),
         };
         if end <= start {
             continue;
@@ -543,7 +543,7 @@ fn finish_group(
         name: named.map(|n| n.label.clone()),
         record_id: named.map(|n| n.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
-        open: named.map(|n| n.open).unwrap_or(false),
+        open: named.is_some_and(|n| n.open),
         start,
         end,
         children,

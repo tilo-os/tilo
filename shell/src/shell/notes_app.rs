@@ -170,7 +170,7 @@ impl Widget for NotesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        full_bleed_leaf(taffy, node_map, self as *mut dyn Widget)
+        full_bleed_leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -237,23 +237,23 @@ impl Widget for NotesApp {
                     let mid = &line_text[(lo - line_start)..(hi - line_start)];
                     let (x0, _) = tr.measure(pre, TEXT_SIZE, Some(wrap_w));
                     let (mw, _) = tr.measure(mid, TEXT_SIZE, Some(wrap_w));
-                    let y0 = body_top + row as f64 * LINE_HEIGHT as f64;
+                    let y0 = body_top + row as f64 * f64::from(LINE_HEIGHT);
                     let rect = Rect::new(
-                        content_x + x0 as f64,
+                        content_x + f64::from(x0),
                         y0,
-                        content_x + x0 as f64 + mw as f64,
-                        y0 + LINE_HEIGHT as f64,
+                        content_x + f64::from(x0) + f64::from(mw),
+                        y0 + f64::from(LINE_HEIGHT),
                     );
                     scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
                 } else if sel_lo <= line_end && sel_hi > line_end {
                     // Selection spans this line's trailing newline.
                     let (full_w, _) = tr.measure(line_text, TEXT_SIZE, Some(wrap_w));
-                    let y0 = body_top + row as f64 * LINE_HEIGHT as f64;
+                    let y0 = body_top + row as f64 * f64::from(LINE_HEIGHT);
                     let rect = Rect::new(
-                        content_x + full_w as f64,
+                        content_x + f64::from(full_w),
                         y0,
-                        content_x + full_w as f64 + (TEXT_SIZE as f64 * 0.4),
-                        y0 + LINE_HEIGHT as f64,
+                        content_x + f64::from(full_w) + (f64::from(TEXT_SIZE) * 0.4),
+                        y0 + f64::from(LINE_HEIGHT),
                     );
                     scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
                 }
@@ -279,13 +279,13 @@ impl Widget for NotesApp {
             let nl_count = prefix.matches('\n').count();
             let last_line_prefix = prefix.rsplit('\n').next().unwrap_or("");
             let (prefix_w, _) = tr.measure(last_line_prefix, TEXT_SIZE, Some(wrap_w));
-            let caret_x = content_x + prefix_w as f64;
-            let caret_y = body_top + (nl_count as f64) * LINE_HEIGHT as f64;
+            let caret_x = content_x + f64::from(prefix_w);
+            let caret_y = body_top + (nl_count as f64) * f64::from(LINE_HEIGHT);
             let caret = Rect::new(
                 caret_x,
                 caret_y,
                 caret_x + 1.5,
-                caret_y + LINE_HEIGHT as f64,
+                caret_y + f64::from(LINE_HEIGHT),
             );
             scene.fill(Fill::NonZero, transform, accent, None, &caret);
         }
@@ -370,12 +370,11 @@ impl Widget for NotesApp {
                     }
                     *handled = true;
                 }
-                ElementState::Released => {
-                    if self.is_dragging {
+                ElementState::Released
+                    if self.is_dragging => {
                         self.is_dragging = false;
                         *handled = true;
                     }
-                }
                 _ => {}
             },
             WindowEvent::KeyboardInput {
@@ -424,8 +423,8 @@ impl Widget for NotesApp {
                                 return;
                             }
                             "v" => {
-                                if let Some(paste) = clipboard_paste() {
-                                    if !paste.is_empty() {
+                                if let Some(paste) = clipboard_paste()
+                                    && !paste.is_empty() {
                                         // Preserve \n, strip other control chars.
                                         let cleaned: String = paste
                                             .chars()
@@ -435,7 +434,6 @@ impl Widget for NotesApp {
                                             self.insert_str(state, root, &cleaned);
                                         }
                                     }
-                                }
                                 *handled = true;
                                 return;
                             }
@@ -451,18 +449,18 @@ impl Widget for NotesApp {
 
                 match logical_key {
                     Key::Named(NamedKey::Backspace) => {
-                        if !self.selection.is_collapsed() {
-                            self.delete_selection(state, root);
-                        } else {
+                        if self.selection.is_collapsed() {
                             self.delete_before(state, root);
+                        } else {
+                            self.delete_selection(state, root);
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Delete) => {
-                        if !self.selection.is_collapsed() {
-                            self.delete_selection(state, root);
-                        } else {
+                        if self.selection.is_collapsed() {
                             self.delete_after(state, root);
+                        } else {
+                            self.delete_selection(state, root);
                         }
                         *handled = true;
                     }
@@ -522,16 +520,14 @@ impl Widget for NotesApp {
                         let cur = self.selection.cursor;
                         let line_start = self.body.text[..cur]
                             .rfind('\n')
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
+                            .map_or(0, |i| i + 1);
                         let col = cur - line_start;
                         let new_pos = if line_start == 0 {
                             0
                         } else {
                             let prev_nl = self.body.text[..line_start - 1]
                                 .rfind('\n')
-                                .map(|i| i + 1)
-                                .unwrap_or(0);
+                                .map_or(0, |i| i + 1);
                             let prev_line_end = line_start - 1;
                             let prev_line_len = prev_line_end - prev_nl;
                             let want_col = col.min(prev_line_len);
@@ -552,21 +548,18 @@ impl Widget for NotesApp {
                         let cur = self.selection.cursor;
                         let line_start = self.body.text[..cur]
                             .rfind('\n')
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
+                            .map_or(0, |i| i + 1);
                         let col = cur - line_start;
                         let line_end = self.body.text[cur..]
                             .find('\n')
-                            .map(|i| cur + i)
-                            .unwrap_or(self.body.text.len());
+                            .map_or(self.body.text.len(), |i| cur + i);
                         let new_pos = if line_end == self.body.text.len() {
                             self.body.text.len()
                         } else {
                             let next_line_start = line_end + 1;
                             let next_line_end = self.body.text[next_line_start..]
                                 .find('\n')
-                                .map(|i| next_line_start + i)
-                                .unwrap_or(self.body.text.len());
+                                .map_or(self.body.text.len(), |i| next_line_start + i);
                             let next_line_len = next_line_end - next_line_start;
                             let want_col = col.min(next_line_len);
                             let mut p = next_line_start + want_col;
@@ -585,8 +578,7 @@ impl Widget for NotesApp {
                     Key::Named(NamedKey::Home) => {
                         let line_start = self.body.text[..self.selection.cursor]
                             .rfind('\n')
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
+                            .map_or(0, |i| i + 1);
                         if shift {
                             self.selection.extend_to(line_start);
                         } else {
@@ -597,8 +589,7 @@ impl Widget for NotesApp {
                     Key::Named(NamedKey::End) => {
                         let line_end = self.body.text[self.selection.cursor..]
                             .find('\n')
-                            .map(|i| self.selection.cursor + i)
-                            .unwrap_or(self.body.text.len());
+                            .map_or(self.body.text.len(), |i| self.selection.cursor + i);
                         if shift {
                             self.selection.extend_to(line_end);
                         } else {
@@ -609,7 +600,7 @@ impl Widget for NotesApp {
                     _ => {
                         if let Some(t) = text {
                             let s = t.as_str();
-                            if !s.is_empty() && !s.chars().all(|c| c.is_control()) {
+                            if !s.is_empty() && !s.chars().all(char::is_control) {
                                 self.insert_str(state, root, s);
                                 *handled = true;
                             }
@@ -621,7 +612,7 @@ impl Widget for NotesApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NotesApp"
     }
 
@@ -679,14 +670,13 @@ impl Widget for NotesApp {
     }
 
     fn set_state(&mut self, s: &str) {
-        if let Some((a, c)) = s.split_once(':') {
-            if let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>()) {
+        if let Some((a, c)) = s.split_once(':')
+            && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>()) {
                 self.selection.anchor = anchor;
                 self.selection.cursor = cursor;
                 self.clamp_cursor();
                 return;
             }
-        }
         // Backwards-compat: an older state blob was just the cursor.
         if let Ok(pos) = s.parse::<usize>() {
             self.selection = Selection::collapsed(pos);
@@ -704,7 +694,7 @@ impl NotesApp {
         }
         let rel_x = (point.x - self.body_origin.x).max(0.0);
         let rel_y = (point.y - self.body_origin.y).max(0.0);
-        let row = (rel_y / LINE_HEIGHT as f64).floor() as usize;
+        let row = (rel_y / f64::from(LINE_HEIGHT)).floor() as usize;
 
         // ~8px average advance for 15px proportional text; 7.2 avoids
         // overshooting on the common case.
@@ -740,7 +730,7 @@ impl AppWidget for NotesApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Notes"
     }
     fn app_icon(&self) -> IconDescriptor {

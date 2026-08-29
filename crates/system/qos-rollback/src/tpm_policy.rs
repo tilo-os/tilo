@@ -39,7 +39,7 @@ pub const CC_POLICY_AUTHORIZE: u32 = 0x0000_016A;
 pub const CC_POLICY_AUTH_VALUE: u32 = 0x0000_016B;
 pub const CC_POLICY_NV_WRITTEN: u32 = 0x0000_018F;
 
-/// Arithmetic operations for `TPM2_PolicyNV` (TPM_EO).
+/// Arithmetic operations for `TPM2_PolicyNV` (`TPM_EO`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Operation {

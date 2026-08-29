@@ -27,8 +27,8 @@ const CHIP_MAX_W: f64 = 320.0;
 
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
     let (tw, _th) = text_renderer.measure(label, text_size, None);
-    let w = (tw as f64 + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
-    let h = (text_size as f64 + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
+    let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
+    let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
 }
 
@@ -68,14 +68,14 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
-    let radius = theme.tokens.radii.sm as f64;
+    let radius = f64::from(theme.tokens.radii.sm);
 
     // Vello has no blur primitive on this path, so two stacked translucent
     // copies offset downward fake a soft shadow.
     let elev = &theme.tokens.elevation.e2;
     let base = elev.color;
     for (inflate, dy, alpha_scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = (base.a() as f32 * alpha_scale).round() as u8;
+        let a = (f32::from(base.a()) * alpha_scale).round() as u8;
         let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
         let sr = Rect::new(
             rect.x0 - inflate,
@@ -109,7 +109,7 @@ pub fn draw_chip(
     );
 
     let text_size = theme.tokens.typography.scale.sm;
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -259,17 +259,17 @@ impl Widget for Tooltip {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -359,7 +359,7 @@ impl Widget for Tooltip {
         self.hover_since.is_some() && !self.is_visible
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Tooltip"
     }
 
@@ -443,36 +443,33 @@ impl TooltipHost {
     /// jittering pointer still reveals); moving to a different region
     /// restarts it. Returns `true` when the caller should request a redraw.
     pub fn on_pointer(&mut self, target: Option<(Rect, String)>, now: Instant) -> bool {
-        match target {
-            Some((anchor, label)) => {
-                let same = self
-                    .target
-                    .as_ref()
-                    .is_some_and(|t| t.label == label && t.anchor == anchor);
-                if same {
-                    let was = self.visible;
-                    self.recompute_visible(now);
-                    self.visible != was
-                } else {
-                    self.target = Some(HoverTarget {
-                        label,
-                        anchor,
-                        since: now,
-                    });
-                    let was = self.visible;
-                    self.visible = false;
-                    self.recompute_visible(now);
-                    // A new target always warrants a redraw: it may clear a
-                    // previously-shown chip.
-                    true || self.visible != was
-                }
-            }
-            None => {
-                let had = self.target.is_some() || self.visible;
-                self.target = None;
+        if let Some((anchor, label)) = target {
+            let same = self
+                .target
+                .as_ref()
+                .is_some_and(|t| t.label == label && t.anchor == anchor);
+            if same {
+                let was = self.visible;
+                self.recompute_visible(now);
+                self.visible != was
+            } else {
+                self.target = Some(HoverTarget {
+                    label,
+                    anchor,
+                    since: now,
+                });
+                let was = self.visible;
                 self.visible = false;
-                had
+                self.recompute_visible(now);
+                // A new target always warrants a redraw: it may clear a
+                // previously-shown chip.
+                true || self.visible != was
             }
+        } else {
+            let had = self.target.is_some() || self.visible;
+            self.target = None;
+            self.visible = false;
+            had
         }
     }
 

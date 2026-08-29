@@ -51,9 +51,9 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     ];
     let bottom = [base.r * 0.32, base.g * 0.32, base.b * 0.32];
     let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let (wf, hf) = (w as f64, h as f64);
+    let (wf, hf) = (f64::from(w), f64::from(h));
     for y in 0..h {
-        let yf = y as f64 / hf;
+        let yf = f64::from(y) / hf;
         // Vertical gradient top→bottom.
         let mut r = top[0] + (bottom[0] - top[0]) * yf;
         let mut g = top[1] + (bottom[1] - top[1]) * yf;
@@ -65,7 +65,7 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             b *= 0.82;
         }
         for x in 0..w {
-            let xf = x as f64 / wf;
+            let xf = f64::from(x) / wf;
             // Gentle corner vignette.
             let dx = (xf - 0.5) * 2.0;
             let dy = (yf - 0.5) * 2.0;
@@ -128,13 +128,10 @@ impl ThumbnailCache {
     /// kick off a real-frame extraction to replace it. `at` is the source time
     /// (seconds) to sample a real frame from.
     pub fn ensure(&mut self, id: MediaId, palette: u8, source: &MediaSource, at: f64) {
-        if !self.map.contains_key(&id) {
-            self.map
-                .insert(id, Arc::new(representative(palette, THUMB_W, THUMB_H)));
-        }
+        self.map.entry(id).or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
         #[cfg(feature = "decode")]
         {
-            let already_real = self.map.get(&id).map(|t| t.real).unwrap_or(false);
+            let already_real = self.map.get(&id).is_some_and(|t| t.real);
             if !already_real && !self.real_requested.contains(&id) && source.is_decodable() {
                 self.real_requested.insert(id);
                 let tx = self.tx.clone();
@@ -161,7 +158,7 @@ impl ThumbnailCache {
         // A request is pending until its real frame replaces the representative.
         self.real_requested
             .iter()
-            .any(|id| !self.map.get(id).map(|t| t.real).unwrap_or(false))
+            .any(|id| !self.map.get(id).is_some_and(|t| t.real))
     }
 }
 

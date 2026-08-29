@@ -122,7 +122,7 @@ pub enum ChannelEvent {
     ///
     /// `welcome` bytes are opaque to the validator — only the recipient
     /// (whose `KeyPackage` the Welcome references) can decrypt them. The
-    /// signature is over (tag, welcome, signed_by), so the broker can verify
+    /// signature is over (tag, welcome, `signed_by`), so the broker can verify
     /// the addition was issued by an authorised member.
     MemberAdded {
         /// TLS-serialised MLS `Welcome` message bytes, opaque to non-recipients.

@@ -1,10 +1,10 @@
-//! LibreOffice Calc `.ods` import and export.
+//! `LibreOffice` Calc `.ods` import and export.
 //!
 //! Reading reuses [`calamine`] (it understands ODS as well as XLSX), so the
 //! import path shares [`crate::xlsx::SheetTable`] — including the formula text
 //! it lifts from each cell's `table:formula`. Writing is hand-rolled: an ODS
 //! file is just a ZIP archive of flat XML, so we emit the three members
-//! LibreOffice needs — the uncompressed `mimetype` marker, a
+//! `LibreOffice` needs — the uncompressed `mimetype` marker, a
 //! `META-INF/manifest.xml`, and the `content.xml` spreadsheet body — using the
 //! `zip` crate already in the dependency tree. This keeps the writer
 //! dependency-light while round-tripping values, basic number/currency/
@@ -72,7 +72,7 @@ fn content_xml(tables: &[SheetTable]) -> String {
             r#"<table:table table:name="{}">"#,
             xml_escape_attr(&table.name)
         ));
-        let cols = table.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let cols = table.rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
         s.push_str(&format!(
             r#"<table:table-column table:number-columns-repeated="{}"/>"#,
             cols.max(1)
@@ -95,7 +95,7 @@ const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number
 
 /// Emit one `<table:table-cell>` (or an empty one). A cell holding a formula
 /// carries a `table:formula` attribute (ODF `of:=…` form) alongside its cached
-/// value so LibreOffice shows a live formula and our importer can recover it.
+/// value so `LibreOffice` shows a live formula and our importer can recover it.
 fn cell_xml(cell: &Option<ImportedCell>) -> String {
     let Some(cell) = cell else {
         return "<table:table-cell/>".into();
@@ -153,7 +153,7 @@ fn cell_xml(cell: &Option<ImportedCell>) -> String {
 
 /// Convert one of our A1 formulas (`=SUM(A1:A3)`) into ODF form
 /// (`of:=SUM([.A1:.A3])`): rewrite each cell/range reference into a bracketed,
-/// current-table `[.…]` reference and prefix the OpenFormula namespace.
+/// current-table `[.…]` reference and prefix the `OpenFormula` namespace.
 fn to_ods_formula(app_formula: &str) -> String {
     let body = app_formula.strip_prefix('=').unwrap_or(app_formula);
     format!("of:={}", rewrite_refs_to_ods(body))

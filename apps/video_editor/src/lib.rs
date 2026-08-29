@@ -10,7 +10,7 @@
 //!                   undoable source of truth) + the demo project seed.
 //!   * [`preview`] — the composited-frame producer: a representative frame
 //!                   from clip metadata, or (behind the `decode` feature) a
-//!                   real decoded frame via `ui::VideoPlayer` / GStreamer.
+//!                   real decoded frame via `ui::VideoPlayer` / `GStreamer`.
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,

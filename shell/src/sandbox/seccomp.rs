@@ -30,7 +30,7 @@ pub const DEFAULT_CACHE_ROOT: &str = "/var/cache/qos-fs";
 #[derive(Debug)]
 pub enum SeccompError {
     /// The crate was built for a target architecture seccompiler does
-    /// not support (only x86_64, aarch64, riscv64 are wired here).
+    /// not support (only `x86_64`, aarch64, riscv64 are wired here).
     UnsupportedArch(&'static str),
     /// Anything that went wrong inside the seccompiler backend — bad
     /// rule, identical actions, filter too large, invalid arg index.
@@ -126,7 +126,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // stable across runs, which matters for the on-disk cache.
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for nr in blanket_denies {
-        rules.insert(nr as i64, Vec::new());
+        rules.insert(nr, Vec::new());
     }
 
     // Conditional: socket(family, type, protocol) where family ==
@@ -134,7 +134,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // value (Dword) so we don't accidentally match on adjacent bits
     // of a 64-bit register.
     rules.insert(
-        libc::SYS_socket as i64,
+        libc::SYS_socket,
         vec![SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,

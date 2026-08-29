@@ -215,7 +215,7 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
 }
 
 /// Translate a real user-selected path list into the
-/// `(response_code, results)` pair the FileChooser frontend expects.
+/// `(response_code, results)` pair the `FileChooser` frontend expects.
 ///
 /// `response_code` follows the freedesktop.org Request convention: 0 =
 /// OK (with results), 1 = user cancelled, 2 = other failure. `None`
@@ -244,11 +244,10 @@ pub(super) fn paths_to_open_response(
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
     }
-    if save {
-        if let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
+    if save
+        && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
             results.insert("writable".to_string(), w);
         }
-    }
     (0, results)
 }
 

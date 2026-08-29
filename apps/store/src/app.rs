@@ -466,7 +466,7 @@ impl StoreApp {
         // loop here.
         // Category chips.
         for label in self.category_labels() {
-            let key = format!("{}.{}", CATEGORY_SELECT_KEY, label);
+            let key = format!("{CATEGORY_SELECT_KEY}.{label}");
             if take_bool_edge(state, path, &key) {
                 self.active_category = if label == "All" {
                     None
@@ -506,11 +506,10 @@ impl StoreApp {
         let mut secondary: Vec<(String, ActionKind)> = Vec::new();
         for item in &self.items {
             let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &pin_key) {
-                if let Some(action) = item.pin_action() {
+            if take_bool_edge(state, path, &pin_key)
+                && let Some(action) = item.pin_action() {
                     secondary.push((item.id.clone(), action));
                 }
-            }
             let rm_key = format!("{}{}", REMOVE_CLICK_KEY_PREFIX, item.id);
             if take_bool_edge(state, path, &rm_key) {
                 // The item decides *how* it is removed. A Flatpak
@@ -582,11 +581,10 @@ impl Widget for StoreApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // A source-filter chip parked its segment index in the shared
         // cell during the last `handle_event`; adopt it now.
-        if let Some(idx) = self.filter_click.take() {
-            if let Some(f) = SourceFilter::ALL.get(idx).copied() {
+        if let Some(idx) = self.filter_click.take()
+            && let Some(f) = SourceFilter::ALL.get(idx).copied() {
                 self.set_active_filter(f);
             }
-        }
         // Seed the search box's backing `Text` object *before* the
         // children sync so the `TextInput` resolves a real object to
         // splice keystrokes into (it binds to an existing `Text` but
@@ -624,23 +622,22 @@ impl Widget for StoreApp {
                 &[child],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node)) {
-            if let Some(&child_node) = children.first() {
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
+            && let Some(&child_node) = children.first() {
                 root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
             }
-        }
     }
 
     fn draw(
@@ -710,8 +707,8 @@ impl Widget for StoreApp {
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id)) {
-            if let Some(&child_node) = children.first() {
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id))
+            && let Some(&child_node) = children.first() {
                 root.handle_event(
                     event,
                     scale_factor,
@@ -724,7 +721,6 @@ impl Widget for StoreApp {
                     taffy,
                 );
             }
-        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -743,7 +739,7 @@ impl Widget for StoreApp {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StoreApp"
     }
 
@@ -756,8 +752,7 @@ impl Widget for StoreApp {
         let child = self
             .root
             .as_mut()
-            .map(|r| r.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|r| r.take_structure_dirty());
         own || child
     }
 

@@ -41,7 +41,7 @@ pub type ImportChannel = Receiver<ImportOutcome>;
 
 /// Spawn the portal `OpenFile` on a worker thread and return the receiver the
 /// caller drains each frame. `kind` seeds the filter shown to the user
-/// (WireGuard `.conf` vs OpenVPN `.ovpn`). The UI thread is never blocked: the
+/// (`WireGuard` `.conf` vs `OpenVPN` `.ovpn`). The UI thread is never blocked: the
 /// D-Bus round-trip and the host dialog live entirely on the worker.
 pub fn request_import(kind: ConnKind) -> ImportChannel {
     let (tx, rx) = std::sync::mpsc::channel();

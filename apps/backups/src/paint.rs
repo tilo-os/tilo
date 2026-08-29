@@ -118,7 +118,7 @@ pub fn text_right(
         s,
         size,
         color,
-        t * Affine::translate((x_right - w as f64, y)),
+        t * Affine::translate((x_right - f64::from(w), y)),
         None,
     );
 }
@@ -137,7 +137,7 @@ pub fn text_center(
     y: f64,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - w as f64) / 2.0;
+    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
@@ -154,7 +154,7 @@ pub fn text_vc(
     y0: f64,
     h: f64,
 ) {
-    let y = y0 + (h - size as f64) / 2.0;
+    let y = y0 + (h - f64::from(size)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
@@ -175,11 +175,11 @@ pub fn pill(
 ) -> f64 {
     let (tw, _) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = size as f64 + 8.0;
-    let w = tw as f64 + pad * 2.0;
+    let h = f64::from(size) + 8.0;
+    let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     fill_rrect(scene, t, rect, h / 2.0, bg);
-    let ty = rect.y0 + (h - size as f64) / 2.0;
+    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
     tr.draw_text(
         scene,
         label,
@@ -206,12 +206,12 @@ pub fn tag_pill(
 ) -> f64 {
     let (tw, _) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = size as f64 + 7.0;
-    let w = tw as f64 + pad * 2.0;
+    let h = f64::from(size) + 7.0;
+    let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     fill_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.18));
     stroke_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.55), 1.0);
-    let ty = rect.y0 + (h - size as f64) / 2.0;
+    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
     tr.draw_text(
         scene,
         label,

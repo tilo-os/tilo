@@ -477,7 +477,7 @@ impl ViewportState {
     /// End a drag-to-pan. Returns `true` if the gesture actually moved the
     /// content (so the host can treat a no-move release as a click).
     pub fn end_pan(&mut self) -> bool {
-        self.pan.take().map(|a| a.moved).unwrap_or(false)
+        self.pan.take().is_some_and(|a| a.moved)
     }
 
     /// Whether a drag-to-pan is currently in progress.
@@ -505,7 +505,7 @@ impl ViewportState {
         scale_factor: f64,
     ) -> bool {
         let (raw_x, raw_y) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
             MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
         };
         let ctrl = modifiers.control_key() || modifiers.super_key();
@@ -583,8 +583,7 @@ impl ViewportState {
         let now = Instant::now();
         let dt = self
             .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
         self.last_tick = Some(now);
         dt
     }
@@ -797,7 +796,7 @@ enum Content {
 pub struct DocumentViewport {
     state: ViewportState,
     content: Content,
-    /// Last cursor position in screen space (MouseInput carries none).
+    /// Last cursor position in screen space (`MouseInput` carries none).
     last_cursor: Point,
     /// Inner taffy tree for a wrapped child widget (so it lays out + can be
     /// asked for its measured/intrinsic size). `None` for the draw-closure
@@ -938,17 +937,17 @@ impl Widget for DocumentViewport {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.state.set_rect(self.rect);
         let theme = Theme::dark();
@@ -1105,7 +1104,7 @@ impl Widget for DocumentViewport {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DocumentViewport"
     }
 

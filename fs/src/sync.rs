@@ -38,7 +38,7 @@ pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
 const MODE_FULL: u8 = b'F';
 /// Mode byte: incremental Automerge sync-protocol exchange (anti-entropy).
 const MODE_SYNC: u8 = b'S';
-/// Hard cap on a single sync frame (DoS guard).
+/// Hard cap on a single sync frame (`DoS` guard).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
@@ -312,9 +312,7 @@ fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventS
         RequestMode, ThrottleMode,
     };
 
-    if policy.is_none() {
-        return None;
-    }
+    policy.as_ref()?;
     let mask = EventMask {
         connected: ConnectMode::Intercept,
         get: RequestMode::Intercept,
@@ -560,8 +558,7 @@ fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The bidirectional pump: broadcast local deltas, apply remote deltas,

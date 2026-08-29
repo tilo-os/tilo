@@ -74,8 +74,7 @@ impl Action for ThemesAction {
                 // Only name a theme that actually exists in the catalog, so a
                 // stale / malformed id can't point the desktop at nothing.
                 let exists = doc::load_catalog(doc, &ROOT)
-                    .map(|c| c.iter().any(|s| &s.id == id))
-                    .unwrap_or(false);
+                    .is_some_and(|c| c.iter().any(|s| &s.id == id));
                 if exists {
                     doc::put_str(doc, &ROOT, doc::KEY_ACTIVE, id);
                 }

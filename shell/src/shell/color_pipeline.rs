@@ -198,10 +198,10 @@ pub fn bt2020_to_bt709_matrix() -> Mat3 {
     gamut_matrix(&BT2020_PRIMARIES, &BT709_PRIMARIES)
 }
 
-const PQ_M1: f32 = 0.1593017578125; // 2610/16384
+const PQ_M1: f32 = 0.159_301_76; // 2610/16384
 const PQ_M2: f32 = 78.84375; // 2523/32
 const PQ_C1: f32 = 0.8359375; // 3424/4096
-const PQ_C2: f32 = 18.8515625; // 2413/128
+const PQ_C2: f32 = 18.851_563; // 2413/128
 const PQ_C3: f32 = 18.6875; // 2392/128
 
 /// SMPTE ST 2084 EOTF: PQ electrical signal `[0,1]` → absolute
@@ -226,7 +226,7 @@ pub fn pq_inverse_eotf(nits: f32) -> f32 {
 
 const HLG_A: f32 = 0.17883277;
 const HLG_B: f32 = 0.28466892;
-const HLG_C: f32 = 0.55991073;
+const HLG_C: f32 = 0.559_910_7;
 
 /// HLG OETF: scene-linear light `[0,1]` → HLG signal `[0,1]`. The
 /// *encode* direction for an HLG output.
@@ -286,9 +286,9 @@ pub fn map_sdr_linear_to_hdr_bt2020_nits(rgb_bt709_linear: [f32; 3]) -> [f32; 3]
 /// [`OUTPUT_ENCODE_SHADER_SOURCE`] mirrors.
 pub fn map_sdr_pixel_to_pq_bt2020(srgb8: [u8; 3]) -> [u16; 3] {
     let linear = [
-        srgb_eotf(srgb8[0] as f32 / 255.0),
-        srgb_eotf(srgb8[1] as f32 / 255.0),
-        srgb_eotf(srgb8[2] as f32 / 255.0),
+        srgb_eotf(f32::from(srgb8[0]) / 255.0),
+        srgb_eotf(f32::from(srgb8[1]) / 255.0),
+        srgb_eotf(f32::from(srgb8[2]) / 255.0),
     ];
     let nits = map_sdr_linear_to_hdr_bt2020_nits(linear);
     [
@@ -427,11 +427,10 @@ pub fn plan_surface_op(
         OutputColorSpace::SdrSrgb => {
             if surface_hdr {
                 let mut config = HdrTonemapConfig::default();
-                if let Some(peak) = source_hdr_peak_nits {
-                    if peak.is_finite() && peak > 0.0 {
+                if let Some(peak) = source_hdr_peak_nits
+                    && peak.is_finite() && peak > 0.0 {
                         config.source_peak_nits = peak;
                     }
-                }
                 config.target_peak_nits = output.max_luminance_nits;
                 SurfaceColorOp::TonemapHdrToSdr { config }
             } else {

@@ -548,11 +548,10 @@ fn parse_contact(raw: &str) -> (String, String, String, String) {
             email = v;
         } else if let Some(v) = field_after(line, "ORG") {
             org = v;
-        } else if let Some(v) = field_after(line, "N") {
-            if name.is_empty() {
+        } else if let Some(v) = field_after(line, "N")
+            && name.is_empty() {
                 name = v.replace(';', " ").trim().to_string();
             }
-        }
     }
     // MECARD: `MECARD:N:Name;TEL:123;EMAIL:a@b;;`
     if name.is_empty() {

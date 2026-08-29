@@ -143,7 +143,7 @@ pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
         return String::new();
     }
     let (w, _) = tr.measure(s, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return s.to_string();
     }
     let mut out = String::new();
@@ -151,7 +151,7 @@ pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     for ch in s.chars() {
         let candidate = format!("{out}{ch}{ell}");
         let (cw, _) = tr.measure(&candidate, size, None);
-        if (cw as f64) > max_w {
+        if f64::from(cw) > max_w {
             break;
         }
         out.push(ch);
@@ -188,7 +188,7 @@ pub(crate) fn blend_toward(a: Color, b: Color, t: f64) -> Color {
     use ui::color_compat::ColorCompat;
     let t = t.clamp(0.0, 1.0) as f32;
     let lerp = |x: u8, y: u8| {
-        (x as f32 + (y as f32 - x as f32) * t)
+        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
             .round()
             .clamp(0.0, 255.0) as u8
     };
@@ -231,7 +231,7 @@ pub fn legible_on(ink: Color, bg: Color, target: f64, fallback: Color) -> Color 
     let mut best_ratio = contrast_ratio(ink, bg);
     for toward in [first, second] {
         for step in 1..=24 {
-            let candidate = blend_toward(ink, toward, step as f64 / 24.0);
+            let candidate = blend_toward(ink, toward, f64::from(step) / 24.0);
             let r = contrast_ratio(candidate, bg);
             if r >= target {
                 return candidate;
@@ -261,7 +261,7 @@ pub fn band_at_least(tint: Color, own: Color, ground: Color, target: f64) -> Col
         return tint;
     }
     for step in 1..=16 {
-        let candidate = blend_toward(tint, own, step as f64 / 16.0);
+        let candidate = blend_toward(tint, own, f64::from(step) / 16.0);
         if contrast_ratio(candidate, ground) >= target {
             return candidate;
         }

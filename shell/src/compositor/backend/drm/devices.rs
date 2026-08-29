@@ -70,15 +70,15 @@ pub fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
         return None;
     }
     let preferred_set: Vec<ModeInfo> = modes.iter().copied().filter(|m| m.preferred).collect();
-    let working: &[ModeInfo] = if !preferred_set.is_empty() {
-        &preferred_set
-    } else {
+    let working: &[ModeInfo] = if preferred_set.is_empty() {
         modes
+    } else {
+        &preferred_set
     };
     working
         .iter()
         .copied()
-        .max_by_key(|m| ((m.width as u64) * (m.height as u64), m.refresh_mhz))
+        .max_by_key(|m| (u64::from(m.width) * u64::from(m.height), m.refresh_mhz))
 }
 
 #[cfg(test)]

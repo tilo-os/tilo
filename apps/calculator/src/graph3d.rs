@@ -253,7 +253,11 @@ impl Graph3dScreen {
 
     /// Reconcile the per-row [`MathField`]s with `model.surfaces`.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        if self.fields.len() != model.surfaces.len() {
+        if self.fields.len() == model.surfaces.len() {
+            for (field, f) in self.fields.iter_mut().zip(&model.surfaces) {
+                field.set_source(&f.expr);
+            }
+        } else {
             self.fields = model
                 .surfaces
                 .iter()
@@ -267,10 +271,6 @@ impl Graph3dScreen {
                 } else {
                     field.park_caret_in_structure();
                 }
-            }
-        } else {
-            for (field, f) in self.fields.iter_mut().zip(&model.surfaces) {
-                field.set_source(&f.expr);
             }
         }
     }
@@ -344,7 +344,7 @@ impl Graph3dScreen {
     /// Center of surface row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.vis_rects.get(i).map(|r| r.center())
+        self.vis_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     pub fn draw(
@@ -871,7 +871,7 @@ impl Graph3dScreen {
 }
 
 fn scale_rgb(c: Color, f: f64) -> Color {
-    let s = |x: u8| (x as f64 * f).round().clamp(0.0, 255.0) as u8;
+    let s = |x: u8| (f64::from(x) * f).round().clamp(0.0, 255.0) as u8;
     Color::from_rgba8(s(c.r()), s(c.g()), s(c.b()), c.a())
 }
 

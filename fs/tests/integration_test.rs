@@ -392,7 +392,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
         let _sa =
             fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a).expect("spawn alice session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         let alice_read = std::fs::read(alice_dir.path().join("secret.txt"));
         assert!(
@@ -415,7 +415,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let mut cfg_b = Config::default();
         cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
         let _sb = fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
         assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
@@ -467,7 +467,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         config.mount_options = options;
 
         let _session = fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Projection: the tree is visible.
         let entries = std::fs::read_dir(&mount_path)
@@ -509,7 +509,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
         let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // create + write
         std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
@@ -553,7 +553,7 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
         libc::getxattr(
             cpath.as_ptr(),
             name.as_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
             buf.len(),
         )
     };
@@ -607,7 +607,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
         let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         assert_eq!(
             read_sync_xattr(&path.join("here.txt")).as_deref(),
@@ -647,7 +647,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
         let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // A markdown document: recognized, stored as a CRDT, round-trips.
         std::fs::write(path.join("note.md"), b"# Title\n\nHello world\n").expect("write md");
@@ -686,7 +686,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
         let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         std::fs::create_dir(path.join("dir")).expect("mkdir");
         std::fs::write(path.join("dir/inner.txt"), b"keepme").expect("write inner");
@@ -880,7 +880,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     ViewFixture {
         _session: session,
         dir,
@@ -1239,7 +1239,7 @@ async fn document_fixture(
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     (session, dir, namespace)
 }
 

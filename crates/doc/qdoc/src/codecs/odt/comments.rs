@@ -33,12 +33,11 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
         }
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur {
-            if !txt.is_empty() {
+        if let Some(b) = cur
+            && !txt.is_empty() {
                 doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
                 *cur_len += txt.chars().count();
             }
-        }
     };
 
     loop {
@@ -50,7 +49,7 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
             Event::Start(e) => match e.name().as_ref() {
                 b"dc:creator" | b"dc:date" | b"meta:date-string" => in_meta += 1,
                 b"text:p" | b"text:h" if in_meta == 0 => {
-                    open_block(doc, &mut prev, &mut cur, &mut cur_len)
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
                 }
                 _ => {}
             },
@@ -77,7 +76,7 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
                     if !txt.is_empty()
-                        && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r']))
+                        && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
                     {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
@@ -100,7 +99,7 @@ pub(super) fn annotation_name(raw: &str) -> Option<String> {
     let mut reader = Reader::from_str(raw);
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+            Ok(Event::Start(e) | Event::Empty(e))
                 if matches!(
                     e.name().as_ref(),
                     b"office:annotation" | b"office:annotation-end"
@@ -110,7 +109,7 @@ pub(super) fn annotation_name(raw: &str) -> Option<String> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"office:name")
-                    .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()));
+                    .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned));
             }
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}

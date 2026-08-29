@@ -100,11 +100,11 @@ impl Link {
     /// [`handle_event`](Widget::handle_event). Returns `true` when the state
     /// changed, so the caller can request a redraw.
     pub fn set_hovered(&mut self, hovered: bool) -> bool {
-        if hovered != self.is_hovered {
+        if hovered == self.is_hovered {
+            false
+        } else {
             self.is_hovered = hovered;
             true
-        } else {
-            false
         }
     }
 
@@ -151,7 +151,7 @@ impl Widget for Link {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -171,10 +171,10 @@ impl Widget for Link {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
@@ -193,7 +193,7 @@ impl Widget for Link {
         self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
         let color = theme.accent_primary;
         let (tw, th) = text_renderer.measure(&self.label, self.font_size, None);
-        let (tw, th) = (tw as f64, th as f64);
+        let (tw, th) = (f64::from(tw), f64::from(th));
         let x0 = self.rect.x0;
         let y0 = self.rect.y0;
 
@@ -295,7 +295,7 @@ impl Widget for Link {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Link"
     }
 

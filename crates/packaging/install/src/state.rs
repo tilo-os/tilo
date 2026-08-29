@@ -137,7 +137,7 @@ fn sanitise(raw: &str) -> String {
 fn fnv1a(raw: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in raw.as_bytes() {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{h:016x}")

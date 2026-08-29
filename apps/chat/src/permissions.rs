@@ -76,7 +76,7 @@ impl ChatPermissions {
     }
 
     /// The call-action seam, backed by the real context. Join / Speak / Camera
-    /// / ShareScreen all require Write on the room (you can't transmit into a
+    /// / `ShareScreen` all require Write on the room (you can't transmit into a
     /// room you can't write to); Leave is always allowed so a downgraded peer
     /// can always drop out.
     pub fn allows(&self, action: CallAction) -> bool {

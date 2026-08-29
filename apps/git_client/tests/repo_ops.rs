@@ -470,7 +470,7 @@ fn app_stage_and_commit_through_production_actions() {
     let (s, u, n) = app.test_change_counts();
     assert_eq!((s, u, n), (0, 0, 0), "tree clean after commit");
     assert_eq!(
-        app.test_commit_summaries().first().map(|s| s.as_str()),
+        app.test_commit_summaries().first().map(std::string::String::as_str),
         Some("wire real git"),
         "history reload shows the new commit at the tip"
     );

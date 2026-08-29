@@ -150,9 +150,9 @@ impl BreadcrumbBar {
             return;
         }
         let cy = self.rect.center().y;
-        let text_h = TEXT_SIZE as f64;
+        let text_h = f64::from(TEXT_SIZE);
         let (chevron_w, _) = tr.measure(CHEVRON, TEXT_SIZE, None);
-        let chevron_w = chevron_w as f64;
+        let chevron_w = f64::from(chevron_w);
         let sep_block = SEP_PAD + chevron_w + SEP_PAD;
         let last_idx = self.segments.len() - 1;
         let avail_right = self.rect.x1 - 4.0;
@@ -184,12 +184,12 @@ impl BreadcrumbBar {
             let (w, _) = tr.measure(label, TEXT_SIZE, None);
             laid.push(LaidSlot {
                 slot: Slot::Text(label.to_string()),
-                rect: Rect::new(*x, cy - text_h / 2.0, *x + w as f64, cy + text_h / 2.0),
+                rect: Rect::new(*x, cy - text_h / 2.0, *x + f64::from(w), cy + text_h / 2.0),
                 target,
                 is_current,
                 chevron_before,
             });
-            *x += w as f64;
+            *x += f64::from(w);
         };
 
         // The root label always shows (no chevron — it pairs with the icon).
@@ -212,7 +212,7 @@ impl BreadcrumbBar {
             .enumerate()
             .map(|(i, (label, _))| {
                 let (w, _) = tr.measure(label, TEXT_SIZE, None);
-                (i + 1, label.clone(), w as f64)
+                (i + 1, label.clone(), f64::from(w))
             })
             .collect();
         let rest_needed: f64 = comps.iter().map(|(_, _, w)| sep_block + *w).sum();
@@ -221,7 +221,7 @@ impl BreadcrumbBar {
         let mut collapsed = false;
         if x + rest_needed > avail_right && comps.len() > 1 {
             let (ell_w, _) = tr.measure(ELLIPSIS, TEXT_SIZE, None);
-            let budget = avail_right - x - (sep_block + ell_w as f64);
+            let budget = avail_right - x - (sep_block + f64::from(ell_w));
             let mut used = 0.0;
             show.clear();
             for (i, _, w) in comps.iter().rev() {
@@ -274,17 +274,17 @@ impl Widget for BreadcrumbBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -332,7 +332,7 @@ impl Widget for BreadcrumbBar {
             // Chevron separator, painted only where the layout marked it.
             if ls.chevron_before {
                 let (cw, _) = text_renderer.measure(CHEVRON, TEXT_SIZE, None);
-                let sep_x = ls.rect.x0 - SEP_PAD - cw as f64;
+                let sep_x = ls.rect.x0 - SEP_PAD - f64::from(cw);
                 let sep_y =
                     crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
                 text_renderer.draw_text(
@@ -454,7 +454,7 @@ impl Widget for BreadcrumbBar {
         None
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BreadcrumbBar"
     }
 

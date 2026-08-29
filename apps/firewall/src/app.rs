@@ -127,9 +127,7 @@ impl FormState {
 
     fn current_service(&self) -> String {
         ServiceCatalog::ALL
-            .get(self.service_idx)
-            .map(|s| s.id.to_string())
-            .unwrap_or_else(|| "ssh".to_string())
+            .get(self.service_idx).map_or_else(|| "ssh".to_string(), |s| s.id.to_string())
     }
 
     fn matcher(&self) -> Matcher {
@@ -450,7 +448,7 @@ impl FirewallApp {
         let seg_h = 30.0;
         let seg_total = seg_w * 3.0;
         for i in 0..3 {
-            let x = cx1 - seg_total + i as f64 * seg_w;
+            let x = cx1 - seg_total + f64::from(i) * seg_w;
             l.filter_seg.push(Rect::new(x, fy, x + seg_w, fy + seg_h));
         }
 
@@ -548,7 +546,7 @@ impl FirewallApp {
         // kind segmented Service|Port
         let kind_w = 64.0;
         for i in 0..2 {
-            let x = fx0 + i as f64 * kind_w;
+            let x = fx0 + f64::from(i) * kind_w;
             l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + CTRL_H));
         }
         let mut x = fx0 + kind_w * 2.0 + 12.0;
@@ -565,7 +563,7 @@ impl FirewallApp {
             x += 96.0 + 8.0;
             let pw = 52.0;
             for i in 0..2 {
-                let px = x + i as f64 * pw;
+                let px = x + f64::from(i) * pw;
                 l.proto_seg.push(Rect::new(px, y1, px + pw, y1 + CTRL_H));
             }
             x += pw * 2.0 + 12.0;
@@ -574,7 +572,7 @@ impl FirewallApp {
         // action segmented allow|deny — right aligned on line 1
         let act_w = 64.0;
         for i in 0..2 {
-            let ax = fx1 - act_w * 2.0 + i as f64 * act_w;
+            let ax = fx1 - act_w * 2.0 + f64::from(i) * act_w;
             l.action_seg
                 .push(Rect::new(ax, y1, ax + act_w, y1 + CTRL_H));
         }
@@ -594,12 +592,12 @@ impl FirewallApp {
         let y1 = l.form.y0 + 40.0;
         let kind_w = 62.0;
         for i in 0..2 {
-            let x = fx0 + i as f64 * kind_w;
+            let x = fx0 + f64::from(i) * kind_w;
             l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + CTRL_H));
         }
         let act_w = 62.0;
         for i in 0..2 {
-            let ax = fx1 - act_w * 2.0 + i as f64 * act_w;
+            let ax = fx1 - act_w * 2.0 + f64::from(i) * act_w;
             l.action_seg
                 .push(Rect::new(ax, y1, ax + act_w, y1 + CTRL_H));
         }
@@ -616,7 +614,7 @@ impl FirewallApp {
             let port_x1 = fx1 - pw * 2.0 - 8.0;
             l.port_field = Rect::new(fx0, y2, port_x1, y2 + CTRL_H);
             for i in 0..2 {
-                let px = fx1 - pw * 2.0 + i as f64 * pw;
+                let px = fx1 - pw * 2.0 + f64::from(i) * pw;
                 l.proto_seg.push(Rect::new(px, y2, px + pw, y2 + CTRL_H));
             }
         }
@@ -701,8 +699,7 @@ impl FirewallApp {
         let currently = self
             .config
             .zone(self.selected_zone)
-            .map(|z| z.has_service(&id))
-            .unwrap_or(false);
+            .is_some_and(|z| z.has_service(&id));
         let on = !currently;
         self.perform_action(
             state,
@@ -749,9 +746,9 @@ impl FirewallApp {
             Ok(()) => {
                 let n = self.backend.last_plan().len();
                 self.status = match self.backend.mode() {
-                    Mode::Live => format!("Applied {} firewall-cmd commands", n),
+                    Mode::Live => format!("Applied {n} firewall-cmd commands"),
                     Mode::DryRun => {
-                        format!("Dry-run: {} commands planned (set QOS_FIREWALL_APPLY=1)", n)
+                        format!("Dry-run: {n} commands planned (set QOS_FIREWALL_APPLY=1)")
                     }
                 };
             }
@@ -819,17 +816,15 @@ impl Widget for FirewallApp {
             return;
         }
         // Adopt genuine remote edits (collab).
-        if let Some(json) = FirewallDoc::load_json(state) {
-            if self.last_json.as_deref() != Some(json.as_str()) {
-                if let Some(cfg) = FirewallConfig::from_json(&json) {
+        if let Some(json) = FirewallDoc::load_json(state)
+            && self.last_json.as_deref() != Some(json.as_str())
+                && let Some(cfg) = FirewallConfig::from_json(&json) {
                     self.config = cfg;
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
                     self.last_json = Some(json);
                 }
-            }
-        }
     }
 
     fn build_layout(
@@ -847,7 +842,7 @@ impl Widget for FirewallApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -855,10 +850,10 @@ impl Widget for FirewallApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.relayout();
     }
@@ -971,7 +966,7 @@ impl Widget for FirewallApp {
         self.relayout();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FirewallApp"
     }
 
@@ -1065,7 +1060,7 @@ impl FirewallApp {
                 self.cycle_zone(-1);
                 *handled = true;
             }
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if let Some(id) = self.selected_rule {
                     self.delete_rule(id, state);
                     *handled = true;
@@ -1636,7 +1631,7 @@ impl FirewallApp {
                 paint::fill_rrect(scene, t, bar, 2.0, theme.accent_primary);
             }
             // Trust dot.
-            let cy = (rect.y0 + rect.y1) / 2.0;
+            let cy = f64::midpoint(rect.y0, rect.y1);
             paint::dot(
                 scene,
                 t,
@@ -2079,7 +2074,7 @@ impl FirewallApp {
                     row.rect.width() - 30.0,
                 );
             } else {
-                let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+                let cy = f64::midpoint(row.rect.y0, row.rect.y1);
                 paint::dot(
                     scene,
                     t,
@@ -2215,8 +2210,7 @@ impl FirewallApp {
         let on_count = self
             .config
             .zone(self.selected_zone)
-            .map(|z| z.services.len())
-            .unwrap_or(0);
+            .map_or(0, |z| z.services.len());
         paint::label(
             tr,
             scene,
@@ -2305,7 +2299,7 @@ impl FirewallApp {
         );
 
         // kind segmented.
-        let kind_sel = if self.form.is_service { 0 } else { 1 };
+        let kind_sel = usize::from(!self.form.is_service);
         self.draw_segmented(
             scene,
             t,

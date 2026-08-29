@@ -26,8 +26,7 @@ fn download_timeout() -> Duration {
     std::env::var("QOS_CATALOGUE_DOWNLOAD_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS))
+        .map_or(Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS), Duration::from_secs)
 }
 
 /// Why an install did not happen; every variant renders to something a person can act on — reaches a notification.
@@ -139,7 +138,7 @@ pub fn download_reporting(
     let mut response = client
         .get(url)
         .send()
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("{e}"))?;
     let total = response.content_length();
     on_progress(DownloadProgress { received: 0, total });
@@ -281,9 +280,7 @@ const DETAIL_MAX_CHARS: usize = 110;
 fn installer_complaint(text: &str) -> String {
     let Some(line) = text
         .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .next_back()
+        .map(str::trim).rfind(|l| !l.is_empty())
     else {
         return String::new();
     };

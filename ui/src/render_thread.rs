@@ -30,7 +30,7 @@ use vello::{RenderParams, Renderer, Scene};
 /// A hook run on the render thread *after* vello encodes the frame into its
 /// intermediate texture and *before* that texture is blit to the surface.
 /// It may composite extra GPU content into `target` — used by the browser
-/// to draw its zero-copy WebView texture (which vello cannot sample) over
+/// to draw its zero-copy `WebView` texture (which vello cannot sample) over
 /// the transparent region the chrome leaves for it.
 pub trait FramePostProcess: Send {
     fn post_render(
@@ -359,8 +359,7 @@ fn render_one_frame(
     surface_texture.present();
     if present_dbg {
         let present_us = t_present
-            .map(|t| t.elapsed().as_secs_f64() * 1e6)
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
         eprintln!(
             "present-frame {frame_ix}: encode={:.0}us acquire={:.0}us submit={:.0}us present={:.0}us  ({}x{})",
             encode_us.unwrap_or(0.0),

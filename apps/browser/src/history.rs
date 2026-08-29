@@ -258,10 +258,10 @@ impl History {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let last_visit = item.get("last_visit").and_then(|v| v.as_u64()).unwrap_or(0);
+                let last_visit = item.get("last_visit").and_then(serde_json::Value::as_u64).unwrap_or(0);
                 let visit_count = item
                     .get("visit_count")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0) as u32;
                 entries.push(HistoryEntry {
                     url,
@@ -287,8 +287,7 @@ pub fn history_path() -> Option<PathBuf> {
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving
@@ -303,7 +302,7 @@ fn recency_score(last_visit: u64, now: u64) -> f64 {
 /// and a very popular page can't dwarf match quality. `1 → 0.5`,
 /// `4 → 0.8`, `9 → 0.9`.
 fn frequency_score(visit_count: u32) -> f64 {
-    let n = visit_count.max(1) as f64;
+    let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
 }
 
@@ -353,9 +352,9 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
             }
             hi += 1;
         }
-        match found {
-            Some(idx) => matched.push(idx),
-            None => return None, // ran out of haystack — not a subsequence
+        {
+            let idx = found?;
+            matched.push(idx)
         }
     }
 

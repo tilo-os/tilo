@@ -107,7 +107,7 @@ collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
         "Sequencing looks right. I'd pull sandboxing forward — it's the \
 security boundary everything else leans on. Let's not ship streaming before \
 the bubblewrap policy is solid.\n\nGrace",
-        1 * h + 47,
+        h + 47,
         true,
         false,
         Folder::Inbox,
@@ -128,7 +128,7 @@ revised gantt. Can you review the collaboration section before Friday?",
 
     // ---- Thread 2: CI failure (unread, attachment: log)
     mb.insert(message(
-        ci.clone(),
+        ci,
         vec![me.clone()],
         "Build #4821 failed on shell --lib",
         "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
@@ -157,7 +157,7 @@ solver. Margins are tight on the third burn — want me to widen the window?",
 
     // ---- Thread 4: Alan, single short (unread)
     mb.insert(message(
-        alan.clone(),
+        alan,
         vec![me.clone()],
         "Coffee before the standup?",
         "Fancy a coffee at 9:15 before we dive into the compositor review? \
@@ -171,7 +171,7 @@ I have thoughts on the focus model.",
 
     // ---- Thread 5: Linus, mailing-list style (read, long)
     mb.insert(message(
-        linus.clone(),
+        linus,
         vec![Addr::bare("qos-dev@lists.qos.example")],
         "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
         "On Tue, the patch looks mostly fine, but the readahead window is \
@@ -186,7 +186,7 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
 
     // ---- Calendar invite (unread, ics attachment)
     mb.insert(message(
-        calendar.clone(),
+        calendar,
         vec![me.clone()],
         "Invitation: Compositor sync @ Thu 11:00",
         "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
@@ -201,7 +201,7 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
     // ---- Sent items
     mb.insert(message(
         me.clone(),
-        vec![ada.clone(), grace.clone()],
+        vec![ada, grace.clone()],
         "Re: Launch plan for the spatial shell",
         "Thanks both. I'll own the tiling engine and have a skeleton up by \
 Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
@@ -213,7 +213,7 @@ Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
     ));
     mb.insert(message(
         me.clone(),
-        vec![katherine.clone()],
+        vec![katherine],
         "Re: Re-check the trajectory math",
         "Widen it — better a longer window than a missed burn. I'll update \
 the solver bounds and re-run tonight.",
@@ -226,7 +226,7 @@ the solver bounds and re-run tonight.",
 
     // ---- Archive
     mb.insert(message(
-        grace.clone(),
+        grace,
         vec![me.clone()],
         "Onboarding notes",
         "Welcome aboard! Here are the cluster conventions and the review \
@@ -241,7 +241,7 @@ rota. Ping me if the FUSE mount misbehaves.",
     // ---- Junk
     mb.insert(message(
         Addr::new("Totally Legit Prize Co", "winner@prize.example"),
-        vec![me.clone()],
+        vec![me],
         "\u{1F389} You have WON a free spatial monitor!!!",
         "Dear winner, click here within 24 hours to claim your prize. This \
 is definitely not a scam.",

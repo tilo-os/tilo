@@ -131,7 +131,7 @@ pub fn host_arch() -> &'static str {
     std::env::consts::ARCH
 }
 
-/// x86_64 loader + libc set: Fedora (/lib64), Debian
+/// `x86_64` loader + libc set: Fedora (/lib64), Debian
 /// (/lib/x86_64-linux-gnu via symlink), and legacy /lib/ld-linux.so.2.
 pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     // Dynamic loader itself.
@@ -158,7 +158,7 @@ pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     "/lib/x86_64-linux-gnu/libutil.so.1",
 ];
 
-/// aarch64 loader + libc set: Debian (/lib/aarch64-linux-gnu) and Fedora (/lib64, same convention as x86_64).
+/// aarch64 loader + libc set: Debian (/lib/aarch64-linux-gnu) and Fedora (/lib64, same convention as `x86_64`).
 pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     // Dynamic loader itself.
     "/lib/ld-linux-aarch64.so.1",
@@ -211,11 +211,10 @@ pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
 /// [`RUNTIME_DIR_ENV`] when set and non-empty, else
 /// `$XDG_DATA_HOME/qos-runtime`.
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
-    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV) {
-        if !dir.is_empty() {
+    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
+        && !dir.is_empty() {
             return Ok(PathBuf::from(dir));
         }
-    }
     Ok(dirs::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("qos-runtime"))
@@ -385,7 +384,7 @@ pub fn build_bundle_with(
         // /lib64/libc.so.6 → lib/lib64/libc.so.6) so LD_LIBRARY_PATH plus the
         // loader's own search finds everything with no symlink dances.
         let rel_no_slash = src_abs.trim_start_matches('/');
-        let rel_in_bundle = format!("lib/{}", rel_no_slash);
+        let rel_in_bundle = format!("lib/{rel_no_slash}");
         let dst = out.join(&rel_in_bundle);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
@@ -525,14 +524,13 @@ pub fn verify_bundle_with(
         toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
 
     // Optional arch policy.
-    if let Some(required) = opts.require_arch.as_deref() {
-        if manifest.arch != required {
+    if let Some(required) = opts.require_arch.as_deref()
+        && manifest.arch != required {
             return Err(BundleError::ArchMismatch {
-                actual: manifest.arch.clone(),
+                actual: manifest.arch,
                 host: required.to_string(),
             });
         }
-    }
 
     // Recompute per-file hashes and compare against disk: a listed file
     // missing on disk is corruption; an unlisted file present is suspect
@@ -602,14 +600,13 @@ pub fn verify_bundle_with(
             return Err(BundleError::BadSignature);
         }
 
-        if let Some(required) = opts.require_publisher.as_deref() {
-            if !eq_hex_ignore_case(publisher_hex, required) {
+        if let Some(required) = opts.require_publisher.as_deref()
+            && !eq_hex_ignore_case(publisher_hex, required) {
                 return Err(BundleError::PublisherMismatch {
                     required: required.to_string(),
                     actual: publisher_hex.to_string(),
                 });
             }
-        }
     }
 
     Ok(manifest)
@@ -712,8 +709,7 @@ fn resolve_from(host_root: &Path, abs: &str) -> PathBuf {
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

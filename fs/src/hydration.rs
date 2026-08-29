@@ -138,7 +138,7 @@ impl Hydrator {
         let mut pos: u64 = 0;
         for c in &manifest.chunks {
             let cstart = pos;
-            let cend = pos + c.len as u64;
+            let cend = pos + u64::from(c.len);
             pos = cend;
             if cend <= offset {
                 continue; // entirely before the range
@@ -146,7 +146,7 @@ impl Hydrator {
             if cstart >= end {
                 break; // entirely after the range
             }
-            let chunk = self.read_blob(Hash::from(c.hash), 0, c.len as u64).await?;
+            let chunk = self.read_blob(Hash::from(c.hash), 0, u64::from(c.len)).await?;
             let from = offset.saturating_sub(cstart).min(chunk.len() as u64) as usize;
             let to = (end - cstart).min(chunk.len() as u64) as usize;
             if from < to {
@@ -220,7 +220,7 @@ mod tests {
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
             .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
-        assert_eq!(store.local(mh).await.is_some(), true, "manifest stored");
+        assert!(store.local(mh).await.is_some(), "manifest stored");
 
         let hyd = Hydrator::new(endpoint, store);
         assert_eq!(hyd.content_len(mh).await.unwrap(), data.len() as u64);

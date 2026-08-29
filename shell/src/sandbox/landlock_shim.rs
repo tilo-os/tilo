@@ -2,7 +2,7 @@
 //! layered on top of the bwrap + seccomp + netns sandbox.
 //!
 //! `bwrap` needs broad filesystem access to build the sandbox (mount, bind,
-//! pivot_root), so it can't be Landlocked itself. Landlock is path-based
+//! `pivot_root`), so it can't be Landlocked itself. Landlock is path-based
 //! and irrevocable for a process and its descendants, so it has to apply
 //! to the *app* process after bwrap has finished setting up the mount
 //! namespace — hence bwrap execs this shim (via the hidden
@@ -36,7 +36,7 @@ pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
 ///
 /// * V4 is the ABI that introduces network (TCP bind/connect) control,
 ///   which is the highest right we actively *use* here.
-/// * Capping below the IoctlDev right (V5) means device ioctls stay
+/// * Capping below the `IoctlDev` right (V5) means device ioctls stay
 ///   unrestricted, so granted hardware (`/dev/video*`, `/dev/snd`) keeps
 ///   working without us having to special-case `VIDIOC_*`/ALSA ioctls.
 ///
@@ -325,24 +325,17 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cprogram = match CString::new(program.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: program path contains an interior NUL");
-            std::process::exit(2);
-        }
+    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) { c } else {
+        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        std::process::exit(2);
     };
 
-    let cargs: Vec<CString> = match command
+    let cargs: Vec<CString> = if let Ok(v) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
-        .collect::<Result<_, _>>()
-    {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: argument contains an interior NUL");
-            std::process::exit(2);
-        }
+        .collect::<Result<_, _>>() { v } else {
+        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        std::process::exit(2);
     };
 
     let mut argv_ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();

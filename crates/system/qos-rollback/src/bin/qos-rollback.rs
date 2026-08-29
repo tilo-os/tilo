@@ -534,7 +534,9 @@ fn cmd_harden(
         );
     }
 
-    if !before.lockout_auth_set {
+    if before.lockout_auth_set {
+        println!("reset authorisation already set; leaving it alone");
+    } else {
         let auth = lockout::new_reset_auth()?;
         // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two
         // leaves a TPM whose DA counter can never be reset by anyone.
@@ -562,8 +564,6 @@ fn cmd_harden(
              attacker holding a powered-off machine — and also means a TPM lockout cannot be \
              cleared until the disk is open. The recovery key is the way out of that."
         );
-    } else {
-        println!("reset authorisation already set; leaving it alone");
     }
 
     let auth = read_secret(auth_file).ok();
@@ -632,21 +632,18 @@ fn cmd_enroll(
     counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
     let existing = keyslots::list_tokens(runner, device)?;
     let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
-    let floor = match base {
-        Some(b) => {
-            let c = counter::read(runner, cfg.nv_index, scratch)?
-                .context("the rollback floor counter exists but has never been incremented")?;
-            counter::FloorState {
-                counter: c,
-                base: b,
-            }
+    let floor = if let Some(b) = base {
+        let c = counter::read(runner, cfg.nv_index, scratch)?
+            .context("the rollback floor counter exists but has never been incremented")?;
+        counter::FloorState {
+            counter: c,
+            base: b,
         }
-        None => {
-            // First enrollment starts the floor at the bottom of the window, not at this generation —
-            // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
-            let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
-            counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
-        }
+    } else {
+        // First enrollment starts the floor at the bottom of the window, not at this generation —
+        // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
+        let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
+        counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
     };
     println!(
         "rollback floor counter {} (base {}, floor generation {})",
@@ -709,9 +706,7 @@ fn cmd_enroll(
              exercised until that image boots. Its keyslot is verified; the running generation's \
              keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
              back instead of failing.",
-            running
-                .map(|g| g.to_string())
-                .unwrap_or_else(|| "unknown".into())
+            running.map_or_else(|| "unknown".into(), |g| g.to_string())
         );
     }
 
@@ -789,19 +784,16 @@ fn cmd_unlock(
             pin.as_deref().map(|v| &v[..]),
         ) {
             Ok(Some(secret)) => {
-                match output {
-                    Some(p) => {
-                        write_private(p, &secret)?;
-                        eprintln!(
-                            "qos-rollback: generation {} unsealed to {}",
-                            t.generation,
-                            p.display()
-                        );
-                    }
-                    None => {
-                        use std::io::Write;
-                        std::io::stdout().write_all(&secret)?;
-                    }
+                if let Some(p) = output {
+                    write_private(p, &secret)?;
+                    eprintln!(
+                        "qos-rollback: generation {} unsealed to {}",
+                        t.generation,
+                        p.display()
+                    );
+                } else {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&secret)?;
                 }
                 // Keep it for `confirm`, which runs later in the same boot and cannot re-unseal without the PIN.
                 if let Some(pf) = proof_file {
@@ -811,7 +803,7 @@ fn cmd_unlock(
             }
             Ok(None) => continue,
             Err(e) => {
-                floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation))
+                floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation));
             }
         }
     }

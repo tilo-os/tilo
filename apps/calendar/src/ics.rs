@@ -58,7 +58,7 @@ pub fn export(model: &Model) -> String {
             // VALARM with a relative trigger N minutes before start.
             out.push_str("BEGIN:VALARM\r\n");
             raw(&mut out, "ACTION", "DISPLAY");
-            raw(&mut out, "TRIGGER", &format!("-PT{}M", m));
+            raw(&mut out, "TRIGGER", &format!("-PT{m}M"));
             out.push_str("END:VALARM\r\n");
         }
         raw(&mut out, "X-QOS-COLOR", e.color.name());
@@ -140,11 +140,10 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<Event>, usize) {
         if raw.trim() == "BEGIN:VALARM" {
             // Scan the alarm for a TRIGGER:-PTnM.
             while i < lines.len() && lines[i].trim() != "END:VALARM" {
-                if let Some((k, v)) = split_prop(&lines[i]) {
-                    if k.starts_with("TRIGGER") {
+                if let Some((k, v)) = split_prop(&lines[i])
+                    && k.starts_with("TRIGGER") {
                         reminder = parse_trigger_minutes(&v);
                     }
-                }
                 i += 1;
             }
             i += 1;
@@ -221,11 +220,10 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
                         _ => Priority::None,
                     }
                 }
-                "PERCENT-COMPLETE" => {
-                    if val.trim() == "100" {
+                "PERCENT-COMPLETE"
+                    if val.trim() == "100" => {
                         done = true;
                     }
-                }
                 _ => {}
             }
         }
@@ -283,7 +281,7 @@ fn unescape(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
-                Some('n') | Some('N') => out.push('\n'),
+                Some('n' | 'N') => out.push('\n'),
                 Some(other) => out.push(other),
                 None => {}
             }
@@ -316,11 +314,10 @@ fn split_prop(line: &str) -> Option<(String, String)> {
 }
 
 fn parse_cal_datetime(key: &str, val: &str) -> (NaiveDateTime, bool) {
-    if key.contains("VALUE=DATE") || val.len() == 8 {
-        if let Some(d) = parse_cal_date(val) {
+    if (key.contains("VALUE=DATE") || val.len() == 8)
+        && let Some(d) = parse_cal_date(val) {
             return (d.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()), true);
         }
-    }
     let clean = val.trim_end_matches('Z');
     if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
         return (dt, false);
