@@ -265,7 +265,16 @@ resolver = "2"
 #     dependency where even one member wants defaults off is declared off here.
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+# `nursery` as a group is clippy's unstable channel: documented false positives,
+# behaviour that changes between releases, so a toolchain bump can turn CI red
+# with no code change. Measured here it was 10,873 violations, 96% of them four
+# style lints (use_self 3401, missing_const_for_fn 2511, redundant_pub_crate
+# 1443, suboptimal_flops 1224 — the last rewrites float expressions and changes
+# results, which a renderer should not accept from a lint).
+#
+# The nursery lints that find bugs rather than style are named individually
+# below: 431 violations, and each one is a defect.
+
 # Panics. clippy.toml exempts tests.
 unwrap_used = "deny"
 expect_used = "deny"
@@ -278,6 +287,31 @@ string_slice = "deny"
 panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
+
+# Nursery lints kept individually: each catches a defect, not a style.
+redundant_clone = "deny"                    # allocations that are never needed
+significant_drop_tightening = "deny"        # lock held longer than necessary
+significant_drop_in_scrutinee = "deny"      # lock held across a match arm
+needless_pass_by_ref_mut = "deny"           # &mut that never mutates
+future_not_send = "deny"                    # future that cannot cross threads
+while_float = "deny"                        # float loop counter accumulates error
+or_fun_call = "deny"                        # eager evaluation in unwrap_or
+needless_collect = "deny"                   # collect just to iterate
+suspicious_operation_groupings = "deny"     # a.x == b.x && a.y == b.x
+collection_is_never_read = "deny"
+iter_with_drain = "deny"
+unused_peekable = "deny"
+literal_string_with_formatting_args = "deny"
+as_ptr_cast_mut = "deny"
+path_buf_push_overwrite = "deny"
+read_zero_byte_vec = "deny"
+debug_assert_with_mut_call = "deny"
+non_send_fields_in_send_ty = "deny"
+transmute_undefined_repr = "deny"
+uninhabited_references = "deny"
+set_contains_or_insert = "deny"
+clear_with_drain = "deny"
+trailing_empty_array = "deny"
 
 # `as_conversions` fires on all 7,090 `as` uses, including provably-safe ones.
 # pedantic already denies the dangerous subset more precisely — cast_possible_
