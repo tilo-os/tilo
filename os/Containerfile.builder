@@ -44,7 +44,8 @@ RUN curl -fsSL https://sh.rustup.rs \
           --component rustfmt --component clippy \
     && cargo --version && rustc --version
 
-RUN cargo install --locked cargo-nextest && cargo nextest --version
+RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
+    && cargo nextest --version && cargo deny --version && cargo machete --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
