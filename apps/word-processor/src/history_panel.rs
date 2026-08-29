@@ -570,6 +570,26 @@ mod tests {
         s
     }
 
+    /// The entry whose edit produced `summary`, addressed by meaning rather
+    /// than by index — the track's contents shift when the schema changes.
+    fn entry_with(panel: &HistoryPanel, summary: &str) -> ui::widget::history::HistoryEntryId {
+        panel
+            .entries()
+            .iter()
+            .find(|e| e.summary == summary)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no entry summarised {summary:?}; track is {:?}",
+                    panel
+                        .entries()
+                        .iter()
+                        .map(|e| e.summary.as_str())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .id
+    }
+
     fn body(s: &State) -> String {
         let c = qdoc::model::open(&s.doc, &s.root).unwrap();
         qdoc::model::materialize(&s.doc, &c)
@@ -585,7 +605,12 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        assert_eq!(panel.version_count(), 3, "schema init plus two edits");
+        assert_eq!(
+            panel.version_count(),
+            2,
+            "the two edits; the schema genesis is written by a fixed actor and \
+             is not an authored revision"
+        );
         let summaries: Vec<&str> = panel.entries().iter().map(|e| e.summary.as_str()).collect();
         assert!(
             summaries.contains(&"+5 -0 chars") && summaries.contains(&"+7 -0 chars"),
@@ -612,7 +637,8 @@ mod tests {
         assert_eq!(body(&s), "first second");
 
         let versions_before = panel.version_count();
-        let target = panel.entries()[1].id;
+        // The state after "first" was typed, before " second".
+        let target = entry_with(&panel, "+5 -0 chars");
         assert!(restore_to(&mut s.doc, &target), "restore writes something");
         // The host commits — this is what `needs_commit()` triggers in the app.
         s.commit_action(None, None);
@@ -638,7 +664,7 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        let target = panel.entries()[1].id;
+        let target = entry_with(&panel, "+5 -0 chars");
 
         panel.preview = build_preview(&mut s.doc, &target, panel.scrubber.entries());
         assert_eq!(panel.preview_text(), Some("first"));
@@ -1016,13 +1042,14 @@ mod tests {
         // work, and nothing after it.
         let v = panel.versions()[1].clone();
         let boundary = panel.entries()[v.end].id;
-        let expected = {
-            let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
-            snap.blocks
-                .first()
-                .map(|b| b.text.clone())
-                .unwrap_or_default()
-        };
+        // Read the expected text through the same id the restore uses. `v.end`
+        // indexes `entries()`, which omits the schema genesis, while
+        // `materialize_at` counts raw changes — passing one to the other
+        // compares two different states and the assertion drifts by whatever
+        // the entry list filtered out.
+        let expected = build_preview(&mut s.doc, &boundary, panel.scrubber.entries())
+            .map(|p| p.text)
+            .unwrap_or_default();
         assert_ne!(expected, live, "the boundary is a different state");
 
         assert!(
