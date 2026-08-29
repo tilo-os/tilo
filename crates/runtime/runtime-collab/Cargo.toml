@@ -22,7 +22,6 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
-thiserror.workspace = true
 futures = { workspace = true, default-features = true }
 
 [dev-dependencies]

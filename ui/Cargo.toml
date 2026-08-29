@@ -114,7 +114,6 @@ winit.workspace = true
 dirs.workspace = true
 fluent.workspace = true
 unic-langid.workspace = true
-once_cell.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

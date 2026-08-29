@@ -23,7 +23,6 @@ app-registry = { path = "../app-registry" }
 # Cap'n Proto RPC for the control socket, matching format-host.
 capnp.workspace = true
 capnp-rpc.workspace = true
-capnp-futures.workspace = true
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }

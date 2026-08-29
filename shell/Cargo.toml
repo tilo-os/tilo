@@ -66,7 +66,6 @@ serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-once_cell.workspace = true
 chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
@@ -97,7 +96,6 @@ smithay = { version = "0.7", default-features = false, features = [
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
-calloop-wayland-source = "0.4.1"
 
 ui = { path = "../ui" }
 # The record/room-index store. The compositor keeps one document per room
@@ -167,7 +165,6 @@ landlock.workspace = true
 # are already pulled in transitively by libp2p; pinning them here is a one-line
 # Cargo edit and avoids relying on transitive re-exports of unrelated deps.
 base64.workspace = true
-bs58 = "0.5.1"
 # Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # software H.264 encode/decode for foreign-surface streaming between peers.
 # `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
@@ -231,7 +228,6 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
-runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `qos-launcher` binary to build the actual bwrap + seccomp + Landlock

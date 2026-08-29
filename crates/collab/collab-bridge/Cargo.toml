@@ -34,7 +34,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 sd-notify.workspace = true
 parking_lot.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
