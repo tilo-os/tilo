@@ -31,3 +31,6 @@ anyhow.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls", "blocking"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
 chrono = { workspace = true, features = ["std", "clock"] }
+
+[lints]
+workspace = true

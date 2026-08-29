@@ -32,3 +32,6 @@ git2 = { version = "0.20", default-features = false, features = ["vendored-libgi
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

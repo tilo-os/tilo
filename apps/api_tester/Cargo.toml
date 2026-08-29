@@ -26,3 +26,6 @@ taffy.workspace = true
 anyhow.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 base64.workspace = true
+
+[lints]
+workspace = true

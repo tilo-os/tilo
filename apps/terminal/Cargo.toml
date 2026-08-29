@@ -50,3 +50,6 @@ arboard.workspace = true
 # (selecting text sets the primary selection, which a middle-click paste test
 # then reads — they must not interleave).
 serial_test.workspace = true
+
+[lints]
+workspace = true

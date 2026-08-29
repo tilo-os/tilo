@@ -38,3 +38,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] 
 futures-util.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
 chrono = { workspace = true, default-features = true }
+
+[lints]
+workspace = true

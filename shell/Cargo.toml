@@ -347,3 +347,6 @@ path = "src/bin/qos-control.rs"
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ serde.workspace = true
 package = "qos:format-provider"
 version = "1.0.0"
 path = "wit"
+
+[lints]
+workspace = true

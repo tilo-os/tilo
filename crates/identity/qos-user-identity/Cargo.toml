@@ -81,3 +81,6 @@ hex.workspace = true
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/qos on the developer's machine.
 tempfile.workspace = true
+
+[lints]
+workspace = true

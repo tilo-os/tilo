@@ -36,3 +36,6 @@ des = "0.8"
 # Serialises tests that exercise the process-wide clipboard, so they never
 # race each other under cargo's default parallel runner.
 serial_test.workspace = true
+
+[lints]
+workspace = true

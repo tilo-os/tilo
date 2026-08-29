@@ -46,3 +46,6 @@ cli = { path = "../cli" }
 # asking for a superset still resolves to this one copy; enabling it
 # here is what makes the standalone-built dylib useful on its own.
 ui = { path = "../../../ui", features = ["portal"] }
+
+[lints]
+workspace = true

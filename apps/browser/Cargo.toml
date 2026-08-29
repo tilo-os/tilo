@@ -69,3 +69,6 @@ required-features = ["wpe"]
 [[example]]
 name = "startup_flicker_capture"
 required-features = ["wpe"]
+
+[lints]
+workspace = true

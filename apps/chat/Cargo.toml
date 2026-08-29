@@ -97,3 +97,6 @@ qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true 
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true
