@@ -48,6 +48,20 @@ pub struct RelayClient {
     _pump: JoinHandle,
 }
 
+impl Drop for RelayClient {
+    /// Tell the relay the peer has gone.
+    ///
+    /// Dropping the handle alone only abandons the QUIC connection: the relay
+    /// keeps the subscriber until its idle timeout, so for that whole window it
+    /// fans out to a channel nobody reads and skips store-and-forward for a
+    /// member it still believes is online. Those deltas are not queued and not
+    /// delivered — they are lost. An explicit close makes the relay drop the
+    /// subscription now, so the next delta is queued instead.
+    fn drop(&mut self) {
+        self._connection.close(0u32.into(), b"client dropped");
+    }
+}
+
 struct JoinHandle(tokio::task::JoinHandle<()>);
 impl Drop for JoinHandle {
     fn drop(&mut self) {
