@@ -2,7 +2,7 @@
 """Three qOS sessions in one room, and an agent that drives one of them.
 
 Starts three real compositors — separate state directories, separate
-libp2p keypairs, separate user identities, separate control sockets:
+Iroh endpoint keys, separate user identities, separate control sockets:
 
   ada  hosts the room and owns it
   bob    joins it by invite
@@ -337,10 +337,9 @@ class Session:
 
     #: Whether this session gossips its presence to peers on the network.
     #: On for the nine-beat film, whose whole subject is other people;
-    #: worth turning off for a single-session take, because mdns finds
-    #: every other qOS session on the machine — another agent's harness,
-    #: a demo somebody left running — and paints a cursor and a name pill
-    #: for it, over the document, on camera.
+    #: worth turning off for a single-session take, because an explicit
+    #: demo peer or configured host would paint a cursor and name pill over
+    #: the document on camera.
     peer_sync: bool = True
 
     def __init__(self, name: str, user: str, run_dir: str, sock: str, binary: str,
@@ -3208,7 +3207,7 @@ def run_the_agent(agent: Session, room: str, shots: str,
     """Let the agent join the document and carry out one instruction.
 
     It connects to its own session's broker, which is how its edits
-    reach the other two: the same libp2p republish every peer's edits
+    reach the other two: the same Iroh publish path carries every peer's edits
     take. `--no-model` keeps the run reproducible and off the network —
     the vocabulary is a keyword table, and an instruction must never
     wait on a request.
@@ -3312,7 +3311,7 @@ def beat_one(ada: Session, shots: str) -> tuple[dict, dict | None]:
     for s in SESSIONS:
         note(f"{s.name:8} pid {s.proc.pid:<8} user {s.user:<8} peer {ids[s.name]}")
     claim("three separate processes", len({s.proc.pid for s in SESSIONS}), 3)
-    claim("three separate libp2p identities", len(set(ids.values())), 3)
+    claim("three separate Iroh identities", len(set(ids.values())), 3)
 
     host_ws = ada.active_workspace()
     note(f"ada's room {host_ws['room']}  named {host_ws['name']!r}")

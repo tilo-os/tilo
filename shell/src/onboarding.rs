@@ -7,10 +7,11 @@
 //! for; **that there is no recovery**, acknowledged explicitly; and
 //! where the key ended up, with its fingerprint.
 //!
-//! qOS mints a *single* Ed25519 key with no second factor, no escrow,
-//! no recovery phrase — `threshold-identity` implements share-based
-//! recovery but isn't wired into this path, so the only true thing to
-//! tell a user is that losing the device loses the identity. The copy in
+//! qOS mints a personal Ed25519 root plus a distinct device key certified
+//! by that root, with no escrow or recovery phrase. `threshold-identity`
+//! implements share-based recovery but isn't wired into this path, so the
+//! only true thing to tell a user is that losing every local or copied root
+//! record loses the identity. The copy in
 //! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
@@ -47,29 +48,31 @@ pub const INTRO_POINTS: &[&str] = &[
 ];
 
 /// Heading for the consequence screen — stated as a fact, not a warning to be dismissed.
-pub const NO_RECOVERY_TITLE: &str = "If you lose this device, this identity is gone";
+pub const NO_RECOVERY_TITLE: &str =
+    "If you lose this device without a backup, this identity is gone";
 
 /// The plain truth, point by point.
 ///
 /// Every line here is load-bearing. Read [`tests::copy_does_not_promise_recovery`]
 /// before editing any of them.
 pub const NO_RECOVERY_POINTS: &[&str] = &[
-    "There is no recovery. qOS has no backup code, no recovery phrase, and no second device \
-     that can vouch for you.",
-    "The key exists in exactly one place — a single file in your home directory, readable \
-     only by you.",
-    "If this device is lost or wiped, or that file is deleted, the identity cannot be \
-     rebuilt. Not by you, and not by anyone else.",
-    "You would start again with a new identity, and rejoin shared workspaces as a new \
-     participant. Work you already signed stays signed and stays yours; you just cannot \
-     sign anything new with the old key.",
-    "Copying that file somewhere safe is the only backup that exists today. Anyone who has \
-     a copy can sign as you, so treat it like a key to your house.",
+    "There is no recovery service. qOS has no backup code, no recovery phrase, and no \
+     support desk that can recreate your key.",
+    "Setup creates a personal root record in your home and a separate certified device key \
+     in the protected system identity directory. Both remain on this machine.",
+    "If this device is lost or wiped and you kept no copy of the personal root record, the \
+     identity cannot be rebuilt. Not by you, and not by anyone else.",
+    "With no backup you would start again with a new identity and rejoin shared workspaces \
+     as a new participant. Work you already signed stays signed and stays yours; you just \
+     cannot sign anything new with the old key.",
+    "Copying the personal root record somewhere safe is the only backup that exists today. \
+     Anyone who has a copy can sign as you and certify devices, so treat it like a key to \
+     your house.",
 ];
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
 pub const ACKNOWLEDGEMENT: &str =
-    "I understand that losing this device means losing this identity.";
+    "I understand that losing this device without a backup means losing this identity.";
 
 pub const DONE_TITLE: &str = "Your identity is ready";
 pub const DONE_BODY: &str = "This is the fingerprint others will see. You never have to type it — \
@@ -197,12 +200,23 @@ impl Error for OnboardingError {}
 
 /// Mint the identity into `identity_dir` and describe what landed.
 ///
-/// Delegates to [`crate::firstboot::ensure_primary_identity`] so there's
-/// exactly one writer of the on-disk record, and the ceremony can't drift from what the rest of the system reads.
+/// Delegates to [`crate::firstboot::ensure_collaboration_identity`] so the
+/// human root, certified device key, and Iroh endpoint identity are created
+/// as one idempotent ceremony.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{ProvisionOutcome, ensure_primary_identity};
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    mint_into_with_paths(identity_dir, &identity_paths)
+}
+
+fn mint_into_with_paths(
+    identity_dir: &Path,
+    identity_paths: &qos_user_identity::IdentityPaths,
+) -> Result<MintedIdentity, OnboardingError> {
+    use crate::firstboot::{ProvisionOutcome, ensure_collaboration_identity};
     let path = identity_dir.join("primary.json");
-    match ensure_primary_identity(identity_dir).map_err(|e| OnboardingError::Mint(e.to_string()))? {
+    match ensure_collaboration_identity(identity_dir, identity_paths)
+        .map_err(|e| OnboardingError::Mint(e.to_string()))?
+    {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
             fingerprint: pubkey_hex,
             path,
@@ -300,7 +314,7 @@ mod tests {
 
     /// The copy must not imply a safety net that does not exist.
     ///
-    /// qOS mints one key with no escrow and no recovery phrase.
+    /// qOS mints a root and certified device key with no escrow or recovery phrase.
     /// `threshold-identity` implements share-based recovery but is
     /// deliberately not wired into this path, so any language here about
     /// restoring/recovering/backing up would be false — if recovery is ever wired up, this test and the copy change together.
@@ -366,12 +380,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let minted = mint_into(&dir).expect("mint");
+        let system = qos_user_identity::IdentityPaths::under(dir.join("system"));
+        let minted = mint_into_with_paths(&dir, &system).expect("mint");
         assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
         assert!(minted.path.exists());
 
         // Minting again reports the same key rather than a fresh one.
-        let again = mint_into(&dir).expect("second mint is idempotent");
+        let again = mint_into_with_paths(&dir, &system).expect("second mint is idempotent");
         assert_eq!(again.fingerprint, minted.fingerprint);
 
         let _ = std::fs::remove_dir_all(&dir);

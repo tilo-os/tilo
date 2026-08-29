@@ -15,11 +15,9 @@
 //! The pixels. The document holds a path and two small edit fields and never
 //! the image itself, which is the same invariant
 //! `crates/doc/qdoc/src/blobstore.rs` documents for a document's blobs: an
-//! automerge change carrying a multi-megabyte payload exceeds the 64 KiB
-//! gossipsub RPC cap, is dropped by the transport without an error, and every
-//! subsequent change names an ancestor the far replica will never receive — so
-//! the peer freezes permanently while both ends still report themselves
-//! connected. A path plus a crop rect is a change of a few dozen bytes.
+//! automerge change carrying a multi-megabyte payload bloats every replica and
+//! durable host log and makes later edits wait behind the media. A path plus a
+//! crop rect is a change of a few dozen bytes.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, Value};

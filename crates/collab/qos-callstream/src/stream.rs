@@ -17,7 +17,7 @@
 //! 13      N      payload    N = length bytes of NALU data
 //! ```
 //!
-//! The byte transport itself — compositor gossipsub/QUIC, or the call
+//! The byte transport itself — compositor gossip/QUIC, or the call
 //! app's iroh-QUIC media transport — lives outside this module, keeping
 //! framing and backpressure unit-testable without a running network stack.
 

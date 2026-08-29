@@ -10,7 +10,7 @@ use crate::wire::{CollabRequest, PresenceKey, PresencePayload};
 /// identity blob. The launcher-side identity is postcard-encoded and the
 /// bridge has no schema to parse it, so it's hashed into a v5 UUID —
 /// same identity means same cluster on the shell side, which uses
-/// `cluster_id` as a libp2p routing key. The namespace itself is
+/// `cluster_id` as an Iroh routing key. The namespace itself is
 /// arbitrary (the standard OID namespace); it only needs to be stable.
 pub const CLUSTER_ID_NAMESPACE: Uuid = Uuid::NAMESPACE_OID;
 

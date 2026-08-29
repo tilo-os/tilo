@@ -22,9 +22,9 @@ The scenarios we defend against:
 ## Identity
 
 - One ed25519 device key per machine at `/var/lib/qos/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `qos-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
-- libp2p `PeerId` is the multihash of the protobuf-encoded public key, and the filesystem's iroh `NodeId` is the same public key. Used everywhere a stable peer-identity is needed.
+- The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
-- Per-user identity (display name, avatar) is self-asserted for v1; federated identity is a follow-up.
+- The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collaboration.md §7` for the wire format and validation order.
 
@@ -151,7 +151,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 Two properties this rests on:
 
 - **The list is re-read while the mount is up** (`fs/src/caps_file.rs`). `/var/workspace` is mounted at boot and lives as long as the session, so a list read only at mount time could not express a grant — or a revocation — made afterwards. A deleted list denies everything (its absence is the producer saying nothing is granted); an unreadable or malformed one keeps the last good list, because the file is rewritten in place and a reader can catch it truncated.
-- **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/qos/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/qos/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The subject is a principal (`person:local`) rather than a key because the mount's identity is a per-start iroh endpoint key that no file written in advance could name.
+- **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/qos/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/qos/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The shipped default uses a human-readable principal (`person:local`); the mount itself presents the same durable, certified device key as the shell, so remote policies may name a stable cryptographic subject.
 
 ### Network
 
@@ -211,7 +211,7 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 
 ## Encryption
 
-- libp2p uses the `noise` transport with ChaCha20-Poly1305. All P2P traffic is encrypted; identities are bound to peer-IDs.
+- Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication.
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
@@ -219,7 +219,7 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 
 | Attack vector              | Defense                                                 | Component                          |
 |----------------------------|---------------------------------------------------------|------------------------------------|
-| Unauthorised peer connect  | ed25519 invite token + libp2p noise                     | `network/invite.rs`, libp2p        |
+| Unauthorised peer connect  | Ed25519 invite token + authenticated Iroh endpoint      | `network/invite.rs`, Iroh          |
 | File exfil from sandbox    | bwrap mount namespace + fixed system read profile + one per-room app dir | `packaging/launcher/{profile,appdir}.rs` |
 | Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `sandbox/profile.rs`, `portal/`    |
 | Cross-workspace input leak | Bridge tag + per-workspace seat routing                 | `compositor/bridge.rs`             |
@@ -230,7 +230,7 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `shell/state.rs::Workspace.grants` |
 | Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `shell/state.rs::apply_room_changes` |
-| Traffic snoop              | noise / TLS 1.3 end-to-end                              | libp2p, iroh                       |
+| Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |
 

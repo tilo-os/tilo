@@ -305,7 +305,7 @@ impl ChannelGroup {
         // Why catch_unwind: openmls 0.8.1 has a `debug_assert!(false, ...)` on
         // the AEAD-tag-mismatch path (`framing/private_message_in.rs:136`) —
         // it returns the error correctly in release but panics in debug. A
-        // broker accepting libp2p messages must never crash on a malformed
+        // broker accepting Iroh messages must never crash on a malformed
         // peer payload, so the panic is absorbed here and turned into
         // `Error::OpenMls`. One extra `AssertUnwindSafe` per decrypt,
         // negligible. Remove once openmls fixes the debug-assert.

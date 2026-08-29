@@ -74,6 +74,16 @@ impl Drop for JoinHandle {
     }
 }
 
+impl Drop for RelayClient {
+    fn drop(&mut self) {
+        // Dropping the pump alone can leave the peer's session looking live
+        // until QUIC's idle timeout expires.  Send CONNECTION_CLOSE first so
+        // the host promptly unregisters this device and store-and-forward
+        // routing starts deterministically during device failover.
+        self._connection.close(0u32.into(), b"relay client dropped");
+    }
+}
+
 /// Failure modes.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {

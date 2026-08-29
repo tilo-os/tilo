@@ -5,11 +5,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use libp2p::SwarmBuilder;
+use iroh::address_lookup::memory::MemoryLookup;
+use iroh::endpoint::presets;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, NetCmd, NetEvent};
-use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
+use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
+use crate::network::behaviour::load_or_create_keypair;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
@@ -18,27 +19,22 @@ use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 
 /// Default workspace topic id. Every shell currently shares the same
-/// gossipsub topic rather than negotiating per-workspace routing.
+/// gossip topic rather than negotiating per-workspace routing.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
 /// Largest app-document snapshot this shell will put on the gossip
 /// topic, in bytes.
 ///
-/// libp2p gossipsub caps one RPC at 64 KiB, but `serde_json` writes a
-/// `Vec<u8>` as decimal numbers (up to 4 chars per byte), so a snapshot
-/// costs up to 4x its size on the wire — 14 KiB expands to at most 56
-/// KiB, leaving ~9 KiB for the envelope.
-/// `snapshot_at_the_cap_fits_a_gossipsub_rpc` pins this. Raising it
-/// means changing the wire encoding, which every peer must agree on.
-///
-/// A cap rather than a bigger pipe: a document has no upper bound, so
-/// raising the gossipsub limit moves the failure rather than removing
-/// it. Past this size the carrier is a direct peer-to-peer stream via
+/// `serde_json` writes a `Vec<u8>` as decimal numbers, so the 14 KiB
+/// document cap can expand to roughly 56 KiB before postcard framing.
+/// The Iroh actor accepts much larger messages, but this application-level
+/// bound limits memory amplification and keeps snapshots interactive.
+/// Past this size the carrier is a direct peer-to-peer stream via
 /// [`crate::network::surface_stream`].
 pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
 
 /// Default on-disk path of the machine's device key, from which the
-/// shell derives its libp2p identity. The FUSE mount reads the same
+/// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
@@ -52,11 +48,6 @@ pub fn peer_key_path() -> std::path::PathBuf {
         _ => std::path::PathBuf::from(DEFAULT_KEYPAIR_PATH),
     }
 }
-
-/// Transport addresses the swarm binds on startup. Loopback is listed
-/// first so two sessions on one machine have a dialable address that
-/// does not depend on which interface is up.
-const LISTEN_ADDRS: [&str; 2] = ["/ip4/127.0.0.1/tcp/0", "/ip4/0.0.0.0/tcp/0"];
 
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
@@ -82,18 +73,16 @@ pub struct ShellNetwork {
     /// Tokio runtime hosting the actor. `Option` so `drop` can `take`
     /// it and shut down without blocking the test thread.
     runtime: Option<tokio::runtime::Runtime>,
-    /// Cached hash of the local libp2p `PeerId`, stamped on every
+    /// Cached hash of the local iroh endpoint id, stamped on every
     /// outbound `NeighbourMsg::PresenceMoved`. Computed once at spawn.
     local_peer_hash: u64,
-    /// This shell's libp2p identity. An invite is a *signed* statement
+    /// This device's iroh identity. An invite is a signed statement
     /// by the inviting owner — [`Self::issue_invite`] signs with it.
-    keypair: libp2p::identity::Keypair,
-    /// `PeerId` derived from [`Self::keypair`], appended to the listen
-    /// address so an invite carries a fully-qualified `/p2p/…` dial
-    /// target rather than a bare transport address.
-    local_peer_id: libp2p::PeerId,
-    /// Addresses the swarm reported binding, filled by the actor.
-    listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>>,
+    keypair: iroh::SecretKey,
+    /// Endpoint id derived from [`Self::keypair`].
+    local_peer_id: iroh::EndpointId,
+    /// Current direct/relay dialing addresses reported by iroh.
+    listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -139,7 +128,7 @@ pub struct ShellNetwork {
 /// to every locally-connected app.
 #[derive(Debug, Clone)]
 pub struct InboundAppCrdt {
-    /// Hashed libp2p peer id of the publisher; the broker's fan-out
+    /// Hashed Iroh peer id of the publisher; the broker's fan-out
     /// routes on `app_id` + `cluster_id` rather than on this.
     pub peer: u64,
     /// Originating app id (e.g. `"terminal"`); first half of the
@@ -161,7 +150,7 @@ pub struct InboundAppCrdt {
 /// at cluster scope.
 #[derive(Debug, Clone)]
 pub struct InboundAppPresence {
-    /// Hashed libp2p peer id of the publisher. Unlike the CRDT queues
+    /// Hashed Iroh peer id of the publisher. Unlike the CRDT queues
     /// this one is load-bearing: it becomes the `user_id` the
     /// receiving app attributes the caret and its colour to.
     pub peer: u64,
@@ -225,7 +214,7 @@ pub struct InboundPresence {
 }
 
 impl ShellNetwork {
-    /// Build a tokio runtime, spawn the libp2p [`Actor`], wrap the
+    /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared [`WorkspaceTree`] in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
     /// loaded if it already exists, otherwise a fresh ed25519 key is
@@ -240,42 +229,53 @@ impl ShellNetwork {
         let _enter = runtime.enter();
 
         let keypair = load_or_create_keypair(keypair_path)?;
-        let local_peer_id = keypair.public().to_peer_id();
+        let local_peer_id = keypair.public();
         // Must use the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
-        let local_peer_hash =
-            crate::network::behaviour::peer_liveness_handle(&keypair.public().to_peer_id());
-        let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
-            .with_tokio()
-            .with_tcp(
-                Default::default(),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
+        let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
+        let lookup = MemoryLookup::new();
+        let endpoint = runtime
+            .block_on(
+                iroh::Endpoint::builder(presets::N0)
+                    .secret_key(keypair.clone())
+                    .address_lookup(lookup.clone())
+                    .bind(),
             )
-            .map_err(|e| std::io::Error::other(format!("tcp: {e:?}")))?
-            .with_behaviour(|kp| NiriosBehaviour::new(kp).expect("behaviour construction"))
-            .map_err(|e| std::io::Error::other(format!("behaviour wrap: {e:?}")))?
-            .build();
+            .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
+        tracing::info!(
+            local_peer_id = %local_peer_id,
+            addr = ?endpoint.addr(),
+            "peer-sync: Iroh endpoint started"
+        );
+        let listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>> = Arc::new(Mutex::new(Vec::new()));
+        let host_identity = host_identity_for_key(&keypair, keypair_path);
+        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
+            endpoint,
+            lookup,
+            host_identity,
+            Arc::clone(&listen_addrs),
+        );
 
-        // Without this the swarm has no transport address: mdns
-        // advertises nothing, an invite can carry no dialable address,
-        // and no peer can ever reach this shell. Everything downstream
-        // of it — the invite, the sync round, the capability that has to
-        // reach the guest — depends on the socket actually being bound.
-        for addr in LISTEN_ADDRS {
-            let addr: libp2p::Multiaddr = addr.parse().map_err(std::io::Error::other)?;
-            if let Err(e) = swarm.listen_on(addr.clone()) {
-                tracing::warn!(%addr, "peer-sync: listen failed ({e})");
-            }
+        if let Some(addr) = std::env::var_os("QOS_COLLAB_HOST")
+            .and_then(|value| value.into_string().ok())
+            .and_then(|value| {
+                serde_json::from_str::<iroh::EndpointAddr>(&value)
+                    .ok()
+                    .or_else(|| {
+                        value
+                            .parse::<iroh::EndpointId>()
+                            .ok()
+                            .map(iroh::EndpointAddr::new)
+                    })
+            })
+        {
+            let _ = cmd_tx.try_send(NetCmd::ConnectHost { addr });
         }
-
-        let listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>> = Arc::new(Mutex::new(Vec::new()));
-        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(swarm, Arc::clone(&listen_addrs));
 
         // Peer id `1` is the replica-side identity for
         // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's
-        // libp2p `PeerId` is transport-level and hashed separately.
+        // Iroh `EndpointId` is transport-level and hashed separately.
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
@@ -304,7 +304,7 @@ impl ShellNetwork {
         })
     }
 
-    /// Pre-computed hash of the local libp2p `PeerId`. Stamped on every
+    /// Pre-computed hash of the local iroh endpoint id. Stamped on every
     /// outbound presence move so peers can attribute the cursor to its
     /// publisher.
     pub fn local_peer_id_hash(&self) -> u64 {
@@ -369,7 +369,7 @@ impl ShellNetwork {
     }
 
     /// Queue a received presence move; public so tests can inject one
-    /// without going through gossipsub.
+    /// without going through gossip.
     pub fn handle_presence_message(
         &self,
         peer: u64,
@@ -574,9 +574,9 @@ impl ShellNetwork {
 
     /// Publish one document's whole state so a peer that has just joined
     /// can adopt a document it holds no history for. Refuses above
-    /// [`MAX_APP_SNAPSHOT_BYTES`] rather than handing gossipsub a message
-    /// it would reject — both transports reach the wire through here, so
-    /// the cap is enforced once. Refusal logs at `warn`: the consequence
+    /// [`MAX_APP_SNAPSHOT_BYTES`] to bound serialization and fan-out memory —
+    /// both transports reach the wire through here, so the cap is enforced
+    /// once. Refusal logs at `warn`: the consequence
     /// (this document does not converge) has no other symptom.
     pub fn publish_app_crdt_snapshot(
         &self,
@@ -600,7 +600,7 @@ impl ShellNetwork {
                 app = %app_id,
                 room = %cluster_id,
                 record = %record_id,
-                "shell_network: refusing to publish an app snapshot over the gossip cap; this document will not converge for peers that lack its history",
+                "shell_network: refusing to publish an app snapshot over the application cap; this document will not converge for peers that lack its history",
             );
             return;
         }
@@ -763,19 +763,23 @@ impl ShellNetwork {
             .is_ok()
     }
 
-    /// The dial address this shell publishes in an invite: the first
-    /// address the swarm bound, with this peer's id appended so the
-    /// receiver dials a specific peer. `None` until the swarm has
-    /// reported a listen address.
-    pub fn dial_addr(&self) -> Option<String> {
+    /// Attach an always-on home or hosted workspace server. The actor keeps
+    /// its direct Iroh gossip path and additionally uses the authenticated
+    /// host session for offline store-and-forward.
+    pub fn connect_host(&self, addr: iroh::EndpointAddr) -> bool {
+        self.cmd_tx.try_send(NetCmd::ConnectHost { addr }).is_ok()
+    }
+
+    /// The current iroh address published in an invite. It contains the
+    /// stable endpoint id plus fresh direct/relay dialing hints.
+    pub fn dial_addr(&self) -> Option<iroh::EndpointAddr> {
         let addrs = self.listen_addrs.lock().ok()?;
-        let base = addrs.first()?.clone();
-        Some(format!("{base}/p2p/{}", self.local_peer_id))
+        addrs.first().cloned()
     }
 
     /// Mint a signed invite to the workspace `local`, valid for
-    /// `expiry_seconds_from_now`. Signs with this shell's own libp2p
-    /// keypair and embeds the address the swarm actually bound, so the
+    /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
+    /// key and embeds the address the endpoint actually bound, so the
     /// token a user copies is one a peer can act on.
     pub fn issue_invite(
         &self,
@@ -835,7 +839,7 @@ impl ShellNetwork {
         // the write refused and stays an id rather than failing the invite.
         if let Ok(replica) = self.replica.lock() {
             let me = crate::shell::state::local_user_id();
-            let peer = self.local_peer_id.to_base58();
+            let peer = self.local_peer_id.to_string();
             replica.tree.write().name_peer(room, &me, &peer, &me);
         }
 
@@ -850,7 +854,7 @@ impl ShellNetwork {
     }
 
     /// Name the peer that just redeemed this room's invite. `peer` is
-    /// the *authenticated* author — gossipsub runs
+    /// the *authenticated* author — gossip runs
     /// `MessageAuthenticity::Signed` with `ValidationMode::Strict`, so
     /// it signed what arrived rather than merely forwarding it.
     ///
@@ -858,7 +862,7 @@ impl ShellNetwork {
     /// machine, never a peer the room has already named, and only if
     /// `name_peer` accepts the write. The pending name is consumed by
     /// the first peer to redeem it, so a second arrival keeps its own id.
-    fn name_invitee_on_arrival(&self, peer: &libp2p::PeerId, room: &str) {
+    fn name_invitee_on_arrival(&self, peer: &iroh::EndpointId, room: &str) {
         if *peer == self.local_peer_id {
             return;
         }
@@ -871,12 +875,16 @@ impl ShellNetwork {
         let Some(name) = pending.get(&room).cloned() else {
             return;
         };
-        let base58 = peer.to_base58();
+        let endpoint_id = peer.to_string();
         let Ok(replica) = self.replica.lock() else {
             return;
         };
         let mut tree = replica.tree.write();
-        if let Some(existing) = tree.room_peer_names.get(&room).and_then(|n| n.get(&base58)) {
+        if let Some(existing) = tree
+            .room_peer_names
+            .get(&room)
+            .and_then(|n| n.get(&endpoint_id))
+        {
             // Already named — but if it's the name that was waiting,
             // this is the peer the invite was for. Spend the pending
             // copy rather than leave it lying around.
@@ -886,9 +894,9 @@ impl ShellNetwork {
             return;
         }
         let me = crate::shell::state::local_user_id();
-        if tree.name_peer(room, &me, &base58, &name) {
+        if tree.name_peer(room, &me, &endpoint_id, &name) {
             tracing::info!(
-                peer = %base58,
+                peer = %endpoint_id,
                 %name,
                 %room,
                 "peer-sync: named the invitee that arrived"
@@ -915,13 +923,13 @@ impl ShellNetwork {
             let mut tree = replica.tree.write();
             accept_invite_into(&mut tree, local, token)?
         };
-        // Dial what the token named rather than wait on mdns discovery.
+        // Dial the authenticated address carried by the invite.
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
-        if let Ok(parsed) = crate::network::invite::validate_invite_token(token)
-            && let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>()
-        {
-            let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+        if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
+            let _ = self.cmd_tx.try_send(NetCmd::Connect {
+                addr: parsed.owner_addr,
+            });
         }
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
@@ -1167,6 +1175,28 @@ impl ShellNetwork {
     }
 }
 
+fn host_identity_for_key(
+    keypair: &iroh::SecretKey,
+    keypair_path: &std::path::Path,
+) -> Option<HostIdentity> {
+    let root = keypair_path.parent()?.parent()?;
+    let paths = qos_user_identity::IdentityPaths::under(root);
+    let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
+    let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
+    if qos_user_identity::verify_device_cert(&device_cert).is_err()
+        || device_cert.user_public_key != user_public_key
+        || device_cert.device_public_key != *keypair.public().as_bytes()
+    {
+        tracing::warn!("ignoring invalid collaboration device certificate");
+        return None;
+    }
+    Some(HostIdentity {
+        user_public_key,
+        device_cert,
+        device_signing_key: ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+    })
+}
+
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
         // `take` + explicit shutdown avoids the noisy "runtime dropped
@@ -1178,7 +1208,7 @@ impl Drop for ShellNetwork {
 }
 
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
-/// a caller-owned receiver, bypassing the libp2p actor. `pub(crate)` so
+/// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
 /// the broker's own tests can drive the inbound side of the peer bridge too.
 #[cfg(test)]
 pub(crate) fn shell_network_for_test(
@@ -1187,6 +1217,8 @@ pub(crate) fn shell_network_for_test(
 ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (event_tx, event_rx) = mpsc::channel(64);
+    let keypair = iroh::SecretKey::generate();
+    let local_peer_id = keypair.public();
     let net = ShellNetwork {
         cmd_tx,
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
@@ -1194,8 +1226,8 @@ pub(crate) fn shell_network_for_test(
         event_rx: Mutex::new(event_rx),
         runtime: None,
         local_peer_hash,
-        keypair: libp2p::identity::Keypair::generate_ed25519(),
-        local_peer_id: libp2p::PeerId::random(),
+        keypair,
+        local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         last_sync_kick: Mutex::new(None),
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
@@ -1261,12 +1293,12 @@ mod tests {
     fn name_in(
         tree: &crate::shell::state::WorkspaceTreeHandle,
         room: crate::shell::state::RoomId,
-        peer: &libp2p::PeerId,
+        peer: &iroh::EndpointId,
     ) -> Option<String> {
         tree.read()
             .room_peer_names
             .get(&room)
-            .and_then(|names| names.get(&peer.to_base58()))
+            .and_then(|names| names.get(&peer.to_string()))
             .cloned()
     }
 
@@ -1282,7 +1314,7 @@ mod tests {
             .unwrap()
             .insert(room, "bob".to_string());
 
-        let guest = libp2p::PeerId::random();
+        let guest = iroh::SecretKey::generate().public();
         assert_eq!(name_in(&tree, room, &guest), None, "nobody is named yet");
         net.name_invitee_on_arrival(&guest, &room.to_string());
         assert_eq!(
@@ -1291,7 +1323,7 @@ mod tests {
             "the room's own authority recorded the name the inviter gave"
         );
 
-        let stranger = libp2p::PeerId::random();
+        let stranger = iroh::SecretKey::generate().public();
         net.name_invitee_on_arrival(&stranger, &room.to_string());
         assert_eq!(
             name_in(&tree, room, &stranger),
@@ -1309,7 +1341,7 @@ mod tests {
             .unwrap()
             .insert(rooms[0], "bob".to_string());
 
-        let guest = libp2p::PeerId::random();
+        let guest = iroh::SecretKey::generate().public();
         net.name_invitee_on_arrival(&guest, &rooms[1].to_string());
         assert_eq!(name_in(&tree, rooms[1], &guest), None);
         assert_eq!(
@@ -1341,7 +1373,7 @@ mod tests {
             "this machine's own sync request is not somebody arriving"
         );
 
-        net.name_invitee_on_arrival(&libp2p::PeerId::random(), "not-a-room");
+        net.name_invitee_on_arrival(&iroh::SecretKey::generate().public(), "not-a-room");
         assert!(
             net.pending_invitees.lock().unwrap().contains_key(&room),
             "a room id that does not parse names nothing and spends nothing"
@@ -1361,7 +1393,7 @@ mod tests {
     fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
         NetEvent::Msg {
             ws: DEFAULT_WS_TOPIC,
-            peer: libp2p::PeerId::random(),
+            peer: iroh::SecretKey::generate().public(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
                 app_id: "dev.qos.notes".to_string(),
@@ -1426,8 +1458,10 @@ mod tests {
             "Design review".to_string(),
         );
         let host_room = host_ws.room;
-        let owner_key = libp2p::identity::Keypair::generate_ed25519();
-        let token = make_invite_token(&owner_key, &host_ws, "/ip4/127.0.0.1/tcp/4001", 3600)
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4001".parse().unwrap());
+        let token = make_invite_token(&owner_key, &host_ws, &owner_addr, 3600)
             .expect("the host issues an invite");
 
         let mut guest = WorkspaceTree::default();
@@ -1456,11 +1490,7 @@ mod tests {
             .try_recv()
             .expect("accepting an invite must dial the address it named");
         match dial {
-            NetCmd::Connect { addr } => assert_eq!(
-                addr.to_string(),
-                "/ip4/127.0.0.1/tcp/4001",
-                "the dial must go to the address inside the token",
-            ),
+            NetCmd::Connect { addr } => assert_eq!(addr, owner_addr),
             other => panic!("expected NetCmd::Connect, got {other:?}"),
         }
         let cmd = cmd_rx
@@ -1594,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossipsub() {
+    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossip() {
         // Refusing here turns "this document silently never converges"
         // into a log line naming the size, rather than a transport-level failure.
         let tree = WorkspaceTree::bootstrap_demo().shared();
@@ -1664,9 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_at_the_cap_fits_a_gossipsub_rpc() {
-        // Worst case on both axes: bytes that each need three JSON
-        // digits, and a record id the length of a real path.
+    fn snapshot_at_the_cap_fits_the_iroh_frame_budget() {
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: u64::MAX,
             app_id: "dev.qos.word-processor".into(),
@@ -1674,10 +1702,10 @@ mod tests {
             record_id: "file:".to_string() + &"a".repeat(4096),
             data: vec![0xFFu8; MAX_APP_SNAPSHOT_BYTES],
         };
-        let encoded = serde_json::to_vec(&msg).expect("encode");
+        let encoded = postcard::to_allocvec(&msg).expect("encode");
         assert!(
-            encoded.len() < 65536,
-            "a snapshot at the cap must still fit a gossipsub RPC; got {} bytes",
+            encoded.len() < 64 * 1024 * 1024,
+            "a snapshot at the cap must fit the Iroh frame budget; got {} bytes",
             encoded.len(),
         );
     }

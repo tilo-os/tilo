@@ -4,11 +4,11 @@
 
 Single-monitor, single-user is feature-complete: strip tiling
 (`Workspace → Strip → WindowGroup → Tab`), drag-to-detach tabs, undo/redo,
-collaborative cursors, peer-shared tabs (H.264 over libp2p), per-workspace
+collaborative cursors, peer-shared tabs (H.264 over Iroh), per-workspace
 Bubblewrap sandbox with portal-mediated grants, and FUSE-projected workspaces.
 
 Shipped stack: `smithay` compositor · `vello`/`wgpu` paint · the CRDT-native
-`ui` toolkit (`automerge` state) · `libp2p` (gossipsub + mDNS) collaboration ·
+`ui` toolkit (`automerge` state) · Iroh collaboration and workspace hosting ·
 `iroh` FS · ed25519 identity + signed invite tokens · Bubblewrap + seccomp
 sandbox · Fedora bootc image.
 

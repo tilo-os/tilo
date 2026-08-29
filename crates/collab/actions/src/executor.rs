@@ -183,7 +183,7 @@ pub enum HostDecision {
 
 /// The transport an action is handed to after (or instead of) local
 /// execution — the seam between the pure action model and whatever
-/// moves bytes (in-process broker, compositor socket, libp2p). The
+/// moves bytes (in-process broker, compositor socket, Iroh). The
 /// model never imports a transport, only calls this trait.
 pub trait ActionTransport {
     /// Replicate a locally-applied action to peers so they can [`replay`] it.

@@ -902,12 +902,19 @@ impl PdfApp {
                 anno_id: Some(note_id.clone()),
                 page: 1,
                 author: "Alice".into(),
-                body: "Should we spell out the relay fallback path here? mDNS only covers the local segment.".into(),
+                body: "Should we spell out the Iroh relay and persistent-host fallback paths here?"
+                    .into(),
                 created: 1,
                 resolved: false,
                 replies: vec![
-                    Reply { author: "Bob".into(), body: "Good catch — folded it into section 1.2.".into() },
-                    Reply { author: "Alice".into(), body: "Perfect, thanks.".into() },
+                    Reply {
+                        author: "Bob".into(),
+                        body: "Good catch — folded it into section 1.2.".into(),
+                    },
+                    Reply {
+                        author: "Alice".into(),
+                        body: "Perfect, thanks.".into(),
+                    },
                 ],
             },
         );
