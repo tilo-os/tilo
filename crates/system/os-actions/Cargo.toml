@@ -26,3 +26,6 @@ zbus = { version = "4", default-features = false, features = ["tokio"] }
 # Fixture sysfs trees, so the backlight reader/writer is tested against
 # real directory layouts rather than a mocked filesystem.
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

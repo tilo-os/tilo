@@ -40,3 +40,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
+
+[lints]
+workspace = true

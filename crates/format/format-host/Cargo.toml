@@ -49,3 +49,6 @@ capnpc.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }
 wat = "1"
+
+[lints]
+workspace = true

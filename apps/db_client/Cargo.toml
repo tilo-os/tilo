@@ -33,3 +33,6 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 # can enable `rustls-tls` on both.
 postgres = "0.19"
 mysql = { version = "25", default-features = false, features = ["minimal"] }
+
+[lints]
+workspace = true

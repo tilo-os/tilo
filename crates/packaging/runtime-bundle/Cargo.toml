@@ -38,3 +38,6 @@ tempfile.workspace = true
 # The bundle-root override is process-wide environment, so the tests
 # that set it have to be serialised against each other.
 serial_test.workspace = true
+
+[lints]
+workspace = true

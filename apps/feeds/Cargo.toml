@@ -39,3 +39,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", 
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 # Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
 tokio-rustls.workspace = true
+
+[lints]
+workspace = true

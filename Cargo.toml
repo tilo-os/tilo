@@ -263,6 +263,23 @@ resolver = "2"
 #     way: a member can turn defaults back **on** with `default-features = true`,
 #     but a member can never turn them off if this table leaves them on. So any
 #     dependency where even one member wants defaults off is declared off here.
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+# Panics. clippy.toml exempts tests.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
+
 [workspace.dependencies]
 
 # ---------------------------------------------------------------------------
