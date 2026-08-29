@@ -212,6 +212,233 @@ pub fn unmatched(rest: &str, why: &NoMatch) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Sequences: one request, more than one thing to do.
+// ---------------------------------------------------------------------------
+
+/// One thing to do, and where its argument comes from.
+///
+/// A step is exactly what a whole instruction used to be, plus the one fact
+/// a single instruction never needed: whether its argument is something the
+/// request said, or something the step before it made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub instruction: Instruction,
+    /// Whether this step's argument is the previous step's result.
+    ///
+    /// Read off the *operation's own declaration* ([`Offer::wants_content`]),
+    /// never from a model and never from the words of the request: an
+    /// operation that collects a content hash can only be performed with
+    /// content something produced, so there is exactly one place its
+    /// argument can come from.
+    pub carries: bool,
+}
+
+impl Step {
+    /// A step that stands on its own: every instruction, until now.
+    pub fn own(instruction: Instruction) -> Step {
+        Step {
+            instruction,
+            carries: false,
+        }
+    }
+
+    /// The step a resolved instruction becomes, reading off the survey it
+    /// was resolved against whether its argument has to be carried.
+    pub fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
+        let carries = match &instruction {
+            Instruction::Perform { id, .. } => {
+                surface::find(offers, id).is_some_and(Offer::wants_content)
+            }
+            _ => false,
+        };
+        Step {
+            instruction,
+            carries,
+        }
+    }
+
+    /// Whether performing this step starts an application — the one kind of
+    /// step that changes what the room exports rather than what a document
+    /// says. [`Plan::unanswered`] treats a clause after one differently: a
+    /// survey taken before the open ran could never have held the
+    /// operation that clause is asking for.
+    pub fn opens_an_application(&self) -> bool {
+        match &self.instruction {
+            Instruction::Perform { id, .. } => {
+                surface::decode_address(id).as_ref().and_then(surface::opens).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this step is a refusal rather than something to do.
+    pub fn is_unanswered(&self) -> bool {
+        matches!(self.instruction, Instruction::Unknown(_))
+    }
+}
+
+/// An instruction, resolved: the ordered steps that carry it out.
+///
+/// Most requests are one step and always were. The reason this type exists
+/// is the request that is not — "caption the image and give this a title"
+/// is one sentence and two operations, and an agent that answered it with a
+/// single [`Instruction`] would carry out half of it and report success.
+/// There is no honest way to say half a sentence back to somebody, so the
+/// shape of an answer has to hold all of it.
+///
+/// A sequence is not a way to ask for more: every step is resolved against
+/// the same discovered surface a single instruction is, and validated again
+/// at dispatch. The one thing it adds is that a step's argument may come
+/// from the step before it — and even that is not a choice anybody makes,
+/// but a fact the operation itself declares ([`Step::carries`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    pub steps: Vec<Step>,
+}
+
+impl Plan {
+    /// A plan of one step: what every instruction was until now.
+    pub fn of(instruction: Instruction) -> Plan {
+        Plan {
+            steps: vec![Step::own(instruction)],
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Whether this asks for more than one thing.
+    pub fn is_sequence(&self) -> bool {
+        self.steps.len() > 1
+    }
+
+    /// The first part of the request that resolved to nothing, if any.
+    ///
+    /// A plan carrying one of these must not be started: working through
+    /// the steps until the refusal is reached would leave the earlier ones
+    /// applied to somebody's document for a request that, taken whole, was
+    /// never going to be finished.
+    ///
+    /// The one exception is a clause that names an operation an *earlier*
+    /// step's own open would create. Such a clause cannot resolve against a
+    /// survey taken before that open ran — the application it needs is not
+    /// there yet — so it is not fatal here; it is only fatal if nothing
+    /// before it opens an application, which is exactly what is checked.
+    pub fn unanswered(&self) -> Option<&str> {
+        let mut an_open_comes_first = false;
+        for s in &self.steps {
+            if let Instruction::Unknown(what) = &s.instruction
+                && !an_open_comes_first
+            {
+                return Some(what.as_str());
+            }
+            if s.opens_an_application() {
+                an_open_comes_first = true;
+            }
+        }
+        None
+    }
+
+    /// The deterministic floor over a request that may name several things.
+    ///
+    /// A request is read as a sequence only when it is written as one — the
+    /// ordering words in [`CONJUNCTIONS`], outside any quotation — and only
+    /// when reading it that way answers something. A single instruction
+    /// with "and" inside it ("align left and right") resolves no clause on
+    /// its own and is handed to [`Instruction::from_floor`] whole, exactly
+    /// as before.
+    pub fn from_floor(rest: &str, offers: &[Offer]) -> Plan {
+        Plan::assembled(rest, |clause| Step::bound(Instruction::from_floor(clause, offers), offers))
+    }
+
+    /// Split a request into its parts and resolve each with `step`, or read
+    /// it whole when it turns out not to be several requests after all.
+    fn assembled(rest: &str, step: impl Fn(&str) -> Step) -> Plan {
+        let parts = clauses(rest);
+        if parts.len() < 2 {
+            return Plan { steps: vec![step(rest)] };
+        }
+        let steps: Vec<Step> = parts.iter().map(|c| step(c)).collect();
+        // Nothing in it was a request the room could answer, so the
+        // ordering word was a word in one sentence rather than a join
+        // between two.
+        if steps.iter().all(Step::is_unanswered) {
+            return Plan { steps: vec![step(rest)] };
+        }
+        // Every part named the same operation, which is one request said
+        // twice rather than two to carry out — performing it twice is
+        // harmless here.
+        if steps.windows(2).all(|w| w[0].instruction == w[1].instruction) {
+            return Plan {
+                steps: vec![steps.into_iter().next().expect("at least two")],
+            };
+        }
+        Plan { steps }
+    }
+}
+
+/// The words that join one thing to do to the next.
+///
+/// Ordering words only, and longest first so that `and then` is one join
+/// rather than `and` followed by a clause beginning `then`. Deliberately
+/// not punctuation on its own: a comma separates the parts of a single
+/// request far more often than it separates two.
+pub const CONJUNCTIONS: &[&str] = &[
+    ", and then ",
+    " and then ",
+    ", then ",
+    " then ",
+    ", and ",
+    " and ",
+];
+
+/// Split a request into the things it asks for, in order.
+///
+/// Quoted text is never split, for the same reason [`surface::quoted_literal`]
+/// exists: what is inside quotation marks is a value somebody supplied, and
+/// `rename it to "sound and vision.md"` asks for one thing.
+pub fn clauses(rest: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let mut in_straight = false;
+    let mut in_curly = false;
+    let mut i = 0usize;
+    while i < rest.len() {
+        let tail = &rest[i..];
+        let Some(ch) = tail.chars().next() else { break };
+        match ch {
+            '"' => in_straight = !in_straight,
+            '\u{201c}' => in_curly = true,
+            '\u{201d}' => in_curly = false,
+            _ => {}
+        }
+        if !in_straight && !in_curly {
+            // Compared as bytes, not as a substring: the conjunctions are
+            // ASCII, and `tail` may begin with a multi-byte character — a
+            // typographic quotation mark, in the very case this has to get
+            // right — which slicing by a byte length would split.
+            if let Some(sep) = CONJUNCTIONS.iter().find(|s| {
+                tail.len() >= s.len() && tail.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes())
+            }) {
+                out.push(rest[start..i].trim().to_string());
+                i += sep.len();
+                start = i;
+                continue;
+            }
+        }
+        i += ch.len_utf8();
+    }
+    out.push(rest[start..].trim().to_string());
+    out.retain(|c| !c.is_empty());
+    out
+}
+
+// ---------------------------------------------------------------------------
 // The catalogue: what the agent can be asked for, grounded in the actions the
 // word processor exports.
 // ---------------------------------------------------------------------------
@@ -911,6 +1138,154 @@ mod tests {
                 argument: Some("c.md".into()),
             }),
             "a literal the answer itself supplied is used even with no quote in the instruction"
+        );
+    }
+
+    // -- Sequences: Plan, Step, clauses -----------------------------------
+
+    #[test]
+    fn clauses_split_on_ordering_words_outside_quotes() {
+        assert_eq!(
+            clauses("give this a title and caption the image"),
+            vec!["give this a title".to_string(), "caption the image".to_string()]
+        );
+        assert_eq!(
+            clauses("give this a title, then caption the image"),
+            vec!["give this a title".to_string(), "caption the image".to_string()]
+        );
+        // "and then" is one join, not "and" followed by a clause starting
+        // "then" — the longest match has to win.
+        assert_eq!(
+            clauses("caption the image and then give this a title"),
+            vec!["caption the image".to_string(), "give this a title".to_string()]
+        );
+        // A quoted literal that itself contains a join is never split.
+        assert_eq!(
+            clauses(r#"rename it to "sound and vision.md""#),
+            vec![r#"rename it to "sound and vision.md""#.to_string()]
+        );
+        // A single request with no ordering word is one clause.
+        assert_eq!(clauses("caption the image"), vec!["caption the image".to_string()]);
+    }
+
+    #[test]
+    fn a_plan_reads_a_request_written_as_several_things_as_a_sequence() {
+        let plan = Plan::from_floor("give this a title, then caption the image", &[]);
+        assert!(plan.is_sequence(), "{plan:?}");
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan.steps[0].instruction, Instruction::Heading);
+        assert_eq!(plan.steps[1].instruction, Instruction::Caption);
+        assert_eq!(plan.unanswered(), None);
+    }
+
+    #[test]
+    fn a_single_request_with_a_join_inside_it_is_not_split() {
+        // "align left and right" resolves no clause on its own — the floor
+        // reads it whole, exactly as a request with no join in it at all.
+        let plan = Plan::from_floor("align left and right", &[]);
+        assert!(!plan.is_sequence(), "{plan:?}");
+        assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn a_plan_collapses_a_request_that_only_repeats_one_operation() {
+        let plan = Plan::from_floor("give this a heading and give it a heading again", &[]);
+        assert!(!plan.is_sequence(), "{plan:?}");
+        assert_eq!(plan.steps[0].instruction, Instruction::Heading);
+    }
+
+    #[test]
+    fn a_plan_falls_back_to_the_whole_request_when_nothing_in_it_resolves() {
+        // Both clauses come back unanswered, so the join was a word in one
+        // sentence rather than a seam between two requests — and the
+        // fallback reads the *whole* text, not just the first clause.
+        let whole = "juggle three plates and then take a bow";
+        let plan = Plan::from_floor(whole, &[]);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        assert_eq!(plan.steps[0].instruction, Instruction::Unknown(whole.to_string()));
+    }
+
+    #[test]
+    fn carries_is_read_off_the_operations_own_declaration_never_guessed() {
+        let content = offer(
+            "photos",
+            "photos.picture:1",
+            "crop",
+            "Crop",
+            Some(qos_actions::Collects::Content),
+        );
+        let words = offer(
+            "files",
+            "files.entry:/a",
+            "rename",
+            "Rename",
+            Some(qos_actions::Collects::Words),
+        );
+        let none = offer("word-processor", "word-processor.section:b", "align-left", "Align left", None);
+        let offers = vec![content.clone(), words.clone(), none.clone()];
+
+        let perform = |o: &Offer| Instruction::Perform { id: o.id(), argument: None };
+        assert!(
+            Step::bound(perform(&content), &offers).carries,
+            "an operation that collects content must be carried into"
+        );
+        assert!(
+            !Step::bound(perform(&words), &offers).carries,
+            "an operation that collects words is never carried into — it is quoted, not carried"
+        );
+        assert!(!Step::bound(perform(&none), &offers).carries);
+
+        // Never true for anything but Perform, whatever the survey holds.
+        assert!(!Step::bound(Instruction::Table, &offers).carries);
+    }
+
+    #[test]
+    fn opens_an_application_is_true_only_for_the_open_address() {
+        let open = offer("photos", "photos.app", "open", "Open the photo editor", None);
+        let ordinary = offer("photos", "photos.picture:1", "crop", "Crop", None);
+        assert!(Step::own(Instruction::Perform { id: open.id(), argument: None }).opens_an_application());
+        assert!(!Step::own(Instruction::Perform { id: ordinary.id(), argument: None }).opens_an_application());
+        assert!(!Step::own(Instruction::Table).opens_an_application());
+    }
+
+    #[test]
+    fn unanswered_refuses_a_sequence_with_no_open_ahead_of_the_gap() {
+        let plan = Plan {
+            steps: vec![
+                Step::own(Instruction::Table),
+                Step::own(Instruction::Unknown("juggle three plates".into())),
+            ],
+        };
+        assert_eq!(plan.unanswered(), Some("juggle three plates"));
+    }
+
+    /// A step naming what only an earlier open would create is not fatal —
+    /// but only once that open has actually run first.
+    #[test]
+    fn an_open_excuses_a_clause_it_makes_answerable_but_only_once_it_comes_first() {
+        let open = offer("photos", "photos.app", "open", "Open the photo editor", None);
+        let excused = Plan {
+            steps: vec![
+                Step::own(Instruction::Perform { id: open.id(), argument: None }),
+                Step::own(Instruction::Unknown("crop it square".into())),
+            ],
+        };
+        assert_eq!(
+            excused.unanswered(),
+            None,
+            "a clause an earlier open would make answerable is not fatal up front"
+        );
+
+        let too_early = Plan {
+            steps: vec![
+                Step::own(Instruction::Unknown("crop it square".into())),
+                Step::own(Instruction::Perform { id: open.id(), argument: None }),
+            ],
+        };
+        assert_eq!(
+            too_early.unanswered(),
+            Some("crop it square"),
+            "nothing has opened anything yet, so this gap is still fatal"
         );
     }
 }
