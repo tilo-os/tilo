@@ -2,7 +2,7 @@
 """Two qOS sessions collaborating in one workspace, end to end.
 
 Starts two real compositors — separate state directories, separate
-libp2p keypairs, separate user identities, separate control sockets —
+Iroh endpoint keys, separate user identities, separate control sockets —
 and drives them through the flow a pair of users would take:
 
   1. the host mints an invite from the command palette (`/invite`),
@@ -406,7 +406,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     note(f"peer pid {peer.proc.pid} on {peer.sock}")
     note(f"host peer-id {peer_id_of(host)}")
     note(f"peer peer-id {peer_id_of(peer)}")
-    claim("the two sessions have distinct libp2p identities",
+    claim("the two sessions have distinct Iroh identities",
           peer_id_of(host) != peer_id_of(peer), True)
 
     step("2.", "the host creates a workspace and makes it active")
@@ -473,7 +473,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     # from another guest of the same room.
     claim("the peer records the inviter as the room's governance authority",
           peer.tree().get("room_authority", {}).get(peer_ws["room"]),
-          {"Peer": f"p2p:{peer_id_of(host)}"})
+          {"Peer": f"iroh:{peer_id_of(host)}"})
     claim("the host still governs the room it made",
           host.tree().get("room_authority", {}).get(host_ws["room"], "Local"),
           "Local")
@@ -606,7 +606,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
 
 
 def peer_id_of(s: Session) -> str:
-    """Pull the libp2p peer id the session logged at startup."""
+    """Pull the Iroh endpoint id the session logged at startup."""
     try:
         with open(s.log_path) as f:
             for line in f:

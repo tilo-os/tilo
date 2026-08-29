@@ -188,11 +188,11 @@ enum Direction {
     Right,
 }
 
-/// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
+/// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
 /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-/// [`PresenceCtx::remote_cursors`] without App knowing about libp2p.
+/// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
 
 pub struct App {
@@ -264,11 +264,11 @@ pub struct App {
     last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     last_view_presence: Option<crate::view::ViewSubset>,
-    /// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
+    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
     /// send. Invoked after the throttle gate.
     presence_broadcast_sink: Option<PresenceBroadcastSink>,
     /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-    /// [`PresenceCtx::remote_cursors`] without App knowing about libp2p.
+    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
     frame_tick: Option<FrameTick>,
 
     /// Only calls into winit when it changes, keeping the hot pointer path
@@ -1040,7 +1040,7 @@ impl App {
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
-        // Fan out to the optional out-of-band sink first (the shell's libp2p
+        // Fan out to the optional out-of-band sink first (the shell's Iroh
         // bridge) so a slow socket never delays the network path.
         if let Some(sink) = self.presence_broadcast_sink.as_ref() {
             sink(&key, &payload);

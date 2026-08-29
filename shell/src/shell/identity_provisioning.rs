@@ -128,7 +128,7 @@ pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> 
 }
 
 /// Instantiated once at boot and shared between the host and pairer
-/// wirings. In-memory shim for now; a libp2p-backed impl will land later.
+/// wirings. In-memory shim for now; an Iroh-backed impl will land later.
 pub type SharedPairingChannel = Arc<PairingHandshake>;
 
 pub fn new_pairing_channel() -> SharedPairingChannel {

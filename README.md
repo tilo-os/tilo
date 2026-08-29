@@ -39,7 +39,7 @@ Most of the rest follows from that:
 
 | Path | What |
 |---|---|
-| `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over `libp2p` and `automerge`. Also `qos-control` (drives a running desktop) and `shots` (offscreen renderer). |
+| `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `qos-control` (drives a running desktop) and `shots` (offscreen renderer). |
 | `ui/` | Retained-mode CRDT-native toolkit. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`. |
 | `fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
 | `apps/` | 46 native applications — office suite, WebKit-based browser, mail, calendar, maps, video editor, terminal, files. See [`apps/README.md`](apps/README.md). |

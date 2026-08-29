@@ -172,7 +172,7 @@ Neither proof helps if the source shows different logs to different people. So:
 > **Every qOS machine is a witness.**
 
 Machines gossip signed log heads over the collaboration substrate that is
-already there for rooms — the same libp2p gossip that carries workspace
+already there for rooms — the same Iroh gossip that carries workspace
 presence. A source that presents one head to you and another to everyone else
 produces two heads in circulation, signed by the same key, and is caught by
 anyone who sees both. This closes the *compromised registry owner* hole

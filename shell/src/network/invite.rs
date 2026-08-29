@@ -1,32 +1,9 @@
-//! Peer-invite token format.
+//! Signed invitation tickets for iroh workspace collaboration.
 //!
-//! A base64-url-encoded JSON blob signed by the inviting owner's libp2p
-//! ed25519 keypair. The receiver decodes it, verifies the signature
-//! against the embedded public key, checks the key matches the embedded
-//! `PeerId`, and dials the embedded multiaddr to join the workspace.
-//!
-//! ```text
-//! /invite        → ShellNetwork::issue_invite() → token string → clipboard
-//! /connect <tok> → validate_invite_token        → ShellNetwork::dial(addr)
-//!                                              → JoinWorkspace { ws }
-//! ```
-//!
-//! Token wire format (base64-url, no-pad):
-//!
-//! ```ignore
-//! { "workspace_id": u64,
-//!   "room_id": "…-…-…" (uuid),
-//!   "owner_peer_id": "12D3KooW…" (base58),
-//!   "owner_public_key": <base64-url protobuf-encoded PublicKey>,
-//!   "owner_addr": "/ip4/…/tcp/…/p2p/…",
-//!   "expiry_unix_seconds": u64,
-//!   "signature": <bytes — ed25519 over the canonical payload>
-//! }
-//! ```
-//!
-//! `owner_public_key` is embedded because libp2p's `PeerId` has no stable
-//! accessor to recover a `PublicKey` for verification; `owner_peer_id ==
-//! PeerId::from(public_key)` is still cross-checked so a mismatched pair is rejected.
+//! An invitation binds the durable room identity to the inviter's stable iroh
+//! endpoint id and its current dialing hints. The endpoint id is itself the
+//! Ed25519 verification key, so no transport-specific PeerId/public-key pair is
+//! duplicated in the token.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -36,85 +13,49 @@ use crate::shell::state::{
     Collaborator, PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree,
 };
 
-/// Signed invite issued by a workspace owner so a remote peer can dial
-/// in and replicate the tree. Round-trips through
-/// [`make_invite_token`] / [`validate_invite_token`].
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PeerInviteToken {
-    /// Gossipsub topic the invite grants access to; the receiver issues
-    /// `JoinWorkspace { ws: workspace_id }` once the signature checks out.
-    ///
-    /// This is the **inviter's local** workspace handle, naming only a
-    /// transport topic — the same number means a different workspace on
-    /// every machine, so it isn't an identity the receiver can compare
-    /// against its own. [`Self::room_id`] is that identity.
+    /// Inviter-local routing handle. The durable shared identity is `room_id`.
     pub workspace_id: u64,
-    /// The inviter's durable room identity (`crate::shell::state::RoomId`),
-    /// as a uuid string — what makes an invite an invite *to something*: the
-    /// receiver adopts this as its local workspace's room
-    /// ([`crate::shell::state::WorkspaceTree::set_room`]). Signed along with
-    /// everything else — unsigned, an attacker could redirect the invitee to a room of their choosing.
     pub room_id: String,
-    /// Inviter's libp2p `PeerId`, base58-encoded to round-trip through
-    /// `PeerId::from_str`; cross-checked against `owner_public_key` on validate.
+    /// z-base-32 iroh EndpointId. The historic field name remains in v1 JSON
+    /// so existing UI/debug tooling can display it without another migration.
     pub owner_peer_id: String,
-    /// Inviter's libp2p `PublicKey`, protobuf-encoded (base64-url no-pad) so
-    /// the receiver can verify `signature` without re-deriving the key from the peer-id.
-    pub owner_public_key: String,
-    /// Multiaddr the receiver should dial (e.g. `/ip4/192.168.1.5/tcp/4001`);
-    /// validated by libp2p's `Multiaddr` parser at `dial` time, not here.
-    pub owner_addr: String,
-    /// Absolute unix timestamp after which the token is rejected (v1: 1-hour
-    /// expiry). Checked before signature verification so an expired-but-valid signature doesn't leak a validity oracle.
+    /// Fresh direct and relay dialing information for the endpoint.
+    pub owner_addr: iroh::EndpointAddr,
     pub expiry_unix_seconds: u64,
-    /// ed25519 signature over the canonical payload string built by [`canonical_payload`]; verified against `owner_public_key`.
     pub signature: Vec<u8>,
 }
 
-/// Build the canonical signing-payload string from a token's fields.
-///
-/// Fields join with `|` in a fixed order: `workspace_id | room_id |
-/// owner_peer_id | owner_public_key | owner_addr | expiry_unix_seconds`.
-/// Pinned by [`tests::canonical_payload_is_stable`] so a future field
-/// addition can't silently break verification on already-issued tokens.
-///
-/// `room_id` is inside the signature because it decides which
-/// collaboration cluster the invitee ends up in — unsigned, it could be
-/// rewritten in transit to point the invitee at a different room.
-fn canonical_payload(
+#[derive(Serialize)]
+struct InvitePayload<'a> {
     workspace_id: u64,
-    room_id: &str,
-    owner_peer_id: &str,
-    owner_public_key: &str,
-    owner_addr: &str,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
     expiry_unix_seconds: u64,
-) -> String {
-    format!(
-        "{workspace_id}|{room_id}|{owner_peer_id}|{owner_public_key}|{owner_addr}|\
-         {expiry_unix_seconds}"
-    )
 }
 
-/// Wall-clock seconds since the unix epoch, or `0` if the system clock is somehow before 1970.
+fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(&InvitePayload {
+        workspace_id: token.workspace_id,
+        room_id: &token.room_id,
+        owner_peer_id: &token.owner_peer_id,
+        owner_addr: &token.owner_addr,
+        expiry_unix_seconds: token.expiry_unix_seconds,
+    })
+}
+
 fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-/// Issue an invite to `workspace`, signed by `keypair`.
-///
-/// Takes the whole [`Workspace`] rather than a pair of ids so the
-/// transport topic and room identity can't be sourced from two different
-/// workspaces — that would connect the peers and route their deltas nowhere.
-///
-/// `expiry_seconds_from_now` is added to the current unix time (v1
-/// callers pass `3600`). Refuses a workspace whose room has not been
-/// minted — a token carrying the nil room would hand the invitee an address that reaches nobody.
 pub fn make_invite_token(
-    keypair: &libp2p::identity::Keypair,
+    key: &iroh::SecretKey,
     workspace: &Workspace,
-    owner_addr: &str,
+    owner_addr: &iroh::EndpointAddr,
     expiry_seconds_from_now: u64,
 ) -> std::io::Result<String> {
     if workspace.room.is_nil() {
@@ -122,117 +63,62 @@ pub fn make_invite_token(
             "workspace has no room identity to invite into",
         ));
     }
-    let workspace_id = workspace.id.raw();
-    let room_id = workspace.room.to_string();
-    let public_key = keypair.public();
-    let owner_peer_id = public_key.to_peer_id().to_base58();
-    let owner_public_key = B64.encode(public_key.encode_protobuf());
-    let expiry_unix_seconds = now_unix_seconds().saturating_add(expiry_seconds_from_now);
-
-    let payload = canonical_payload(
-        workspace_id,
-        &room_id,
-        &owner_peer_id,
-        &owner_public_key,
-        owner_addr,
-        expiry_unix_seconds,
-    );
-    let signature = keypair
-        .sign(payload.as_bytes())
-        .map_err(std::io::Error::other)?;
-
-    let token = PeerInviteToken {
-        workspace_id,
-        room_id,
-        owner_peer_id,
-        owner_public_key,
-        owner_addr: owner_addr.to_string(),
-        expiry_unix_seconds,
-        signature,
+    if owner_addr.id != key.public() {
+        return Err(std::io::Error::other(
+            "invite address does not belong to the signing device",
+        ));
+    }
+    let mut token = PeerInviteToken {
+        workspace_id: workspace.id.raw(),
+        room_id: workspace.room.to_string(),
+        owner_peer_id: key.public().to_string(),
+        owner_addr: owner_addr.clone(),
+        expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
+        signature: Vec::new(),
     };
+    token.signature = key
+        .sign(&signing_payload(&token).map_err(std::io::Error::other)?)
+        .to_bytes()
+        .to_vec();
     let json = serde_json::to_vec(&token).map_err(std::io::Error::other)?;
-    Ok(B64.encode(&json))
+    Ok(B64.encode(json))
 }
 
-/// Decode and verify an invite token issued by [`make_invite_token`].
-///
-/// Returns the parsed token on success. Errors are `String` so the
-/// palette `/connect` UI can render them inline without a custom error enum.
-///
-/// Verification order:
-/// 1. base64-url decode → JSON parse,
-/// 2. expiry is in the future,
-/// 3. the room id is a real (non-nil) uuid,
-/// 4. embedded public key parses,
-/// 5. embedded `owner_peer_id` matches `PeerId::from(owner_public_key)`,
-/// 6. signature verifies over [`canonical_payload`].
-///
-/// Step 5 closes a forge-by-key-substitution attack: without it, an
-/// attacker could swap in a key they control while keeping the victim's
-/// peer-id, then pass step 6 with their own signature. Step 3 is checked
-/// before the signature so a validly signed but meaningless invite (nil room) is refused rather than accepted.
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
         .map_err(|e| format!("base64 decode: {e}"))?;
     let token: PeerInviteToken =
         serde_json::from_slice(&json).map_err(|e| format!("json parse: {e}"))?;
-
-    let now = now_unix_seconds();
-    if token.expiry_unix_seconds < now {
+    if token.expiry_unix_seconds < now_unix_seconds() {
         return Err("token expired".into());
     }
-
     match RoomId::parse(&token.room_id) {
         Some(room) if !room.is_nil() => {}
         Some(_) => return Err("invite names the unminted room".into()),
         None => return Err("invite carries no valid room id".into()),
     }
-
-    let pk_bytes = B64
-        .decode(token.owner_public_key.as_bytes())
-        .map_err(|e| format!("public-key base64 decode: {e}"))?;
-    let public_key = libp2p::identity::PublicKey::try_decode_protobuf(&pk_bytes)
-        .map_err(|e| format!("public-key protobuf decode: {e}"))?;
-
-    let derived_peer_id = public_key.to_peer_id().to_base58();
-    if derived_peer_id != token.owner_peer_id {
-        return Err("peer-id does not match embedded public key".into());
+    let endpoint: iroh::EndpointId = token
+        .owner_peer_id
+        .parse()
+        .map_err(|e| format!("endpoint id parse: {e}"))?;
+    if endpoint != token.owner_addr.id {
+        return Err("endpoint id does not match embedded address".into());
     }
-
-    let payload = canonical_payload(
-        token.workspace_id,
-        &token.room_id,
-        &token.owner_peer_id,
-        &token.owner_public_key,
-        &token.owner_addr,
-        token.expiry_unix_seconds,
-    );
-    if !public_key.verify(payload.as_bytes(), &token.signature) {
-        return Err("signature mismatch".into());
-    }
-
+    let signature: [u8; 64] = token
+        .signature
+        .as_slice()
+        .try_into()
+        .map_err(|_| "signature has the wrong length".to_string())?;
+    endpoint
+        .verify(
+            &signing_payload(&token).map_err(|e| format!("canonical encode: {e}"))?,
+            &iroh_base::Signature::from_bytes(&signature),
+        )
+        .map_err(|_| "signature mismatch".to_string())?;
     Ok(token)
 }
 
-/// Accept a verified invite into `tree`: point `local` at the room the
-/// inviter named.
-///
-/// Validating a token proves who issued it and which room they meant;
-/// this is what makes the invitee actually *be* in that room — their
-/// local workspace keeps its own id, and swaps only the identity its apps collaborate under.
-///
-/// Mirrored into the automerge doc and flushed to disk by
-/// [`WorkspaceTree::set_room`], so the invitee is still in the room after a restart.
-///
-/// Also records **who administers the room**
-/// ([`WorkspaceTree::pin_room_authority`]): room id and owner peer id are
-/// both inside the ed25519 signature, so only the holder of the owner's
-/// key could bind the two — the invitee accepts the room's owner and
-/// capabilities from that peer alone, not from other guests who are in the room but don't govern it.
-///
-/// Returns `Err` when the token doesn't verify or names no workspace
-/// this tree has. Takes the *token string*, not a parsed token, so there is no way to reach this having skipped validation.
 pub fn accept_invite_into(
     tree: &mut WorkspaceTree,
     local: WorkspaceId,
@@ -248,341 +134,96 @@ pub fn accept_invite_into(
         ));
     }
     tree.set_room(local, room);
-    tree.pin_room_authority(room, PeerOrigin::peer_base58(&token.owner_peer_id));
-    // The chrome renders presence from `Workspace::collaborators` (avatar
-    // stack, wheel-disc dots, collaborators overlay), so record the inviter
-    // now — under their session handle, not a name (not in the token, so
-    // inventing one would be a fabrication). [`WorkspaceTree::note_peer_present`]
-    // later replaces this row with the named one once that session publishes presence.
-    if let Ok(peer) = token.owner_peer_id.parse::<libp2p::PeerId>() {
-        let session = crate::network::behaviour::peer_liveness_handle(&peer);
-        let handle = crate::shell::state::session_handle(session);
-        tree.admit_collaborator(
-            local,
-            Collaborator::new(handle.clone(), handle).with_session(session),
-        );
-    }
+    tree.pin_room_authority(room, PeerOrigin::peer_id(&token.owner_peer_id));
+    let endpoint: iroh::EndpointId = token
+        .owner_peer_id
+        .parse()
+        .map_err(|e| format!("endpoint id parse: {e}"))?;
+    let session = crate::network::behaviour::peer_liveness_handle(&endpoint);
+    let handle = crate::shell::state::session_handle(session);
+    tree.admit_collaborator(
+        local,
+        Collaborator::new(handle.clone(), handle).with_session(session),
+    );
     Ok(room)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libp2p::identity::Keypair;
 
-    /// A workspace to issue invites to, with a real minted room.
     fn workspace(id: u64) -> Workspace {
         Workspace::test_default(WorkspaceId(id), format!("ws-{id}"))
     }
 
-    /// Pin the canonical payload format. A drift here silently invalidates
-    /// every already-issued token, so call out the change deliberately
-    /// rather than letting it sneak in. `room_id` sits between `workspace_id`
-    /// and `owner_peer_id`, signed so a rewritten room fails verification rather than quietly redirecting the invitee.
-    #[test]
-    fn canonical_payload_is_stable() {
-        let p = canonical_payload(
-            99,
-            "3f2b1c00-0000-4000-8000-000000000001",
-            "PEER",
-            "PK",
-            "/ip4/127.0.0.1/tcp/1234",
-            1_700_000_000,
-        );
-        assert_eq!(
-            p,
-            "99|3f2b1c00-0000-4000-8000-000000000001|PEER|PK|\
-             /ip4/127.0.0.1/tcp/1234|1700000000"
-        );
+    fn endpoint(key: &iroh::SecretKey, port: u16) -> iroh::EndpointAddr {
+        iroh::EndpointAddr::new(key.public())
+            .with_ip_addr(format!("127.0.0.1:{port}").parse().unwrap())
     }
 
     #[test]
-    fn round_trip_token_via_make_and_validate() {
-        let kp = Keypair::generate_ed25519();
+    fn round_trip_binds_room_key_and_dialing_address() {
+        let key = iroh::SecretKey::from_bytes(&[7; 32]);
         let ws = workspace(99);
-        let token_str = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-        let parsed = validate_invite_token(&token_str).expect("valid");
-        assert_eq!(parsed.workspace_id, 99);
-        assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/1234");
-        assert_eq!(parsed.owner_peer_id, kp.public().to_peer_id().to_base58());
-        // The point of the token: it names the inviter's room, so the receiver can join it instead of minting one of its own.
+        let addr = endpoint(&key, 1234);
+        let encoded = make_invite_token(&key, &ws, &addr, 3600).unwrap();
+        let token = validate_invite_token(&encoded).unwrap();
+        assert_eq!(token.workspace_id, 99);
+        assert_eq!(token.room_id, ws.room.to_string());
+        assert_eq!(token.owner_addr, addr);
+        assert_eq!(token.owner_peer_id, key.public().to_string());
+    }
+
+    #[test]
+    fn tampering_any_signed_route_field_is_rejected() {
+        let key = iroh::SecretKey::from_bytes(&[8; 32]);
+        let encoded = make_invite_token(&key, &workspace(1), &endpoint(&key, 1), 3600).unwrap();
+        let bytes = B64.decode(encoded).unwrap();
+        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
+        token.workspace_id = 2;
+        let forged = B64.encode(serde_json::to_vec(&token).unwrap());
+        assert!(
+            validate_invite_token(&forged)
+                .unwrap_err()
+                .contains("signature")
+        );
+    }
+
+    #[test]
+    fn substituted_endpoint_is_rejected() {
+        let owner = iroh::SecretKey::from_bytes(&[9; 32]);
+        let attacker = iroh::SecretKey::from_bytes(&[10; 32]);
+        let encoded = make_invite_token(&owner, &workspace(1), &endpoint(&owner, 1), 3600).unwrap();
+        let bytes = B64.decode(encoded).unwrap();
+        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
+        token.owner_addr = endpoint(&attacker, 2);
+        let forged = B64.encode(serde_json::to_vec(&token).unwrap());
+        assert!(validate_invite_token(&forged).is_err());
+    }
+
+    #[test]
+    fn accepting_invite_adopts_room_and_roster_identity() {
+        let key = iroh::SecretKey::from_bytes(&[11; 32]);
+        let host = workspace(11);
+        let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
+        let mut guest = WorkspaceTree::default();
+        let guest_id = WorkspaceId(4242);
+        guest
+            .workspaces
+            .push(Workspace::test_default(guest_id, "guest"));
         assert_eq!(
-            parsed.room_id,
-            ws.room.to_string(),
-            "the invite must carry the inviting workspace's room identity"
+            accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
+            host.room
         );
+        assert_eq!(guest.room_of(guest_id), Some(host.room));
+        assert_eq!(guest.workspaces[0].collaborators.len(), 1);
     }
 
     #[test]
-    fn tampered_workspace_id_fails_signature_check() {
-        let kp = Keypair::generate_ed25519();
-        let token_str =
-            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-        let bytes = B64.decode(&token_str).expect("b64");
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        token.workspace_id = 100;
-        let bad = B64.encode(serde_json::to_vec(&token).expect("re-json"));
-        let err = validate_invite_token(&bad).expect_err("must fail");
-        assert!(
-            err.contains("signature"),
-            "expected signature error, got {err:?}"
-        );
-    }
-
-    /// Rewriting the room in transit is the attack the signature has to
-    /// cover: it would move the invitee into a room of the attacker's choosing while every other field still checked out.
-    #[test]
-    fn tampered_room_id_fails_signature_check() {
-        let kp = Keypair::generate_ed25519();
-        let token_str =
-            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-        let bytes = B64.decode(&token_str).expect("b64");
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        token.room_id = RoomId::new().to_string();
-        let bad = B64.encode(serde_json::to_vec(&token).expect("re-json"));
-        let err = validate_invite_token(&bad).expect_err("must fail");
-        assert!(
-            err.contains("signature"),
-            "an invite whose room was swapped must fail verification, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn tampered_addr_fails_signature_check() {
-        let kp = Keypair::generate_ed25519();
-        let token_str =
-            make_invite_token(&kp, &workspace(7), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-        let bytes = B64.decode(&token_str).expect("b64");
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        token.owner_addr = "/ip4/10.0.0.1/tcp/9999".into();
-        let bad = B64.encode(serde_json::to_vec(&token).expect("re-json"));
-        assert!(validate_invite_token(&bad).is_err());
-    }
-
-    #[test]
-    fn substituted_public_key_is_rejected() {
-        // Forge attempt: keep the legitimate peer-id but swap in an attacker
-        // key + sign with it — the peer-id cross-check catches this even though the signature itself would verify.
-        let victim = Keypair::generate_ed25519();
-        let attacker = Keypair::generate_ed25519();
-
-        let victim_peer_id = victim.public().to_peer_id().to_base58();
-        let attacker_pk_b64 = B64.encode(attacker.public().encode_protobuf());
-        let expiry = now_unix_seconds() + 3600;
-        let room_id = RoomId::new().to_string();
-        let payload = canonical_payload(
-            1,
-            &room_id,
-            &victim_peer_id,
-            &attacker_pk_b64,
-            "/ip4/1.2.3.4/tcp/1",
-            expiry,
-        );
-        let signature = attacker.sign(payload.as_bytes()).unwrap();
-
-        let token = PeerInviteToken {
-            workspace_id: 1,
-            room_id,
-            owner_peer_id: victim_peer_id,
-            owner_public_key: attacker_pk_b64,
-            owner_addr: "/ip4/1.2.3.4/tcp/1".into(),
-            expiry_unix_seconds: expiry,
-            signature,
-        };
-        let token_str = B64.encode(serde_json::to_vec(&token).unwrap());
-        let err = validate_invite_token(&token_str).expect_err("forge must fail");
-        assert!(
-            err.contains("peer-id"),
-            "expected peer-id mismatch, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn expired_token_is_rejected() {
-        // Issue a token with "now + 0s" expiry, sleep one second, assert
-        // rejection — the 0s expiry latches the current second, so `now` is strictly greater by the time sleep returns.
-        let kp = Keypair::generate_ed25519();
-        let token_str =
-            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 0).expect("make");
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let err = validate_invite_token(&token_str).expect_err("must fail");
-        assert!(
-            err.contains("expired"),
-            "expected expiry error, got {err:?}"
-        );
-    }
-
-    /// A workspace whose room has not been minted has nothing to invite
-    /// anyone into — issuing anyway would hand out an address that reaches nobody, undetectably.
-    #[test]
-    fn a_workspace_with_no_room_cannot_issue_an_invite() {
-        let kp = Keypair::generate_ed25519();
+    fn nil_room_cannot_be_invited() {
+        let key = iroh::SecretKey::from_bytes(&[12; 32]);
         let mut ws = workspace(4);
         ws.room = RoomId::nil();
-        let err = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect_err("an unminted workspace must not issue invites");
-        assert!(
-            err.to_string().contains("room"),
-            "expected a room-identity error, got {err:?}"
-        );
-    }
-
-    /// Accepting an invite is what puts the invitee in the inviter's room —
-    /// asserted through the production entry point, against a real tree, covering validation + lookup + mutation.
-    #[test]
-    fn accepting_an_invite_moves_the_local_workspace_into_the_inviters_room() {
-        let kp = Keypair::generate_ed25519();
-        let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-
-        // The invitee's tree: its own workspace, its own local id, its own freshly-minted room.
-        let mut guest_tree = WorkspaceTree::default();
-        let guest_id = WorkspaceId(4242);
-        guest_tree
-            .workspaces
-            .push(Workspace::test_default(guest_id, "guest"));
-        let before = guest_tree.room_of(guest_id).expect("guest workspace");
-        assert_ne!(
-            before, host.room,
-            "the two hosts must start in different rooms, or the test \
-             would pass without the invite doing anything"
-        );
-
-        let adopted = accept_invite_into(&mut guest_tree, guest_id, &token)
-            .expect("a valid invite must be accepted");
-        assert_eq!(adopted, host.room);
-        assert_eq!(
-            guest_tree.room_of(guest_id),
-            Some(host.room),
-            "after accepting, the invitee's workspace must address the \
-             inviter's room"
-        );
-        // The local handle is untouched: it indexes the invitee's own tree and means nothing to the inviter.
-        assert_eq!(
-            guest_tree.workspaces[0].id, guest_id,
-            "accepting an invite must not renumber the local workspace"
-        );
-    }
-
-    /// Accepting an invite puts the inviter on the roster: the chrome reads
-    /// `Workspace::collaborators` for the avatar stack, wheel-disc dots, and
-    /// collaborators overlay. The entry is derived from the owner peer id
-    /// inside the token's signature, so it's exactly as verified as the room itself.
-    #[test]
-    fn accepting_an_invite_puts_the_inviter_on_the_roster() {
-        let kp = Keypair::generate_ed25519();
-        let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-
-        let mut guest_tree = WorkspaceTree::default();
-        let guest_id = WorkspaceId(4242);
-        guest_tree
-            .workspaces
-            .push(Workspace::test_default(guest_id, "guest"));
-        assert!(
-            guest_tree.workspaces[0].collaborators.is_empty(),
-            "the guest starts alone, or this proves nothing"
-        );
-
-        accept_invite_into(&mut guest_tree, guest_id, &token).expect("a valid invite");
-
-        let roster = &guest_tree.workspaces[0].collaborators;
-        let expected = crate::shell::state::session_handle(
-            crate::network::behaviour::peer_liveness_handle(&kp.public().to_peer_id()),
-        );
-        assert_eq!(
-            roster.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-            vec![expected.as_str()],
-            "accepting an invite must put exactly the inviting session on \
-             the roster, under the handle the presence path will use to \
-             recognise it again"
-        );
-        assert_eq!(
-            crate::shell::state::active_workspace_peer_count(&guest_tree),
-            0,
-            "the guest's workspace is not the active one here, so the \
-             count helper must not borrow its roster"
-        );
-    }
-
-    /// Accepting twice is one peer: an invite isn't a one-shot nonce, so a
-    /// roster that pushed on every accept would stack duplicate avatars for one person.
-    #[test]
-    fn accepting_the_same_invite_twice_is_one_peer() {
-        let kp = Keypair::generate_ed25519();
-        let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-
-        let mut guest_tree = WorkspaceTree::default();
-        let guest_id = WorkspaceId(4242);
-        guest_tree
-            .workspaces
-            .push(Workspace::test_default(guest_id, "guest"));
-
-        accept_invite_into(&mut guest_tree, guest_id, &token).expect("first accept");
-        // The second accept is refused by `set_room` (already in that room) but must still leave the roster with one entry.
-        let _ = accept_invite_into(&mut guest_tree, guest_id, &token);
-        assert_eq!(
-            guest_tree.workspaces[0].collaborators.len(),
-            1,
-            "one inviter is one avatar, however many times the token is \
-             accepted; got {:?}",
-            guest_tree.workspaces[0].collaborators
-        );
-    }
-
-    /// A tampered token must not move anybody anywhere — without
-    /// validate-first ordering in `accept_invite_into`, a forged room would be adopted before the signature was ever checked.
-    #[test]
-    fn a_forged_invite_does_not_move_the_local_workspace() {
-        let kp = Keypair::generate_ed25519();
-        let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
-        let bytes = B64.decode(&token).expect("b64");
-        let mut parsed: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        let attacker_room = RoomId::new();
-        parsed.room_id = attacker_room.to_string();
-        let forged = B64.encode(serde_json::to_vec(&parsed).expect("re-json"));
-
-        let mut guest_tree = WorkspaceTree::default();
-        let guest_id = WorkspaceId(4242);
-        guest_tree
-            .workspaces
-            .push(Workspace::test_default(guest_id, "guest"));
-        let before = guest_tree.room_of(guest_id).expect("guest workspace");
-
-        let err = accept_invite_into(&mut guest_tree, guest_id, &forged)
-            .expect_err("a forged invite must be refused");
-        assert!(
-            err.contains("signature"),
-            "expected signature error, got {err:?}"
-        );
-        assert_eq!(
-            guest_tree.room_of(guest_id),
-            Some(before),
-            "a refused invite must leave the local room exactly as it was; \
-             it must not have been moved to the attacker's room {attacker_room}"
-        );
-        assert!(
-            guest_tree.workspaces[0].collaborators.is_empty(),
-            "a refused invite must put nobody on the roster either — an \
-             avatar is a claim that someone is here, and this token \
-             proved nothing; got {:?}",
-            guest_tree.workspaces[0].collaborators
-        );
-    }
-
-    #[test]
-    fn malformed_base64_rejected() {
-        let err = validate_invite_token("!!!not-base64!!!").expect_err("must fail");
-        assert!(err.contains("base64"), "expected base64 error, got {err:?}");
-    }
-
-    #[test]
-    fn malformed_json_rejected() {
-        // base64-decodes fine but isn't valid JSON.
-        let bad = B64.encode(b"not json");
-        let err = validate_invite_token(&bad).expect_err("must fail");
-        assert!(err.contains("json"), "expected json error, got {err:?}");
+        assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
     }
 }

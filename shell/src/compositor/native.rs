@@ -1489,7 +1489,7 @@ fn load_session_tree(
     // The id salt is set **before** the tree is loaded — load-bearing order.
     //
     // Two peers minting ids from the same counter collide, and CRDT sync
-    // folds them into one row. The salt (from the libp2p keypair) puts each
+    // folds them into one row. The salt (from the Iroh keypair) puts each
     // peer in a disjoint id range, making an id safe as a replication key.
     //
     // Setting it after load left `bootstrap_default`'s first-boot ids
@@ -1890,7 +1890,7 @@ pub fn run() -> ! {
     // descriptor once at spawn, so a broker arriving later is one it never gets.
     //
     // Lives in this process, not a unit of its own: a listener + fanout
-    // table over `ShellNetwork` (the libp2p handle above), since the shell
+    // table over `ShellNetwork` (the Iroh handle above), since the shell
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());

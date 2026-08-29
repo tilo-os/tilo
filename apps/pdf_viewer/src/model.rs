@@ -608,7 +608,7 @@ cluster with a remote peer never widens the host's exposure beyond that cluster.
                 Block::H2("1.2  Remote input injection".to_string()),
                 b("Collaboration streams Wayland buffers to invited peers and injects \
 their pointer and keyboard events back into the originating cluster. Coordination \
-runs over a libp2p gossip mesh discovered through multicast DNS on the local \
+runs over an Iroh gossip mesh reached through authenticated invite addresses \
 segment and through relays elsewhere."),
             ],
         },

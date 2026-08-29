@@ -2,7 +2,7 @@
 //!
 //! Ties together `network::streaming` (encoder loop + share registry),
 //! `shell::peer_view` (receive-side widget that decodes + paints) and
-//! `network::actor` (the libp2p gossipsub actor that ships bytes) into
+//! `network::actor` (the Iroh gossip actor that ships bytes) into
 //! a story a user can point at: **"share a Flatpak app window to my
 //! workspace peers"**. See [`flatpak_share::SharedFlatpakSession`].
 //!

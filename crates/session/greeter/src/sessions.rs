@@ -122,7 +122,7 @@ DesktopNames=nirios
 [Desktop Entry]
 Name=qOS with peer sync
 GenericName=Desktop
-Comment=Collaborative session with libp2p peer discovery enabled
+Comment=Collaborative session with Iroh peer discovery enabled
 Exec=/usr/bin/shell --backend drm --enable-peer-sync
 Type=Application
 DesktopNames=nirios

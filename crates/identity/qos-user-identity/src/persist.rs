@@ -205,8 +205,8 @@ pub enum DeviceKeyOutcome {
 /// Load this device's signing key, generating one on first boot.
 ///
 /// This is the root of every network and document identity on the
-/// machine: the same 32 bytes derive the libp2p peer id, the iroh node
-/// id, the CRDT author, and the filesystem access subject. There is
+/// machine: the same 32 bytes derive the Iroh endpoint id, the CRDT
+/// author, and the filesystem access subject. There is
 /// exactly one per device and no subsystem mints its own.
 ///
 /// **A key file that exists but cannot be read is an error, never a

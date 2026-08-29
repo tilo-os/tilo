@@ -489,7 +489,7 @@ struct Collaborator {
 # page (both inclusive) so clients can request the next page
 # without decoding. `done == true` means the broker has no further
 # in-memory history in the requested range — clients that want
-# older ops can then fall back to the cooperative gossipsub path.
+# older ops can then fall back to the cooperative Iroh gossip path.
 struct ScrollbackBatch {
   ops         @0 :List(Data);
   earliestSeq @1 :UInt64;

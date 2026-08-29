@@ -592,7 +592,7 @@ fn compaction_op_class_rejected_for_editor() {
 #[test]
 fn cooperative_scrollback_round_trip() {
     // Two brokers in process. A ("requesting") has an EMPTY op log, so a
-    // local FetchScrollback gets empty+exhausted AND publishes a gossipsub
+    // local FetchScrollback gets empty+exhausted AND publishes a gossip
     // ScrollbackRequest; B ("responding") holds the ops, simulated by calling
     // `handle_scrollback_response_message` on A's ShellNetwork directly (the
     // wire-level round trip is covered by `protocol.rs::round_trips`).
@@ -645,7 +645,7 @@ fn cooperative_scrollback_round_trip() {
         other => panic!("expected ScrollbackBatch, got {other:?}"),
     }
 
-    // The response as gossipsub would deliver it. v1 doesn't validate
+    // The response as gossip would deliver it. v1 doesn't validate
     // cooperative responses against the signature pipeline here — that
     // happens when the receiving app renders them.
     let synthetic_ops = vec![
@@ -708,7 +708,7 @@ fn cooperative_scrollback_round_trip() {
 fn cooperative_request_published_when_local_empty() {
     // The *outbound* half: a local FetchScrollback that finds nothing must
     // publish a NeighbourMsg::ScrollbackRequest through the actor's command
-    // channel. With no libp2p mesh the request reaches no peer, so this
+    // channel. With no Iroh mesh the request reaches no peer, so this
     // asserts only that the publish runs and the local reply is (empty,
     // exhausted=true); the wire round trip is covered by
     // `network/protocol.rs::scrollback_request_round_trips_*`.

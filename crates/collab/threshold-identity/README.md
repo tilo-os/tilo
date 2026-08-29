@@ -60,7 +60,7 @@ forward-compatible upgrade.
 `EnrolmentRound1`, `EnrolmentRound2`,
 `SigningRound1Commitment`, and `SigningRound2Partial` derive
 `Serialize + Deserialize` so the qOS broker can ship them over
-libp2p direct-message tunnels. Each carries a small qOS header
+Iroh direct-message tunnels. Each carries a small qOS header
 (sender's share index) wrapping the FROST round-package bytes.
 
 ## Building this crate

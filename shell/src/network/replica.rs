@@ -388,7 +388,9 @@ mod tests {
         let mut guest_tree = WorkspaceTree::default();
         let guest_ws = guest_tree.append_empty_workspace("My workspace");
 
-        let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4001".parse().unwrap());
         let token = make_invite_token(
             &owner_key,
             host_tree
@@ -396,7 +398,7 @@ mod tests {
                 .iter()
                 .find(|w| w.id == host_a)
                 .expect("host workspace A"),
-            "/ip4/127.0.0.1/tcp/4001",
+            &owner_addr,
             3600,
         )
         .expect("the host issues an invite to room A");
@@ -408,7 +410,7 @@ mod tests {
         // guest takes a room's owner/capabilities from the peer whose signature admitted it.
         let host = Arc::new(Mutex::new(
             WorkspaceTreeReplica::new(1, host_tree.shared())
-                .with_origin(PeerOrigin::peer(&owner_key.public().to_peer_id())),
+                .with_origin(PeerOrigin::peer(&owner_key.public())),
         ));
         let guest_handle = guest_tree.shared();
         let guest = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
@@ -951,10 +953,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&"quinten".to_string());
         let mut rep = WorkspaceTreeReplica::new(1, tree.shared());
 
-        let guest = libp2p::identity::Keypair::ed25519_from_bytes([7u8; 32])
-            .expect("32 bytes is a keypair")
-            .public()
-            .to_peer_id();
+        let guest = iroh::SecretKey::from_bytes(&[7u8; 32]).public();
         let handle = crate::network::behaviour::peer_liveness_handle(&guest);
         let since = serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).expect("heads");
 

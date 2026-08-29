@@ -314,7 +314,7 @@ pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> boo
 
 /// In-memory stand-in for the broker-mediated pairing channel, so
 /// tests and the example bin exercise the full ceremony without
-/// standing up libp2p. Production replaces this with the real broker
+/// standing up Iroh. Production replaces this with the real broker
 /// shim in `shell/src/shell/identity_provisioning.rs`.
 #[derive(Default, Clone)]
 pub struct PairingHandshake {

@@ -81,7 +81,7 @@ impl From<uuid::Uuid> for RoomId {
 /// Whoever a message arrived from, named as the transport authenticated
 /// it — not as the message claims. The only thing about a sender the
 /// receiver did not take on faith, so the only thing an authority
-/// decision may rest on. Namespaced (`p2p:` / `hub:`) and carried whole
+/// decision may rest on. Namespaced (`iroh:` / `hub:`) and carried whole
 /// rather than hashed: equality must not turn on a digest an attacker
 /// can grind against.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -89,16 +89,16 @@ impl From<uuid::Uuid> for RoomId {
 pub struct PeerOrigin(String);
 
 impl PeerOrigin {
-    /// A remote libp2p peer, by its base58 `PeerId`.
-    pub fn peer(peer: &libp2p::PeerId) -> Self {
-        Self(format!("p2p:{}", peer.to_base58()))
+    /// A remote peer, by its authenticated iroh endpoint id.
+    pub fn peer(peer: &iroh::EndpointId) -> Self {
+        Self(format!("iroh:{peer}"))
     }
 
-    /// A remote libp2p peer named as an invite token names it — base58
-    /// text already validated by
+    /// A remote peer named as an invite token names it — endpoint text
+    /// already validated by
     /// [`crate::network::invite::validate_invite_token`].
-    pub fn peer_base58(base58: &str) -> Self {
-        Self(format!("p2p:{base58}"))
+    pub fn peer_id(endpoint_id: &str) -> Self {
+        Self(format!("iroh:{endpoint_id}"))
     }
 
     /// An in-process `crate::network::hub::Hub` subscriber.
@@ -117,12 +117,12 @@ impl PeerOrigin {
     }
 
     /// The handle presence frames identify this origin's peer by, or
-    /// `None` when this isn't a remote libp2p peer — bridges presence and
+    /// `None` when this isn't a remote iroh peer — bridges presence and
     /// room replication onto the same row per peer. One-way only, never
     /// for authority: a collision merges a display row, not a permission.
     pub fn liveness_handle(&self) -> Option<u64> {
-        let base58 = self.0.strip_prefix("p2p:")?;
-        let peer = base58.parse::<libp2p::PeerId>().ok()?;
+        let id = self.0.strip_prefix("iroh:")?;
+        let peer = id.parse::<iroh::EndpointId>().ok()?;
         Some(crate::network::behaviour::peer_liveness_handle(&peer))
     }
 }
@@ -216,7 +216,7 @@ pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// High-16-bit peer salt for every id [`next_id`] mints. Default `0`
 /// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
-/// it at startup with a hash of the local libp2p key. `Relaxed`: written
+/// it at startup with a hash of the local Iroh key. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
@@ -557,7 +557,7 @@ pub struct Collaborator {
     /// Named by the room but has not taken part yet.
     #[serde(default)]
     pub invited: bool,
-    /// The publishing peer's libp2p handle, so a departure (which names
+    /// The publishing peer's Iroh handle, so a departure (which names
     /// only a peer id) finds this row again after it has been renamed
     /// from the handle to the person. `None` for a persisted row.
     #[serde(default)]
@@ -716,7 +716,7 @@ pub struct Workspace {
     #[serde(default)]
     pub capabilities: Vec<CapOverride>,
     /// Surfaces from this workspace being streamed to peers. Keys are
-    /// wayland `wl_surface` ids; values are the target libp2p peers
+    /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: HashMap<u64, std::collections::HashSet<u64>>,
@@ -765,7 +765,7 @@ pub fn local_user_id() -> UserId {
 }
 
 /// The name a session goes by before it says who is sitting at it.
-/// Derived from the libp2p peer handle, so it must match the fallback
+/// Derived from the Iroh peer handle, so it must match the fallback
 /// label [`crate::shell::peer_presence::fold_inbound`] gives an
 /// unnamed publisher, or one peer shows up as two.
 pub fn session_handle(peer: u64) -> String {
@@ -1425,7 +1425,7 @@ pub struct WorkspaceTree {
     /// Persisted, unlike [`Self::room_docs`] — can't be re-derived.
     #[serde(default)]
     pub room_authority: HashMap<RoomId, RoomAuthority>,
-    /// What each peer is **called**, as libp2p `PeerId` (base58) →
+    /// What each peer is **called**, as Iroh `EndpointId` →
     /// display name. Written only by the inviter (non-spoofable);
     /// [`Self::apply_room_changes`] refuses it from anyone else.
     #[serde(default)]
@@ -1677,7 +1677,7 @@ impl WorkspaceTree {
         self.room_authority(room) == RoomAuthority::Local
     }
 
-    /// Name the peer `peer_id` (base58 libp2p `PeerId`) `name` in
+    /// Name the peer `peer_id` (iroh EndpointId) `name` in
     /// `room`, as `actor`. Deliberately the **inviter's** act, not the
     /// invitee's — a peer naming itself could claim any name. Refused
     /// unless `actor` may administer `room`. An empty `name` un-names
@@ -1690,7 +1690,7 @@ impl WorkspaceTree {
         // Storing an unparseable peer id would leave a key no presence
         // frame can ever match — reads later as "didn't replicate"
         // rather than "was never addressed to anyone".
-        if peer_id.parse::<libp2p::PeerId>().is_err() {
+        if peer_id.parse::<iroh::EndpointId>().is_err() {
             return false;
         }
         if !self.governs_room(room) {
@@ -1740,7 +1740,7 @@ impl WorkspaceTree {
             self.room_peer_names_in_doc(room)
         };
         for (peer, name) in named {
-            let Ok(parsed) = peer.parse::<libp2p::PeerId>() else {
+            let Ok(parsed) = peer.parse::<iroh::EndpointId>() else {
                 continue;
             };
             out.insert(
@@ -2035,7 +2035,7 @@ impl WorkspaceTree {
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
 
-    /// Project "who the peers in this room are", as `PeerId` (base58)
+    /// Project "who the peers in this room are", as Iroh `EndpointId`
     /// -> display name. Called only from the governing branch of
     /// [`Self::sync_room_doc`] — one writer, so no guest can rename
     /// itself or anybody else.
@@ -6202,20 +6202,18 @@ mod automerge_foundation_tests {
         (owner, caps)
     }
 
-    /// A real base58 peer id, derived from a keypair like a running
+    /// A real endpoint id, derived from a keypair like a running
     /// session's, so the tests exercise the same parse production does.
     fn peer_id(seed: u8) -> String {
-        libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
-            .expect("32 bytes is a keypair")
+        iroh::SecretKey::from_bytes(&[seed; 32])
             .public()
-            .to_peer_id()
-            .to_base58()
+            .to_string()
     }
 
     /// The handle presence frames identify `peer` by.
     fn handle_of(peer: &str) -> u64 {
         crate::network::behaviour::peer_liveness_handle(
-            &peer.parse::<libp2p::PeerId>().expect("a peer id"),
+            &peer.parse::<iroh::EndpointId>().expect("a peer id"),
         )
     }
 

@@ -60,7 +60,7 @@ seccomp    = "qos-default"
 landlock   = "strict"
 
 # The app itself gets no network. Collaboration is the compositor's
-# libp2p, reached through the broker descriptor — an app never needs an
+# Iroh, reached through the broker descriptor — an app never needs an
 # egress grant to collaborate, and this manifest is where that shows.
 [sandbox.net]
 mode = "off"

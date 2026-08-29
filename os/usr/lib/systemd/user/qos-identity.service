@@ -1,10 +1,10 @@
 [Unit]
 Description=qOS signing identity for this user
 Documentation=man:shell(1)
-# A signing identity is personal. It has to be minted by the person it
-# belongs to, in their own session, so the key lands in their home, owned by
-# them, mode 0600. The system-wide first-boot unit runs as root before anyone
-# has logged in; anything it wrote would be root's.
+# A signing identity is personal. It is minted in the person's own session,
+# with its private root in their home and a certified per-device key in the
+# qos-identity group-owned system directory.  That device key is the shared
+# Iroh identity used by the shell, filesystem sync, and hosted relay.
 #
 # Ordered before the graphical session so the compositor and every app it
 # launches can find an identity on the very first login rather than starting

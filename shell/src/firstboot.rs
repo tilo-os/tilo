@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist, sign_device_cert};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
@@ -224,6 +225,153 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
+/// Provision the complete identity chain used by collaboration.
+///
+/// The personal 1-of-1 signing key remains in `primary.json`, while the same
+/// key is also persisted as the user root that certifies a distinct
+/// per-device key.  That device key is the single transport identity used by
+/// the shell, filesystem synchroniser, and hosted relay.  Existing records
+/// are migrated idempotently; an existing device key is never replaced.
+pub fn ensure_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    fs::create_dir_all(identity_dir)?;
+    #[cfg(unix)]
+    {
+        let mut perm = fs::metadata(identity_dir)?.permissions();
+        perm.set_mode(0o700);
+        fs::set_permissions(identity_dir, perm)?;
+    }
+
+    let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
+    let (identity, outcome) = if primary_path.exists() {
+        let bytes = fs::read(&primary_path)?;
+        let record = IdentityRecord::from_json_bytes(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let identity = record
+            .into_threshold_identity()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        (identity, ProvisionOutcome::Existing)
+    } else if paths.user_privkey.exists() {
+        let root = persist::read_signing_key(&paths.user_privkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let identity = ThresholdIdentity::from_single_device_seed(&root.to_bytes());
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "",
+            [128, 128, 128],
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let bytes = record
+            .to_json_bytes()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
+        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+        (identity, ProvisionOutcome::Created { pubkey_hex })
+    } else {
+        let mut rng = OsRng;
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "",
+            [128, 128, 128],
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let bytes = record
+            .to_json_bytes()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
+        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+        (identity, ProvisionOutcome::Created { pubkey_hex })
+    };
+
+    let root_seed = identity.single_device_seed().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "threshold identity cannot be exported as a single-device root",
+        )
+    })?;
+    let root = ed25519_dalek::SigningKey::from_bytes(&root_seed);
+    paths.ensure_directories()?;
+
+    if paths.user_privkey.exists() {
+        let stored = persist::read_signing_key(&paths.user_privkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if stored.verifying_key() != root.verifying_key() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "primary identity does not match the persisted user root",
+            ));
+        }
+    } else {
+        persist::write_signing_key(&paths.user_privkey, &root)?;
+    }
+
+    let root_public = root.verifying_key().to_bytes();
+    if paths.user_pubkey.exists() {
+        let stored = persist::read_public_key(&paths.user_pubkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if stored != root_public {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "primary identity does not match the persisted user public key",
+            ));
+        }
+    } else {
+        persist::write_public_key(&paths.user_pubkey, &root_public)?;
+    }
+
+    let (device, _) =
+        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    if paths.device_cert.exists() {
+        let cert = persist::read_device_cert(&paths.device_cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        qos_user_identity::verify_device_cert(&cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if cert.user_public_key != root_public
+            || cert.device_public_key != device.verifying_key().to_bytes()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "device certificate does not match the provisioned identity keys",
+            ));
+        }
+    } else {
+        let issued_at_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .min(u64::MAX as u128) as u64;
+        let mut cert = DeviceCert {
+            user_public_key: root_public,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Primary device".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).map_err(|e| io::Error::other(e.to_string()))?;
+        persist::write_device_cert(&paths.device_cert, &cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+
+    Ok(outcome)
+}
+
+/// Resolve the system identity root, with the same test/development override
+/// used by the filesystem synchroniser.
+pub fn collaboration_identity_paths() -> IdentityPaths {
+    std::env::var_os("QOS_IDENTITY_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(IdentityPaths::under)
+        .unwrap_or_else(IdentityPaths::default_system)
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -394,6 +542,37 @@ mod tests {
         // Second run leaves it alone.
         assert_eq!(
             ensure_primary_identity(&dir).expect("provision ok (2nd)"),
+            ProvisionOutcome::Existing
+        );
+    }
+
+    #[test]
+    fn collaboration_setup_creates_one_verified_identity_chain() {
+        let tmp = TmpDir::new("collaboration-identity");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+
+        assert!(matches!(
+            ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
+            ProvisionOutcome::Created { .. }
+        ));
+        let record = IdentityRecord::from_json_bytes(
+            &std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+        )
+        .unwrap();
+        let root = persist::read_signing_key(&paths.user_privkey).unwrap();
+        let device = persist::read_device_key(&paths.device_privkey).unwrap();
+        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+
+        assert_eq!(
+            record.threshold_identity.group_public_key,
+            root.verifying_key().to_bytes()
+        );
+        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
+        qos_user_identity::verify_device_cert(&cert).unwrap();
+        assert_eq!(
+            ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
         );
     }

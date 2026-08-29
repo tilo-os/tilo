@@ -1,6 +1,6 @@
 //! End-to-end integration test for the Flatpak-share pipeline.
 //!
-//! In-process rather than two netns/processes: gossipsub transport is
+//! In-process rather than two netns/processes: gossip transport is
 //! already covered by the `hub`/`actor` and `peer_sync_test.rs` suites,
 //! this runner has no root for netns, and what's under test
 //! (encoder+decoder+registry+`NeighbourMsg` composition against the

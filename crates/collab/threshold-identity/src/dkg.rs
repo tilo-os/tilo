@@ -9,7 +9,7 @@
 //! [`DkgSession`] is a per-device handle advancing `Round1 → Round2 →
 //! Complete`; a higher-level orchestrator (in `shell/`) shuttles
 //! [`EnrolmentRound1`]/[`EnrolmentRound2`] messages between devices over
-//! its transport (libp2p direct-message in production).
+//! its transport (Iroh direct-message in production).
 //!
 //! A session struct (not free functions) because FROST's intermediate
 //! secret packages must stay in memory between rounds — never sent over

@@ -22,13 +22,10 @@ pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 // where a descriptor is a sub-map of *metadata only* — the bytes themselves live
 // outside the CRDT, in the content-addressed store `blobstore` owns.
 //
-// Storing the bytes inline was a correctness bug, not just a size one: a 146 KB
-// image became a 146 KB automerge change, gossipsub caps an RPC at 64 KiB, so the
-// transport dropped it silently. Automerge queues a change whose ancestors it
-// lacks rather than applying it, so every later keystroke naming that change sat
-// unapplied and the far replica froze at the line before the image while both
-// ends still reported themselves connected. A reference is a few dozen bytes and
-// cannot hit that ceiling, which is why this is the fix rather than a bigger pipe.
+// Inline media makes every Automerge replica and durable host log carry the
+// full payload, amplifies sync memory, and puts later edits behind a large
+// change. A reference is only a few dozen bytes, which is why this is the fix
+// rather than a bigger transport message.
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>
 /// A blob descriptor's media type (`Str`, e.g. `image/png`). Sniffed from the
 /// content on `put_blob`, so it is present for anything we recognise.

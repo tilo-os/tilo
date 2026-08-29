@@ -347,7 +347,7 @@ Content-Type: multipart/mixed; boundary=\"=_qos_boundary_=\"\r\n\
 --=_qos_boundary_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
-Your mdns + gossipsub topology can loop if two clusters bridge the same \
+Your direct + hosted gossip topology can loop if two clusters bridge the same \
 peer. A spanning-tree pass keeps the collaboration buffer from echoing. \
 Diagram attached.\r\n\
 --=_qos_boundary_=\r\n\
@@ -372,7 +372,7 @@ Content-Type: multipart/alternative; boundary=\"=_qos_alt_=\"\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 This week: the scrollable-strip shell landed, and collaboration buffers now \
-stream over gossipsub. Read on.\r\n\
+stream over gossip. Read on.\r\n\
 --=_qos_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
@@ -380,7 +380,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 <h1 style=\"color:#4f7cff\">This week in qOS</h1>\
 <img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
-buffers now stream over gossipsub.</p>\
+buffers now stream over gossip.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\

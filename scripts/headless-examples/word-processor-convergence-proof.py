@@ -20,7 +20,7 @@ reporting a pass it cannot see.
 Both halves of the round trip, in pixels: each session renders the
 other's caret and pointer under the other machine's peer id, **and each
 session's page shows what the other typed**. Every hop is real app
-traffic — app → capnp broker → libp2p → the far broker's drain → the far
+traffic — app → capnp broker → Iroh → the far broker's drain → the far
 app → pixels.
 
 Two independently started apps each create their own Automerge document,

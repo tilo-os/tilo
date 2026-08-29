@@ -73,38 +73,45 @@ where
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
 
-    loop {
-        tokio::select! {
-            biased;
-            outbound = rx.recv() => {
-                match outbound {
-                    Some(env) => {
-                        let bytes = crate::transport::encode(&env)?;
-                        write.write_all(&bytes).await?;
-                    }
-                    None => break,
-                }
-            }
-            frame = reader.read_next() => {
-                match frame {
-                    Ok(Some(env)) => {
-                        if let Some(reply) = handle_envelope(
-                            &peer,
-                            env,
-                            &workspaces,
-                            &tx,
-                            &mut subscribed,
-                        ).await? {
-                            let bytes = crate::transport::encode(&reply)?;
+    // Keep the loop in a nested future so every `?` funnels through the
+    // subscription cleanup below. QUIC disconnects commonly surface as an
+    // I/O/frame error rather than a clean EOF.
+    let result: Result<(), PeerError> = async {
+        loop {
+            tokio::select! {
+                biased;
+                outbound = rx.recv() => {
+                    match outbound {
+                        Some(env) => {
+                            let bytes = crate::transport::encode(&env)?;
                             write.write_all(&bytes).await?;
                         }
+                        None => break,
                     }
-                    Ok(None) => break,
-                    Err(e) => return Err(PeerError::Frame(e)),
+                }
+                frame = reader.read_next() => {
+                    match frame {
+                        Ok(Some(env)) => {
+                            if let Some(reply) = handle_envelope(
+                                &peer,
+                                env,
+                                &workspaces,
+                                &tx,
+                                &mut subscribed,
+                            ).await? {
+                                let bytes = crate::transport::encode(&reply)?;
+                                write.write_all(&bytes).await?;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(PeerError::Frame(e)),
+                    }
                 }
             }
         }
+        Ok(())
     }
+    .await;
 
     // Clean up subscriptions on disconnect.
     let wsmap = workspaces.lock().await;
@@ -113,7 +120,7 @@ where
             ws.lock().await.remove_subscriber(&peer.device_public_key);
         }
     }
-    Ok(())
+    result
 }
 
 async fn handle_envelope(

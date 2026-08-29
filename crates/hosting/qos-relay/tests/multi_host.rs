@@ -108,7 +108,14 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
         other => panic!("expected Delta, got {other:?}"),
     }
 
-    // Now p2 fails over to relay2 (relay1 conn is dropped).
+    // Now p2 deliberately fails over to relay2. Announce the workspace
+    // departure before dropping the connection; an abrupt outage is healed
+    // by the separate anti-entropy path and tested independently.
+    c2_r1
+        .send(Envelope::Unsubscribe { workspace_id: 3 })
+        .unwrap();
+    // Delivery and processing of Unsubscribe are asynchronous.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     drop(c2_r1);
     let ep3 = client_endpoint().await;
     let c2_r2 = RelayClient::connect(

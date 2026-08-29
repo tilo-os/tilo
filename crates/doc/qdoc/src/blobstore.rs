@@ -1,12 +1,11 @@
 //! Content-addressed storage for document binaries, and the sniffer that derives a blob's
 //! descriptor from its bytes.
 //!
-//! The bytes are deliberately not in the document: storing them inline made a 146 KB image a
-//! 146 KB automerge change, and gossipsub caps one RPC at 64 KiB, so the transport silently
-//! dropped it and automerge queued every later change behind the one it never received — the far
-//! replica froze at the line before the image while both ends still reported themselves connected.
-//! So the document holds `{hash, mime, len, w, h}` and the bytes live here; a reference cannot hit
-//! that ceiling, dedup is free (the key *is* the content hash), and history stops carrying megabytes.
+//! The bytes are deliberately not in the document: inline media turns every
+//! Automerge replica and durable host log into a blob store, amplifies sync
+//! memory, and makes ordinary edits wait behind large payloads. The document
+//! holds `{hash, mime, len, w, h}` and the bytes live here; dedup is free (the
+//! key *is* the content hash), and history stops carrying megabytes.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

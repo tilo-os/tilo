@@ -1,6 +1,6 @@
 [Desktop Entry]
 # Alternate Wayland session entry for users who explicitly want the
-# libp2p peer-sync stack enabled (mdns + gossipsub for cluster sharing
+# Iroh peer-sync stack enabled (direct paths plus encrypted relay fallback
 # discovery). Off by default — see /usr/share/doc/qos/peer-sync.md
 # for the privacy/trust trade-off and how to opt in.
 #
@@ -10,7 +10,7 @@
 # is the internal id the portal matches on.
 Name=qOS with peer sync
 GenericName=Desktop
-Comment=Collaborative session with libp2p peer discovery enabled
+Comment=Collaborative session with Iroh peer discovery enabled
 Exec=/usr/bin/shell --backend drm --enable-peer-sync
 Type=Application
 DesktopNames=nirios

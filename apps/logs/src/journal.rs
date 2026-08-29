@@ -343,7 +343,7 @@ pub fn sample_entries() -> Vec<LogEntry> {
             Priority::Info,
             Some(very(820)),
             "stdout",
-            "collab: peer 'mara@thinkpad' invited to cluster 'design' (gossipsub topic ok)",
+            "collab: peer 'mara@thinkpad' invited to cluster 'design' (gossip topic ok)",
             &[("CODE_FILE", "shell/src/collab/mod.rs"), ("PEER", "mara")],
         ),
         (

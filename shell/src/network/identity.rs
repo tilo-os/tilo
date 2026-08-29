@@ -1,7 +1,7 @@
 //! Peer identity — the shell-side wiring for user-scoped identities.
 //!
-//! A peer is named by its [`PeerOrigin`] (the whole base58 libp2p peer
-//! id, as the transport authenticated it) — stable across restarts, but
+//! A peer is named by its [`PeerOrigin`] (the complete iroh endpoint id,
+//! as the transport authenticated it) — stable across restarts, but
 //! silent about *who* the peer is until an out-of-band invite ties it to a workspace.
 //!
 //! The name is carried whole rather than folded to a `u64`, because this
@@ -213,12 +213,7 @@ mod tests {
 
     /// A peer, named the way the transport names it.
     fn peer(n: u8) -> PeerOrigin {
-        PeerOrigin::peer(
-            &libp2p::identity::Keypair::ed25519_from_bytes([n; 32])
-                .unwrap()
-                .public()
-                .to_peer_id(),
-        )
+        PeerOrigin::peer(&iroh::SecretKey::from_bytes(&[n; 32]).public())
     }
 
     #[test]

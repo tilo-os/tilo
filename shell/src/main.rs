@@ -177,9 +177,19 @@ fn main() {
                 store.path().display()
             );
         }
-        Ok(_) if provision_identity_requested => {
-            // Idempotent by design: the user unit runs on every login, and an identity that already exists is the success case.
-            tracing::info!("qOS identity already present; nothing to provision");
+        Ok(store) if provision_identity_requested => {
+            // Migrate older installs which have the personal signing record
+            // but not yet the certified device/Iroh identity chain.
+            let Some(identity_dir) = store.path().parent() else {
+                tracing::error!("identity record has no parent directory");
+                std::process::exit(1);
+            };
+            let paths = firstboot::collaboration_identity_paths();
+            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+                tracing::error!("could not provision collaboration identity: {e}");
+                std::process::exit(1);
+            }
+            tracing::info!("qOS collaboration identity is provisioned");
             return;
         }
         Ok(store) => {
