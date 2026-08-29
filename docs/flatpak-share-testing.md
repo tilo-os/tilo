@@ -10,7 +10,7 @@ smithay surface commit
    → SharedFlatpakSession
    → Encoder (openh264 SW / VA-API / NVENC — chosen at start via probe)
    → SurfaceStreamSender (drop-oldest bounded queue per subscriber)
-   → wire (dedicated substream + gossipsub announces)
+   → wire (dedicated substream + Iroh gossip announces)
    → PeerView (decode + wgpu upload + composite)
 ```
 
@@ -172,7 +172,7 @@ so you can compare configurations without a stopwatch.
   correctly; the DmabufDirect counter increments off the zero-copy
   path, ShmReadback off the CPU-copy path.
 - `surface_substream_e2e` — QUIC-substream substrate: framing, drop-
-  oldest per subscriber, gossipsub vs substream split, viewer teardown
+  oldest per subscriber, gossip vs substream split, viewer teardown
   releases the subscription.
 - `two_netns_share` — same pipeline over real UDP loopback (in-process,
   runs everywhere) and over an actual netns pair (self-skips without

@@ -50,7 +50,7 @@ Most user-facing design questions reduce to that one decision:
 
 Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
-- `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + `libp2p`): workspaces, strips,
+- `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
   sandboxing, collaboration. Also the `qos-control` CLI and the `shots` renderer.
 - `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).

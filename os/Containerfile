@@ -807,7 +807,7 @@ COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
-#   - shell-peer-sync.desktop — opt-in session (libp2p enabled)
+#   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
 # tuigreet lists both at the login prompt; see docs/peer-sync.md.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
 COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
@@ -1326,10 +1326,9 @@ RUN for u in \
     ; do systemctl mask "$u" || true; done
 
 # C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
-# 1025-65535 tcp/udp ranges already cover the compositor's peer-sync traffic:
-#   * mDNS LAN discovery on 5353/udp (also added explicitly below).
-#   * The libp2p/gossipsub TCP listener, which binds an EPHEMERAL port
-#     (`/ip4/0.0.0.0/tcp/0` in shell/src/network/p2p.rs) inside that range.
+# 1025-65535 UDP range covers Iroh's ephemeral QUIC endpoint. Invites carry
+# authenticated endpoint addresses, so collaboration needs no multicast
+# discovery service or fixed inbound port.
 # firewalld isn't running at build time, so edit the permanent config offline.
 #
 # Printing adds NO service here, deliberately. `ipp` (631/tcp) would expose
@@ -1338,8 +1337,7 @@ RUN for u in \
 # only — the desktop talks to a printer, nothing talks to the desktop — and
 # the FedoraWorkstation zone already permits the outbound side. Adding either
 # service is a decision to be argued for, not a default.
-RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
-    firewall-offline-cmd --zone=FedoraWorkstation --add-service=mdns
+RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 
 # ---------------------------------------------------------------------------
 # Custom qOS kernel: swap Fedora's kernel-core for our tuned qos-kernel-core.

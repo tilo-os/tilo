@@ -400,7 +400,7 @@ fn sample_processes() -> Vec<ProcessInfo> {
             false,
         ),
         (
-            "gossipsub",
+            "gossip",
             "iroh-node",
             "ada",
             2.2,

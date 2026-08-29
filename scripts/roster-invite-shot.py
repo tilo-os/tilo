@@ -14,8 +14,8 @@ any of that.
 
 An accepted invite is what tells the *guest* who the host is. It tells
 the host nothing directly, because the signal a peer subscribing
-produces (`NetEvent::PeerJoined`) names no room -- v1 puts every
-workspace on one gossipsub topic -- and putting somebody on a room they
+produces (`NetEvent::PeerJoined`) names no room -- v1 uses one Iroh gossip
+topic per workspace -- and putting somebody on a room they
 may not be in is the fabrication this is all about. The host learns
 which room a peer is in from the first room-scoped presence frame that
 peer publishes. A session publishes its pointer with nothing open, so

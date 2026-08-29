@@ -3,7 +3,7 @@
 //!
 //! Source-agnostic by design: the producer (today an in-memory iterator
 //! over automerge history, later a signed-op stream) is external, so the
-//! widgets can be unit-tested without touching automerge, libp2p, or the
+//! widgets can be unit-tested without touching automerge, Iroh, or the
 //! broker.
 //!
 //! [`activity_timeline`]: crate::widget::activity_timeline

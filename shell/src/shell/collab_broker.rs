@@ -11,7 +11,7 @@
 //!
 //! Routing **fails closed**: a connection that has not said `Hello`
 //! receives nothing, and a frame whose sender has not said `Hello` is
-//! neither fanned out locally nor republished over libp2p. There is no
+//! neither fanned out locally nor republished over Iroh. There is no
 //! broadcast primitive left in the broker.
 
 use std::collections::HashMap;
@@ -185,7 +185,7 @@ pub struct LocalIdentity {
     /// live network.
     labels: Box<dyn Fn(&str) -> PeerLabels + Send + Sync>,
     /// This machine's own liveness handle. Presence frames key by that
-    /// digest while the room document keys by base58 `PeerId`;
+    /// digest while the room document keys by Iroh `EndpointId`;
     /// `room_peer_labels` bridges the two.
     local_handle: u64,
     /// The last answer per cluster, with the instant it was given.
@@ -681,7 +681,7 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
 
 /// Apply a validated Redact envelope to the shared channel state.
 /// Hoisted here because both the local-broker `translate` path and the
-/// libp2p drain thread reach it after a Redact validates and has
+/// Iroh drain thread reach it after a Redact validates and has
 /// already been pushed onto the op log; this owns the derived-state
 /// mutation + the redaction-record audit entry.
 pub(crate) fn apply_redaction_from_envelope(
@@ -970,7 +970,7 @@ fn reader_loop(
             continue;
         };
         // Capture the Hello route before translating — `translate`
-        // consumes the request, and both fan-out and the libp2p bridge
+        // consumes the request, and both fan-out and the Iroh bridge
         // need the announced address.
         if let CollabRequest::Hello {
             ref app_id,
@@ -1069,7 +1069,7 @@ fn reader_loop(
                         CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
                     );
                     if is_empty {
-                        // Remember who is waiting — a gossipsub response
+                        // Remember who is waiting — a gossip response
                         // carries only an artifact id.
                         if let Some(route) = &src_route {
                             if let Ok(mut pending) = pending_scrollback.lock() {
@@ -1124,7 +1124,7 @@ pub struct BrokerHandle {
     /// `LocalSet` driving capnp-rpc futures.
     capnp_thread: Option<JoinHandle<()>>,
     capnp_quit: Arc<AtomicBool>,
-    /// Shared with reader threads so external callers (the libp2p
+    /// Shared with reader threads so external callers (the Iroh
     /// bridge) can fan a remote event to every locally-connected peer.
     pub(crate) peers: Arc<PeerTable>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1146,7 +1146,7 @@ impl BrokerHandle {
     }
 
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
-    /// skips one peer id, for the libp2p bridge. No "reach everyone"
+    /// skips one peer id, for the Iroh bridge. No "reach everyone"
     /// form exists — see [`PeerTable::fanout_to_route`].
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.peers
@@ -1245,7 +1245,7 @@ pub fn spawn_with_peer_sync(
 ///   (`QOS_SVC_COLLAB`). When `Some`, both transports share fanout
 ///   through the same [`PeerTable`], so either side reaches every
 ///   subscriber on either side.
-/// - `peer_sync`: optional libp2p bridge.
+/// - `peer_sync`: optional Iroh bridge.
 pub fn spawn_full(
     socket_path: PathBuf,
     capnp_socket_path: Option<PathBuf>,
@@ -1266,7 +1266,7 @@ pub fn spawn_full(
 
 /// [`spawn_full`] with the identity lookup supplied rather than built
 /// from the network, so attribution can be tested against a room whose
-/// answers are known without standing up libp2p.
+/// answers are known without standing up Iroh.
 pub fn spawn_full_with_identity(
     socket_path: PathBuf,
     capnp_socket_path: Option<PathBuf>,
@@ -1285,7 +1285,7 @@ pub fn spawn_full_with_identity(
 
 /// Same broker, with the outbound half supplied by the caller — lets a
 /// test watch what actually reaches the wire without standing up
-/// libp2p. `peer_sync` stays `None`; the inbound drain has its own coverage.
+/// Iroh. `peer_sync` stays `None`; the inbound drain has its own coverage.
 pub fn spawn_with_publisher(
     socket_path: PathBuf,
     capnp_socket_path: Option<PathBuf>,
@@ -1310,7 +1310,7 @@ fn spawn_inner(
     let table = Arc::new(PeerTable::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // Who is waiting on a cooperative scrollback answer, keyed by
-    // artifact — a `ScrollbackResponse` off gossipsub carries an
+    // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
     // would have to broadcast the batch to every local app.
     let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
@@ -1581,7 +1581,7 @@ fn spawn_inner(
                                     drain_table.fanout_to_route(&event, u64::MAX, &route);
                                 }
                                 Err(ValidationError::OpAlreadyRedacted { target }) => {
-                                    // Late-arriving op via libp2p, already
+                                    // Late-arriving op via Iroh, already
                                     // redacted: don't fan, push a marker
                                     // entry so the seq stream stays gapless.
                                     tracing::warn!(
@@ -2001,11 +2001,9 @@ mod tests {
         let room = tree.room_of(ws).expect("a fresh workspace mints a room");
         let owner = "ada".to_string();
         tree.adopt_ownerless_workspaces(&owner);
-        let bob = libp2p::identity::Keypair::generate_ed25519()
-            .public()
-            .to_peer_id();
+        let bob = iroh::SecretKey::generate().public();
         assert!(
-            tree.name_peer(room, &owner, &bob.to_base58(), "bob"),
+            tree.name_peer(room, &owner, &bob.to_string(), "bob"),
             "the room's authority may name a peer in it",
         );
         let bob_handle = crate::network::behaviour::peer_liveness_handle(&bob);
@@ -2303,7 +2301,7 @@ mod tests {
     /// history; deltas alone would read as nothing. The whole-document
     /// snapshot sent on `Arrived` is what resolves it — driven here via
     /// the real inbound path: queued like `ShellNetwork::tick` queues one
-    /// off gossipsub, drained, delivered as `CRDTUpdate`.
+    /// off gossip, drained, delivered as `CRDTUpdate`.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_document_created_here_adopts_the_state_of_the_one_it_meets() {
@@ -2370,7 +2368,7 @@ mod tests {
         drop(handle);
     }
 
-    /// The record boundary holds across hosts too. Gossipsub is a
+    /// The record boundary holds across hosts too. Iroh gossip is a
     /// broadcast — which of a receiving host's apps see a frame is
     /// decided entirely by the route, so the record has to be on the
     /// wire (`NeighbourMsg::AppCrdt*`) and rebuilt on arrival.
@@ -3357,8 +3355,8 @@ mod tests {
             .expect("peer should have announced a route")
     }
 
-    /// One hop of the peer-sync wire, minus libp2p — both ends of the
-    /// bridge verbatim. Gossipsub is a broadcast: a frame reaches every
+    /// One hop of the peer-sync wire, minus Iroh — both ends of the
+    /// bridge verbatim. Gossip is a broadcast: a frame reaches every
     /// host on the topic, and which of their apps see it is decided
     /// entirely by the route. That's the decision under test.
     fn deliver_over_the_wire(to: &BrokerHandle, wire_route: &CrdtRoute, data: &[u8]) {
@@ -3527,7 +3525,9 @@ mod tests {
         );
 
         // The invite, production path on both ends.
-        let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4001".parse().unwrap());
         let token = crate::network::invite::make_invite_token(
             &owner_key,
             host_tree
@@ -3535,7 +3535,7 @@ mod tests {
                 .iter()
                 .find(|w| w.id == local_id)
                 .expect("host workspace"),
-            "/ip4/127.0.0.1/tcp/4001",
+            &owner_addr,
             3600,
         )
         .expect("the host issues an invite");

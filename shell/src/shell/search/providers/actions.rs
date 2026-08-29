@@ -50,7 +50,7 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "peer",
         ParamType::Text,
-        "The invitee's libp2p `PeerId`, base58 — the identity the name is attached to.",
+        "The invitee's Iroh `EndpointId` — the device identity the name is attached to.",
     ),
     ActionParam::required(
         "name",

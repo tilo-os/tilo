@@ -1,7 +1,7 @@
 //! Coordination transcripts for inter-device DKG and signing.
 //!
 //! The DKG and threshold-signing wire types are point-to-point/set
-//! messages, normally wrapped in authenticated channels (libp2p
+//! messages, normally wrapped in authenticated channels (Iroh
 //! direct-message tunnels secured by each device's transport key) that
 //! integrity-check them. For the device-pairing ceremony (QR scan +
 //! 6-digit code), where no transport channel exists yet, the spec calls
