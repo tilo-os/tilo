@@ -51,9 +51,10 @@ impl KnownRecord {
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut out: Vec<RoomId> = self.held_by.clone();
         if let Some(home) = self.home
-            && !out.contains(&home) {
-                out.push(home);
-            }
+            && !out.contains(&home)
+        {
+            out.push(home);
+        }
         out.sort();
         out
     }
@@ -180,10 +181,9 @@ impl RoomRecords {
     pub fn reference(&mut self, room: RoomId, id: &RecordId, kind: &RecordKind) -> bool {
         let slot = self.index_mut(room);
         let added = room::reference(&mut slot.doc, id, kind);
-        if added
-            && let Some(saver) = slot.autosave.as_mut() {
-                saver.request(&mut slot.doc);
-            }
+        if added && let Some(saver) = slot.autosave.as_mut() {
+            saver.request(&mut slot.doc);
+        }
         self.labelled.insert(id.clone(), kind.clone());
         self.changed();
         added
@@ -196,10 +196,9 @@ impl RoomRecords {
             return false;
         };
         let dropped = room::unreference(&mut slot.doc, id);
-        if dropped
-            && let Some(saver) = slot.autosave.as_mut() {
-                saver.request(&mut slot.doc);
-            }
+        if dropped && let Some(saver) = slot.autosave.as_mut() {
+            saver.request(&mut slot.doc);
+        }
         self.changed();
         dropped
     }
@@ -233,9 +232,10 @@ impl RoomRecords {
             .unwrap_or((0, true));
         let key = (self.generation, scan_key.0, scan_key.1);
         if let Some(cached) = self.known.borrow().as_ref()
-            && cached.key == key {
-                return std::rc::Rc::clone(&cached.records);
-            }
+            && cached.key == key
+        {
+            return std::rc::Rc::clone(&cached.records);
+        }
         let records = std::rc::Rc::new(self.compute_known());
         *self.known.borrow_mut() = Some(KnownCache {
             key,
@@ -266,9 +266,10 @@ impl RoomRecords {
             }
         };
         if let Some(scan) = self.scan.as_ref()
-            && let Ok(state) = scan.lock() {
-                state.records.iter().for_each(&mut observe);
-            }
+            && let Ok(state) = scan.lock()
+        {
+            state.records.iter().for_each(&mut observe);
+        }
         self.seeded.iter().for_each(&mut observe);
 
         for (room, held) in &self.held {
@@ -548,10 +549,14 @@ pub fn record_title(id: &RecordId, kind: &RecordKind) -> String {
         return leaf_of(&path);
     }
     if let Some(rest) = id.as_str().strip_prefix("derived:")
-        && let Some((role, target)) = rest.split_once('@') {
-            let target_name = RecordId::parse(target).map_or_else(|| target.to_string(), |t| record_title(&t, &RecordKind::new("")));
-            return format!("{role} of {target_name}");
-        }
+        && let Some((role, target)) = rest.split_once('@')
+    {
+        let target_name = RecordId::parse(target).map_or_else(
+            || target.to_string(),
+            |t| record_title(&t, &RecordKind::new("")),
+        );
+        return format!("{role} of {target_name}");
+    }
     if !kind.as_str().is_empty() {
         return kind.as_str().to_string();
     }
@@ -559,7 +564,10 @@ pub fn record_title(id: &RecordId, kind: &RecordKind) -> String {
 }
 
 fn leaf_of(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    )
 }
 
 /// Human name for the room a record lives in — a raw uuid in a palette row

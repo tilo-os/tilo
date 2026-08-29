@@ -326,8 +326,10 @@ impl HexView {
     fn open_path(&mut self, path: PathBuf, doc: &mut AutoCommit) {
         match std::fs::read(&path) {
             Ok(bytes) => {
-                let name = path
-                    .file_name().map_or_else(|| "untitled".to_string(), |s| s.to_string_lossy().into_owned());
+                let name = path.file_name().map_or_else(
+                    || "untitled".to_string(),
+                    |s| s.to_string_lossy().into_owned(),
+                );
                 let n = bytes.len();
                 self.model = HexModel::new(bytes);
                 self.file_name = name;
@@ -752,10 +754,8 @@ impl HexView {
                 let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
                 let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
 
-                let selected = selection
-                    .is_some_and(|(lo, hi)| off >= lo && off <= hi);
-                let inspected = inspector_span
-                    .is_some_and(|(lo, hi)| off >= lo && off <= hi);
+                let selected = selection.is_some_and(|(lo, hi)| off >= lo && off <= hi);
+                let inspected = inspector_span.is_some_and(|(lo, hi)| off >= lo && off <= hi);
                 let is_cursor = off == cursor;
                 let is_match = self.matches.iter().any(|&mh| {
                     // Highlight cells inside any match span.
@@ -1122,7 +1122,10 @@ impl HexView {
             label,
             bsz,
             contrast_on(accent),
-            t * Affine::translate((bx0 + (bw - f64::from(lw)) / 2.0, by0 + (bh - f64::from(bsz)) / 2.0)),
+            t * Affine::translate((
+                bx0 + (bw - f64::from(lw)) / 2.0,
+                by0 + (bh - f64::from(bsz)) / 2.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -1143,17 +1146,18 @@ impl HexView {
 
         // A pending open error (e.g. unreadable path) surfaces here.
         if let Some((msg, error, _)) = &self.flash
-            && *error {
-                let (mw, _) = tr.measure(msg, ssz, None);
-                tr.draw_text(
-                    scene,
-                    msg,
-                    ssz,
-                    c.semantic.danger,
-                    t * Affine::translate((cx - f64::from(mw) / 2.0, by0 + bh + 44.0)),
-                    None,
-                );
-            }
+            && *error
+        {
+            let (mw, _) = tr.measure(msg, ssz, None);
+            tr.draw_text(
+                scene,
+                msg,
+                ssz,
+                c.semantic.danger,
+                t * Affine::translate((cx - f64::from(mw) / 2.0, by0 + bh + 44.0)),
+                None,
+            );
+        }
     }
 
     fn draw_search_overlay(
@@ -1449,22 +1453,25 @@ impl Widget for HexView {
         // diverge from ours. A local keystroke keeps model and document in step
         // (the edit is applied to both), so this is a no-op on the common path
         // and never clobbers an in-progress edit.
-        if self.seeded && self.has_file
+        if self.seeded
+            && self.has_file
             && let Some(bytes) = HexDoc::read_bytes(doc)
-                && bytes != self.model.bytes() {
-                    self.model.adopt_bytes(bytes);
-                    if self.overlay == Overlay::Search {
-                        self.recompute_matches();
-                    }
-                    self.dirty = true;
-                }
+            && bytes != self.model.bytes()
+        {
+            self.model.adopt_bytes(bytes);
+            if self.overlay == Overlay::Search {
+                self.recompute_matches();
+            }
+            self.dirty = true;
+        }
 
         // Expire a status flash so an idle window settles back to no message.
         if let Some((_, _, born)) = &self.flash
-            && born.elapsed().as_millis() > FLASH_MS {
-                self.flash = None;
-                self.dirty = true;
-            }
+            && born.elapsed().as_millis() > FLASH_MS
+        {
+            self.flash = None;
+            self.dirty = true;
+        }
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1621,10 +1628,11 @@ impl Widget for HexView {
                 if !self.has_file {
                     if ctrl
                         && let Key::Character(c) = key
-                            && c.eq_ignore_ascii_case("o") {
-                                self.begin_open();
-                                *handled = true;
-                            }
+                        && c.eq_ignore_ascii_case("o")
+                    {
+                        self.begin_open();
+                        *handled = true;
+                    }
                     return;
                 }
 
@@ -1637,41 +1645,40 @@ impl Widget for HexView {
                 }
 
                 // Global chords.
-                if ctrl
-                    && let Key::Character(c) = key {
-                        match c.as_str() {
-                            "o" | "O" => {
-                                self.begin_open();
-                                *handled = true;
-                                return;
-                            }
-                            "s" | "S" => {
-                                self.begin_save();
-                                *handled = true;
-                                return;
-                            }
-                            "f" | "F" => {
-                                self.overlay = Overlay::Search;
-                                self.recompute_matches();
-                                self.dirty = true;
-                                *handled = true;
-                                return;
-                            }
-                            "g" | "G" => {
-                                self.overlay = Overlay::Goto;
-                                self.dirty = true;
-                                *handled = true;
-                                return;
-                            }
-                            "a" | "A" => {
-                                self.model.select_all();
-                                self.persist(state);
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
+                if ctrl && let Key::Character(c) = key {
+                    match c.as_str() {
+                        "o" | "O" => {
+                            self.begin_open();
+                            *handled = true;
+                            return;
                         }
+                        "s" | "S" => {
+                            self.begin_save();
+                            *handled = true;
+                            return;
+                        }
+                        "f" | "F" => {
+                            self.overlay = Overlay::Search;
+                            self.recompute_matches();
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        "g" | "G" => {
+                            self.overlay = Overlay::Goto;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        "a" | "A" => {
+                            self.model.select_all();
+                            self.persist(state);
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
+                }
 
                 let mut moved = true;
                 match key {

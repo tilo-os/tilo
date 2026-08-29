@@ -87,13 +87,15 @@ impl FormatProvider for DocxCodec {
         let rels = container.get("word/_rels/document.xml.rels");
         let (hdr_part, ftr_part) = headers::resolve_default_parts(&document, rels);
         if let Some(part) = hdr_part
-            && let Some(xml) = container.get(&part) {
-                headers::import_region(xml, crate::model::Region::Header, doc);
-            }
+            && let Some(xml) = container.get(&part)
+        {
+            headers::import_region(xml, crate::model::Region::Header, doc);
+        }
         if let Some(part) = ftr_part
-            && let Some(xml) = container.get(&part) {
-                headers::import_region(xml, crate::model::Region::Footer, doc);
-            }
+            && let Some(xml) = container.get(&part)
+        {
+            headers::import_region(xml, crate::model::Region::Footer, doc);
+        }
         // Parse the body `w:sectPr`'s `w:cols` num/space into the document-wide column setting.
         columns::import_section_columns(&document, doc);
         // Preservation layer: stash every part except the regenerated word/document.xml verbatim,

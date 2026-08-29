@@ -975,12 +975,16 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
         });
 
     let cluster_id = non_empty_env("QOS_WORKSPACE_ID")
-        .and_then(|s| if let Ok(id) = Uuid::parse_str(&s) { Some(id) } else {
-            tracing::debug!(
-                "QOS_WORKSPACE_ID={s:?} is not a uuid; \
+        .and_then(|s| {
+            if let Ok(id) = Uuid::parse_str(&s) {
+                Some(id)
+            } else {
+                tracing::debug!(
+                    "QOS_WORKSPACE_ID={s:?} is not a uuid; \
                  falling back to QUICK_CLUSTER_ID for collaboration routing"
-            );
-            None
+                );
+                None
+            }
         })
         .or_else(|| non_empty_env("QUICK_CLUSTER_ID").and_then(|s| Uuid::parse_str(&s).ok()))
         .unwrap_or_else(Uuid::nil);
@@ -1536,21 +1540,25 @@ pub mod broker {
                     // First frame establishes identity; if it isn't a `Hello`,
                     // fall back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
-                        Some(frame) => if let Ok(CollabRequest::Hello { app_id, handle, .. }) = serde_json::from_slice::<CollabRequest>(&frame) {
-                            // Announced handle when there is one, else the app id.
-                            let user_id =
-                                handle.filter(|h| !h.trim().is_empty()).unwrap_or(app_id);
-                            peers.lock().unwrap().insert(idx, Peer { user_id, write });
-                        } else {
-                            peers.lock().unwrap().insert(
-                                idx,
-                                Peer {
-                                    user_id: format!("peer-{idx}"),
-                                    write,
-                                },
-                            );
-                            let _ = tx.send((idx, frame));
-                        },
+                        Some(frame) => {
+                            if let Ok(CollabRequest::Hello { app_id, handle, .. }) =
+                                serde_json::from_slice::<CollabRequest>(&frame)
+                            {
+                                // Announced handle when there is one, else the app id.
+                                let user_id =
+                                    handle.filter(|h| !h.trim().is_empty()).unwrap_or(app_id);
+                                peers.lock().unwrap().insert(idx, Peer { user_id, write });
+                            } else {
+                                peers.lock().unwrap().insert(
+                                    idx,
+                                    Peer {
+                                        user_id: format!("peer-{idx}"),
+                                        write,
+                                    },
+                                );
+                                let _ = tx.send((idx, frame));
+                            }
+                        }
                         None => return, // closed before saying anything
                     }
 
@@ -1575,7 +1583,8 @@ pub mod broker {
             let user_id = peers
                 .lock()
                 .unwrap()
-                .get(&src_idx).map_or_else(|| format!("peer-{src_idx}"), |p| p.user_id.clone());
+                .get(&src_idx)
+                .map_or_else(|| format!("peer-{src_idx}"), |p| p.user_id.clone());
 
             let event = match req {
                 CollabRequest::Hello { .. } => continue,

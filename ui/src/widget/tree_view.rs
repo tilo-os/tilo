@@ -105,9 +105,7 @@ impl<T> TreeView<T> {
     }
 
     pub fn toggle_expand(&mut self, id: NodeId) {
-        if !Self::find_node(&self.root, id)
-            .is_some_and(TreeNode::is_branch)
-        {
+        if !Self::find_node(&self.root, id).is_some_and(TreeNode::is_branch) {
             return;
         }
         if !self.expanded.insert(id) {
@@ -343,8 +341,8 @@ impl<T: 'static> Widget for TreeView<T> {
                     }
                     let glyph_x0 = row_rect.x0 + (*depth as f64) * DISCLOSURE_WIDTH;
                     let glyph_x1 = glyph_x0 + DISCLOSURE_WIDTH;
-                    let is_branch = Self::find_node(&self.root, *id)
-                        .is_some_and(TreeNode::is_branch);
+                    let is_branch =
+                        Self::find_node(&self.root, *id).is_some_and(TreeNode::is_branch);
                     if is_branch && pt.x >= glyph_x0 && pt.x < glyph_x1 {
                         self.toggle_expand(*id);
                     } else {
@@ -367,8 +365,8 @@ impl<T: 'static> Widget for TreeView<T> {
             } => match logical_key {
                 Key::Named(NamedKey::ArrowRight) => {
                     if let Some(fid) = self.focused {
-                        let is_branch = Self::find_node(&self.root, fid)
-                            .is_some_and(TreeNode::is_branch);
+                        let is_branch =
+                            Self::find_node(&self.root, fid).is_some_and(TreeNode::is_branch);
                         if is_branch && !self.expanded.contains(&fid) {
                             self.expanded.insert(fid);
                             *handled = true;
@@ -377,8 +375,8 @@ impl<T: 'static> Widget for TreeView<T> {
                 }
                 Key::Named(NamedKey::ArrowLeft) => {
                     if let Some(fid) = self.focused {
-                        let is_branch = Self::find_node(&self.root, fid)
-                            .is_some_and(TreeNode::is_branch);
+                        let is_branch =
+                            Self::find_node(&self.root, fid).is_some_and(TreeNode::is_branch);
                         if is_branch && self.expanded.contains(&fid) {
                             self.expanded.remove(&fid);
                             *handled = true;

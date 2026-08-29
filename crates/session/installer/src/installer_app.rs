@@ -439,7 +439,10 @@ impl Widget for Card {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(std::convert::AsRef::as_ref).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -756,19 +759,22 @@ impl InstallerApp {
         // Hostname / timezone seed with sensible defaults so the fields
         // aren't blank (and validation passes out of the box).
         if state.get(root, HOSTNAME_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, HOSTNAME_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj, 0, 0, DEFAULT_HOSTNAME);
-            }
+            && let Ok(obj) = state.put_object(root, HOSTNAME_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj, 0, 0, DEFAULT_HOSTNAME);
+        }
         if state.get(root, TIMEZONE_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
-            }
+            && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
+        }
         // Keyboard layout seeds with the current selection (default or a
         // shot-injected one), so the picker + preview aren't blank.
         if state.get(root, KEYMAP_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, KEYMAP_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj, 0, 0, &self.keymap);
-            }
+            && let Ok(obj) = state.put_object(root, KEYMAP_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.keymap);
+        }
         // The TPM2 PIN is a Text object so the masked TextInput can splice
         // into it like every other field; it starts empty (no PIN).
         if state.get(root, PIN_PATH).ok().flatten().is_none() {
@@ -917,10 +923,9 @@ impl InstallerApp {
         if let Some(proxy) = proxy {
             // Worker thread: stream each line back as an External event.
             std::thread::spawn(move || {
-                let result =
-                    crate::install::run_install(&disk, &user, &password, &opts, |line| {
-                        let _ = proxy.send_event(UserEvent::External(line));
-                    });
+                let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
+                    let _ = proxy.send_event(UserEvent::External(line));
+                });
                 let terminal = match result {
                     Ok(true) => CTRL_DONE.to_string(),
                     Ok(false) => CTRL_FAIL.to_string(),
@@ -943,9 +948,8 @@ impl InstallerApp {
             match result {
                 Ok(true) => self.mark_install_done(),
                 Ok(false) => self.mark_install_failed(None),
-                Err(e) => self.mark_install_failed(Some(format!(
-                    "error: failed to launch installer: {e}"
-                ))),
+                Err(e) => self
+                    .mark_install_failed(Some(format!("error: failed to launch installer: {e}"))),
             }
         }
     }
@@ -988,7 +992,10 @@ impl InstallerApp {
         let sm = theme.tokens.typography.scale.sm;
 
         let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
-            STEP_LABELS.iter().map(std::string::ToString::to_string).collect(),
+            STEP_LABELS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             step_index(self.step),
         ))];
 
@@ -1071,7 +1078,10 @@ impl InstallerApp {
 
                 children.push(Box::new(Text::new("Filesystem").with_size(base)));
                 children.push(Box::new(SegChoice::new(
-                    FILESYSTEMS.iter().map(std::string::ToString::to_string).collect(),
+                    FILESYSTEMS
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
                     (0..FILESYSTEMS.len()).map(fs_path).collect(),
                     self.selected_fs,
                 )));
@@ -1084,7 +1094,10 @@ impl InstallerApp {
                 children.push(Box::new(Text::new("Disk encryption").with_size(base)));
                 children.push(Box::new(
                     SegChoice::new(
-                        ENCRYPT_LABELS.iter().map(std::string::ToString::to_string).collect(),
+                        ENCRYPT_LABELS
+                            .iter()
+                            .map(std::string::ToString::to_string)
+                            .collect(),
                         (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
                         usize::from(self.encrypt),
                     )
@@ -1120,7 +1133,10 @@ impl InstallerApp {
                     children.push(Box::new(Text::new("Security key").with_size(base)));
                     children.push(Box::new(
                         SegChoice::new(
-                            FIDO2_LABELS.iter().map(std::string::ToString::to_string).collect(),
+                            FIDO2_LABELS
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
                             (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
                             usize::from(self.fido2),
                         )
@@ -1448,10 +1464,10 @@ impl Widget for InstallerApp {
                         self.recovery_ack = false;
                         if let Some((Value::Object(ObjType::Text), pobj)) =
                             state.get(root, PIN_PATH).ok().flatten()
-                            && let Ok(cur) = state.text(&pobj) {
-                                let _ =
-                                    state.splice_text(&pobj, 0, cur.chars().count() as isize, "");
-                            }
+                            && let Ok(cur) = state.text(&pobj)
+                        {
+                            let _ = state.splice_text(&pobj, 0, cur.chars().count() as isize, "");
+                        }
                         self.pin.clear();
                     }
                     self.dirty_structure = true;
@@ -1562,9 +1578,10 @@ impl Widget for InstallerApp {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&card_node) = children.first() {
-                    c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&card_node) = children.first()
+        {
+            c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -1601,19 +1618,20 @@ impl Widget for InstallerApp {
         // step out from under the user.
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&card_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        root,
-                        handled,
-                        focus_target,
-                        card_node,
-                        taffy,
-                    );
-                }
+            && let Some(&card_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                card_node,
+                taffy,
+            );
+        }
 
         // Enter advances only when no inner field consumed it: Begin on
         // Review, Next on Disk/Account/Options. We mark the event handled
@@ -1629,24 +1647,24 @@ impl Widget for InstallerApp {
                     },
                 ..
             } = event
-            {
-                match self.step {
-                    Step::Review => {
-                        // Enter must honour the same gate as the Begin button:
-                        // when encrypting, the recovery-key acknowledgement is
-                        // required before the install can start.
-                        if self.encryption_ready() {
-                            let _ = state.put(root, BEGIN_PATH, true);
-                        }
-                        *handled = true;
+        {
+            match self.step {
+                Step::Review => {
+                    // Enter must honour the same gate as the Begin button:
+                    // when encrypting, the recovery-key acknowledgement is
+                    // required before the install can start.
+                    if self.encryption_ready() {
+                        let _ = state.put(root, BEGIN_PATH, true);
                     }
-                    Step::Disk | Step::Account | Step::Keyboard | Step::Options => {
-                        let _ = state.put(root, NEXT_PATH, true);
-                        *handled = true;
-                    }
-                    Step::Install => {}
+                    *handled = true;
                 }
+                Step::Disk | Step::Account | Step::Keyboard | Step::Options => {
+                    let _ = state.put(root, NEXT_PATH, true);
+                    *handled = true;
+                }
+                Step::Install => {}
             }
+        }
     }
 
     fn on_external_event(&mut self, payload: &str, _state: &mut AutoCommit, _root: &ObjId) {

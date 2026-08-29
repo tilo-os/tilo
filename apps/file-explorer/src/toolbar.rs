@@ -212,21 +212,25 @@ impl FileToolbar {
     /// open its menu right-aligned under the button (never off the right edge).
     /// The ⋯ is always the last control on the right.
     pub fn view_menu_anchor(&self) -> Point {
-        self.right
-            .last().map_or_else(|| Point::new(self.rect.x1, self.rect.y1), |b| {
+        self.right.last().map_or_else(
+            || Point::new(self.rect.x1, self.rect.y1),
+            |b| {
                 let r = b.get_rect();
                 Point::new(r.x1, r.y1 + 2.0)
-            })
+            },
+        )
     }
 
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
     /// where it is the second control on the right, before the ⋯).
     pub fn sort_menu_anchor(&self) -> Point {
-        self.right
-            .get(1).map_or_else(|| Point::new(self.rect.x1, self.rect.y1), |b| {
+        self.right.get(1).map_or_else(
+            || Point::new(self.rect.x1, self.rect.y1),
+            |b| {
                 let r = b.get_rect();
                 Point::new(r.x1, r.y1 + 2.0)
-            })
+            },
+        )
     }
 
     /// The Up nav button's on-screen rect, so a drag can be dropped on it to

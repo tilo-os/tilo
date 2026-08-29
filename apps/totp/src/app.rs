@@ -864,11 +864,12 @@ impl Widget for AuthenticatorApp {
     /// active. Selection is app-local presentation, so the doc args are unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::TotpSearchProvider::parse_action_id(action_id)
-            && self.vault.get(id).is_some() {
-                self.selected = Some(id);
-                self.search.set_text("");
-                self.list_dirty = true;
-            }
+            && self.vault.get(id).is_some()
+        {
+            self.selected = Some(id);
+            self.search.set_text("");
+            self.list_dirty = true;
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1009,9 +1010,7 @@ mod tests {
         let mut app = AuthenticatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        if crate::storage::vault_path()
-            .map_or(true, |p| !p.exists())
-        {
+        if crate::storage::vault_path().map_or(true, |p| !p.exists()) {
             assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
         }
     }

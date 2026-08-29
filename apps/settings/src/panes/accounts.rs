@@ -729,6 +729,11 @@ mod tests {
         // Guard: saving a blank address must not create an account (and must
         // not touch disk). We assert the pure guard directly.
         let mut pane = AccountsPane::from_dir(AccountDirectory::default(), false);
-        assert!(!pane.save_mail_account("Nobody".into(), "  ".into(), String::new(), String::new()));
+        assert!(!pane.save_mail_account(
+            "Nobody".into(),
+            "  ".into(),
+            String::new(),
+            String::new()
+        ));
     }
 }

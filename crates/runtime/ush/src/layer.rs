@@ -343,9 +343,10 @@ fn mirror_directories(src: &Path, dst: &Path) -> Result<(), LayerError> {
         }
         let target = dst.join(rel);
         if let Err(e) = std::fs::create_dir_all(&target)
-            && e.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(io(&target, e));
-            }
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(io(&target, e));
+        }
     }
     Ok(())
 }

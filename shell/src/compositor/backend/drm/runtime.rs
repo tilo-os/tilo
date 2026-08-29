@@ -357,7 +357,10 @@ impl DrmDispatchState {
             // The remaining three all happen inside the scanouts, which
             // live on the render thread, so they travel together as one ordered `Resume` — splitting would let a frame slip between modeset and unpause.
             SessionAction::ResetOutputs => {
-                let dpms_on = self.session.as_ref().is_none_or(super::session::SessionState::dpms_on);
+                let dpms_on = self
+                    .session
+                    .as_ref()
+                    .is_none_or(super::session::SessionState::dpms_on);
                 self.command(ScanoutCommand::Resume { dpms_on });
             }
             SessionAction::RestoreDpms | SessionAction::ResumeScanout => {}
@@ -818,7 +821,11 @@ impl DrmRuntime {
 
         // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
-        if keyboard.is_some() { tracing::info!("DRM backend: xkb keyboard initialised") } else { tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled") }
+        if keyboard.is_some() {
+            tracing::info!("DRM backend: xkb keyboard initialised")
+        } else {
+            tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled")
+        }
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();

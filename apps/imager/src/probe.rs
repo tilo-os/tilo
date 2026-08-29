@@ -89,9 +89,10 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
         let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let size = c.get("size").and_then(as_u64).unwrap_or(0);
         if let Some(mp) = str_field(c, "mountpoint")
-            && (mp == "/" || mp == "/boot" || mp == "/boot/efi" || mp.starts_with("/var")) {
-                *is_system = true;
-            }
+            && (mp == "/" || mp == "/boot" || mp == "/boot/efi" || mp.starts_with("/var"))
+        {
+            *is_system = true;
+        }
         if ty == "part" || ty == "crypt" || ty == "lvm" {
             out.push(TargetPartition {
                 name: str_field(c, "name").unwrap_or_default(),

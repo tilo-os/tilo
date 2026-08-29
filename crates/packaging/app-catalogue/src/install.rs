@@ -26,7 +26,10 @@ fn download_timeout() -> Duration {
     std::env::var("QOS_CATALOGUE_DOWNLOAD_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map_or(Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS), Duration::from_secs)
+        .map_or(
+            Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 /// Why an install did not happen; every variant renders to something a person can act on — reaches a notification.
@@ -278,10 +281,7 @@ const DETAIL_MAX_CHARS: usize = 110;
 /// stripped (the caller already says who refused it); anything still
 /// over [`DETAIL_MAX_CHARS`] is elided rather than cut off mid-word.
 fn installer_complaint(text: &str) -> String {
-    let Some(line) = text
-        .lines()
-        .map(str::trim).rfind(|l| !l.is_empty())
-    else {
+    let Some(line) = text.lines().map(str::trim).rfind(|l| !l.is_empty()) else {
         return String::new();
     };
     let line = line

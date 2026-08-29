@@ -95,9 +95,10 @@ fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u
         match sink.try_pull_sample(per_pull) {
             Some(sample) => {
                 if let Some(buffer) = sample.buffer()
-                    && let Ok(map) = buffer.map_readable() {
-                        out.push(map.as_slice().to_vec());
-                    }
+                    && let Ok(map) = buffer.map_readable()
+                {
+                    out.push(map.as_slice().to_vec());
+                }
             }
             None => {
                 // No sample within the timeout: either the stream has ended and
@@ -279,9 +280,10 @@ impl MicCapture {
         let mut out = Vec::new();
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
             if let Some(buffer) = sample.buffer()
-                && let Ok(map) = buffer.map_readable() {
-                    out.push(map.as_slice().to_vec());
-                }
+                && let Ok(map) = buffer.map_readable()
+            {
+                out.push(map.as_slice().to_vec());
+            }
         }
         out
     }

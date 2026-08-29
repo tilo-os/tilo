@@ -31,9 +31,10 @@ const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
 /// falling back to `~/Pictures/Camera`.
 pub fn resolve_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CAMERA_DIR")
-        && !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
     let pics = dirs::picture_dir().unwrap_or_else(|| {
         dirs::home_dir().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
@@ -97,16 +98,18 @@ pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
             }
             CaptureKind::Video => {
                 if ext == "avi"
-                    && let Some((vw, vh, d)) = video::probe_avi(&path) {
-                        w = vw;
-                        h = vh;
-                        dur_ms = d;
-                    }
+                    && let Some((vw, vh, d)) = video::probe_avi(&path)
+                {
+                    w = vw;
+                    h = vh;
+                    dur_ms = d;
+                }
             }
         }
         let label = path
             .file_stem()
-            .and_then(|s| s.to_str()).map_or_else(|| id.clone(), prettify_stem);
+            .and_then(|s| s.to_str())
+            .map_or_else(|| id.clone(), prettify_stem);
         out.push(Capture {
             id: id.clone(),
             kind,

@@ -361,9 +361,9 @@ impl FrameRecorder {
             return;
         }
         let start_us = now.duration_since(self.start).as_micros() as u64;
-        let period_us = self
-            .prev_start_us
-            .map_or(0, |p| start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32);
+        let period_us = self.prev_start_us.map_or(0, |p| {
+            start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32
+        });
         self.prev_start_us = Some(start_us);
         self.cur = FrameSample {
             seq: self.seq,
@@ -432,10 +432,11 @@ impl FrameRecorder {
         }
         let sample = self.cur;
         if let Some(t) = self.trace.as_mut()
-            && let Err(e) = sample.write_csv_row(t) {
-                eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
-                self.trace = None;
-            }
+            && let Err(e) = sample.write_csv_row(t)
+        {
+            eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
+            self.trace = None;
+        }
         if sample.start_us >= self.warmup_us && self.samples.len() < MAX_RETAINED {
             self.samples.push(sample);
         }

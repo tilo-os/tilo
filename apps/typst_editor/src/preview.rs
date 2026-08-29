@@ -424,9 +424,10 @@ impl PreviewPane {
             return;
         }
         if self.selecting
-            && let Some(b) = self.boundary_at(p) {
-                self.sel_cursor = b;
-            }
+            && let Some(b) = self.boundary_at(p)
+        {
+            self.sel_cursor = b;
+        }
     }
 
     pub fn on_mouse_up(&mut self) {
@@ -562,9 +563,10 @@ impl PreviewPane {
         let mut prev_key: Option<(usize, i64)> = None;
         for cell in &self.cells[lo..hi] {
             if let Some(k) = prev_key
-                && k != cell.line_key {
-                    out.push('\n');
-                }
+                && k != cell.line_key
+            {
+                out.push('\n');
+            }
             out.push_str(&cell.text);
             prev_key = Some(cell.line_key);
         }

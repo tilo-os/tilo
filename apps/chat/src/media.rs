@@ -224,11 +224,12 @@ impl MediaEngine {
         #[cfg(feature = "live-media")]
         {
             if live::environment_supports_media()
-                && let Some(t) = live::IrohTransport::try_new() {
-                    return Self {
-                        transport: Box::new(t),
-                    };
-                }
+                && let Some(t) = live::IrohTransport::try_new()
+            {
+                return Self {
+                    transport: Box::new(t),
+                };
+            }
         }
         Self {
             transport: Box::new(SimulatedTransport::default()),
@@ -561,7 +562,10 @@ mod live {
                     .ok()?
                     .response()
                     .ok()?;
-                response.streams().first().map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
+                response
+                    .streams()
+                    .first()
+                    .map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
             };
             tokio::time::timeout(std::time::Duration::from_mins(2), flow)
                 .await

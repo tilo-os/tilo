@@ -56,10 +56,7 @@ impl Sampler {
     /// elapsed wall time.
     pub fn refresh(&mut self, model: &mut MonitorModel) {
         let now = Instant::now();
-        let dt = self
-            .last
-            .map_or(1.0, |l| (now - l).as_secs_f32())
-            .max(0.05);
+        let dt = self.last.map_or(1.0, |l| (now - l).as_secs_f32()).max(0.05);
 
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
@@ -67,7 +64,12 @@ impl Sampler {
         self.networks.refresh();
 
         let m = &mut model.metrics;
-        m.cores = self.sys.cpus().iter().map(sysinfo::Cpu::cpu_usage).collect();
+        m.cores = self
+            .sys
+            .cpus()
+            .iter()
+            .map(sysinfo::Cpu::cpu_usage)
+            .collect();
         if let Some(c) = self.sys.cpus().first() {
             let brand = c.brand().trim().to_string();
             if !brand.is_empty() {
@@ -121,7 +123,8 @@ impl Sampler {
             let name = p.name().to_string_lossy().to_string();
             let user = p
                 .user_id()
-                .and_then(|uid| self.users.get_user_by_id(uid)).map_or_else(|| "—".to_string(), |u| u.name().to_string());
+                .and_then(|uid| self.users.get_user_by_id(uid))
+                .map_or_else(|| "—".to_string(), |u| u.name().to_string());
             let threads = p.tasks().map_or(1, std::collections::HashSet::len).max(1);
             let mem = p.memory();
             // Full command line (argv joined); fall back to the bare name when

@@ -361,9 +361,9 @@ impl ActionPalette {
                     height: AvailableSpace::Definite(FIELD_H as f32),
                 },
                 |known, available, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map_or(Size::ZERO, |&p| unsafe { (*p).measure(known, available, tr) })
+                    node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, tr)
+                    })
                 },
             )
             .expect("field layout");

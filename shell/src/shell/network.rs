@@ -330,7 +330,7 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return empty;
         };
-        
+
         replica.tree.read().room_peer_labels(room)
     }
 

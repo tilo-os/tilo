@@ -86,8 +86,10 @@ impl OpenError {
     pub fn user_message(&self) -> String {
         match self {
             OpenError::NoHandler { path, ext } => {
-                let name = path
-                    .file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().to_string(),
+                );
                 match ext {
                     Some(ext) => format!("no app on this desktop opens .{ext} files ({name})"),
                     None => format!("{name} has no file type to open it by"),
@@ -239,8 +241,10 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
 /// failure is indistinguishable from a broken desktop.
 pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: Option<&str>) {
     use crate::shell::notification::{Notification, NotificationSeverity};
-    let name = path
-        .file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
     let mut n = Notification::new(format!("Couldn't open {name}"), detail.to_string())
         .with_severity(NotificationSeverity::Error);
     if let Some(surface) = surface {
@@ -343,7 +347,9 @@ fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
         let tree = st.tree();
         tab_showing_surface(&tree, surface)
     };
-    if let Some(addr) = found { Some(Existing::Window(addr)) } else {
+    if let Some(addr) = found {
+        Some(Existing::Window(addr))
+    } else {
         forget_document(record);
         None
     }

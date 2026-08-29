@@ -251,16 +251,16 @@ impl SourceEditor {
         // Hover tooltip for a diagnostic squiggle — drawn last and outside the
         // clip so it floats above the source and can overflow the pane.
         if let Some(hp) = self.hover
-            && self.rect.contains(hp) {
-                let byte = self.code.byte_at_point(hp);
-                let text = self.code.value().to_string();
-                if let Some(d) = diags.iter().find(|d| {
-                    diag_byte_span(d, &text)
-                        .is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-                }) {
-                    self.draw_tooltip(scene, transform, tr, theme, hp, d);
-                }
+            && self.rect.contains(hp)
+        {
+            let byte = self.code.byte_at_point(hp);
+            let text = self.code.value().to_string();
+            if let Some(d) = diags.iter().find(|d| {
+                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
+            }) {
+                self.draw_tooltip(scene, transform, tr, theme, hp, d);
             }
+        }
     }
 
     /// Gutter severity markers + inline squiggles, positioned from the shared
@@ -428,10 +428,7 @@ fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
     let mut byte = 0usize;
     for (i, l) in text.split('\n').enumerate() {
         if i == line0 {
-            let add = l
-                .char_indices()
-                .nth(col0)
-                .map_or(l.len(), |(o, _)| o);
+            let add = l.char_indices().nth(col0).map_or(l.len(), |(o, _)| o);
             return byte + add;
         }
         byte += l.len() + 1; // + '\n'

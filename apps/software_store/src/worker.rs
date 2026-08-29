@@ -312,9 +312,10 @@ fn worker_loop(job_rx: Receiver<Request>, msg_tx: Sender<WorkerMsg>) {
         let msg = handle(req);
         // If the UI is gone, stop.
         if let Some(m) = msg
-            && msg_tx.send(m).is_err() {
-                break;
-            }
+            && msg_tx.send(m).is_err()
+        {
+            break;
+        }
     }
 }
 

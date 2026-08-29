@@ -44,9 +44,11 @@ pub fn list_devices() -> Vec<String> {
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
             && let Some(num) = name.strip_prefix("video")
-                && !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
-                    out.push(path.to_string_lossy().into_owned());
-                }
+            && !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit())
+        {
+            out.push(path.to_string_lossy().into_owned());
+        }
     }
     // Numeric order, not lexical, so video2 sorts before video10.
     out.sort_by_key(|p| {

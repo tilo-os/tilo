@@ -30,10 +30,9 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
     for raw in text.lines() {
         if raw.starts_with("@@") {
             // Close the previous hunk's line range.
-            if in_hunk
-                && let Some(h) = diff.hunks.last_mut() {
-                    h.line_range.1 = diff.lines.len();
-                }
+            if in_hunk && let Some(h) = diff.hunks.last_mut() {
+                h.line_range.1 = diff.lines.len();
+            }
             let (old_start, new_start, header) = parse_hunk_header(raw);
             old_no = old_start;
             new_no = new_start;
@@ -126,10 +125,9 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
         });
     }
 
-    if in_hunk
-        && let Some(h) = diff.hunks.last_mut() {
-            h.line_range.1 = diff.lines.len();
-        }
+    if in_hunk && let Some(h) = diff.hunks.last_mut() {
+        h.line_range.1 = diff.lines.len();
+    }
     diff
 }
 

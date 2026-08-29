@@ -143,9 +143,7 @@ impl Tpm {
             if let Ok(Some(status)) = tpm.child.try_wait() {
                 return Err(format!(
                     "swtpm on port {port} exited ({status}): {}",
-                    std::fs::read_to_string(&log)
-                        .unwrap_or_default()
-                        .trim()
+                    std::fs::read_to_string(&log).unwrap_or_default().trim()
                 ));
             }
             match Command::new("tpm2_getcap")

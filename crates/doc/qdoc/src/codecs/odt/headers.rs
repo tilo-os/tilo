@@ -41,10 +41,11 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
         if let Some(b) = cur
-            && !txt.is_empty() {
-                doc.splice_text_in(region, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+            && !txt.is_empty()
+        {
+            doc.splice_text_in(region, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
+        }
     };
 
     loop {

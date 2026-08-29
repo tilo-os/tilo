@@ -441,7 +441,10 @@ impl Widget for TimePicker {
             text_size,
             colors.text_dim,
             transform
-                * Affine::translate((between_h_m_x - f64::from(cw) / 2.0, centre_y - f64::from(ch) / 2.0)),
+                * Affine::translate((
+                    between_h_m_x - f64::from(cw) / 2.0,
+                    centre_y - f64::from(ch) / 2.0,
+                )),
             None,
         );
         if self.seconds.is_some() {

@@ -99,7 +99,9 @@ fn focus_bloom_sprite(tint: Color) -> Image {
     let rgba = tint.to_rgba8();
     let key = [rgba.r, rgba.g, rgba.b];
     let cache = SPRITES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache
         .entry(key)
         .or_insert_with(|| build_shadow_sprite(key[0], key[1], key[2]))

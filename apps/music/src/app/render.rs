@@ -10,7 +10,14 @@
 // reducing complexity.
 #![allow(clippy::too_many_arguments)]
 
-use super::{CacheState, Widget, Action, Rect, Instant, Scene, Affine, fill_rrect, Fill, rrect, MusicApp, AutoCommit, ObjId, TaffyTree, Theme, HashMap, NodeId, Style, Size, Dimension, Point, TextRenderer, PresenceCtx, PermissionContext, Drag, View, is_live_id, is_live_album_id, is_live_playlist_id, art, Circle, TextWeight, draw_text, HEADER_H, NOWPLAYING_H, icon, Icon, elide, Stroke, Color, HomeSection, HomeItemKind, AlbumPage, ArtistPage, PlaylistPage, lyrics, SearchTab, RepeatMode};
+use super::{
+    Action, Affine, AlbumPage, ArtistPage, AutoCommit, CacheState, Circle, Color, Dimension, Drag,
+    Fill, HEADER_H, HashMap, HomeItemKind, HomeSection, Icon, Instant, MusicApp, NOWPLAYING_H,
+    NodeId, ObjId, PermissionContext, PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene,
+    SearchTab, Size, Stroke, Style, TaffyTree, TextRenderer, TextWeight, Theme, View, Widget, art,
+    draw_text, elide, fill_rrect, icon, is_live_album_id, is_live_id, is_live_playlist_id, lyrics,
+    rrect,
+};
 
 use vello::kurbo::Shape;
 use vello::peniko::BlendMode;
@@ -530,10 +537,8 @@ impl Widget for MusicApp {
                 let bar = self.nowplaying_rect();
                 if bar.contains(self.mouse) {
                     let hit = self.hit_test(self.mouse);
-                    let swipeable = matches!(
-                        hit,
-                        None | Some(Action::Nav(View::Lyrics | View::Album(_)))
-                    );
+                    let swipeable =
+                        matches!(hit, None | Some(Action::Nav(View::Lyrics | View::Album(_))));
                     if swipeable {
                         self.bar_press = Some((self.mouse, hit));
                         *handled = true;
@@ -1337,7 +1342,8 @@ impl MusicApp {
             View::Lyrics => "Lyrics".into(),
             View::Album(id) => self
                 .album_pages
-                .get(id).map_or_else(|| self.lib.album_title(id).to_string(), |p| p.title.clone()),
+                .get(id)
+                .map_or_else(|| self.lib.album_title(id).to_string(), |p| p.title.clone()),
             View::Artist(id) => self
                 .artist_pages
                 .get(id)
@@ -1606,10 +1612,10 @@ impl MusicApp {
             } else {
                 format!("{cur} {w}")
             };
-            if f64::from(tr
-                .measure_weighted(&cand, 14.0, None, TextWeight::Regular)
-                .0)
-                > maxw
+            if f64::from(
+                tr.measure_weighted(&cand, 14.0, None, TextWeight::Regular)
+                    .0,
+            ) > maxw
                 && !cur.is_empty()
             {
                 lines.push(std::mem::take(&mut cur));
@@ -1642,9 +1648,10 @@ impl MusicApp {
         // Primary action: Search (the one thing to do from an empty Home).
         let bh = 44.0;
         let label = "Search";
-        let labelw = f64::from(tr
-            .measure_weighted(label, 15.0, None, TextWeight::Semibold)
-            .0);
+        let labelw = f64::from(
+            tr.measure_weighted(label, 15.0, None, TextWeight::Semibold)
+                .0,
+        );
         let group = 18.0 + 10.0 + labelw;
         let bw = (group + 48.0).max(150.0);
         let btn = Rect::new(cx - bw / 2.0, yy, cx + bw / 2.0, yy + bh);
@@ -2535,13 +2542,7 @@ impl MusicApp {
         // Action buttons.
         let by = ay + 116.0;
         let play = Rect::new(tx, by, tx + 120.0, by + 40.0);
-        let ph = self.push_hit(
-            play,
-            Action::Play {
-                queue,
-                index: 0,
-            },
-        );
+        let ph = self.push_hit(play, Action::Play { queue, index: 0 });
         fill_rrect(
             scene,
             t,
@@ -3214,10 +3215,10 @@ impl MusicApp {
                 } else {
                     format!("{line} {word}")
                 };
-                if f64::from(tr
-                    .measure_weighted(&cand, 13.0, None, TextWeight::Regular)
-                    .0)
-                    > maxw
+                if f64::from(
+                    tr.measure_weighted(&cand, 13.0, None, TextWeight::Regular)
+                        .0,
+                ) > maxw
                     && !line.is_empty()
                 {
                     draw_text(
@@ -5547,7 +5548,10 @@ impl MusicApp {
                 t,
                 c.text,
                 None,
-                &Circle::new(Point::new(fillx, f64::midpoint(track_top, track_bottom)), 6.0),
+                &Circle::new(
+                    Point::new(fillx, f64::midpoint(track_top, track_bottom)),
+                    6.0,
+                ),
             );
         }
         self.volume_rect = Rect::ZERO;

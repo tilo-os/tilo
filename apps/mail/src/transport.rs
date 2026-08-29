@@ -54,11 +54,12 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 
 fn parse_single_addr(s: &str) -> Addr {
     if let Some(open) = s.find('<')
-        && let Some(close) = s[open..].find('>') {
-            let name = s[..open].trim().trim_matches('"').to_string();
-            let email = s[open + 1..open + close].trim().to_string();
-            return Addr::new(name, email);
-        }
+        && let Some(close) = s[open..].find('>')
+    {
+        let name = s[..open].trim().trim_matches('"').to_string();
+        let email = s[open + 1..open + close].trim().to_string();
+        return Addr::new(name, email);
+    }
     Addr::bare(s.to_string())
 }
 
@@ -126,7 +127,8 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
 
     let from = parsed
         .from()
-        .and_then(|a| a.first()).map_or_else(|| Addr::bare("unknown@unknown"), addr_from_parsed);
+        .and_then(|a| a.first())
+        .map_or_else(|| Addr::bare("unknown@unknown"), addr_from_parsed);
 
     let to = parsed
         .to()
@@ -260,7 +262,11 @@ pub fn parse_fetched(
 }
 
 fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
-    let name = a.name.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
+    let name = a
+        .name
+        .as_ref()
+        .map(std::string::ToString::to_string)
+        .unwrap_or_default();
     let email = a
         .address
         .as_ref()

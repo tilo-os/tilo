@@ -182,7 +182,11 @@ pub fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(std::string::ToString::to_string));
+    out.extend(
+        INVIDIOUS_INSTANCES
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
     out
 }
 
@@ -240,9 +244,7 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
         .header(reqwest::header::RANGE, "bytes=0-2047")
         .send()
     {
-        Ok(resp) => {
-            resp.status().is_success() && resp.bytes().is_ok_and(|b| !b.is_empty())
-        }
+        Ok(resp) => resp.status().is_success() && resp.bytes().is_ok_and(|b| !b.is_empty()),
         Err(_) => false,
     }
 }

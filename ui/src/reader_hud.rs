@@ -107,7 +107,7 @@ impl SelectionHud {
         anchor: Point,
         bounds: Rect,
     ) -> Self {
-        use dims::{DOT_R, DOT_GAP, PILL_GAP, TRASH, SEP_W, PAD, HEIGHT, ANCHOR_GAP};
+        use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
         let mut hud = SelectionHud::default();
 
         let n = swatches.len().max(1) as f64;

@@ -508,9 +508,10 @@ fn import_html(src: &str, doc: &mut DocMut) {
     for tok in tokens {
         if let Some(skip) = &skip_until {
             if let Token::Close { name } = &tok
-                && name == skip {
-                    skip_until = None;
-                }
+                && name == skip
+            {
+                skip_until = None;
+            }
             continue;
         }
 

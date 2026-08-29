@@ -54,7 +54,11 @@ impl SlideSearchProvider {
             .iter()
             .filter(|e| e.kind == ElementKind::Text)
             .map(|e| e.text.trim())
-            .find(|t| !t.is_empty()).map_or_else(|| format!("Slide {}", index + 1), |t| t.lines().next().unwrap_or(t).to_string())
+            .find(|t| !t.is_empty())
+            .map_or_else(
+                || format!("Slide {}", index + 1),
+                |t| t.lines().next().unwrap_or(t).to_string(),
+            )
     }
 
     /// All searchable text on a slide: every text box plus the speaker notes.

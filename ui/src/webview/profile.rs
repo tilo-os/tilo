@@ -172,9 +172,7 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
 
 impl State {
     fn print_summary(&self) {
-        let elapsed = self
-            .started
-            .map_or(0.0, |s| s.elapsed().as_secs_f64());
+        let elapsed = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
         let fps = if elapsed > 0.0 {
             self.frame_count as f64 / elapsed
         } else {

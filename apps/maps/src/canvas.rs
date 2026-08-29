@@ -155,7 +155,7 @@ impl MapPalette {
 
 /// The signal colour for a congestion level, resolved from the palette.
 pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Color {
-    use crate::traffic::Congestion::{Free, Moderate, Heavy, Severe};
+    use crate::traffic::Congestion::{Free, Heavy, Moderate, Severe};
     match level {
         Free => pal.traffic_free,
         Moderate => pal.traffic_moderate,
@@ -313,10 +313,11 @@ pub fn draw_tiles(
         if !have_exact {
             // (2) ancestor placeholder (blurry lower-z fill for zoom-in / pan).
             if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id)
-                && let Some(anc_img) = tiles_layer.get(anc_id).cloned() {
-                    tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
-                    painted_any = true;
-                }
+                && let Some(anc_img) = tiles_layer.get(anc_id).cloned()
+            {
+                tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
+                painted_any = true;
+            }
             // (3) descendant placeholder (sharp higher-z fill for zoom-out).
             if tiles::paint_descendants(scene, t, tiles_layer, *id, *rect, 2) {
                 painted_any = true;
@@ -828,12 +829,13 @@ pub fn draw_pois(
         );
     }
     if let Some(sel) = selected
-        && let Some(poi) = pois.iter().find(|p| p.id == sel) {
-            let p = proj.project(poi.pos);
-            if clip.contains(p) {
-                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
-            }
+        && let Some(poi) = pois.iter().find(|p| p.id == sel)
+    {
+        let p = proj.project(poi.pos);
+        if clip.contains(p) {
+            draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
         }
+    }
     scene.pop_layer();
 }
 
@@ -887,7 +889,12 @@ fn draw_poi_dot(
         let tw = draw::measure_w(tr, &poi.name, size);
         let lx = p.x + r + 6.0;
         let ly = p.y - f64::from(size) * 0.72;
-        let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + f64::from(size) + 3.0);
+        let plate = Rect::new(
+            lx - 4.0,
+            ly - 1.0,
+            lx + tw + 6.0,
+            ly + f64::from(size) + 3.0,
+        );
         // Only draw the name plate when it fits in the map area, so it is never
         // sliced at the drawer / screen edge into an unreadable fragment. The
         // marker still shows; the info card / list already carries the name.

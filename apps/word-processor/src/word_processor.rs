@@ -2655,8 +2655,8 @@ impl WordProcessor {
         };
         let b = views.iter().find(|b| b.id == block);
         let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
-        let ordered = b
-            .is_some_and(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true))));
+        let ordered =
+            b.is_some_and(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true))));
         let level = b.and_then(|b| match b.attrs.get("level") {
             Some(qdoc::AttrVal::Int(n)) => Some(*n),
             _ => None,

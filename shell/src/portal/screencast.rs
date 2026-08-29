@@ -393,8 +393,10 @@ fn start_response(
     persist_mode: u32,
 ) -> (u32, HashMap<String, OwnedValue>) {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
-    let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
-        infos.into_iter().map(super::screencast_pipewire::PipewireStreamInfo::into_stream_tuple).collect();
+    let streams: Vec<(u32, HashMap<String, OwnedValue>)> = infos
+        .into_iter()
+        .map(super::screencast_pipewire::PipewireStreamInfo::into_stream_tuple)
+        .collect();
     if let Ok(o) = OwnedValue::try_from(Value::new(streams)) {
         results.insert("streams".to_string(), o);
     }

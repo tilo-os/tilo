@@ -523,7 +523,10 @@ impl MergeModel {
 
     /// The merged output as a flat line list (no terminators).
     pub fn merged_lines(&self) -> Vec<String> {
-        self.hunks.iter().flat_map(MergeHunk::resolved_lines).collect()
+        self.hunks
+            .iter()
+            .flat_map(MergeHunk::resolved_lines)
+            .collect()
     }
 }
 
@@ -563,7 +566,7 @@ impl SideAlign {
         // Walk the structured ops. Each op carries a base (old) range and a
         // side (new) range.
         for op in diff.ops() {
-            use similar::DiffOp::{Equal, Delete, Insert, Replace};
+            use similar::DiffOp::{Delete, Equal, Insert, Replace};
             match *op {
                 Equal { .. } => {}
                 Delete {

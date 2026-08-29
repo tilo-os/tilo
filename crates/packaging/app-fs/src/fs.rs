@@ -319,7 +319,9 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let entry = if let Some(e) = self.entries.get((ino.0 - 1) as usize) { e } else {
+        let entry = if let Some(e) = self.entries.get((ino.0 - 1) as usize) {
+            e
+        } else {
             reply.error(Errno::ENOENT);
             return;
         };

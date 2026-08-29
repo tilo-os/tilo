@@ -64,7 +64,10 @@ fn ensure_text_obj(
 /// isolated) so previews survive across launches; it falls back to a temp dir
 /// when there is no persistence dir.
 fn build_thumb_service(config_dir: Option<&Path>) -> ThumbnailService {
-    let dir = config_dir.map_or_else(|| std::env::temp_dir().join("qos-file-explorer-thumbnails"), |d| d.join("thumbnails"));
+    let dir = config_dir.map_or_else(
+        || std::env::temp_dir().join("qos-file-explorer-thumbnails"),
+        |d| d.join("thumbnails"),
+    );
     ThumbnailService::open(&dir, 4).unwrap_or_else(|_| {
         let fallback = std::env::temp_dir().join("qos-file-explorer-thumbnails");
         ThumbnailService::open(&fallback, 4).expect("a temp thumbnail cache dir is creatable")
@@ -691,14 +694,16 @@ impl FileExplorerWidget {
     pub fn select(&mut self, idx: Option<usize>) -> Option<PathBuf> {
         let now = Instant::now();
         if let (Some(i), Some((pi, pt))) = (idx, self.last_click)
-            && i == pi && now.duration_since(pt) < Duration::from_millis(500) {
-                let disp = self.displayed_entries();
-                if let Some(e) = disp.get(i) {
-                    let path = e.path.clone();
-                    self.last_click = None;
-                    return Some(path);
-                }
+            && i == pi
+            && now.duration_since(pt) < Duration::from_millis(500)
+        {
+            let disp = self.displayed_entries();
+            if let Some(e) = disp.get(i) {
+                let path = e.path.clone();
+                self.last_click = None;
+                return Some(path);
             }
+        }
         match idx {
             Some(i) => self.selection.select_only(i),
             None => self.selection.clear(),
@@ -1290,9 +1295,10 @@ impl FileExplorerWidget {
         }
         if let Some(rect) = self.toolbar.up_button_rect()
             && rect.contains(pt)
-                && let Some(parent) = self.current_path.parent() {
-                    return Some(parent.to_path_buf());
-                }
+            && let Some(parent) = self.current_path.parent()
+        {
+            return Some(parent.to_path_buf());
+        }
         None
     }
 
@@ -1313,10 +1319,12 @@ impl FileExplorerWidget {
             // Only a single folder can be a favourite — files and multi-drags
             // are not pinnable. `is_dir` comes from the dragged row, so this
             // holds even for a folder that isn't physically on disk (tests).
-            if paths.len() == 1 && self.drag_origin_is_dir
-                && let Some(path) = origin {
-                    self.apply_command(FileCommand::AddFavorite(path));
-                }
+            if paths.len() == 1
+                && self.drag_origin_is_dir
+                && let Some(path) = origin
+            {
+                self.apply_command(FileCommand::AddFavorite(path));
+            }
         }
         self.drag_origin_is_dir = false;
     }
@@ -1354,8 +1362,10 @@ impl FileExplorerWidget {
         if moved > 0 {
             self.refresh();
         }
-        let dest = dir
-            .file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let dest = dir.file_name().map_or_else(
+            || dir.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         self.status = Some(if errors > 0 {
             format!("Moved {moved} to \u{201c}{dest}\u{201d} ({errors} failed)")
         } else if moved > 0 {
@@ -1468,14 +1478,15 @@ impl FileExplorerWidget {
     pub fn begin_rename(&mut self) {
         let disp = self.displayed_entries();
         if let Some(i) = self.selection.primary()
-            && let Some(e) = disp.get(i) {
-                self.renaming = Some(i);
-                self.rename_buffer = e.name.clone();
-                self.rename_seed_pending = true;
-                self.rename_select_pending = true;
-                self.rename_input.set_focus(true);
-                self.status = None;
-            }
+            && let Some(e) = disp.get(i)
+        {
+            self.renaming = Some(i);
+            self.rename_buffer = e.name.clone();
+            self.rename_seed_pending = true;
+            self.rename_select_pending = true;
+            self.rename_input.set_focus(true);
+            self.status = None;
+        }
     }
 
     /// Tear down the in-place editor: drop focus and clear its published rect so
@@ -1659,7 +1670,10 @@ impl FileExplorerWidget {
         let label = if count > 1 {
             format!("{count} items")
         } else {
-            path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
         };
         let tokens = &theme.tokens;
         let size = tokens.typography.scale.base;
@@ -2338,18 +2352,12 @@ impl FileExplorerWidget {
                 true
             }
             Key::Named(NamedKey::ArrowDown) if len > 0 => {
-                let next = self
-                    .selection
-                    .primary()
-                    .map_or(0, |i| (i + 1).min(len - 1));
+                let next = self.selection.primary().map_or(0, |i| (i + 1).min(len - 1));
                 self.selection.move_to(next, shift);
                 true
             }
             Key::Named(NamedKey::ArrowUp) if len > 0 => {
-                let next = self
-                    .selection
-                    .primary()
-                    .map_or(0, |i| i.saturating_sub(1));
+                let next = self.selection.primary().map_or(0, |i| i.saturating_sub(1));
                 self.selection.move_to(next, shift);
                 true
             }
@@ -2443,9 +2451,10 @@ impl Widget for FileExplorerWidget {
         // While renaming, mirror the field's live text into our buffer so a
         // commit renames to what the user actually typed.
         if self.renaming.is_some()
-            && let Ok(text) = state.text(&rename_obj) {
-                self.rename_buffer = text;
-            }
+            && let Ok(text) = state.text(&rename_obj)
+        {
+            self.rename_buffer = text;
+        }
     }
 
     fn build_layout(
@@ -2526,10 +2535,11 @@ impl Widget for FileExplorerWidget {
         );
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
-            && let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) {
-                self.toolbar.apply_layout(taffy, above_n, base);
-                self.nav.apply_layout(taffy, nav_n, base);
-            }
+            && let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1))
+        {
+            self.toolbar.apply_layout(taffy, above_n, base);
+            self.nav.apply_layout(taffy, nav_n, base);
+        }
     }
 
     fn draw(
@@ -2637,12 +2647,12 @@ impl Widget for FileExplorerWidget {
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
-                    && self.last_cursor.distance(start) > crate::views::file_view::DRAG_THRESHOLD
-                {
-                    self.armed_drag = None;
-                    self.apply_command(FileCommand::BeginDrag { path, is_dir });
-                    self.structure_dirty = true;
-                }
+                && self.last_cursor.distance(start) > crate::views::file_view::DRAG_THRESHOLD
+            {
+                self.armed_drag = None;
+                self.apply_command(FileCommand::BeginDrag { path, is_dir });
+                self.structure_dirty = true;
+            }
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Released,
@@ -2764,20 +2774,21 @@ impl Widget for FileExplorerWidget {
         // Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
         // the Scrollable, which would otherwise consume it for scrolling).
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && (modifiers.state().control_key() || modifiers.state().super_key()) {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
-                };
-                if dy > 0.0 {
-                    self.set_zoom(self.zoom_level + 1);
-                } else if dy < 0.0 {
-                    self.set_zoom(self.zoom_level - 1);
-                }
-                *handled = true;
-                self.structure_dirty = true;
-                return;
+            && (modifiers.state().control_key() || modifiers.state().super_key())
+        {
+            let dy = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
+            };
+            if dy > 0.0 {
+                self.set_zoom(self.zoom_level + 1);
+            } else if dy < 0.0 {
+                self.set_zoom(self.zoom_level - 1);
             }
+            *handled = true;
+            self.structure_dirty = true;
+            return;
+        }
 
         // While an inline rename is active the in-place editor (drawn over the
         // row, not in a bottom bar) owns input: Enter commits, Escape cancels,
@@ -2889,10 +2900,11 @@ impl Widget for FileExplorerWidget {
         // App-level keyboard nav for keys the children didn't consume.
         if !*handled
             && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event
-                && self.handle_app_key(ke, modifiers) {
-                    *handled = true;
-                    self.structure_dirty = true;
-                }
+            && self.handle_app_key(ke, modifiers)
+        {
+            *handled = true;
+            self.structure_dirty = true;
+        }
 
         // Apply any commands the children queued during this event.
         if self.drain_commands() {

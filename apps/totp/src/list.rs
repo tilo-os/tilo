@@ -581,31 +581,33 @@ impl Widget for AccountList {
                 ..
             } => {
                 if let Some((i, zone)) = self.hit(self.last_mouse)
-                    && let Some(account) = self.accounts.get(i) {
-                        let id = account.id;
-                        let ev = match zone {
-                            Zone::Copy => ListEvent::Copy(id),
-                            Zone::Up => ListEvent::MoveUp(id),
-                            Zone::Down => ListEvent::MoveDown(id),
-                            Zone::Delete => ListEvent::Delete(id),
-                            Zone::Body => ListEvent::Select(id),
-                        };
-                        if matches!(zone, Zone::Body | Zone::Copy) {
-                            self.selected = Some(id);
-                        }
-                        self.events.push(ev);
-                        *handled = true;
-                    }
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 => {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                        MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    && let Some(account) = self.accounts.get(i)
+                {
+                    let id = account.id;
+                    let ev = match zone {
+                        Zone::Copy => ListEvent::Copy(id),
+                        Zone::Up => ListEvent::MoveUp(id),
+                        Zone::Down => ListEvent::MoveDown(id),
+                        Zone::Delete => ListEvent::Delete(id),
+                        Zone::Body => ListEvent::Select(id),
                     };
-                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
+                    if matches!(zone, Zone::Body | Zone::Copy) {
+                        self.selected = Some(id);
+                    }
+                    self.events.push(ev);
                     *handled = true;
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 =>
+            {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                };
+                self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
+                *handled = true;
+            }
             _ => {}
         }
     }
@@ -656,10 +658,16 @@ mod tests {
         let body_p = Point::new(layout.text_x + 4.0, r.center().y);
         assert_eq!(l.hit(body_p), Some((0, Zone::Body)));
         // Top of the action column → reorder-up.
-        let up_p = Point::new(f64::midpoint(layout.actions_x0, layout.actions_x1), r.y0 + 6.0);
+        let up_p = Point::new(
+            f64::midpoint(layout.actions_x0, layout.actions_x1),
+            r.y0 + 6.0,
+        );
         assert_eq!(l.hit(up_p), Some((0, Zone::Up)));
         // Bottom of the action column → delete.
-        let del_p = Point::new(f64::midpoint(layout.actions_x0, layout.actions_x1), r.y1 - 6.0);
+        let del_p = Point::new(
+            f64::midpoint(layout.actions_x0, layout.actions_x1),
+            r.y1 - 6.0,
+        );
         assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
     }
 

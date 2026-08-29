@@ -258,9 +258,10 @@ impl HistoryView {
             Some(w),
             TextWeight::Semibold,
         );
-        let sh = f64::from(tr
-            .measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold)
-            .1);
+        let sh = f64::from(
+            tr.measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold)
+                .1,
+        );
         y += sh + 14.0;
 
         // Author block with avatar.

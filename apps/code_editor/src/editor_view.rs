@@ -56,12 +56,12 @@ fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
     match kind {
         Some(2 | 3) => "\u{0192}",  // Method / Function — ƒ
         Some(5 | 10) => "\u{25C8}", // Field / Property — ◈
-        Some(6) => "\u{25CB}",            // Variable — ○
+        Some(6) => "\u{25CB}",      // Variable — ○
         Some(7 | 8) => "\u{25A0}",  // Class / Interface — ■
-        Some(9) => "\u{25A3}",            // Module — ▣
-        Some(14) => "\u{2726}",           // Keyword — ✦
-        Some(21) => "\u{25C6}",           // Constant — ◆
-        _ => "\u{2022}",                  // • default
+        Some(9) => "\u{25A3}",      // Module — ▣
+        Some(14) => "\u{2726}",     // Keyword — ✦
+        Some(21) => "\u{25C6}",     // Constant — ◆
+        _ => "\u{2022}",            // • default
     }
 }
 
@@ -324,7 +324,9 @@ impl EditorView {
         self.lines = if text.is_empty() {
             vec![String::new()]
         } else {
-            text.split('\n').map(std::string::ToString::to_string).collect()
+            text.split('\n')
+                .map(std::string::ToString::to_string)
+                .collect()
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
@@ -508,9 +510,10 @@ impl EditorView {
     /// Paste clipboard text at the caret, replacing any selection.
     fn paste_clipboard(&mut self, doc: &mut AutoCommit) {
         if let Some(t) = clipboard_paste()
-            && !t.is_empty() {
-                self.insert(doc, &t);
-            }
+            && !t.is_empty()
+        {
+            self.insert(doc, &t);
+        }
     }
 
     // ---- language-server surface -----------------------------------------
@@ -813,13 +816,16 @@ impl EditorView {
         // A plain horizontal arrow with a live selection collapses to the
         // selection edge instead of moving one character past it — every
         // native editor does this, and so does `TextInput`.
-        if dx != 0 && dy == 0 && !extend
-            && let Some((s, e)) = self.carets[0].selection() {
-                let target = if dx < 0 { s } else { e };
-                self.carets[0] = Caret::at(target.0, target.1);
-                self.scroll_to_caret();
-                return;
-            }
+        if dx != 0
+            && dy == 0
+            && !extend
+            && let Some((s, e)) = self.carets[0].selection()
+        {
+            let target = if dx < 0 { s } else { e };
+            self.carets[0] = Caret::at(target.0, target.1);
+            self.scroll_to_caret();
+            return;
+        }
         let c = &mut self.carets[0];
         if extend && c.anchor.is_none() {
             c.anchor = Some((c.line, c.col));
@@ -900,12 +906,13 @@ impl EditorView {
     /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
-            && last.line + 1 < self.lines.len() {
-                let cols = self.lines[last.line + 1].chars().count();
-                self.carets
-                    .push(Caret::at(last.line + 1, last.col.min(cols)));
-                self.dirty = true;
-            }
+            && last.line + 1 < self.lines.len()
+        {
+            let cols = self.lines[last.line + 1].chars().count();
+            self.carets
+                .push(Caret::at(last.line + 1, last.col.min(cols)));
+            self.dirty = true;
+        }
     }
 
     /// Insert a newline plus auto-indent matching the current line's leading
@@ -1085,10 +1092,7 @@ impl EditorView {
                 // Remove the token (and one following space, if present) at the
                 // first non-whitespace column.
                 let lead = line.chars().take_while(|c| c.is_whitespace()).count();
-                let after = &line[line
-                    .char_indices()
-                    .nth(lead)
-                    .map_or(line.len(), |(i, _)| i)..];
+                let after = &line[line.char_indices().nth(lead).map_or(line.len(), |(i, _)| i)..];
                 if let Some(rest) = after.strip_prefix(token) {
                     let mut remove = token.chars().count();
                     if rest.starts_with(' ') {
@@ -1410,8 +1414,7 @@ impl Widget for EditorView {
                 for span in spans {
                     // Byte offsets → char offset for x positioning.
                     let prefix = &line.as_bytes()[..span.start.min(line.len())];
-                    let char_col = std::str::from_utf8(prefix)
-                        .map_or(0, |s| s.chars().count());
+                    let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
                     let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
                     if seg.is_empty() {
                         continue;
@@ -1452,10 +1455,7 @@ impl Widget for EditorView {
             if y > self.rect.y1 {
                 continue;
             }
-            let line_len = self
-                .lines
-                .get(d.line)
-                .map_or(0, |l| l.chars().count());
+            let line_len = self.lines.get(d.line).map_or(0, |l| l.chars().count());
             let start_col = d.start_col.min(line_len);
             let end_col = if d.end_col == usize::MAX {
                 line_len
@@ -1700,11 +1700,10 @@ impl Widget for EditorView {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
+                } if self.empty_action_rect.contains(self.last_cursor) => {
+                    self.empty_action = true;
+                    *handled = true;
                 }
-                    if self.empty_action_rect.contains(self.last_cursor) => {
-                        self.empty_action = true;
-                        *handled = true;
-                    }
                 _ => {}
             }
             return;
@@ -2008,14 +2007,13 @@ impl Widget for EditorView {
                         // Printable text insertion. `text` carries the
                         // resolved character(s) for the key (handles shift,
                         // layout, dead keys).
-                        if !ctrl
-                            && let Some(t) = text {
-                                let s: &str = t.as_str();
-                                if !s.is_empty() && !s.chars().any(char::is_control) {
-                                    self.insert(state, s);
-                                    *handled = true;
-                                }
+                        if !ctrl && let Some(t) = text {
+                            let s: &str = t.as_str();
+                            if !s.is_empty() && !s.chars().any(char::is_control) {
+                                self.insert(state, s);
+                                *handled = true;
                             }
+                        }
                     }
                 }
             }

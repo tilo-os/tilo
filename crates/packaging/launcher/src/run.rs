@@ -101,7 +101,6 @@ impl RunError {
     }
 }
 
-
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -220,26 +219,28 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     }
     let file_name = "primary.json";
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty() {
-            let p = PathBuf::from(xdg)
-                .join("qos")
-                .join("identity")
-                .join(file_name);
-            if p.exists() {
-                return Some(p);
-            }
+        && !xdg.is_empty()
+    {
+        let p = PathBuf::from(xdg)
+            .join("qos")
+            .join("identity")
+            .join(file_name);
+        if p.exists() {
+            return Some(p);
         }
+    }
     if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty() {
-            let p = PathBuf::from(home)
-                .join(".config")
-                .join("qos")
-                .join("identity")
-                .join(file_name);
-            if p.exists() {
-                return Some(p);
-            }
+        && !home.is_empty()
+    {
+        let p = PathBuf::from(home)
+            .join(".config")
+            .join("qos")
+            .join("identity")
+            .join(file_name);
+        if p.exists() {
+            return Some(p);
         }
+    }
     None
 }
 
@@ -274,7 +275,8 @@ pub fn resolve_runtime(
     //    as the manifest path.
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
-            .runtime_ref().map_or_else(|| "1".to_string(), |(_, v)| v.to_string());
+            .runtime_ref()
+            .map_or_else(|| "1".to_string(), |(_, v)| v.to_string());
         enforce_bundle_policy(explicit, opts)?;
         return Ok(Some((explicit.clone(), version)));
     }
@@ -332,21 +334,22 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
             // Multi-publisher trust list: `require_publisher` above was `None`
             // (only one key can be pinned there), so check by hand here.
             if let Some(list) = load_trusted_publisher_list()
-                && !list.is_empty() {
-                    let ok = manifest
-                        .publisher_hex
-                        .as_deref()
-                        .is_some_and(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)));
-                    if !ok {
-                        return Err(RunError::RuntimeBundleSignature {
-                            path: path.to_path_buf(),
-                            reason: format!(
-                                "publisher {:?} not in trust list",
-                                manifest.publisher_hex.as_deref().unwrap_or("<none>"),
-                            ),
-                        });
-                    }
+                && !list.is_empty()
+            {
+                let ok = manifest
+                    .publisher_hex
+                    .as_deref()
+                    .is_some_and(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)));
+                if !ok {
+                    return Err(RunError::RuntimeBundleSignature {
+                        path: path.to_path_buf(),
+                        reason: format!(
+                            "publisher {:?} not in trust list",
+                            manifest.publisher_hex.as_deref().unwrap_or("<none>"),
+                        ),
+                    });
                 }
+            }
             Ok(())
         }
         Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
@@ -401,8 +404,7 @@ pub fn run(
 
 /// Launch mode — which of the entrypoint binaries we're targeting
 /// and what extra args to forward.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum LaunchMode {
     /// The default: GUI-flavour bin, used implicitly by `run`/`run_with`.
     #[default]
@@ -795,11 +797,8 @@ pub fn run_with(
     let need_shim = opts.landlock_enforce || net_gate.is_some();
     if need_shim {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
-        let launcher = std::env::current_exe().map_err(|e| {
-            RunError::Io(std::io::Error::other(
-                format!("current_exe: {e}"),
-            ))
-        })?;
+        let launcher = std::env::current_exe()
+            .map_err(|e| RunError::Io(std::io::Error::other(format!("current_exe: {e}"))))?;
         argv.push("--ro-bind".to_string());
         argv.push(launcher.display().to_string());
         argv.push(SHIM_MOUNT_PATH.to_string());

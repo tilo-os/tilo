@@ -48,7 +48,8 @@ pub struct LoadedBook {
 /// The collaborative-workspace mount root. A book under here is shared with the
 /// workspace's peers; a book anywhere else is local to this device.
 pub fn workspace_root() -> PathBuf {
-    std::env::var(WORKSPACE_DIR_ENV).map_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE), PathBuf::from)
+    std::env::var(WORKSPACE_DIR_ENV)
+        .map_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE), PathBuf::from)
 }
 
 /// Where a book copied into the workspace lands.

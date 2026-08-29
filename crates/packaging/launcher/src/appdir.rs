@@ -96,9 +96,10 @@ fn hex_digest(raw: &str) -> String {
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
-        && !xdg.is_empty() {
-            return Some(PathBuf::from(xdg));
-        }
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg));
+    }
     let home = std::env::var_os("HOME")?;
     if home.is_empty() {
         return None;

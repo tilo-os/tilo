@@ -615,8 +615,9 @@ impl SoftwareStore {
             return;
         }
         let all_done = self.update_batch.iter().all(|id| {
-            self.app_by_id(id)
-                .map_or(true, |app| matches!(self.live_state(&app), InstallState::Installed))
+            self.app_by_id(id).map_or(true, |app| {
+                matches!(self.live_state(&app), InstallState::Installed)
+            })
         });
         if all_done {
             self.update_batch.clear();
@@ -1015,9 +1016,10 @@ impl SoftwareStore {
         let mut out: Vec<&AppEntry> = Vec::new();
         for id in &self.popular_ids {
             if let Some(a) = self.live_apps.get(id)
-                && seen.insert(a.id.as_str()) {
-                    out.push(a);
-                }
+                && seen.insert(a.id.as_str())
+            {
+                out.push(a);
+            }
         }
         // Anything fetched outside the popular collection (e.g. a detail view)
         // trails after, alphabetised, so nothing real is hidden.
@@ -4039,13 +4041,13 @@ impl SoftwareStore {
     ) {
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
             && ke.state == winit::event::ElementState::Pressed
-                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
-            {
-                self.confirm_pending_ref(state);
-                self.ref_dialog = None;
-                *handled = true;
-                return;
-            }
+            && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+        {
+            self.confirm_pending_ref(state);
+            self.ref_dialog = None;
+            *handled = true;
+            return;
+        }
         self.ensure_ref_dialog();
         self.layout_ref_dialog();
         let (install, cancel) = {
@@ -4458,13 +4460,15 @@ impl Widget for SoftwareStore {
     ) {
         // Expire the toast + any action error (errors linger a bit longer).
         if let Some((_, at)) = &self.toast
-            && at.elapsed() > TOAST_DURATION {
-                self.toast = None;
-            }
+            && at.elapsed() > TOAST_DURATION
+        {
+            self.toast = None;
+        }
         if let Some((_, at)) = &self.action_error
-            && at.elapsed() > TOAST_DURATION * 2 {
-                self.action_error = None;
-            }
+            && at.elapsed() > TOAST_DURATION * 2
+        {
+            self.action_error = None;
+        }
 
         let c = &theme.tokens.colors;
         // Full background.

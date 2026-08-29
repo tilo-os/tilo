@@ -529,9 +529,10 @@ impl PeerTable {
     /// broker-spawn time; repeat calls are silently ignored.
     pub(crate) fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
         if let Ok(mut g) = self.capnp.lock()
-            && g.is_none() {
-                *g = Some(state);
-            }
+            && g.is_none()
+        {
+            *g = Some(state);
+        }
     }
 
     /// Read the capnp fanout sink if one has been attached.
@@ -1542,9 +1543,9 @@ fn spawn_inner(
                                         if envelope.op_class == OpClass::Compaction
                                             && let Ok(cp) =
                                                 collab_types::parse_compaction_payload(&envelope)
-                                            {
-                                                let _ = state.apply_compaction(&cp);
-                                            }
+                                        {
+                                            let _ = state.apply_compaction(&cp);
+                                        }
                                     }
                                     if envelope.op_class == OpClass::Redact {
                                         apply_redaction_from_envelope(

@@ -738,7 +738,12 @@ impl TextRenderer {
         for &(s, e, [br, bg, bb]) in &layout.backgrounds {
             let band = Color::from_rgb8(br, bg, bb);
             for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
-                let rect = vello::kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+                let rect = vello::kurbo::Rect::new(
+                    f64::from(x0),
+                    f64::from(y0),
+                    f64::from(x1),
+                    f64::from(y1),
+                );
                 scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
             }
         }

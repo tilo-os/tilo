@@ -83,10 +83,11 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
         if let Some(b) = cur
-            && !txt.is_empty() {
-                doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+            && !txt.is_empty()
+        {
+            doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
+        }
     };
 
     loop {
@@ -107,9 +108,10 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
             },
             Event::Text(t) if in_t => {
                 if let Ok(txt) = t.xml10_content()
-                    && !txt.is_empty() {
-                        append(doc, &cur, &mut cur_len, &txt);
-                    }
+                    && !txt.is_empty()
+                {
+                    append(doc, &cur, &mut cur_len, &txt);
+                }
             }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,

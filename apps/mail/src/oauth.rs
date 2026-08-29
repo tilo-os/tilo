@@ -232,7 +232,10 @@ pub fn parse_token_response(json: &str) -> Option<OAuthTokens> {
         .and_then(|t| t.as_str())
         .unwrap_or_default()
         .to_string();
-    let expires_in = v.get("expires_in").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let expires_in = v
+        .get("expires_in")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     Some(OAuthTokens {
         access_token,
         refresh_token,

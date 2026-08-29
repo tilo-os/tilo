@@ -244,10 +244,9 @@ pub(super) fn paths_to_open_response(
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
     }
-    if save
-        && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
-            results.insert("writable".to_string(), w);
-        }
+    if save && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
+        results.insert("writable".to_string(), w);
+    }
     (0, results)
 }
 

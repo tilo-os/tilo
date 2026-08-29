@@ -181,7 +181,8 @@ impl Widget for PreviewPane {
         }
         let title = self
             .spec
-            .as_ref().map_or_else(|| th.name.clone(), |s| s.name.clone());
+            .as_ref()
+            .map_or_else(|| th.name.clone(), |s| s.name.clone());
         draw::text_center(
             tr,
             scene,

@@ -265,11 +265,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // free-text argument carries everything (issuer, label, secret, params); the
     // uuid is minted once when the argument is committed and the colour/order are
     // pinned from the current vault, so the built envelope replays deterministically.
-    let next_order = accounts
-        .iter()
-        .map(|a| a.order)
-        .max()
-        .map_or(0, |m| m + 1);
+    let next_order = accounts.iter().map(|a| a.order).max().map_or(0, |m| m + 1);
     let next_color = (accounts.len() % 7) as u8;
     root = root.with_action(ActionSpec::prompted(
         "add-account",

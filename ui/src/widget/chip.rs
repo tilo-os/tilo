@@ -419,7 +419,8 @@ impl Widget for Chip {
     ) -> NodeId {
         // Approximate width from a fixed advance; measure() refines it.
         let approx = PAD_X * 2.0
-            + self.label.chars().count() as f64 * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
+            + self.label.chars().count() as f64
+                * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
             + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
             + if self.removable { GAP + X_D } else { 0.0 };
         let node = taffy

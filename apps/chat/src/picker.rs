@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 /// Where the picker browses: the P2P workspace mount by default.
 pub fn attach_dir() -> PathBuf {
-    std::env::var_os("QOS_CHAT_ATTACH_DIR").map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
+    std::env::var_os("QOS_CHAT_ATTACH_DIR")
+        .map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
 }
 
 /// One selectable file in the picker.

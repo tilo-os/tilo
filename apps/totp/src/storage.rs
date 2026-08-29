@@ -112,10 +112,14 @@ fn load_at(dir: &Path) -> Vault {
     let enc = dir.join("vault.enc");
     if enc.exists() {
         return match (load_or_create_key(dir), std::fs::read(&enc)) {
-            (Some(key), Ok(blob)) => if let Some(plaintext) = open(&key, &blob) { parse_vault(&plaintext) } else {
-                tracing::warn!("authenticator: vault decrypt failed; starting empty");
-                Vault::new()
-            },
+            (Some(key), Ok(blob)) => {
+                if let Some(plaintext) = open(&key, &blob) {
+                    parse_vault(&plaintext)
+                } else {
+                    tracing::warn!("authenticator: vault decrypt failed; starting empty");
+                    Vault::new()
+                }
+            }
             _ => Vault::new(),
         };
     }
@@ -124,17 +128,19 @@ fn load_at(dir: &Path) -> Vault {
     // re-seal it, and remove the cleartext original.
     let legacy = legacy_plaintext_path_in(dir);
     if let Ok(text) = std::fs::read_to_string(&legacy)
-        && let Ok(file) = serde_json::from_str::<VaultFile>(&text) {
-            let mut v = Vault::new();
-            v.accounts = file.accounts;
-            v.renumber();
-            save_at(dir, &v);
-            if enc.exists()
-                && let Err(e) = std::fs::remove_file(&legacy) {
-                    tracing::warn!(error = %e, "authenticator: could not remove migrated plaintext vault");
-                }
-            return v;
+        && let Ok(file) = serde_json::from_str::<VaultFile>(&text)
+    {
+        let mut v = Vault::new();
+        v.accounts = file.accounts;
+        v.renumber();
+        save_at(dir, &v);
+        if enc.exists()
+            && let Err(e) = std::fs::remove_file(&legacy)
+        {
+            tracing::warn!(error = %e, "authenticator: could not remove migrated plaintext vault");
         }
+        return v;
+    }
 
     Vault::new()
 }

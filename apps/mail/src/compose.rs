@@ -1545,7 +1545,10 @@ impl ComposeWindow {
             label,
             11.5,
             c.neutral[8],
-            t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0, rect.y0 + 8.0)),
+            t * Affine::translate((
+                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
+                rect.y0 + 8.0,
+            )),
             None,
         );
     }
@@ -1608,7 +1611,10 @@ impl ComposeWindow {
                 glyph,
                 13.0,
                 col,
-                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0, rect.y0 + 7.0)),
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
+                    rect.y0 + 7.0,
+                )),
                 None,
                 weight,
                 italic,
@@ -1670,7 +1676,10 @@ impl ComposeWindow {
             label,
             11.5,
             c.neutral[8],
-            t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0, rect.y0 + 8.0)),
+            t * Affine::translate((
+                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
+                rect.y0 + 8.0,
+            )),
             None,
         );
     }
@@ -1840,7 +1849,10 @@ impl ComposeWindow {
                 label,
                 13.5,
                 Color::WHITE,
-                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 10.0)),
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
+                    rect.y0 + 10.0,
+                )),
                 None,
                 TextWeight::Semibold,
             );
@@ -1863,7 +1875,10 @@ impl ComposeWindow {
                 label,
                 13.0,
                 c.neutral[8],
-                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 10.0)),
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
+                    rect.y0 + 10.0,
+                )),
                 None,
             );
         }

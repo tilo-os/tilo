@@ -302,18 +302,19 @@ impl SchemaTree {
                     );
                     // Row count badge.
                     if let Some(info) = info
-                        && let Some(rc) = info.row_count {
-                            let badge = format!("{rc}");
-                            let (bw, _) = tr.measure(&badge, 10.5, None);
-                            tr.draw_text(
-                                scene,
-                                &badge,
-                                10.5,
-                                theme.text_dim,
-                                t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
-                                None,
-                            );
-                        }
+                        && let Some(rc) = info.row_count
+                    {
+                        let badge = format!("{rc}");
+                        let (bw, _) = tr.measure(&badge, 10.5, None);
+                        tr.draw_text(
+                            scene,
+                            &badge,
+                            10.5,
+                            theme.text_dim,
+                            t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
+                            None,
+                        );
+                    }
                 }
                 Row::Column {
                     table, text, icon, ..
@@ -331,7 +332,9 @@ impl SchemaTree {
                     // tracks the theme (avoids storing a stale colour).
                     let (icon_color, _cls) = self
                         .column_class(session, table, text)
-                        .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| (theme.type_color(c), c));
+                        .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| {
+                            (theme.type_color(c), c)
+                        });
 
                     // Type icon chip.
                     let chip = Rect::new(

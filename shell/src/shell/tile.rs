@@ -128,10 +128,7 @@ pub struct WorkspaceTree {
 
 impl WorkspaceTree {
     pub fn new(workspaces: Vec<Workspace>) -> Self {
-        let active = workspaces
-            .first()
-            .map(|w| w.id)
-            .unwrap_or_default();
+        let active = workspaces.first().map(|w| w.id).unwrap_or_default();
         Self { workspaces, active }
     }
 }

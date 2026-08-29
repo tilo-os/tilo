@@ -77,7 +77,12 @@ impl ContainersApp {
         let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
         if expanded {
             if self.hovered(tgl) {
-                draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.surface_white_10);
+                draw::fill_round(
+                    scene,
+                    tgl,
+                    f64::from(theme.tokens.radii.sm),
+                    c.surface_white_10,
+                );
             }
             // "«" collapse glyph
             draw::text(
@@ -136,7 +141,12 @@ impl ContainersApp {
                     draw::with_alpha(c.accent[5], 46),
                 );
             } else if self.hovered(item) {
-                draw::fill_round(scene, item, f64::from(theme.tokens.radii.md), c.surface_white_5);
+                draw::fill_round(
+                    scene,
+                    item,
+                    f64::from(theme.tokens.radii.md),
+                    c.surface_white_5,
+                );
             }
             let fg = if active { c.accent[6] } else { c.text_dim };
             draw::icon(
@@ -378,9 +388,9 @@ impl ContainersApp {
                 height: taffy::AvailableSpace::Definite(rect.height() as f32),
             },
             |known, available, id, _, _| {
-                node_map
-                    .get(&id)
-                    .map_or(taffy::Size::ZERO, |&p| unsafe { (*p).measure(known, available, tr) })
+                node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, tr)
+                })
             },
         );
         self.search_field
@@ -899,7 +909,10 @@ impl ContainersApp {
                 tab.label(),
                 theme.tokens.typography.scale.sm,
                 fg,
-                Point::new(trect.center().x - f64::from(lw) / 2.0, trect.center().y - 7.0),
+                Point::new(
+                    trect.center().x - f64::from(lw) / 2.0,
+                    trect.center().y - 7.0,
+                ),
                 if active {
                     TextWeight::Semibold
                 } else {
@@ -1105,7 +1118,12 @@ impl ContainersApp {
                      color: Color,
                      y: f64| {
             let card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + 72.0);
-            draw::fill_round(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
+            draw::fill_round(
+                scene,
+                card,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.base,
+            );
             draw::stroke_round(
                 scene,
                 card,
@@ -1186,7 +1204,12 @@ impl ContainersApp {
             body.x0 + PAD + card_w,
             y + rows.len() as f64 * 30.0 + 12.0,
         );
-        draw::fill_round(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
+        draw::fill_round(
+            scene,
+            card,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.base,
+        );
         draw::stroke_round(
             scene,
             card,
@@ -1936,7 +1959,12 @@ impl ContainersApp {
                 continue;
             }
             let hov = self.hovered(card);
-            draw::fill_round(scene, card, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
+            draw::fill_round(
+                scene,
+                card,
+                f64::from(theme.tokens.radii.lg),
+                c.surfaces.raised,
+            );
             draw::stroke_round(
                 scene,
                 card,
@@ -2112,7 +2140,12 @@ impl ContainersApp {
                 TextWeight::Medium,
             );
             let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            draw::fill_round(scene, input, f64::from(theme.tokens.radii.md), c.surfaces.base);
+            draw::fill_round(
+                scene,
+                input,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.base,
+            );
             draw::stroke_round(
                 scene,
                 input,
@@ -2237,10 +2270,11 @@ impl ContainersApp {
 
         // Image suggestion dropdown — drawn LAST so it overlays the rows below.
         if self.combo.open
-            && let Some(input) = combo_input {
-                let typed = view.create[CreateField::Image.index()].clone();
-                self.draw_image_dropdown(scene, tr, theme, input, &typed);
-            }
+            && let Some(input) = combo_input
+        {
+            let typed = view.create[CreateField::Image.index()].clone();
+            self.draw_image_dropdown(scene, tr, theme, input, &typed);
+        }
     }
 
     /// The combobox suggestion dropdown: locally-installed image references
@@ -2688,7 +2722,8 @@ impl ContainersApp {
                 if action.is_destructive() {
                     let name = self
                         .engine
-                        .find(&id).map_or_else(|| id.clone(), |c| c.name.clone());
+                        .find(&id)
+                        .map_or_else(|| id.clone(), |c| c.name.clone());
                     self.confirm = Some(crate::app::Confirm {
                         name,
                         verb: "Remove container".into(),

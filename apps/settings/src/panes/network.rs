@@ -802,11 +802,8 @@ mod tests {
     fn wifi_list_renders_each_returned_network() {
         let rec = Arc::new(RecordingDispatcher::default());
         let nets = sample_networks();
-        let pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            nets,
-        );
+        let pane =
+            NetworkPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, nets);
         assert_eq!(pane.networks().len(), 3);
         let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
         assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);

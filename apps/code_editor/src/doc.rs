@@ -50,7 +50,9 @@ impl EditorDoc {
     pub fn ensure_buffer(doc: &mut AutoCommit, node: NodeId, seed: &str) -> ObjId {
         let buffers = Self::buffers_map(doc);
         let key = node.to_string();
-        if let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&buffers, key.as_str()) { t } else {
+        if let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&buffers, key.as_str()) {
+            t
+        } else {
             let t = doc
                 .put_object(&buffers, key.as_str(), ObjType::Text)
                 .expect("put_object buffer text never fails");

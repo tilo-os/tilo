@@ -281,37 +281,38 @@ impl PeerView {
     /// tone-mapped into RGBA.
     fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
         if self.cached_image.is_none()
-            && let Some(frame) = &self.latest {
-                let rgba = match &frame.pixels {
-                    DecodedPixels::Rgba8(bytes) => bytes.clone(),
-                    DecodedPixels::P010 {
+            && let Some(frame) = &self.latest
+        {
+            let rgba = match &frame.pixels {
+                DecodedPixels::Rgba8(bytes) => bytes.clone(),
+                DecodedPixels::P010 {
+                    y,
+                    uv,
+                    y_stride,
+                    uv_stride,
+                } => {
+                    let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
+                    tonemap_p010_to_rgba8(
                         y,
                         uv,
-                        y_stride,
-                        uv_stride,
-                    } => {
-                        let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
-                        tonemap_p010_to_rgba8(
-                            y,
-                            uv,
-                            *y_stride,
-                            *uv_stride,
-                            frame.width,
-                            frame.height,
-                            frame.colorimetry,
-                            cfg,
-                        )
-                    }
-                };
-                let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
-                self.cached_image = Some(vello::peniko::ImageData {
-                    data: blob,
-                    format: vello::peniko::ImageFormat::Rgba8,
-                    alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                    width: frame.width,
-                    height: frame.height,
-                });
-            }
+                        *y_stride,
+                        *uv_stride,
+                        frame.width,
+                        frame.height,
+                        frame.colorimetry,
+                        cfg,
+                    )
+                }
+            };
+            let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
+            self.cached_image = Some(vello::peniko::ImageData {
+                data: blob,
+                format: vello::peniko::ImageFormat::Rgba8,
+                alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                width: frame.width,
+                height: frame.height,
+            });
+        }
         self.cached_image.as_ref()
     }
 }

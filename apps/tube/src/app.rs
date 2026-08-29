@@ -323,7 +323,8 @@ impl TubeApp {
         let id = self
             .model
             .videos
-            .first().map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
+            .first()
+            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
         self.model.route = Route::Watch(id.clone());
         {
             let mut p = self.player.borrow_mut();
@@ -683,9 +684,7 @@ impl TubeApp {
     /// Whether any real image (thumbnail / avatar / banner) is still loading, so
     /// the app keeps redrawing/idle-syncing until each decoded image lands.
     fn images_pending(&self) -> bool {
-        self.images
-            .as_ref()
-            .is_some_and(|s| s.pending() > 0)
+        self.images.as_ref().is_some_and(|s| s.pending() > 0)
     }
 
     /// If the current route is a watch page we haven't started playing yet, ask
@@ -1837,10 +1836,7 @@ impl Widget for TubeApp {
     fn needs_redraw(&self) -> bool {
         self.structure_dirty
             || self.images_pending()
-            || self
-                .root_child
-                .as_ref()
-                .map_or(true, |c| c.needs_redraw())
+            || self.root_child.as_ref().map_or(true, |c| c.needs_redraw())
     }
 
     fn mark_drawn(&mut self) {

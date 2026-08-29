@@ -312,7 +312,10 @@ impl Widget for VStack {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(std::convert::AsRef::as_ref).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -850,9 +853,10 @@ impl GreeterApp {
         }
         if state.get(root, SESSION_PATH).ok().flatten().is_none()
             && let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text)
-                && let Some(s) = self.sessions.get(self.selected_session) {
-                    let _ = state.splice_text(&obj, 0, 0, &s.name);
-                }
+            && let Some(s) = self.sessions.get(self.selected_session)
+        {
+            let _ = state.splice_text(&obj, 0, 0, &s.name);
+        }
         if state.get(root, REBOOT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, REBOOT_PATH, false);
         }
@@ -1030,12 +1034,13 @@ impl GreeterApp {
     /// sync. The username is intentionally left untouched.
     fn clear_password(state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, PASSWORD_PATH)
-            && let Ok(text) = state.text(&obj) {
-                let chars = text.chars().count();
-                if chars > 0 {
-                    let _ = state.splice_text(&obj, 0, chars as isize, "");
-                }
+            && let Ok(text) = state.text(&obj)
+        {
+            let chars = text.chars().count();
+            if chars > 0 {
+                let _ = state.splice_text(&obj, 0, chars as isize, "");
             }
+        }
     }
 
     /// Surface a correctable note about the form itself. Distinct from a
@@ -1079,10 +1084,11 @@ impl Widget for GreeterApp {
         // resetting the choice out from under the user.
         if let Some(name) = Self::read_text(state, root, SESSION_PATH)
             && let Some(idx) = self.sessions.iter().position(|s| s.name == name)
-                && idx != self.selected_session {
-                    self.selected_session = idx;
-                    self.dirty_structure = true;
-                }
+            && idx != self.selected_session
+        {
+            self.selected_session = idx;
+            self.dirty_structure = true;
+        }
 
         // Submit rising edge — reset the flag *before* attempting so a
         // single click fires exactly one attempt.
@@ -1149,9 +1155,10 @@ impl Widget for GreeterApp {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&card_node) = children.first() {
-                    c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&card_node) = children.first()
+        {
+            c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -1249,19 +1256,20 @@ impl Widget for GreeterApp {
         // Delegate to the composed card.
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&card_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        root,
-                        handled,
-                        focus_target,
-                        card_node,
-                        taffy,
-                    );
-                }
+            && let Some(&card_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                card_node,
+                taffy,
+            );
+        }
 
         if enter_pressed {
             *handled = true;
@@ -1301,10 +1309,7 @@ impl Widget for GreeterApp {
     /// in place.
     fn take_focus_reset(&mut self) -> bool {
         let mine = std::mem::take(&mut self.focus_reset_pending);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_focus_reset());
+        let child = self.composed.as_mut().is_some_and(|c| c.take_focus_reset());
         mine || child
     }
 

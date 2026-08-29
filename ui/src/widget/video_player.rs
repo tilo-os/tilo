@@ -927,10 +927,10 @@ impl VideoPlayer {
         self.gear_entries.extend(zero.iter().copied());
 
         // Leftmost edge the right cluster reached — the volume sits to its left.
-        let cluster_x0 = self
-            .setting_icon_rects
-            .last()
-            .map_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 }, |(_, r)| r.x0);
+        let cluster_x0 = self.setting_icon_rects.last().map_or(
+            if gear_needed { gear_btn.x0 } else { fs_btn.x0 },
+            |(_, r)| r.x0,
+        );
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
@@ -1213,7 +1213,10 @@ impl VideoPlayer {
                             12.0,
                             tint,
                             transform
-                                * Affine::translate((x1 - pad - f64::from(vw), y + row_h * 0.5 - 7.0)),
+                                * Affine::translate((
+                                    x1 - pad - f64::from(vw),
+                                    y + row_h * 0.5 - 7.0,
+                                )),
                             None,
                         );
                     }

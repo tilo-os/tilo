@@ -372,7 +372,11 @@ fn flatten(world: &TypstWorld, d: &SourceDiagnostic) -> Diagnostic {
         col,
         end_line,
         end_col,
-        hints: d.hints.iter().map(std::string::ToString::to_string).collect(),
+        hints: d
+            .hints
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
     }
 }
 
@@ -386,11 +390,7 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     }
     let before = &text[..byte];
     let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
-    let col = before
-        .rsplit('\n')
-        .next()
-        .map_or(0, |s| s.chars().count())
-        + 1;
+    let col = before.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
     (line, col)
 }
 

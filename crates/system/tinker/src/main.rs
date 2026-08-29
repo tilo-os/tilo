@@ -405,11 +405,11 @@ fn cmd_revert(store: &Store, name: &str, path: &Path) -> Result<()> {
 }
 
 fn cmd_base_list(store: &Store) -> Result<()> {
-    let rd = if let Ok(rd) = std::fs::read_dir(store.bases_dir()) { rd } else {
+    let rd = if let Ok(rd) = std::fs::read_dir(store.bases_dir()) {
+        rd
+    } else {
         println!("No bases yet. Add one with:");
-        println!(
-            "    tinker base add debian --from-image docker.io/library/debian:stable-slim"
-        );
+        println!("    tinker base add debian --from-image docker.io/library/debian:stable-slim");
         return Ok(());
     };
     for e in rd.filter_map(std::result::Result::ok) {

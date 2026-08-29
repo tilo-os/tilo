@@ -591,15 +591,16 @@ impl MusicBackend for RustyPipeBackend {
         let pl = self
             .block(async { q.music_playlist(playlist_id).await })
             .map_err(|e| BackendError(format!("music playlist: {e}")))?;
-        let owner = pl
-            .channel
-            .as_ref().map_or_else(|| {
+        let owner = pl.channel.as_ref().map_or_else(
+            || {
                 if pl.from_ytm {
                     "YouTube Music".into()
                 } else {
                     "Playlist".into()
                 }
-            }, |c| c.name.clone());
+            },
+            |c| c.name.clone(),
+        );
         let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
         let subtitle = format!("{owner} \u{00b7} {count} songs");
         let description = pl

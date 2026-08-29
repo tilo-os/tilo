@@ -263,9 +263,9 @@ impl AccountStore {
                 .accounts
                 .iter()
                 .find(|a| &a.id == id && &a.type_id == type_id)
-            {
-                return Some(a);
-            }
+        {
+            return Some(a);
+        }
         self.list(type_id).into_iter().next()
     }
 

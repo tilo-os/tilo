@@ -328,26 +328,30 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
 pub fn select_for_driver(node: &Path, driver: &str, search: &IcdSearch) -> GpuSelection {
     let mut notes = Vec::new();
 
-    let egl_vendor_json = if let Some(lib) = egl_vendor_library(driver) { match unique_manifest_for(&search.egl_vendor_dirs, lib, "EGL vendor") {
-        Ok(p) => Some(p),
-        Err(why) => {
-            notes.push(format!("{EGL_VENDOR_ENV} not set: {why}"));
-            None
+    let egl_vendor_json = if let Some(lib) = egl_vendor_library(driver) {
+        match unique_manifest_for(&search.egl_vendor_dirs, lib, "EGL vendor") {
+            Ok(p) => Some(p),
+            Err(why) => {
+                notes.push(format!("{EGL_VENDOR_ENV} not set: {why}"));
+                None
+            }
         }
-    } } else {
+    } else {
         notes.push(format!(
             "{EGL_VENDOR_ENV} not set: no known EGL vendor for driver `{driver}`"
         ));
         None
     };
 
-    let vulkan_icd_json = if let Some(lib) = vulkan_driver_library(driver) { match unique_manifest_for(&search.vulkan_icd_dirs, lib, "Vulkan ICD") {
-        Ok(p) => Some(p),
-        Err(why) => {
-            notes.push(format!("{VK_DRIVER_FILES_ENV} not set: {why}"));
-            None
+    let vulkan_icd_json = if let Some(lib) = vulkan_driver_library(driver) {
+        match unique_manifest_for(&search.vulkan_icd_dirs, lib, "Vulkan ICD") {
+            Ok(p) => Some(p),
+            Err(why) => {
+                notes.push(format!("{VK_DRIVER_FILES_ENV} not set: {why}"));
+                None
+            }
         }
-    } } else {
+    } else {
         notes.push(format!(
             "{VK_DRIVER_FILES_ENV} not set: no known Vulkan driver for `{driver}`"
         ));

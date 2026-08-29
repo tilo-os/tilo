@@ -476,9 +476,10 @@ fn read_str_list(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i)
-            && let ScalarValue::Str(s) = v.as_ref() {
-                out.push(s.to_string());
-            }
+            && let ScalarValue::Str(s) = v.as_ref()
+        {
+            out.push(s.to_string());
+        }
     }
     out
 }

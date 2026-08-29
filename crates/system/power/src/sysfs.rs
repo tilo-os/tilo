@@ -91,8 +91,8 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
         // for minutes before it says "100" looks like a stuck charge.
         (((now_total as f64 / full_total as f64) * 100.0).round() as u64).min(100) as u8
     } else if !percent_fallback.is_empty() {
-        (percent_fallback.iter().map(|p| u32::from(*p)).sum::<u32>() / percent_fallback.len() as u32)
-            as u8
+        (percent_fallback.iter().map(|p| u32::from(*p)).sum::<u32>()
+            / percent_fallback.len() as u32) as u8
     } else {
         return BatterySnapshot::absent();
     };
