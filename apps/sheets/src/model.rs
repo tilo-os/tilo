@@ -742,6 +742,9 @@ mod tests {
     }
 
     #[test]
+    // 3.14 is the value under test, not an approximation of PI; the assertion
+    // is that it formats back to the same digits.
+    #[allow(clippy::approx_constant)]
     fn general_trims_trailing_zeros() {
         assert_eq!(format_number_general(42.0), "42");
         assert_eq!(format_number_general(3.14), "3.14");
