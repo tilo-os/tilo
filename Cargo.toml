@@ -278,7 +278,22 @@ string_slice = "deny"
 panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
-as_conversions = "deny"
+
+# `as_conversions` fires on all 7,090 `as` uses, including provably-safe ones.
+# pedantic already denies the dangerous subset more precisely — cast_possible_
+# truncation (1,518), cast_precision_loss (872), cast_sign_loss (469),
+# cast_possible_wrap (301) — plus cast_lossless (3,388) which rewrites a safe
+# cast to `From`. Denying the blanket lint on top adds no safety and turns
+# bounded graphics casts into fallible conversions that cannot be discharged
+# with unwrap, since that is denied too.
+as_conversions = "allow"
+
+# `must_use_candidate` wants `#[must_use]` on every public value-returning
+# function: 6,746 attributes here. The bug it aims at — calling something and
+# discarding a result that mattered — is better caught by `#[must_use]` on the
+# *type*, the way Result and Option do it. Mark guards, builders returning Self
+# and tokens; a getter whose result is ignored is harmless.
+must_use_candidate = "allow"
 
 [workspace.dependencies]
 
