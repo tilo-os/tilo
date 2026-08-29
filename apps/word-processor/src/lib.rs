@@ -282,15 +282,12 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
 
 /// Best-effort autosave / crash-recovery store.
 ///
-/// While a document is being edited the word processor periodically writes a
-/// **recovery copy** (always Markdown — lossless for the canonical model and
-/// trivially re-importable) to a stable per-document path under the user's state
-/// directory. If the app crashes or is killed before the user saves, the next
-/// session that opens the same document finds the (newer) recovery copy and can
-/// offer to restore it. On a successful real save the recovery copy is deleted.
-///
-/// Everything here is **best-effort**: an unwritable state directory never
-/// panics and never blocks editing — recovery just silently does nothing.
+/// While editing, the word processor periodically writes a **recovery copy**
+/// (always Markdown — lossless, trivially re-importable) to a stable per-document
+/// path under the user's state directory. If the app crashes before saving, the
+/// next session finds the newer recovery copy and can offer to restore it; a
+/// real save deletes it. Everything here is **best-effort**: an unwritable state
+/// directory never panics or blocks editing — recovery just silently does nothing.
 pub mod recovery {
     use std::path::{Path, PathBuf};
 
@@ -332,14 +329,11 @@ pub mod recovery {
         h
     }
 
-    /// The recovery file path for a document. Stable for a given target: the same
-    /// document path always maps to the same recovery file, so a later session
-    /// can find it. An **untitled** document (no path) maps to a single shared
-    /// `untitled` slot.
-    ///
-    /// The on-disk name is `<16-hex-hash>.md`; the hash is over the document's
-    /// absolute path string (or the literal `:untitled:` sentinel), which keeps
-    /// the name short and filesystem-safe regardless of the original path.
+    /// The recovery file path for a document. Stable for a given target: the
+    /// same document path always maps to the same file, so a later session can
+    /// find it. An untitled document (no path) maps to a shared `untitled` slot.
+    /// The on-disk name is `<16-hex-hash>.md`, hashed from the absolute path
+    /// string (or the `:untitled:` sentinel) — short and filesystem-safe.
     pub fn recovery_path_for(doc_path: Option<&Path>) -> PathBuf {
         let key = match doc_path {
             Some(p) => {
@@ -366,11 +360,10 @@ pub mod recovery {
     /// it wrote to on success (for the caller's bookkeeping / tests).
     pub fn write(doc_path: Option<&Path>, markdown: &[u8]) -> Option<PathBuf> {
         let path = recovery_path_for(doc_path);
-        if let Some(parent) = path.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
+        if let Some(parent) = path.parent()
+            && std::fs::create_dir_all(parent).is_err() {
                 return None;
             }
-        }
         std::fs::write(&path, markdown).ok().map(|_| path)
     }
 
