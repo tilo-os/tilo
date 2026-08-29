@@ -230,7 +230,10 @@ impl Editor {
         let row = self.row().clone();
         let len = row.len();
         let mut i = self.caret.offset;
-        while i < len && !is_word_node(&row[i]) {
+        // Stop after consuming a single structure / operator, mirroring
+        // move_word_left. This was a `while` that returned on its first
+        // iteration, so it only ever ran once anyway.
+        if i < len && !is_word_node(&row[i]) {
             i += 1;
             self.caret.offset = i;
             return;
