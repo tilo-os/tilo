@@ -47,3 +47,6 @@ xkbcommon = "0.8"
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[lints]
+workspace = true

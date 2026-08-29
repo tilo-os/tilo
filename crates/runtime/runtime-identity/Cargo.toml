@@ -34,3 +34,6 @@ tempfile.workspace = true
 # ceremony wrote, so the loader's refusal is tested against the real
 # historical shape rather than an invented one.
 sha2.workspace = true
+
+[lints]
+workspace = true

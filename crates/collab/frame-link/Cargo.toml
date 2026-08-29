@@ -32,3 +32,6 @@ tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-fil
 
 [dev-dependencies]
 proptest.workspace = true
+
+[lints]
+workspace = true

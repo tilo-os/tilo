@@ -133,3 +133,6 @@ media = [
 # the live `GrayjaySyncTransport`; the default build keeps only the deterministic
 # `StubTransport`, so nothing here can touch the hermetic path.
 grayjay-sync = ["dep:snow", "dep:flate2", "dep:base64"]
+
+[lints]
+workspace = true

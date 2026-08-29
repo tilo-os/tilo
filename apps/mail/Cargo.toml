@@ -89,3 +89,6 @@ html-webview = ["ui/webview-wpe"]
 # stand up local IMAP/SMTP servers over a real TLS socket. Uses the ring backend
 # already in the tree (no aws-lc). Only compiled for tests, never shipped.
 rcgen = "0.13"
+
+[lints]
+workspace = true

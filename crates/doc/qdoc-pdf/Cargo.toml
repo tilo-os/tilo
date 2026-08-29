@@ -14,3 +14,6 @@ image = { workspace = true, default-features = true }
 # Flate compression for image XObject pixel data (keeps PDFs reasonably small).
 # Already in the workspace lockfile.
 flate2.workspace = true
+
+[lints]
+workspace = true

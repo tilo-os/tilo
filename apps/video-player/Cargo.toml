@@ -37,3 +37,6 @@ taffy.workspace = true
 anyhow.workspace = true
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
+
+[lints]
+workspace = true
