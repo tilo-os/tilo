@@ -34,10 +34,13 @@ jobs:
         run: cargo fmt --all --check
 
       # Runs whatever check.yml did not: every target, including tests.
-      - name: cargo clippy
+      # Not a plain `cargo clippy`: the workspace has ~50,000 existing
+      # violations, so that gate would be red for months and gate nothing.
+      # The ratchet fails only when a lint's count goes up.
+      - name: clippy ratchet
         env:
           CARGO_BUILD_JOBS: "4"
-        run: cargo clippy --workspace --all-targets --locked
+        run: tools/clippy-ratchet.sh
 
       - name: cargo doc (warnings are errors)
         env:
