@@ -139,7 +139,7 @@ impl Widget for Spinner {
         let accent = theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX];
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
-        for i in 0..DOT_COUNT {
+        for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
             let angle_frac = phase - (i as f64) / (DOT_COUNT as f64);
             // -π/2 so the leading dot crosses the top at phase = 0; negative
             // direction is clockwise, matching a "loading" spinner convention.
@@ -147,7 +147,7 @@ impl Widget for Spinner {
             let cx = centre.x + orbit_r * theta.cos();
             let cy = centre.y + orbit_r * theta.sin();
             let dot = Circle::new(Point::new(cx, cy), dot_r);
-            let colour = accent.with_alpha_factor(DOT_ALPHAS[i]);
+            let colour = accent.with_alpha_factor(alpha);
             scene.fill(vello::peniko::Fill::NonZero, transform, colour, None, &dot);
         }
     }

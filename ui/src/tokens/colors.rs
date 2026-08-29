@@ -54,6 +54,7 @@ pub struct ColorRamp { pub stops: [Color; 11] }
 
 impl ColorRamp {
     pub fn len(&self) -> usize { self.stops.len() }
+    pub fn is_empty(&self) -> bool { self.stops.is_empty() }
 
     /// Builds an 11-stop ramp from `a` (index 0) to `b` (index 10) eased so
     /// low indices cluster near `a` (`powf(1.5)`) — keeps `neutral[2..5]`
@@ -199,7 +200,7 @@ impl Colors {
         let i = idx % CATEGORICAL_LEN;
         // Fan outward from the accent (+1, -1, +2, -2, …) rather than a full
         // 360/N rotation, which reaches hues with nothing to do with theme.
-        let k = (i + 1) / 2;
+        let k = i.div_ceil(2);
         let sign = if i % 2 == 1 { 1.0 } else { -1.0 };
         let step = sign * k as f32 / (CATEGORICAL_LEN / 2) as f32; // -1 … +1
         let hue = (h + step * CATEGORICAL_HUE_ARC_DEG / 2.0).rem_euclid(360.0);

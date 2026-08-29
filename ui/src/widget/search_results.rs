@@ -364,7 +364,7 @@ impl Widget for SearchResultsView {
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.desired_height() as f32),
                 },
                 flex_shrink: 0.0,

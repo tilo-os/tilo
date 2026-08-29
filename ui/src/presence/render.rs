@@ -165,6 +165,10 @@ impl PresenceCtx {
     /// Draw a peer's caret with a name chip above the tip — mirrors the
     /// pointer's pill (same size/shadow) so caret and pointer read as one
     /// person.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_peer_caret_labeled(
         &self,
         scene: &mut Scene,

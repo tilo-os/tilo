@@ -174,10 +174,6 @@ struct RowGroup {
     last_time: SystemTime,
     authors: Vec<HistoryAuthor>,
     expanded: bool,
-    /// Differs from `total_count` only while a filter is active; the header
-    /// says so rather than quietly under-reporting.
-    visible_count: usize,
-    total_count: usize,
     restorable: bool,
 }
 
@@ -446,7 +442,7 @@ impl ActivityTimeline {
         }
         for op in &self.filter.op_classes {
             let label = format!("{op:?}").to_uppercase();
-            if !parts.iter().any(|p| *p == label) {
+            if !parts.contains(&label) {
                 parts.push(label);
             }
         }
@@ -524,7 +520,7 @@ impl ActivityTimeline {
 
     /// 0 for a top-level band or a loose change.
     pub fn row_depth_at(&self, i: usize) -> Option<usize> {
-        Some(self.row_depth(i)).filter(|_| i < self.rows.len())
+        (i < self.rows.len()).then_some(self.row_depth(i))
     }
 
     /// `None` when the line is a header.
@@ -1136,8 +1132,6 @@ impl ActivityTimeline {
             last_time: g.last_time,
             authors: g.authors.clone(),
             expanded,
-            visible_count,
-            total_count,
             restorable,
         });
         rows.push(VisualRow::Group(gi));
@@ -1948,10 +1942,10 @@ impl ActivityTimeline {
                 clear.x0 - 8.0,
                 bar.center().y + 12.0,
             );
-            if field.width() > 40.0 {
-                if let Some(state) = self.naming.as_ref() {
-                    state.field.draw(scene, transform, tr, theme, field, size);
-                }
+            if field.width() > 40.0
+                && let Some(state) = self.naming.as_ref()
+            {
+                state.field.draw(scene, transform, tr, theme, field, size);
             }
         } else {
             let action = Rect::new(
@@ -2243,12 +2237,12 @@ impl Widget for ActivityTimeline {
                             *handled = true;
                         }
                     }
-                    Key::Named(NamedKey::Escape) => {
-                        if self.selection.take().is_some() {
-                            self.selection_anchor = None;
-                            self.rebuild_rows();
-                            *handled = true;
-                        }
+                    Key::Named(NamedKey::Escape)
+                        if self.selection.take().is_some() =>
+                    {
+                        self.selection_anchor = None;
+                        self.rebuild_rows();
+                        *handled = true;
                     }
                     _ => {}
                 }

@@ -71,10 +71,7 @@ impl DemoFileStore {
         }
         let cached = if path.exists() {
             let bytes = fs::read(&path)?;
-            match IdentityRecord::from_json_bytes(&bytes) {
-                Ok(rec) => Some(rec),
-                Err(_) => None,
-            }
+            IdentityRecord::from_json_bytes(&bytes).ok()
         } else {
             None
         };

@@ -17,6 +17,12 @@ pub struct Stack {
     permission_scope: Option<PermissionScope>,
 }
 
+impl Default for Stack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stack {
     pub fn new() -> Self {
         Self {
@@ -77,7 +83,7 @@ impl Widget for Stack {
             Style {
                 display: taffy::Display::Flex,
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     // With every child `position: Absolute`, the stack
                     // contributes zero to intrinsic size, so `Dimension::auto()`
                     // here made the parent ration percent-based descendant
@@ -85,7 +91,7 @@ impl Widget for Stack {
                     // bottom-padding got silently dropped. Pinning to the
                     // parent's height makes the viewport size flow through
                     // to absolute children correctly.
-                    height: percent(1.0),
+                    height: percent(1.0_f32),
                 },
                 ..Default::default()
             },
@@ -141,6 +147,10 @@ impl Widget for Stack {
 
     fn name(&self) -> &str { "Stack" }
 
+    // `.any` would short-circuit and skip `take_structure_dirty()` on later
+    // children once one reports dirty, leaving their flags uncleared --
+    // the non-short-circuiting `.fold` below is required, not incidental.
+    #[allow(clippy::unnecessary_fold)]
     fn take_structure_dirty(&mut self) -> bool {
         self.children
             .iter_mut()
@@ -176,19 +186,18 @@ impl Widget for Stack {
             child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

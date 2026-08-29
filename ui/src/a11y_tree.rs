@@ -166,6 +166,10 @@ impl TreeDelta {
     }
 }
 
+/// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
+/// actions, keyed by `(node id, action name)`.
+type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>;
+
 /// The retained accessibility tree. Persists node identity across frames and
 /// diffs each [`refresh`](Self::refresh) against the previous.
 pub struct SemanticTree {
@@ -177,7 +181,7 @@ pub struct SemanticTree {
     /// actions, keyed by `(node id, action name)`. Kept out of [`SemanticNode`]
     /// (a closure is neither `PartialEq` nor `Clone`-comparable) so nodes stay
     /// diffable; refreshed wholesale each frame.
-    prompted: HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>,
+    prompted: PromptedMap,
 }
 
 impl Default for SemanticTree {
@@ -414,7 +418,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
 struct Build<'a> {
     nodes: HashMap<SemanticId, SemanticNode>,
     order: Vec<SemanticId>,
-    prompted: HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>,
+    prompted: PromptedMap,
     ptr_to_taffy: &'a HashMap<*const (), TaffyNodeId>,
     focused: Option<TaffyNodeId>,
 }
@@ -446,10 +450,10 @@ impl Build<'_> {
                 }
 
                 let mut state = access.state;
-                if let (Some(t), Some(f)) = (taffy_id, self.focused) {
-                    if t == f {
-                        state.focused = true;
-                    }
+                if let (Some(t), Some(f)) = (taffy_id, self.focused)
+                    && t == f
+                {
+                    state.focused = true;
                 }
 
                 // Disabled/read-only gate the verbs but focus does not, so

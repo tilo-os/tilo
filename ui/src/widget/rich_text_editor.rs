@@ -38,7 +38,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -800,13 +800,12 @@ impl Widget for RichTextEditor {
                     _ => {
                         // Fall back to any committed text winit attached (dead
                         // keys, layout composition) when it isn't a control combo.
-                        if !ctrl {
-                            if let Some(t) = text {
-                                if !t.is_empty() && !t.chars().all(|c| c.is_control()) {
-                                    self.insert_str(state, t);
-                                    *handled = true;
-                                }
-                            }
+                        if !ctrl
+                            && let Some(t) = text
+                            && !t.is_empty() && !t.chars().all(|c| c.is_control())
+                        {
+                            self.insert_str(state, t);
+                            *handled = true;
                         }
                     }
                 }
@@ -860,10 +859,10 @@ impl Widget for RichTextEditor {
         Some(format!("{}:{}", self.core.selection().anchor, self.core.selection().cursor))
     }
     fn set_state(&mut self, s: &str) {
-        if let Some((a, c)) = s.split_once(':') {
-            if let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>()) {
-                self.core.set_selection(a, c);
-            }
+        if let Some((a, c)) = s.split_once(':')
+            && let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>())
+        {
+            self.core.set_selection(a, c);
         }
     }
 

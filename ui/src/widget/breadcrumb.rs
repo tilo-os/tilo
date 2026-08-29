@@ -95,13 +95,13 @@ impl Breadcrumb {
         }
         let full_width = self.measure_total_width(&self.segments, theme, tr);
         if full_width <= available_width {
-            return self.segments.iter().cloned().collect();
+            return self.segments.to_vec();
         }
 
         // The truncated form is no shorter than the full form here, so
         // truncating would only make the render worse.
         if self.segments.len() <= 4 {
-            return self.segments.iter().cloned().collect();
+            return self.segments.to_vec();
         }
 
         let n = self.segments.len();
@@ -213,7 +213,7 @@ impl Widget for Breadcrumb {
     ) -> NodeId {
         // Width isn't known until taffy runs, so leave it auto; height is a
         // single line of `sm` text plus 1.5x line-height for click comfort.
-        let line_h = (theme.tokens.typography.scale.sm * 1.5) as f32;
+        let line_h = theme.tokens.typography.scale.sm * 1.5;
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -341,13 +341,13 @@ impl Widget for Breadcrumb {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(hover_idx) = self.hover_idx {
-                    if let Some(Some(orig)) = self.visible_origin.get(hover_idx).copied() {
-                        if let Some(cb) = self.on_navigate.as_mut() {
-                            cb(orig);
-                        }
-                        *handled = true;
+                if let Some(hover_idx) = self.hover_idx
+                    && let Some(Some(orig)) = self.visible_origin.get(hover_idx).copied()
+                {
+                    if let Some(cb) = self.on_navigate.as_mut() {
+                        cb(orig);
                     }
+                    *handled = true;
                 }
             }
             _ => {}

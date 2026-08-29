@@ -244,6 +244,10 @@ impl Chip {
     ///
     /// The label is **truncated with an ellipsis** to whatever width `rect`
     /// allows — use [`Chip::natural_width_at`] to size `rect` when the space is free.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,

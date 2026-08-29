@@ -134,10 +134,10 @@ fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i) {
-            if let ScalarValue::Str(v) = s.as_ref() {
-                out.push(v.to_string());
-            }
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i)
+            && let ScalarValue::Str(v) = s.as_ref()
+        {
+            out.push(v.to_string());
         }
     }
     out
@@ -361,7 +361,7 @@ pub struct Table {
 
     /// Cell editors in row-major order (`len == rows * cols`). Rebuilt only
     /// when the set of `(row, col)` ids changes.
-    cells: Vec<Box<TextInput>>,
+    cells: Vec<TextInput>,
     /// Resolved `cells` map, so children are rooted correctly.
     cells_obj: Option<ObjId>,
 
@@ -422,14 +422,12 @@ impl Table {
         self.n_rows() == 0 || self.n_cols() == 0
     }
 
-    fn make_cell(rid: &str, cid: &str) -> Box<TextInput> {
-        Box::new(
-            TextInput::new(vec![])
-                .with_id(&format!("cell_{rid}_{cid}"))
-                .with_on_change_path(&cell_key(rid, cid))
-                .with_plain_chrome()
-                .with_font_size(CELL_FONT),
-        )
+    fn make_cell(rid: &str, cid: &str) -> TextInput {
+        TextInput::new(vec![])
+            .with_id(&format!("cell_{rid}_{cid}"))
+            .with_on_change_path(&cell_key(rid, cid))
+            .with_plain_chrome()
+            .with_font_size(CELL_FONT)
     }
 
     /// Analytic grid geometry from the widget rect + stored widths — matches
@@ -521,8 +519,8 @@ impl Table {
         }
         // Grid body → interior column boundaries resize the column to the left.
         if p.x >= self.rect.x0 + LEFT_GUTTER && p.y >= self.rect.y0 + TOP_GUTTER {
-            for i in 1..xs.len() {
-                if (p.x - xs[i]).abs() <= RESIZE_HIT {
+            for (i, &x) in xs.iter().enumerate().skip(1) {
+                if (p.x - x).abs() <= RESIZE_HIT {
                     return Hover::ResizeCol(i);
                 }
             }
@@ -987,23 +985,23 @@ impl Widget for Table {
                 if key_event.state == ElementState::Pressed =>
             {
                 // Enter moves the caret down one row (Shift+Enter → up).
-                if matches!(key_event.logical_key, Key::Named(NamedKey::Enter)) {
-                    if let Some(focused) = self.cells.iter().position(|c| c.is_focused()) {
-                        let cols = self.n_cols().max(1);
-                        let up = modifiers.state().shift_key();
-                        let target = if up {
-                            focused.checked_sub(cols)
-                        } else {
-                            let t = focused + cols;
-                            (t < self.cells.len()).then_some(t)
-                        };
-                        if let Some(t) = target {
-                            if let Some(&tn) = child_nodes.get(t) {
-                                *focus_target = Some(tn);
-                                *handled = true;
-                                return;
-                            }
-                        }
+                if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
+                    && let Some(focused) = self.cells.iter().position(|c| c.is_focused())
+                {
+                    let cols = self.n_cols().max(1);
+                    let up = modifiers.state().shift_key();
+                    let target = if up {
+                        focused.checked_sub(cols)
+                    } else {
+                        let t = focused + cols;
+                        (t < self.cells.len()).then_some(t)
+                    };
+                    if let Some(t) = target
+                        && let Some(&tn) = child_nodes.get(t)
+                    {
+                        *focus_target = Some(tn);
+                        *handled = true;
+                        return;
                     }
                 }
             }
@@ -1013,14 +1011,14 @@ impl Widget for Table {
         // ---- forward to cell editors ----
         if let Some(cells_obj) = self.cells_obj.clone() {
             // Pointer-capture short-circuit (a cell dragging a selection).
-            if let Some(idx) = self.cells.iter().position(|c| c.wants_pointer_capture()) {
-                if let Some(&cn) = child_nodes.get(idx) {
-                    self.cells[idx].handle_event(
-                        event, scale_factor, modifiers, state, &cells_obj, handled,
-                        focus_target, cn, taffy,
-                    );
-                    return;
-                }
+            if let Some(idx) = self.cells.iter().position(|c| c.wants_pointer_capture())
+                && let Some(&cn) = child_nodes.get(idx)
+            {
+                self.cells[idx].handle_event(
+                    event, scale_factor, modifiers, state, &cells_obj, handled,
+                    focus_target, cn, taffy,
+                );
+                return;
             }
             for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
                 cell.handle_event(
@@ -1035,10 +1033,10 @@ impl Widget for Table {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.cells.iter().map(|c| c.as_ref() as &dyn Widget).collect()
+        self.cells.iter().map(|c| c as &dyn Widget).collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.cells.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+        self.cells.iter_mut().map(|c| c as &mut (dyn Widget + '_)).collect()
     }
 
     fn name(&self) -> &str {

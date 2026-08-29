@@ -223,9 +223,9 @@ impl Widget for StatTile {
         let node = taffy
             .new_leaf(Style {
                 flex_grow: 1.0,
-                flex_basis: length(0.0),
-                min_size: taffy::Size { width: length(120.0), height: length(h) },
-                size: taffy::Size { width: percent(1.0), height: length(h) },
+                flex_basis: length(0.0_f32),
+                min_size: taffy::Size { width: length(120.0_f32), height: length(h) },
+                size: taffy::Size { width: percent(1.0_f32), height: length(h) },
                 ..Default::default()
             })
             .unwrap();
@@ -331,8 +331,8 @@ mod tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Row,
-                    gap: taffy::Size { width: length(12.0), height: length(0.0) },
-                    size: taffy::Size { width: length(600.0), height: length(120.0) },
+                    gap: taffy::Size { width: length(12.0_f32), height: length(0.0_f32) },
+                    size: taffy::Size { width: length(600.0_f32), height: length(120.0_f32) },
                     ..Default::default()
                 },
                 &nodes,

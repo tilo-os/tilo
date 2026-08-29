@@ -666,7 +666,7 @@ impl Widget for WindowGroup {
             flex_direction: taffy::FlexDirection::Column,
             size: Size { width: Dimension::length(self.resolved_width_px() as f32), height: Dimension::percent(1.0) },
             flex_grow: 0.0,
-            gap: taffy::Size { width: length(0.0), height: length(0.0) },
+            gap: taffy::Size { width: length(0.0_f32), height: length(0.0_f32) },
             ..Default::default()
         };
         if self.maximized {
@@ -1210,6 +1210,7 @@ impl Widget for WindowGroup {
         // `fold`, not `any`: every child's flag must be drained even if
         // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
+        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
         let hosts = self
             .hosts
             .iter_mut()

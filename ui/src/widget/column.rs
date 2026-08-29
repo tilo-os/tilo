@@ -39,6 +39,12 @@ pub struct Column {
     cache_rect: vello::kurbo::Rect,
 }
 
+impl Default for Column {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Column {
     pub fn new() -> Self {
         Self {
@@ -193,7 +199,7 @@ impl Widget for Column {
                 align_items: Some(taffy::AlignItems::FlexStart),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
-                    width: length(0.0),
+                    width: length(0.0_f32),
                     height: length(self.gap_override.unwrap_or(theme.gap_standard)),
                 },
                 padding: {
@@ -210,13 +216,11 @@ impl Widget for Column {
                     }
                 },
                 size: taffy::Size {
-                    width: percent(1.0),
-                    height: if self.intrinsic_height {
-                        taffy::Dimension::auto()
-                    } else if self.fill_remaining_height {
+                    width: percent(1.0_f32),
+                    height: if self.intrinsic_height || self.fill_remaining_height {
                         taffy::Dimension::auto()
                     } else {
-                        percent(1.0)
+                        percent(1.0_f32)
                     },
                 },
                 flex_basis: if self.fill_remaining_height {
@@ -320,6 +324,10 @@ impl Widget for Column {
     fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
     fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 
+    // `.any` would short-circuit and skip `take_structure_dirty()` on later
+    // children once one reports dirty, leaving their flags uncleared --
+    // the non-short-circuiting `.fold` below is required, not incidental.
+    #[allow(clippy::unnecessary_fold)]
     fn take_structure_dirty(&mut self) -> bool {
         // Forward to every child; fold over the full set so each child's
         // flag is cleared even if an earlier one already reported dirty.
@@ -388,19 +396,18 @@ impl Widget for Column {
             presence.viewport.set(prev_vp);
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use ui::offscreen::OffscreenRenderer;
 use ui::surface::soft_shadow;
@@ -51,6 +51,10 @@ fn out_dir() -> PathBuf {
 /// Paint one case centred in `canvas`: the shadow through the production
 /// primitive, then the card itself on top, so what you see is what a
 /// surface sitting on that shadow looks like.
+// Standard immediate-mode paint-helper signature (scene + geometry + the
+// shadow's own tunable parameters); every parameter is independently
+// load-bearing for this one shot case.
+#[allow(clippy::too_many_arguments)]
 fn paint(scene: &mut Scene, canvas: Rect, w: f64, h: f64, spread: f64, off: f64, i: f32, r: f64) {
     let theme = Theme::dark();
     let c = canvas.center();

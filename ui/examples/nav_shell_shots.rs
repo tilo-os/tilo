@@ -3,10 +3,10 @@
 //! Renders the four canonical states — no window opened — so the layout can be
 //! self-inspected against HIG §1:
 //!   1. `nav_shell-wide.png`          — `[ sidebar | overview | detail ]` three
-//!                                       abreast, docked sidebar + collapse chevron.
+//!      abreast, docked sidebar + collapse chevron.
 //!   2. `nav_shell-narrow-overview.png` — full-screen overview + hamburger.
 //!   3. `nav_shell-narrow-drawer.png`   — sidebar overlay drawer over the overview,
-//!                                       scrim behind, collapse chevron.
+//!      scrim behind, collapse chevron.
 //!   4. `nav_shell-narrow-detail.png`   — detail slid over the overview + Back button.
 //!
 //! Run: `cargo run -p ui --example nav_shell_shots`
@@ -59,11 +59,11 @@ fn panel(
     for (primary, secondary) in rows {
         let mut row_col = Column::new().with_intrinsic_height();
         row_col = row_col.push(Box::new(
-            Text::new(*primary).with_size(15.0).with_color(theme.text_primary),
+            Text::new(primary).with_size(15.0).with_color(theme.text_primary),
         ));
         if !secondary.is_empty() {
             row_col = row_col.push(Box::new(
-                Text::new(*secondary).with_size(12.0).with_color(theme.text_dim),
+                Text::new(secondary).with_size(12.0).with_color(theme.text_dim),
             ));
         }
         let row = Container::new().with_height(52.0).with_child(Box::new(row_col));

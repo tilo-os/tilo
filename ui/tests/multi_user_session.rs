@@ -325,7 +325,7 @@ fn peer_tab_switch_moves_the_presence_dot() {
         key: tab_a.clone(),
         payload: PresencePayload::Arrived,
     });
-    assert_eq!(bob_app.presence_ctx().peers_on(&tab_a), &[alice.clone()]);
+    assert_eq!(bob_app.presence_ctx().peers_on(&tab_a), std::slice::from_ref(&alice));
     assert!(bob_app.presence_ctx().peers_on(&tab_b).is_empty());
 
     bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {

@@ -142,14 +142,22 @@ impl ActionPalette {
     /// action becomes an **Actions** row; rebuilds the result set + index.
     pub fn load_open_resources(&mut self, resources: &[Resource]) {
         self.resources = resources.to_vec();
-        self.rebuild(&self.field.value().to_string());
+        // `.to_string()` is load-bearing here, not redundant: it ends the
+        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
+        #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
     }
 
     /// Fold in searchable-content sources. Their hits appear as navigable result
     /// rows, grouped by each provider's kind.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
         self.providers = providers;
-        self.rebuild(&self.field.value().to_string());
+        // `.to_string()` is load-bearing here, not redundant: it ends the
+        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
+        #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
     }
 
     pub fn is_open(&self) -> bool {
@@ -528,7 +536,7 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
         r.score * BIAS_WEIGHT + bonus
     };
     let mut ranked = rows;
-    ranked.sort_by(|a, b| key(b).cmp(&key(a)));
+    ranked.sort_by_key(|b| std::cmp::Reverse(key(b)));
     let mut groups: Vec<SearchGroup> = Vec::new();
     for r in ranked {
         if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {

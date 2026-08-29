@@ -386,10 +386,13 @@ pub enum RemotePresenceEffect {
     PeerArrived,
 }
 
+/// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
+pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
+
 #[derive(Debug, Default, Clone)]
 pub struct PresenceCtx {
     pub here: HashMap<PresenceKey, Vec<UserId>>,
-    pub pointers: HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>,
+    pub pointers: PointerPositions,
     /// When each pointer in [`Self::pointers`] was last heard about, so
     /// [`Self::prune_pointers`] can retire one gone quiet — without it a
     /// crashed peer's cursor stays painted for the rest of the session.
@@ -1092,8 +1095,8 @@ impl PresenceCtx {
                 // other way to show what it wrote. Gated on a document
                 // change having actually landed, so a caret merely reading
                 // paints nothing.
-                if let Some(prev) = self.caret_for(&key, &uid) {
-                    if pos > prev
+                if let Some(prev) = self.caret_for(&key, &uid)
+                    && pos > prev
                         && pos - prev <= TYPING_DERIVE_MAX_RUN
                         && self.edit_landed_recently(now)
                     {
@@ -1104,7 +1107,6 @@ impl PresenceCtx {
                             now,
                         );
                     }
-                }
                 self.set_caret(&key, uid, pos);
                 self.set_remote_caret(user_id, key, pos);
             }
@@ -1208,7 +1210,7 @@ mod tab_focus_tests {
         let b = PresenceKey::Tab { id: "bbb".into() };
 
         ctx.set_tab_focus(&a, alice.clone());
-        assert_eq!(ctx.peers_on(&a), &[alice.clone()]);
+        assert_eq!(ctx.peers_on(&a), std::slice::from_ref(&alice));
         assert!(ctx.peers_on(&b).is_empty());
 
         ctx.set_tab_focus(&b, alice.clone());
@@ -1247,7 +1249,7 @@ mod tab_focus_tests {
 
         assert_eq!(
             ctx.peers_on(&tab),
-            &[alice.clone()],
+            std::slice::from_ref(&alice),
             "workspace registration must not evict the tab attribution"
         );
         assert_eq!(ctx.peers_on(&ws), &[alice]);

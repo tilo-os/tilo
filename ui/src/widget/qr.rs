@@ -140,10 +140,10 @@ impl Widget for QrWidget {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
     }
 

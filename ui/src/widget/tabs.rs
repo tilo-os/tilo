@@ -241,6 +241,10 @@ impl TabBar {
     /// or the cursor-following ghost rect. `self.close_rects` etc. are cached at
     /// the pill's *target* position, so they're offset by `r - self.tab_rects[i]`
     /// before painting; hit-testing still consults the unoffset rects.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     fn draw_pill_inner(
         &self,
         scene: &mut Scene,
@@ -1601,39 +1605,39 @@ impl Widget for TabBar {
         // Painted LAST so it composites over everything. Not clipped to `self.rect`:
         // cross-group drag handoff (`GroupRow::handle_event`) reads the raw cursor
         // position, not the ghost. Hit-tests still use the original `tab_rects`.
-        if let Some(ghost_rect) = self.compute_ghost_rect() {
-            if let Some(source_idx) = match &self.pending_drag {
-                Some(DragPayload::Tab { tab, .. }) => {
-                    self.tabs.iter().position(|t| t.id == *tab)
-                }
-                _ => None,
-            } {
-                // Generous so the ghost's drop shadow isn't clipped.
-                let clip = Rect::new(
-                    ghost_rect.x0 - 20.0,
-                    ghost_rect.y0 - 20.0,
-                    ghost_rect.x1 + 20.0,
-                    ghost_rect.y1 + 40.0,
-                );
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    Self::GHOST_PILL_ALPHA,
-                    transform,
-                    &clip,
-                );
-                self.draw_pill_inner(
-                    scene,
-                    transform,
-                    source_idx,
-                    ghost_rect,
-                    tr,
-                    theme,
-                    presence,
-                    true,
-                );
-                scene.pop_layer();
+        if let Some(ghost_rect) = self.compute_ghost_rect()
+            && let Some(source_idx) = match &self.pending_drag
+        {
+            Some(DragPayload::Tab { tab, .. }) => {
+                self.tabs.iter().position(|t| t.id == *tab)
             }
+            _ => None,
+        } {
+            // Generous so the ghost's drop shadow isn't clipped.
+            let clip = Rect::new(
+                ghost_rect.x0 - 20.0,
+                ghost_rect.y0 - 20.0,
+                ghost_rect.x1 + 20.0,
+                ghost_rect.y1 + 40.0,
+            );
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                Self::GHOST_PILL_ALPHA,
+                transform,
+                &clip,
+            );
+            self.draw_pill_inner(
+                scene,
+                transform,
+                source_idx,
+                ghost_rect,
+                tr,
+                theme,
+                presence,
+                true,
+            );
+            scene.pop_layer();
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -1671,14 +1675,13 @@ impl Widget for TabBar {
                     .position(|r| r.contains(p));
                 self.hover_new_tab =
                     self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
-                if let Some((idx, origin)) = self.press_origin {
-                    if (p - origin).hypot() > DRAG_START_THRESHOLD_PX {
-                        if let Some(t) = self.tabs.get(idx) {
-                            let group_tag_hash = self.group_id_tag.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
-                            self.pending_drag = Some(DragPayload::Tab { group: group_tag_hash, tab: t.id });
-                            *handled = true;
-                        }
-                    }
+                if let Some((idx, origin)) = self.press_origin
+                    && (p - origin).hypot() > DRAG_START_THRESHOLD_PX
+                    && let Some(t) = self.tabs.get(idx)
+                {
+                    let group_tag_hash = self.group_id_tag.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+                    self.pending_drag = Some(DragPayload::Tab { group: group_tag_hash, tab: t.id });
+                    *handled = true;
                 }
                 // Inside the bar → gap index from `drop_index_for`; outside → clear
                 // (cross-group release is handled by `GroupRow`).
@@ -1753,33 +1756,33 @@ impl Widget for TabBar {
                     return;
                 }
                 // Close button takes priority over selection/drag.
-                if let Some(ci) = close_idx {
-                    if let Some(t) = self.tabs.get(ci) {
-                        let id = t.id;
-                        self.start_closing(id);
-                        *handled = true;
-                        return;
-                    }
+                if let Some(ci) = close_idx
+                    && let Some(t) = self.tabs.get(ci)
+                {
+                    let id = t.id;
+                    self.start_closing(id);
+                    *handled = true;
+                    return;
                 }
                 // Maximize icon — fires on first click regardless of whether
                 // the tab is already active.
-                if let Some(mi) = max_idx {
-                    if let Some(t) = self.tabs.get(mi) {
-                        self.pending_max = Some(t.id);
-                        *handled = true;
-                        return;
-                    }
+                if let Some(mi) = max_idx
+                    && let Some(t) = self.tabs.get(mi)
+                {
+                    self.pending_max = Some(t.id);
+                    *handled = true;
+                    return;
                 }
                 // Search icon — same deal; shell drains `pending_search`.
-                if let Some(si) = search_idx {
-                    if let Some(t) = self.tabs.get(si) {
-                        // Deliberately does NOT activate the tab — chip
-                        // hits never bleed into selection, same as close
-                        // and maximize.
-                        self.pending_search = Some(t.id);
-                        *handled = true;
-                        return;
-                    }
+                if let Some(si) = search_idx
+                    && let Some(t) = self.tabs.get(si)
+                {
+                    // Deliberately does NOT activate the tab — chip
+                    // hits never bleed into selection, same as close
+                    // and maximize.
+                    self.pending_search = Some(t.id);
+                    *handled = true;
+                    return;
                 }
                 if let Some(idx) = self.hover_idx {
                     // Can go stale if a neighbouring widget shrunk `tabs`/`tab_rects`
@@ -3321,10 +3324,12 @@ mod tests {
             (b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON,
             "non-source pill stays at full alpha",
         );
-        assert!(
-            TabBar::SOURCE_PILL_DIM_ALPHA < TabBar::GHOST_PILL_ALPHA,
-            "source dim must be more transparent than the ghost",
-        );
+        const {
+            assert!(
+                TabBar::SOURCE_PILL_DIM_ALPHA < TabBar::GHOST_PILL_ALPHA,
+                "source dim must be more transparent than the ghost",
+            );
+        }
     }
 
     /// Mirrors the hand-built rects other tests use to skip the taffy layout pass.
@@ -3886,7 +3891,6 @@ mod tests {
     /// The hover headroom is subtracted from the bar before pills are fitted,
     /// which is right when the row is tight and wrong when it is not.
     #[test]
-    #[test]
     fn a_row_with_room_to_spare_clips_no_name() {
         let mut tr = TextRenderer::new();
         let theme = crate::theme::Theme::dark();
@@ -3914,6 +3918,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn squeezed_pills_still_name_their_tabs() {
         let mut tr = TextRenderer::new();
         let theme = crate::theme::Theme::dark();
@@ -4206,21 +4211,21 @@ mod tests {
                 hover_pill(&mut b, idx, width, &theme);
                 // Must hold under a squeeze too, not only where there's slack —
                 // that's exactly where a re-fit under the pointer would be tempting.
-                for i in 0..=idx {
+                for (i, ir) in idle.iter().enumerate().take(idx + 1) {
                     assert!(
-                        (b.tab_rects()[i].x0 - idle[i].x0).abs() < 0.01,
+                        (b.tab_rects()[i].x0 - ir.x0).abs() < 0.01,
                         "at {width} px with pill {idx} open, pill {i}'s leading edge \
                          moved from {} to {}",
-                        idle[i].x0,
+                        ir.x0,
                         b.tab_rects()[i].x0,
                     );
                 }
-                for i in 0..idx {
+                for (i, ir) in idle.iter().enumerate().take(idx) {
                     assert!(
-                        (b.tab_rects()[i].width() - idle[i].width()).abs() < 0.01,
+                        (b.tab_rects()[i].width() - ir.width()).abs() < 0.01,
                         "at {width} px, pill {i} was re-sized ({} -> {}) because the \
                          pointer moved onto pill {idx}",
-                        idle[i].width(),
+                        ir.width(),
                         b.tab_rects()[i].width(),
                     );
                 }

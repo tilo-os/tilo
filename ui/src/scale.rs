@@ -166,7 +166,7 @@ mod tests {
         let (lw, lh) = (140u32, 44u32);
         let mut tr = TextRenderer::new();
 
-        let mut draw = |scale: f64, tr: &mut TextRenderer| -> (Vec<u8>, u32, u32) {
+        let draw = |scale: f64, tr: &mut TextRenderer| -> (Vec<u8>, u32, u32) {
             let pw = (lw as f64 * scale).round() as u32;
             let ph = (lh as f64 * scale).round() as u32;
             let mut scene = Scene::new();

@@ -444,16 +444,16 @@ impl BlockEditor {
             if self.focused.is_none() {
                 self.focused = Some(0);
             }
-            if let Some(idx) = self.focused {
-                if let Some(b) = self.blocks.get_mut(idx) {
-                    b.line.set_focus(true);
-                }
+            if let Some(idx) = self.focused
+                && let Some(b) = self.blocks.get_mut(idx)
+            {
+                b.line.set_focus(true);
             }
         } else {
-            if let Some(idx) = self.focused {
-                if let Some(b) = self.blocks.get_mut(idx) {
-                    b.line.set_focus(false);
-                }
+            if let Some(idx) = self.focused
+                && let Some(b) = self.blocks.get_mut(idx)
+            {
+                b.line.set_focus(false);
             }
         }
         self.dirty = true;
@@ -604,12 +604,11 @@ impl BlockEditor {
 
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
         let target = idx.min(self.blocks.len().saturating_sub(1));
-        if let Some(prev) = self.focused {
-            if prev != target {
-                if let Some(b) = self.blocks.get_mut(prev) {
-                    b.line.set_focus(false);
-                }
-            }
+        if let Some(prev) = self.focused
+            && prev != target
+            && let Some(b) = self.blocks.get_mut(prev)
+        {
+            b.line.set_focus(false);
         }
         if let Some(b) = self.blocks.get_mut(target) {
             b.line.set_focus(true);
@@ -766,14 +765,14 @@ impl BlockEditor {
         self.dirty = true;
         // Dividers aren't focusable — push focus to the next block (or a
         // fresh trailing paragraph) so the user can keep typing.
-        if matches!(new_kind, BlockKind::Divider) {
-            if self.focused == Some(idx) {
-                if idx + 1 < self.blocks.len() {
-                    self.focus_block(idx + 1, CursorPlacement::Start);
-                } else {
-                    self.blocks.push(Block::paragraph(""));
-                    self.focus_block(idx + 1, CursorPlacement::Start);
-                }
+        if matches!(new_kind, BlockKind::Divider)
+            && self.focused == Some(idx)
+        {
+            if idx + 1 < self.blocks.len() {
+                self.focus_block(idx + 1, CursorPlacement::Start);
+            } else {
+                self.blocks.push(Block::paragraph(""));
+                self.focus_block(idx + 1, CursorPlacement::Start);
             }
         }
         true
@@ -857,19 +856,19 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return;
         };
-        if let Some(open_byte) = self.slash_open_at {
-            if let Some(b) = self.blocks.get_mut(focused_idx) {
-                let text = b.line.value().to_string();
-                let cursor = b.line.cursor_pos().min(text.len());
-                let start = open_byte.min(text.len());
-                if cursor > start {
-                    // Drop bytes [start, cursor) — the `/<filter>` slice.
-                    let mut new_text = String::with_capacity(text.len());
-                    new_text.push_str(&text[..start]);
-                    new_text.push_str(&text[cursor..]);
-                    b.line.set_text(&new_text);
-                    b.line.set_cursor_pos(start);
-                }
+        if let Some(open_byte) = self.slash_open_at
+            && let Some(b) = self.blocks.get_mut(focused_idx)
+        {
+            let text = b.line.value().to_string();
+            let cursor = b.line.cursor_pos().min(text.len());
+            let start = open_byte.min(text.len());
+            if cursor > start {
+                // Drop bytes [start, cursor) — the `/<filter>` slice.
+                let mut new_text = String::with_capacity(text.len());
+                new_text.push_str(&text[..start]);
+                new_text.push_str(&text[cursor..]);
+                b.line.set_text(&new_text);
+                b.line.set_cursor_pos(start);
             }
         }
         self.slash_open_at = None;
@@ -976,9 +975,7 @@ impl BlockEditor {
 
     /// No-op for non-Checklist kinds.
     pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
-        let Some(b) = self.blocks.get_mut(idx) else {
-            return None;
-        };
+        let b = self.blocks.get_mut(idx)?;
         if let BlockKind::Checklist { indent, done } = &b.kind {
             let new_done = !*done;
             b.kind = BlockKind::Checklist { indent: *indent, done: new_done };
@@ -1392,10 +1389,10 @@ impl Widget for BlockEditor {
                 self.blocks[i].kind = k;
                 self.structure_dirty = true;
             }
-            if self.blocks[i].line.bound_obj().is_none() {
-                if let Some(t) = doc_text_obj(state, &list, i) {
-                    self.blocks[i].line.bind_text(t);
-                }
+            if self.blocks[i].line.bound_obj().is_none()
+                && let Some(t) = doc_text_obj(state, &list, i)
+            {
+                self.blocks[i].line.bind_text(t);
             }
             self.blocks[i].line.set_local_author(self.local_author.clone());
             self.blocks[i].line.sync(state, &list);
@@ -1431,10 +1428,10 @@ impl Widget for BlockEditor {
                 let existing = taffy.style(n).cloned().unwrap_or_default();
                 let mut s = existing;
                 s.margin = taffy::Rect {
-                    left: length(0.0),
-                    right: length(0.0),
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
                     top: length(top_margin as f32),
-                    bottom: length(0.0),
+                    bottom: length(0.0_f32),
                 };
                 let _ = taffy.set_style(n, s);
             }
@@ -1447,8 +1444,8 @@ impl Widget for BlockEditor {
                     flex_direction: taffy::FlexDirection::Column,
                     align_items: Some(taffy::AlignItems::Stretch),
                     gap: taffy::Size {
-                        width: length(0.0),
-                        height: length(0.0),
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
                     },
                     size: Size {
                         width: Dimension::percent(1.0),
@@ -1702,7 +1699,7 @@ impl Widget for BlockEditor {
             let key = block_presence_key(i);
             let line = &self.blocks[i].line;
             let brect = line.get_rect();
-            let tr_rect = {
+            let _tr_rect = {
                 let p0 = transform * Point::new(brect.x0, brect.y0);
                 let p1 = transform * Point::new(brect.x1, brect.y1);
                 Rect::new(p0.x, p0.y, p1.x, p1.y)
@@ -1787,39 +1784,39 @@ impl Widget for BlockEditor {
 
         // While visible, intercept keystrokes BEFORE the editable line
         // sees them. Same pattern as the slash menu below.
-        if self.link_popover.is_visible() {
-            if let WindowEvent::KeyboardInput { .. } = event {
-                let consumed = self.link_popover.handle_key(event);
-                if let Some(page) = self.link_popover.take_selection() {
-                    self.commit_link_selection(page);
-                }
-                if !self.link_popover.is_visible() {
-                    self.link_open_at = None;
-                }
-                if consumed {
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
+        if self.link_popover.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+        {
+            let consumed = self.link_popover.handle_key(event);
+            if let Some(page) = self.link_popover.take_selection() {
+                self.commit_link_selection(page);
+            }
+            if !self.link_popover.is_visible() {
+                self.link_open_at = None;
+            }
+            if consumed {
+                *handled = true;
+                self.dirty = true;
+                return;
             }
         }
 
         // The menu owns arrow nav / Enter / Escape / typing-into-filter.
-        if self.slash_menu.is_visible() {
-            if let WindowEvent::KeyboardInput { .. } = event {
-                let consumed = self.slash_menu.handle_key(event);
-                // Drain pending_selection regardless of `consumed` — Enter may have set it.
-                if let Some(new_kind) = self.slash_menu.take_selected_kind() {
-                    self.commit_slash_selection(new_kind);
-                }
-                if !self.slash_menu.is_visible() {
-                    self.slash_open_at = None;
-                }
-                if consumed {
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
+        if self.slash_menu.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+        {
+            let consumed = self.slash_menu.handle_key(event);
+            // Drain pending_selection regardless of `consumed` — Enter may have set it.
+            if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+                self.commit_slash_selection(new_kind);
+            }
+            if !self.slash_menu.is_visible() {
+                self.slash_open_at = None;
+            }
+            if consumed {
+                *handled = true;
+                self.dirty = true;
+                return;
             }
         }
 
@@ -1887,14 +1884,14 @@ impl Widget for BlockEditor {
             // a single-block drag (X within its own rect); this
             // coordinator picks up the slack across block boundaries.
             self.clear_cross_block_selection();
-            if let Some(block_idx) = self.block_at_y(self.last_mouse_pos.y) {
-                if block_idx < self.blocks.len() {
-                    let byte = self.blocks[block_idx]
-                        .line
-                        .inner_mut()
-                        .byte_at_x(self.last_mouse_pos.x);
-                    self.cross_block_drag_start = Some((block_idx, byte));
-                }
+            if let Some(block_idx) = self.block_at_y(self.last_mouse_pos.y)
+                && block_idx < self.blocks.len()
+            {
+                let byte = self.blocks[block_idx]
+                    .line
+                    .inner_mut()
+                    .byte_at_x(self.last_mouse_pos.x);
+                self.cross_block_drag_start = Some((block_idx, byte));
             }
         }
         if let WindowEvent::MouseInput {
@@ -1925,24 +1922,24 @@ impl Widget for BlockEditor {
                     .blocks
                     .iter()
                     .any(|b| b.line.inner().is_dragging());
-                if any_dragging {
-                    if let Some(end_block) = self.block_at_y(logical.y) {
-                        let end_byte = if end_block < self.blocks.len() {
-                            self.blocks[end_block]
-                                .line
-                                .inner_mut()
-                                .byte_at_x(logical.x)
-                        } else {
-                            0
-                        };
-                        if end_block != start_block {
-                            self.paint_cross_block_selection(
-                                start_block,
-                                start_byte,
-                                end_block,
-                                end_byte,
-                            );
-                        }
+                if any_dragging
+                    && let Some(end_block) = self.block_at_y(logical.y)
+                {
+                    let end_byte = if end_block < self.blocks.len() {
+                        self.blocks[end_block]
+                            .line
+                            .inner_mut()
+                            .byte_at_x(logical.x)
+                    } else {
+                        0
+                    };
+                    if end_block != start_block {
+                        self.paint_cross_block_selection(
+                            start_block,
+                            start_byte,
+                            end_block,
+                            end_byte,
+                        );
                     }
                 }
             }
@@ -1959,27 +1956,26 @@ impl Widget for BlockEditor {
                 },
             ..
         } = event
+            && let Some(focused_idx) = self.focused
         {
-            if let Some(focused_idx) = self.focused {
-                let supports = self
-                    .blocks
-                    .get(focused_idx)
-                    .map(|b| b.kind.supports_indent())
-                    .unwrap_or(false);
-                if supports {
-                    let delta = if modifiers.state().shift_key() { -1 } else { 1 };
-                    self.try_indent(focused_idx, delta);
-                    *handled = true;
-                    return;
-                }
+            let supports = self
+                .blocks
+                .get(focused_idx)
+                .map(|b| b.kind.supports_indent())
+                .unwrap_or(false);
+            if supports {
+                let delta = if modifiers.state().shift_key() { -1 } else { 1 };
+                self.try_indent(focused_idx, delta);
+                *handled = true;
+                return;
             }
         }
 
         // The leading `/` still falls through to TextInput (visible
         // feedback); `slash_open_at` remembers where to strip it on
         // commit. Code blocks excluded — `/` there is meaningful text.
-        if !self.slash_menu.is_visible() {
-            if let WindowEvent::KeyboardInput {
+        if !self.slash_menu.is_visible()
+            && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Character(c),
@@ -1988,38 +1984,35 @@ impl Widget for BlockEditor {
                     },
                 ..
             } = event
-            {
-                if c.as_str() == "/" {
-                    if let Some(focused_idx) = self.focused {
-                        let can_open = self
-                            .blocks
-                            .get(focused_idx)
-                            .map(|b| {
-                                !matches!(b.kind, BlockKind::CodeBlock { .. })
-                                    && b.kind.is_editable()
-                            })
-                            .unwrap_or(false);
-                        if can_open {
-                            let caret_byte = self
-                                .blocks
-                                .get(focused_idx)
-                                .map(|b| b.line.cursor_pos())
-                                .unwrap_or(0);
-                            let line_rect = self
-                                .blocks
-                                .get(focused_idx)
-                                .map(|b| b.line.get_rect())
-                                .unwrap_or(Rect::ZERO);
-                            self.slash_menu.set_anchor(Point::new(
-                                line_rect.x0,
-                                line_rect.y1 + 2.0,
-                            ));
-                            self.slash_menu.set_filter("");
-                            self.slash_menu.set_visible(true);
-                            self.slash_open_at = Some(caret_byte);
-                        }
-                    }
-                }
+            && c.as_str() == "/"
+            && let Some(focused_idx) = self.focused
+        {
+            let can_open = self
+                .blocks
+                .get(focused_idx)
+                .map(|b| {
+                    !matches!(b.kind, BlockKind::CodeBlock { .. })
+                        && b.kind.is_editable()
+                })
+                .unwrap_or(false);
+            if can_open {
+                let caret_byte = self
+                    .blocks
+                    .get(focused_idx)
+                    .map(|b| b.line.cursor_pos())
+                    .unwrap_or(0);
+                let line_rect = self
+                    .blocks
+                    .get(focused_idx)
+                    .map(|b| b.line.get_rect())
+                    .unwrap_or(Rect::ZERO);
+                self.slash_menu.set_anchor(Point::new(
+                    line_rect.x0,
+                    line_rect.y1 + 2.0,
+                ));
+                self.slash_menu.set_filter("");
+                self.slash_menu.set_visible(true);
+                self.slash_open_at = Some(caret_byte);
             }
         }
 
@@ -2035,20 +2028,20 @@ impl Widget for BlockEditor {
                 b.kind.is_editable()
                     && b.line.get_rect().contains(self.last_mouse_pos)
             });
-            if let Some(idx) = hit {
-                if self.focused != Some(idx) {
-                    if let Some(prev) = self.focused {
-                        if let Some(b) = self.blocks.get_mut(prev) {
-                            b.line.set_focus(false);
-                        }
-                    }
-                    self.focused = Some(idx);
-                    self.is_focused = true;
-                    if let Some(b) = self.blocks.get_mut(idx) {
-                        b.line.set_focus(true);
-                    }
-                    *focus_target = Some(node_id);
+            if let Some(idx) = hit
+                && self.focused != Some(idx)
+            {
+                if let Some(prev) = self.focused
+                    && let Some(b) = self.blocks.get_mut(prev)
+                {
+                    b.line.set_focus(false);
                 }
+                self.focused = Some(idx);
+                self.is_focused = true;
+                if let Some(b) = self.blocks.get_mut(idx) {
+                    b.line.set_focus(true);
+                }
+                *focus_target = Some(node_id);
             }
         }
 
@@ -2062,20 +2055,20 @@ impl Widget for BlockEditor {
                 .get(focused_idx)
                 .filter(|b| matches!(b.kind, BlockKind::Paragraph))
                 .map(|b| b.line.value().to_string());
-            if let Some(b) = self.blocks.get_mut(focused_idx) {
-                if b.kind.is_editable() {
-                    b.line.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
+            if let Some(b) = self.blocks.get_mut(focused_idx)
+                && b.kind.is_editable()
+            {
+                b.line.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
             }
             if let Some(sig) = self
                 .blocks
@@ -2088,14 +2081,14 @@ impl Widget for BlockEditor {
             // before the caret is exactly a heading prefix — a click that
             // parks the caret after an existing "# " doesn't promote,
             // nor does a space typed mid-line.
-            if let Some(before) = before_text {
-                if let Some(b) = self.blocks.get(focused_idx) {
-                    let now = b.line.value();
-                    if now != before {
-                        let caret = b.line.cursor_pos().min(now.len());
-                        if is_heading_prefix(&now[..caret]) {
-                            let _ = self.try_promote_to_heading(focused_idx);
-                        }
+            if let Some(before) = before_text
+                && let Some(b) = self.blocks.get(focused_idx)
+            {
+                let now = b.line.value();
+                if now != before {
+                    let caret = b.line.cursor_pos().min(now.len());
+                    if is_heading_prefix(&now[..caret]) {
+                        let _ = self.try_promote_to_heading(focused_idx);
                     }
                 }
             }

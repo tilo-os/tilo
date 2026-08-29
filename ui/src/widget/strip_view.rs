@@ -37,9 +37,8 @@ impl StripView {
     /// Returns `true` if the paginate applied. `direction` is +1 or -1.
     pub fn try_paginate(&mut self, direction: i32, now_since_start: Duration) -> bool {
         let now_ms = now_since_start.as_millis();
-        if let Some(last) = self.last_paginate_ms {
-            if now_ms.saturating_sub(last) < STRIP_COOLDOWN_MS as u128 { return false; }
-        }
+        if let Some(last) = self.last_paginate_ms
+            && now_ms.saturating_sub(last) < STRIP_COOLDOWN_MS as u128 { return false; }
         let new_idx = self.active_index as i64 + direction as i64;
         if new_idx < 0 || new_idx >= self.strip_names.len() as i64 { return false; }
         self.active_index = new_idx as usize;

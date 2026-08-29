@@ -20,7 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use vello::Scene;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
@@ -62,10 +62,6 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
 fn cursor(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: PhysicalPosition::new(x, y) }
 }
-fn press() -> WindowEvent {
-    WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left }
-}
-
 fn main() {
     let dir = std::env::var("TEXT_SHOTS_OUT").unwrap_or_else(|_| "/tmp/text_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();

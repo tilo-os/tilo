@@ -12,8 +12,10 @@ use vello::peniko::{Color, FontData as Font, StyleRef};
 /// numeric constants (Tailwind's font-medium/semibold/bold), so call sites
 /// read declaratively instead of passing raw u16s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum TextWeight {
     /// 400 — body / subtitle / explanatory text. Default.
+    #[default]
     Regular,
     /// 500 — most chrome labels (buttons, secondary titles).
     Medium,
@@ -38,28 +40,20 @@ impl TextWeight {
     }
 }
 
-impl Default for TextWeight {
-    fn default() -> Self {
-        TextWeight::Regular
-    }
-}
 
 /// A font family to shape with. The three generic classes resolve to the
 /// system's default face for that class; `Named` targets a specific
 /// installed family by name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum FontChoice {
+    #[default]
     SansSerif,
     Serif,
     Monospace,
     Named(String),
 }
 
-impl Default for FontChoice {
-    fn default() -> Self {
-        FontChoice::SansSerif
-    }
-}
 
 impl FontChoice {
     fn to_cosmic(&self) -> Family<'_> {
@@ -164,6 +158,12 @@ pub struct TextRenderer {
     shape_ns: u128,
 }
 
+impl Default for TextRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TextRenderer {
     pub fn new() -> Self {
         Self {
@@ -222,10 +222,10 @@ impl TextRenderer {
     /// most missed entries are one-off animated values (Spinner dots,
     /// scrubbing slider value) that aren't worth keeping anyway.
     fn measure_insert(&mut self, key: MeasureKey, value: (f32, f32)) {
-        if self.measure_cache.len() >= MEASURE_CACHE_LIMIT {
-            if let Some(victim) = self.measure_cache.keys().next().copied() {
-                self.measure_cache.remove(&victim);
-            }
+        if self.measure_cache.len() >= MEASURE_CACHE_LIMIT
+            && let Some(victim) = self.measure_cache.keys().next().copied()
+        {
+            self.measure_cache.remove(&victim);
         }
         self.measure_cache.insert(key, value);
     }
@@ -544,6 +544,10 @@ impl TextRenderer {
 
     /// Same as [`TextRenderer::draw_text`] but takes an explicit typographic
     /// [`TextWeight`], for chrome labels that need to lift off the body.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_text_weighted(
         &mut self,
         scene: &mut Scene,
@@ -622,19 +626,19 @@ impl TextRenderer {
                     y: run.line_y + g.y,
                 });
             }
-            if let Some(face_id) = current_face {
-                if !glyphs.is_empty() {
-                    runs.push(GlyphRun { face_id, glyphs });
-                }
+            if let Some(face_id) = current_face
+                && !glyphs.is_empty()
+            {
+                runs.push(GlyphRun { face_id, glyphs });
             }
         }
         self.shape_ns += t0.elapsed().as_nanos();
 
         let arc = Arc::new(runs);
-        if self.shape_cache.len() >= SHAPE_CACHE_LIMIT {
-            if let Some(victim) = self.shape_cache.keys().next().copied() {
-                self.shape_cache.remove(&victim);
-            }
+        if self.shape_cache.len() >= SHAPE_CACHE_LIMIT
+            && let Some(victim) = self.shape_cache.keys().next().copied()
+        {
+            self.shape_cache.remove(&victim);
         }
         self.shape_cache.insert(key, arc.clone());
         arc
@@ -737,11 +741,11 @@ impl TextRenderer {
                 batch_size = g.font_size;
                 batch.push(g.clone());
             }
-            if let Some(f) = face {
-                if !batch.is_empty() {
-                    let dy = cur_shift.offset(batch_size);
-                    self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y + dy);
-                }
+            if let Some(f) = face
+                && !batch.is_empty()
+            {
+                let dy = cur_shift.offset(batch_size);
+                self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y + dy);
             }
         }
         for &(s, e) in &layout.underlines {
@@ -760,6 +764,10 @@ impl TextRenderer {
         }
     }
 
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     fn flush_glyphs(
         &mut self,
         scene: &mut Scene,

@@ -250,6 +250,11 @@ fn later_writers(
     let versions = qdoc::history::versions(doc);
     let start_at = first_index_after(doc, after, versions.len());
     let mut out: HashMap<Slot, String> = HashMap::new();
+    // `i` is more than an array subscript here -- `prefix_heads(doc, i)` and
+    // `i - 1`/`i == 0` need the absolute version index itself, so an
+    // `.iter().enumerate()` rewrite would just reconstruct `i` from the
+    // enumerated offset for no clarity gain.
+    #[allow(clippy::needless_range_loop)]
     for i in start_at..versions.len() {
         let v = versions[i].clone();
         if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor_hex)) {
