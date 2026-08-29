@@ -173,7 +173,12 @@ pub struct ZoomAnim3d {
 
 impl ZoomAnim3d {
     pub fn new(z: f64) -> Self {
-        Self { display: z, sampled: z, active: false, last_tick: None }
+        Self {
+            display: z,
+            sampled: z,
+            active: false,
+            last_tick: None,
+        }
     }
 
     pub fn begin(&mut self) {
@@ -260,16 +265,28 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             let animating = z.tick(target, false);
             let s = z.display().scale;
-            assert!(s >= prev - 1e-9, "scale must move monotonically toward target");
-            assert!(s <= target.scale + 1e-6, "scale must not overshoot the target");
+            assert!(
+                s >= prev - 1e-9,
+                "scale must move monotonically toward target"
+            );
+            assert!(
+                s <= target.scale + 1e-6,
+                "scale must not overshoot the target"
+            );
             prev = s;
             frames += 1;
             if !animating {
                 break;
             }
         }
-        assert!(frames > 3, "a smooth zoom must take several frames, not snap (took {frames})");
-        assert!((z.display().scale - target.scale).abs() < 1e-6, "the ease converges to the target");
+        assert!(
+            frames > 3,
+            "a smooth zoom must take several frames, not snap (took {frames})"
+        );
+        assert!(
+            (z.display().scale - target.scale).abs() < 1e-6,
+            "the ease converges to the target"
+        );
         assert!(!z.active(), "the animation clears when settled");
     }
 
@@ -307,8 +324,14 @@ mod tests {
             // Anchor-based easing pins the world point under the cursor EXACTLY,
             // every frame — not merely at the endpoints.
             let w = to_world(cursor, &z.display());
-            assert!((w.x - anchor.x).abs() < 1e-9, "cursor x-anchor drifts during zoom");
-            assert!((w.y - anchor.y).abs() < 1e-9, "cursor y-anchor drifts during zoom");
+            assert!(
+                (w.x - anchor.x).abs() < 1e-9,
+                "cursor x-anchor drifts during zoom"
+            );
+            assert!(
+                (w.y - anchor.y).abs() < 1e-9,
+                "cursor y-anchor drifts during zoom"
+            );
             if !animating {
                 break;
             }
@@ -370,7 +393,10 @@ mod tests {
                 break;
             }
         }
-        assert!(frames > 3, "3D zoom must animate over several frames (took {frames})");
+        assert!(
+            frames > 3,
+            "3D zoom must animate over several frames (took {frames})"
+        );
         assert!((z.display() - 2.0).abs() < 1e-6);
         assert!(!z.active());
     }
@@ -378,7 +404,11 @@ mod tests {
     #[test]
     fn reduce_motion_snaps_zoom_immediately() {
         let mut z = ZoomAnim2d::new(v(64.0, 0.0, 0.0));
-        z.begin(Point::ZERO, Point::new(400.0, 300.0), Point::new(400.0, 300.0));
+        z.begin(
+            Point::ZERO,
+            Point::new(400.0, 300.0),
+            Point::new(400.0, 300.0),
+        );
         assert!(!z.tick(v(200.0, 0.0, 0.0), true));
         assert_eq!(z.display().scale, 200.0, "reduced motion snaps the zoom");
         assert!(!z.active());

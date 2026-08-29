@@ -5,12 +5,12 @@
 //! the rest of the OS. They paint directly into a Vello [`Scene`]; the app
 //! widget owns hit-testing and state, these are pure paint.
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::ColorCompat;
+use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 use crate::model::ContainerStatus;
 
@@ -31,7 +31,12 @@ pub fn status_color(theme: &Theme, status: ContainerStatus) -> Color {
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let lerp = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
-    Color::from_rgba8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()), a.a())
+    Color::from_rgba8(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        a.a(),
+    )
 }
 
 /// Apply an explicit alpha (0..=255) to a colour.
@@ -82,7 +87,15 @@ pub fn text(
     weight: TextWeight,
 ) -> f32 {
     let (w, _) = tr.measure_weighted(s, size, None, weight);
-    tr.draw_text_weighted(scene, s, size, color, base() * Affine::translate((at.x, at.y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        base() * Affine::translate((at.x, at.y)),
+        None,
+        weight,
+    );
     w
 }
 
@@ -99,7 +112,15 @@ pub fn text_clip(
 ) {
     let (w, _) = tr.measure_weighted(s, size, None, weight);
     if (w as f64) <= max_width {
-        tr.draw_text_weighted(scene, s, size, color, base() * Affine::translate((at.x, at.y)), None, weight);
+        tr.draw_text_weighted(
+            scene,
+            s,
+            size,
+            color,
+            base() * Affine::translate((at.x, at.y)),
+            None,
+            weight,
+        );
         return;
     }
     // Binary-search the longest prefix that fits with an ellipsis.
@@ -122,7 +143,15 @@ pub fn text_clip(
     if best.is_empty() {
         best = ell.to_string();
     }
-    tr.draw_text_weighted(scene, &best, size, color, base() * Affine::translate((at.x, at.y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        &best,
+        size,
+        color,
+        base() * Affine::translate((at.x, at.y)),
+        None,
+        weight,
+    );
 }
 
 /// A status pill: a filled-dot + label inside a faint rounded chip.
@@ -177,7 +206,15 @@ pub fn chip(
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
     fill_round(scene, rect, 4.0, with_alpha(accent, 30));
     let ty = rect.center().y - (size as f64) / 2.0 - 1.0;
-    text(scene, tr, label, size, accent, Point::new(rect.x0 + pad_x, ty), TextWeight::Medium);
+    text(
+        scene,
+        tr,
+        label,
+        size,
+        accent,
+        Point::new(rect.x0 + pad_x, ty),
+        TextWeight::Medium,
+    );
     width
 }
 
@@ -211,7 +248,13 @@ pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64)
             // A cube/box outline.
             let b = Rect::from_center_size(c, (r * 1.6, r * 1.4));
             scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
-            scene.stroke(&s, id, color, None, &Line::new(Point::new(b.x0, c.y), Point::new(b.x1, c.y)));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(Point::new(b.x0, c.y), Point::new(b.x1, c.y)),
+            );
         }
         Icon::Layers => {
             // Three stacked diamonds.
@@ -223,7 +266,11 @@ pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64)
                 path.line_to(Point::new(c.x, oy + r * 0.5));
                 path.line_to(Point::new(c.x - r, oy));
                 path.close_path();
-                let col = if i == 0 { color } else { with_alpha(color, 150) };
+                let col = if i == 0 {
+                    color
+                } else {
+                    with_alpha(color, 150)
+                };
                 scene.stroke(&s, id, col, None, &path);
             }
         }
@@ -231,14 +278,26 @@ pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64)
             let b = Rect::from_center_size(c, (r * 1.8, r * 1.4));
             scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
             // prompt chevron
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(b.x0 + r * 0.35, c.y - r * 0.3),
-                Point::new(b.x0 + r * 0.75, c.y),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(b.x0 + r * 0.75, c.y),
-                Point::new(b.x0 + r * 0.35, c.y + r * 0.3),
-            ));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(b.x0 + r * 0.35, c.y - r * 0.3),
+                    Point::new(b.x0 + r * 0.75, c.y),
+                ),
+            );
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(b.x0 + r * 0.75, c.y),
+                    Point::new(b.x0 + r * 0.35, c.y + r * 0.3),
+                ),
+            );
         }
         Icon::Play => {
             let mut path = vello::kurbo::BezPath::new();
@@ -250,7 +309,13 @@ pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64)
         }
         Icon::Stop => {
             let b = Rect::from_center_size(c, (r * 1.1, r * 1.1));
-            scene.fill(Fill::NonZero, id, color, None, &RoundedRect::from_rect(b, 2.0));
+            scene.fill(
+                Fill::NonZero,
+                id,
+                color,
+                None,
+                &RoundedRect::from_rect(b, 2.0),
+            );
         }
         Icon::Restart => {
             let arc = Circle::new(c, r * 0.8);
@@ -267,47 +332,89 @@ pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64)
         Icon::Trash => {
             let b = Rect::new(c.x - r * 0.6, c.y - r * 0.5, c.x + r * 0.6, c.y + r * 0.8);
             scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.9, c.y - r * 0.5),
-                Point::new(c.x + r * 0.9, c.y - r * 0.5),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.3, c.y - r * 0.8),
-                Point::new(c.x + r * 0.3, c.y - r * 0.8),
-            ));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x - r * 0.9, c.y - r * 0.5),
+                    Point::new(c.x + r * 0.9, c.y - r * 0.5),
+                ),
+            );
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x - r * 0.3, c.y - r * 0.8),
+                    Point::new(c.x + r * 0.3, c.y - r * 0.8),
+                ),
+            );
         }
         Icon::Plus => {
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.7, c.y),
-                Point::new(c.x + r * 0.7, c.y),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x, c.y - r * 0.7),
-                Point::new(c.x, c.y + r * 0.7),
-            ));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x - r * 0.7, c.y),
+                    Point::new(c.x + r * 0.7, c.y),
+                ),
+            );
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x, c.y - r * 0.7),
+                    Point::new(c.x, c.y + r * 0.7),
+                ),
+            );
         }
         Icon::Search => {
             let circle = Circle::new(Point::new(c.x - r * 0.2, c.y - r * 0.2), r * 0.55);
             scene.stroke(&s, id, color, None, &circle);
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x + r * 0.25, c.y + r * 0.25),
-                Point::new(c.x + r * 0.7, c.y + r * 0.7),
-            ));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x + r * 0.25, c.y + r * 0.25),
+                    Point::new(c.x + r * 0.7, c.y + r * 0.7),
+                ),
+            );
         }
         Icon::Pause => {
             let bw = r * 0.35;
             let h = r * 1.3;
             for dx in [-r * 0.4, r * 0.4] {
                 let b = Rect::from_center_size(Point::new(c.x + dx, c.y), (bw, h));
-                scene.fill(Fill::NonZero, id, color, None, &RoundedRect::from_rect(b, 1.5));
+                scene.fill(
+                    Fill::NonZero,
+                    id,
+                    color,
+                    None,
+                    &RoundedRect::from_rect(b, 1.5),
+                );
             }
         }
         Icon::Enter => {
             // arrow pointing into a bracket
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.7, c.y),
-                Point::new(c.x + r * 0.4, c.y),
-            ));
+            scene.stroke(
+                &s,
+                id,
+                color,
+                None,
+                &Line::new(
+                    Point::new(c.x - r * 0.7, c.y),
+                    Point::new(c.x + r * 0.4, c.y),
+                ),
+            );
             let mut path = vello::kurbo::BezPath::new();
             path.move_to(Point::new(c.x + r * 0.7, c.y));
             path.line_to(Point::new(c.x + r * 0.2, c.y - r * 0.4));

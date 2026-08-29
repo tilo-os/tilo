@@ -33,7 +33,11 @@ impl TextEdit {
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
     if cur == new {
-        return TextEdit { pos: 0, del: 0, ins: 0 };
+        return TextEdit {
+            pos: 0,
+            del: 0,
+            ins: 0,
+        };
     }
     let cur_chars: Vec<char> = cur.chars().collect();
     let new_chars: Vec<char> = new.chars().collect();
@@ -55,7 +59,11 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
     let ins: String = new_chars[p..new_chars.len() - s].iter().collect();
     let ins_len = new_chars.len() - s - p;
     let _ = doc.splice_text(text_id, p, del as isize, &ins);
-    TextEdit { pos: p, del, ins: ins_len }
+    TextEdit {
+        pos: p,
+        del,
+        ins: ins_len,
+    }
 }
 
 /// Creates the `Text` object on first use (inserting the whole value);
@@ -122,11 +130,19 @@ mod tests {
 
         assert_eq!(
             edit,
-            TextEdit { pos: long.chars().count(), del: 0, ins: 1 },
+            TextEdit {
+                pos: long.chars().count(),
+                del: 0,
+                ins: 1
+            },
             "appending one char must splice exactly one char, not rewrite the text"
         );
         assert!(edit.ins < long.chars().count());
-        assert_eq!(doc.text(&id).unwrap(), target, "must round-trip to the new value");
+        assert_eq!(
+            doc.text(&id).unwrap(),
+            target,
+            "must round-trip to the new value"
+        );
     }
 
     #[test]
@@ -156,7 +172,14 @@ mod tests {
         let edit = splice_text_diffed(&mut doc, &id, "unchanged");
 
         assert!(edit.is_noop(), "re-storing the same value must be a no-op");
-        assert_eq!(edit, TextEdit { pos: 0, del: 0, ins: 0 });
+        assert_eq!(
+            edit,
+            TextEdit {
+                pos: 0,
+                del: 0,
+                ins: 0
+            }
+        );
         assert_eq!(
             doc.save().len(),
             before,
@@ -169,13 +192,30 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
-        assert_eq!(e0, TextEdit { pos: 0, del: 0, ins: 11 });
+        assert_eq!(
+            e0,
+            TextEdit {
+                pos: 0,
+                del: 0,
+                ins: 11
+            }
+        );
 
         let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
-        assert_eq!(e1, TextEdit { pos: 11, del: 0, ins: 1 });
+        assert_eq!(
+            e1,
+            TextEdit {
+                pos: 11,
+                del: 0,
+                ins: 1
+            }
+        );
 
         let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
-        assert!(matches!(v, Value::Object(ObjType::Text)), "field is a CRDT Text");
+        assert!(
+            matches!(v, Value::Object(ObjType::Text)),
+            "field is a CRDT Text"
+        );
         assert_eq!(doc.text(&tid).unwrap(), "hello world!");
     }
 
@@ -194,20 +234,37 @@ mod tests {
             s.len()
         );
         let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
-        assert_eq!(doc.text(&tid).unwrap(), s, "typed value must round-trip exactly");
+        assert_eq!(
+            doc.text(&tid).unwrap(),
+            s,
+            "typed value must round-trip exactly"
+        );
     }
 
     #[test]
     fn put_if_changed_guards_redundant_writes() {
         let mut doc = AutoCommit::new();
 
-        assert!(put_if_changed(&mut doc, &ROOT, "n", 1i64), "first write happens");
+        assert!(
+            put_if_changed(&mut doc, &ROOT, "n", 1i64),
+            "first write happens"
+        );
         let before = doc.save().len();
 
-        assert!(!put_if_changed(&mut doc, &ROOT, "n", 1i64), "unchanged re-put is a no-op");
-        assert_eq!(doc.save().len(), before, "unchanged re-put must not grow the doc");
+        assert!(
+            !put_if_changed(&mut doc, &ROOT, "n", 1i64),
+            "unchanged re-put is a no-op"
+        );
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "unchanged re-put must not grow the doc"
+        );
 
-        assert!(put_if_changed(&mut doc, &ROOT, "n", 2i64), "changed value writes");
+        assert!(
+            put_if_changed(&mut doc, &ROOT, "n", 2i64),
+            "changed value writes"
+        );
         let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
             Value::Scalar(v) => v.to_i64(),
             _ => None,

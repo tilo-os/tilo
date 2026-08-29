@@ -36,7 +36,10 @@ pub struct Selection {
 
 impl Selection {
     pub fn collapsed(pos: usize) -> Self {
-        Self { anchor: pos, cursor: pos }
+        Self {
+            anchor: pos,
+            cursor: pos,
+        }
     }
 
     /// `true` when `anchor == cursor` — no characters are selected.
@@ -457,13 +460,19 @@ mod tests {
 
     #[test]
     fn selection_helpers_min_max_range_collapsed() {
-        let s = Selection { anchor: 3, cursor: 7 };
+        let s = Selection {
+            anchor: 3,
+            cursor: 7,
+        };
         assert_eq!(s.min(), 3);
         assert_eq!(s.max(), 7);
         assert_eq!(s.range(), 3..7);
         assert!(!s.is_collapsed());
 
-        let s2 = Selection { anchor: 9, cursor: 4 };
+        let s2 = Selection {
+            anchor: 9,
+            cursor: 4,
+        };
         assert_eq!(s2.min(), 4);
         assert_eq!(s2.max(), 9);
         assert_eq!(s2.range(), 4..9);

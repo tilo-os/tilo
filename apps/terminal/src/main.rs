@@ -13,14 +13,14 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use terminal::TerminalWidget;
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
-use ui::theme::Theme;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -65,7 +65,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.terminal"));
+        std::process::exit(ui::headless::run(
+            spec,
+            Box::new(widget),
+            "dev.qos.terminal",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.terminal");
@@ -286,11 +290,17 @@ fn run_scenario(
             let mut s = String::new();
             s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
             s.push_str(" 16-color ANSI:  ");
-            for n in 0..8 { s.push_str(&format!("\x1b[4{}m  \x1b[0m", n)); }
+            for n in 0..8 {
+                s.push_str(&format!("\x1b[4{}m  \x1b[0m", n));
+            }
             s.push(' ');
-            for n in 0..8 { s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8)); }
+            for n in 0..8 {
+                s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8));
+            }
             s.push_str("\r\n\r\n 256-color:      ");
-            for n in (16..232).step_by(6) { s.push_str(&format!("\x1b[48;5;{}m \x1b[0m", n)); }
+            for n in (16..232).step_by(6) {
+                s.push_str(&format!("\x1b[48;5;{}m \x1b[0m", n));
+            }
             s.push_str("\r\n\r\n truecolor:      ");
             for i in 0..48 {
                 let r = (i * 255 / 47) as u8;
@@ -321,7 +331,12 @@ fn run_scenario(
             ];
             for (i, line) in lines.iter().enumerate() {
                 // Line-number gutter in a dim color, then source text.
-                s.push_str(&format!("\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}", i + 3, i + 1, line));
+                s.push_str(&format!(
+                    "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
+                    i + 3,
+                    i + 1,
+                    line
+                ));
             }
             // A status line near the bottom in reverse video.
             s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");

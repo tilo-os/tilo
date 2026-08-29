@@ -159,7 +159,11 @@ impl AudioEngine {
         };
         #[cfg(not(feature = "audio"))]
         let inner = Inner { playing: false };
-        Self { inner, current_uri: None, volume: 0.8 }
+        Self {
+            inner,
+            current_uri: None,
+            volume: 0.8,
+        }
     }
 
     /// Point the engine at a new stream URI and start from zero.
@@ -180,14 +184,18 @@ impl AudioEngine {
             // Fully reset the pipeline before re-pointing it, so a fast skip
             // never leaves the previous stream decoding underneath the new one.
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
-            self.inner.frames.store(0, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .frames
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             self.inner
                 .errored
                 .store(false, std::sync::atomic::Ordering::Relaxed);
             if let Ok(mut m) = self.inner.error_msg.lock() {
                 *m = None;
             }
-            self.inner.eos.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .eos
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(target: "music::audio", %uri, "load: reset pipeline for new stream");
 
             // An http(s) stream can't be handed to playbin's `souphttpsrc`:
@@ -254,8 +262,12 @@ impl AudioEngine {
         {
             use gstreamer::prelude::*;
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
-            self.inner.eos.store(false, std::sync::atomic::Ordering::Relaxed);
-            self.inner.errored.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .eos
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .errored
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "live")]
             self.clear_pending();
         }
@@ -302,7 +314,9 @@ impl AudioEngine {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            self.inner.playbin.set_property("volume", self.volume as f64);
+            self.inner
+                .playbin
+                .set_property("volume", self.volume as f64);
         }
     }
 
@@ -368,7 +382,11 @@ impl AudioEngine {
             // A pipeline that errored (a forbidden fetch, an undecodable stream)
             // can linger with `pending == Playing`; never report that as playing,
             // or the transport fakes progress over a stream that makes no sound.
-            if self.inner.errored.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .inner
+                .errored
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 return false;
             }
             let (_, current, pending) = self.inner.playbin.state(gstreamer::ClockTime::ZERO);
@@ -396,8 +414,9 @@ impl AudioEngine {
                         .then(|| (p.path.clone(), p.want_play))
                 });
                 if let Some((path, want)) = staged {
-                    let has_bytes =
-                        std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+                    let has_bytes = std::fs::metadata(&path)
+                        .map(|m| m.len() > 0)
+                        .unwrap_or(false);
                     if has_bytes {
                         let uri = format!("file://{}", path.display());
                         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -405,7 +424,9 @@ impl AudioEngine {
                         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
                         self.inner.playbin.set_property("uri", &uri);
                         self.inner.playbin.set_property("mute", false);
-                        self.inner.playbin.set_property("volume", self.volume as f64);
+                        self.inner
+                            .playbin
+                            .set_property("volume", self.volume as f64);
                         if want {
                             let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
                         }
@@ -441,7 +462,9 @@ impl AudioEngine {
                         }
                         gstreamer::MessageView::Eos(_) => {
                             tracing::info!(target: "music::audio", "pipeline bus EOS");
-                            self.inner.eos.store(true, std::sync::atomic::Ordering::Relaxed);
+                            self.inner
+                                .eos
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         gstreamer::MessageView::StateChanged(sc) => {
                             // Only the playbin's own transitions are interesting
@@ -456,7 +479,9 @@ impl AudioEngine {
                     }
                 }
             }
-            self.inner.errored.load(std::sync::atomic::Ordering::Relaxed)
+            self.inner
+                .errored
+                .load(std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -608,8 +633,20 @@ impl AudioEngine {
         ));
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        spawn_stream_download(uri.to_string(), fallback, path.clone(), ready.clone(), done.clone());
-        self.inner.pending = Some(Pending { path, ready, done, want_play: false, started: false });
+        spawn_stream_download(
+            uri.to_string(),
+            fallback,
+            path.clone(),
+            ready.clone(),
+            done.clone(),
+        );
+        self.inner.pending = Some(Pending {
+            path,
+            ready,
+            done,
+            want_play: false,
+            started: false,
+        });
     }
 
     /// Drop any staged stream, removing its temp file.
@@ -626,7 +663,8 @@ impl AudioEngine {
 /// client UA matching the URL's `c=` param on the media fetch to mirror the
 /// client that signed it. Values mirror rustypipe's own client UAs (crate 0.11).
 #[cfg(all(feature = "audio", feature = "live"))]
-const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)";
+const IOS_UA: &str =
+    "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)";
 #[cfg(all(feature = "audio", feature = "live"))]
 const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1";
 
@@ -897,7 +935,13 @@ mod tests {
     fn real_sink_renders_audio_and_is_not_fakesink() {
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
         // The decode graph playbin needs for a local WAV, plus the real sink.
-        let need = ["filesrc", "wavparse", "audioconvert", "audioresample", "autoaudiosink"];
+        let need = [
+            "filesrc",
+            "wavparse",
+            "audioconvert",
+            "audioresample",
+            "autoaudiosink",
+        ];
         let have_plugins = need
             .iter()
             .all(|n| gstreamer::ElementFactory::find(n).is_some());
@@ -921,8 +965,14 @@ mod tests {
         engine.play();
 
         let reached = engine.wait_until_playing(std::time::Duration::from_secs(5));
-        assert!(reached, "real sink pipeline reached PLAYING for a decoded stream");
-        assert!(engine.is_playing_real(), "engine reports real PLAYING state");
+        assert!(
+            reached,
+            "real sink pipeline reached PLAYING for a decoded stream"
+        );
+        assert!(
+            engine.is_playing_real(),
+            "engine reports real PLAYING state"
+        );
 
         // Poll until decoded PCM buffers actually reach the real sink. This is
         // the audible-output proof a fakesink test could never give.
@@ -934,7 +984,10 @@ mod tests {
                 break;
             }
         }
-        assert!(frames > 0, "decoded PCM buffers reached the real audio sink");
+        assert!(
+            frames > 0,
+            "decoded PCM buffers reached the real audio sink"
+        );
 
         // The concrete sink autoaudiosink plugged must be a real audio sink,
         // never a fakesink fallback (which would mean silence in the field).
@@ -964,8 +1017,17 @@ mod tests {
     #[test]
     fn seek_while_playing_repositions_and_keeps_playing() {
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
-        let need = ["filesrc", "wavparse", "audioconvert", "audioresample", "autoaudiosink"];
-        if !need.iter().all(|n| gstreamer::ElementFactory::find(n).is_some()) {
+        let need = [
+            "filesrc",
+            "wavparse",
+            "audioconvert",
+            "audioresample",
+            "autoaudiosink",
+        ];
+        if !need
+            .iter()
+            .all(|n| gstreamer::ElementFactory::find(n).is_some())
+        {
             eprintln!("[seek test] skipped — missing decode/sink plugins {need:?}");
             return;
         }
@@ -1001,7 +1063,10 @@ mod tests {
             }
             d.expect("duration resolved for a local WAV")
         };
-        assert!(dur >= 5_000, "≈6 s WAV reports a multi-second duration ({dur} ms)");
+        assert!(
+            dur >= 5_000,
+            "≈6 s WAV reports a multi-second duration ({dur} ms)"
+        );
 
         // Seek to ~50% while playing.
         let target = dur / 2;
@@ -1023,7 +1088,10 @@ mod tests {
             pos >= target.saturating_sub(700) && pos < dur.saturating_sub(100),
             "seek landed near 50% ({pos} ms) and not at the end ({dur} ms)"
         );
-        assert!(engine.is_playing_real(), "playback continued after the seek (no EOS)");
+        assert!(
+            engine.is_playing_real(),
+            "playback continued after the seek (no EOS)"
+        );
         // Frames keep flowing after the seek — genuinely audible, still decoding.
         let before = engine.frames_rendered();
         let mut after = before;
@@ -1034,7 +1102,10 @@ mod tests {
                 break;
             }
         }
-        assert!(after > before, "decoded buffers keep reaching the sink after the seek");
+        assert!(
+            after > before,
+            "decoded buffers keep reaching the sink after the seek"
+        );
 
         engine.stop();
         let _ = std::fs::remove_file(&path);

@@ -17,9 +17,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use pkg::PackageId;
-use pkg::manifest::{
-    AArch64Level, Arch, IsaLevel, X86_64Level,
-};
+use pkg::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
 use pkg::pack::SigningIdentity;
 
 /// Version of the index wire format; bumped when the canonical signing bytes change shape.
@@ -130,8 +128,8 @@ impl RuntimeRef {
         if name.is_empty() {
             return Err(IndexError::BadRuntimeRef(s.to_string()));
         }
-        let version = semver::Version::parse(ver)
-            .map_err(|e| IndexError::BadSemver(s.to_string(), e))?;
+        let version =
+            semver::Version::parse(ver).map_err(|e| IndexError::BadSemver(s.to_string(), e))?;
         Ok(Self {
             name: name.to_string(),
             version,
@@ -166,20 +164,19 @@ impl HostProfile {
     pub fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            let level = if is_x86_feature_detected!("avx512f")
-                && is_x86_feature_detected!("avx512bw")
-            {
-                X86_64Level::V4
-            } else if is_x86_feature_detected!("avx2")
-                && is_x86_feature_detected!("bmi2")
-                && is_x86_feature_detected!("fma")
-            {
-                X86_64Level::V3
-            } else if is_x86_feature_detected!("sse4.2") && is_x86_feature_detected!("popcnt") {
-                X86_64Level::V2
-            } else {
-                X86_64Level::Baseline
-            };
+            let level =
+                if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+                    X86_64Level::V4
+                } else if is_x86_feature_detected!("avx2")
+                    && is_x86_feature_detected!("bmi2")
+                    && is_x86_feature_detected!("fma")
+                {
+                    X86_64Level::V3
+                } else if is_x86_feature_detected!("sse4.2") && is_x86_feature_detected!("popcnt") {
+                    X86_64Level::V2
+                } else {
+                    X86_64Level::Baseline
+                };
             return Self {
                 arch: Arch::X86_64,
                 isa: IsaLevel::X86_64(level),
@@ -257,9 +254,9 @@ impl IndexEntry {
 
     /// Parse the `package_id`.
     pub fn parse_package_id(&self) -> Result<PackageId, IndexError> {
-        self.package_id
-            .parse()
-            .map_err(|e| IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id)))
+        self.package_id.parse().map_err(|e| {
+            IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id))
+        })
     }
 
     /// The parsed publisher key bytes.
@@ -305,12 +302,11 @@ impl IndexEntry {
         let key = self.publisher_key()?;
         let vk = VerifyingKey::from_bytes(&key).map_err(|_| IndexError::InvalidKey)?;
         let sig = Signature::from_bytes(&parse_sig(&self.publisher_signature)?);
-        vk.verify(&self.signing_bytes()?, &sig).map_err(|_| {
-            IndexError::EntrySignatureMismatch {
+        vk.verify(&self.signing_bytes()?, &sig)
+            .map_err(|_| IndexError::EntrySignatureMismatch {
                 app_id: self.app_id.clone(),
                 version: self.version.clone(),
-            }
-        })
+            })
     }
 
     fn semver(&self) -> Result<semver::Version, IndexError> {
@@ -442,7 +438,9 @@ impl RegistryIndex {
         }
         let embedded = parse_ed25519(&self.signer_identity)?;
         if &embedded != expected_key {
-            return Err(IndexError::IndexSignatureMismatch(self.signer_identity.clone()));
+            return Err(IndexError::IndexSignatureMismatch(
+                self.signer_identity.clone(),
+            ));
         }
         let vk = VerifyingKey::from_bytes(expected_key).map_err(|_| IndexError::InvalidKey)?;
         let sig = Signature::from_bytes(&parse_sig(&self.signature)?);
@@ -605,7 +603,9 @@ mod tests {
         }
         let host = x86_host(X86_64Level::Baseline);
         let req = semver::VersionReq::parse("^1").unwrap();
-        let best = idx.resolve_best("dev.qos.editor", Some(&req), &host).unwrap();
+        let best = idx
+            .resolve_best("dev.qos.editor", Some(&req), &host)
+            .unwrap();
         assert_eq!(best.version, "1.2.0");
     }
 

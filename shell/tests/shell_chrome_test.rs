@@ -164,9 +164,7 @@ fn workspace_settings_members_tab_reads_the_real_roster() {
 
 #[test]
 fn workspace_settings_permissions_tab_lists_granted_capabilities() {
-    use shell::shell::state::{
-        CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
-    };
+    use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId};
     use shell::shell::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.set_owner("host");
@@ -186,7 +184,11 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
 
     let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
     let layout = permissions_pane_layout(&ws, pane);
-    assert_eq!(layout.rows.len(), 1, "the owner's membership is not a permission");
+    assert_eq!(
+        layout.rows.len(),
+        1,
+        "the owner's membership is not a permission"
+    );
     let row = &layout.rows[0];
     assert_eq!(row.subject.kind, SubjectKind::App);
     assert_eq!(row.subject.id, "Terminal");

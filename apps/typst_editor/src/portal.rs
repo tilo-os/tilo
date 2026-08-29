@@ -65,7 +65,9 @@ mod tests {
 
     #[test]
     fn open_dialog_offers_typ_then_an_escape_hatch() {
-        let r = PickRequest::open("Open a Typst file", "Open").filter(typ_filter()).all_files();
+        let r = PickRequest::open("Open a Typst file", "Open")
+            .filter(typ_filter())
+            .all_files();
         assert_eq!(r.filter_names(), vec!["Typst source", "All files"]);
         assert!(!r.is_multiple());
     }

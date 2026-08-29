@@ -477,7 +477,10 @@ impl AgentWork {
     /// story; an unfinished one is the agent's last word on it, which is not
     /// the same as a promise that more is coming.
     pub fn finished(&self) -> bool {
-        matches!(self.state, AgentWorkState::Done { .. } | AgentWorkState::Refused)
+        matches!(
+            self.state,
+            AgentWorkState::Done { .. } | AgentWorkState::Refused
+        )
     }
 }
 
@@ -731,8 +734,14 @@ mod tests {
         // Small calls mesh peer-to-peer; past the threshold they switch to a
         // host relay so a growing call's upload bandwidth stays flat.
         assert_eq!(CallSession::select(1), CallSession::Peer);
-        assert_eq!(CallSession::select(CallSession::PEER_MAX), CallSession::Peer);
-        assert_eq!(CallSession::select(CallSession::PEER_MAX + 1), CallSession::Host);
+        assert_eq!(
+            CallSession::select(CallSession::PEER_MAX),
+            CallSession::Peer
+        );
+        assert_eq!(
+            CallSession::select(CallSession::PEER_MAX + 1),
+            CallSession::Host
+        );
         assert_eq!(CallSession::Peer.label(), "peer-to-peer");
         assert_eq!(CallSession::Host.label(), "host relay");
     }
@@ -749,7 +758,9 @@ mod tests {
 
 #[cfg(test)]
 mod agent_record_tests {
-    use super::{AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+    use super::{
+        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+    };
 
     fn step(resource: &str, label: &str, outcome: AgentStepOutcome) -> AgentStep {
         AgentStep {
@@ -787,8 +798,12 @@ mod agent_record_tests {
     /// explanation nobody wrote.
     #[test]
     fn an_empty_reasoning_and_trace_are_absent_from_the_wire() {
-        let json = serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).expect("serialise");
-        assert!(!json.contains("reasoning"), "empty reasoning leaked: {json}");
+        let json =
+            serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).expect("serialise");
+        assert!(
+            !json.contains("reasoning"),
+            "empty reasoning leaked: {json}"
+        );
         assert!(!json.contains("trace"), "empty trace leaked: {json}");
     }
 
@@ -805,7 +820,9 @@ mod agent_record_tests {
                 step(
                     "doc:2",
                     "Insert table",
-                    AgentStepOutcome::Refused { why: "not allowed here".into() },
+                    AgentStepOutcome::Refused {
+                        why: "not allowed here".into(),
+                    },
                 ),
             ]);
         let json = serde_json::to_string(&work).expect("serialise");
@@ -813,7 +830,10 @@ mod agent_record_tests {
         assert_eq!(back, work);
         // The route is not decoration: a turn decided on the floor has to be
         // findable as one afterwards.
-        assert!(json.contains("\"route\":\"model\""), "route missing: {json}");
+        assert!(
+            json.contains("\"route\":\"model\""),
+            "route missing: {json}"
+        );
     }
 
     /// A refusal is never counted as work carried out — the difference
@@ -836,8 +856,17 @@ mod agent_record_tests {
     /// claim about an outcome.
     #[test]
     fn a_row_that_has_not_answered_yet_survives_the_wire() {
-        let work = AgentWork::new(AgentWorkState::Waiting { app: "Photos".into() }, 42)
-            .with_trace(vec![step("photos:app", "Open Photos", AgentStepOutcome::Asked)]);
+        let work = AgentWork::new(
+            AgentWorkState::Waiting {
+                app: "Photos".into(),
+            },
+            42,
+        )
+        .with_trace(vec![step(
+            "photos:app",
+            "Open Photos",
+            AgentStepOutcome::Asked,
+        )]);
         let json = serde_json::to_string(&work).expect("serialise");
         assert!(json.contains("\"outcome\":\"asked\""), "wire shape: {json}");
         let back: AgentWork = serde_json::from_str(&json).expect("parse");
@@ -848,8 +877,25 @@ mod agent_record_tests {
     #[test]
     fn finished_is_true_only_once_the_agent_has_stopped() {
         assert!(!AgentWork::new(AgentWorkState::Taken, 0).finished());
-        assert!(!AgentWork::new(AgentWorkState::Waiting { app: "Photos".into() }, 0).finished());
-        assert!(!AgentWork::new(AgentWorkState::Doing { did: "Crop".into(), about: String::new() }, 0).finished());
+        assert!(
+            !AgentWork::new(
+                AgentWorkState::Waiting {
+                    app: "Photos".into()
+                },
+                0
+            )
+            .finished()
+        );
+        assert!(
+            !AgentWork::new(
+                AgentWorkState::Doing {
+                    did: "Crop".into(),
+                    about: String::new()
+                },
+                0
+            )
+            .finished()
+        );
         assert!(AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, 0).finished());
         assert!(AgentWork::new(AgentWorkState::Refused, 0).finished());
     }

@@ -96,8 +96,7 @@ impl ResourceKind {
 /// directly. Returns a [`Result`] because an action can be addressed
 /// correctly and still have nothing to act on — "it ran" and "there was
 /// nothing here" are different answers a headless caller must tell apart.
-pub type OpenFn =
-    dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
+pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
 
 /// One row the palette will render. `score` is provider-supplied, higher
 /// ranks first; a stable scale is expected — prefix matches ~100,
@@ -845,8 +844,8 @@ mod tests {
     #[test]
     fn a_provider_never_scores_above_its_declared_ceiling() {
         use crate::shell::search::providers::{
-            actions::ActionsProvider, applications::ApplicationsProvider,
-            files::FilesProvider, notes::NotesProvider,
+            actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
+            notes::NotesProvider,
         };
         let providers: Vec<Rc<dyn SearchProvider>> = vec![
             Rc::new(ActionsProvider::new()),
@@ -958,7 +957,8 @@ mod tests {
             );
             let first = out.first().expect("some result in {scope:?}");
             assert_eq!(
-                first.provider_id, "applications",
+                first.provider_id,
+                "applications",
                 "in {scope:?} the row Enter activates must be the installed \
                  app, not one of the {} file hits: {:?}",
                 out.iter().filter(|r| r.kind == ResourceKind::File).count(),
@@ -1030,8 +1030,7 @@ mod tests {
         assert_eq!(apps.results.len(), 1);
 
         // Must be reachable, not merely present: within the flattened rows.
-        let flat: Vec<&SearchResult> =
-            groups.iter().flat_map(|g| g.results.iter()).collect();
+        let flat: Vec<&SearchResult> = groups.iter().flat_map(|g| g.results.iter()).collect();
         let app_row = flat
             .iter()
             .position(|r| r.kind == ResourceKind::Application)
@@ -1086,9 +1085,7 @@ mod tests {
             id: "files".into(),
             kinds: vec![ResourceKind::File],
             results: (0..30)
-                .map(|i| {
-                    mk_result(ResourceKind::File, "files", &format!("f{i}"), "x.rs", 80)
-                })
+                .map(|i| mk_result(ResourceKind::File, "files", &format!("f{i}"), "x.rs", 80))
                 .collect(),
             max_score: Some(120),
         }));

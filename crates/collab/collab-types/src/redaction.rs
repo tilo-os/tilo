@@ -66,11 +66,7 @@ impl OpId {
     /// Variant of [`OpId::from_op`] for callers that already have the
     /// signing-bytes (the audit log, which snapshots them at apply-time).
     /// Cuts one canonical-encode pass.
-    pub fn from_signing_bytes(
-        author: Ed25519PublicKey,
-        seq: u64,
-        signing_bytes: &[u8],
-    ) -> Self {
+    pub fn from_signing_bytes(author: Ed25519PublicKey, seq: u64, signing_bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"qos-redact-op-id-v1\0");
         hasher.update(author.as_bytes());
@@ -199,7 +195,9 @@ pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalEr
 /// The returned struct is owned, so callers can drop the original envelope.
 pub fn parse_redact_payload(op: &SignedOp) -> Result<RedactRequest, RedactionError> {
     if op.op_class != OpClass::Redact {
-        return Err(RedactionError::WrongOpClass { actual: op.op_class });
+        return Err(RedactionError::WrongOpClass {
+            actual: op.op_class,
+        });
     }
     let req: RedactRequest =
         from_canonical_bytes(&op.payload).map_err(RedactionError::Malformed)?;

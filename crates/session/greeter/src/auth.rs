@@ -16,7 +16,7 @@ use winit::event_loop::EventLoopProxy;
 
 use ui::app::UserEvent;
 
-use crate::greetd_client::{authenticate_and_start, AuthPrompt};
+use crate::greetd_client::{AuthPrompt, authenticate_and_start};
 
 /// Field separator for the [`AuthUpdate`] wire form. A control character
 /// that never appears in PAM prompt text or our own copy.
@@ -122,9 +122,8 @@ pub fn spawn_auth(
                 ));
             },
             move || {
-                let _ = accepted_proxy.send_event(UserEvent::External(
-                    AuthUpdate::Accepted.encode(),
-                ));
+                let _ =
+                    accepted_proxy.send_event(UserEvent::External(AuthUpdate::Accepted.encode()));
             },
         );
         // `authenticate_and_start` exits the process on success; only the
@@ -147,7 +146,11 @@ mod tests {
 
     fn roundtrip(u: AuthUpdate) {
         let encoded = u.encode();
-        assert_eq!(AuthUpdate::decode(&encoded), Some(u), "roundtrip: {encoded:?}");
+        assert_eq!(
+            AuthUpdate::decode(&encoded),
+            Some(u),
+            "roundtrip: {encoded:?}"
+        );
     }
 
     #[test]

@@ -9,23 +9,23 @@
 //! `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
 //! (`group_row_<state>.png`) for by-eye inspection.
 
-use std::collections::HashMap;
 use crate::support::offscreen::OffscreenRenderer;
+use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
-};
+use ui::widget::{AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
@@ -131,10 +131,7 @@ fn group_row_visual_journey_distinguishes_all_states() {
     );
     let g_b = make_group(
         200,
-        &[
-            (10, "B1", AppKind::Browser),
-            (11, "B2", AppKind::Settings),
-        ],
+        &[(10, "B1", AppKind::Browser), (11, "B2", AppKind::Settings)],
     );
     let mut row = GroupRow::new(vec![g_a, g_b]);
 
@@ -191,10 +188,7 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     let mut row = GroupRow::new(vec![
         make_group(
             100,
-            &[
-                (1, "A1", AppKind::Editor),
-                (2, "A2", AppKind::Files),
-            ],
+            &[(1, "A1", AppKind::Editor), (2, "A2", AppKind::Files)],
         ),
         make_group(200, &[(10, "B1", AppKind::Browser)]),
         make_group(300, &[(20, "C1", AppKind::Terminal)]),
@@ -337,26 +331,48 @@ fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &ev, 1.0, &modifiers, &mut state, &path, &mut handled, &mut focus,
-            root, taffy,
+            &ev,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            taffy,
         );
     };
     // Press on group 100's bar background, then move past group 200's
     // centre so the drop target is the gap after group 200.
-    dispatch(&mut row, &taffy, WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(grab.x, grab.y),
-    });
-    dispatch(&mut row, &taffy, WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    });
-    dispatch(&mut row, &taffy, WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(past_x, grab.y),
-    });
-    assert!(row.group_drag_active(), "grab-and-move must engage the reorder drag");
+    dispatch(
+        &mut row,
+        &taffy,
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(grab.x, grab.y),
+        },
+    );
+    dispatch(
+        &mut row,
+        &taffy,
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+    );
+    dispatch(
+        &mut row,
+        &taffy,
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(past_x, grab.y),
+        },
+    );
+    assert!(
+        row.group_drag_active(),
+        "grab-and-move must engage the reorder drag"
+    );
     assert!(
         row.group_reorder_target().is_some(),
         "the drag must target a drop gap so the indicator has a slot to paint",
@@ -384,5 +400,9 @@ fn tabbar_grab_point(row: &GroupRow, idx: usize) -> Point {
 }
 
 fn center_x_of_group(row: &GroupRow, idx: usize) -> f64 {
-    row.group_at_for_test(idx).expect("group at idx").get_rect().center().x
+    row.group_at_for_test(idx)
+        .expect("group at idx")
+        .get_rect()
+        .center()
+        .x
 }

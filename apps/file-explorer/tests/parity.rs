@@ -1,6 +1,6 @@
-use file_explorer::model::{Entry, SortBy, SortOrder, sort_entries, format_path};
-use std::path::PathBuf;
 use chrono::{Local, TimeZone};
+use file_explorer::model::{Entry, SortBy, SortOrder, format_path, sort_entries};
+use std::path::PathBuf;
 
 fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
     Entry {
@@ -71,7 +71,7 @@ use file_explorer::breadcrumbs::breadcrumb_components;
 #[test]
 fn breadcrumb_component_click_navigates_to_that_component() {
     let home = PathBuf::from("/home/user");
-    let cwd  = PathBuf::from("/home/user/Documents/Projects");
+    let cwd = PathBuf::from("/home/user/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home), &[]);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
     // Clean text labels — the leading root is drawn as a themed vector icon
@@ -187,7 +187,10 @@ fn back_button_moves_to_parent_and_noops_at_root() {
     let mut w = FileExplorerWidget::new();
     let start_parent = w.current_path().parent().map(|p| p.to_path_buf());
     w.back();
-    assert_eq!(Some(w.current_path()), start_parent.or(Some(w.current_path())));
+    assert_eq!(
+        Some(w.current_path()),
+        start_parent.or(Some(w.current_path()))
+    );
 
     // At root, back is a no-op.
     let mut w2 = FileExplorerWidget::new();
@@ -212,7 +215,7 @@ fn double_click_dir_navigates_into_it() {
     let dir_idx = w_first_dir_index(&w);
     if let Some(idx) = dir_idx {
         let path = w_entry_path(&w, idx);
-        let _ = w.select(Some(idx));   // first click
+        let _ = w.select(Some(idx)); // first click
         let triggered = w.select(Some(idx)); // second click within 500 ms
         assert_eq!(triggered, Some(path.clone()));
         // Caller would call navigate(path); simulate:
@@ -262,9 +265,16 @@ fn footer_shows_item_count_and_formatted_path() {
 
 #[test]
 fn crate_has_no_iced_dependency() {
-    let cargo = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
-    assert!(!cargo.contains("iced ="), "iced dependency must be removed after port");
-    assert!(!cargo.contains("iced = "), "iced dependency must be removed after port");
+    let cargo =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+    assert!(
+        !cargo.contains("iced ="),
+        "iced dependency must be removed after port"
+    );
+    assert!(
+        !cargo.contains("iced = "),
+        "iced dependency must be removed after port"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +347,7 @@ fn sidebar_has_fixed_width_180() {
 
 #[test]
 fn sort_by_name_places_alpha_order_with_dirs_first() {
-    use file_explorer::model::{sort_entries, SortBy, SortOrder};
+    use file_explorer::model::{SortBy, SortOrder, sort_entries};
     let mut v = vec![
         e("zeta.txt", false, 0, "text/plain", 2020),
         e("alpha.txt", false, 0, "text/plain", 2020),
@@ -351,7 +361,7 @@ fn sort_by_name_places_alpha_order_with_dirs_first() {
 
 #[test]
 fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
-    use file_explorer::model::{sort_entries, SortBy, SortOrder};
+    use file_explorer::model::{SortBy, SortOrder, sort_entries};
     let mut v = vec![
         e("alpha.txt", false, 10, "text/plain", 2020),
         e("zeta.txt", false, 100, "text/plain", 2020),
@@ -381,7 +391,12 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
             self.calls.push((program.to_string(), cwd.to_path_buf()));
             Ok(())
         }
-        fn spawn_arg(&mut self, program: &str, _arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
+        fn spawn_arg(
+            &mut self,
+            program: &str,
+            _arg: &std::path::Path,
+            cwd: &std::path::Path,
+        ) -> std::io::Result<()> {
             self.calls.push((program.to_string(), cwd.to_path_buf()));
             Ok(())
         }
@@ -445,11 +460,14 @@ fn grid_mode_uses_responsive_file_view() {
     // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
-    use file_explorer::views::grid_view::{build_grid, GRID_CELL_HEIGHT, GRID_CELL_WIDTH};
+    use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
     use std::path::PathBuf;
     use ui::SelectionModel;
 
-    assert!(GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0, "cell metrics are sane");
+    assert!(
+        GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0,
+        "cell metrics are sane"
+    );
     let entries = vec![Entry {
         name: "a.txt".into(),
         path: PathBuf::from("/a.txt"),
@@ -463,7 +481,17 @@ fn grid_mode_uses_responsive_file_view() {
     let sink = new_sink();
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_grid(&entries, &sel, &sink, 1.0, None, rename_rect, vello::kurbo::Point::ZERO, drop_targets, None);
+    let w = build_grid(
+        &entries,
+        &sel,
+        &sink,
+        1.0,
+        None,
+        rename_rect,
+        vello::kurbo::Point::ZERO,
+        drop_targets,
+        None,
+    );
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
@@ -487,7 +515,10 @@ fn loading_state_shown_during_navigation() {
     assert!(w.error_message().is_some(), "and an error is surfaced");
     // Successful refresh on a real directory also clears the flag.
     w.navigate(file_explorer::model::initial_path());
-    assert!(!w.is_loading(), "after successful navigate loading is clear");
+    assert!(
+        !w.is_loading(),
+        "after successful navigate loading is clear"
+    );
 }
 
 #[test]
@@ -497,14 +528,14 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
     // the child widget tree is non-empty (i.e. each subtree contributed
     // layout nodes), proving the composition is actually wired through —
     // not a no-op stub as it was at the end of Task 11.
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use ui::widget::Widget;
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, TaffyTree};
-    use vello::kurbo::Point;
     use vello::Scene;
+    use vello::kurbo::Point;
 
     let mut w = FileExplorerWidget::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();

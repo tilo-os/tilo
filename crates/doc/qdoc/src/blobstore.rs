@@ -94,7 +94,11 @@ impl FsBlobStore {
             .ok()
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".cache")))
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".cache"))
+            })
             .unwrap_or_else(std::env::temp_dir);
         base.join("qos").join("blobs")
     }
@@ -249,7 +253,9 @@ static ASKED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock:
 fn may_ask(hash: &str) -> bool {
     let cell = ASKED.get_or_init(|| RwLock::new(BTreeMap::new()));
     let now = std::time::Instant::now();
-    let Ok(mut m) = cell.write() else { return false };
+    let Ok(mut m) = cell.write() else {
+        return false;
+    };
     match m.get(hash) {
         Some(t) if now.duration_since(*t) < ASK_AGAIN_AFTER => false,
         _ => {
@@ -386,7 +392,10 @@ pub fn put(bytes: &[u8]) -> String {
 /// header rather than a full decode (the point is only to know how much space to reserve). An
 /// unrecognised format still gets a correct `len` and reserves no particular size.
 pub fn sniff(bytes: &[u8]) -> BlobMeta {
-    let mut m = BlobMeta { len: bytes.len() as u64, ..Default::default() };
+    let mut m = BlobMeta {
+        len: bytes.len() as u64,
+        ..Default::default()
+    };
     if let Some((mime, w, h)) = sniff_image(bytes) {
         m.mime = mime.to_string();
         m.w = w;
@@ -427,7 +436,11 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
             }
             b"VP8L" => {
                 let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
-                return Some(("image/webp", (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1));
+                return Some((
+                    "image/webp",
+                    (bits & 0x3FFF) + 1,
+                    ((bits >> 14) & 0x3FFF) + 1,
+                ));
             }
             _ => return Some(("image/webp", 0, 0)),
         }

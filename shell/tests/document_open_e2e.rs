@@ -68,7 +68,10 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         )
         .expect("compute_layout");
     host.apply_layout(&taffy, child, Point::ORIGIN);
-    Layout { taffy, child_node: child }
+    Layout {
+        taffy,
+        child_node: child,
+    }
 }
 
 /// Kept across events: the palette's input is CRDT-backed, so a fresh doc
@@ -282,14 +285,18 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         );
         let (_, query, _, entries) = host.palette_snapshot();
         assert_eq!(query, "quarterly-repor", "the query must be what was typed");
-        if entries.iter().any(|(_, label)| label.contains("quarterly-report")) {
+        if entries
+            .iter()
+            .any(|(_, label)| label.contains("quarterly-report"))
+        {
             rows = entries;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
-        rows.iter().any(|(_, label)| label.contains("quarterly-report")),
+        rows.iter()
+            .any(|(_, label)| label.contains("quarterly-report")),
         "the palette never offered the document; rows were {rows:#?}"
     );
 

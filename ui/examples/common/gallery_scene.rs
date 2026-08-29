@@ -19,10 +19,10 @@ use ui::widget::table;
 use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    Avatar, Badge, Banner, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
-    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, BarGauge, Row, SearchField,
-    Series, Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput,
-    Toggle, ToggleGroup, Toolbar, Trend, Widget,
+    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
+    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
+    Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
+    ToggleGroup, Toolbar, Trend, Widget,
 };
 
 const CARD_W: f32 = 560.0;
@@ -48,7 +48,9 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
         .push(Box::new(Text::new(heading).with_size(15.0)))
         .push(Box::new(Divider::horizontal()))
         .push(body);
-    let mut c = Container::new().with_background().with_child(Box::new(inner));
+    let mut c = Container::new()
+        .with_background()
+        .with_child(Box::new(inner));
     if let Some(w) = width {
         c = c.with_width(w);
     }
@@ -56,7 +58,10 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
 }
 
 fn col(gap: f32) -> Column {
-    Column::new().with_no_padding().with_intrinsic_height().with_gap(gap)
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(gap)
 }
 
 /// Build the whole showcase, seeding `state.doc`. `theme` selects dimmed-text
@@ -69,7 +74,10 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    let ti = state.doc.put_object(&root, "ti_name", automerge::ObjType::Text).unwrap();
+    let ti = state
+        .doc
+        .put_object(&root, "ti_name", automerge::ObjType::Text)
+        .unwrap();
     let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
 
     // Editable table model (lives directly under root, like the old gallery).
@@ -95,9 +103,10 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let accent = theme.accent_primary;
 
     // ---- Header -----------------------------------------------------------
-    let header = col(4.0)
-        .push(title("qOS UI Toolkit"))
-        .push(dim("Component gallery — one showcase of every general-purpose widget, light & dark", theme));
+    let header = col(4.0).push(title("qOS UI Toolkit")).push(dim(
+        "Component gallery — one showcase of every general-purpose widget, light & dark",
+        theme,
+    ));
 
     // ---- Row 1: controls | inputs -----------------------------------------
     let controls = card(
@@ -126,7 +135,11 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Volume", theme))
                 .push(Box::new(Slider::new("sld_vol", "sld_vol")))
                 .push(Box::new(ToggleGroup::new(
-                    vec![Segment::new("Day"), Segment::new("Week"), Segment::new("Month")],
+                    vec![
+                        Segment::new("Day"),
+                        Segment::new("Week"),
+                        Segment::new("Month"),
+                    ],
                     1,
                 ))),
         ),
@@ -138,9 +151,15 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             col(12.0)
                 .push(dim("Text field", theme))
-                .push(Box::new(TextInput::new(vec![]).with_id("g_name").with_on_change_path("ti_name")))
+                .push(Box::new(
+                    TextInput::new(vec![])
+                        .with_id("g_name")
+                        .with_on_change_path("ti_name"),
+                ))
                 .push(dim("Search field", theme))
-                .push(Box::new(SearchField::new().with_placeholder("Search components")))
+                .push(Box::new(
+                    SearchField::new().with_placeholder("Search components"),
+                ))
                 .push(dim("Dropdown", theme))
                 .push(Box::new(
                     Dropdown::new(
@@ -150,7 +169,11 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                     .with_placeholder("Quality"),
                 ))
                 .push(dim("Stepper & breadcrumb", theme))
-                .push(Box::new(NumberInput::new(12.0).with_range(0.0, 100.0).with_suffix(" px")))
+                .push(Box::new(
+                    NumberInput::new(12.0)
+                        .with_range(0.0, 100.0)
+                        .with_suffix(" px"),
+                ))
                 .push(Box::new(Breadcrumb::new(vec![
                     "Home".into(),
                     "Projects".into(),
@@ -178,7 +201,9 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Chips — plain, selected, selectable, removable", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Chip::new("Design").with_dot(theme.tokens.colors.semantic.info)))
+                        .push(Box::new(
+                            Chip::new("Design").with_dot(theme.tokens.colors.semantic.info),
+                        ))
                         .push(Box::new(Chip::new("Rust").selected(true)))
                         .push(Box::new(Chip::new("Filter").selectable()))
                         .push(Box::new(Chip::new("alice@example.com").removable())),
@@ -200,7 +225,9 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             col(14.0)
                 .push(dim("Determinate progress", theme))
-                .push(Box::new(ProgressBar::new(0.65).with_label("Downloading update")))
+                .push(Box::new(
+                    ProgressBar::new(0.65).with_label("Downloading update"),
+                ))
                 .push(dim("Indeterminate progress", theme))
                 .push(Box::new(ProgressBar::indeterminate()))
                 .push(dim("Spinner", theme))
@@ -219,10 +246,27 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             Row::new()
                 .no_wrap()
-                .push(Box::new(StatTile::new("Requests", "1,284").with_icon(Icon::BarChart).with_delta("12%", Trend::Up)))
-                .push(Box::new(StatTile::new("Errors", "3").with_icon(Icon::Ban).with_value_color(theme.tokens.colors.semantic.danger).with_delta("2", Trend::Down)))
-                .push(Box::new(StatTile::new("Latency", "48 ms").with_icon(Icon::Refresh).with_delta("0%", Trend::Flat)))
-                .push(Box::new(StatTile::new("Uptime", "99.9%").with_icon(Icon::Check).with_value_color(theme.tokens.colors.semantic.success))),
+                .push(Box::new(
+                    StatTile::new("Requests", "1,284")
+                        .with_icon(Icon::BarChart)
+                        .with_delta("12%", Trend::Up),
+                ))
+                .push(Box::new(
+                    StatTile::new("Errors", "3")
+                        .with_icon(Icon::Ban)
+                        .with_value_color(theme.tokens.colors.semantic.danger)
+                        .with_delta("2", Trend::Down),
+                ))
+                .push(Box::new(
+                    StatTile::new("Latency", "48 ms")
+                        .with_icon(Icon::Refresh)
+                        .with_delta("0%", Trend::Flat),
+                ))
+                .push(Box::new(
+                    StatTile::new("Uptime", "99.9%")
+                        .with_icon(Icon::Check)
+                        .with_value_color(theme.tokens.colors.semantic.success),
+                )),
         ),
     );
 
@@ -234,14 +278,19 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(RingGauge::new(0.72).with_label("72%", "CPU").with_size(110.0)))
                         .push(Box::new(
-                            col(8.0)
-                                .push(dim("Throughput", theme))
-                                .push(Box::new(Sparkline::new(
+                            RingGauge::new(0.72)
+                                .with_label("72%", "CPU")
+                                .with_size(110.0),
+                        ))
+                        .push(Box::new(
+                            col(8.0).push(dim("Throughput", theme)).push(Box::new(
+                                Sparkline::new(
                                     vec![4.0, 7.0, 3.0, 8.0, 6.0, 9.0, 5.0, 11.0, 8.0, 12.0],
                                     accent,
-                                ).with_size(200.0, 52.0))),
+                                )
+                                .with_size(200.0, 52.0),
+                            )),
                         )),
                 ))
                 .push(Box::new(BarGauge::new(0.4).with_label("Disk", "40%")))
@@ -289,10 +338,21 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         "Inline Banners",
         Box::new(
             col(10.0)
-                .push(Box::new(Banner::info("A new version of qOS is available.").with_message("Restart to finish updating.")))
+                .push(Box::new(
+                    Banner::info("A new version of qOS is available.")
+                        .with_message("Restart to finish updating."),
+                ))
                 .push(Box::new(Banner::success("Your changes were saved.")))
-                .push(Box::new(Banner::warning("You're offline.").with_message("Edits will sync when you reconnect.").dismissible()))
-                .push(Box::new(Banner::error("Upload failed.").with_message("Check your connection and try again.").dismissible())),
+                .push(Box::new(
+                    Banner::warning("You're offline.")
+                        .with_message("Edits will sync when you reconnect.")
+                        .dismissible(),
+                ))
+                .push(Box::new(
+                    Banner::error("Upload failed.")
+                        .with_message("Check your connection and try again.")
+                        .dismissible(),
+                )),
         ),
     );
 
@@ -301,12 +361,15 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         None,
         "Empty State",
         Box::new(
-            Container::new().with_no_padding().with_height(210.0).with_child(Box::new(
-                EmptyState::new("No messages yet")
-                    .with_icon(Icon::Inbox)
-                    .with_message("When you receive mail, it will show up here.")
-                    .with_action("Compose"),
-            )),
+            Container::new()
+                .with_no_padding()
+                .with_height(210.0)
+                .with_child(Box::new(
+                    EmptyState::new("No messages yet")
+                        .with_icon(Icon::Inbox)
+                        .with_message("When you receive mail, it will show up here.")
+                        .with_action("Compose"),
+                )),
         ),
     );
 

@@ -42,7 +42,6 @@ use std::time::Duration;
 use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
 use launcher::sandbox::NetGateBind;
 
-
 /// Sandbox-side path of the bind-mounted gate socket. Absent when the
 /// launch has no gate.
 const ENV_SOCKET: &str = "QOS_NETGATE_PROBE_SOCKET";
@@ -67,7 +66,6 @@ const ALLOWED_NAME: &str = "localhost";
 /// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for
 /// this name can only be the policy.
 const BLOCKED_NAME: &str = "blocked.invalid";
-
 
 /// The in-sandbox half. A no-op unless the outer test selected it —
 /// assertions live in the outer tests, which read its stdout.
@@ -234,8 +232,7 @@ fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::Failed(format!("connect gate: {:?}", e.kind())),
     };
-    if s
-        .write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+    if s.write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
         .is_err()
     {
         return Outcome::Failed("connect write".into());
@@ -348,7 +345,6 @@ fn http_exchange<S: Read + Write>(s: &mut S) -> Outcome {
         _ => Outcome::Failed(format!("no body in {text:?}")),
     }
 }
-
 
 /// A tiny HTTP server on loopback answering every request with `body`.
 /// Returns the port it bound.
@@ -533,7 +529,6 @@ fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
     (gate, path)
 }
 
-
 #[test]
 fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host() {
     let dir = runtime_scratch_dir();
@@ -574,7 +569,13 @@ fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host
             SANDBOX_SOCKET_PATH,
         ])
         .arg(&exe)
-        .args(["--exact", &probe_test_name("proof_probe"), "--nocapture", "--test-threads", "1"])
+        .args([
+            "--exact",
+            &probe_test_name("proof_probe"),
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env("QOS_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
         .env("QOS_NETGATE_PROOF_PORT", host_port.to_string())
         .output()
@@ -767,7 +768,13 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
     let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
     let (strict_gate, strict_socket) =
         start_gate("breakage-strict", strict.policy().unwrap().clone());
-    let refused = run_probe(&strict, Some(&strict_socket), allowed_port, other_port, false);
+    let refused = run_probe(
+        &strict,
+        Some(&strict_socket),
+        allowed_port,
+        other_port,
+        false,
+    );
     refused.dump("control: filter on");
     assert_eq!(
         refused.get("gate_by_literal"),

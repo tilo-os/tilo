@@ -488,8 +488,16 @@ mod tests {
     #[test]
     fn favorites_sort_before_others() {
         let mut lib = Library::new();
-        lib.insert(Snippet { title: "zebra".into(), favorite: true, ..Snippet::blank("") });
-        lib.insert(Snippet { title: "apple".into(), favorite: false, ..Snippet::blank("") });
+        lib.insert(Snippet {
+            title: "zebra".into(),
+            favorite: true,
+            ..Snippet::blank("")
+        });
+        lib.insert(Snippet {
+            title: "apple".into(),
+            favorite: false,
+            ..Snippet::blank("")
+        });
         let ids = lib.query(&Selection::default(), "");
         assert_eq!(lib.get(ids[0]).unwrap().title, "zebra");
     }
@@ -497,8 +505,16 @@ mod tests {
     #[test]
     fn smart_favorites_only_includes_starred() {
         let mut lib = Library::new();
-        lib.insert(Snippet { title: "a".into(), favorite: true, ..Snippet::blank("") });
-        lib.insert(Snippet { title: "b".into(), favorite: false, ..Snippet::blank("") });
+        lib.insert(Snippet {
+            title: "a".into(),
+            favorite: true,
+            ..Snippet::blank("")
+        });
+        lib.insert(Snippet {
+            title: "b".into(),
+            favorite: false,
+            ..Snippet::blank("")
+        });
         let ids = lib.query(&Selection::Smart(SmartFolder::Favorites), "");
         assert_eq!(ids.len(), 1);
         assert!(lib.get(ids[0]).unwrap().favorite);
@@ -507,8 +523,14 @@ mod tests {
     #[test]
     fn folder_selection_filters_by_folder() {
         let mut lib = Library::new();
-        lib.insert(Snippet { title: "a".into(), ..Snippet::blank("Deploy") });
-        lib.insert(Snippet { title: "b".into(), ..Snippet::blank("Git") });
+        lib.insert(Snippet {
+            title: "a".into(),
+            ..Snippet::blank("Deploy")
+        });
+        lib.insert(Snippet {
+            title: "b".into(),
+            ..Snippet::blank("Git")
+        });
         let ids = lib.query(&Selection::Folder("Deploy".into()), "");
         assert_eq!(ids.len(), 1);
         assert_eq!(lib.get(ids[0]).unwrap().folder, "Deploy");

@@ -146,7 +146,10 @@ pub fn trace_failure(program: &str, args: &[&OsStr], out: &Output) {
     if !debug_enabled() {
         return;
     }
-    let joined: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let joined: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     eprintln!(
         "qos-rollback: {program} {} -> exit {}\n{}",
         joined.join(" "),
@@ -159,7 +162,11 @@ pub fn trace_failure(program: &str, args: &[&OsStr], out: &Output) {
 pub fn require(runner: &dyn Runner, program: &str, args: &[&OsStr], what: &str) -> Result<Output> {
     let out = runner.run(program, args, None)?;
     if !out.ok() {
-        bail!("{what} failed ({program} exit {}): {}", out.code, out.last_error_line());
+        bail!(
+            "{what} failed ({program} exit {}): {}",
+            out.code,
+            out.last_error_line()
+        );
     }
     Ok(out)
 }
@@ -212,7 +219,13 @@ mod tests {
     #[test]
     fn real_runner_captures_status_and_streams() {
         let r = Real::new();
-        let out = r.run("/bin/sh", &argv!["-c", "printf hi; printf bad >&2; exit 3"], None).unwrap();
+        let out = r
+            .run(
+                "/bin/sh",
+                &argv!["-c", "printf hi; printf bad >&2; exit 3"],
+                None,
+            )
+            .unwrap();
         assert_eq!(out.code, 3);
         assert_eq!(out.stdout_utf8(), "hi");
         assert_eq!(out.last_error_line(), "bad");

@@ -36,19 +36,19 @@ pub mod revert;
 pub mod run_undo;
 pub mod runs;
 pub use authors::{
-    actor_handle, local_identity_author, short_id, stable_hue, AuthorDirectory, UNKNOWN_AUTHOR_NAME,
+    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author, short_id, stable_hue,
 };
 pub use groups::{
-    clear_name, close_range, is_group_marker, name_range, read_named_ranges, GROUPS_KEY,
+    GROUPS_KEY, clear_name, close_range, is_group_marker, name_range, read_named_ranges,
 };
 pub use revert::{
-    latest_run_by, plan_revert, revert_run, ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot,
+    ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
 };
 pub use run_undo::{
-    refuse_run, undo_run, undo_step, unreachable_steps, RunUndoReport, StepOutcome, StepState,
+    RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
 };
 pub use runs::{
-    forget_run, is_run_marker, read_runs, record_run, run_starting_at, AgentRun, RunStep, RUNS_KEY,
+    AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run, run_starting_at,
 };
 
 /// The structural path materialises one snapshot per version, so cost is
@@ -239,8 +239,10 @@ fn prefix_heads_series(
     let lo = start.saturating_sub(1);
     for i in lo..end.min(changes.len()) {
         let prefix = &changes[..=i];
-        let depended_on: std::collections::HashSet<ChangeHash> =
-            prefix.iter().flat_map(|c| c.deps().iter().copied()).collect();
+        let depended_on: std::collections::HashSet<ChangeHash> = prefix
+            .iter()
+            .flat_map(|c| c.deps().iter().copied())
+            .collect();
         out.insert(
             i,
             prefix
@@ -269,7 +271,9 @@ fn structural_summary(
     for b in &diff.blocks {
         match b.op {
             qdoc::BlockOp::Added => inserted += b.new_text.as_deref().unwrap_or("").chars().count(),
-            qdoc::BlockOp::Removed => deleted += b.old_text.as_deref().unwrap_or("").chars().count(),
+            qdoc::BlockOp::Removed => {
+                deleted += b.old_text.as_deref().unwrap_or("").chars().count()
+            }
             qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
                 for r in &b.runs {
                     match r.op {
@@ -388,7 +392,9 @@ fn patch_summary(
     for p in &patches {
         let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
         match &p.action {
-            PatchAction::SpliceText { value, .. } => inserted += value.make_string().chars().count(),
+            PatchAction::SpliceText { value, .. } => {
+                inserted += value.make_string().chars().count()
+            }
             PatchAction::DeleteSeq { length, .. } => {
                 if is_text {
                     text_deleted += length;
@@ -443,11 +449,7 @@ fn patch_summary(
         );
     }
     if marks > 0 {
-        return (
-            plural(marks, "formatting change"),
-            OpClass::EditMeta,
-            delta,
-        );
+        return (plural(marks, "formatting change"), OpClass::EditMeta, delta);
     }
     (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
 }

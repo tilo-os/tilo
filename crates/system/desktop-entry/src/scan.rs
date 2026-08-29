@@ -89,9 +89,7 @@ pub fn application_dirs() -> Vec<PathBuf> {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
-    push(PathBuf::from(
-        "/var/lib/flatpak/exports/share/applications",
-    ));
+    push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     dirs
 }
 
@@ -227,7 +225,9 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
         // `metadata()` follows symlinks, which is what we want: Flatpak and distribution packaging
         // both export entries as symlinks.
         let is_dir = if file_type.is_symlink() {
-            std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+            std::fs::metadata(&path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
         } else {
             file_type.is_dir()
         };
@@ -321,7 +321,12 @@ mod tests {
             &[user.path().to_path_buf(), system.path().to_path_buf()],
             &nirios(),
         );
-        assert_eq!(scan.entries.len(), 1, "one id, one entry: {:?}", scan.entries);
+        assert_eq!(
+            scan.entries.len(),
+            1,
+            "one id, one entry: {:?}",
+            scan.entries
+        );
         assert_eq!(scan.entries[0].name, "Mine");
         assert_eq!(scan.stats.shadowed, 1);
     }

@@ -54,7 +54,10 @@ fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
 /// The trash items backing the given in-trash file paths (matched by their
 /// `.trashinfo` file name, which is robust to on-trash name deduplication).
 fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
-    let wanted: Vec<_> = entries.iter().filter_map(|p| p.file_name().map(|n| n.to_owned())).collect();
+    let wanted: Vec<_> = entries
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_owned()))
+        .collect();
     Ok(trash::os_limited::list()
         .map_err(|e| e.to_string())?
         .into_iter()
@@ -89,7 +92,10 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
         return candidate;
     }
     let path = Path::new(name);
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
     for n in 2..10_000 {
         let trial_name = match &ext {
@@ -128,7 +134,9 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     if new_name.contains('/') {
         return Err("Name cannot contain '/'".to_string());
     }
-    let parent = path.parent().ok_or_else(|| "No parent directory".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "No parent directory".to_string())?;
     let dest = parent.join(new_name);
     if dest == path {
         return Ok(dest);
@@ -281,9 +289,15 @@ mod tests {
         // The Trash sidebar entry + the "am I in the trash?" check both hinge on
         // this path being the freedesktop home-trash files dir.
         if let Some(t) = trash_dir() {
-            assert!(t.ends_with("Trash/files"), "trash dir is <data>/Trash/files: {t:?}");
+            assert!(
+                t.ends_with("Trash/files"),
+                "trash dir is <data>/Trash/files: {t:?}"
+            );
             assert!(is_trash_dir(&t), "the trash dir recognises itself");
-            assert!(!is_trash_dir(Path::new("/tmp/not-trash")), "an unrelated dir is not the trash");
+            assert!(
+                !is_trash_dir(Path::new("/tmp/not-trash")),
+                "an unrelated dir is not the trash"
+            );
         }
     }
 

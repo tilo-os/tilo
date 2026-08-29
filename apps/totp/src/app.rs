@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -36,7 +36,7 @@ use ui::widget::{TextInput, Widget};
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
 use crate::list::{AccountList, ListEvent};
-use crate::model::{demo_accounts, AccountId, Vault};
+use crate::model::{AccountId, Vault, demo_accounts};
 use crate::storage;
 use crate::totp;
 
@@ -188,7 +188,8 @@ impl AuthenticatorApp {
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::TotpAction) {
-        self.actions.dispatch(doc, crate::actions::TOTP_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, &action);
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —
@@ -216,7 +217,10 @@ impl AuthenticatorApp {
             if query.trim().is_empty() {
                 self.list.set_empty_message("No accounts yet");
             } else {
-                self.list.set_empty_message(format!("No accounts match \u{201c}{}\u{201d}", query.trim()));
+                self.list.set_empty_message(format!(
+                    "No accounts match \u{201c}{}\u{201d}",
+                    query.trim()
+                ));
             }
         }
         self.list.set_selected(self.selected);
@@ -354,7 +358,9 @@ impl AuthenticatorApp {
     /// in-flight channel. Never blocks — a still pending picker leaves the
     /// channel installed for the next frame.
     fn drain_portal(&mut self) {
-        let Some(rx) = self.portal_rx.as_ref() else { return };
+        let Some(rx) = self.portal_rx.as_ref() else {
+            return;
+        };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
@@ -440,7 +446,11 @@ impl AuthenticatorApp {
         // Add button.
         let hovered = self.add_btn_rect.contains(self.last_mouse);
         let shape = RoundedRect::from_rect(self.add_btn_rect, theme.tokens.radii.md as f64);
-        let bg = if hovered { theme.accent_hover } else { theme.accent_primary };
+        let bg = if hovered {
+            theme.accent_hover
+        } else {
+            theme.accent_primary
+        };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
         let label = "+  Add account";
         let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
@@ -459,7 +469,13 @@ impl AuthenticatorApp {
         );
 
         // Search field (TextInput draws its own chrome + focus ring).
-        self.search.draw(scene, transform, text_renderer, theme, &PresenceCtx::empty());
+        self.search.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &PresenceCtx::empty(),
+        );
         if self.search.value().is_empty() {
             let pad = theme.padding_standard as f64;
             text_renderer.draw_text(
@@ -468,7 +484,10 @@ impl AuthenticatorApp {
                 16.0,
                 theme.tokens.colors.text_dim.with_alpha_factor(0.6),
                 transform
-                    * Affine::translate((self.search_rect.x0 + pad, self.search_rect.center().y - 10.0)),
+                    * Affine::translate((
+                        self.search_rect.x0 + pad,
+                        self.search_rect.center().y - 10.0,
+                    )),
                 None,
             );
         }
@@ -481,7 +500,9 @@ impl AuthenticatorApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some((msg, when)) = &self.toast else { return };
+        let Some((msg, when)) = &self.toast else {
+            return;
+        };
         if when.elapsed() > TOAST_TTL {
             return;
         }
@@ -493,13 +514,23 @@ impl AuthenticatorApp {
         let y1 = self.rect.y1 - 28.0;
         let pill = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
         let shape = RoundedRect::from_rect(pill, h / 2.0);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.semantic.success, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.semantic.success,
+            None,
+            &shape,
+        );
         text_renderer.draw_text_weighted(
             scene,
             msg,
             size,
             Color::WHITE,
-            transform * Affine::translate((cx - tw as f64 / 2.0, pill.center().y - size as f64 / 2.0 - 1.0)),
+            transform
+                * Affine::translate((
+                    cx - tw as f64 / 2.0,
+                    pill.center().y - size as f64 / 2.0 - 1.0,
+                )),
             None,
             TextWeight::Medium,
         );
@@ -566,7 +597,12 @@ impl Widget for AuthenticatorApp {
             y0 + layout.size.height as f64,
         );
 
-        self.header_rect = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + HEADER_H);
+        self.header_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + HEADER_H,
+        );
         self.add_btn_rect = Rect::new(
             self.rect.x1 - OUTER_PAD - ADD_BTN_W,
             self.rect.y0 + 18.0,
@@ -611,7 +647,12 @@ impl Widget for AuthenticatorApp {
         );
         self.draw_header(scene, transform, text_renderer, theme);
         // Hairline under the header.
-        let line = Rect::new(self.rect.x0, self.header_rect.y1 - 1.0, self.rect.x1, self.header_rect.y1);
+        let line = Rect::new(
+            self.rect.x0,
+            self.header_rect.y1 - 1.0,
+            self.rect.x1,
+            self.header_rect.y1,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -620,7 +661,8 @@ impl Widget for AuthenticatorApp {
             &line,
         );
 
-        self.list.draw(scene, transform, text_renderer, theme, presence);
+        self.list
+            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_toast(scene, transform, text_renderer, theme);
         self.add_panel.draw(scene, transform, text_renderer, theme);
     }
@@ -656,8 +698,16 @@ impl Widget for AuthenticatorApp {
 
         // Modal owns all input while open.
         if self.add_panel.is_open() {
-            self.add_panel
-                .handle_event(event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+            self.add_panel.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                node_id,
+                taffy,
+            );
             if let Some(ev) = self.add_panel.take_event() {
                 self.apply_add_panel_event(ev, state);
             }
@@ -668,7 +718,12 @@ impl Widget for AuthenticatorApp {
 
         // Global keyboard shortcuts.
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } = event
         {
@@ -742,7 +797,15 @@ impl Widget for AuthenticatorApp {
             || matches!(event, WindowEvent::CursorMoved { .. });
         if route_to_search {
             self.search.handle_event(
-                event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                &mut throwaway,
+                node_id,
+                taffy,
             );
             if self.search.take_dirty().is_some() {
                 // A query change reshapes the visible list but not the vault,
@@ -752,8 +815,17 @@ impl Widget for AuthenticatorApp {
         }
 
         // Route to the list (hover / click-to-copy / reorder / scroll).
-        self.list
-            .handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy);
+        self.list.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            &mut throwaway,
+            node_id,
+            taffy,
+        );
         let events = self.list.take_events();
         for ev in events {
             self.apply_list_event(ev, state);
@@ -782,7 +854,9 @@ impl Widget for AuthenticatorApp {
     /// every account findable there by issuer or account name, alongside the
     /// actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::TotpSearchProvider::new(&self.vault))]
+        vec![Box::new(crate::search_provider::TotpSearchProvider::new(
+            &self.vault,
+        ))]
     }
 
     /// Select the account a chosen palette row identifies. Clears the in-app
@@ -872,7 +946,17 @@ mod tests {
     ) -> bool {
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(ev, 1.0, mods, state, root, &mut handled, &mut focus, node, taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            mods,
+            state,
+            root,
+            &mut handled,
+            &mut focus,
+            node,
+            taffy,
+        );
         handled
     }
 
@@ -888,12 +972,18 @@ mod tests {
         assert!(wide_list_w > 900.0, "wide window gives a wide list");
 
         layout_at(&mut app, 560.0, 720.0);
-        assert!(app.list_rect.width() < wide_list_w, "list reflows narrower on resize");
+        assert!(
+            app.list_rect.width() < wide_list_w,
+            "list reflows narrower on resize"
+        );
         assert!(
             app.add_btn_rect.x0 < wide_btn_x0,
             "the add button re-anchors to the narrower right edge"
         );
-        assert!(app.add_btn_rect.x1 <= app.rect.x1, "add button stays inside the window");
+        assert!(
+            app.add_btn_rect.x1 <= app.rect.x1,
+            "add button stays inside the window"
+        );
 
         // Back to wide — it must recover, not stay stuck narrow.
         layout_at(&mut app, 1280.0, 720.0);
@@ -920,7 +1010,10 @@ mod tests {
         let mut app = AuthenticatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        if crate::storage::vault_path().map(|p| !p.exists()).unwrap_or(true) {
+        if crate::storage::vault_path()
+            .map(|p| !p.exists())
+            .unwrap_or(true)
+        {
             assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
         }
     }
@@ -954,7 +1047,9 @@ mod tests {
         assert!(app.vault.get(id).is_none());
         // The delete went through the action, so it left the shared document too.
         assert!(
-            AuthDoc::list_accounts(&state.doc).iter().all(|a| a.id != id),
+            AuthDoc::list_accounts(&state.doc)
+                .iter()
+                .all(|a| a.id != id),
             "the delete action mutated the shared document"
         );
     }
@@ -980,7 +1075,10 @@ mod tests {
         app.apply_list_event(ListEvent::Copy(id), &mut state.doc);
         let after = totp::current_code(&acc);
         assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-        let (msg, _) = app.toast.clone().expect("copying shows a confirmation toast");
+        let (msg, _) = app
+            .toast
+            .clone()
+            .expect("copying shows a confirmation toast");
         assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
         // The copied string is the account's live TOTP code (not its title or
         // an empty string). It equals the code at some instant during the copy,
@@ -1005,11 +1103,19 @@ mod tests {
         assert!(!app.add_panel.is_open(), "a valid save closes the modal");
         let ev = app.add_panel.take_event().expect("save emits an event");
         app.apply_add_panel_event(ev, &mut state.doc);
-        assert_eq!(app.vault.len(), before + 1, "the account is added to the vault");
+        assert_eq!(
+            app.vault.len(),
+            before + 1,
+            "the account is added to the vault"
+        );
         // The save went through the AddAccount action, so it landed in the
         // shared document (the real, replicated path — not just the local vault).
         let in_doc = AuthDoc::list_accounts(&state.doc);
-        assert_eq!(in_doc.len(), before + 1, "the add action mutated the shared document");
+        assert_eq!(
+            in_doc.len(),
+            before + 1,
+            "the add action mutated the shared document"
+        );
         assert!(
             in_doc.iter().any(|a| a.issuer == "Proton"),
             "the added account is present in the document by issuer"
@@ -1027,7 +1133,7 @@ mod tests {
     /// dialog; the in-flight guard must preserve it.
     #[test]
     fn qr_cta_routes_to_the_host_portal() {
-        use crate::portal::{inject_for_test, PortalOutcome};
+        use crate::portal::{PortalOutcome, inject_for_test};
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
@@ -1044,7 +1150,7 @@ mod tests {
     /// portal result is injected (no real dialog) and the next `sync` loads it.
     #[test]
     fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        use crate::portal::{inject_for_test, PortalOutcome};
+        use crate::portal::{PortalOutcome, inject_for_test};
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
         let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1059,7 +1165,10 @@ mod tests {
         app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(img.clone())));
         app.sync(&mut state.doc, &state.root);
 
-        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after delivering"
+        );
         let (issuer, label, secret) = app.add_panel.field_snapshot();
         assert_eq!(issuer, "Acme");
         assert_eq!(label, "bob@acme.io");
@@ -1071,14 +1180,21 @@ mod tests {
     /// left exactly as they were and the channel clears.
     #[test]
     fn portal_cancel_leaves_the_add_panel_untouched() {
-        use crate::portal::{inject_for_test, PortalOutcome};
+        use crate::portal::{PortalOutcome, inject_for_test};
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
         let before = app.add_panel.field_snapshot();
         app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
         app.sync(&mut state.doc, &state.root);
-        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
-        assert_eq!(app.add_panel.field_snapshot(), before, "cancel changes nothing");
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after a cancel"
+        );
+        assert_eq!(
+            app.add_panel.field_snapshot(),
+            before,
+            "cancel changes nothing"
+        );
     }
 
     /// End-to-end proof of the QR-image import seam: a real QR PNG on disk is
@@ -1105,7 +1221,7 @@ mod tests {
     // add-button hit-test, the modal-owns-input gate, and every global shortcut
     // are verified end to end.
 
-    use crate::test_events::{char_press, cursor_at, ctrl, left_press, named_press, no_mods};
+    use crate::test_events::{char_press, ctrl, cursor_at, left_press, named_press, no_mods};
 
     #[test]
     fn clicking_the_add_button_opens_the_modal() {
@@ -1115,8 +1231,24 @@ mod tests {
 
         let btn = app.add_btn_rect.center();
         let mods = no_mods();
-        dispatch(&mut app, &cursor_at(btn), &mods, &mut state.doc, &state.root, node, &taffy);
-        dispatch(&mut app, &left_press(), &mods, &mut state.doc, &state.root, node, &taffy);
+        dispatch(
+            &mut app,
+            &cursor_at(btn),
+            &mods,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
+        dispatch(
+            &mut app,
+            &left_press(),
+            &mods,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
         assert!(
             app.add_panel.is_open(),
             "clicking the + Add account button opens the add modal"
@@ -1128,8 +1260,15 @@ mod tests {
         let (mut app, mut state) = app_with_state();
         let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
         let ctrl = ctrl();
-        let handled =
-            dispatch(&mut app, &char_press("n"), &ctrl, &mut state.doc, &state.root, node, &taffy);
+        let handled = dispatch(
+            &mut app,
+            &char_press("n"),
+            &ctrl,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
         assert!(handled, "Ctrl+N is consumed");
         assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
     }
@@ -1142,13 +1281,29 @@ mod tests {
 
         // "/" focuses search when not already typing there.
         let none = no_mods();
-        dispatch(&mut app, &char_press("/"), &none, &mut state.doc, &state.root, node, &taffy);
+        dispatch(
+            &mut app,
+            &char_press("/"),
+            &none,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
         assert!(app.search.is_focused(), "'/' focuses the search field");
 
         // Ctrl+F also focuses search.
         app.search.set_focus(false);
         let ctrl = ctrl();
-        dispatch(&mut app, &char_press("f"), &ctrl, &mut state.doc, &state.root, node, &taffy);
+        dispatch(
+            &mut app,
+            &char_press("f"),
+            &ctrl,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
         assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
     }
 
@@ -1170,7 +1325,10 @@ mod tests {
             &taffy,
         );
         assert!(handled, "Escape is consumed while clearing the query");
-        assert!(app.search.value().is_empty(), "Escape clears the search text");
+        assert!(
+            app.search.value().is_empty(),
+            "Escape clears the search text"
+        );
         assert!(!app.search.is_focused(), "Escape also drops search focus");
     }
 
@@ -1178,7 +1336,9 @@ mod tests {
     fn enter_copies_the_selected_accounts_live_code() {
         let (mut app, mut state) = app_with_state();
         let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        let id = app.selected.expect("the demo vault selects the first account");
+        let id = app
+            .selected
+            .expect("the demo vault selects the first account");
         let acc = app.vault.get(id).cloned().unwrap();
 
         let before = totp::current_code(&acc);
@@ -1215,7 +1375,15 @@ mod tests {
         assert!(!app.search.is_focused());
 
         let none = no_mods();
-        dispatch(&mut app, &char_press("/"), &none, &mut state.doc, &state.root, node, &taffy);
+        dispatch(
+            &mut app,
+            &char_press("/"),
+            &none,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
         assert!(
             !app.search.is_focused(),
             "the open modal gates the '/' shortcut from reaching the list"

@@ -240,7 +240,9 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     const SEEKS: u32 = 100;
     let sstart = Instant::now();
     for _ in 0..SEEKS {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let off = (rng % size.saturating_sub(4096).max(1)) & !0xFFF;
         let _ = f.seek(SeekFrom::Start(off));
         let _ = f.read(&mut small);

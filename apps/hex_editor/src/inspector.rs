@@ -155,12 +155,60 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
     }
 
     // Multi-byte integers (endianness-aware).
-    rows.push(int_row!("i16", bytes, offset, endian, 2, i16, i16::from_le_bytes));
-    rows.push(int_row!("u16", bytes, offset, endian, 2, u16, u16::from_le_bytes));
-    rows.push(int_row!("i32", bytes, offset, endian, 4, i32, i32::from_le_bytes));
-    rows.push(int_row!("u32", bytes, offset, endian, 4, u32, u32::from_le_bytes));
-    rows.push(int_row!("i64", bytes, offset, endian, 8, i64, i64::from_le_bytes));
-    rows.push(int_row!("u64", bytes, offset, endian, 8, u64, u64::from_le_bytes));
+    rows.push(int_row!(
+        "i16",
+        bytes,
+        offset,
+        endian,
+        2,
+        i16,
+        i16::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u16",
+        bytes,
+        offset,
+        endian,
+        2,
+        u16,
+        u16::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "i32",
+        bytes,
+        offset,
+        endian,
+        4,
+        i32,
+        i32::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u32",
+        bytes,
+        offset,
+        endian,
+        4,
+        u32,
+        u32::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "i64",
+        bytes,
+        offset,
+        endian,
+        8,
+        i64,
+        i64::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u64",
+        bytes,
+        offset,
+        endian,
+        8,
+        u64,
+        u64::from_le_bytes
+    ));
 
     // Floats.
     rows.push(match read_n(bytes, offset, 4) {
@@ -227,7 +275,11 @@ fn format_float(v: f64) -> String {
     } else if v.is_nan() {
         "NaN".to_string()
     } else if v.is_infinite() {
-        if v > 0.0 { "+inf".to_string() } else { "-inf".to_string() }
+        if v > 0.0 {
+            "+inf".to_string()
+        } else {
+            "-inf".to_string()
+        }
     } else if v.abs() >= 1e-4 && v.abs() < 1e9 {
         // Plain decimal with up to 6 significant fractional digits.
         let s = format!("{:.6}", v);
@@ -280,8 +332,14 @@ mod tests {
     fn binary_and_octal_of_byte() {
         let bytes = [0b1010_0101];
         let rows = inspect(&bytes, 0, Endian::Little);
-        assert_eq!(rows.iter().find(|r| r.label == "bin").unwrap().value, "10100101");
-        assert_eq!(rows.iter().find(|r| r.label == "oct").unwrap().value, "0o245");
+        assert_eq!(
+            rows.iter().find(|r| r.label == "bin").unwrap().value,
+            "10100101"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.label == "oct").unwrap().value,
+            "0o245"
+        );
     }
 
     #[test]

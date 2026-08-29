@@ -133,7 +133,13 @@ impl RowGeometry {
         // glyphs sit on the pill's optical centre.
         let line_box = ROW_TEXT_SIZE as f64 * LINE_HEIGHT_RATIO;
         let text_y = rect.y0 + (rect.height() - line_box) / 2.0;
-        Self { pill, content_left, icon_x, label_x, text_y }
+        Self {
+            pill,
+            content_left,
+            icon_x,
+            label_x,
+            text_y,
+        }
     }
 }
 
@@ -326,7 +332,11 @@ impl Widget for SidebarRow {
     /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
     /// place for this read-only snapshot.
     fn get_state(&self) -> Option<String> {
-        Some(if self.active { "active".into() } else { "inactive".into() })
+        Some(if self.active {
+            "active".into()
+        } else {
+            "inactive".into()
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -378,10 +388,15 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
         // "RESULTS" header, or an honest empty state.
         col = col.push(section_header("Results"));
         col = col.push(vgap(SECTION_GAP_BELOW));
-        let matches: Vec<Category> =
-            Category::ALL.iter().copied().filter(|c| c.matches(trimmed)).collect();
+        let matches: Vec<Category> = Category::ALL
+            .iter()
+            .copied()
+            .filter(|c| c.matches(trimmed))
+            .collect();
         if matches.is_empty() {
-            col = col.push(caption(&format!("No settings match \u{201c}{trimmed}\u{201d}")));
+            col = col.push(caption(&format!(
+                "No settings match \u{201c}{trimmed}\u{201d}"
+            )));
         } else {
             for category in matches {
                 col = col.push(Box::new(SidebarRow::new(category, category == selected)));
@@ -440,13 +455,20 @@ mod tests {
         let sb = build(Category::Displays, "night");
         let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
         assert_eq!(count_rows(sb.as_ref()), expected);
-        assert!(expected >= 1 && expected < Category::ALL.len(), "genuinely filtered");
+        assert!(
+            expected >= 1 && expected < Category::ALL.len(),
+            "genuinely filtered"
+        );
     }
 
     #[test]
     fn no_match_query_shows_no_rows() {
         let sb = build(Category::Network, "zzzznope");
-        assert_eq!(count_rows(sb.as_ref()), 0, "an empty result set lists no rows");
+        assert_eq!(
+            count_rows(sb.as_ref()),
+            0,
+            "an empty result set lists no rows"
+        );
     }
 
     #[test]
@@ -472,7 +494,10 @@ mod tests {
         // Content starts one gutter inside the pill's left edge (even left
         // padding), and both icon and label sit inside the pill.
         assert!((g.content_left - (g.pill.x0 + ROW_CONTENT_GUTTER)).abs() < f64::EPSILON);
-        assert!(g.icon_x >= g.pill.x0, "icon must not spill past the pill's left");
+        assert!(
+            g.icon_x >= g.pill.x0,
+            "icon must not spill past the pill's left"
+        );
         let label_right = g.label_x; // label starts here; its ink extends right
         assert!(label_right < g.pill.x1, "label must start within the pill");
 
@@ -542,7 +567,17 @@ mod tests {
         for ev in [&press, &release] {
             let mut handled = false;
             let mut focus = None;
-            row.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+            row.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         }
 
         use automerge::{ReadDoc, Value};

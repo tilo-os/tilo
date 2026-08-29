@@ -1,19 +1,21 @@
+use crate::presence::PresenceCtx;
+use crate::record::{RecordCheckout, RecordId, RecordStore};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Spinner;
+use crate::widget::Widget;
+use crate::widget::app_widget::AppWidget;
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use crate::record::{RecordCheckout, RecordId, RecordStore};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
+use vello::peniko::{
+    Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
+};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
-use crate::widget::Spinner;
-use crate::widget::app_widget::AppWidget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::PresenceCtx;
 
 const SPAWN_FADE_MS: f32 = 180.0;
 const SPAWN_SCALE_START: f64 = 0.95;
@@ -119,9 +121,8 @@ fn draw_shadow_sprite(
     }
     let sx = tw / sprite.width as f64;
     let sy = th / sprite.height as f64;
-    let brush_transform = transform
-        * Affine::translate((target.x0, target.y0))
-        * Affine::scale_non_uniform(sx, sy);
+    let brush_transform =
+        transform * Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(sx, sy);
     scene.push_layer(
         vello::peniko::Fill::NonZero,
         vello::peniko::BlendMode::default(),
@@ -168,7 +169,13 @@ fn undo_step(event: &WindowEvent, m: &winit::event::Modifiers) -> Option<UndoSte
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppKind { Terminal, Files, Editor, Browser, Settings }
+pub enum AppKind {
+    Terminal,
+    Files,
+    Editor,
+    Browser,
+    Settings,
+}
 
 impl AppKind {
     pub fn as_str(&self) -> &str {
@@ -184,11 +191,17 @@ impl AppKind {
 
 pub enum TileContent {
     App(Box<dyn AppWidget>),
-    Stub { kind: AppKind, label: String },
+    Stub {
+        kind: AppKind,
+        label: String,
+    },
     /// Distinct from `Stub`'s "coming soon": `title` names the thing,
     /// `detail` says what's actually the case (e.g. a peer's app not
     /// installed here is absent, not coming soon).
-    Notice { title: String, detail: String },
+    Notice {
+        title: String,
+        detail: String,
+    },
 }
 
 /// A tab is an open thing, not a view onto one shared thing: the document
@@ -360,7 +373,9 @@ impl TileHost {
             TileContent::Notice { title, .. } => title.clone(),
         }
     }
-    pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
+    pub fn content_mut(&mut self) -> &mut TileContent {
+        &mut self.content
+    }
     /// Used when a window announced before it existed (an opening card)
     /// becomes the app; replacing the tab instead would hand focus
     /// elsewhere. Keeps the record binding but resets `announced` so the
@@ -371,8 +386,12 @@ impl TileHost {
         self.announced = None;
         self.structure_dirty = true;
     }
-    pub fn content(&self) -> &TileContent { &self.content }
-    pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+    pub fn content(&self) -> &TileContent {
+        &self.content
+    }
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
 
     /// A call mid-animation restarts the curve.
     pub fn start_spawn_animation(&mut self) {
@@ -412,7 +431,8 @@ impl Widget for TileHost {
             (Some(id), Some(b)) => {
                 b.store.with(&id, |doc| w.sync(doc, &ROOT));
                 if !b.established {
-                    b.store.with_history(&id, |doc, history| history.rebase(doc));
+                    b.store
+                        .with_history(&id, |doc, history| history.rebase(doc));
                     b.established = true;
                 }
             }
@@ -428,7 +448,10 @@ impl Widget for TileHost {
         let (Some(id), Some(b)) = (live, &self.binding) else {
             return w.update(s, p);
         };
-        let changed = b.store.with(&id, |doc| w.update(doc, &ROOT)).unwrap_or(false);
+        let changed = b
+            .store
+            .with(&id, |doc| w.update(doc, &ROOT))
+            .unwrap_or(false);
         // Close the burst against *this* record's history: the host's own
         // commit pass no longer touches the document the tab is editing,
         // and would otherwise leave it open forever.
@@ -445,22 +468,49 @@ impl Widget for TileHost {
         }
         changed
     }
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         let node = match &mut self.content {
             TileContent::App(w) => {
                 let child = w.build_layout(taffy, theme, node_map);
-                taffy.new_with_children(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }, &[child]).unwrap()
+                taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::percent(1.0),
+                            },
+                            ..Default::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap()
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => {
-                taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }).unwrap()
-            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap(),
         };
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64, origin.x + l.location.x as f64 + l.size.width as f64, origin.y + l.location.y as f64 + l.size.height as f64);
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -476,7 +526,14 @@ impl Widget for TileHost {
             }
         }
     }
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
@@ -522,7 +579,18 @@ impl Widget for TileHost {
         }
         self.draw_steady_state(scene, transform, tr, theme, presence);
     }
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        m: &winit::event::Modifiers,
+        s: &mut AutoCommit,
+        p: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
         let live = self.resolve_record();
         let TileContent::App(w) = &mut self.content else {
             return;
@@ -533,7 +601,17 @@ impl Widget for TileHost {
             return;
         };
         let (Some(id), Some(b)) = (live, &self.binding) else {
-            w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
+            w.handle_event(
+                event,
+                scale_factor,
+                m,
+                s,
+                p,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
             return;
         };
         // An `UndoEntry` is a pair of change hashes inside *this* record's
@@ -548,12 +626,7 @@ impl Widget for TileHost {
                 // reverts what was just typed, not the action before it —
                 // free when the burst is already closed.
                 if matches!(step, UndoStep::Undo) {
-                    history.commit_action_authored(
-                        doc,
-                        None,
-                        w.get_state(),
-                        Some(author.clone()),
-                    );
+                    history.commit_action_authored(doc, None, w.get_state(), Some(author.clone()));
                 }
                 match step {
                     UndoStep::Undo => history.undo_as(doc, Some(&author), None, w.get_state()),
@@ -583,7 +656,9 @@ impl Widget for TileHost {
             )
         });
     }
-    fn name(&self) -> &str { "TileHost" }
+    fn name(&self) -> &str {
+        "TileHost"
+    }
     /// Only an app can answer anything but `true` — a stub/notice is
     /// painted by this process and is on screen the moment the tile is.
     fn presented(&self) -> bool {
@@ -609,14 +684,18 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
     /// Presence identity is the record shown, not the tile — the only
     /// thing that tells two tabs of one app apart, since a peer's caret is
     /// a position in *a document*. Unbound tiles report nothing.
     fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
-        self.binding.as_ref().map(|b| crate::presence::PresenceKey::Tab {
-            id: b.live.as_str().to_string(),
-        })
+        self.binding
+            .as_ref()
+            .map(|b| crate::presence::PresenceKey::Tab {
+                id: b.live.as_str().to_string(),
+            })
     }
     /// A bound tile has already committed the app's burst against its own
     /// record in [`Widget::update`]; saying "yes" here would commit the
@@ -658,10 +737,7 @@ impl Widget for TileHost {
             TileContent::App(w) => w.needs_animation_frame(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         };
-        self.spawn_in_flight()
-            || Widget::opening(self)
-            || self.handover_in_flight()
-            || inner
+        self.spawn_in_flight() || Widget::opening(self) || self.handover_in_flight() || inner
     }
 }
 
@@ -717,7 +793,13 @@ impl TileHost {
             );
         }
         let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.window_card, None, &shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card,
+            None,
+            &shape,
+        );
         // Hosted apps fill their own background as a plain rectangle (an
         // app can't know it's being framed); without this clip the first
         // fill squares off the window's rounded corners.
@@ -809,10 +891,7 @@ impl TileHost {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
         let half = edge_width / 2.0;
-        let edge = RoundedRect::from_rect(
-            self.rect.inflate(half, half),
-            radius + half,
-        );
+        let edge = RoundedRect::from_rect(self.rect.inflate(half, half), radius + half);
         scene.stroke(
             &vello::kurbo::Stroke::new(edge_width),
             transform,
@@ -904,14 +983,28 @@ fn draw_card_text(
     let (tw, _) = tr.measure(title, text_size, None);
     let x = rect.center().x - tw as f64 / 2.0;
     let y = rect.center().y - text_size as f64 / 2.0;
-    tr.draw_text(scene, title, text_size, on_card, transform * Affine::translate((x, y)), None);
+    tr.draw_text(
+        scene,
+        title,
+        text_size,
+        on_card,
+        transform * Affine::translate((x, y)),
+        None,
+    );
     if detail.is_empty() {
         return;
     }
     let sm = theme.tokens.typography.scale.sm;
     let (sw, _) = tr.measure(detail, sm, None);
     let sx = rect.center().x - sw as f64 / 2.0;
-    tr.draw_text(scene, detail, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
+    tr.draw_text(
+        scene,
+        detail,
+        sm,
+        on_card_dim,
+        transform * Affine::translate((sx, y + text_size as f64 + 8.0)),
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -1003,7 +1096,10 @@ mod tests {
         }
         fn record_intent(&self) -> Option<RecordCheckout> {
             self.opens.as_ref().map(|p| {
-                RecordCheckout::new(RecordId::for_file(p), crate::record::RecordKind::new("file"))
+                RecordCheckout::new(
+                    RecordId::for_file(p),
+                    crate::record::RecordKind::new("file"),
+                )
             })
         }
     }
@@ -1168,10 +1264,7 @@ mod tests {
         // — guards against the wrapper becoming always-on and costing an
         // extra layer + affine compose every frame.
         let h = stub_host();
-        assert!(
-            !h.spawn_in_flight(),
-            "fresh host must not be in flight",
-        );
+        assert!(!h.spawn_in_flight(), "fresh host must not be in flight",);
         assert!(
             h.spawn_alpha().is_none(),
             "fresh host must report no spawn alpha",
@@ -1540,7 +1633,6 @@ mod tests {
         }
     }
 
-
     /// An app that has been asked for and has not drawn: the two things
     /// its widget is allowed to say about itself.
     struct Starting {
@@ -1624,7 +1716,10 @@ mod tests {
     /// app painted.
     const STARTING_FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
 
-    fn starting_host(presented: bool, opening: bool) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
+    fn starting_host(
+        presented: bool,
+        opening: bool,
+    ) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
         let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut host = TileHost::new(TileContent::App(Box::new(Starting {

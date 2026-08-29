@@ -51,7 +51,11 @@ mod tests {
 
     #[test]
     fn state_strings_round_trip() {
-        for s in [SyncState::Local, SyncState::Projected, SyncState::Downloading] {
+        for s in [
+            SyncState::Local,
+            SyncState::Projected,
+            SyncState::Downloading,
+        ] {
             assert_eq!(SyncState::parse(s.as_str()), Some(s), "round-trip {s:?}");
         }
         assert_eq!(SyncState::parse("bogus"), None);

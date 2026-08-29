@@ -58,7 +58,7 @@ pub(crate) fn ensure_text_object(
     root: &automerge::ObjId,
     key: &str,
 ) -> automerge::ObjId {
-    use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
+    use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
     if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, key) {
         return obj;
     }
@@ -86,7 +86,7 @@ pub(crate) fn clear_text_object(
     root: &automerge::ObjId,
     key: &str,
 ) {
-    use automerge::{transaction::Transactable, ReadDoc};
+    use automerge::{ReadDoc, transaction::Transactable};
     let obj = ensure_text_object(state, root, key);
     if let Ok(text) = state.text(&obj) {
         let n = text.chars().count();

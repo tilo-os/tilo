@@ -16,7 +16,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};

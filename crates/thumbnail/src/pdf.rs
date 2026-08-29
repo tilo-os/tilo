@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use pdfium_render::prelude::*;
 
-use crate::generate::{rgba_to_thumb, RgbaThumb};
+use crate::generate::{RgbaThumb, rgba_to_thumb};
 
 /// Serialises all pdfium access — the shared library handle is `!Sync` and
 /// callers may drive several worker threads.

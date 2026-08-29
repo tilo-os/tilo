@@ -105,7 +105,11 @@ pub fn proxy_media_url(instance: &str, video_id: &str, itag: u32) -> String {
 
 /// The Invidious video-info endpoint for a video id.
 pub fn video_info_url(instance: &str, video_id: &str) -> String {
-    format!("{}/api/v1/videos/{}", instance.trim_end_matches('/'), video_id)
+    format!(
+        "{}/api/v1/videos/{}",
+        instance.trim_end_matches('/'),
+        video_id
+    )
 }
 
 /// Parse the progressive **muxed** entries out of an Invidious
@@ -139,7 +143,12 @@ pub fn parse_format_streams(json: &serde_json::Value) -> Vec<MuxedFormat> {
                 .and_then(|h| h.parse::<u32>().ok())
                 .or_else(|| quality.trim_end_matches('p').parse::<u32>().ok())
                 .unwrap_or(0);
-            Some(MuxedFormat { itag, mime, quality, height })
+            Some(MuxedFormat {
+                itag,
+                mime,
+                quality,
+                height,
+            })
         })
         .collect()
 }
@@ -147,7 +156,8 @@ pub fn parse_format_streams(json: &serde_json::Value) -> Vec<MuxedFormat> {
 /// Read a numeric JSON field that Invidious may send as a number *or* a string.
 fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
     let v = it.get(key)?;
-    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// Pick the best muxed MP4 format to play: highest resolution among the
@@ -178,8 +188,7 @@ pub fn instances() -> Vec<String> {
 
 /// A plain browser `User-Agent` for talking to an Invidious `local` proxy (it is
 /// not a signed googlevideo URL, so no client-specific UA is needed).
-pub const BROWSER_UA: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+pub const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
 /// Resolve a video id to a **fully-rangeable** proxied muxed video+audio stream.
 ///
@@ -335,7 +344,11 @@ mod tests {
             eprintln!("[proxy test] skipped — no Invidious instance reachable");
             return;
         };
-        assert!(stream.url.contains("local=true"), "resolved a proxied URL: {}", stream.url);
+        assert!(
+            stream.url.contains("local=true"),
+            "resolved a proxied URL: {}",
+            stream.url
+        );
         assert!(stream.has_audio, "a muxed format carries audio");
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))

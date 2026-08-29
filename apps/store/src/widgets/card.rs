@@ -14,9 +14,7 @@
 //! bespoke rendering. The action button label + click path are wired by the
 //! caller: this fn is pure composition.
 
-use ui::widget::{
-    Button, Column, Container, Row, Spacer, Text, Widget,
-};
+use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -72,12 +70,8 @@ pub fn store_card(
     // ghost buttons so the card has one clear primary action. They are direct
     // children of the row (fixed-width buttons) laid out as a horizontal
     // cluster on the right, not a vertical stack.
-    let action_btn = Button::new(
-        action_click_key,
-        action.label(),
-        Some(action_click_key),
-    )
-    .primary();
+    let action_btn =
+        Button::new(action_click_key, action.label(), Some(action_click_key)).primary();
 
     let mut row = Row::new()
         .no_wrap()
@@ -112,11 +106,7 @@ pub fn store_card(
     // on the focused card writes `select_key`).
     let _ = select_key;
 
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(row)),
-    )
+    Box::new(Container::new().with_background().with_child(Box::new(row)))
 }
 
 /// Small decorative icon square. Real icon fetching is a follow-up;

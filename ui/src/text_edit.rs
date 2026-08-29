@@ -71,11 +71,15 @@ pub struct EditCore {
 impl EditCore {
     /// A collapsed caret at the start.
     pub fn new() -> Self {
-        Self { sel: Selection::collapsed(0) }
+        Self {
+            sel: Selection::collapsed(0),
+        }
     }
     /// A collapsed caret at byte `pos`.
     pub fn at(pos: usize) -> Self {
-        Self { sel: Selection::collapsed(pos) }
+        Self {
+            sel: Selection::collapsed(pos),
+        }
     }
 
     /// The full selection (anchor + cursor).
@@ -125,7 +129,10 @@ impl EditCore {
 
     /// Select the entire buffer.
     pub fn select_all(&mut self, text: &str) {
-        self.sel = Selection { anchor: 0, cursor: text.len() };
+        self.sel = Selection {
+            anchor: 0,
+            cursor: text.len(),
+        };
     }
 
     fn target(&self, text: &str, m: Motion) -> usize {
@@ -147,7 +154,11 @@ impl EditCore {
     /// edge rather than stepping past it — the native editor behaviour.
     pub fn motion(&mut self, text: &str, m: Motion, extend: bool) {
         if !extend && self.has_selection() && matches!(m, Motion::Left | Motion::Right) {
-            let edge = if m == Motion::Left { self.sel.min() } else { self.sel.max() };
+            let edge = if m == Motion::Left {
+                self.sel.min()
+            } else {
+                self.sel.max()
+            };
             self.sel.move_to(edge);
             return;
         }
@@ -172,12 +183,18 @@ impl EditCore {
     /// Select the word under `byte` (double-click) and anchor to it.
     pub fn select_word(&mut self, text: &str, byte: usize) {
         let (s, e) = word_boundaries(text, byte);
-        self.sel = Selection { anchor: s, cursor: e };
+        self.sel = Selection {
+            anchor: s,
+            cursor: e,
+        };
     }
     /// Select the `\n`-delimited line under `byte` (triple-click).
     pub fn select_line(&mut self, text: &str, byte: usize) {
         let (s, e) = line_boundaries(text, byte);
-        self.sel = Selection { anchor: s, cursor: e };
+        self.sel = Selection {
+            anchor: s,
+            cursor: e,
+        };
     }
 
     /// Insert `s`, replacing any selection. Returns the byte-space [`Edit`] and
@@ -188,7 +205,11 @@ impl EditCore {
         } else {
             (self.sel.cursor, 0)
         };
-        let edit = Edit { at, removed, inserted: s.to_string() };
+        let edit = Edit {
+            at,
+            removed,
+            inserted: s.to_string(),
+        };
         self.sel.move_to(edit.caret_after());
         edit
     }
@@ -200,7 +221,11 @@ impl EditCore {
             let at = self.sel.min();
             let removed = self.sel.max() - at;
             self.sel.move_to(at);
-            return Edit { at, removed, inserted: String::new() };
+            return Edit {
+                at,
+                removed,
+                inserted: String::new(),
+            };
         }
         let c = self.sel.cursor.min(text.len());
         if c == 0 {
@@ -212,7 +237,11 @@ impl EditCore {
             prev_char_boundary(text, c)
         };
         self.sel.move_to(from);
-        Edit { at: from, removed: c - from, inserted: String::new() }
+        Edit {
+            at: from,
+            removed: c - from,
+            inserted: String::new(),
+        }
     }
 
     /// Delete forward (Delete key): the selection, else the char (or word) after
@@ -222,7 +251,11 @@ impl EditCore {
             let at = self.sel.min();
             let removed = self.sel.max() - at;
             self.sel.move_to(at);
-            return Edit { at, removed, inserted: String::new() };
+            return Edit {
+                at,
+                removed,
+                inserted: String::new(),
+            };
         }
         let c = self.sel.cursor.min(text.len());
         if c >= text.len() {
@@ -234,7 +267,11 @@ impl EditCore {
             next_char_boundary(text, c)
         };
         self.sel.move_to(c);
-        Edit { at: c, removed: to - c, inserted: String::new() }
+        Edit {
+            at: c,
+            removed: to - c,
+            inserted: String::new(),
+        }
     }
 }
 
@@ -302,7 +339,11 @@ mod tests {
         // A plain Left collapses to the LEFT edge of the selection, not 3.
         c.motion(t, Motion::Left, false);
         assert!(!c.has_selection());
-        assert_eq!(c.caret(), 2, "plain left collapses to the selection's near edge");
+        assert_eq!(
+            c.caret(),
+            2,
+            "plain left collapses to the selection's near edge"
+        );
     }
 
     #[test]
@@ -320,7 +361,14 @@ mod tests {
         let t = "abc";
         let mut c = EditCore::at(1);
         let e = c.insert("XY");
-        assert_eq!(e, Edit { at: 1, removed: 0, inserted: "XY".into() });
+        assert_eq!(
+            e,
+            Edit {
+                at: 1,
+                removed: 0,
+                inserted: "XY".into()
+            }
+        );
         assert_eq!(apply(t, &e), "aXYbc");
         assert_eq!(c.caret(), 3, "caret sits after the insert");
 
@@ -381,6 +429,9 @@ mod tests {
         assert_eq!(c.caret(), "café".len());
         c.set_caret(4); // mid-é byte
         c.clamp_to("café");
-        assert!("café".is_char_boundary(c.caret()), "clamp lands on a char boundary");
+        assert!(
+            "café".is_char_boundary(c.caret()),
+            "clamp lands on a char boundary"
+        );
     }
 }

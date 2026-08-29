@@ -237,7 +237,11 @@ mod tests {
         );
         // Deterministic: the same basemap yields the identical overlay each run.
         let again = TrafficData::sample(&base);
-        assert_eq!(again.counts(), counts, "sample overlay is stable across runs");
+        assert_eq!(
+            again.counts(),
+            counts,
+            "sample overlay is stable across runs"
+        );
     }
 
     #[test]
@@ -252,7 +256,10 @@ mod tests {
         );
         // The residential grid keeps some free-flowing streets, and the busy
         // arterials produce heavy/severe segments — both ends of the ramp show.
-        assert!(counts[Congestion::Free as usize] > 0, "some roads flow freely");
+        assert!(
+            counts[Congestion::Free as usize] > 0,
+            "some roads flow freely"
+        );
         assert!(
             counts[Congestion::Heavy as usize] + counts[Congestion::Severe as usize] > 0,
             "some arterials are congested"

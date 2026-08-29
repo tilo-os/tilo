@@ -7,9 +7,9 @@
 //! file path; the network engines show host/port/db/user. It is a focused
 //! form widget that paints over a scrim.
 
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -132,7 +132,10 @@ impl ConnectModal {
             self.engine,
         );
         p.host = self.host.clone();
-        p.port = self.port.parse().unwrap_or_else(|_| self.engine.default_port());
+        p.port = self
+            .port
+            .parse()
+            .unwrap_or_else(|_| self.engine.default_port());
         p.database = self.database.clone();
         p.user = self.user.clone();
         p.password = self.password.clone();
@@ -254,7 +257,14 @@ impl ConnectModal {
         }
     }
 
-    pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, root: Rect) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        root: Rect,
+    ) {
         let p = theme.db();
         // Scrim.
         scene.fill(
@@ -266,12 +276,22 @@ impl ConnectModal {
         );
 
         let pw = 460.0;
-        let ph = if self.engine == Engine::Sqlite { 320.0 } else { 512.0 };
+        let ph = if self.engine == Engine::Sqlite {
+            320.0
+        } else {
+            512.0
+        };
         let px = root.x0 + (root.width() - pw) / 2.0;
         let py = root.y0 + (root.height() - ph) / 2.0;
         let panel = Rect::new(px, py, px + pw, py + ph);
         self.panel = panel;
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &panel.to_rounded_rect(12.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_primary,
+            None,
+            &panel.to_rounded_rect(12.0),
+        );
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -308,9 +328,19 @@ impl ConnectModal {
             };
             scene.fill(Fill::NonZero, t, bg, None, &seg.to_rounded_rect(6.0));
             if !active {
-                scene.stroke(&Stroke::new(1.0), t, theme.border_standard, None, &seg.to_rounded_rect(6.0));
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    theme.border_standard,
+                    None,
+                    &seg.to_rounded_rect(6.0),
+                );
             }
-            let fg = if active { Color::WHITE } else { theme.text_primary };
+            let fg = if active {
+                Color::WHITE
+            } else {
+                theme.text_primary
+            };
             let (lw, _) = tr.measure(e.label(), 12.5, None);
             tr.draw_text(
                 scene,
@@ -328,15 +358,47 @@ impl ConnectModal {
         self.field_rects.clear();
         if self.engine == Engine::Sqlite {
             y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
-            y = self.field(scene, t, tr, theme, px, pw, y, "SQLite file path", Field::FilePath);
+            y = self.field(
+                scene,
+                t,
+                tr,
+                theme,
+                px,
+                pw,
+                y,
+                "SQLite file path",
+                Field::FilePath,
+            );
         } else {
             y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
             // Host + Port on one row.
-            let (hx, _) = self.field_pair(scene, t, tr, theme, px, pw, y, "Host", Field::Host, "Port", Field::Port);
+            let (hx, _) = self.field_pair(
+                scene,
+                t,
+                tr,
+                theme,
+                px,
+                pw,
+                y,
+                "Host",
+                Field::Host,
+                "Port",
+                Field::Port,
+            );
             y = hx;
             y = self.field(scene, t, tr, theme, px, pw, y, "Database", Field::Database);
             let (ux, _) = self.field_pair(
-                scene, t, tr, theme, px, pw, y, "User", Field::User, "Password", Field::Password,
+                scene,
+                t,
+                tr,
+                theme,
+                px,
+                pw,
+                y,
+                "User",
+                Field::User,
+                "Password",
+                Field::Password,
             );
             y = ux;
         }
@@ -354,8 +416,18 @@ impl ConnectModal {
         }
 
         // Buttons.
-        let cancel = Rect::new(px + pw - 200.0, py + ph - 48.0, px + pw - 110.0, py + ph - 16.0);
-        let save = Rect::new(px + pw - 100.0, py + ph - 48.0, px + pw - 24.0, py + ph - 16.0);
+        let cancel = Rect::new(
+            px + pw - 200.0,
+            py + ph - 48.0,
+            px + pw - 110.0,
+            py + ph - 16.0,
+        );
+        let save = Rect::new(
+            px + pw - 100.0,
+            py + ph - 48.0,
+            px + pw - 24.0,
+            py + ph - 16.0,
+        );
         self.cancel_btn = cancel;
         self.save_btn = save;
 
@@ -428,7 +500,14 @@ impl ConnectModal {
     ) -> (f64, ()) {
         let total = pw - 48.0;
         let w1 = total * 0.68;
-        tr.draw_text(scene, l1, 11.0, theme.text_dim, t * Affine::translate((px + 24.0, y)), None);
+        tr.draw_text(
+            scene,
+            l1,
+            11.0,
+            theme.text_dim,
+            t * Affine::translate((px + 24.0, y)),
+            None,
+        );
         tr.draw_text(
             scene,
             l2,
@@ -456,9 +535,25 @@ impl ConnectModal {
         field: Field,
     ) {
         let focused = self.focus == Some(field);
-        scene.fill(Fill::NonZero, t, theme.bg_app, None, &r.to_rounded_rect(6.0));
-        let border = if focused { theme.border_focus } else { theme.border_standard };
-        scene.stroke(&Stroke::new(if focused { 1.5 } else { 1.0 }), t, border, None, &r.to_rounded_rect(6.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_app,
+            None,
+            &r.to_rounded_rect(6.0),
+        );
+        let border = if focused {
+            theme.border_focus
+        } else {
+            theme.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if focused { 1.5 } else { 1.0 }),
+            t,
+            border,
+            None,
+            &r.to_rounded_rect(6.0),
+        );
         // Password fields render masked; every other field shows its value.
         let raw = self.field_value(field);
         let masked;

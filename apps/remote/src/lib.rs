@@ -39,9 +39,9 @@ pub mod model;
 pub mod rfb;
 pub mod session;
 pub mod ssh;
+mod theme_ext;
 pub mod vnc;
 pub mod vt;
-mod theme_ext;
 
 use ui::widget::Widget;
 

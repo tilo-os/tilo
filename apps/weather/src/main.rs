@@ -15,13 +15,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -48,7 +48,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, weather::app_root(), "dev.qos.weather"));
+        std::process::exit(ui::headless::run(
+            spec,
+            weather::app_root(),
+            "dev.qos.weather",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.weather");
@@ -111,7 +115,10 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
         lat: berlin.latitude,
         lon: berlin.longitude,
     });
-    svc.request(Request::Geocode { seq: 1, query: "Tokyo".to_string() });
+    svc.request(Request::Geocode {
+        seq: 1,
+        query: "Tokyo".to_string(),
+    });
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let (mut got_forecast, mut got_geocode, mut got_aq) = (false, false, false);

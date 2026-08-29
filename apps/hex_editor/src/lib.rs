@@ -86,10 +86,7 @@ mod tests {
 
     #[test]
     fn shots_flag_and_value_are_not_treated_as_file() {
-        let args = vec![
-            "--shots".to_string(),
-            "/tmp/whatever-out.png".to_string(),
-        ];
+        let args = vec!["--shots".to_string(), "/tmp/whatever-out.png".to_string()];
         // The PATH after --shots must never be opened as input, even if it
         // happens to exist on disk.
         assert_eq!(parse_file_arg(args), None);

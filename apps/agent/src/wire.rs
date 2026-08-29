@@ -24,7 +24,10 @@ pub fn default_socket_path() -> PathBuf {
             let uid = unsafe { libc_getuid() };
             PathBuf::from(format!("/run/user/{uid}"))
         });
-    runtime.join("qos").join("services").join("collab-json.sock")
+    runtime
+        .join("qos")
+        .join("services")
+        .join("collab-json.sock")
 }
 
 // Avoid a `libc` dependency for one call.
@@ -41,8 +44,9 @@ pub struct Link {
 
 impl Link {
     pub fn connect(path: &Path) -> Result<Self> {
-        let stream = UnixStream::connect(path)
-            .with_context(|| format!("connect to the collaboration broker at {}", path.display()))?;
+        let stream = UnixStream::connect(path).with_context(|| {
+            format!("connect to the collaboration broker at {}", path.display())
+        })?;
         Ok(Self {
             stream,
             rbuf: Vec::new(),
@@ -66,7 +70,9 @@ impl Link {
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
         loop {
             if let Some(frame) = self.take_frame() {
-                return Ok(Some(serde_json::from_slice(&frame).context("decode event")?));
+                return Ok(Some(
+                    serde_json::from_slice(&frame).context("decode event")?,
+                ));
             }
             self.stream.set_nonblocking(false)?;
             self.stream.set_read_timeout(Some(timeout))?;
@@ -91,7 +97,8 @@ impl Link {
         if self.rbuf.len() < 4 {
             return None;
         }
-        let len = u32::from_le_bytes([self.rbuf[0], self.rbuf[1], self.rbuf[2], self.rbuf[3]]) as usize;
+        let len =
+            u32::from_le_bytes([self.rbuf[0], self.rbuf[1], self.rbuf[2], self.rbuf[3]]) as usize;
         if self.rbuf.len() < 4 + len {
             return None;
         }
@@ -132,8 +139,13 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let frame = read_frame(&mut s).expect("a frame");
             let req: CollabRequest = serde_json::from_slice(&frame).unwrap();
-            assert!(matches!(req, CollabRequest::Hello { ref app_id, .. } if app_id == "dev.qos.word-processor"));
-            let ev = serde_json::to_vec(&CollabEvent::CRDTIncremental { data: vec![1, 2, 3] }).unwrap();
+            assert!(
+                matches!(req, CollabRequest::Hello { ref app_id, .. } if app_id == "dev.qos.word-processor")
+            );
+            let ev = serde_json::to_vec(&CollabEvent::CRDTIncremental {
+                data: vec![1, 2, 3],
+            })
+            .unwrap();
             // Split the frame across two writes: the reader must reassemble.
             let len = (ev.len() as u32).to_le_bytes();
             s.write_all(&len).unwrap();
@@ -156,7 +168,9 @@ mod tests {
                 break;
             }
         }
-        assert!(matches!(got, Some(CollabEvent::CRDTIncremental { ref data }) if data == &[1, 2, 3]));
+        assert!(
+            matches!(got, Some(CollabEvent::CRDTIncremental { ref data }) if data == &[1, 2, 3])
+        );
         server.join().unwrap();
     }
 
@@ -164,6 +178,9 @@ mod tests {
     fn the_default_socket_follows_the_runtime_dir() {
         // Pure function of the environment; pin the shape the compositor binds.
         let p = default_socket_path();
-        assert!(p.ends_with("qos/services/collab-json.sock") || std::env::var_os("QUICK_COLLAB_SOCK").is_some());
+        assert!(
+            p.ends_with("qos/services/collab-json.sock")
+                || std::env::var_os("QUICK_COLLAB_SOCK").is_some()
+        );
     }
 }

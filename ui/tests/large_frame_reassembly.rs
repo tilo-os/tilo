@@ -13,8 +13,8 @@ use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 #[test]
 #[serial_test::serial(quick_collab_sock)]
 fn large_frame_survives_split_reads() {
-    let socket_path = std::env::temp_dir()
-        .join(format!("quick-collab-big-{}.sock", std::process::id()));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-big-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).expect("bind broker");
     thread::spawn(move || ui::collaboration::broker::serve(listener));

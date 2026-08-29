@@ -48,7 +48,9 @@ impl ThumbProvider {
 
     /// The cached PNG for a content hash, without generating anything.
     pub fn cached(&self, content_hash: [u8; 32]) -> Option<Vec<u8>> {
-        self.cache.get(&self.key(content_hash)).map(|a| a.as_ref().clone())
+        self.cache
+            .get(&self.key(content_hash))
+            .map(|a| a.as_ref().clone())
     }
 
     /// Generate a PNG thumbnail from `bytes`, cache it under `content_hash`. `None` for non-previewable, oversized, or undecodable input.
@@ -109,7 +111,11 @@ mod tests {
             assert!(decoded.is_valid());
             assert_eq!(decoded.max_edge(), HOST_EDGE);
             // Small enough to ride the xattr metadata channel.
-            assert!(png.len() <= MAX_XATTR_THUMB, "host preview fits the xattr: {} bytes", png.len());
+            assert!(
+                png.len() <= MAX_XATTR_THUMB,
+                "host preview fits the xattr: {} bytes",
+                png.len()
+            );
             // Second lookup hits the cache.
             assert_eq!(provider.cached(content_hash).unwrap(), png, "cache hit");
             png
@@ -129,11 +135,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = ThumbProvider::open(dir.path()).unwrap();
         assert!(
-            provider.generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04").is_none(),
+            provider
+                .generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04")
+                .is_none(),
             "a non-previewable type is never generated"
         );
         assert!(
-            provider.generate([2u8; 32], FileCategory::Image, b"not an image").is_none(),
+            provider
+                .generate([2u8; 32], FileCategory::Image, b"not an image")
+                .is_none(),
             "undecodable bytes yield no thumbnail"
         );
     }

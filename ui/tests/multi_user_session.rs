@@ -1,10 +1,7 @@
-
-use crate::support::{MemoryRelay, pump, headless_app};
-use ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
-use ui::presence::{PresenceKey, PathSegment};
-use ui::permissions::{
-    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
-};
+use crate::support::{MemoryRelay, headless_app, pump};
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
+use ui::presence::{PathSegment, PresenceKey};
 use ui::widget::{TextInput, Widget};
 
 #[test]
@@ -13,13 +10,19 @@ fn memory_relay_fans_out_presence_updates_to_both_peers() {
     let alice = relay.attach("alice");
     let bob = relay.attach("bob");
 
-    alice.send(CollabRequest::SyncIncremental { data: vec![1, 2, 3] });
+    alice.send(CollabRequest::SyncIncremental {
+        data: vec![1, 2, 3],
+    });
 
     relay.drain_peer_outbox(&alice);
     pump(&mut relay);
 
     let events = bob.poll();
-    assert!(events.iter().any(|e| matches!(e, CollabEvent::CRDTIncremental { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. }))
+    );
     // Sender should not receive its own broadcast.
     let alice_events = alice.poll();
     assert!(alice_events.is_empty());
@@ -70,10 +73,7 @@ fn app_broadcast_presence_completes_loop_to_remote_peer() {
         path: vec![PathSegment::Field("doc".into())],
     };
     // Mirrors what a text-input widget does on every caret move.
-    alice_app.broadcast_presence(
-        key.clone(),
-        PresencePayload::Caret { pos: 9 },
-    );
+    alice_app.broadcast_presence(key.clone(), PresencePayload::Caret { pos: 9 });
 
     // Without a real socket, the manager's outbox is a no-op — wire the
     // test relay directly through alice's peer instead; this bypass
@@ -131,7 +131,9 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
         payload: PresencePayload::Caret { pos: 7 },
     });
 
-    let caret = bob_app.presence_ctx().caret_for(&key, &UserId("alice".into()));
+    let caret = bob_app
+        .presence_ctx()
+        .caret_for(&key, &UserId("alice".into()));
     assert_eq!(caret, Some(7));
 }
 
@@ -151,7 +153,9 @@ fn peer_pointer_position_follows_layout_change() {
     });
 
     assert_eq!(
-        bob_app.presence_ctx().pointer_for(&ws_key, &UserId("alice".into())),
+        bob_app
+            .presence_ctx()
+            .pointer_for(&ws_key, &UserId("alice".into())),
         Some((100.0, 50.0))
     );
 
@@ -163,7 +167,9 @@ fn peer_pointer_position_follows_layout_change() {
     });
 
     assert_eq!(
-        bob_app.presence_ctx().pointer_for(&ws_key, &UserId("alice".into())),
+        bob_app
+            .presence_ctx()
+            .pointer_for(&ws_key, &UserId("alice".into())),
         Some((200.0, 70.0))
     );
 }
@@ -224,7 +230,9 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
     let (_alice_app, _) = headless_app("alice", alice_peer);
     let (mut bob_app, _) = headless_app("bob", bob_peer);
 
-    let key = PresenceKey::Widget { path: vec![PathSegment::Field("doc".into())] };
+    let key = PresenceKey::Widget {
+        path: vec![PathSegment::Field("doc".into())],
+    };
     bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "alice".into(),
         key: key.clone(),
@@ -247,7 +255,12 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
     );
 
     assert!(!scene.encoding().is_empty());
-    assert_eq!(bob_app.presence_ctx().caret_for(&key, &UserId("alice".into())), Some(5));
+    assert_eq!(
+        bob_app
+            .presence_ctx()
+            .caret_for(&key, &UserId("alice".into())),
+        Some(5)
+    );
 }
 
 #[test]
@@ -277,7 +290,9 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
         "save_incremental must emit non-empty bytes after a mutation"
     );
 
-    alice_peer.send(CollabRequest::SyncIncremental { data: delta.clone() });
+    alice_peer.send(CollabRequest::SyncIncremental {
+        data: delta.clone(),
+    });
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
@@ -325,7 +340,10 @@ fn peer_tab_switch_moves_the_presence_dot() {
         key: tab_a.clone(),
         payload: PresencePayload::Arrived,
     });
-    assert_eq!(bob_app.presence_ctx().peers_on(&tab_a), std::slice::from_ref(&alice));
+    assert_eq!(
+        bob_app.presence_ctx().peers_on(&tab_a),
+        std::slice::from_ref(&alice)
+    );
     assert!(bob_app.presence_ctx().peers_on(&tab_b).is_empty());
 
     bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {

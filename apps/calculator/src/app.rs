@@ -134,8 +134,18 @@ impl CalculatorApp {
     /// from the *current* width every call, so a resize between breakpoints
     /// reflows rather than staying frozen at the launch layout.
     fn relayout(&mut self) {
-        self.topbar = Rect::new(self.area.x0, self.area.y0, self.area.x1, self.area.y0 + TOPBAR_H);
-        self.body = Rect::new(self.area.x0, self.area.y0 + TOPBAR_H, self.area.x1, self.area.y1);
+        self.topbar = Rect::new(
+            self.area.x0,
+            self.area.y0,
+            self.area.x1,
+            self.area.y0 + TOPBAR_H,
+        );
+        self.body = Rect::new(
+            self.area.x0,
+            self.area.y0 + TOPBAR_H,
+            self.area.x1,
+            self.area.y1,
+        );
 
         let w = self.area.width();
         let seg_h = 36.0;
@@ -163,7 +173,8 @@ impl CalculatorApp {
         let seg_w = (avail / 3.0).clamp(46.0, 128.0);
         self.seg_short = seg_w < 104.0;
         let seg_total = seg_w * 3.0;
-        let seg_start = seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
+        let seg_start =
+            seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
         for i in 0..3 {
             let sx = seg_start + i as f64 * seg_w;
             self.seg_rects[i] = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
@@ -206,7 +217,8 @@ impl CalculatorApp {
     /// no-op action, and an empty change wedges the next dispatch. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: CalculatorAction) {
-        self.actions.dispatch(doc, actions::CALCULATOR_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, actions::CALCULATOR_ACTION_TYPE, &action);
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -216,7 +228,10 @@ impl CalculatorApp {
     /// empty evaluation commits nothing and dispatches nothing.
     fn commit_equals(&mut self, doc: &mut AutoCommit) {
         if let Some(entry) = self.model.commit_equals() {
-            self.perform_action(doc, actions::commit_history_action(&entry.expr, &entry.result));
+            self.perform_action(
+                doc,
+                actions::commit_history_action(&entry.expr, &entry.result),
+            );
         }
         self.model_dirty = true;
     }
@@ -233,11 +248,17 @@ impl CalculatorApp {
             // for 3D. These are editor affordances, not restored data.
             match m {
                 Mode::Graph2d if self.model.funcs.is_empty() => {
-                    self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.funcs.push(PlotFn {
+                        expr: String::new(),
+                        visible: true,
+                    });
                     self.model.active_fn = 0;
                 }
                 Mode::Graph3d if self.model.surfaces.is_empty() => {
-                    self.model.surfaces.push(PlotFn { expr: model::DEFAULT_SURFACE.to_string(), visible: true });
+                    self.model.surfaces.push(PlotFn {
+                        expr: model::DEFAULT_SURFACE.to_string(),
+                        visible: true,
+                    });
                     self.model.active_surface = 0;
                 }
                 _ => {}
@@ -262,7 +283,12 @@ impl CalculatorApp {
         // its functional toolbar controls here.
 
         // segmented mode control
-        let outer = Rect::new(self.seg_rects[0].x0 - 4.0, self.seg_rects[0].y0 - 4.0, self.seg_rects[2].x1 + 4.0, self.seg_rects[2].y1 + 4.0);
+        let outer = Rect::new(
+            self.seg_rects[0].x0 - 4.0,
+            self.seg_rects[0].y0 - 4.0,
+            self.seg_rects[2].x1 + 4.0,
+            self.seg_rects[2].y1 + 4.0,
+        );
         draw::fill_rrect(scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
         for (i, m) in Mode::all().iter().enumerate() {
@@ -271,22 +297,69 @@ impl CalculatorApp {
                 draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
             }
             let col = if i == sel { Color::WHITE } else { c.text_dim };
-            let label = if self.seg_short { m.short_label() } else { m.label() };
-            draw::text_in(scene, tr, t, r, label, 14.0, col, Align::Center, TextWeight::Semibold);
+            let label = if self.seg_short {
+                m.short_label()
+            } else {
+                m.label()
+            };
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                label,
+                14.0,
+                col,
+                Align::Center,
+                TextWeight::Semibold,
+            );
         }
 
         // DEG / RAD toggle
-        let outer2 = Rect::new(self.rad_rect.x0 - 4.0, self.rad_rect.y0 - 4.0, self.deg_rect.x1 + 4.0, self.deg_rect.y1 + 4.0);
+        let outer2 = Rect::new(
+            self.rad_rect.x0 - 4.0,
+            self.rad_rect.y0 - 4.0,
+            self.deg_rect.x1 + 4.0,
+            self.deg_rect.y1 + 4.0,
+        );
         draw::fill_rrect(scene, t, outer2, 10.0, c.neutral[2]);
         if !self.model.deg {
             draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
         } else {
             draw::fill_rrect(scene, t, self.deg_rect, 8.0, c.accent[5]);
         }
-        let rad_col = if !self.model.deg { Color::WHITE } else { c.text_dim };
-        let deg_col = if self.model.deg { Color::WHITE } else { c.text_dim };
-        draw::text_in(scene, tr, t, self.rad_rect, "RAD", 13.0, rad_col, Align::Center, TextWeight::Semibold);
-        draw::text_in(scene, tr, t, self.deg_rect, "DEG", 13.0, deg_col, Align::Center, TextWeight::Semibold);
+        let rad_col = if !self.model.deg {
+            Color::WHITE
+        } else {
+            c.text_dim
+        };
+        let deg_col = if self.model.deg {
+            Color::WHITE
+        } else {
+            c.text_dim
+        };
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            self.rad_rect,
+            "RAD",
+            13.0,
+            rad_col,
+            Align::Center,
+            TextWeight::Semibold,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            self.deg_rect,
+            "DEG",
+            13.0,
+            deg_col,
+            Align::Center,
+            TextWeight::Semibold,
+        );
     }
 
     // -- pointer routing -----------------------------------------------------
@@ -337,14 +410,20 @@ impl CalculatorApp {
             return;
         }
         if self.g3.add_at(p) {
-            self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
+            self.model.surfaces.push(PlotFn {
+                expr: String::new(),
+                visible: true,
+            });
             self.model.active_surface = self.model.surfaces.len() - 1;
             self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g3.vis_at(p) {
             if self.model.surfaces.get(i).is_some() {
                 self.model.surfaces[i].visible = !self.model.surfaces[i].visible;
-                self.perform_action(doc, actions::toggle_graph_visible_action(GraphKind::Surface3d, i));
+                self.perform_action(
+                    doc,
+                    actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
+                );
                 self.model_dirty = true;
             }
         } else if let Some(i) = self.g3.field_at(p) {
@@ -421,14 +500,20 @@ impl CalculatorApp {
             return;
         }
         if self.g2.add_at(p) {
-            self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
+            self.model.funcs.push(PlotFn {
+                expr: String::new(),
+                visible: true,
+            });
             self.model.active_fn = self.model.funcs.len() - 1;
             self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g2.vis_at(p) {
             if self.model.funcs.get(i).is_some() {
                 self.model.funcs[i].visible = !self.model.funcs[i].visible;
-                self.perform_action(doc, actions::toggle_graph_visible_action(GraphKind::Curve2d, i));
+                self.perform_action(
+                    doc,
+                    actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
+                );
                 self.model_dirty = true;
             }
         } else if let Some(i) = self.g2.field_at(p) {
@@ -610,13 +695,19 @@ impl CalculatorApp {
                 // its edit into the model on each keystroke, so the row is
                 // committed; here we just append (an action) and focus it.
                 Mode::Graph2d => {
-                    self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.funcs.push(PlotFn {
+                        expr: String::new(),
+                        visible: true,
+                    });
                     self.model.active_fn = self.model.funcs.len() - 1;
                     self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
                     self.model_dirty = true;
                 }
                 Mode::Graph3d => {
-                    self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.surfaces.push(PlotFn {
+                        expr: String::new(),
+                        visible: true,
+                    });
                     self.model.active_surface = self.model.surfaces.len() - 1;
                     self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
                     self.model_dirty = true;
@@ -882,8 +973,14 @@ impl Widget for CalculatorApp {
         let remote = remote_carets(presence);
         if !remote.is_empty() {
             match self.model.mode {
-                Mode::Graph2d => self.g2.draw_remote_carets(scene, t, self.model.active_fn, &remote),
-                Mode::Graph3d => self.g3.draw_remote_carets(scene, t, self.model.active_surface, &remote),
+                Mode::Graph2d => {
+                    self.g2
+                        .draw_remote_carets(scene, t, self.model.active_fn, &remote)
+                }
+                Mode::Graph3d => {
+                    self.g3
+                        .draw_remote_carets(scene, t, self.model.active_surface, &remote)
+                }
                 Mode::Calc => {}
             }
         }
@@ -943,11 +1040,19 @@ impl Widget for CalculatorApp {
                 }
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.on_press(self.mouse, state);
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.dragging = false;
                 self.field_dragging = false;
                 self.g2.release_fields();
@@ -963,9 +1068,9 @@ impl Widget for CalculatorApp {
                 self.on_wheel(step);
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 self.on_key(&key_event.logical_key, modifiers, state);
                 *handled = true;
             }
@@ -1047,9 +1152,18 @@ mod tests {
         // fabricated plots / history / memory / expression.
         let app = CalculatorApp::new();
         assert_eq!(app.model.mode, Mode::Calc);
-        assert!(app.model.expr.is_empty(), "live launch must have an empty expression");
-        assert!(app.model.history.is_empty(), "live launch must have no history");
-        assert!(app.model.funcs.is_empty(), "live launch must have no pre-plotted functions");
+        assert!(
+            app.model.expr.is_empty(),
+            "live launch must have an empty expression"
+        );
+        assert!(
+            app.model.history.is_empty(),
+            "live launch must have no history"
+        );
+        assert!(
+            app.model.funcs.is_empty(),
+            "live launch must have no pre-plotted functions"
+        );
         assert_eq!(app.model.memory, 0.0, "live launch must have empty memory");
         assert_eq!(app.model.ans, 0.0);
     }
@@ -1079,8 +1193,15 @@ mod tests {
         assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
         assert!(app.model.funcs[0].expr.is_empty());
         app.set_mode(Mode::Graph3d);
-        assert_eq!(app.model.surfaces.len(), 1, "Graph 3D seeds one starter surface");
-        assert!(!app.model.surfaces[0].expr.trim().is_empty(), "Graph 3D starter is a non-empty example surface");
+        assert_eq!(
+            app.model.surfaces.len(),
+            1,
+            "Graph 3D seeds one starter surface"
+        );
+        assert!(
+            !app.model.surfaces[0].expr.trim().is_empty(),
+            "Graph 3D starter is a non-empty example surface"
+        );
     }
 
     #[test]
@@ -1139,7 +1260,10 @@ mod tests {
         app.relayout();
         app.layout_active();
         assert!(!app.g2.panel_open(), "narrow default must start collapsed");
-        let toggle = app.g2.toggle_center().expect("a collapsed toggle must be present");
+        let toggle = app
+            .g2
+            .toggle_center()
+            .expect("a collapsed toggle must be present");
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -1149,14 +1273,38 @@ mod tests {
         let mut focus = None;
         let dev = winit::event::DeviceId::dummy();
         app.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y) },
-            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
+            },
+            1.0,
+            &mods,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
         app.handle_event(
-            &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left },
-            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
-        assert!(app.g2.panel_open(), "tapping the toggle must open the Functions drawer");
+        assert!(
+            app.g2.panel_open(),
+            "tapping the toggle must open the Functions drawer"
+        );
     }
 
     #[test]
@@ -1174,7 +1322,10 @@ mod tests {
         let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
         // start from a clean active row
-        app.model.funcs = vec![crate::model::PlotFn { expr: String::new(), visible: true }];
+        app.model.funcs = vec![crate::model::PlotFn {
+            expr: String::new(),
+            visible: true,
+        }];
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["2", "*", "x"] {
@@ -1188,7 +1339,10 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         app.set_mode(Mode::Graph3d);
-        app.model.surfaces = vec![PlotFn { expr: "x+y".into(), visible: true }];
+        app.model.surfaces = vec![PlotFn {
+            expr: "x+y".into(),
+            visible: true,
+        }];
         app.model.active_surface = 0;
         // on_key_g3 resyncs the active field to the surface before editing.
         let none = winit::event::Modifiers::default();
@@ -1203,7 +1357,10 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
-        app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
+        app.model.funcs = vec![PlotFn {
+            expr: String::new(),
+            visible: true,
+        }];
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["s", "i", "n", "(", "x", ")"] {
@@ -1211,10 +1368,20 @@ mod tests {
         }
         assert_eq!(app.model.funcs[0].expr, "sin(x)");
         app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
-        assert_eq!(app.model.funcs.len(), 2, "Enter must add a new function row");
+        assert_eq!(
+            app.model.funcs.len(),
+            2,
+            "Enter must add a new function row"
+        );
         assert_eq!(app.model.active_fn, 1, "the new row must be focused");
-        assert!(app.model.funcs[1].expr.is_empty(), "the new row starts empty");
-        assert_eq!(app.model.funcs[0].expr, "sin(x)", "the edited row is preserved");
+        assert!(
+            app.model.funcs[1].expr.is_empty(),
+            "the new row starts empty"
+        );
+        assert_eq!(
+            app.model.funcs[0].expr, "sin(x)",
+            "the edited row is preserved"
+        );
     }
 
     #[test]
@@ -1225,9 +1392,20 @@ mod tests {
         let start = app.model.surfaces.len();
         let none = winit::event::Modifiers::default();
         app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
-        assert_eq!(app.model.surfaces.len(), start + 1, "Enter must add a new surface row");
-        assert_eq!(app.model.active_surface, app.model.surfaces.len() - 1, "the new surface is focused");
-        assert!(app.model.surfaces.last().unwrap().expr.is_empty(), "the new surface starts empty");
+        assert_eq!(
+            app.model.surfaces.len(),
+            start + 1,
+            "Enter must add a new surface row"
+        );
+        assert_eq!(
+            app.model.active_surface,
+            app.model.surfaces.len() - 1,
+            "the new surface is focused"
+        );
+        assert!(
+            app.model.surfaces.last().unwrap().expr.is_empty(),
+            "the new surface starts empty"
+        );
     }
 
     /// Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
@@ -1246,7 +1424,10 @@ mod tests {
 
         // Start from a single, empty 2D function; checkpoint it.
         app.set_mode(Mode::Graph2d);
-        app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
+        app.model.funcs = vec![PlotFn {
+            expr: String::new(),
+            visible: true,
+        }];
         app.model.active_fn = 0;
         doc::store(&mut state.doc, &app.model);
         state.commit_action(None, None);
@@ -1262,7 +1443,10 @@ mod tests {
         state.commit_action(None, None);
 
         // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
-        assert!(state.undo(None, None).is_some(), "undo must pop a checkpoint");
+        assert!(
+            state.undo(None, None).is_some(),
+            "undo must pop a checkpoint"
+        );
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
             app.model.funcs[0].expr, "",
@@ -1270,7 +1454,10 @@ mod tests {
         );
 
         // Ctrl+Y: redo re-applies; sync adopts it.
-        assert!(state.redo(None, None).is_some(), "redo must pop a checkpoint");
+        assert!(
+            state.redo(None, None).is_some(),
+            "redo must pop a checkpoint"
+        );
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
             app.model.funcs[0].expr, "2*x",
@@ -1290,7 +1477,10 @@ mod tests {
         // Mutate the document out-of-band, then re-sync.
         app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
         let mut edited = crate::doc::load(&state.doc).expect("seeded");
-        edited.surfaces = vec![PlotFn { expr: "x*y+1".into(), visible: true }];
+        edited.surfaces = vec![PlotFn {
+            expr: "x*y+1".into(),
+            visible: true,
+        }];
         crate::doc::store(&mut state.doc, &edited);
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
@@ -1315,7 +1505,15 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
-            ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+            ev,
+            1.0,
+            &mods,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
     }
 
@@ -1369,7 +1567,10 @@ mod tests {
         assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
         let plus = app.bench_calc_key_center("+").expect("+ keycap laid out");
         tap(&mut app, &mut st, plus);
-        assert_eq!(app.model.expr, "7+", "tapping an operator keycap must append it");
+        assert_eq!(
+            app.model.expr, "7+",
+            "tapping an operator keycap must append it"
+        );
     }
 
     #[test]
@@ -1383,12 +1584,21 @@ mod tests {
         app.layout_active();
         let want = app.model.history[0].expr.clone();
         assert!(!want.is_empty());
-        let row = app.calc.history_row_center(0).expect("history row 0 laid out");
+        let row = app
+            .calc
+            .history_row_center(0)
+            .expect("history row 0 laid out");
         app.model.expr = "999".into(); // something distinct to overwrite
         app.model.after_equals = true;
         tap(&mut app, &mut st, row);
-        assert_eq!(app.model.expr, want, "tapping a history row must load its expression");
-        assert!(!app.model.after_equals, "recall must clear the after-equals latch");
+        assert_eq!(
+            app.model.expr, want,
+            "tapping a history row must load its expression"
+        );
+        assert!(
+            !app.model.after_equals,
+            "recall must clear the after-equals latch"
+        );
     }
 
     #[test]
@@ -1401,9 +1611,15 @@ mod tests {
         app.relayout();
         app.layout_active();
         assert!(!app.model.history.is_empty());
-        let clear = app.calc.clear_history_center().expect("Clear button laid out");
+        let clear = app
+            .calc
+            .clear_history_center()
+            .expect("Clear button laid out");
         tap(&mut app, &mut st, clear);
-        assert!(app.model.history.is_empty(), "tapping Clear must empty the history");
+        assert!(
+            app.model.history.is_empty(),
+            "tapping Clear must empty the history"
+        );
     }
 
     #[test]
@@ -1418,7 +1634,10 @@ mod tests {
         // MEM_KEYS = [MC, MR, M+, M-]; index 2 is M+, index 0 is MC.
         let m_add = app.calc.mem_center(2).expect("M+ button laid out");
         tap(&mut app, &mut st, m_add);
-        assert_eq!(app.model.memory, 10.0, "M+ must add the current value to memory");
+        assert_eq!(
+            app.model.memory, 10.0,
+            "M+ must add the current value to memory"
+        );
         tap(&mut app, &mut st, m_add);
         assert_eq!(app.model.memory, 20.0, "M+ again accumulates");
         let m_clr = app.calc.mem_center(0).expect("MC button laid out");
@@ -1437,12 +1656,18 @@ mod tests {
         app.relayout();
         assert!(!app.model.deg, "default is radians");
         let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!((rad_val - 1.0).abs() > 0.01, "RAD sin(90) must not be 1 (got {rad_val})");
+        assert!(
+            (rad_val - 1.0).abs() > 0.01,
+            "RAD sin(90) must not be 1 (got {rad_val})"
+        );
         let deg_pt = app.deg_rect.center();
         tap(&mut app, &mut st, deg_pt);
         assert!(app.model.deg, "clicking DEG must switch to degrees");
         let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!((deg_val - 1.0).abs() < 1e-9, "DEG sin(90) must be 1 (got {deg_val})");
+        assert!(
+            (deg_val - 1.0).abs() < 1e-9,
+            "DEG sin(90) must be 1 (got {deg_val})"
+        );
         let rad_pt = app.rad_rect.center();
         tap(&mut app, &mut st, rad_pt);
         assert!(!app.model.deg, "clicking RAD must switch back to radians");
@@ -1497,8 +1722,14 @@ mod tests {
         let (yaw0, pitch0) = (app.model.view3d.yaw, app.model.view3d.pitch);
         let c = app.g3.canvas.center();
         drag(&mut app, &mut st, c, Point::new(c.x + 50.0, c.y + 20.0));
-        assert!(app.model.view3d.yaw != yaw0, "horizontal drag must change yaw");
-        assert!(app.model.view3d.pitch != pitch0, "vertical drag must change pitch");
+        assert!(
+            app.model.view3d.yaw != yaw0,
+            "horizontal drag must change yaw"
+        );
+        assert!(
+            app.model.view3d.pitch != pitch0,
+            "vertical drag must change pitch"
+        );
     }
 
     #[test]
@@ -1514,7 +1745,10 @@ mod tests {
         let c = app.g3.canvas.center();
         send(&mut app, &mut st, &cursor(c));
         send(&mut app, &mut st, &wheel(1.0));
-        assert!(app.model.view3d.zoom > before, "scrolling up over the surface must zoom in");
+        assert!(
+            app.model.view3d.zoom > before,
+            "scrolling up over the surface must zoom in"
+        );
     }
 
     #[test]
@@ -1536,7 +1770,10 @@ mod tests {
         assert!(app.model.funcs[0].visible);
         let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
         tap(&mut app, &mut st, dot);
-        assert!(!app.model.funcs[0].visible, "tapping the dot must hide the function");
+        assert!(
+            !app.model.funcs[0].visible,
+            "tapping the dot must hide the function"
+        );
         tap(&mut app, &mut st, dot);
         assert!(app.model.funcs[0].visible, "tapping again must show it");
     }
@@ -1557,11 +1794,20 @@ mod tests {
         let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
         tap(&mut app, &mut st, five);
         assert_eq!(app.model.expr, "5");
-        assert!(app.last_edit_time.is_some(), "an edit must arm the coalescing timer");
-        assert!(!app.needs_commit(), "a just-made edit must not seal a checkpoint mid-burst");
+        assert!(
+            app.last_edit_time.is_some(),
+            "an edit must arm the coalescing timer"
+        );
+        assert!(
+            !app.needs_commit(),
+            "a just-made edit must not seal a checkpoint mid-burst"
+        );
         // Once the coalesce window has elapsed the widget asks to checkpoint.
         app.last_edit_time = Some(std::time::Instant::now() - COMMIT_COALESCE);
-        assert!(app.needs_commit(), "after the pause the edit must seal into a checkpoint");
+        assert!(
+            app.needs_commit(),
+            "after the pause the edit must seal into a checkpoint"
+        );
         // The App calls on_commit after snapshotting; that clears the pending edit.
         app.on_commit();
         assert!(!app.needs_commit());

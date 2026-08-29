@@ -32,18 +32,18 @@ use taffy::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
     Size, Style, TaffyTree,
 };
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toggle_group::ToggleGroup;
 use ui::widget::toggle_group::Segment;
+use ui::widget::toggle_group::ToggleGroup;
 use ui::widget::{Button, Widget};
 
-use crate::command::{push, CommandSink, FileCommand};
+use crate::command::{CommandSink, FileCommand, push};
 use crate::model::ViewMode;
 use crate::path_bar::PathBar;
 
@@ -135,9 +135,27 @@ impl FileToolbar {
 
     fn build_left(&self) -> Vec<Box<dyn Widget>> {
         vec![
-            self.nav_button("files.back", Icon::ArrowLeft, FileCommand::Back, self.can_back, "Back"),
-            self.nav_button("files.forward", Icon::ArrowRight, FileCommand::Forward, self.can_forward, "Forward"),
-            self.nav_button("files.up", Icon::ArrowUp, FileCommand::Up, self.can_up, "Up one folder"),
+            self.nav_button(
+                "files.back",
+                Icon::ArrowLeft,
+                FileCommand::Back,
+                self.can_back,
+                "Back",
+            ),
+            self.nav_button(
+                "files.forward",
+                Icon::ArrowRight,
+                FileCommand::Forward,
+                self.can_forward,
+                "Forward",
+            ),
+            self.nav_button(
+                "files.up",
+                Icon::ArrowUp,
+                FileCommand::Up,
+                self.can_up,
+                "Up one folder",
+            ),
         ]
     }
 
@@ -153,7 +171,11 @@ impl FileToolbar {
         out.push(Box::new(
             ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], selected).on_change(
                 move |i| {
-                    let mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
+                    let mode = if i == 0 {
+                        ViewMode::List
+                    } else {
+                        ViewMode::Grid
+                    };
                     push(&view_sink, FileCommand::SetView(mode));
                 },
             ),
@@ -253,14 +275,20 @@ impl Widget for FileToolbar {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             align_items: Some(AlignItems::Center),
-            gap: Size { width: LengthPercentage::length(sp.s2), height: LengthPercentage::length(0.0) },
+            gap: Size {
+                width: LengthPercentage::length(sp.s2),
+                height: LengthPercentage::length(0.0),
+            },
             padding: TaffyRect {
                 left: LengthPercentage::length(sp.s3),
                 right: LengthPercentage::length(sp.s3),
                 top: LengthPercentage::length(sp.s2),
                 bottom: LengthPercentage::length(sp.s2),
             },
-            size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
             flex_shrink: 0.0,
             ..Default::default()
         };
@@ -337,7 +365,8 @@ impl Widget for FileToolbar {
         presence: &PresenceCtx,
     ) {
         // The path bar's completion popover is the only overlay here.
-        self.path_bar.draw_overlay(scene, transform, tr, theme, presence);
+        self.path_bar
+            .draw_overlay(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(
@@ -352,23 +381,53 @@ impl Widget for FileToolbar {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let Ok(children) = taffy.children(node_id) else { return };
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
         let (left_ns, path_n, right_ns) = self.child_groups(&children);
         // Path bar first, so it captures the keyboard while editing.
         self.path_bar.handle_event(
-            event, scale_factor, modifiers, state, path, handled, focus_target, path_n, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            path_n,
+            taffy,
         );
         for (c, &n) in self.left.iter_mut().zip(left_ns.iter()) {
             if *handled {
                 break;
             }
-            c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
         for (c, &n) in self.right.iter_mut().zip(right_ns.iter()) {
             if *handled {
                 break;
             }
-            c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
     }
 

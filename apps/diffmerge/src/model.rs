@@ -488,15 +488,16 @@ impl MergeModel {
     }
 
     pub fn conflict_count(&self) -> usize {
-        self.hunks.iter().filter(|h| h.resolution.is_conflict()).count()
+        self.hunks
+            .iter()
+            .filter(|h| h.resolution.is_conflict())
+            .count()
     }
 
     pub fn resolved_count(&self) -> usize {
         self.hunks
             .iter()
-            .filter(|h| {
-                h.is_change && !h.resolution.is_conflict()
-            })
+            .filter(|h| h.is_change && !h.resolution.is_conflict())
             .count()
     }
 
@@ -565,7 +566,9 @@ impl SideAlign {
             use similar::DiffOp::*;
             match *op {
                 Equal { .. } => {}
-                Delete { old_index, old_len, .. } => {
+                Delete {
+                    old_index, old_len, ..
+                } => {
                     for k in old_index..(old_index + old_len) {
                         replace[k] = Some(Vec::new());
                     }
@@ -716,7 +719,11 @@ mod tests {
         let ours = "a\nOURS\nc\n";
         let theirs = "a\nTHEIRS\nc\n";
         let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m.hunks.iter().position(|h| h.resolution.is_conflict()).unwrap();
+        let idx = m
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
         m.hunks[idx].resolution = Resolution::TookTheirs;
         assert!(m.fully_resolved());
         assert_eq!(m.merged_lines(), vec!["a", "THEIRS", "c"]);
@@ -728,7 +735,11 @@ mod tests {
         let ours = "a\nOURS\nc\n";
         let theirs = "a\nTHEIRS\nc\n";
         let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m.hunks.iter().position(|h| h.resolution.is_conflict()).unwrap();
+        let idx = m
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
         m.hunks[idx].resolution = Resolution::TookBoth;
         assert_eq!(m.merged_lines(), vec!["a", "OURS", "THEIRS", "c"]);
     }

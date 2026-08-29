@@ -78,9 +78,7 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
 
         // Membership: admitting a peer or agent, or joining a room — all
         // decide who is in this room, so all gate on the same verb.
-        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => {
-            Some(Verb::Invite)
-        }
+        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => Some(Verb::Invite),
 
         // Acts on the room's contents.
         "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
@@ -118,9 +116,7 @@ impl ActionVisibility for CapabilityVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
         match required_capability(resource, kind) {
             None => true,
-            Some((cap_resource, verb)) => {
-                self.workspace.allows(&self.actor, &cap_resource, verb)
-            }
+            Some((cap_resource, verb)) => self.workspace.allows(&self.actor, &cap_resource, verb),
         }
     }
 }
@@ -184,7 +180,12 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in ["peer.invite", "peer.invite.named", "peer.connect", "agent.invite"] {
+        for id in [
+            "peer.invite",
+            "peer.invite.named",
+            "peer.connect",
+            "agent.invite",
+        ] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
@@ -194,11 +195,9 @@ mod tests {
     /// Editing a document is an act, gated on `Write` like spawning a tab.
     #[test]
     fn writing_into_a_document_requires_write() {
-        let (cap, verb) = required_capability(
-            &resource("actions", "text.insert"),
-            &ResourceKind::Action,
-        )
-        .expect("writing into a document must be gated");
+        let (cap, verb) =
+            required_capability(&resource("actions", "text.insert"), &ResourceKind::Action)
+                .expect("writing into a document must be gated");
         assert_eq!(verb, Verb::Write);
         assert_eq!(
             cap,
@@ -318,10 +317,7 @@ mod tests {
             "granting Write must make the act visible"
         );
         assert!(
-            !granted_view.can_see(
-                &resource("actions", "peer.invite"),
-                &ResourceKind::Action
-            ),
+            !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
             "Write must not confer Invite"
         );
     }

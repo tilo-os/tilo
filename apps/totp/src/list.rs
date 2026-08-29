@@ -18,9 +18,9 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use vello::Scene;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
@@ -29,7 +29,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
 
-use crate::model::{account_color, Account, AccountId};
+use crate::model::{Account, AccountId, account_color};
 use crate::ring::CountdownRing;
 use crate::totp;
 
@@ -237,7 +237,15 @@ impl AccountList {
             center.x + AVATAR_R,
             center.y + AVATAR_R,
         );
-        Avatar::draw_at(scene, transform, rect, &account.initials(), color, theme, text_renderer);
+        Avatar::draw_at(
+            scene,
+            transform,
+            rect,
+            &account.initials(),
+            color,
+            theme,
+            text_renderer,
+        );
     }
 
     fn draw_action_icons(
@@ -349,7 +357,11 @@ impl AccountList {
         let text_w = (l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32;
         let issuer = account.title().to_string();
         let has_label = !account.label.trim().is_empty();
-        let issuer_y = if has_label { r.center().y - 20.0 } else { r.center().y - 10.0 };
+        let issuer_y = if has_label {
+            r.center().y - 20.0
+        } else {
+            r.center().y - 10.0
+        };
         text_renderer.draw_text_weighted(
             scene,
             &issuer,
@@ -675,7 +687,17 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
-        l.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut None, node, &taffy);
+        l.handle_event(
+            ev,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut None,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -722,7 +744,11 @@ mod tests {
         dispatch(&mut l, &cursor_at(Point::new(300.0, 110.0)));
         // Scroll far down: the offset clamps to the bottom, never past it.
         dispatch(&mut l, &wheel(-100.0));
-        assert_eq!(l.scroll, l.max_scroll(), "scrolling down clamps to the bottom");
+        assert_eq!(
+            l.scroll,
+            l.max_scroll(),
+            "scrolling down clamps to the bottom"
+        );
         // Scroll far up: clamps to the top, never negative.
         dispatch(&mut l, &wheel(100.0));
         assert_eq!(l.scroll, 0.0, "scrolling up clamps to the top");

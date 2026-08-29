@@ -185,7 +185,10 @@ mod tests {
         let hits = provider.query("rust");
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|h| h.type_id == VIDEO_TYPE_ID));
-        assert!(hits.iter().all(|h| h.deep_link.starts_with("tube://watch/")));
+        assert!(
+            hits.iter()
+                .all(|h| h.deep_link.starts_with("tube://watch/"))
+        );
         assert!(hits.iter().all(|h| !h.thumbnail_seed.is_empty()));
     }
 
@@ -217,10 +220,17 @@ mod tests {
         // vid_rust_async has a DeArrow title in the sample.
         let plain = VideoSearchProvider::new(&backend, false).query("compositor");
         let dearrowed = VideoSearchProvider::new(&backend, true).query("compositor");
-        let p = plain.iter().find(|h| h.deep_link.contains("vid_rust_async"));
-        let d = dearrowed.iter().find(|h| h.deep_link.contains("vid_rust_async"));
+        let p = plain
+            .iter()
+            .find(|h| h.deep_link.contains("vid_rust_async"));
+        let d = dearrowed
+            .iter()
+            .find(|h| h.deep_link.contains("vid_rust_async"));
         if let (Some(p), Some(d)) = (p, d) {
-            assert_ne!(p.title, d.title, "DeArrow should change the contributed title");
+            assert_ne!(
+                p.title, d.title,
+                "DeArrow should change the contributed title"
+            );
         }
     }
 }

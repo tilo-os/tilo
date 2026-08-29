@@ -43,7 +43,10 @@ pub struct GaugeThresholds {
 
 impl Default for GaugeThresholds {
     fn default() -> Self {
-        Self { warning: 0.6, danger: 0.85 }
+        Self {
+            warning: 0.6,
+            danger: 0.85,
+        }
     }
 }
 
@@ -166,7 +169,9 @@ impl RingGauge {
         let frac = frac.clamp(0.0, 1.0) as f64;
         if frac > 0.0 {
             let arc = Arc::new(center, (radius, radius), -FRAC_PI_2, frac * TAU, 0.0);
-            let stroke = Stroke::new(thickness).with_caps(Cap::Round).with_join(Join::Round);
+            let stroke = Stroke::new(thickness)
+                .with_caps(Cap::Round)
+                .with_join(Join::Round);
             scene.stroke(&stroke, transform, color, None, &arc);
         }
 
@@ -429,7 +434,12 @@ impl BarGauge {
 
         let frac = frac.clamp(0.0, 1.0) as f64;
         if frac > 0.0 {
-            let fill = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+            let fill = Rect::new(
+                track.x0,
+                track.y0,
+                track.x0 + track.width() * frac,
+                track.y1,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -579,13 +589,31 @@ mod tests {
 
         let mut zero = Scene::new();
         RingGauge::draw_at(
-            &mut zero, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.0, theme.accent_primary, &theme, "", "",
+            &mut zero,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.0,
+            theme.accent_primary,
+            &theme,
+            "",
+            "",
         );
         let mut half = Scene::new();
         RingGauge::draw_at(
-            &mut half, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.5, theme.accent_primary, &theme, "", "",
+            &mut half,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.5,
+            theme.accent_primary,
+            &theme,
+            "",
+            "",
         );
         assert!(
             count_color_tags(&half) > count_color_tags(&zero),
@@ -600,8 +628,17 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         RingGauge::draw_at(
-            &mut scene, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.7, theme.accent_primary, &theme, "70%", "cpu",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.7,
+            theme.accent_primary,
+            &theme,
+            "70%",
+            "cpu",
         );
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),
@@ -615,9 +652,15 @@ mod tests {
     fn ring_widget_uses_thresholds() {
         let theme = Theme::dark();
         let hot = RingGauge::new(0.9);
-        assert_eq!(hot.resolve_color(&theme), theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            hot.resolve_color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
         let cool = RingGauge::new(0.3);
-        assert_eq!(cool.resolve_color(&theme), theme.tokens.colors.semantic.success);
+        assert_eq!(
+            cool.resolve_color(&theme),
+            theme.tokens.colors.semantic.success
+        );
         // Fixed colour overrides thresholds.
         let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
         assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
@@ -633,14 +676,33 @@ mod tests {
 
         let mut zero = Scene::new();
         BarGauge::draw_at(
-            &mut zero, Affine::IDENTITY, &mut tr, rect, &theme, 0.0, theme.accent_primary, "", "",
+            &mut zero,
+            Affine::IDENTITY,
+            &mut tr,
+            rect,
+            &theme,
+            0.0,
+            theme.accent_primary,
+            "",
+            "",
         );
         let mut filled = Scene::new();
         BarGauge::draw_at(
-            &mut filled, Affine::IDENTITY, &mut tr, rect, &theme, 0.5, theme.accent_primary, "", "",
+            &mut filled,
+            Affine::IDENTITY,
+            &mut tr,
+            rect,
+            &theme,
+            0.5,
+            theme.accent_primary,
+            "",
+            "",
         );
         assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-        assert!(count_color_tags(&filled) > count_color_tags(&zero), "fill adds a rect");
+        assert!(
+            count_color_tags(&filled) > count_color_tags(&zero),
+            "fill adds a rect"
+        );
     }
 
     /// A bar gauge with a label + value paints two glyph runs.
@@ -650,8 +712,15 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         BarGauge::draw_at(
-            &mut scene, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 32.0), &theme, 0.4, theme.accent_primary, "Memory", "4.2 GB",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &theme,
+            0.4,
+            theme.accent_primary,
+            "Memory",
+            "4.2 GB",
         );
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),

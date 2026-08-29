@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
@@ -163,14 +162,11 @@ impl SearchProvider for FilesProvider {
         if let Ok(guard) = self.name_index.lock() {
             // Narrow from the previous match set when this needle extends it.
             let mut cache = self.narrow.lock().ok();
-            let reuse: Option<&NarrowCache> = cache
-                .as_ref()
-                .and_then(|c| c.as_ref())
-                .filter(|c| {
-                    !c.needle.is_empty()
-                        && c.generation == guard.generation
-                        && needle_lower.starts_with(&c.needle)
-                });
+            let reuse: Option<&NarrowCache> = cache.as_ref().and_then(|c| c.as_ref()).filter(|c| {
+                !c.needle.is_empty()
+                    && c.generation == guard.generation
+                    && needle_lower.starts_with(&c.needle)
+            });
             let mut candidates: Vec<usize> = Vec::new();
             let mut ranked: Vec<(i32, usize, usize)> = Vec::new();
             {
@@ -189,7 +185,8 @@ impl SearchProvider for FilesProvider {
                 };
                 match reuse {
                     Some(c) => {
-                        self.last_scanned.store(c.candidates.len(), Ordering::Relaxed);
+                        self.last_scanned
+                            .store(c.candidates.len(), Ordering::Relaxed);
                         c.candidates.iter().for_each(|&i| consider(i));
                     }
                     None => {
@@ -370,9 +367,9 @@ const MAX_SCORE: i32 = STRUCT_EXACT_LEAF + RATIO_WEIGHT + RECENCY_MAX;
 /// Extensions almost never what someone means when they type a word —
 /// shipped alongside software rather than authored.
 const ASSET_EXTS: &[&str] = &[
-    "ttf", "otf", "ttc", "woff", "woff2", "eot", "pfb", "bdf", "pcf",
-    "so", "a", "o", "dll", "dylib", "obj", "pyc", "pyo", "class", "jar", "wasm", "rlib", "rmeta",
-    "deb", "rpm", "appimage", "flatpak", "snap", "msi", "exe", "cab", "iso", "img", "dmg", "apk",
+    "ttf", "otf", "ttc", "woff", "woff2", "eot", "pfb", "bdf", "pcf", "so", "a", "o", "dll",
+    "dylib", "obj", "pyc", "pyo", "class", "jar", "wasm", "rlib", "rmeta", "deb", "rpm",
+    "appimage", "flatpak", "snap", "msi", "exe", "cab", "iso", "img", "dmg", "apk",
     // Game/engine data blobs.
     "grf", "pak", "package", "dat", "bin", "vpk", "wad", "bsp",
     // Icon/cursor blobs — photographic formats (png/jpg/webp) are excluded,
@@ -639,9 +636,8 @@ fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -
         if !starts_word {
             continue;
         }
-        let ends_word = end == leaf.len()
-            || end == stem_len
-            || tokens.iter().any(|&(_, e)| e as usize == end);
+        let ends_word =
+            end == leaf.len() || end == stem_len || tokens.iter().any(|&(_, e)| e as usize == end);
         let tier = match (at == 0, ends_word) {
             (true, true) => STRUCT_FIRST_TOKEN,
             (false, true) => STRUCT_TOKEN,
@@ -673,9 +669,10 @@ fn path_tier(needle: &str, lower_path: &str) -> (i32, usize) {
         }
         let tokens = tokenize(comp, comp);
         let starts_word = comp.starts_with(needle)
-            || tokens
-                .iter()
-                .any(|&(s, _)| comp.get(s as usize..).is_some_and(|t| t.starts_with(needle)));
+            || tokens.iter().any(|&(s, _)| {
+                comp.get(s as usize..)
+                    .is_some_and(|t| t.starts_with(needle))
+            });
         if starts_word && best.0 < STRUCT_PATH_TOKEN_PREFIX {
             best = (STRUCT_PATH_TOKEN_PREFIX, comp.len());
         }
@@ -1113,8 +1110,14 @@ mod tests {
              pattern"
         );
         assert!(should_skip(Path::new("/home/x/Downloads/tmp/a.iso"), home));
-        assert!(should_skip(Path::new("/home/x/go/pkg/mod/rsc.io/quote"), home));
-        assert!(should_skip(Path::new("/home/x/Android/Sdk/platforms"), home));
+        assert!(should_skip(
+            Path::new("/home/x/go/pkg/mod/rsc.io/quote"),
+            home
+        ));
+        assert!(should_skip(
+            Path::new("/home/x/Android/Sdk/platforms"),
+            home
+        ));
         assert!(!should_skip(Path::new("/home/x/Downloads/keep.iso"), home));
         assert!(!should_skip(Path::new("/home/x/go/src/mod/thing.go"), home));
         assert!(!should_skip(Path::new("/home/x/tmp/Downloads/a.iso"), home));
@@ -1136,10 +1139,7 @@ mod tests {
             "a document two levels down ({shallow}) must outrank a game sound \
              effect seven levels down ({buried})"
         );
-        assert_eq!(
-            depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"),
-            PENALTY_DEPTH_MAX
-        );
+        assert_eq!(depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"), PENALTY_DEPTH_MAX);
     }
 
     /// Breadth-first spends the budget on the shallowest paths everywhere.
@@ -1250,8 +1250,7 @@ mod tests {
             .map(|i| (format!("~/report/notes/entry-{i:03}.md"), false))
             .collect();
         entries.push(("~/archive/report-final.md".to_string(), false));
-        let owned: Vec<(&str, bool)> =
-            entries.iter().map(|(s, d)| (s.as_str(), *d)).collect();
+        let owned: Vec<(&str, bool)> = entries.iter().map(|(s, d)| (s.as_str(), *d)).collect();
         let p = provider_with_index(owned);
 
         let chrome = empty_chrome();
@@ -1360,8 +1359,20 @@ mod tests {
     }
 
     const WORDS: &[&str] = &[
-        "component", "compose", "common", "config", "codec", "buffer", "render",
-        "layout", "widget", "theme", "search", "palette", "index", "walker",
+        "component",
+        "compose",
+        "common",
+        "config",
+        "codec",
+        "buffer",
+        "render",
+        "layout",
+        "widget",
+        "theme",
+        "search",
+        "palette",
+        "index",
+        "walker",
     ];
 
     /// Extending a needle must return what a cold query for it would.
@@ -1388,9 +1399,7 @@ mod tests {
             p.narrow.lock().unwrap().take();
             let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));
 
-            let ids = |v: &[SearchResult]| {
-                v.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
-            };
+            let ids = |v: &[SearchResult]| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
             assert_eq!(
                 ids(&warm),
                 ids(&cold),
@@ -1406,7 +1415,11 @@ mod tests {
         let chrome = empty_chrome();
         let st = chrome.borrow();
         let doc = automerge::AutoCommit::new();
-        assert_eq!(p.query(ctx_for("alpha", &[ResourceKind::File], &st, &doc)).len(), 2);
+        assert_eq!(
+            p.query(ctx_for("alpha", &[ResourceKind::File], &st, &doc))
+                .len(),
+            2
+        );
 
         {
             let mut guard = p.name_index.lock().unwrap();

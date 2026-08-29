@@ -121,12 +121,17 @@ impl SelectionHud {
         let sep_w = if swatches.is_empty() { 0.0 } else { SEP_W };
         let hud_w = PAD * 2.0 + dots_w + sep_w + copy_w + note_extra + trash_extra;
 
-        let hud_x = (anchor.x - hud_w / 2.0).clamp(bounds.x0 + 8.0, (bounds.x1 - 8.0 - hud_w).max(bounds.x0 + 8.0));
+        let hud_x = (anchor.x - hud_w / 2.0).clamp(
+            bounds.x0 + 8.0,
+            (bounds.x1 - 8.0 - hud_w).max(bounds.x0 + 8.0),
+        );
         let above = anchor.y - HEIGHT - ANCHOR_GAP;
         let hud_y = if above >= bounds.y0 + 6.0 {
             above
         } else {
-            (anchor.y + 30.0).min(bounds.y1 - HEIGHT - 6.0).max(bounds.y0 + 6.0)
+            (anchor.y + 30.0)
+                .min(bounds.y1 - HEIGHT - 6.0)
+                .max(bounds.y0 + 6.0)
         };
         let rect = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + HEIGHT);
         hud.rect = rect;
@@ -143,7 +148,12 @@ impl SelectionHud {
         let mut x = hud_x + PAD + DOT_R;
         for (i, sw) in swatches.iter().enumerate() {
             let center = Point::new(x, cyc);
-            let dot = Rect::new(center.x - DOT_R, center.y - DOT_R, center.x + DOT_R, center.y + DOT_R);
+            let dot = Rect::new(
+                center.x - DOT_R,
+                center.y - DOT_R,
+                center.x + DOT_R,
+                center.y + DOT_R,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -152,11 +162,26 @@ impl SelectionHud {
                 &Circle::new(center, DOT_R),
             );
             if sw.selected {
-                stroke_round(scene, transform, dot.inflate(2.5, 2.5), DOT_R + 2.5, style.ring, 1.8);
+                stroke_round(
+                    scene,
+                    transform,
+                    dot.inflate(2.5, 2.5),
+                    DOT_R + 2.5,
+                    style.ring,
+                    1.8,
+                );
             } else if dot.inflate(3.0, 3.0).contains(cursor) {
-                stroke_round(scene, transform, dot.inflate(2.5, 2.5), DOT_R + 2.5, style.border, 1.2);
+                stroke_round(
+                    scene,
+                    transform,
+                    dot.inflate(2.5, 2.5),
+                    DOT_R + 2.5,
+                    style.border,
+                    1.2,
+                );
             }
-            hud.buttons.push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
+            hud.buttons
+                .push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
             x += DOT_R * 2.0 + DOT_GAP;
         }
 
@@ -175,7 +200,13 @@ impl SelectionHud {
         let copy_x = dots_end + sep_w;
         let copy_rect = Rect::new(copy_x, cyc - 14.0, copy_x + copy_w, cyc + 14.0);
         let copy_hover = copy_rect.contains(cursor);
-        fill_round(scene, transform, copy_rect, 14.0, if copy_hover { style.hover } else { style.pill });
+        fill_round(
+            scene,
+            transform,
+            copy_rect,
+            14.0,
+            if copy_hover { style.hover } else { style.pill },
+        );
         tr.draw_text_weighted(
             scene,
             "Copy",
@@ -192,7 +223,13 @@ impl SelectionHud {
             let note_x = cursor_x + PILL_GAP;
             let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
             let note_hover = note_rect.contains(cursor);
-            fill_round(scene, transform, note_rect, 14.0, if note_hover { style.hover } else { style.pill });
+            fill_round(
+                scene,
+                transform,
+                note_rect,
+                14.0,
+                if note_hover { style.hover } else { style.pill },
+            );
             tr.draw_text_weighted(
                 scene,
                 "Note",
@@ -213,7 +250,13 @@ impl SelectionHud {
             if thov {
                 fill_round(scene, transform, trash, 6.0, style.hover);
             }
-            draw_trash(scene, transform, trash, if thov { style.danger } else { style.text }, 1.5);
+            draw_trash(
+                scene,
+                transform,
+                trash,
+                if thov { style.danger } else { style.text },
+                1.5,
+            );
             hud.buttons.push((trash, HudAction::Delete));
         }
 
@@ -228,7 +271,11 @@ impl SelectionHud {
 
     /// Hit-test a pointer against the drawn controls (topmost/last wins).
     pub fn hit(&self, p: Point) -> Option<HudAction> {
-        self.buttons.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| *a)
+        self.buttons
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, a)| *a)
     }
 
     /// The bar's bounding rect (a caller can swallow taps on it).
@@ -295,11 +342,23 @@ impl MarkerDrag {
 // Vector helpers below are kept local so the module has no app dependency.
 
 fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 
 fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 
 /// A minimal trash glyph (lid + can) inside `r`.
@@ -310,15 +369,69 @@ fn draw_trash(scene: &mut Scene, t: Affine, r: Rect, color: Color, w: f64) {
     let bot = r.y1 - r.height() * 0.18;
     let stroke = Stroke::new(w);
     // lid
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(r.x0 + r.width() * 0.14, top), Point::new(r.x1 - r.width() * 0.14, top)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(r.x0 + r.width() * 0.14, top),
+            Point::new(r.x1 - r.width() * 0.14, top),
+        ),
+    );
     // handle
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 2.0, top), Point::new(cx0 + 2.0, top - r.height() * 0.12)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx1 - 2.0, top), Point::new(cx1 - 2.0, top - r.height() * 0.12)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 2.0, top - r.height() * 0.12), Point::new(cx1 - 2.0, top - r.height() * 0.12)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx0 + 2.0, top),
+            Point::new(cx0 + 2.0, top - r.height() * 0.12),
+        ),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx1 - 2.0, top),
+            Point::new(cx1 - 2.0, top - r.height() * 0.12),
+        ),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx0 + 2.0, top - r.height() * 0.12),
+            Point::new(cx1 - 2.0, top - r.height() * 0.12),
+        ),
+    );
     // can sides + bottom
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0, top), Point::new(cx0 + 1.0, bot)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx1, top), Point::new(cx1 - 1.0, bot)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 1.0, bot), Point::new(cx1 - 1.0, bot)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx0, top), Point::new(cx0 + 1.0, bot)),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx1, top), Point::new(cx1 - 1.0, bot)),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx0 + 1.0, bot), Point::new(cx1 - 1.0, bot)),
+    );
 }
 
 #[cfg(test)]
@@ -367,30 +480,65 @@ mod tests {
 
     #[test]
     fn hud_lays_out_copy_and_every_swatch() {
-        let hud = draw_hud(true, false, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
+        let hud = draw_hud(
+            true,
+            false,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
         assert!(hud.is_shown());
         // Every swatch + Copy + Note is a hittable button.
         let highlights: Vec<usize> = hud
             .buttons()
             .iter()
-            .filter_map(|(_, a)| if let HudAction::Highlight(i) = a { Some(*i) } else { None })
+            .filter_map(|(_, a)| {
+                if let HudAction::Highlight(i) = a {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy), "Copy present");
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Note), "Note present");
-        assert!(!hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete), "no delete without a mark");
+        assert!(
+            hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
+            "Copy present"
+        );
+        assert!(
+            hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
+            "Note present"
+        );
+        assert!(
+            !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
+            "no delete without a mark"
+        );
     }
 
     #[test]
     fn delete_appears_only_when_asked() {
-        let hud = draw_hud(true, true, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
+        let hud = draw_hud(
+            true,
+            true,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
         assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
     }
 
     #[test]
     fn hit_returns_the_control_under_the_point() {
-        let hud = draw_hud(true, false, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
-        let copy = hud.buttons().iter().find(|(_, a)| *a == HudAction::Copy).unwrap().0;
+        let hud = draw_hud(
+            true,
+            false,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        let copy = hud
+            .buttons()
+            .iter()
+            .find(|(_, a)| *a == HudAction::Copy)
+            .unwrap()
+            .0;
         assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
         assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
     }
@@ -404,7 +552,10 @@ mod tests {
         assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
         assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
         assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
-        assert!(r.y1 <= bounds.y1 + 0.01, "bottom edge kept in bounds: {r:?}");
+        assert!(
+            r.y1 <= bounds.y1 + 0.01,
+            "bottom edge kept in bounds: {r:?}"
+        );
     }
 
     #[test]
@@ -412,7 +563,10 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
         // Anchor near the top → the bar drops below it rather than off-screen.
         let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
-        assert!(hud.rect().y0 >= 10.0, "bar sits at/below the anchor near the top");
+        assert!(
+            hud.rect().y0 >= 10.0,
+            "bar sits at/below the anchor near the top"
+        );
     }
 
     #[test]
@@ -421,7 +575,10 @@ mod tests {
         // A grab keeps the offset so the first tiny move doesn't jump.
         let o = d.update((101.0, 101.0));
         assert!(!d.moved(), "a sub-threshold nudge is still a click");
-        assert!((o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6, "origin tracks pointer minus grab offset");
+        assert!(
+            (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
+            "origin tracks pointer minus grab offset"
+        );
         let o2 = d.update((130.0, 130.0));
         assert!(d.moved(), "a real drag latches moved");
         assert!(o2.0 > o.0 && o2.1 > o.1);

@@ -45,11 +45,7 @@ pub struct Resource {
 }
 
 impl Resource {
-    pub fn new(
-        id: impl Into<String>,
-        kind: impl Into<String>,
-        label: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             id: ResourceId::new(id),
             kind: kind.into(),

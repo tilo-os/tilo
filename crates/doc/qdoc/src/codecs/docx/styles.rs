@@ -4,8 +4,8 @@
 
 use crate::document::MarkValue;
 use crate::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
-    STYLE_SPACE_BEFORE,
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
+    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use crate::snapshot::AttrVal;
 use quick_xml::events::{BytesStart, Event};
@@ -48,7 +48,11 @@ pub(super) fn generic_font(name: &str) -> String {
         "mono".into()
     } else if n.contains("serif") && !n.contains("sans") {
         "serif".into()
-    } else if n.contains("times") || n.contains("georgia") || n.contains("garamond") || n.contains("roman") {
+    } else if n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
         "serif".into()
     } else {
         "sans".into()
@@ -96,14 +100,20 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
         b"w:b" | b"w:bCs" if toggle_on(e) => Some(("strong".into(), MarkValue::Bool(true))),
         b"w:i" | b"w:iCs" if toggle_on(e) => Some(("em".into(), MarkValue::Bool(true))),
         b"w:u" if underline_on(e) => Some(("underline".into(), MarkValue::Bool(true))),
-        b"w:strike" | b"w:dstrike" if toggle_on(e) => Some(("strike".into(), MarkValue::Bool(true))),
+        b"w:strike" | b"w:dstrike" if toggle_on(e) => {
+            Some(("strike".into(), MarkValue::Bool(true)))
+        }
         b"w:sz" => parse_half_point(e).map(|n| ("fontSize".into(), MarkValue::Int(n))),
         b"w:rFonts" => attr_val(e, b"w:ascii")
             .or_else(|| attr_val(e, b"w:hAnsi"))
             .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
-        b"w:color" => attr_val(e, b"w:val").and_then(|v| normalize_color(&v)).map(|c| ("color".into(), MarkValue::Str(c))),
+        b"w:color" => attr_val(e, b"w:val")
+            .and_then(|v| normalize_color(&v))
+            .map(|c| ("color".into(), MarkValue::Str(c))),
         // `w:lang w:val` is already a BCP-47 tag, so it passes straight through to a `lang` mark.
-        b"w:lang" => attr_val(e, b"w:val").filter(|v| !v.is_empty()).map(|v| ("lang".into(), MarkValue::Str(v))),
+        b"w:lang" => attr_val(e, b"w:val")
+            .filter(|v| !v.is_empty())
+            .map(|v| ("lang".into(), MarkValue::Str(v))),
         // Prefer `w:shd w:fill` (arbitrary hex); `w:highlight` carries a named colour mapped to hex.
         b"w:shd" => attr_val(e, b"w:fill")
             .filter(|v| !v.eq_ignore_ascii_case("auto"))
@@ -244,7 +254,11 @@ impl StyleRegistry {
             let n = cur?;
             let Some(p) = self.para.get(&n) else {
                 let (h, l) = heading_from_name(&n, None);
-                return if h { Some(l.unwrap_or(1).clamp(1, 6)) } else { None };
+                return if h {
+                    Some(l.unwrap_or(1).clamp(1, 6))
+                } else {
+                    None
+                };
             };
             if let Some(l) = p.outline_level {
                 return Some(l.clamp(1, 6));
@@ -338,9 +352,18 @@ impl StyleRegistry {
         let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
         let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
         let italic = chain.iter().find_map(|p| p.italic).unwrap_or(false);
-        let color = chain.iter().find_map(|p| p.color.clone()).unwrap_or_else(|| "#000000".to_string());
-        let font = chain.iter().find_map(|p| p.font.clone()).unwrap_or_else(|| "sans".to_string());
-        let align = chain.iter().find_map(|p| p.align.clone()).unwrap_or_else(|| "left".to_string());
+        let color = chain
+            .iter()
+            .find_map(|p| p.color.clone())
+            .unwrap_or_else(|| "#000000".to_string());
+        let font = chain
+            .iter()
+            .find_map(|p| p.font.clone())
+            .unwrap_or_else(|| "sans".to_string());
+        let align = chain
+            .iter()
+            .find_map(|p| p.align.clone())
+            .unwrap_or_else(|| "left".to_string());
         let space_before = chain.iter().find_map(|p| p.space_before).unwrap_or(0.0);
         let space_after = chain.iter().find_map(|p| p.space_after).unwrap_or(0.0);
         let indent = chain.iter().find_map(|p| p.indent).unwrap_or(0.0);
@@ -367,7 +390,9 @@ fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
         let lc = c.to_ascii_lowercase();
         let t = lc.trim_start();
         if t.starts_with("heading") {
-            let lvl = t.split(|ch: char| !ch.is_ascii_digit()).find_map(|x| x.parse::<i64>().ok());
+            let lvl = t
+                .split(|ch: char| !ch.is_ascii_digit())
+                .find_map(|x| x.parse::<i64>().ok());
             return (true, lvl);
         }
     }
@@ -375,7 +400,9 @@ fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
 }
 
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
 
     let mut style_id: Option<String> = None;
@@ -558,7 +585,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
 
 /// Parse `word/numbering.xml` into `reg.num_ordered`: ordered iff the abstract numbering's level-0 `w:numFmt` isn't `bullet`.
 pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
 
     // abstractNumId → its level-0 numbering, and which numId maps to which abstractNum.
@@ -576,7 +605,9 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
                 b"w:lvl" => cur_ilvl = attr_val(&e, b"w:ilvl"),
                 b"w:numFmt" => {
                     if cur_ilvl.as_deref() == Some("0") {
-                        if let (Some(abs), Some(fmt)) = (cur_abstract.clone(), attr_val(&e, b"w:val")) {
+                        if let (Some(abs), Some(fmt)) =
+                            (cur_abstract.clone(), attr_val(&e, b"w:val"))
+                        {
                             let entry = abstract_def.entry(abs).or_default();
                             entry.num_format = map_num_format(&fmt);
                             entry.ordered = entry.num_format.is_some();
@@ -585,7 +616,10 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
                 }
                 b"w:start" => {
                     if cur_ilvl.as_deref() == Some("0") {
-                        if let (Some(abs), Some(st)) = (cur_abstract.clone(), attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok())) {
+                        if let (Some(abs), Some(st)) = (
+                            cur_abstract.clone(),
+                            attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok()),
+                        ) {
                             abstract_def.entry(abs).or_default().num_start = Some(st);
                         }
                     }
@@ -648,10 +682,18 @@ mod tests {
         let mut reg = StyleRegistry::default();
         parse_styles(xml, &mut reg);
         assert_eq!(reg.heading_level("Heading1"), Some(1));
-        assert_eq!(reg.heading_level("MySub"), Some(1), "inherits heading via basedOn");
+        assert_eq!(
+            reg.heading_level("MySub"),
+            Some(1),
+            "inherits heading via basedOn"
+        );
         assert_eq!(reg.para_align("Heading1").as_deref(), Some("center"));
         assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
-        assert!(reg.para_text_marks("Heading1").iter().any(|(n, _)| n == "strong"));
+        assert!(
+            reg.para_text_marks("Heading1")
+                .iter()
+                .any(|(n, _)| n == "strong")
+        );
     }
 
     #[test]

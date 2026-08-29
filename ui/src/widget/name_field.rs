@@ -342,10 +342,7 @@ mod tests {
         // (or anything else) leaking through while a name field is up would
         // silently re-filter the list under the user.
         let mut f = NameField::new("x");
-        let out = f.handle_event(
-            &key(Key::Named(NamedKey::ArrowLeft)),
-            &Modifiers::default(),
-        );
+        let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
         assert_eq!(out, NameFieldOutcome::Edited, "consumed");
         assert_eq!(f.text(), "x", "and it changed nothing");
     }

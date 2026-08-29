@@ -108,7 +108,7 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
     // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
     // the guard active (the system disk locked, both acknowledgements visible).
     if scenario == "drive-internal" {
-        use crate::model::{sample_source, TargetDrive, TargetKind, TargetPartition};
+        use crate::model::{TargetDrive, TargetKind, TargetPartition, sample_source};
         let targets = vec![
             crate::model::sample_targets().remove(0), // the USB stick
             TargetDrive {
@@ -120,8 +120,18 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
                 removable: false,
                 is_system: true, // the running OS boots from this disk
                 partitions: vec![
-                    TargetPartition { name: "nvme0n1p1".into(), size: 536_870_912, fstype: Some("vfat".into()), label: Some("EFI".into()) },
-                    TargetPartition { name: "nvme0n1p2".into(), size: 999_650_000_000, fstype: Some("btrfs".into()), label: Some("qos-root".into()) },
+                    TargetPartition {
+                        name: "nvme0n1p1".into(),
+                        size: 536_870_912,
+                        fstype: Some("vfat".into()),
+                        label: Some("EFI".into()),
+                    },
+                    TargetPartition {
+                        name: "nvme0n1p2".into(),
+                        size: 999_650_000_000,
+                        fstype: Some("btrfs".into()),
+                        label: Some("qos-root".into()),
+                    },
                 ],
             },
         ];
@@ -163,7 +173,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Write);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Writing, write_frac: 0.62, verify_frac: 0.0, rate_bps: 176_000_000 },
+                &Progress {
+                    phase: JobPhase::Writing,
+                    write_frac: 0.62,
+                    verify_frac: 0.0,
+                    rate_bps: 176_000_000,
+                },
             );
             ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
         }
@@ -172,7 +187,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Done);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 },
+                &Progress {
+                    phase: JobPhase::Success,
+                    write_frac: 1.0,
+                    verify_frac: 1.0,
+                    rate_bps: 0,
+                },
             );
             ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
         }
@@ -181,7 +201,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Done);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Failed, write_frac: 0.4, verify_frac: 0.0, rate_bps: 0 },
+                &Progress {
+                    phase: JobPhase::Failed,
+                    write_frac: 0.4,
+                    verify_frac: 0.0,
+                    rate_bps: 0,
+                },
             );
             ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");
         }

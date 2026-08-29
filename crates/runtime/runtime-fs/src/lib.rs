@@ -143,7 +143,9 @@ pub struct FsClient {
 impl FsClient {
     /// Wrap an existing generated client (mainly for tests with their own RPC system).
     pub fn from_raw(client: WorkspaceFsClient) -> Self {
-        Self { inner: Rc::new(client) }
+        Self {
+            inner: Rc::new(client),
+        }
     }
 
     /// Open a file; `path` is workspace-relative, a leading `/` is tolerated.
@@ -156,7 +158,9 @@ impl FsClient {
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;
-        Ok(FileHandle { inner: Rc::new(handle) })
+        Ok(FileHandle {
+            inner: Rc::new(handle),
+        })
     }
 
     /// List a directory. Snapshot semantics: the vec is the entries at the

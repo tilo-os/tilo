@@ -11,11 +11,11 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use automerge::transaction::Transactable;
 use automerge::AutoCommit;
+use automerge::transaction::Transactable;
 
 use settings::panes::accounts::{
-    AccountsPane, ADD_MAIL_KEY, FORM_EMAIL_KEY, FORM_NAME_KEY, FORM_PASSWORD_KEY, FORM_SAVE_KEY,
+    ADD_MAIL_KEY, AccountsPane, FORM_EMAIL_KEY, FORM_NAME_KEY, FORM_PASSWORD_KEY, FORM_SAVE_KEY,
     FORM_USER_KEY,
 };
 use ui::widget::Widget;
@@ -78,10 +78,17 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
 
     // ---- Now read it back the way MAIL does, through Mail's own loader. ----
     let mail_store = mail::account::AccountStore::load_in(&qos_root);
-    assert_eq!(mail_store.len(), 1, "Mail sees exactly the account Settings added");
+    assert_eq!(
+        mail_store.len(),
+        1,
+        "Mail sees exactly the account Settings added"
+    );
 
     let acct = mail_store.active_account().expect("an active account");
-    assert_eq!(acct.config.email, "ada@gmail.com", "the address round-trips");
+    assert_eq!(
+        acct.config.email, "ada@gmail.com",
+        "the address round-trips"
+    );
     assert_eq!(
         acct.config.imap_host, "imap.gmail.com",
         "Settings' autofill reached Mail via the shared store"

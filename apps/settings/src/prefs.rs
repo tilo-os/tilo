@@ -108,7 +108,11 @@ fn default_display_scale() -> f64 {
 
 impl Default for DisplayPrefs {
     fn default() -> Self {
-        Self { auto_brightness: false, night_light: false, scale: 1.0 }
+        Self {
+            auto_brightness: false,
+            night_light: false,
+            scale: 1.0,
+        }
     }
 }
 
@@ -248,7 +252,11 @@ pub struct UpdatePrefs {
 
 impl Default for UpdatePrefs {
     fn default() -> Self {
-        Self { auto: true, channel: "Stable".to_string(), last_checked: "Never".to_string() }
+        Self {
+            auto: true,
+            channel: "Stable".to_string(),
+            last_checked: "Never".to_string(),
+        }
     }
 }
 
@@ -440,8 +448,12 @@ impl AccessibilityPrefs {
     /// The offered pointer sizes as `(display label, size px)`. The compositor
     /// applies [`Self::cursor_size`] as its cursor-theme size when
     /// [`Self::large_cursor`] is set.
-    pub const CURSOR_SIZES: &'static [(&'static str, u32)] =
-        &[("Default", 24), ("Large", 36), ("Larger", 48), ("Largest", 64)];
+    pub const CURSOR_SIZES: &'static [(&'static str, u32)] = &[
+        ("Default", 24),
+        ("Large", 36),
+        ("Larger", 48),
+        ("Largest", 64),
+    ];
 
     /// Map a cursor size to its closest offered label.
     pub fn cursor_size_label(size: u32) -> &'static str {
@@ -454,7 +466,10 @@ impl AccessibilityPrefs {
 
     /// Map a cursor-size label back to its pixel size, if recognised.
     pub fn cursor_size_px(label: &str) -> Option<u32> {
-        Self::CURSOR_SIZES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
+        Self::CURSOR_SIZES
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, s)| *s)
     }
 }
 
@@ -476,8 +491,7 @@ impl SystemPrefs {
     /// Parse each section from a JSON document, falling back to that
     /// section's default when it is missing or malformed. Never fails.
     pub fn from_json(text: &str) -> Self {
-        let root: serde_json::Value =
-            serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+        let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         let section = |key: &str| root.get(key).cloned();
         Self {
             audio: section("audio")
@@ -518,11 +532,26 @@ impl SystemPrefs {
         }
         let obj = root.as_object_mut().expect("just ensured object");
         obj.insert("version".into(), serde_json::json!(1));
-        obj.insert("audio".into(), serde_json::to_value(&self.audio).unwrap_or_default());
-        obj.insert("display".into(), serde_json::to_value(self.display).unwrap_or_default());
-        obj.insert("input".into(), serde_json::to_value(&self.input).unwrap_or_default());
-        obj.insert("power".into(), serde_json::to_value(self.power).unwrap_or_default());
-        obj.insert("updates".into(), serde_json::to_value(&self.updates).unwrap_or_default());
+        obj.insert(
+            "audio".into(),
+            serde_json::to_value(&self.audio).unwrap_or_default(),
+        );
+        obj.insert(
+            "display".into(),
+            serde_json::to_value(self.display).unwrap_or_default(),
+        );
+        obj.insert(
+            "input".into(),
+            serde_json::to_value(&self.input).unwrap_or_default(),
+        );
+        obj.insert(
+            "power".into(),
+            serde_json::to_value(self.power).unwrap_or_default(),
+        );
+        obj.insert(
+            "updates".into(),
+            serde_json::to_value(&self.updates).unwrap_or_default(),
+        );
         obj.insert(
             "appearance".into(),
             serde_json::to_value(&self.appearance).unwrap_or_default(),
@@ -553,8 +582,8 @@ impl SystemPrefs {
     /// Persist to the shared settings path, preserving foreign keys. Creates
     /// the `qos` config directory if needed. Returns the path written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path = RegionSettings::store_path()
-            .ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let path =
+            RegionSettings::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -665,7 +694,10 @@ mod tests {
         assert!(n.show_banners);
         assert!(n.show_previews);
         assert!(n.play_sounds);
-        assert!(!n.show_on_lock_screen, "lock screen is the most exposed surface");
+        assert!(
+            !n.show_on_lock_screen,
+            "lock screen is the most exposed surface"
+        );
         // An old config without the section loads as defaults.
         assert_eq!(SystemPrefs::from_json("{}").notifications, n);
     }
@@ -692,9 +724,18 @@ mod tests {
         p.notifications.do_not_disturb = true;
         p.accessibility.screen_reader = true;
         let out = p.to_json_merged(existing);
-        assert!(out.contains("\"do_not_disturb\": true"), "notifications landed: {out}");
-        assert!(out.contains("\"screen_reader\": true"), "accessibility landed: {out}");
-        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
+        assert!(
+            out.contains("\"do_not_disturb\": true"),
+            "notifications landed: {out}"
+        );
+        assert!(
+            out.contains("\"screen_reader\": true"),
+            "accessibility landed: {out}"
+        );
+        assert!(
+            out.contains("\"currency\": \"EUR\""),
+            "locale survived: {out}"
+        );
         assert!(out.contains("Delft"), "foreign key survived: {out}");
     }
 
@@ -725,7 +766,10 @@ mod tests {
         let json = r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#;
         let p = SystemPrefs::from_json(json);
         assert_eq!(p.appearance.theme, "Nord", "the section still parses");
-        assert_eq!(p.appearance.ui_scale, 1.0, "missing ui_scale defaults to neutral");
+        assert_eq!(
+            p.appearance.ui_scale, 1.0,
+            "missing ui_scale defaults to neutral"
+        );
         assert_eq!(p.appearance.text_scale, 1.15);
     }
 
@@ -786,8 +830,14 @@ mod tests {
         let mut p = SystemPrefs::default();
         p.appearance.theme = "Gruvbox".into();
         let out = p.to_json_merged(existing);
-        assert!(out.contains("\"theme\": \"Gruvbox\""), "appearance landed: {out}");
-        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
+        assert!(
+            out.contains("\"theme\": \"Gruvbox\""),
+            "appearance landed: {out}"
+        );
+        assert!(
+            out.contains("\"currency\": \"EUR\""),
+            "locale survived: {out}"
+        );
     }
 
     #[test]
@@ -798,8 +848,14 @@ mod tests {
         let mut p = SystemPrefs::default();
         p.display.night_light = true;
         let out = p.to_json_merged(existing);
-        assert!(out.contains("\"night_light\": true"), "our edit landed: {out}");
-        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
+        assert!(
+            out.contains("\"night_light\": true"),
+            "our edit landed: {out}"
+        );
+        assert!(
+            out.contains("\"currency\": \"EUR\""),
+            "locale survived: {out}"
+        );
         assert!(out.contains("Delft"), "foreign key survived: {out}");
     }
 
@@ -807,9 +863,14 @@ mod tests {
     fn malformed_section_degrades_to_default() {
         // A garbage `input` section falls back to defaults rather than
         // throwing away the whole document.
-        let p = SystemPrefs::from_json(r#"{"input":"not-an-object","audio":{"event_sounds":false,"chat_join":true,"chat_leave":true}}"#);
+        let p = SystemPrefs::from_json(
+            r#"{"input":"not-an-object","audio":{"event_sounds":false,"chat_join":true,"chat_leave":true}}"#,
+        );
         assert_eq!(p.input, InputPrefs::default());
-        assert!(!p.audio.event_sounds, "the valid audio section still parsed");
+        assert!(
+            !p.audio.event_sounds,
+            "the valid audio section still parsed"
+        );
     }
 
     #[test]
@@ -851,7 +912,11 @@ mod tests {
 
     #[test]
     fn power_action_pref_labels_round_trip() {
-        for a in [PowerActionPref::Suspend, PowerActionPref::Lock, PowerActionPref::Ignore] {
+        for a in [
+            PowerActionPref::Suspend,
+            PowerActionPref::Lock,
+            PowerActionPref::Ignore,
+        ] {
             assert_eq!(PowerActionPref::from_display(a.display()), Some(a));
         }
         assert_eq!(PowerActionPref::from_display("bogus"), None);

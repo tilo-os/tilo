@@ -41,7 +41,11 @@ impl Span {
     /// Normalises a backwards range, so drag direction does not change the
     /// addressed run.
     pub fn new(start: usize, end: usize, unit: SpanUnit) -> Self {
-        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
         Self { start, end, unit }
     }
 

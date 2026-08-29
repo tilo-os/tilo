@@ -32,9 +32,9 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation as ToolbarOrientation;
 use ui::widget::tree_view::TreeNode;
 use ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog,
-    PopoverWidget, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup,
-    Toolbar, TreeView, VideoPlayer, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog, PopoverWidget,
+    ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar, TreeView, VideoPlayer,
+    Widget,
 };
 
 fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, x: f64, y: f64, text: &str) {
@@ -229,13 +229,13 @@ fn main() {
 
     // Helper: place a single widget at (col_idx, y) with a label.
     let place = |scene: &mut Scene,
-                     tr: &mut TextRenderer,
-                     doc: &mut AutoCommit,
-                     col_idx: usize,
-                     y_top: f64,
-                     caption: &str,
-                     widget: &mut dyn Widget,
-                     size: (f32, f32)| {
+                 tr: &mut TextRenderer,
+                 doc: &mut AutoCommit,
+                 col_idx: usize,
+                 y_top: f64,
+                 caption: &str,
+                 widget: &mut dyn Widget,
+                 size: (f32, f32)| {
         label(scene, tr, &theme, cols[col_idx], y_top, caption);
         stamp(
             scene,
@@ -252,27 +252,108 @@ fn main() {
     let mut pb_det = ProgressBar::new(0.5);
     let mut pb_indet = ProgressBar::indeterminate();
     let mut sp = Spinner::with_size(32.0);
-    place(&mut scene, &mut tr, &mut doc, 0, y, "ProgressBar (50%)", &mut pb_det, (col_w as f32, 8.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "ProgressBar (indeterminate)", &mut pb_indet, (col_w as f32, 8.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "Spinner (32 px)", &mut sp, (32.0, 32.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "ProgressBar (50%)",
+        &mut pb_det,
+        (col_w as f32, 8.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "ProgressBar (indeterminate)",
+        &mut pb_indet,
+        (col_w as f32, 8.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "Spinner (32 px)",
+        &mut sp,
+        (32.0, 32.0),
+    );
     y += row_label_h + 32.0 + row_gap;
 
     // --- Row 2: Badge variants ---------------------------------------------
     let mut b_dot = Badge::dot();
     let mut b_5 = Badge::count(5);
     let mut b_99 = Badge::count(150);
-    place(&mut scene, &mut tr, &mut doc, 0, y, "Badge::dot", &mut b_dot, (16.0, 16.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "Badge::count(5)", &mut b_5, (28.0, 18.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "Badge::count(150) → '99+'", &mut b_99, (40.0, 18.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "Badge::dot",
+        &mut b_dot,
+        (16.0, 16.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "Badge::count(5)",
+        &mut b_5,
+        (28.0, 18.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "Badge::count(150) → '99+'",
+        &mut b_99,
+        (40.0, 18.0),
+    );
     y += row_label_h + 24.0 + row_gap;
 
     // --- Row 3: Avatar variants --------------------------------------------
     let mut av_qd = Avatar::from_initials("QD", 48.0);
     let mut av_al = Avatar::from_initials("AL", 48.0);
     let mut av_img = Avatar::new(placeholder_image(), 48.0);
-    place(&mut scene, &mut tr, &mut doc, 0, y, "Avatar 'QD' (initials)", &mut av_qd, (48.0, 48.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "Avatar 'AL' (initials)", &mut av_al, (48.0, 48.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "Avatar (image)", &mut av_img, (48.0, 48.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "Avatar 'QD' (initials)",
+        &mut av_qd,
+        (48.0, 48.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "Avatar 'AL' (initials)",
+        &mut av_al,
+        (48.0, 48.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "Avatar (image)",
+        &mut av_img,
+        (48.0, 48.0),
+    );
     y += row_label_h + 48.0 + row_gap;
 
     // --- Row 4: Breadcrumb / ToggleGroup / Toolbar -------------------------
@@ -283,7 +364,11 @@ fn main() {
         "readme.md".into(),
     ]);
     let mut tg = ToggleGroup::new(
-        vec![Segment::new("Day"), Segment::new("Week"), Segment::new("Month")],
+        vec![
+            Segment::new("Day"),
+            Segment::new("Week"),
+            Segment::new("Month"),
+        ],
         1,
     );
     let mut tb = Toolbar::new(ToolbarOrientation::Horizontal)
@@ -291,18 +376,72 @@ fn main() {
         .push_separator()
         .push_button("Copy", || {})
         .push_button("Paste", || {});
-    place(&mut scene, &mut tr, &mut doc, 0, y, "Breadcrumb", &mut bc, (col_w as f32, 24.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "ToggleGroup (selected=1)", &mut tg, (240.0, 36.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "Toolbar", &mut tb, (col_w as f32, 36.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "Breadcrumb",
+        &mut bc,
+        (col_w as f32, 24.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "ToggleGroup (selected=1)",
+        &mut tg,
+        (240.0, 36.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "Toolbar",
+        &mut tb,
+        (col_w as f32, 36.0),
+    );
     y += row_label_h + 36.0 + row_gap;
 
     // --- Row 5: DatePicker / TimePicker (×2) -------------------------------
     let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2026, 5, 22).unwrap());
     let mut tp = TimePicker::new(14, 30);
     let mut tps = TimePicker::new(9, 15).with_seconds(45);
-    place(&mut scene, &mut tr, &mut doc, 0, y, "DatePicker (2026-05-22)", &mut dp, (224.0, 244.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "TimePicker (14:30)", &mut tp, (96.0, 72.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "TimePicker (with seconds)", &mut tps, (140.0, 72.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "DatePicker (2026-05-22)",
+        &mut dp,
+        (224.0, 244.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "TimePicker (14:30)",
+        &mut tp,
+        (96.0, 72.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "TimePicker (with seconds)",
+        &mut tps,
+        (140.0, 72.0),
+    );
     y += row_label_h + 244.0 + row_gap;
 
     // --- Row 6: ColorPicker / TreeView / ResizableSplit --------------------
@@ -332,16 +471,61 @@ fn main() {
         TinyText::new("right pane"),
         SplitOrientation::Horizontal,
     );
-    place(&mut scene, &mut tr, &mut doc, 0, y, "ColorPicker (indigo)", &mut cp, (260.0, 220.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "TreeView (project tree)", &mut tv, (col_w as f32, 160.0));
-    place(&mut scene, &mut tr, &mut doc, 2, y, "ResizableSplit (Horizontal)", &mut rs, (col_w as f32, 160.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "ColorPicker (indigo)",
+        &mut cp,
+        (260.0, 220.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "TreeView (project tree)",
+        &mut tv,
+        (col_w as f32, 160.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        2,
+        y,
+        "ResizableSplit (Horizontal)",
+        &mut rs,
+        (col_w as f32, 160.0),
+    );
     y += row_label_h + 220.0 + row_gap;
 
     // --- Row 7: ImageViewer / VideoPlayer ----------------------------------
     let mut iv = ImageViewer::new(placeholder_image());
     let mut vp = VideoPlayer::new();
-    place(&mut scene, &mut tr, &mut doc, 0, y, "ImageViewer (16×16 indigo)", &mut iv, (col_w as f32, 160.0));
-    place(&mut scene, &mut tr, &mut doc, 1, y, "VideoPlayer (no frame)", &mut vp, (col_w as f32, 160.0));
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        0,
+        y,
+        "ImageViewer (16×16 indigo)",
+        &mut iv,
+        (col_w as f32, 160.0),
+    );
+    place(
+        &mut scene,
+        &mut tr,
+        &mut doc,
+        1,
+        y,
+        "VideoPlayer (no frame)",
+        &mut vp,
+        (col_w as f32, 160.0),
+    );
 
     // --- Row 7 col 3: PopoverWidget — set anchor_rect and viewport in
     // scene-space so the flip resolver fires inside the intended cell. ----
@@ -350,7 +534,14 @@ fn main() {
         let pop_y = y;
         let pop_w = col_w;
         let pop_h = 240.0_f64;
-        label(&mut scene, &mut tr, &theme, pop_x, pop_y, "PopoverWidget (anchored, Below)");
+        label(
+            &mut scene,
+            &mut tr,
+            &theme,
+            pop_x,
+            pop_y,
+            "PopoverWidget (anchored, Below)",
+        );
         // Visualise the anchor we're going to attach to so it reads as a
         // real button rather than a phantom region.
         let anchor = Rect::new(
@@ -374,10 +565,16 @@ fn main() {
             Affine::translate((anchor.x0 + 12.0, anchor.y0 + 8.0)),
             None,
         );
-        let viewport = Rect::new(pop_x, pop_y + row_label_h, pop_x + pop_w, pop_y + row_label_h + pop_h);
-        let mut popover = PopoverWidget::new(anchor, TinyText::new("Popover content"), PopoverSide::Below)
-            .open(true)
-            .with_viewport(viewport);
+        let viewport = Rect::new(
+            pop_x,
+            pop_y + row_label_h,
+            pop_x + pop_w,
+            pop_y + row_label_h + pop_h,
+        );
+        let mut popover =
+            PopoverWidget::new(anchor, TinyText::new("Popover content"), PopoverSide::Below)
+                .open(true)
+                .with_viewport(viewport);
         stamp(
             &mut scene,
             &mut tr,
@@ -396,8 +593,20 @@ fn main() {
         let modal_y = y;
         let modal_w = (canvas_w as f64) - 2.0 * pad;
         let modal_h = 200.0_f64;
-        label(&mut scene, &mut tr, &theme, modal_x, modal_y, "ModalDialog (open) — backdrop + centred box");
-        let viewport = Rect::new(modal_x, modal_y + row_label_h, modal_x + modal_w, modal_y + row_label_h + modal_h);
+        label(
+            &mut scene,
+            &mut tr,
+            &theme,
+            modal_x,
+            modal_y,
+            "ModalDialog (open) — backdrop + centred box",
+        );
+        let viewport = Rect::new(
+            modal_x,
+            modal_y + row_label_h,
+            modal_x + modal_w,
+            modal_y + row_label_h + modal_h,
+        );
         let mut modal = ModalDialog::new(
             "Save changes?",
             TinyText::new("Discard your unsaved edits to widget_snapshot.rs?"),

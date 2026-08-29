@@ -204,7 +204,11 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     for _ in 0..15 {
         let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
         match env {
-            Ok(Some(Envelope::Delta { delta, workspace_id: 11, .. })) => got.push(delta),
+            Ok(Some(Envelope::Delta {
+                delta,
+                workspace_id: 11,
+                ..
+            })) => got.push(delta),
             Ok(Some(_)) => {} // Ready / other, ignore
             _ => break,
         }

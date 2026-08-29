@@ -322,7 +322,11 @@ impl SpeakerPlayback {
         if pipeline.set_state(gst::State::Playing).is_err() {
             return None;
         }
-        Some(Self { pipeline, src, pts_ms: 0 })
+        Some(Self {
+            pipeline,
+            src,
+            pts_ms: 0,
+        })
     }
 
     /// Push one received Opus packet to the speakers.
@@ -362,7 +366,10 @@ mod tests {
     fn test_tone_has_expected_length_and_signal() {
         let t = test_tone(RATE, CHANNELS, 40);
         assert_eq!(t.len(), (RATE as usize / 1000) * 40, "40 ms of 48 kHz mono");
-        assert!(t.iter().any(|&s| s.abs() > 1000), "tone actually oscillates");
+        assert!(
+            t.iter().any(|&s| s.abs() > 1000),
+            "tone actually oscillates"
+        );
     }
 
     /// Real codec round-trip with no audio device: PCM → Opus → PCM. Proves the
@@ -376,11 +383,17 @@ mod tests {
         let pcm = test_tone(RATE, CHANNELS, 60); // 3 × 20 ms frames
         let packets = enc.encode(&pcm);
         assert!(!packets.is_empty(), "opusenc produced packets");
-        assert!(packets.iter().all(|p| !p.is_empty()), "each packet carries bytes");
+        assert!(
+            packets.iter().all(|p| !p.is_empty()),
+            "each packet carries bytes"
+        );
         let mut decoded = 0usize;
         for p in &packets {
             decoded += dec.decode(p).len();
         }
-        assert!(decoded > 0, "opusdec recovered PCM samples from the encoded packets");
+        assert!(
+            decoded > 0,
+            "opusdec recovered PCM samples from the encoded packets"
+        );
     }
 }

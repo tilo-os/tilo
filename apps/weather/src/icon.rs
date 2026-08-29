@@ -134,9 +134,27 @@ fn draw_cloud(scene: &mut Scene, t: Affine, rect: Rect, _p: &IconPalette, fill: 
     );
     scene.fill(Fill::NonZero, t, fill, None, &base);
     // Lobes.
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx - s * 0.18, base_y - s * 0.05), s * 0.16));
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx + s * 0.02, base_y - s * 0.14), s * 0.20));
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx + s * 0.22, base_y - s * 0.04), s * 0.15));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx - s * 0.18, base_y - s * 0.05), s * 0.16),
+    );
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx + s * 0.02, base_y - s * 0.14), s * 0.20),
+    );
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx + s * 0.22, base_y - s * 0.04), s * 0.15),
+    );
 }
 
 fn draw_rain(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette, heavy: bool) {
@@ -159,7 +177,13 @@ fn draw_snow(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette) {
     let top = rect.y0 + rect.height() * 0.78;
     for i in 0..3 {
         let x = cx + (i as f64 - 1.0) * s * 0.20;
-        scene.fill(Fill::NonZero, t, p.snow, None, &Circle::new(Point::new(x, top + s * 0.06), s * 0.035));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            p.snow,
+            None,
+            &Circle::new(Point::new(x, top + s * 0.06), s * 0.035),
+        );
     }
 }
 

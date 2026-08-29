@@ -29,8 +29,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::text_selection::clipboard_copy;
+use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 
@@ -427,10 +427,7 @@ impl Widget for RecoveryShareScreen {
         if self.acknowledged {
             let mut p = vello::kurbo::BezPath::new();
             p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
-            p.line_to((
-                self.ack_rect.x0 + 7.5,
-                self.ack_rect.y1 - 4.0,
-            ));
+            p.line_to((self.ack_rect.x0 + 7.5, self.ack_rect.y1 - 4.0));
             p.line_to((self.ack_rect.x1 - 3.0, self.ack_rect.y0 + 4.0));
             scene.stroke(
                 &Stroke::new(2.0),
@@ -445,8 +442,7 @@ impl Widget for RecoveryShareScreen {
             "I've written them down somewhere safe",
             13.0,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0)),
+            transform * Affine::translate((self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0)),
             None,
         );
         if let Some(msg) = &self.clipboard_message {

@@ -153,13 +153,7 @@ impl<T: Lerp + Copy> Animated<T> {
 
     /// Like `new`, but with an explicit start instant — useful for tests
     /// and for scheduling animations to begin in the future.
-    pub fn starting_at(
-        from: T,
-        to: T,
-        started: Instant,
-        duration: Duration,
-        curve: Curve,
-    ) -> Self {
+    pub fn starting_at(from: T, to: T, started: Instant, duration: Duration, curve: Curve) -> Self {
         Self {
             from,
             to,
@@ -269,12 +263,7 @@ impl Transition {
 
     /// No-op when the intent is unchanged AND the animation has settled, so
     /// repeated calls each frame don't restart the curve.
-    pub fn set_open(
-        &mut self,
-        open: bool,
-        duration: Duration,
-        curve: Curve,
-    ) {
+    pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
         let now = Instant::now();
         if open == self.open && self.anim.done(now) {
             return;
@@ -315,7 +304,10 @@ mod tests {
     #[test]
     fn ease_out_starts_fast_ends_slow() {
         let half = Curve::EaseOut.apply(0.5);
-        assert!(half > 0.5, "ease-out at midpoint should be past linear: {half}");
+        assert!(
+            half > 0.5,
+            "ease-out at midpoint should be past linear: {half}"
+        );
         assert!(Curve::EaseOut.apply(0.0).abs() < 1e-6);
         assert!((Curve::EaseOut.apply(1.0) - 1.0).abs() < 1e-6);
     }
@@ -387,18 +379,15 @@ mod tests {
     #[test]
     fn raw_t_is_unclamped() {
         let now = Instant::now();
-        let a = Animated::starting_at(
-            0.0_f32,
-            1.0,
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
+        let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::from_millis(100), Curve::Linear);
         assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
         let over = a.raw_t(now + Duration::from_millis(300));
         assert!(over > 2.5 && over < 3.5, "raw_t should overshoot: {over}");
         let under = a.raw_t(now - Duration::from_millis(50));
-        assert!(under < -0.4 && under > -0.6, "raw_t should be negative: {under}");
+        assert!(
+            under < -0.4 && under > -0.6,
+            "raw_t should be negative: {under}"
+        );
     }
 
     #[test]
@@ -440,7 +429,11 @@ mod tests {
             Curve::Linear,
         );
         let mid = a.current(now + Duration::from_millis(50));
-        assert!(mid.r() > 90 && mid.r() < 110, "mid R should be ~100: {}", mid.r());
+        assert!(
+            mid.r() > 90 && mid.r() < 110,
+            "mid R should be ~100: {}",
+            mid.r()
+        );
         assert!(mid.g() > 40 && mid.g() < 60);
         assert!(mid.b() > 20 && mid.b() < 30);
     }

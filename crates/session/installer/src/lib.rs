@@ -31,17 +31,17 @@
 //! * [`installer_app`] — the root [`InstallerApp`] `Widget` + wizard
 //!   state machine.
 
+pub mod action_button;
+pub mod disk_row;
 pub mod disks;
 pub mod install;
-pub mod status_log;
-pub mod disk_row;
-pub mod step_indicator;
-pub mod action_button;
-pub mod seg_choice;
-pub mod timezones;
-pub mod layouts;
-pub mod keyboard_view;
 pub mod installer_app;
+pub mod keyboard_view;
+pub mod layouts;
+pub mod seg_choice;
+pub mod status_log;
+pub mod step_indicator;
+pub mod timezones;
 
-pub use disks::{parse_lsblk, read_disks, Disk};
-pub use installer_app::{InstallerApp, InstallState, Step};
+pub use disks::{Disk, parse_lsblk, read_disks};
+pub use installer_app::{InstallState, InstallerApp, Step};

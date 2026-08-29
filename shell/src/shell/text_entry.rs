@@ -244,7 +244,15 @@ mod tests {
     #[test]
     fn backspace_removes_one_character_and_a_word_under_ctrl() {
         let (mut buf, mut sel) = typed("hello world");
-        assert_eq!(apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel), Edit::Changed);
+        assert_eq!(
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel
+            ),
+            Edit::Changed
+        );
         assert_eq!(buf, "hello worl");
         apply(&Key::Named(NamedKey::Backspace), ctrl(), &mut buf, &mut sel);
         assert_eq!(buf, "hello ", "ctrl+backspace deletes the word");
@@ -255,7 +263,12 @@ mod tests {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
         assert_eq!(
-            apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel),
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel
+            ),
             Edit::ConsumedQuiet,
             "swallowed, but no repaint is owed"
         );
@@ -274,7 +287,10 @@ mod tests {
     #[test]
     fn select_all_spans_the_buffer_without_owing_a_repaint() {
         let (mut buf, mut sel) = typed("abc");
-        assert_eq!(apply(&ch("a"), ctrl(), &mut buf, &mut sel), Edit::ConsumedQuiet);
+        assert_eq!(
+            apply(&ch("a"), ctrl(), &mut buf, &mut sel),
+            Edit::ConsumedQuiet
+        );
         assert_eq!(sel.anchor, 0);
         assert_eq!(sel.cursor, 3);
         assert_eq!(buf, "abc", "ctrl+a must not type an 'a'");
@@ -292,7 +308,10 @@ mod tests {
     #[test]
     fn shift_arrow_extends_a_selection_rather_than_collapsing_it() {
         let (mut buf, mut sel) = typed("abcdef");
-        let shift = Mods { shift: true, ctrl: false };
+        let shift = Mods {
+            shift: true,
+            ctrl: false,
+        };
         apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
         apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
         assert!(!sel.is_collapsed());
@@ -302,8 +321,14 @@ mod tests {
     #[test]
     fn enter_and_escape_are_reported_rather_than_typed() {
         let (mut buf, mut sel) = typed("pw");
-        assert_eq!(apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel), Edit::Submit);
-        assert_eq!(apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel), Edit::Cancel);
+        assert_eq!(
+            apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel),
+            Edit::Submit
+        );
+        assert_eq!(
+            apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel),
+            Edit::Cancel
+        );
         assert_eq!(buf, "pw", "neither key changes the buffer");
     }
 
@@ -314,7 +339,12 @@ mod tests {
         apply(&ch("é"), plain(), &mut buf, &mut sel);
         apply(&ch("漢"), plain(), &mut buf, &mut sel);
         assert_eq!(buf, "é漢");
-        apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel);
+        apply(
+            &Key::Named(NamedKey::Backspace),
+            plain(),
+            &mut buf,
+            &mut sel,
+        );
         assert_eq!(buf, "é");
         assert!(buf.is_char_boundary(sel.cursor));
     }
@@ -323,7 +353,10 @@ mod tests {
     fn control_characters_are_dropped_rather_than_stored() {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
-        assert_eq!(apply(&ch("\u{7}"), plain(), &mut buf, &mut sel), Edit::Ignored);
+        assert_eq!(
+            apply(&ch("\u{7}"), plain(), &mut buf, &mut sel),
+            Edit::Ignored
+        );
         assert!(buf.is_empty(), "an invisible byte must never reach nmcli");
     }
 
@@ -331,7 +364,10 @@ mod tests {
     fn unrelated_keys_fall_through() {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
-        assert_eq!(apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel), Edit::Ignored);
+        assert_eq!(
+            apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel),
+            Edit::Ignored
+        );
         assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
     }
 

@@ -6,10 +6,10 @@
 //! last two. A trail of 4 or fewer segments never truncates (the truncated
 //! form wouldn't be shorter).
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -116,12 +116,7 @@ impl Breadcrumb {
     /// Sum the widths of all segments + interleaved separators (with
     /// `s2` padding on each side of each separator). Used by
     /// `visible_segments` to decide whether the full path fits.
-    fn measure_total_width(
-        &self,
-        labels: &[String],
-        theme: &Theme,
-        tr: &mut TextRenderer,
-    ) -> f64 {
+    fn measure_total_width(&self, labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
         let size = theme.tokens.typography.scale.sm;
         let sep_pad = theme.tokens.spacing.s2 as f64;
         let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
@@ -148,9 +143,7 @@ impl Breadcrumb {
         // originals survive (first + last two); otherwise each visible
         // index equals the original index.
         let n = self.segments.len();
-        let truncated = labels.len() == 4
-            && n > 4
-            && labels[1] == ELLIPSIS;
+        let truncated = labels.len() == 4 && n > 4 && labels[1] == ELLIPSIS;
         let mut origin = Vec::with_capacity(labels.len());
         if truncated {
             origin.push(Some(0));
@@ -381,7 +374,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, ElementState, MouseButton, Modifiers};
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
 
     fn synth_device() -> DeviceId {
         // SAFETY: `DeviceId` is opaque; tests construct one via
@@ -478,9 +471,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_with_long_path_truncates_middle_segments() {
-        let segments: Vec<String> = (0..10)
-            .map(|i| format!("segment_{:02}", i))
-            .collect();
+        let segments: Vec<String> = (0..10).map(|i| format!("segment_{:02}", i)).collect();
         let bc = Breadcrumb::new(segments.clone());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();

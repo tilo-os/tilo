@@ -18,11 +18,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use photos::actions::{PhotosResources, register};
-use qos_actions::ResourceProvider;
 use photos::doc::PhotosDoc;
 use photos::model::{Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
+use qos_actions::ResourceProvider;
 
 /// A laid-out app, ready to assert on.
 struct Harness {
@@ -52,7 +52,9 @@ impl Harness {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         self.app.sync(&mut self.state.doc, &self.state.root);
-        let child = self.app.build_layout(&mut taffy, &self.theme, &mut node_map);
+        let child = self
+            .app
+            .build_layout(&mut taffy, &self.theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style {
@@ -134,7 +136,7 @@ fn the_whole_photograph_is_inside_the_canvas_at_every_window_size() {
     for (w, h) in [
         (1280.0, 800.0),
         (640.0, 480.0),
-        (400.0, 900.0), // taller than wide: the photograph is not
+        (400.0, 900.0),  // taller than wide: the photograph is not
         (1600.0, 300.0), // a letterbox strip
         (320.0, 240.0),  // small enough that chrome dominates
     ] {
@@ -200,7 +202,11 @@ fn a_loaded_photograph_produces_a_non_empty_scene() {
 
     // With nothing open the scene is chrome and an empty state — no image.
     let empty = hz.frame();
-    assert_eq!(images(&empty), 0, "an empty app drew an image from somewhere");
+    assert_eq!(
+        images(&empty),
+        0,
+        "an empty app drew an image from somewhere"
+    );
 
     // Path count is deliberately not the metric: the empty state is an icon
     // plus two runs of text, so opening a photograph *reduces* the path count
@@ -267,7 +273,8 @@ fn rotating_changes_the_exported_pixels() {
         let want = before.pixel(sx, sy).unwrap();
         let got = after.pixel(sh - 1 - sy, sx).unwrap();
         assert_eq!(
-            got, want,
+            got,
+            want,
             "source ({sx}, {sy}) did not land at ({}, {sx}) after a clockwise turn",
             sh - 1 - sy
         );
@@ -324,8 +331,14 @@ fn cropping_changes_the_exported_pixels() {
         "the cropped buffer is not smaller"
     );
     // Pixel (0,0) of the crop is pixel (200,200) of the original.
-    assert_eq!(after.pixel(0, 0).unwrap(), original.pixel(200, 200).unwrap());
-    assert_eq!(after.pixel(5, 7).unwrap(), original.pixel(205, 207).unwrap());
+    assert_eq!(
+        after.pixel(0, 0).unwrap(),
+        original.pixel(200, 200).unwrap()
+    );
+    assert_eq!(
+        after.pixel(5, 7).unwrap(),
+        original.pixel(205, 207).unwrap()
+    );
 }
 
 /// Reset must return the exported pixels to exactly the original — byte for
@@ -338,9 +351,12 @@ fn reset_restores_the_original_pixels_exactly() {
     hz.app.open_path(&mut hz.state.doc, &path);
     hz.frame();
 
-    let e = Edits::default()
-        .rotated_right()
-        .cropped_from_view(Rect01 { x: 0.1, y: 0.1, w: 0.5, h: 0.5 });
+    let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
+        x: 0.1,
+        y: 0.1,
+        w: 0.5,
+        h: 0.5,
+    });
     PhotosDoc::set_edits(&mut hz.state.doc, &e);
     hz.frame();
     assert_ne!(hz.app.edited_pixels().unwrap().bytes, original.bytes);
@@ -464,14 +480,22 @@ fn copy_puts_the_edited_pixels_on_the_clipboard() {
     let shown = hz.app.edited_pixels().expect("rendered").clone();
     assert!(hz.app.copy_to_clipboard(), "the copy was refused");
 
-    let got = recorder.image.lock().unwrap().clone().expect("nothing was copied");
+    let got = recorder
+        .image
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("nothing was copied");
     assert_eq!(
         (got.0, got.1),
         (shown.w as usize, shown.h as usize),
         "the clipboard got a different size from what is on screen"
     );
     assert_eq!(got.2, shown.bytes, "the clipboard got different pixels");
-    assert_ne!(got.2, original.bytes, "the clipboard got the unedited original");
+    assert_ne!(
+        got.2, original.bytes,
+        "the clipboard got the unedited original"
+    );
     assert_eq!(
         got.2.len(),
         got.0 * got.1 * 4,
@@ -500,7 +524,10 @@ fn save_writes_a_png_that_decodes_to_what_was_shown() {
     assert_eq!(&written[1..4], b"PNG", "that is not a PNG");
     let back = pixels::decode(&written).expect("the saved file does not decode");
     assert_eq!((back.w, back.h), (shown.w, shown.h));
-    assert_eq!(back.bytes, shown.bytes, "the saved pixels differ from the shown ones");
+    assert_eq!(
+        back.bytes, shown.bytes,
+        "the saved pixels differ from the shown ones"
+    );
 }
 
 /// The default destination must not be the file that was opened.
@@ -532,7 +559,11 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
     let before = hz.state.doc.save();
     let resources = PhotosResources.resources(&hz.state.doc);
     let flat = flatten(&resources);
-    assert_eq!(hz.state.doc.save(), before, "enumeration mutated the document");
+    assert_eq!(
+        hz.state.doc.save(),
+        before,
+        "enumeration mutated the document"
+    );
 
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].label, "harbour.png");
@@ -631,8 +662,14 @@ fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
     );
     // The bottom-right quarter, by identity — a crop of the right *size*
     // taken from the wrong *place* would pass a dimensions-only check.
-    assert_eq!(after.pixel(0, 0).unwrap(), original.pixel(200, 200).unwrap());
-    assert_eq!(after.pixel(9, 3).unwrap(), original.pixel(209, 203).unwrap());
+    assert_eq!(
+        after.pixel(0, 0).unwrap(),
+        original.pixel(200, 200).unwrap()
+    );
+    assert_eq!(
+        after.pixel(9, 3).unwrap(),
+        original.pixel(209, 203).unwrap()
+    );
 
     // And the document still carries only the decision, never the pixels.
     let saved = hz.state.doc.save().len();
@@ -659,7 +696,6 @@ fn nothing_open_publishes_nothing_and_still_draws() {
 // ---------------------------------------------------------------------------
 // 5. Contrast, measured rather than eyeballed.
 // ---------------------------------------------------------------------------
-
 
 /// Every colour this app chooses for itself, measured in every theme it can be
 /// rendered under.
@@ -762,7 +798,11 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
 
         let window = hz.window_rect();
         let items = hz.app.toolbar_item_rects();
-        assert_eq!(items.len(), 7, "{w}x{h}: the toolbar lost a control entirely");
+        assert_eq!(
+            items.len(),
+            7,
+            "{w}x{h}: the toolbar lost a control entirely"
+        );
 
         for (name, r) in items {
             assert!(

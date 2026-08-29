@@ -62,7 +62,9 @@ impl InstalledState {
     pub fn update_available(&self) -> bool {
         match self {
             InstalledState::Not => false,
-            InstalledState::Installed { version, available, .. } => version != available,
+            InstalledState::Installed {
+                version, available, ..
+            } => version != available,
         }
     }
 
@@ -240,9 +242,7 @@ impl StoreItem {
     /// re-derive which is which is a caller that can get it wrong.
     pub fn remove_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => {
-                Some(ActionKind::Remove)
-            }
+            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => Some(ActionKind::Remove),
             (StoreSource::Flathub, InstalledState::Installed { .. }) => {
                 Some(ActionKind::FlatpakRemove)
             }
@@ -357,7 +357,9 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
-            source: StoreSource::Qos { registry_name: "qOS main".into() },
+            source: StoreSource::Qos {
+                registry_name: "qOS main".into(),
+            },
             versions: vec![StoreItemVersion {
                 version: latest.into(),
                 released_at_unix: 0,
@@ -453,8 +455,14 @@ mod tests {
         let f = flatpak_item("Chess", qinstalled("1", "1", false));
         assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
         // Nothing to remove until something is installed.
-        assert_eq!(qos_item("Notes", InstalledState::Not, "1").remove_action(), None);
-        assert_eq!(flatpak_item("Chess", InstalledState::Not).remove_action(), None);
+        assert_eq!(
+            qos_item("Notes", InstalledState::Not, "1").remove_action(),
+            None
+        );
+        assert_eq!(
+            flatpak_item("Chess", InstalledState::Not).remove_action(),
+            None
+        );
     }
 
     #[test]
@@ -483,8 +491,14 @@ mod tests {
         let prefix = n.fuzzy_score("no");
         let mid = n.fuzzy_score("les");
         let desc = n.fuzzy_score("little");
-        assert!(prefix > mid, "prefix ({prefix}) should outrank mid-name ({mid})");
-        assert!(prefix > desc, "prefix ({prefix}) should outrank description ({desc})");
+        assert!(
+            prefix > mid,
+            "prefix ({prefix}) should outrank mid-name ({mid})"
+        );
+        assert!(
+            prefix > desc,
+            "prefix ({prefix}) should outrank description ({desc})"
+        );
     }
 
     #[test]

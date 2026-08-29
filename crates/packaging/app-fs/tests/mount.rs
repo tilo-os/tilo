@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use app_fs::{
-    store::CountingStore, Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions,
-    QosAppFs, PAGE_SIZE,
+    Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions, PAGE_SIZE, QosAppFs,
+    store::CountingStore,
 };
 
 /// Common fixture: put a single 1 KiB file at bin/hello into a
@@ -29,7 +29,9 @@ fn fixture_1k() -> (
 ) {
     let inner = MemoryBlobStore::new();
     // 1 KiB of "aB" repeating so partial reads are easy to eyeball.
-    let bytes: Vec<u8> = (0..1024).map(|i| if i & 1 == 0 { b'a' } else { b'B' }).collect();
+    let bytes: Vec<u8> = (0..1024)
+        .map(|i| if i & 1 == 0 { b'a' } else { b'B' })
+        .collect();
     let hash = inner.put(&bytes);
     let counter = Arc::new(CountingStore::new(inner));
     let collection = Collection::from_entries([("bin/hello".to_string(), hash)]);
@@ -154,8 +156,7 @@ fn mount_and_read_single_file() {
     // into it; belt-and-braces, spawn_mount2 already returns after INIT.
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let read_back = std::fs::read(mountpoint.path().join("hello.bin"))
-        .expect("read mounted file");
+    let read_back = std::fs::read(mountpoint.path().join("hello.bin")).expect("read mounted file");
     assert_eq!(read_back, fs_bytes);
 
     // Clean unmount.

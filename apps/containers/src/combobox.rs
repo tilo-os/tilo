@@ -124,7 +124,10 @@ mod tests {
 
     #[test]
     fn close_resets() {
-        let mut s = ComboState { open: true, highlight: 2 };
+        let mut s = ComboState {
+            open: true,
+            highlight: 2,
+        };
         s.close();
         assert!(!s.open);
         assert_eq!(s.highlight, 0);

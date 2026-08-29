@@ -36,7 +36,10 @@ pub struct OverviewPane {
 
 impl OverviewPane {
     pub fn new(core: Rc<RefCell<Core>>) -> Self {
-        Self { core, rect: Rect::ZERO }
+        Self {
+            core,
+            rect: Rect::ZERO,
+        }
     }
 }
 
@@ -48,14 +51,24 @@ pub struct DetailPane {
 
 impl DetailPane {
     pub fn new(core: Rc<RefCell<Core>>) -> Self {
-        Self { core, rect: Rect::ZERO }
+        Self {
+            core,
+            rect: Rect::ZERO,
+        }
     }
 }
 
-fn leaf(taffy: &mut TaffyTree<()>, node_map: &mut HashMap<NodeId, *mut dyn Widget>, me: *mut dyn Widget) -> NodeId {
+fn leaf(
+    taffy: &mut TaffyTree<()>,
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    me: *mut dyn Widget,
+) -> NodeId {
     let node = taffy
         .new_leaf(Style {
-            size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
             ..Default::default()
         })
         .unwrap();
@@ -76,7 +89,12 @@ fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
 impl Widget for OverviewPane {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         leaf(taffy, node_map, self as *mut dyn Widget)
     }
 
@@ -84,8 +102,17 @@ impl Widget for OverviewPane {
         self.rect = store_rect(taffy, node, origin);
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
-        self.core.borrow_mut().draw_overview(self.rect, scene, transform, text_renderer, theme);
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.core
+            .borrow_mut()
+            .draw_overview(self.rect, scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -104,7 +131,14 @@ impl Widget for OverviewPane {
             return;
         }
         if self.core.borrow_mut().handle_overview_event(
-            event, scale_factor, modifiers, state, path, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
         ) {
             *handled = true;
         }
@@ -126,7 +160,12 @@ impl Widget for OverviewPane {
 impl Widget for DetailPane {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         leaf(taffy, node_map, self as *mut dyn Widget)
     }
 
@@ -134,8 +173,17 @@ impl Widget for DetailPane {
         self.rect = store_rect(taffy, node, origin);
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
-        self.core.borrow_mut().draw_detail(self.rect, scene, transform, text_renderer, theme);
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.core
+            .borrow_mut()
+            .draw_detail(self.rect, scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -153,7 +201,11 @@ impl Widget for DetailPane {
         if *handled {
             return;
         }
-        if self.core.borrow_mut().handle_detail_event(event, scale_factor) {
+        if self
+            .core
+            .borrow_mut()
+            .handle_detail_event(event, scale_factor)
+        {
             *handled = true;
         }
     }

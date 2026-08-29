@@ -105,11 +105,9 @@ impl AuthorDirectory {
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    let id = runtime_identity::load()
-        .ok()
-        .or_else(|| {
-            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
-        })?;
+    let id = runtime_identity::load().ok().or_else(|| {
+        config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+    })?;
     let key_hex = hex_lower(&id.group_public_key());
     let name = if id.display_name().is_empty() {
         // First boot writes an empty display name and the user names
@@ -249,13 +247,20 @@ mod tests {
         // A key with high bytes: not valid UTF-8, so the handle decode fails.
         let key: Vec<u8> = (0u8..32).map(|i| 0x80u8.wrapping_add(i)).collect();
         let hex = automerge::ActorId::from(key.as_slice()).to_hex_string();
-        assert_eq!(actor_handle(&hex), None, "a raw key must not decode to a handle");
+        assert_eq!(
+            actor_handle(&hex),
+            None,
+            "a raw key must not decode to a handle"
+        );
 
         let dir = AuthorDirectory::new();
         let a = dir.resolve(&hex);
         assert_eq!(a.name, UNKNOWN_AUTHOR_NAME);
         assert_eq!(a.identity_short.len(), SHORT_LEN);
-        assert!(hex.starts_with(&a.identity_short), "short id prefixes the actor");
+        assert!(
+            hex.starts_with(&a.identity_short),
+            "short id prefixes the actor"
+        );
     }
 
     /// An unknown actor gets a stable colour, so the same stranger is
@@ -265,7 +270,11 @@ mod tests {
         let a = "ff00ff00ff00ff00";
         let b = "00ff00ff00ff00ff";
         assert_eq!(stable_hue(a), stable_hue(a), "hue is deterministic");
-        assert_ne!(stable_hue(a), stable_hue(b), "distinct actors, distinct hues");
+        assert_ne!(
+            stable_hue(a),
+            stable_hue(b),
+            "distinct actors, distinct hues"
+        );
         assert!((0.0..360.0).contains(&stable_hue(a)));
         assert!((0.0..360.0).contains(&stable_hue(b)));
     }
@@ -335,7 +344,8 @@ mod tests {
     /// writer or reader reports, so a test asserting on it checks the whole
     /// chain rather than echoing one side of it.
     fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
-        let identity = threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
+        let identity =
+            threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
         let record = crate::widget::identity_flow::IdentityRecord::from_threshold_identity(
             &identity,
             display_name,
@@ -431,7 +441,10 @@ mod tests {
 
         let author = local_identity_author().expect("an identity on disk resolves to an author");
         assert_eq!(author.name, "ada");
-        assert!((author.avatar_hue - 120.0).abs() < 0.5, "green avatar colour");
+        assert!(
+            (author.avatar_hue - 120.0).abs() < 0.5,
+            "green avatar colour"
+        );
         assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
         assert_eq!(author.identity_short.len(), SHORT_LEN);
     }

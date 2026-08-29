@@ -443,7 +443,13 @@ impl RoomActivityPane {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let card = RoundedRect::from_rect(self.sheet, tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -556,7 +562,12 @@ impl RoomActivityPane {
                 transform,
                 tr,
                 theme,
-                Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + CHIP_ROW_H),
+                Rect::new(
+                    self.sheet.x0 + 12.0,
+                    y,
+                    self.sheet.x1 - 12.0,
+                    y + CHIP_ROW_H,
+                ),
                 &periods,
                 |p| *p == selected,
             );
@@ -688,12 +699,7 @@ impl RoomActivityPane {
                 return false;
             }
         } else {
-            ui::history_groups::name_range(
-                &mut tree.doc,
-                &req.start,
-                Some(&req.end),
-                &req.label,
-            );
+            ui::history_groups::name_range(&mut tree.doc, &req.start, Some(&req.end), &req.label);
         }
         tree.commit_room_change();
         if tree.doc.get_heads() == before {
@@ -1269,11 +1275,7 @@ mod tests {
         let mut pane = pane_over(&mut tree);
         assert_eq!(pane.scope(), RoomScope::ThisRoom, "scoped by default");
 
-        let scoped: Vec<String> = pane
-            .entries()
-            .iter()
-            .map(|e| e.summary.clone())
-            .collect();
+        let scoped: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             !scoped.iter().any(|s| s.contains("research.example")),
             "the other room's network grant leaked into this room: {scoped:?}"
@@ -1286,11 +1288,7 @@ mod tests {
         let all_tree = { tree.workspaces.clone() };
         let _ = all_tree;
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
-        let widened: Vec<String> = pane
-            .entries()
-            .iter()
-            .map(|e| e.summary.clone())
-            .collect();
+        let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             widened.iter().any(|s| s.contains("research.example")),
             "widening the scope must reveal the other room: {widened:?}"
@@ -1319,7 +1317,9 @@ mod tests {
             "the fixture has several workspaces adopting an owner: {owner_rows:?}"
         );
         assert!(
-            owner_rows.iter().any(|s| s.starts_with("Research \u{00b7} ")),
+            owner_rows
+                .iter()
+                .any(|s| s.starts_with("Research \u{00b7} ")),
             "a row must name the room it happened in: {owner_rows:?}"
         );
         let distinct: std::collections::HashSet<&String> = owner_rows.iter().collect();
@@ -1456,10 +1456,7 @@ mod tests {
             "the week-old change must be filtered out: {today} of {all} survived"
         );
         assert!(
-            !pane
-                .timeline()
-                .entries()
-                .is_empty(),
+            !pane.timeline().entries().is_empty(),
             "filtering hides rows, it does not discard them"
         );
         for i in 0..pane.visible_len() {
@@ -1495,7 +1492,10 @@ mod tests {
         {
             use automerge::transaction::Transactable;
             let (_, ws_entry) = peer
-                .get(&peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1, 0_usize)
+                .get(
+                    &peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1,
+                    0_usize,
+                )
                 .unwrap()
                 .unwrap();
             peer.put(&ws_entry, "name", "Bob's rename").unwrap();
@@ -1587,7 +1587,10 @@ mod tests {
 
         // Revert to the version the mistake was made on top of.
         let target = pane.entries()[versions_before - 1].id;
-        assert!(pane.revert_to(&mut tree, &target), "the revert wrote something");
+        assert!(
+            pane.revert_to(&mut tree, &target),
+            "the revert wrote something"
+        );
 
         assert_eq!(
             tree.workspaces
@@ -1650,7 +1653,9 @@ mod tests {
             .find(|e| e.summary.contains("/home/user/notes"))
             .expect("the filesystem grant has a row");
         assert!(
-            grant.summary.starts_with("Granted read on /home/user/notes to files"),
+            grant
+                .summary
+                .starts_with("Granted read on /home/user/notes to files"),
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
@@ -1712,7 +1717,10 @@ mod tests {
     fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
         let mut pane = RoomActivityPane::new();
         pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
-        assert!(pane.shows_chip_rows(), "a normal viewport affords the filters");
+        assert!(
+            pane.shows_chip_rows(),
+            "a normal viewport affords the filters"
+        );
         let tall_rows = pane.timeline().rect().height();
 
         pane.layout(Rect::new(0.0, 0.0, 1280.0, 220.0));
@@ -1730,10 +1738,11 @@ mod tests {
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_room();
-        tree.collaborators.push(crate::shell::state::Collaborator::new(
-            "ghost",
-            "Never Edited",
-        ));
+        tree.collaborators
+            .push(crate::shell::state::Collaborator::new(
+                "ghost",
+                "Never Edited",
+            ));
         let pane = pane_over(&mut tree);
         assert!(
             !pane.contributors().iter().any(|c| c == "Never Edited"),
@@ -1781,8 +1790,14 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         assert!(Period::AllTime.range(now).is_none());
         let (start, end) = Period::Week.range(now).unwrap();
-        assert_eq!(now.duration_since(start).unwrap(), Duration::from_secs(7 * 24 * 3600));
-        assert!(end > now, "a change committed this instant is inside the window");
+        assert_eq!(
+            now.duration_since(start).unwrap(),
+            Duration::from_secs(7 * 24 * 3600)
+        );
+        assert!(
+            end > now,
+            "a change committed this instant is inside the window"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -1836,8 +1851,7 @@ mod tests {
 
         // It is in the document, not in the widget: a fresh pane over the same
         // tree finds it.
-        let ranges =
-            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].label, "Set up the room");
         assert_eq!(ranges[0].start, start);
@@ -1895,8 +1909,7 @@ mod tests {
                 label: "Temporary".to_string(),
             },
         );
-        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())
-            [0]
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
             .id
             .clone();
         let changes_before = pane.entries().len();
@@ -2026,7 +2039,10 @@ mod tests {
             Some("Something else".to_string())
         );
 
-        assert!(pane.revert_to(&mut tree, &boundary), "the restore wrote something");
+        assert!(
+            pane.revert_to(&mut tree, &boundary),
+            "the restore wrote something"
+        );
         assert_eq!(
             tree.workspaces
                 .iter()
@@ -2113,7 +2129,9 @@ mod tests {
         let m = Modifiers::default();
         for ch in text.chars() {
             let ev = if ch == ' ' {
-                key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space))
+                key_press(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Space,
+                ))
             } else {
                 key_press(winit::keyboard::Key::Character(ch.to_string().into()))
             };
@@ -2169,7 +2187,9 @@ mod tests {
         assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
 
         let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2217,7 +2237,9 @@ mod tests {
         assert!(pane.wants_keyboard());
 
         let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Escape,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2254,7 +2276,10 @@ mod tests {
         // Somewhere on the header that is not a chip: next to the disclosure
         // triangle.
         let on_header = Point::new(header.x0 + 60.0, header.center().y);
-        assert!(!name_chip.contains(on_header), "the fixture aims off the chips");
+        assert!(
+            !name_chip.contains(on_header),
+            "the fixture aims off the chips"
+        );
 
         let lines_before = pane.timeline().row_count();
         let out = click_at(&mut pane, &mut tree, on_header);
@@ -2273,7 +2298,10 @@ mod tests {
 
         // And back, addressing the same band by the same key.
         click_at(&mut pane, &mut tree, on_header);
-        assert_eq!(pane.timeline().group_at_row(band).map(|(_, e)| e), Some(expanded));
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(_, e)| e),
+            Some(expanded)
+        );
         assert_eq!(pane.timeline().row_count(), lines_before);
         assert_eq!(
             pane.timeline().group_at_row(band).map(|(k, _)| k),
@@ -2294,7 +2322,9 @@ mod tests {
         click_at(&mut pane, &mut tree, chip.center());
         type_into(&mut pane, &mut tree, "First try");
         pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2319,7 +2349,9 @@ mod tests {
         );
         type_into(&mut pane, &mut tree, " again");
         pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2327,8 +2359,15 @@ mod tests {
         );
 
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1, "a rename must not leave two bands: {ranges:?}");
-        assert_eq!(ranges[0].id, record, "it addressed the record it already had");
+        assert_eq!(
+            ranges.len(),
+            1,
+            "a rename must not leave two bands: {ranges:?}"
+        );
+        assert_eq!(
+            ranges[0].id, record,
+            "it addressed the record it already had"
+        );
         assert_eq!(ranges[0].label, "First try again");
     }
 }

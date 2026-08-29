@@ -65,7 +65,10 @@ impl Harness {
             .taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(vw), height: Dimension::length(vh) },
+                    size: Size {
+                        width: Dimension::length(vw),
+                        height: Dimension::length(vh),
+                    },
                     ..Default::default()
                 },
                 &[child],
@@ -153,7 +156,10 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
         }
         y += 3.0;
     }
-    assert!(!hits.is_empty(), "row {index} was never hit while probing the content pane");
+    assert!(
+        !hits.is_empty(),
+        "row {index} was never hit while probing the content pane"
+    );
     let mid = hits[hits.len() / 2];
     Point::new(x, mid)
 }

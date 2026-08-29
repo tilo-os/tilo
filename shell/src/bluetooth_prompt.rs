@@ -10,13 +10,13 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use qos_bluez::{PairingPrompt, PairingReply, PairingRequest};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Banner, Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 pub const KEY_ACCEPT: &str = "bluetooth.pair.accept";
@@ -164,10 +164,18 @@ impl PairingPromptView {
         // suggest pressing it completes the pairing, when the other device does.
         let actions: Vec<Box<dyn Widget>> = if self.request.prompt.expects_answer() {
             vec![
-                Box::new(Button::new("bluetooth.pair.reject", "Don't pair", Some(KEY_REJECT))),
+                Box::new(Button::new(
+                    "bluetooth.pair.reject",
+                    "Don't pair",
+                    Some(KEY_REJECT),
+                )),
                 Box::new(
-                    Button::new("bluetooth.pair.accept", accept_label(&self.request.prompt), Some(KEY_ACCEPT))
-                        .with_style(ButtonStyle::Primary),
+                    Button::new(
+                        "bluetooth.pair.accept",
+                        accept_label(&self.request.prompt),
+                        Some(KEY_ACCEPT),
+                    )
+                    .with_style(ButtonStyle::Primary),
                 ),
             ]
         } else {
@@ -183,7 +191,11 @@ impl PairingPromptView {
         }
         body = body.push(Box::new(row));
 
-        Box::new(Column::new().with_no_padding().push(Box::new(Card::new(Box::new(body)))))
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(Card::new(Box::new(body)))),
+        )
     }
 }
 
@@ -336,7 +348,14 @@ impl Widget for PairingPromptView {
             if let Ok(children) = taffy.children(node_id) {
                 if let Some(&cn) = children.first() {
                     c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cn,
                         taffy,
                     );
                 }
@@ -345,7 +364,11 @@ impl Widget for PairingPromptView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.as_ref().map(|c| c.as_ref()).into_iter().collect()
+        self.composed
+            .as_ref()
+            .map(|c| c.as_ref())
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -438,7 +461,11 @@ mod tests {
     fn a_typed_passkey_is_parsed_and_returned() {
         let mut v = view(PairingPrompt::RequestPasskey);
         let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("654321".into()));
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_ENTRY,
+            ScalarValue::Str("654321".into()),
+        );
         press(&mut doc, KEY_ACCEPT);
         v.sync(&mut doc, &automerge::ROOT);
         assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
@@ -453,7 +480,11 @@ mod tests {
             let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
             press(&mut doc, KEY_ACCEPT);
             v.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(v.take_answer(), Some(PairingReply::Reject), "entry {entry:?}");
+            assert_eq!(
+                v.take_answer(),
+                Some(PairingReply::Reject),
+                "entry {entry:?}"
+            );
         }
     }
 
@@ -488,12 +519,17 @@ mod tests {
     fn every_prompt_builds_a_layout() {
         let prompts = [
             PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-            PairingPrompt::DisplayPasskey { passkey: 1, entered: 3 },
+            PairingPrompt::DisplayPasskey {
+                passkey: 1,
+                entered: 3,
+            },
             PairingPrompt::DisplayPinCode { pin: "0000".into() },
             PairingPrompt::RequestPasskey,
             PairingPrompt::RequestPinCode,
             PairingPrompt::ConfirmPairing,
-            PairingPrompt::AuthorizeService { uuid: "0000110b-0000-1000-8000-00805f9b34fb".into() },
+            PairingPrompt::AuthorizeService {
+                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+            },
         ];
         for p in prompts {
             let mut v = view(p);

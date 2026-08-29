@@ -12,8 +12,7 @@
 
 use qos_relay::RelayClient;
 use qos_user_identity::{
-    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason,
-    sign_revocation_entry,
+    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
@@ -85,7 +84,9 @@ async fn revoked_device_is_rejected() {
         device_cert: relay_dev.cert.clone(),
         revocations: revs,
     };
-    let relay = qos_relay::daemon::Relay::start(cfg, identity).await.unwrap();
+    let relay = qos_relay::daemon::Relay::start(cfg, identity)
+        .await
+        .unwrap();
     relay
         .set_workspace_membership(9, true, vec![good_dev.device_pubkey()], state_root)
         .await

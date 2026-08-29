@@ -103,9 +103,7 @@ impl Priority {
     /// notice→info→debug across accent / info / dim neutrals.
     pub fn color(self, theme: &ThemeColors) -> Color {
         match self {
-            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => {
-                theme.danger
-            }
+            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => theme.danger,
             Priority::Warning => theme.warning,
             Priority::Notice => theme.accent,
             Priority::Info => theme.info,
@@ -169,9 +167,7 @@ impl LogEntry {
     /// The unit label shown in the list — strips a trailing `.service`
     /// for density, leaves other suffixes (`.socket`, `.timer`) intact.
     pub fn unit_short(&self) -> &str {
-        self.unit
-            .strip_suffix(".service")
-            .unwrap_or(&self.unit)
+        self.unit.strip_suffix(".service").unwrap_or(&self.unit)
     }
 }
 
@@ -303,8 +299,14 @@ mod tests {
     fn filter_threshold_excludes_more_verbose() {
         let mut e = sample();
         e.priority = Priority::Info; // level 6
-        let f = Filter { min_priority: 3, ..Default::default() };
-        assert!(!f.passes(&e), "info must be hidden at errors-only threshold");
+        let f = Filter {
+            min_priority: 3,
+            ..Default::default()
+        };
+        assert!(
+            !f.passes(&e),
+            "info must be hidden at errors-only threshold"
+        );
         e.priority = Priority::Err; // level 3
         assert!(f.passes(&e));
     }
@@ -313,9 +315,15 @@ mod tests {
     fn filter_search_is_case_insensitive_over_message_and_unit() {
         let mut e = sample();
         e.message = "Mount FAILED for /var/workspace".into();
-        let f = Filter { search: "failed".into(), ..Default::default() };
+        let f = Filter {
+            search: "failed".into(),
+            ..Default::default()
+        };
         assert!(f.passes(&e));
-        let f2 = Filter { search: "absent".into(), ..Default::default() };
+        let f2 = Filter {
+            search: "absent".into(),
+            ..Default::default()
+        };
         assert!(!f2.passes(&e));
     }
 

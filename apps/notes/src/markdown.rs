@@ -50,21 +50,43 @@ pub struct InlineText {
 
 impl InlineText {
     pub fn new(text: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
-        Self { text: text.into(), marks }
+        Self {
+            text: text.into(),
+            marks,
+        }
     }
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), marks: Vec::new() }
+        Self {
+            text: text.into(),
+            marks: Vec::new(),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockSpec {
     Paragraph(InlineText),
-    Heading { level: u8, text: InlineText },
-    Bullet { indent: u8, text: InlineText },
-    Numbered { indent: u8, text: InlineText },
-    Checklist { indent: u8, done: bool, text: InlineText },
-    CodeBlock { lang: Option<String>, text: String },
+    Heading {
+        level: u8,
+        text: InlineText,
+    },
+    Bullet {
+        indent: u8,
+        text: InlineText,
+    },
+    Numbered {
+        indent: u8,
+        text: InlineText,
+    },
+    Checklist {
+        indent: u8,
+        done: bool,
+        text: InlineText,
+    },
+    CodeBlock {
+        lang: Option<String>,
+        text: String,
+    },
     Divider,
 }
 
@@ -121,7 +143,12 @@ impl BlockSpec {
             text: InlineText::plain(s),
         }
     }
-    pub fn checklist_marks(indent: u8, done: bool, s: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
+    pub fn checklist_marks(
+        indent: u8,
+        done: bool,
+        s: impl Into<String>,
+        marks: Vec<MarkSpan>,
+    ) -> Self {
         BlockSpec::Checklist {
             indent: indent.min(MAX_LIST_INDENT),
             done,
@@ -382,7 +409,8 @@ pub fn serialize_inline(text: &InlineText) -> String {
     }
     let mut marks = text.marks.clone();
     marks.sort_by(|a, b| {
-        a.range.start
+        a.range
+            .start
             .cmp(&b.range.start)
             .then_with(|| priority(&a.mark).cmp(&priority(&b.mark)))
     });
@@ -485,9 +513,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             });
             continue;
         }
-        if let Some(bullet_body) =
-            body.strip_prefix("- ").or_else(|| body.strip_prefix("* "))
-        {
+        if let Some(bullet_body) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")) {
             let inline = parse_inline(bullet_body);
             blocks.push(BlockSpec::Bullet {
                 indent: indent.min(MAX_LIST_INDENT),
@@ -923,7 +949,11 @@ Last paragraph.
         let mut blocks = parse("See [[Welcome]] please.\n");
         let target = Uuid::from_u128(42);
         resolve_link_ids(&mut blocks, |title| {
-            if title == "Welcome" { Some(target) } else { None }
+            if title == "Welcome" {
+                Some(target)
+            } else {
+                None
+            }
         });
         match &blocks[0] {
             BlockSpec::Paragraph(t) => {

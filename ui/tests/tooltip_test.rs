@@ -1,5 +1,5 @@
-use ui::widget::tooltip::Tooltip;
 use std::time::Duration;
+use ui::widget::tooltip::Tooltip;
 
 #[test]
 fn tooltip_reveals_after_delay() {

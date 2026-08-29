@@ -71,7 +71,10 @@ pub enum CollabRequest {
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
-    Presence { key: PresenceKey, payload: PresencePayload },
+    Presence {
+        key: PresenceKey,
+        payload: PresencePayload,
+    },
     /// Signed incremental CRDT mutation. The broker validates against the
     /// channel's role table before fanning out; invalid envelopes are
     /// dropped and logged, never reaching peers.
@@ -160,15 +163,26 @@ pub enum CollabEvent {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PresencePayload {
-    Pointer { x: f32, y: f32 },
-    Caret { pos: usize },
-    Selection { start: usize, end: usize },
+    Pointer {
+        x: f32,
+        y: f32,
+    },
+    Caret {
+        pos: usize,
+    },
+    Selection {
+        start: usize,
+        end: usize,
+    },
     /// The local user just inserted `start..end` under scope `key`; peers
     /// render a fading "just typed" swipe (see
     /// [`crate::presence::PresenceCtx::record_peer_typing`]). Unlike
     /// `Caret`/`Selection` this is an *event*, published once and decayed
     /// on the receiver.
-    Typing { start: usize, end: usize },
+    Typing {
+        start: usize,
+        end: usize,
+    },
     Arrived,
     Left,
 }
@@ -243,9 +257,8 @@ impl SigningIdentity {
         secret_key: ed25519_dalek::SigningKey,
         attestation_id: collab_types::AttestationId,
     ) -> Self {
-        let public_key = collab_types::Ed25519PublicKey::from_bytes(
-            secret_key.verifying_key().to_bytes(),
-        );
+        let public_key =
+            collab_types::Ed25519PublicKey::from_bytes(secret_key.verifying_key().to_bytes());
         Self {
             secret_key,
             public_key,
@@ -639,10 +652,7 @@ impl CollaborationManager {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<(), SignedSendError> {
-        let identity = self
-            .identity
-            .as_mut()
-            .ok_or(SignedSendError::NoIdentity)?;
+        let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
         let envelope = identity
             .sign_op(payload, artifact, op_class)
             .map_err(SignedSendError::Canonical)?;
@@ -717,9 +727,8 @@ impl CollaborationManager {
                     if l.rbuf.len() < 4 {
                         break;
                     }
-                    let len = u32::from_le_bytes([
-                        l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3],
-                    ]) as usize;
+                    let len =
+                        u32::from_le_bytes([l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3]]) as usize;
                     if l.rbuf.len() < 4 + len {
                         break; // frame not fully arrived yet
                     }
@@ -1053,7 +1062,12 @@ async fn drive_shovel(
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id, cluster_id, record, .. } => {
+            CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } => {
                 // `identity_bytes` is the loaded runtime-identity's pubkey when
                 // reachable, else empty (the broker's "no identity" fallback).
                 let channel_id = channel_key::format(
@@ -1188,7 +1202,9 @@ async fn drive_shovel(
                 }
             }
             CollabRequest::Presence { key, payload } => {
-                let Some(ph) = presence.as_ref() else { continue };
+                let Some(ph) = presence.as_ref() else {
+                    continue;
+                };
                 match payload {
                     PresencePayload::Pointer { x, y } => {
                         // Keyed, unlike `publish_cursor(x, y)` which has nowhere to
@@ -1359,9 +1375,7 @@ fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
     match inbound {
         // Unsigned document delta; carries no author, matching the
         // unsigned broker path.
-        qos_relay::Inbound::Delta { data, .. } => {
-            Some(CollabEvent::CRDTIncremental { data })
-        }
+        qos_relay::Inbound::Delta { data, .. } => Some(CollabEvent::CRDTIncremental { data }),
         // Signed document op, attributed to the publishing device key.
         qos_relay::Inbound::SignedDelta { author, op_bytes } => {
             let envelope = postcard::from_bytes::<SignedOp>(&op_bytes).ok()?;
@@ -1414,15 +1428,14 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
             y,
         },
         other => {
-            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| {
-                PresenceKey::Tab {
+            let key: PresenceKey =
+                postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| PresenceKey::Tab {
                     id: String::from("<undecodable>"),
-                }
-            });
+                });
             let payload = match other {
-                runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
-                    pos: pos as usize,
-                },
+                runtime_collab::PresencePayload::Caret { pos } => {
+                    PresencePayload::Caret { pos: pos as usize }
+                }
                 runtime_collab::PresencePayload::Selection { start, end } => {
                     PresencePayload::Selection {
                         start: start as usize,
@@ -1504,8 +1517,7 @@ pub mod broker {
     /// connections. Blocks the calling thread; spawns one reader thread
     /// per peer plus an accept thread.
     pub fn serve(listener: UnixListener) {
-        let peers: Arc<Mutex<HashMap<usize, Peer>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let peers: Arc<Mutex<HashMap<usize, Peer>>> = Arc::new(Mutex::new(HashMap::new()));
         let (fwd_tx, fwd_rx) = mpsc::channel::<(usize, Vec<u8>)>();
 
         // Accept on a side thread so the forwarding loop owns the calling
@@ -1521,25 +1533,26 @@ pub mod broker {
                 let tx = fwd_tx.clone();
                 let peers = Arc::clone(&accept_peers);
                 thread::spawn(move || {
-                    let Ok(write) = stream.try_clone() else { return };
+                    let Ok(write) = stream.try_clone() else {
+                        return;
+                    };
                     // First frame establishes identity; if it isn't a `Hello`,
                     // fall back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
                         Some(frame) => match serde_json::from_slice::<CollabRequest>(&frame) {
                             Ok(CollabRequest::Hello { app_id, handle, .. }) => {
                                 // Announced handle when there is one, else the app id.
-                                let user_id = handle
-                                    .filter(|h| !h.trim().is_empty())
-                                    .unwrap_or(app_id);
-                                peers.lock().unwrap().insert(
-                                    idx,
-                                    Peer { user_id, write },
-                                );
+                                let user_id =
+                                    handle.filter(|h| !h.trim().is_empty()).unwrap_or(app_id);
+                                peers.lock().unwrap().insert(idx, Peer { user_id, write });
                             }
                             _ => {
                                 peers.lock().unwrap().insert(
                                     idx,
-                                    Peer { user_id: format!("peer-{idx}"), write },
+                                    Peer {
+                                        user_id: format!("peer-{idx}"),
+                                        write,
+                                    },
                                 );
                                 let _ = tx.send((idx, frame));
                             }
@@ -1574,15 +1587,13 @@ pub mod broker {
 
             let event = match req {
                 CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => {
-                    CollabEvent::CRDTIncremental { data }
-                }
-                CollabRequest::SyncCRDT { data } => {
-                    CollabEvent::CRDTUpdate { data }
-                }
-                CollabRequest::Presence { key, payload } => {
-                    CollabEvent::RemotePresenceUpdate { user_id, key, payload }
-                }
+                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
+                CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
+                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                },
                 CollabRequest::SignedSyncIncremental { envelope } => {
                     // This test broker does NOT enforce roles — it just routes
                     // verbatim. Production fan-out (`shell::shell::collab_broker`)
@@ -1605,7 +1616,9 @@ pub mod broker {
                 }
             };
 
-            let Ok(bytes) = serde_json::to_vec(&event) else { continue };
+            let Ok(bytes) = serde_json::to_vec(&event) else {
+                continue;
+            };
 
             let mut guard = peers.lock().unwrap();
             let recipients = guard.len().saturating_sub(1);
@@ -1615,7 +1628,10 @@ pub mod broker {
                     CollabEvent::CRDTIncremental { data } => {
                         format!("CRDTIncremental({}B)", data.len())
                     }
-                    CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
+                    CollabEvent::SignedCRDTIncremental {
+                        envelope,
+                        from_user_id,
+                    } => {
                         format!(
                             "SignedCRDTIncremental(from={from_user_id}, {}B payload)",
                             envelope.payload.len()
@@ -1773,7 +1789,9 @@ mod tests {
             params: presence_handle::PublishCursorParams,
             _results: presence_handle::PublishCursorResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
@@ -1787,13 +1805,17 @@ mod tests {
             params: presence_handle::PublishPointerParams,
             _results: presence_handle::PublishPointerResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
-            self.captures
-                .lock()
-                .unwrap()
-                .pointer_publishes
-                .push((k.to_vec(), r.get_x(), r.get_y()));
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
+            self.captures.lock().unwrap().pointer_publishes.push((
+                k.to_vec(),
+                r.get_x(),
+                r.get_y(),
+            ));
             Promise::ok(())
         }
 
@@ -1814,8 +1836,12 @@ mod tests {
             params: presence_handle::PublishCaretParams,
             _results: presence_handle::PublishCaretResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
@@ -1829,8 +1855,12 @@ mod tests {
             params: presence_handle::PublishSelectionParams,
             _results: presence_handle::PublishSelectionResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().selection_publishes.push((
                 k.to_vec(),
                 r.get_start(),
@@ -1844,8 +1874,12 @@ mod tests {
             params: presence_handle::PublishArrivedParams,
             _results: presence_handle::PublishArrivedResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().arrived.push(k.to_vec());
             Promise::ok(())
         }
@@ -1855,8 +1889,12 @@ mod tests {
             params: presence_handle::PublishLeftParams,
             _results: presence_handle::PublishLeftResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().left.push(k.to_vec());
             Promise::ok(())
         }
@@ -1991,7 +2029,11 @@ mod tests {
             let Ok(d) = params.get().and_then(|r| r.get_data()) else {
                 return Promise::ok(());
             };
-            self.captures.lock().unwrap().unsigned_snapshots.push(d.to_vec());
+            self.captures
+                .lock()
+                .unwrap()
+                .unsigned_snapshots
+                .push(d.to_vec());
             Promise::ok(())
         }
 
@@ -2028,7 +2070,9 @@ mod tests {
             params: channel_handle::FetchScrollbackParams,
             mut results: channel_handle::FetchScrollbackResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(p) = params.get() else { return Promise::ok(()) };
+            let Ok(p) = params.get() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
@@ -2072,7 +2116,9 @@ mod tests {
             params: collab_service::JoinChannelParams,
             mut results: collab_service::JoinChannelResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(reader) = params.get() else { return Promise::ok(()) };
+            let Ok(reader) = params.get() else {
+                return Promise::ok(());
+            };
             let channel_id = reader
                 .get_channel_id()
                 .and_then(|t| {
@@ -2085,7 +2131,11 @@ mod tests {
                 .get_identity()
                 .map(|b| b.to_vec())
                 .unwrap_or_default();
-            self.captures.lock().unwrap().joined.push((channel_id, identity));
+            self.captures
+                .lock()
+                .unwrap()
+                .joined
+                .push((channel_id, identity));
 
             let chan = FakeChannel {
                 captures: self.captures.clone(),
@@ -2102,9 +2152,7 @@ mod tests {
 
     /// Stand up a fake `CollabService` on one end of a Unix socket pair;
     /// returns the client-side raw fd + captures state for assertions.
-    fn stand_up_fake_broker(
-        broker: FakeBroker,
-    ) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
+    fn stand_up_fake_broker(broker: FakeBroker) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
         let captures = broker.captures.clone();
         let (server_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
         server_side.set_nonblocking(true).unwrap();
@@ -2194,7 +2242,9 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::SyncCRDT { data: b"after the broker died".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"after the broker died".to_vec(),
+        });
         let _ = mgr.poll();
     }
 
@@ -2209,7 +2259,9 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::SyncCRDT { data: b"nope".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"nope".to_vec(),
+        });
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
     }
 
@@ -2231,8 +2283,12 @@ mod tests {
         // the `qos_user_identity` key, so nothing reads it concurrently.
         unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
         let cluster = Uuid::new_v4();
-        let _mgr =
-            CollaborationManager::from_sdk_fd_for_test_with_identity(fd, "alice", cluster, Vec::new());
+        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
+            fd,
+            "alice",
+            cluster,
+            Vec::new(),
+        );
 
         assert!(
             wait_until(
@@ -2248,7 +2304,10 @@ mod tests {
             joined[0].0,
             channel_key::format("alice", &cluster.to_string(), ""),
         );
-        assert!(joined[0].1.is_empty(), "identity blob must be empty when env unset");
+        assert!(
+            joined[0].1.is_empty(),
+            "identity blob must be empty when env unset"
+        );
     }
 
     #[test]
@@ -2311,8 +2370,7 @@ mod tests {
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
         assert_eq!(
-            joined[0].1,
-            identity_bytes,
+            joined[0].1, identity_bytes,
             "identity blob must equal the loaded pubkey bytes"
         );
         assert_eq!(joined[0].1.len(), 32, "Ed25519 pubkey is 32 bytes");
@@ -2332,7 +2390,10 @@ mod tests {
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed"
         );
         let joined = captures.lock().unwrap().joined.clone();
@@ -2382,12 +2443,19 @@ mod tests {
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
 
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed",
         );
 
-        mgr.send(CollabRequest::SyncCRDT { data: b"snap".to_vec() });
-        mgr.send(CollabRequest::SyncIncremental { data: b"delta".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"snap".to_vec(),
+        });
+        mgr.send(CollabRequest::SyncIncremental {
+            data: b"delta".to_vec(),
+        });
 
         assert!(
             wait_until(
@@ -2419,11 +2487,16 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed",
         );
 
-        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let key = PresenceKey::Tab {
+            id: "note-1".to_owned(),
+        };
         let expected_key_bytes = postcard::to_stdvec(&key).unwrap();
 
         mgr.send(CollabRequest::Presence {
@@ -2510,9 +2583,10 @@ mod tests {
         let signed: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
-                    Some((envelope, from_user_id))
-                }
+                CollabEvent::SignedCRDTIncremental {
+                    envelope,
+                    from_user_id,
+                } => Some((envelope, from_user_id)),
                 _ => None,
             })
             .collect();
@@ -2564,7 +2638,9 @@ mod tests {
 
     #[test]
     fn presence_stream_translates_cursor_and_all_other_variants() {
-        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let key = PresenceKey::Tab {
+            id: "note-1".to_owned(),
+        };
         let key_bytes = postcard::to_stdvec(&key).unwrap();
         let presence_backlog = vec![
             SeedPresence {
@@ -2664,7 +2740,10 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must precede scrollback fetch",
         );
 
@@ -2713,7 +2792,10 @@ mod tests {
             key_bytes: key_bytes.clone(),
             payload: SdkPayload::Caret { pos: 3 },
         });
-        if let CollabEvent::RemotePresenceUpdate { key: k, payload, .. } = e {
+        if let CollabEvent::RemotePresenceUpdate {
+            key: k, payload, ..
+        } = e
+        {
             assert_eq!(k, key);
             assert_eq!(payload, PresencePayload::Caret { pos: 3 });
         } else {

@@ -9,9 +9,7 @@ use registry_types::RegistryVersion;
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
 use crate::installed::InstalledEntry;
-use crate::model::{
-    InstalledState, StoreItem, StoreItemVersion, StoreSource,
-};
+use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource};
 use crate::registry_client::VerifiedEntry;
 
 /// Convert a qOS registry entry into the unified store item shape.
@@ -29,12 +27,11 @@ pub fn qos_to_store_item(
     installed_index: &[InstalledEntry],
 ) -> StoreItem {
     let entry = &verified.entry;
-    let versions: Vec<StoreItemVersion> = entry
-        .versions
-        .iter()
-        .map(qos_version_to_store)
-        .collect();
-    let latest = versions.first().map(|v| v.version.clone()).unwrap_or_default();
+    let versions: Vec<StoreItemVersion> = entry.versions.iter().map(qos_version_to_store).collect();
+    let latest = versions
+        .first()
+        .map(|v| v.version.clone())
+        .unwrap_or_default();
     let installed = installed_index
         .iter()
         .find(|e| e.id == entry.package_id)
@@ -45,7 +42,7 @@ pub fn qos_to_store_item(
         })
         .unwrap_or(InstalledState::Not);
     let _ = verified.trust; // TrustLevel surfaces on the detail sheet;
-                            // not part of the item shape yet.
+    // not part of the item shape yet.
     StoreItem {
         id: entry.package_id.clone(),
         name: entry.name.clone(),
@@ -125,10 +122,7 @@ pub fn flathub_record_to_item(
         .filter(|c| !c.name.trim().is_empty())
         .map(|c| c.name.clone())
         .collect();
-    let latest = r
-        .current_release_version
-        .clone()
-        .unwrap_or_default();
+    let latest = r.current_release_version.clone().unwrap_or_default();
     let installed = installed_flatpaks
         .iter()
         .find(|(id, _)| id == &r.app_id)
@@ -311,16 +305,8 @@ mod tests {
 
     #[test]
     fn distinct_categories_sorted_and_deduped() {
-        let a = qos_to_store_item(
-            &verified(qos_entry("a", "A", "1", [2u8; 32])),
-            "qOS",
-            &[],
-        );
-        let mut b = qos_to_store_item(
-            &verified(qos_entry("b", "B", "1", [3u8; 32])),
-            "qOS",
-            &[],
-        );
+        let a = qos_to_store_item(&verified(qos_entry("a", "A", "1", [2u8; 32])), "qOS", &[]);
+        let mut b = qos_to_store_item(&verified(qos_entry("b", "B", "1", [3u8; 32])), "qOS", &[]);
         b.categories = vec!["Games".into(), "Productivity".into()];
         let cats = distinct_categories(&[a, b]);
         assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);

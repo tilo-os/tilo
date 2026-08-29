@@ -125,9 +125,7 @@ pub fn load_or_create_keypair(
 }
 
 /// Read an existing key file, migrating the older libp2p-protobuf shape in place; every failure is returned, none is a reason to re-key.
-fn read_device_keypair(
-    path: &std::path::Path,
-) -> std::io::Result<libp2p::identity::Keypair> {
+fn read_device_keypair(path: &std::path::Path) -> std::io::Result<libp2p::identity::Keypair> {
     match qos_user_identity::persist::read_device_key(path) {
         Ok(sk) => keypair_from_seed(&sk.to_bytes()),
         Err(qos_user_identity::PersistError::WrongKeyLength(_)) => {
@@ -173,10 +171,7 @@ fn write_seed(path: &std::path::Path, seed: &[u8; 32]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    qos_user_identity::persist::write_device_key(
-        path,
-        &ed25519_dalek::SigningKey::from_bytes(seed),
-    )
+    qos_user_identity::persist::write_device_key(path, &ed25519_dalek::SigningKey::from_bytes(seed))
 }
 
 #[cfg(test)]

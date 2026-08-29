@@ -337,7 +337,8 @@ mod tests {
     #[test]
     fn root_does_not_mint_an_identity() {
         let tmp = TmpDir::new("root-refuses");
-        run_as(Some(OsString::from(tmp.path())), None, 0).expect("root path is a no-op, not an error");
+        run_as(Some(OsString::from(tmp.path())), None, 0)
+            .expect("root path is a no-op, not an error");
         let identity_file = tmp
             .path()
             .join("qos")
@@ -359,7 +360,10 @@ mod tests {
             .join("qos")
             .join("identity")
             .join(PRIMARY_IDENTITY_FILE);
-        assert!(identity_file.exists(), "a non-root uid mints {identity_file:?}");
+        assert!(
+            identity_file.exists(),
+            "a non-root uid mints {identity_file:?}"
+        );
     }
 
     #[test]

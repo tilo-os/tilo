@@ -34,9 +34,9 @@ use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::TextInput;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::drag::{DragController, ListMetrics};
-use ui::widget::TextInput;
 
 use crate::model::{PageId, Workspace};
 
@@ -78,13 +78,21 @@ const ROW_TEXT_SIZE: f32 = 14.0;
 #[derive(Debug, Clone)]
 pub enum OutEvent {
     Select(PageId),
-    Rename { id: PageId, new_title: String },
+    Rename {
+        id: PageId,
+        new_title: String,
+    },
     Delete(PageId),
     /// Create a child of `parent` (None = root-level).
-    CreateChild { parent: Option<PageId> },
+    CreateChild {
+        parent: Option<PageId>,
+    },
     /// Reorder `id` among its siblings: `delta < 0` moves it earlier,
     /// `delta > 0` later. Backs the Alt-↑ / Alt-↓ reorder shortcut.
-    Move { id: PageId, delta: i32 },
+    Move {
+        id: PageId,
+        delta: i32,
+    },
     /// Re-parent / reorder `id` to be a child of `new_parent` (None =
     /// root), inserted immediately before sibling `before` (None =
     /// append to the group). Backs the drag-to-reorder + re-parent drop.
@@ -416,7 +424,11 @@ impl NoteTreeView {
             if hops > 4096 {
                 break;
             }
-            cur = self.flat_rows.iter().find(|r| r.id == c).and_then(|r| r.parent);
+            cur = self
+                .flat_rows
+                .iter()
+                .find(|r| r.id == c)
+                .and_then(|r| r.parent);
             hops += 1;
         }
         false
@@ -434,7 +446,11 @@ impl NoteTreeView {
             .filter(|(i, _)| *i != from)
             .map(|(_, r)| r)
             .collect();
-        let above = if to == 0 { None } else { reduced.get(to - 1).copied() };
+        let above = if to == 0 {
+            None
+        } else {
+            reduced.get(to - 1).copied()
+        };
         let below = reduced.get(to).copied();
         match (above, below) {
             // Insert as a sibling of the row just below the seam, before
@@ -469,11 +485,19 @@ impl NoteTreeView {
             return DropPlan::Cancel;
         }
         if let Some(row) = self.onto_target(pt) {
-            return DropPlan::Onto { row, page: self.flat_rows[row].id };
+            return DropPlan::Onto {
+                row,
+                page: self.flat_rows[row].id,
+            };
         }
         let to = self.drag.insertion().unwrap_or(from);
         let (parent, before, depth) = self.seam_target(to, from);
-        DropPlan::Seam { to, depth, parent, before }
+        DropPlan::Seam {
+            to,
+            depth,
+            parent,
+            before,
+        }
     }
 
     // ---- context menu ------------------------------------------------
@@ -601,8 +625,8 @@ impl Widget for NoteTreeView {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        let resized = new_rect.width() != self.rect.width()
-            || new_rect.height() != self.rect.height();
+        let resized =
+            new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height();
         self.rect = new_rect;
         // Header "+" new-page button — square, pinned to the top-right
         // of the header strip.
@@ -626,11 +650,7 @@ impl Widget for NoteTreeView {
         // If a rename is active, position the embedded editor against
         // the current row rect — it follows the row across resize.
         if let Some(r) = &mut self.rename {
-            if let Some(idx) = self
-                .flat_rows
-                .iter()
-                .position(|row| row.id == r.page)
-            {
+            if let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page) {
                 let row_rect = self.row_rects[idx];
                 let glyph_x =
                     row_rect.x0 + ROW_INSET_X + (self.flat_rows[idx].depth as f64) * INDENT_PX;
@@ -668,8 +688,7 @@ impl Widget for NoteTreeView {
         // new-page button on the right. The button is the visible
         // affordance the welcome copy ("add a page from the left")
         // points at.
-        let header_text_y =
-            self.rect.y0 + (HEADER_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+        let header_text_y = self.rect.y0 + (HEADER_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
         text_renderer.draw_text(
             scene,
             "PAGES",
@@ -684,17 +703,14 @@ impl Widget for NoteTreeView {
         } else {
             tokens.colors.surface_white_10
         };
-        let btn = vello::kurbo::RoundedRect::from_rect(
-            self.new_page_btn_rect,
-            tokens.radii.sm as f64,
-        );
+        let btn =
+            vello::kurbo::RoundedRect::from_rect(self.new_page_btn_rect, tokens.radii.sm as f64);
         scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
         // "+" glyph, centred in the button.
         let plus_size = ROW_TEXT_SIZE + 2.0;
         let (plus_w, _) = text_renderer.measure("+", plus_size, None);
         let plus_x = self.new_page_btn_rect.center().x - plus_w as f64 / 2.0;
-        let plus_y =
-            self.new_page_btn_rect.center().y - plus_size as f64 / 2.0;
+        let plus_y = self.new_page_btn_rect.center().y - plus_size as f64 / 2.0;
         text_renderer.draw_text(
             scene,
             "+",
@@ -769,7 +785,9 @@ impl Widget for NoteTreeView {
             // peer is currently viewing the page it leads to. Only remote
             // peers appear in `peers_on` (we don't register ourselves
             // locally), so the mist marks "where everyone else is".
-            let here = presence.peers_on(&PresenceKey::Tab { id: row.id.to_string() });
+            let here = presence.peers_on(&PresenceKey::Tab {
+                id: row.id.to_string(),
+            });
             if !here.is_empty() {
                 let p0 = transform * Point::new(row_rect.x0, row_rect.y0);
                 let p1 = transform * Point::new(row_rect.x1, row_rect.y1);
@@ -870,16 +888,18 @@ impl Widget for NoteTreeView {
 
         // Paint the embedded rename editor *over* the row.
         if let Some(r) = &mut self.rename {
-            r.input.draw(scene, transform, text_renderer, theme, presence);
+            r.input
+                .draw(scene, transform, text_renderer, theme, presence);
         }
 
         // Floating ghost: a half-transparent copy of the dragged row
         // following the cursor at its grab offset, drawn above the
         // reflowing list.
         if drag_active {
-            if let (Some(fi), Some(ghost)) =
-                (from_idx, self.drag.ghost_rect(self.rect.x0, self.rect.x1, &metrics))
-            {
+            if let (Some(fi), Some(ghost)) = (
+                from_idx,
+                self.drag.ghost_rect(self.rect.x0, self.rect.x1, &metrics),
+            ) {
                 if let Some(row) = self.flat_rows.get(fi) {
                     let shape = RoundedRect::from_rect(ghost, tokens.radii.sm as f64);
                     scene.fill(
@@ -925,7 +945,8 @@ impl Widget for NoteTreeView {
         );
 
         // Context menu paints last so it sits above every row.
-        self.menu.draw(scene, transform, text_renderer, theme, presence);
+        self.menu
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -947,14 +968,23 @@ impl Widget for NoteTreeView {
         // dismisses itself on Escape or a click outside its rect.
         if self.menu.is_open() {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor =
-                    Some(Point::new(position.x / scale_factor, position.y / scale_factor));
+                self.last_cursor = Some(Point::new(
+                    position.x / scale_factor,
+                    position.y / scale_factor,
+                ));
             }
             let mut menu_handled = false;
             let mut ft = *focus_target;
             self.menu.handle_event(
-                event, scale_factor, modifiers, state, path, &mut menu_handled, &mut ft,
-                node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut menu_handled,
+                &mut ft,
+                node_id,
+                taffy,
             );
             if let Some(idx) = self.menu.take_selection() {
                 self.apply_menu_selection(idx);
@@ -1001,7 +1031,11 @@ impl Widget for NoteTreeView {
                 let inside = self
                     .rename
                     .as_ref()
-                    .map(|r| r.input.get_rect().contains(self.last_cursor.unwrap_or(Point::ZERO)))
+                    .map(|r| {
+                        r.input
+                            .get_rect()
+                            .contains(self.last_cursor.unwrap_or(Point::ZERO))
+                    })
                     .unwrap_or(false);
                 if !inside {
                     self.commit_rename();
@@ -1061,10 +1095,7 @@ impl Widget for NoteTreeView {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
-                );
+                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = Some(pt);
                 let hover = self.new_page_btn_rect.contains(pt);
                 if hover != self.new_page_btn_hover {
@@ -1209,8 +1240,7 @@ impl Widget for NoteTreeView {
                         .as_ref()
                         .map(|c| {
                             c.page == row_id
-                                && now.duration_since(c.at).as_millis()
-                                    < DOUBLE_CLICK_INTERVAL_MS
+                                && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS
                                 && (c.pos.distance(pt)) < DOUBLE_CLICK_RADIUS_PX
                         })
                         .unwrap_or(false);
@@ -1296,9 +1326,7 @@ impl Widget for NoteTreeView {
                         }
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        if let Some(idx) =
-                            self.selected.and_then(|s| self.row_index_of(s))
-                        {
+                        if let Some(idx) = self.selected.and_then(|s| self.row_index_of(s)) {
                             let next = (idx + 1).min(self.flat_rows.len().saturating_sub(1));
                             if next != idx {
                                 let id = self.flat_rows[next].id;
@@ -1316,9 +1344,7 @@ impl Widget for NoteTreeView {
                         }
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        if let Some(idx) =
-                            self.selected.and_then(|s| self.row_index_of(s))
-                        {
+                        if let Some(idx) = self.selected.and_then(|s| self.row_index_of(s)) {
                             let next = idx.saturating_sub(1);
                             if next != idx {
                                 let id = self.flat_rows[next].id;

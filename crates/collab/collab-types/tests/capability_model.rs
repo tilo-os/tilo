@@ -136,7 +136,13 @@ fn even_an_owner_needs_a_capability_to_touch_a_path() {
     );
 
     assert_eq!(
-        decide_capability(&owner, &ResourceRef::Device("camera".into()), Verb::Read, &[], None),
+        decide_capability(
+            &owner,
+            &ResourceRef::Device("camera".into()),
+            Verb::Read,
+            &[],
+            None
+        ),
         CapDecision::DeniedByRole,
         "devices are outside the room and are capability-only"
     );
@@ -367,8 +373,9 @@ fn an_expired_capability_stops_working() {
 fn an_expired_restriction_also_lapses() {
     let editor = Actor::person(Some(Role::Editor), "bob");
     let doc = artifact_of("finance", ArtifactId::new());
-    let caps =
-        vec![CapOverride::restrict_role_in_app(Role::Editor, "finance", Verb::Read).with_expiry(50)];
+    let caps = vec![
+        CapOverride::restrict_role_in_app(Role::Editor, "finance", Verb::Read).with_expiry(50),
+    ];
 
     assert_eq!(
         decide_capability(&editor, &doc, Verb::Write, &caps, Some(10)),
@@ -439,11 +446,23 @@ fn an_instance_share_does_not_reach_a_sibling_instance() {
     let caps = vec![CapOverride::share(bob, shared, Verb::Write)];
 
     assert_eq!(
-        decide_capability(&actor, &artifact_of("notes", shared), Verb::Write, &caps, None),
+        decide_capability(
+            &actor,
+            &artifact_of("notes", shared),
+            Verb::Write,
+            &caps,
+            None
+        ),
         CapDecision::Allow
     );
     assert_eq!(
-        decide_capability(&actor, &artifact_of("notes", other), Verb::Write, &caps, None),
+        decide_capability(
+            &actor,
+            &artifact_of("notes", other),
+            Verb::Write,
+            &caps,
+            None
+        ),
         CapDecision::DeniedByRole,
         "sharing one document must not share the next one"
     );
@@ -724,7 +743,8 @@ fn a_capability_round_trips_through_json() {
 
 #[test]
 fn a_capability_written_before_expiry_existed_still_loads() {
-    let legacy = r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
+    let legacy =
+        r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
     let cap: CapOverride = serde_json::from_str(legacy).expect("legacy record must still load");
     assert_eq!(cap.expiry, Expiry::Never, "no expiry means never expires");
     assert_eq!(cap.id, "");

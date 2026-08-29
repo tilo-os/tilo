@@ -149,14 +149,22 @@ mod tests {
             other => panic!("root[\"store\"] must be an Automerge Map, got {other:?}"),
         };
         let store_keys: BTreeSet<String> = doc.keys(&store).collect();
-        let allowed: BTreeSet<String> =
-            ["installed", "installing", "seeded"].iter().map(|s| s.to_string()).collect();
+        let allowed: BTreeSet<String> = ["installed", "installing", "seeded"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert!(
             store_keys.is_subset(&allowed),
             "store map holds only projected install-state + the seed flag: {store_keys:?}"
         );
-        assert!(store_keys.contains("installed"), "the projected installed-set is present");
-        assert!(store_keys.contains("installing"), "the in-flight install progress is present");
+        assert!(
+            store_keys.contains("installed"),
+            "the projected installed-set is present"
+        );
+        assert!(
+            store_keys.contains("installing"),
+            "the in-flight install progress is present"
+        );
 
         // `installed` / `installing` are Maps; `seeded` is a Bool.
         assert!(matches!(
@@ -172,8 +180,16 @@ mod tests {
         // off — proving this isn't a git-client-style "saved prefs are actions"
         // and that we did not fabricate a wishlist model.
         for forbidden in [
-            "wishlist", "favourites", "favorites", "pinned", "starred", "bookmarks",
-            "collections", "lists", "settings", "prefs",
+            "wishlist",
+            "favourites",
+            "favorites",
+            "pinned",
+            "starred",
+            "bookmarks",
+            "collections",
+            "lists",
+            "settings",
+            "prefs",
         ] {
             assert!(
                 doc.get(&ROOT, forbidden).unwrap().is_none(),
@@ -232,13 +248,26 @@ mod tests {
         let bytes = doc.save();
 
         let mut peer = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical document on load");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical document on load"
+        );
 
         let here = StoreDoc::read_snapshot(&doc);
         let there = StoreDoc::read_snapshot(&peer);
-        assert!(!here.installed.is_empty(), "the seed produced real projected install-state");
-        assert_eq!(here.installed, there.installed, "the peer sees the same installed-set");
-        assert_eq!(here.installing, there.installing, "the peer sees the same in-flight installs");
+        assert!(
+            !here.installed.is_empty(),
+            "the seed produced real projected install-state"
+        );
+        assert_eq!(
+            here.installed, there.installed,
+            "the peer sees the same installed-set"
+        );
+        assert_eq!(
+            here.installing, there.installing,
+            "the peer sees the same in-flight installs"
+        );
     }
 
     /// The honest steady state: the software store fabricates no action or

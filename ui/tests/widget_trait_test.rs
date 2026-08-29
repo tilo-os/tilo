@@ -1,6 +1,6 @@
-use ui::widget::{Widget, Button, AppWidget};
-use ui::presence::PresenceCtx;
 use ui::dnd::DragPayload;
+use ui::presence::PresenceCtx;
+use ui::widget::{AppWidget, Button, Widget};
 
 #[test]
 fn widget_defaults_for_collab_methods() {

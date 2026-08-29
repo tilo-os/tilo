@@ -23,7 +23,11 @@ pub struct FrameBuf {
 
 impl FrameBuf {
     fn new(w: u32, h: u32) -> Self {
-        Self { rgba: vec![0; (w * h * 4) as usize], w, h }
+        Self {
+            rgba: vec![0; (w * h * 4) as usize],
+            w,
+            h,
+        }
     }
 
     #[inline]
@@ -75,7 +79,10 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// Cheap deterministic value hash → [0,1).
 fn hash01(mut n: u32) -> f32 {
     n = (n << 13) ^ n;
-    let m = (n.wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221)).wrapping_add(1376312589)) & 0x7fffffff;
+    let m = (n
+        .wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221))
+        .wrapping_add(1376312589))
+        & 0x7fffffff;
     1.0 - (m as f32 / 1073741824.0)
 }
 
@@ -92,17 +99,66 @@ fn palette(seed: u8) -> Palette {
     // Six distinct looks. `style` selects the composition (0 landscape,
     // 1 sunset, 2 city, 3 portrait bokeh, 4 forest, 5 desert).
     let table: [Palette; 6] = [
-        Palette { sky_top: (96, 165, 250), sky_bot: (191, 219, 254), ground: (52, 96, 64), ridge: (30, 58, 70), accent: (250, 250, 240), style: 0 },
-        Palette { sky_top: (244, 114, 90), sky_bot: (252, 211, 77), ground: (60, 40, 60), ridge: (88, 28, 64), accent: (255, 237, 200), style: 1 },
-        Palette { sky_top: (30, 41, 59), sky_bot: (71, 85, 105), ground: (15, 18, 28), ridge: (51, 65, 85), accent: (250, 204, 21), style: 2 },
-        Palette { sky_top: (60, 50, 70), sky_bot: (120, 90, 110), ground: (40, 30, 45), ridge: (90, 70, 90), accent: (244, 211, 188), style: 3 },
-        Palette { sky_top: (134, 192, 160), sky_bot: (214, 232, 200), ground: (34, 70, 48), ridge: (24, 54, 40), accent: (245, 245, 225), style: 4 },
-        Palette { sky_top: (250, 200, 140), sky_bot: (252, 232, 196), ground: (176, 124, 78), ridge: (140, 92, 60), accent: (255, 244, 222), style: 5 },
+        Palette {
+            sky_top: (96, 165, 250),
+            sky_bot: (191, 219, 254),
+            ground: (52, 96, 64),
+            ridge: (30, 58, 70),
+            accent: (250, 250, 240),
+            style: 0,
+        },
+        Palette {
+            sky_top: (244, 114, 90),
+            sky_bot: (252, 211, 77),
+            ground: (60, 40, 60),
+            ridge: (88, 28, 64),
+            accent: (255, 237, 200),
+            style: 1,
+        },
+        Palette {
+            sky_top: (30, 41, 59),
+            sky_bot: (71, 85, 105),
+            ground: (15, 18, 28),
+            ridge: (51, 65, 85),
+            accent: (250, 204, 21),
+            style: 2,
+        },
+        Palette {
+            sky_top: (60, 50, 70),
+            sky_bot: (120, 90, 110),
+            ground: (40, 30, 45),
+            ridge: (90, 70, 90),
+            accent: (244, 211, 188),
+            style: 3,
+        },
+        Palette {
+            sky_top: (134, 192, 160),
+            sky_bot: (214, 232, 200),
+            ground: (34, 70, 48),
+            ridge: (24, 54, 40),
+            accent: (245, 245, 225),
+            style: 4,
+        },
+        Palette {
+            sky_top: (250, 200, 140),
+            sky_bot: (252, 232, 196),
+            ground: (176, 124, 78),
+            ridge: (140, 92, 60),
+            accent: (255, 244, 222),
+            style: 5,
+        },
     ];
     let idx = (seed as usize) % table.len();
     // Cheap clone via field copy (Palette is small + Copy-ish ints).
     let p = &table[idx];
-    Palette { sky_top: p.sky_top, sky_bot: p.sky_bot, ground: p.ground, ridge: p.ridge, accent: p.accent, style: p.style }
+    Palette {
+        sky_top: p.sky_top,
+        sky_bot: p.sky_bot,
+        ground: p.ground,
+        ridge: p.ridge,
+        accent: p.accent,
+        style: p.style,
+    }
 }
 
 /// Paint a deterministic scene into `buf` using seed `seed`.
@@ -201,8 +257,8 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
                 let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
                 for x in 0..w {
                     let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
-                    let ridge = base as f32 - (t + seed as f32).sin() * amp
-                        - (t * 1.7).cos() * amp * 0.4;
+                    let ridge =
+                        base as f32 - (t + seed as f32).sin() * amp - (t * 1.7).cos() * amp * 0.4;
                     for y in (ridge as i32)..horizon {
                         buf.put(x, y, shade.0, shade.1, shade.2);
                     }
@@ -269,9 +325,26 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
     let pad = mscale * 2;
     for sy in 0..10 {
         let a = 0.12 - sy as f32 * 0.011;
-        buf.fill_rect_blend(px0 - pad + sy, py0 - pad + sy, px0 + poster + pad + sy, py0 + poster + pad + sy, 0, 0, 0, a);
+        buf.fill_rect_blend(
+            px0 - pad + sy,
+            py0 - pad + sy,
+            px0 + poster + pad + sy,
+            py0 + poster + pad + sy,
+            0,
+            0,
+            0,
+            a,
+        );
     }
-    buf.fill_rect(px0 - pad, py0 - pad, px0 + poster + pad, py0 + poster + pad, 250, 250, 250);
+    buf.fill_rect(
+        px0 - pad,
+        py0 - pad,
+        px0 + poster + pad,
+        py0 + poster + pad,
+        250,
+        250,
+        250,
+    );
 
     // QR modules (dark on the card's white quiet zone).
     for my in 0..modules {

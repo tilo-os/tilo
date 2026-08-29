@@ -39,7 +39,11 @@ pub struct Rgb {
 
 impl Rgb {
     pub fn new(r: f64, g: f64, b: f64) -> Self {
-        Self { r: r.clamp(0.0, 1.0), g: g.clamp(0.0, 1.0), b: b.clamp(0.0, 1.0) }
+        Self {
+            r: r.clamp(0.0, 1.0),
+            g: g.clamp(0.0, 1.0),
+            b: b.clamp(0.0, 1.0),
+        }
     }
     pub fn luma(&self) -> f64 {
         0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
@@ -76,7 +80,11 @@ impl Rgb {
 /// Blend `a` toward `b` by `t` (0..1).
 fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
     let t = t.clamp(0.0, 1.0);
-    Rgb::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+    Rgb::new(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
 }
 
 /// Apply one [`ClipEffect`] to a colour. The single source of truth for both the
@@ -141,7 +149,9 @@ pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     let Some(clip) = project.top_video_clip_at(playhead) else {
         return CompositedFrame::Empty;
     };
-    let base = palette_rgb(clip.palette).graded(&clip.filters).with_effects(&clip.effects);
+    let base = palette_rgb(clip.palette)
+        .graded(&clip.filters)
+        .with_effects(&clip.effects);
     let envelope = clip.envelope(playhead) * clip.opacity;
     let flash = transition_flash(clip, playhead);
     CompositedFrame::Clip {
@@ -164,7 +174,10 @@ fn transition_flash(clip: &Clip, playhead: f64) -> Option<Flash> {
         return None;
     }
     let alpha = (1.0 - into / 0.6) * 0.65;
-    Some(Flash { white: clip.transition != Transition::DipToBlack, alpha })
+    Some(Flash {
+        white: clip.transition != Transition::DipToBlack,
+        alpha,
+    })
 }
 
 /// A deterministic base colour per palette slot, in linear 0..1. Mirrors
@@ -299,8 +312,8 @@ impl PreviewDecoder {
         // a rate-limited retry because a freshly-opened pipeline reaches its
         // ready state asynchronously and an early seek can be dropped.
         let target_changed = self.last_seek_ms != Some(target_ms);
-        let stale_retry = !self.settled
-            && self.last_seek_at.elapsed() > std::time::Duration::from_millis(150);
+        let stale_retry =
+            !self.settled && self.last_seek_at.elapsed() > std::time::Duration::from_millis(150);
         if target_changed || stale_retry {
             self.engine.seek_ms(target_ms);
             self.engine.play();
@@ -340,7 +353,12 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
 
     let (bands, env, flash) = match composite(project, playhead) {
         CompositedFrame::Empty => (None, 1.0, None),
-        CompositedFrame::Clip { base, envelope, flash, .. } => (Some(base), envelope, flash),
+        CompositedFrame::Clip {
+            base,
+            envelope,
+            flash,
+            ..
+        } => (Some(base), envelope, flash),
     };
 
     let black = Rgb::new(0.0, 0.0, 0.0);
@@ -368,7 +386,11 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
             }
             // Transition flash.
             if let Some(f) = flash {
-                let target = if f.white { Rgb::new(1.0, 1.0, 1.0) } else { black };
+                let target = if f.white {
+                    Rgb::new(1.0, 1.0, 1.0)
+                } else {
+                    black
+                };
                 px = mix(px, target, f.alpha);
             }
             let i = (y * w + x) * 4;
@@ -426,16 +448,27 @@ mod tests {
         let CompositedFrame::Clip { envelope: mid, .. } = composite(&p, 5.0) else {
             panic!("expected clip");
         };
-        assert!(head < mid, "head ({head}) should be dimmer than mid ({mid})");
+        assert!(
+            head < mid,
+            "head ({head}) should be dimmer than mid ({mid})"
+        );
         assert!(head < 0.2, "very head of a fade-in is near-black");
     }
 
     #[test]
     fn grade_changes_the_base_colour() {
         let neutral = palette_rgb(0);
-        let brighter = neutral.graded(&Filters { brightness: 0.9, contrast: 0.5, saturation: 0.5 });
+        let brighter = neutral.graded(&Filters {
+            brightness: 0.9,
+            contrast: 0.5,
+            saturation: 0.5,
+        });
         assert!(brighter.luma() > neutral.luma(), "brightness raises luma");
-        let desat = neutral.graded(&Filters { brightness: 0.5, contrast: 0.5, saturation: 0.0 });
+        let desat = neutral.graded(&Filters {
+            brightness: 0.5,
+            contrast: 0.5,
+            saturation: 0.0,
+        });
         // Full desaturation collapses channels toward luma → near-equal.
         assert!((desat.r - desat.g).abs() < 1e-6 && (desat.g - desat.b).abs() < 1e-6);
     }
@@ -444,7 +477,11 @@ mod tests {
     fn grayscale_effect_collapses_channels_and_empty_is_a_noop() {
         use crate::model::{ClipEffect, EffectKind};
         let c = palette_rgb(0); // a saturated bluish clip
-        assert_eq!(c.with_effects(&[]), c, "no effects leaves the colour unchanged");
+        assert_eq!(
+            c.with_effects(&[]),
+            c,
+            "no effects leaves the colour unchanged"
+        );
         let g = c.with_effects(&[ClipEffect::new(EffectKind::Grayscale)]);
         // Grayscale pulls the channels strongly toward luma (near-equal).
         assert!(
@@ -452,7 +489,10 @@ mod tests {
             "grayscale converges the channels: {g:?}",
         );
         // Invert flips the colour.
-        let inv = c.with_effects(&[ClipEffect { kind: EffectKind::Invert, amount: 1.0 }]);
+        let inv = c.with_effects(&[ClipEffect {
+            kind: EffectKind::Invert,
+            amount: 1.0,
+        }]);
         assert!((inv.r - (1.0 - c.r)).abs() < 1e-6);
     }
 
@@ -468,13 +508,19 @@ mod tests {
             CompositedFrame::Clip { base, .. } => base,
             _ => panic!("expected clip"),
         };
-        p.clip_mut(cid).unwrap().effects = vec![ClipEffect { kind: EffectKind::Grayscale, amount: 1.0 }];
+        p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
+            kind: EffectKind::Grayscale,
+            amount: 1.0,
+        }];
         let after = match composite(&p, 6.0) {
             CompositedFrame::Clip { base, .. } => base,
             _ => panic!("expected clip"),
         };
         let spread = |c: Rgb| (c.r - c.g).abs() + (c.g - c.b).abs();
-        assert!(spread(after) < spread(before), "grayscale reduces channel spread in the composite");
+        assert!(
+            spread(after) < spread(before),
+            "grayscale reduces channel spread in the composite"
+        );
     }
 
     #[test]
@@ -517,7 +563,14 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
         // Clip placed at timeline 5s, sourcing in_point=3s.
         let cid = p.add_clip(tid, mid, 5.0).unwrap();
         p.clip_mut(cid).unwrap().in_point = 3.0;
@@ -530,7 +583,9 @@ mod tests {
 
     // Build a one-clip project whose media points at a real file on disk, so
     // the decoder's hydration gate reports it decodable.
-    fn project_referencing(path: &std::path::Path) -> (crate::model::Project, crate::model::MediaId) {
+    fn project_referencing(
+        path: &std::path::Path,
+    ) -> (crate::model::Project, crate::model::MediaId) {
         use crate::model::{MediaKind, Project, Track, TrackKind};
         use uuid::Uuid;
         let mut p = Project::new("t");
@@ -548,7 +603,14 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 20.0;
         (p, mid)
@@ -568,9 +630,16 @@ mod tests {
         let mut dec = PreviewDecoder::new_synthesized();
         let got = dec.update(&project, 2.0);
         assert!(got, "a frame is produced for the clip under the playhead");
-        assert_eq!(dec.frame_media(), Some(mid), "frame is keyed to the clip's media");
+        assert_eq!(
+            dec.frame_media(),
+            Some(mid),
+            "frame is keyed to the clip's media"
+        );
         let frame = dec.frame().expect("cached frame");
-        assert_eq!(frame.rgba.len(), frame.width as usize * frame.height as usize * 4);
+        assert_eq!(
+            frame.rgba.len(),
+            frame.width as usize * frame.height as usize * 4
+        );
         assert!(frame.width > 0 && frame.height > 0, "a real, sized picture");
 
         std::fs::remove_file(&f).ok();
@@ -598,10 +667,20 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
         p.add_clip(tid, mid, 0.0);
         let mut dec = PreviewDecoder::new_synthesized();
-        assert!(!dec.update(&p, 1.0), "no frame for an un-hydrated reference");
+        assert!(
+            !dec.update(&p, 1.0),
+            "no frame for an un-hydrated reference"
+        );
         assert!(dec.frame().is_none());
     }
 
@@ -611,7 +690,10 @@ mod tests {
         // Inside the graded drone open (brighter than a neutral clip elsewhere).
         let buf = render_rgba(&p, 5.0, 32, 18);
         assert_eq!(buf.len(), 32 * 18 * 4);
-        assert!(buf.chunks(4).all(|px| px[3] == 255), "every pixel is opaque");
+        assert!(
+            buf.chunks(4).all(|px| px[3] == 255),
+            "every pixel is opaque"
+        );
         // Not a uniform black frame — the composited clip contributes colour.
         let any_colour = buf.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8);
         assert!(any_colour, "the graded clip renders visible colour");
@@ -642,7 +724,9 @@ mod tests {
             .expect("build sample-clip pipeline")
             .downcast::<gst::Pipeline>()
             .expect("pipeline");
-        pipeline.set_state(gst::State::Playing).expect("play sample pipeline");
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("play sample pipeline");
         let bus = pipeline.bus().expect("bus");
         for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
             use gst::MessageView;
@@ -653,11 +737,17 @@ mod tests {
             }
         }
         let _ = pipeline.set_state(gst::State::Null);
-        assert!(f.exists() && std::fs::metadata(&f).unwrap().len() > 512, "a real sample clip was encoded");
+        assert!(
+            f.exists() && std::fs::metadata(&f).unwrap().len() > 512,
+            "a real sample clip was encoded"
+        );
 
         let (project, _mid) = project_referencing(&f);
         let mut dec = PreviewDecoder::new();
-        assert!(dec.is_real_decode(), "the decode feature must use the real pipeline");
+        assert!(
+            dec.is_real_decode(),
+            "the decode feature must use the real pipeline"
+        );
         // Preroll is async: pump until a frame lands or a short deadline.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut got = false;

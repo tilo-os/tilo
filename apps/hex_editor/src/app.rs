@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn view_for_missing_path_is_the_empty_state_not_a_fake_buffer() {
         let v = view_for_path(Path::new("/nonexistent/definitely-not-here.bin"));
-        assert!(!v.has_file(), "an unreadable path must not fabricate a buffer");
+        assert!(
+            !v.has_file(),
+            "an unreadable path must not fabricate a buffer"
+        );
         assert!(v.model().is_empty());
     }
 }

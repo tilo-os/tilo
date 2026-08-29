@@ -297,7 +297,9 @@ mod gst_pipeline {
             .map_err(|e| format!("end export stream: {e:?}"))?;
 
         // Wait for EOS (or an error) so the muxer flushes a complete file.
-        let bus = pipeline.bus().ok_or_else(|| "export pipeline bus".to_string())?;
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
         for msg in bus.iter_timed(gst::ClockTime::from_seconds(120)) {
             use gst::MessageView;
@@ -333,16 +335,25 @@ mod tests {
     #[test]
     fn size_estimate_scales_with_resolution() {
         let d = 60.0;
-        let p720 = ExportSettings { resolution: Resolution::P720, ..Default::default() }
-            .estimated_mb(d);
-        let p2160 = ExportSettings { resolution: Resolution::P2160, ..Default::default() }
-            .estimated_mb(d);
+        let p720 = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        }
+        .estimated_mb(d);
+        let p2160 = ExportSettings {
+            resolution: Resolution::P2160,
+            ..Default::default()
+        }
+        .estimated_mb(d);
         assert!(p2160 > p720 * 4.0, "4K should be much heavier than 720p");
     }
 
     #[test]
     fn filename_is_slugged_with_extension() {
-        let s = ExportSettings { container: Container::WebM, ..Default::default() };
+        let s = ExportSettings {
+            container: Container::WebM,
+            ..Default::default()
+        };
         assert_eq!(s.suggested_filename("My Doc v3"), "My_Doc_v3.webm");
     }
 
@@ -367,21 +378,45 @@ mod tests {
 
     #[test]
     fn pipeline_desc_wires_the_right_chain_per_container() {
-        let mp4 = ExportSettings { container: Container::Mp4, ..Default::default() };
+        let mp4 = ExportSettings {
+            container: Container::Mp4,
+            ..Default::default()
+        };
         let d = pipeline_desc(&mp4, 1920, 1080, "/tmp/out.mp4");
-        assert!(d.contains("appsrc name=qos_src"), "an appsrc feeds real frames: {d}");
-        assert!(d.contains("format=RGBA,width=1920,height=1080"), "caps match the frames: {d}");
+        assert!(
+            d.contains("appsrc name=qos_src"),
+            "an appsrc feeds real frames: {d}"
+        );
+        assert!(
+            d.contains("format=RGBA,width=1920,height=1080"),
+            "caps match the frames: {d}"
+        );
         assert!(d.contains("openh264enc"), "H.264 encoder: {d}");
         assert!(d.contains("h264parse ! mp4mux"), "parsed + MP4-muxed: {d}");
-        assert!(d.contains("filesink location=/tmp/out.mp4"), "writes a real file: {d}");
+        assert!(
+            d.contains("filesink location=/tmp/out.mp4"),
+            "writes a real file: {d}"
+        );
 
-        let webm = ExportSettings { container: Container::WebM, ..Default::default() };
+        let webm = ExportSettings {
+            container: Container::WebM,
+            ..Default::default()
+        };
         let dw = pipeline_desc(&webm, 640, 360, "/tmp/o.webm");
-        assert!(dw.contains("vp8enc") && dw.contains("webmmux"), "VP8/WebM chain: {dw}");
+        assert!(
+            dw.contains("vp8enc") && dw.contains("webmmux"),
+            "VP8/WebM chain: {dw}"
+        );
         assert!(!dw.contains("h264parse"), "no h264parse for WebM: {dw}");
 
-        let mov = ExportSettings { container: Container::Mov, ..Default::default() };
-        assert!(pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"), "MOV muxes with qtmux");
+        let mov = ExportSettings {
+            container: Container::Mov,
+            ..Default::default()
+        };
+        assert!(
+            pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"),
+            "MOV muxes with qtmux"
+        );
     }
 
     #[test]
@@ -389,7 +424,10 @@ mod tests {
         let mut p = Project::new("t");
         p.width = 1440;
         p.height = 1080; // 4:3
-        let s = ExportSettings { resolution: Resolution::P720, ..Default::default() };
+        let s = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        };
         let (w, h) = output_dims(&s, &p);
         assert_eq!(h, 720);
         assert_eq!(w, 960, "4:3 at 720p is 960×720");
@@ -421,14 +459,25 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 0.2;
 
         let out = std::env::temp_dir().join(format!("qos-ve-export-{}.mp4", std::process::id()));
         // Safety: single-threaded test mutation of process env.
         unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
-        let s = ExportSettings { resolution: Resolution::P720, container: Container::Mp4, frame_rate: FrameRate::F24 };
+        let s = ExportSettings {
+            resolution: Resolution::P720,
+            container: Container::Mp4,
+            frame_rate: FrameRate::F24,
+        };
         let status = begin_export(&p, &s);
         unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
 
@@ -436,7 +485,11 @@ mod tests {
             ExportStatus::Done { path } => {
                 assert_eq!(path, out.to_string_lossy());
                 let bytes = std::fs::read(&out).expect("export file exists");
-                assert!(bytes.len() > 512, "a real encoded file, got {} bytes", bytes.len());
+                assert!(
+                    bytes.len() > 512,
+                    "a real encoded file, got {} bytes",
+                    bytes.len()
+                );
                 // A valid ISO-BMFF file has an `ftyp` box type at offset 4.
                 assert_eq!(&bytes[4..8], b"ftyp", "the output is a real MP4 container");
             }

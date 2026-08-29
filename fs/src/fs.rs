@@ -107,7 +107,9 @@ impl QuickFS {
     /// The codec key for `name`'s extension if it's a recognized document.
     fn document_codec_for(&self, name: &str) -> Option<String> {
         let ext = name.rsplit('.').next().filter(|e| *e != name)?;
-        self.registry.provider_for_ext(ext).map(|_| ext.to_lowercase())
+        self.registry
+            .provider_for_ext(ext)
+            .map(|_| ext.to_lowercase())
     }
 
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
@@ -156,11 +158,7 @@ impl QuickFS {
     /// the CRDT and changes as peers edit, so the kernel must not cache a
     /// stale `i_size`), the normal TTL otherwise.
     fn ttl_for(&self, is_doc: bool) -> Duration {
-        if is_doc {
-            Duration::ZERO
-        } else {
-            TTL
-        }
+        if is_doc { Duration::ZERO } else { TTL }
     }
 
     /// Commit an in-flight write buffer: import it as a document, or ingest it
@@ -236,9 +234,9 @@ impl QuickFS {
         let provider = self.thumbs.as_ref()?;
         let (name, content_hash, thumb_hash) = {
             let ns = self.namespace.lock().unwrap();
-            let name = ns.path_for(ino).and_then(|p| {
-                p.rsplit('/').next().map(|s| s.to_string())
-            })?;
+            let name = ns
+                .path_for(ino)
+                .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()))?;
             (name, ns.hash_for(ino), ns.thumb_hash(ino))
         };
         let category = thumbnail::category_for_path(std::path::Path::new(&name));
@@ -404,7 +402,9 @@ impl QuickFS {
             entries
                 .into_iter()
                 .filter(|(_, _, name)| {
-                    name == "." || name == ".." || acl.visible(identity, &child_path(&dir_path, name))
+                    name == "."
+                        || name == ".."
+                        || acl.visible(identity, &child_path(&dir_path, name))
                 })
                 .collect(),
         )
@@ -452,7 +452,12 @@ impl QuickFS {
         }
         let child = child_path(&parent_path, name);
         self.check_path(&child, Access::Write)?;
-        let taken = self.namespace.lock().unwrap().lookup(parent, name).is_some();
+        let taken = self
+            .namespace
+            .lock()
+            .unwrap()
+            .lookup(parent, name)
+            .is_some();
         if taken && !acl.visible(identity, &child) {
             return Err(EROFS);
         }
@@ -862,7 +867,10 @@ impl Filesystem for QuickFS {
             return;
         };
         // Start a fresh empty buffer so subsequent writes accumulate.
-        self.write_buffers.lock().unwrap().insert(attr.ino.0, Vec::new());
+        self.write_buffers
+            .lock()
+            .unwrap()
+            .insert(attr.ino.0, Vec::new());
         self.publish(delta);
         reply.created(
             &self.ttl_for(codec.is_some()),
@@ -943,7 +951,14 @@ impl Filesystem for QuickFS {
         reply.ok();
     }
 
-    fn fsync(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+    fn fsync(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
             self.commit_buffer(ino.0, &data);
@@ -1123,14 +1138,7 @@ impl Filesystem for QuickFS {
     /// Serve the `user.qos.sync` extended attribute: the entry's hydration
     /// state (`local`/`projected`/`downloading`). Every other attribute name
     /// reports absent (`ENODATA`) — the collaborative FS owns only this one.
-    fn getxattr(
-        &self,
-        _req: &Request,
-        ino: INodeNo,
-        name: &OsStr,
-        size: u32,
-        reply: ReplyXattr,
-    ) {
+    fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
         // Outside the view the inode doesn't exist — checked before the
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
@@ -1212,8 +1220,8 @@ mod thumb_tests {
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use crate::thumbs::ThumbProvider;
-    use iroh::endpoint::presets;
     use iroh::endpoint::Endpoint;
+    use iroh::endpoint::presets;
     use std::io::Cursor;
 
     fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
@@ -1237,7 +1245,8 @@ mod thumb_tests {
         let namespace = Arc::new(Mutex::new(Namespace::new("host")));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
-        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics).with_thumbs(provider);
+        let fs =
+            QuickFS::new(namespace.clone(), hydrator.clone(), heuristics).with_thumbs(provider);
         (namespace, store, fs)
     }
 
@@ -1265,7 +1274,11 @@ mod thumb_tests {
         let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
         let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
         assert!(decoded.is_valid());
-        assert_eq!(decoded.max_edge(), crate::thumbs::HOST_EDGE, "downscaled to the host preview size");
+        assert_eq!(
+            decoded.max_edge(),
+            crate::thumbs::HOST_EDGE,
+            "downscaled to the host preview size"
+        );
         assert!(
             decoded.max_edge() < png.len() as u32,
             "the preview is far smaller than the source"
@@ -1278,11 +1291,17 @@ mod thumb_tests {
             .unwrap()
             .thumb_hash(ino)
             .expect("thumbnail hash recorded on the node → projects to peers");
-        assert!(store.has(tbh).await, "the thumbnail blob is stored for peers");
+        assert!(
+            store.has(tbh).await,
+            "the thumbnail blob is stored for peers"
+        );
 
         // A second request returns the identical bytes from the cache.
         let again = fs.thumbnail_for(ino).expect("cached");
-        assert_eq!(again, thumb, "second request is a cache hit, identical bytes");
+        assert_eq!(
+            again, thumb,
+            "second request is a cache hit, identical bytes"
+        );
     }
 
     /// A preview survives a remount: a fresh mount over the same cache
@@ -1297,7 +1316,8 @@ mod thumb_tests {
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
                 let mut ns = namespace.lock().unwrap();
-                ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+                ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
+                    .unwrap()
             };
             fs.thumbnail_for(ino).expect("generated")
         };
@@ -1311,10 +1331,16 @@ mod thumb_tests {
         // Remove the content so it is not local on this mount.
         let ino2 = {
             let mut ns = namespace2.lock().unwrap();
-            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
+                .unwrap()
         };
-        let served = fs2.thumbnail_for(ino2).expect("served from the on-disk cache");
-        assert_eq!(served, thumb, "same content → same cached preview after remount");
+        let served = fs2
+            .thumbnail_for(ino2)
+            .expect("served from the on-disk cache");
+        assert_eq!(
+            served, thumb,
+            "same content → same cached preview after remount"
+        );
     }
 
     /// A file whose content is not local yields no thumbnail (the host never
@@ -1328,7 +1354,8 @@ mod thumb_tests {
         let projected = iroh_blobs::Hash::from([3u8; 32]);
         let img_ino = {
             let mut ns = namespace.lock().unwrap();
-            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1).unwrap()
+            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
+                .unwrap()
         };
         assert!(
             fs.thumbnail_for(img_ino).is_none(),
@@ -1338,9 +1365,13 @@ mod thumb_tests {
         // A non-previewable type is never a thumbnail regardless of content.
         let zip_ino = {
             let mut ns = namespace.lock().unwrap();
-            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1).unwrap()
+            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
+                .unwrap()
         };
-        assert!(fs.thumbnail_for(zip_ino).is_none(), "a .zip is a badge, not a preview");
+        assert!(
+            fs.thumbnail_for(zip_ino).is_none(),
+            "a .zip is a badge, not a preview"
+        );
     }
 
     /// The projected-preview-before-content path: a peer with only gossiped
@@ -1364,12 +1395,19 @@ mod thumb_tests {
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
             let mut ns = namespace.lock().unwrap();
-            let ino = ns.create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1).unwrap();
+            let ino = ns
+                .create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1)
+                .unwrap();
             ns.set_thumb(ino, &thumb_blob);
             ino
         };
 
-        let served = fs.thumbnail_for(ino).expect("a projected preview is served before content");
-        assert_eq!(served, preview, "the gossiped thumbnail is served without local content");
+        let served = fs
+            .thumbnail_for(ino)
+            .expect("a projected preview is served before content");
+        assert_eq!(
+            served, preview,
+            "the gossiped thumbnail is served without local content"
+        );
     }
 }

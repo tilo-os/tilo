@@ -21,17 +21,17 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{InputPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, setting_row_described};
+use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
 
 pub const POINTER_SPEED_KEY: &str = "input.pointer_speed";
 pub const NATURAL_SCROLL_KEY: &str = "input.natural_scroll";
@@ -227,7 +227,11 @@ impl Widget for MouseKeyboardPane {
                 KEY_REPEAT_KEY,
                 automerge::ScalarValue::F64(self.initial.key_repeat),
             );
-            let _ = state.put(root, LAYOUT_KEY, layout_label(&self.initial.keyboard_layout));
+            let _ = state.put(
+                root,
+                LAYOUT_KEY,
+                layout_label(&self.initial.keyboard_layout),
+            );
             self.last = self.initial.clone();
             self.needs_seed = false;
         }
@@ -457,7 +461,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(setter.calls.lock().unwrap().is_empty(), "seed must not apply");
+        assert!(
+            setter.calls.lock().unwrap().is_empty(),
+            "seed must not apply"
+        );
         // Dropdown writes the display name into a Text object; emulate that.
         let _ = doc.put(&root, LAYOUT_KEY, "German");
         pane.sync(&mut doc, &root);

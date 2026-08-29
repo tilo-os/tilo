@@ -31,19 +31,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
@@ -80,7 +80,10 @@ fn scale_label(scale: f64) -> &'static str {
 
 /// Map a scale label back to its factor, if recognised.
 fn scale_factor_of(label: &str) -> Option<f64> {
-    DISPLAY_SCALES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
+    DISPLAY_SCALES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, s)| *s)
 }
 
 /// One real display output, derived from a DRM connector.
@@ -202,9 +205,11 @@ impl DisplayPane {
     ) -> Self {
         Self {
             dispatcher,
-            outputs: vec![
-                DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            ],
+            outputs: vec![DisplayOutput {
+                label: "Built-in display".into(),
+                connected: true,
+                builtin: true,
+            }],
             initial_brightness,
             initial_prefs: DisplayPrefs::default(),
             last_brightness: initial_brightness,
@@ -240,14 +245,16 @@ impl DisplayPane {
         let arrangement = if connected.is_empty() {
             card(
                 "Displays",
-                rows(vec![caption(
-                    "No displays detected on this device.",
-                )]),
+                rows(vec![caption("No displays detected on this device.")]),
             )
         } else {
             let mut out_rows: Vec<El> = Vec::new();
             for o in &connected {
-                let status = if o.builtin { "Active · primary" } else { "Connected" };
+                let status = if o.builtin {
+                    "Active · primary"
+                } else {
+                    "Connected"
+                };
                 out_rows.push(value_row(&o.label, status));
             }
             // One honest line about the idle ports rather than a row each.
@@ -260,8 +267,7 @@ impl DisplayPane {
         };
 
         // --- Scale card: HiDPI display-scale factor.
-        let scale_opts: Vec<String> =
-            DISPLAY_SCALES.iter().map(|(l, _)| l.to_string()).collect();
+        let scale_opts: Vec<String> = DISPLAY_SCALES.iter().map(|(l, _)| l.to_string()).collect();
         let scale = card(
             "Scale",
             rows(vec![
@@ -347,7 +353,11 @@ impl Widget for DisplayPane {
                 NIGHT_LIGHT_KEY,
                 automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
             );
-            let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.initial_prefs.scale));
+            let _ = state.put(
+                root,
+                DISPLAY_SCALE_KEY,
+                scale_label(self.initial_prefs.scale),
+            );
             self.last_prefs = self.initial_prefs;
             self.needs_seed = false;
         }
@@ -360,7 +370,10 @@ impl Widget for DisplayPane {
             let new = *f as f32;
             if (new - self.last_brightness).abs() > 0.001 {
                 self.last_brightness = new;
-                if let Err(e) = self.dispatcher.set_brightness((new.clamp(0.0, 1.0)) * 100.0) {
+                if let Err(e) = self
+                    .dispatcher
+                    .set_brightness((new.clamp(0.0, 1.0)) * 100.0)
+                {
                     warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                 }
             }
@@ -603,14 +616,19 @@ mod tests {
     #[test]
     fn arrangement_reflects_injected_outputs() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            DisplayOutput { label: "HDMI-A-1".into(), connected: true, builtin: false },
-        ]);
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                DisplayOutput {
+                    label: "Built-in display".into(),
+                    connected: true,
+                    builtin: true,
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1".into(),
+                    connected: true,
+                    builtin: false,
+                },
+            ]);
         assert_eq!(pane.outputs().len(), 2);
         assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
     }
@@ -631,18 +649,35 @@ mod tests {
     #[test]
     fn arrangement_lists_only_connected_outputs() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            DisplayOutput { label: "DP-1".into(), connected: false, builtin: false },
-            DisplayOutput { label: "DP-2".into(), connected: false, builtin: false },
-            DisplayOutput { label: "HDMI-A-1".into(), connected: false, builtin: false },
-        ]);
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                DisplayOutput {
+                    label: "Built-in display".into(),
+                    connected: true,
+                    builtin: true,
+                },
+                DisplayOutput {
+                    label: "DP-1".into(),
+                    connected: false,
+                    builtin: false,
+                },
+                DisplayOutput {
+                    label: "DP-2".into(),
+                    connected: false,
+                    builtin: false,
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1".into(),
+                    connected: false,
+                    builtin: false,
+                },
+            ]);
         let shown = pane.connected_outputs();
-        assert_eq!(shown.len(), 1, "only the connected built-in display is listed");
+        assert_eq!(
+            shown.len(),
+            1,
+            "only the connected built-in display is listed"
+        );
         assert_eq!(shown[0].label, "Built-in display");
     }
 
@@ -661,8 +696,7 @@ mod tests {
     fn seed_writes_initial_scale_label_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
         // with_dispatcher seeds initial_prefs = DisplayPrefs::default() (1.0).
-        let mut pane =
-            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
@@ -679,8 +713,7 @@ mod tests {
     fn changing_scale_persists_fractional_factor_to_disk() {
         let _guard = crate::prefs::test_env::ConfigGuard::new("display-scale");
         let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root); // seed

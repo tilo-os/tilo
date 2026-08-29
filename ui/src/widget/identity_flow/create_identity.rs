@@ -31,9 +31,9 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use threshold_identity::ThresholdIdentity;
 use rand_core::OsRng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -239,7 +239,10 @@ impl CreateIdentityScreen {
                     }
                     return ScreenOutcome::Stay;
                 }
-                if self.editor.apply_key(logical_key, _modifiers, text.as_deref()) {
+                if self
+                    .editor
+                    .apply_key(logical_key, _modifiers, text.as_deref())
+                {
                     *handled = true;
                 }
                 ScreenOutcome::Stay
@@ -294,12 +297,14 @@ impl Widget for CreateIdentityScreen {
         self.tile_rects.clear();
         let tile_size = 32.0;
         let gap = 8.0;
-        let tiles_total_width = ACCENT_PALETTE.len() as f64 * tile_size + (ACCENT_PALETTE.len() - 1) as f64 * gap;
+        let tiles_total_width =
+            ACCENT_PALETTE.len() as f64 * tile_size + (ACCENT_PALETTE.len() - 1) as f64 * gap;
         let tile_y = card.y0 + 232.0;
         let tile_x0 = card.x0 + (card_w - tiles_total_width) / 2.0;
         for i in 0..ACCENT_PALETTE.len() {
             let x = tile_x0 + i as f64 * (tile_size + gap);
-            self.tile_rects.push(Rect::new(x, tile_y, x + tile_size, tile_y + tile_size));
+            self.tile_rects
+                .push(Rect::new(x, tile_y, x + tile_size, tile_y + tile_size));
         }
         let btn_w = 160.0;
         let btn_h = 44.0;
@@ -444,7 +449,13 @@ impl Widget for CreateIdentityScreen {
         for (i, r) in self.tile_rects.iter().enumerate() {
             let [r_, g_, b_] = ACCENT_PALETTE[i];
             let fill = Color::from_rgb8(r_, g_, b_);
-            scene.fill(Fill::NonZero, transform, fill, None, &RoundedRect::from_rect(*r, 6.0));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
             if i == self.selected_accent {
                 scene.stroke(
                     &Stroke::new(2.0),
@@ -485,7 +496,10 @@ impl Widget for CreateIdentityScreen {
             14.0,
             btn_text_color,
             transform
-                * Affine::translate((label_x, self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0)),
+                * Affine::translate((
+                    label_x,
+                    self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
+                )),
             None,
         );
         if let Some(err) = &self.submit_error {
@@ -552,7 +566,10 @@ mod tests {
     fn submit_disabled_for_whitespace_only_name() {
         let mut s = CreateIdentityScreen::new();
         s.set_display_name("   \t  ");
-        assert!(!s.is_submit_enabled(), "whitespace must be treated as empty");
+        assert!(
+            !s.is_submit_enabled(),
+            "whitespace must be treated as empty"
+        );
     }
 
     #[test]

@@ -80,9 +80,7 @@ const WORKSPACE_TEXT_KEY: &str = "workspace_json";
 /// be located, which would only happen in extreme container minimal
 /// setups; the binary handles that by printing a friendly error.
 pub fn default_root() -> Option<PathBuf> {
-    let home = dirs::home_dir().or_else(|| {
-        std::env::var_os("HOME").map(PathBuf::from)
-    })?;
+    let home = dirs::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
     Some(home.join("notes"))
 }
 
@@ -164,16 +162,12 @@ pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
     {
         Some((Value::Object(ObjType::Text), id)) => id,
         Some(_) => {
-            return Err(format!(
-                "{} key is not a Text object",
-                WORKSPACE_TEXT_KEY
-            ));
+            return Err(format!("{} key is not a Text object", WORKSPACE_TEXT_KEY));
         }
         None => return Err(format!("missing {} key", WORKSPACE_TEXT_KEY)),
     };
     let json = doc.text(&text_id).map_err(|e| e.to_string())?;
-    let data: WorkspaceData =
-        serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let data: WorkspaceData = serde_json::from_str(&json).map_err(|e| e.to_string())?;
     Ok(Workspace { data })
 }
 
@@ -233,7 +227,13 @@ impl Saver {
         let join = thread::Builder::new()
             .name("notes-saver".into())
             .spawn(move || {
-                saver_loop(rx, pending_thread, root_thread, debounce_thread, status_thread);
+                saver_loop(
+                    rx,
+                    pending_thread,
+                    root_thread,
+                    debounce_thread,
+                    status_thread,
+                );
             })
             .expect("spawn notes saver thread");
         // The receiver-side loop owns `pending` so we don't need to
@@ -321,7 +321,13 @@ impl PageSaver {
         let join = thread::Builder::new()
             .name("notes-page-saver".into())
             .spawn(move || {
-                page_saver_loop(rx, pending_thread, root_thread, debounce_thread, status_thread);
+                page_saver_loop(
+                    rx,
+                    pending_thread,
+                    root_thread,
+                    debounce_thread,
+                    status_thread,
+                );
             })
             .expect("spawn notes page saver thread");
         Self {
@@ -448,8 +454,11 @@ fn page_saver_loop(
                     }
                 }
                 last_request = None;
-                let new_status =
-                    if all_ok { SaveStatus::Saved } else { SaveStatus::Failed };
+                let new_status = if all_ok {
+                    SaveStatus::Saved
+                } else {
+                    SaveStatus::Failed
+                };
                 status.store(new_status.as_u8(), Ordering::Release);
             }
             Some(PageSaverMsg::Stop) => return,
@@ -467,8 +476,11 @@ fn page_saver_loop(
                     }
                 }
                 last_request = None;
-                let new_status =
-                    if all_ok { SaveStatus::Saved } else { SaveStatus::Failed };
+                let new_status = if all_ok {
+                    SaveStatus::Saved
+                } else {
+                    SaveStatus::Failed
+                };
                 status.store(new_status.as_u8(), Ordering::Release);
             }
         }
@@ -529,7 +541,11 @@ fn saver_loop(
                     }
                 }
                 last_request = None;
-                let new_status = if ok { SaveStatus::Saved } else { SaveStatus::Failed };
+                let new_status = if ok {
+                    SaveStatus::Saved
+                } else {
+                    SaveStatus::Failed
+                };
                 status.store(new_status.as_u8(), Ordering::Release);
             }
             Some(SaverMsg::Stop) => return,
@@ -544,7 +560,11 @@ fn saver_loop(
                     }
                 }
                 last_request = None;
-                let new_status = if ok { SaveStatus::Saved } else { SaveStatus::Failed };
+                let new_status = if ok {
+                    SaveStatus::Saved
+                } else {
+                    SaveStatus::Failed
+                };
                 status.store(new_status.as_u8(), Ordering::Release);
             }
         }

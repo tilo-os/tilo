@@ -113,7 +113,10 @@ mod tests {
 
     #[test]
     fn parse_hex_handles_separators() {
-        assert_eq!(parse_hex_query("de ad be ef"), Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(
+            parse_hex_query("de ad be ef"),
+            Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
+        );
         assert_eq!(parse_hex_query("DEAD"), Some(vec![0xDE, 0xAD]));
         assert_eq!(parse_hex_query("de-ad:be"), Some(vec![0xDE, 0xAD, 0xBE]));
     }
@@ -151,7 +154,10 @@ mod tests {
 
     #[test]
     fn text_needle_is_utf8_bytes() {
-        assert_eq!(needle("PNG", SearchKind::Text), Some(vec![0x50, 0x4E, 0x47]));
+        assert_eq!(
+            needle("PNG", SearchKind::Text),
+            Some(vec![0x50, 0x4E, 0x47])
+        );
     }
 
     #[test]

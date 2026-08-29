@@ -88,7 +88,9 @@ impl OAuthProvider {
     /// means "no client id configured" — the flow can be shown but not
     /// completed until one is set.
     pub fn client_id(self) -> Option<String> {
-        std::env::var(self.client_id_env()).ok().filter(|s| !s.is_empty())
+        std::env::var(self.client_id_env())
+            .ok()
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -117,7 +119,10 @@ impl Pkce {
     /// used by the round-trip test.
     pub fn from_verifier(verifier: &str) -> Self {
         let challenge = base64url_nopad(&sha256(verifier.as_bytes()));
-        Self { verifier: verifier.to_string(), challenge }
+        Self {
+            verifier: verifier.to_string(),
+            challenge,
+        }
     }
 }
 
@@ -228,7 +233,12 @@ pub fn parse_token_response(json: &str) -> Option<OAuthTokens> {
         .unwrap_or_default()
         .to_string();
     let expires_in = v.get("expires_in").and_then(|t| t.as_u64()).unwrap_or(0);
-    Some(OAuthTokens { access_token, refresh_token, expires_in, obtained_at: unix_now() })
+    Some(OAuthTokens {
+        access_token,
+        refresh_token,
+        expires_in,
+        obtained_at: unix_now(),
+    })
 }
 
 /// Serialise a token bundle into a vault [`accounts::Secret`] (the credential
@@ -260,8 +270,7 @@ pub fn xoauth2_sasl(user: &str, access_token: &str) -> String {
 /// uses). Inline + dependency-free so it stays in the default build and is
 /// tested there.
 pub fn base64_standard(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -270,8 +279,16 @@ pub fn base64_standard(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[((n >> 6) & 0x3f) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -380,7 +397,9 @@ impl LoopbackServer {
                 }
                 Err(e) => return Err(e.to_string()),
             };
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).unwrap_or(0);
             let request = String::from_utf8_lossy(&buf[..n]);
@@ -400,7 +419,8 @@ impl LoopbackServer {
                     return Ok(code);
                 }
                 Some(RedirectResult::Error(err)) => {
-                    let _ = write_http_response(&mut stream, "Sign-in failed. You can close this tab.");
+                    let _ =
+                        write_http_response(&mut stream, "Sign-in failed. You can close this tab.");
                     return Err(format!("authorization denied: {err}"));
                 }
                 None => {
@@ -461,7 +481,6 @@ pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     code.map(|code| RedirectResult::Code { code, state })
 }
 
-
 /// Refresh an expired access token using its refresh token. Network path —
 /// compiled only under `live`. The provider may omit a new refresh token in
 /// the response (the old one stays valid), so the caller should carry it
@@ -488,8 +507,8 @@ pub fn refresh_tokens(
         .send()
         .map_err(|e| e.to_string())?;
     let body = resp.text().map_err(|e| e.to_string())?;
-    let mut tokens = parse_token_response(&body)
-        .ok_or_else(|| format!("token refresh rejected: {body}"))?;
+    let mut tokens =
+        parse_token_response(&body).ok_or_else(|| format!("token refresh rejected: {body}"))?;
     // Carry the existing refresh token forward when the provider didn't send a
     // fresh one (Google typically doesn't on refresh).
     if tokens.refresh_token.is_empty() {
@@ -524,7 +543,8 @@ pub fn run_loopback_authorization(
     };
     open_browser(&req.authorization_url());
     let code = server.wait_for_code(&state, timeout)?;
-    exchange_code(provider, client_id, &redirect_uri, &code, &pkce.verifier).map(OAuthTokens::stamp_now)
+    exchange_code(provider, client_id, &redirect_uri, &code, &pkce.verifier)
+        .map(OAuthTokens::stamp_now)
 }
 
 // ---- base64url + SHA-256 (RFC 4648 / FIPS 180-4), inline & dependency-free --
@@ -532,8 +552,7 @@ pub fn run_loopback_authorization(
 /// URL-safe base64 with no padding (RFC 4648 §5) — the encoding PKCE mandates
 /// for both the verifier and the challenge.
 pub fn base64url_nopad(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -680,7 +699,10 @@ mod tests {
         assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
         // URL-safe alphabet: must never emit '+' or '/' or '='.
         let s = base64url_nopad(&[0xfb, 0xff, 0xbf]);
-        assert!(!s.contains('+') && !s.contains('/') && !s.contains('='), "{s}");
+        assert!(
+            !s.contains('+') && !s.contains('/') && !s.contains('='),
+            "{s}"
+        );
     }
 
     #[test]
@@ -689,15 +711,26 @@ mod tests {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let pkce = Pkce::from_verifier(verifier);
         assert_eq!(pkce.verifier, verifier);
-        assert_eq!(pkce.challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(
+            pkce.challenge,
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]
     fn generate_yields_valid_verifier_and_matching_challenge() {
         let p = Pkce::generate();
         // RFC 7636: verifier length 43..=128 after base64url of 32 bytes = 43.
-        assert!(p.verifier.len() >= 43 && p.verifier.len() <= 128, "len {}", p.verifier.len());
-        assert!(p.verifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            p.verifier.len() >= 43 && p.verifier.len() <= 128,
+            "len {}",
+            p.verifier.len()
+        );
+        assert!(
+            p.verifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
         // The challenge is the S256 of exactly this verifier.
         assert_eq!(p.challenge, Pkce::from_verifier(&p.verifier).challenge);
     }
@@ -740,15 +773,27 @@ mod tests {
         };
         let url = req.authorization_url();
         assert!(url.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"));
-        assert!(!url.contains("access_type=offline"), "google-only param leaked");
+        assert!(
+            !url.contains("access_type=offline"),
+            "google-only param leaked"
+        );
         // Dots are unreserved, so the scope substring survives percent-encoding.
-        assert!(url.contains("IMAP.AccessAsUser.All"), "outlook IMAP scope present");
+        assert!(
+            url.contains("IMAP.AccessAsUser.All"),
+            "outlook IMAP scope present"
+        );
     }
 
     #[test]
     fn provider_recognised_from_domain() {
-        assert_eq!(OAuthProvider::from_domain("gmail.com"), Some(OAuthProvider::Google));
-        assert_eq!(OAuthProvider::from_domain("Outlook.com"), Some(OAuthProvider::Microsoft));
+        assert_eq!(
+            OAuthProvider::from_domain("gmail.com"),
+            Some(OAuthProvider::Google)
+        );
+        assert_eq!(
+            OAuthProvider::from_domain("Outlook.com"),
+            Some(OAuthProvider::Microsoft)
+        );
         assert_eq!(OAuthProvider::from_domain("fastmail.com"), None);
     }
 
@@ -764,7 +809,10 @@ mod tests {
     #[test]
     fn token_response_rejects_error_payload() {
         let json = r#"{"error":"invalid_grant","error_description":"Bad Request"}"#;
-        assert!(parse_token_response(json).is_none(), "error payload must not parse as tokens");
+        assert!(
+            parse_token_response(json).is_none(),
+            "error payload must not parse as tokens"
+        );
     }
 
     #[test]
@@ -789,8 +837,14 @@ mod tests {
         assert_eq!(s, base64_standard(expected_raw.as_bytes()));
         // Standard alphabet only (SASL mandates +/ and `=` padding, never the
         // URL-safe -_ variant).
-        assert!(s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '='));
-        assert!(!s.contains('-') && !s.contains('_'), "must be standard, not URL-safe base64: {s}");
+        assert!(
+            s.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=')
+        );
+        assert!(
+            !s.contains('-') && !s.contains('_'),
+            "must be standard, not URL-safe base64: {s}"
+        );
     }
 
     #[test]
@@ -834,8 +888,10 @@ mod tests {
             // Give the acceptor a moment to enter its loop.
             std::thread::sleep(std::time::Duration::from_millis(100));
             let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
-            s.write_all(b"GET /oauth?code=THECODE&state=STATE123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-                .expect("write request");
+            s.write_all(
+                b"GET /oauth?code=THECODE&state=STATE123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            )
+            .expect("write request");
             let mut resp = Vec::new();
             use std::io::Read;
             let _ = s.read_to_end(&mut resp);
@@ -875,13 +931,21 @@ mod tests {
             obtained_at: 1000,
         };
         let secret = tokens_to_secret(&tokens);
-        assert!(secret.password.is_empty(), "OAuth secret carries no password");
+        assert!(
+            secret.password.is_empty(),
+            "OAuth secret carries no password"
+        );
         assert_eq!(tokens_from_secret(&secret), Some(tokens));
     }
 
     #[test]
     fn token_expiry_accounts_for_lifetime_and_skew() {
-        let t = OAuthTokens { access_token: "a".into(), refresh_token: "r".into(), expires_in: 3600, obtained_at: 1_000_000 };
+        let t = OAuthTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_in: 3600,
+            obtained_at: 1_000_000,
+        };
         // Well within lifetime: not expired.
         assert!(!t.is_expired_with_skew(60, 1_000_100));
         // Past expiry: expired.
@@ -890,7 +954,11 @@ mod tests {
         // refreshed proactively.
         assert!(t.is_expired_with_skew(60, 1_003_550));
         // A token with no reported lifetime is always considered expired.
-        let no_life = OAuthTokens { expires_in: 0, obtained_at: 1_000_000, ..t };
+        let no_life = OAuthTokens {
+            expires_in: 0,
+            obtained_at: 1_000_000,
+            ..t
+        };
         assert!(no_life.is_expired_with_skew(60, 1_000_000));
     }
 }

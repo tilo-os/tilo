@@ -34,7 +34,7 @@ use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarVa
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{from_hex16, hex16, NamedRange};
+use crate::widget::history_group::{NamedRange, from_hex16, hex16};
 
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses

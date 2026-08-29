@@ -24,10 +24,10 @@ use vello::peniko::{Blob, Fill, ImageAlphaType, ImageData as PenikoImage, ImageF
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use crate::gesture::NavDirection;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::gesture::NavDirection;
 use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::Widget;
 
@@ -201,11 +201,7 @@ impl Widget for WebView {
         };
 
         if let Some(frame) = latest {
-            let key = (
-                Arc::as_ptr(&frame.rgba) as usize,
-                frame.width,
-                frame.height,
-            );
+            let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
             if self.cached_image.is_none() || key != self.cached_key {
                 let expected = frame.width as usize * frame.height as usize * 4;
                 if frame.rgba.len() == expected && expected > 0 {
@@ -342,7 +338,9 @@ impl Widget for WebView {
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 if !self.focused {
                     return;
                 }
@@ -385,9 +383,7 @@ impl Widget for WebView {
         let slot = self.engine.frames();
         let guard = slot.lock();
         match guard.ok().as_deref() {
-            Some(Some(f)) => {
-                (Arc::as_ptr(&f.rgba) as usize, f.width, f.height) != self.cached_key
-            }
+            Some(Some(f)) => (Arc::as_ptr(&f.rgba) as usize, f.width, f.height) != self.cached_key,
             _ => false,
         }
     }
@@ -457,7 +453,15 @@ mod tests {
         let mut focus = None;
         let mods = winit::event::Modifiers::default();
         w.handle_event(
-            &event, 1.0, &mods, &mut state, &root, &mut handled, &mut focus, node, tree,
+            &event,
+            1.0,
+            &mods,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            tree,
         );
     }
 

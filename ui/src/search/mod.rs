@@ -28,5 +28,5 @@
 mod provider;
 mod registry;
 
-pub use provider::{fuzzy_score, SearchProvider, SearchResult};
+pub use provider::{SearchProvider, SearchResult, fuzzy_score};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};

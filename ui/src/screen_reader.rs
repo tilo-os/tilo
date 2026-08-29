@@ -91,26 +91,52 @@ mod phrase {
         }
     }
 
-    pub fn checked() -> String { localized("sr-state-checked", "checked") }
-    pub fn not_checked() -> String { localized("sr-state-not-checked", "not checked") }
+    pub fn checked() -> String {
+        localized("sr-state-checked", "checked")
+    }
+    pub fn not_checked() -> String {
+        localized("sr-state-not-checked", "not checked")
+    }
     pub fn partially_checked() -> String {
         localized("sr-state-partially-checked", "partially checked")
     }
     /// Reads more naturally than "checked" for a toggle/switch.
-    pub fn on() -> String { localized("sr-state-on", "on") }
-    pub fn off() -> String { localized("sr-state-off", "off") }
-    pub fn selected() -> String { localized("sr-state-selected", "selected") }
-    pub fn expanded() -> String { localized("sr-state-expanded", "expanded") }
-    pub fn collapsed() -> String { localized("sr-state-collapsed", "collapsed") }
+    pub fn on() -> String {
+        localized("sr-state-on", "on")
+    }
+    pub fn off() -> String {
+        localized("sr-state-off", "off")
+    }
+    pub fn selected() -> String {
+        localized("sr-state-selected", "selected")
+    }
+    pub fn expanded() -> String {
+        localized("sr-state-expanded", "expanded")
+    }
+    pub fn collapsed() -> String {
+        localized("sr-state-collapsed", "collapsed")
+    }
     /// The long-standing screen-reader word for disabled (Orca/VoiceOver
     /// convention) — clearer than "disabled" when spoken.
-    pub fn dimmed() -> String { localized("sr-state-dimmed", "dimmed") }
-    pub fn read_only() -> String { localized("sr-state-read-only", "read only") }
-    pub fn required() -> String { localized("sr-state-required", "required") }
-    pub fn invalid() -> String { localized("sr-state-invalid", "invalid entry") }
-    pub fn busy() -> String { localized("sr-state-busy", "busy") }
+    pub fn dimmed() -> String {
+        localized("sr-state-dimmed", "dimmed")
+    }
+    pub fn read_only() -> String {
+        localized("sr-state-read-only", "read only")
+    }
+    pub fn required() -> String {
+        localized("sr-state-required", "required")
+    }
+    pub fn invalid() -> String {
+        localized("sr-state-invalid", "invalid entry")
+    }
+    pub fn busy() -> String {
+        localized("sr-state-busy", "busy")
+    }
     /// A protected (password) field — the value is never spoken.
-    pub fn protected() -> String { localized("sr-state-protected", "protected") }
+    pub fn protected() -> String {
+        localized("sr-state-protected", "protected")
+    }
 
     /// "heading level N".
     pub fn heading_word(level: u8) -> String {
@@ -140,10 +166,8 @@ mod phrase {
 
     /// "level N" — hierarchy depth for nested structures (tree rows).
     pub fn level_word(level: usize) -> String {
-        let resolved = crate::i18n::I18nManager::format(
-            "sr-level",
-            &[("level", (level as f64).into())],
-        );
+        let resolved =
+            crate::i18n::I18nManager::format("sr-level", &[("level", (level as f64).into())]);
         if resolved == "sr-level" {
             format!("level {level}")
         } else {
@@ -151,9 +175,15 @@ mod phrase {
         }
     }
 
-    pub fn deleted() -> String { localized("sr-deleted", "deleted") }
-    pub fn no_next() -> String { localized("sr-no-next", "no more") }
-    pub fn no_prev() -> String { localized("sr-no-prev", "no previous") }
+    pub fn deleted() -> String {
+        localized("sr-deleted", "deleted")
+    }
+    pub fn no_next() -> String {
+        localized("sr-no-next", "no more")
+    }
+    pub fn no_prev() -> String {
+        localized("sr-no-prev", "no previous")
+    }
 }
 
 /// Compose the spoken phrase for an accessible node — the pure, heavily
@@ -240,7 +270,11 @@ fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
         if switchy {
             parts.push(if checked { phrase::on() } else { phrase::off() });
         } else {
-            parts.push(if checked { phrase::checked() } else { phrase::not_checked() });
+            parts.push(if checked {
+                phrase::checked()
+            } else {
+                phrase::not_checked()
+            });
         }
     }
 
@@ -249,7 +283,11 @@ fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
     }
 
     if let Some(expanded) = s.expanded {
-        parts.push(if expanded { phrase::expanded() } else { phrase::collapsed() });
+        parts.push(if expanded {
+            phrase::expanded()
+        } else {
+            phrase::collapsed()
+        });
     }
 
     if s.required {
@@ -384,7 +422,11 @@ impl ScreenReader {
     /// fast typist's echoes coalesce.
     pub fn echo_char(&mut self, ch: char) {
         // A space is announced as the word so it isn't silence.
-        let text = if ch == ' ' { "space".to_string() } else { ch.to_string() };
+        let text = if ch == ' ' {
+            "space".to_string()
+        } else {
+            ch.to_string()
+        };
         self.enqueue(Utterance::new(text).with_priority(Priority::Text));
     }
 
@@ -422,7 +464,11 @@ impl ScreenReader {
     /// interrupts it). Seeds the reading cursor at the start.
     pub fn read_all(&mut self, root: &dyn Widget) {
         self.reading_order = flatten_reading_order(root);
-        self.cursor = if self.reading_order.is_empty() { None } else { Some(0) };
+        self.cursor = if self.reading_order.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         // First utterance interrupts (clears focus chatter); the rest are
         // non-interrupting continuations so they don't cancel each other.
         let mut first = true;
@@ -925,7 +971,10 @@ mod tests {
         }
         let recref = rec.0.borrow();
         assert_eq!(recref.last(), Some("Close, button"));
-        assert!(recref.stop_count() >= 4, "interrupts should stop in-flight speech");
+        assert!(
+            recref.stop_count() >= 4,
+            "interrupts should stop in-flight speech"
+        );
     }
 
     #[test]
@@ -1015,7 +1064,10 @@ mod tests {
     }
     impl TW {
         fn new(access: Option<AccessNode>) -> Self {
-            Self { access, kids: vec![] }
+            Self {
+                access,
+                kids: vec![],
+            }
         }
         fn child(mut self, c: Box<dyn Widget>) -> Self {
             self.kids.push(c);
@@ -1035,16 +1087,13 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
-        fn apply_layout(
-            &mut self,
-            _t: &TaffyTree<()>,
-            _n: taffy::NodeId,
-            _o: vello::kurbo::Point,
-        ) {
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
         }
         fn draw(
             &mut self,
@@ -1144,7 +1193,10 @@ mod tests {
         for _ in 0..5 {
             assert!(r.read_next(&root).is_some());
         }
-        assert!(r.read_next(&root).is_none(), "cursor must not run off the end");
+        assert!(
+            r.read_next(&root).is_none(),
+            "cursor must not run off the end"
+        );
         assert_eq!(r.cursor(), Some(4));
     }
 
@@ -1200,7 +1252,11 @@ mod tests {
         r.read_next(&root);
         assert_eq!(r.cursor(), Some(1));
         r.announce_focus(&n(Role::Button).with_name("Elsewhere"));
-        assert_eq!(r.cursor(), None, "focus change re-anchors the reading cursor");
+        assert_eq!(
+            r.cursor(),
+            None,
+            "focus change re-anchors the reading cursor"
+        );
     }
 
     #[test]

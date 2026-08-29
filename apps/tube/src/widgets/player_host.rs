@@ -52,7 +52,12 @@ pub struct PlayerHost {
 
 impl PlayerHost {
     pub fn new(player: SharedPlayer, player_h: f32) -> Self {
-        Self { player, player_h, rect: Rect::ZERO, node: None }
+        Self {
+            player,
+            player_h,
+            rect: Rect::ZERO,
+            node: None,
+        }
     }
 }
 
@@ -74,7 +79,10 @@ impl Widget for PlayerHost {
         // pointer.
         let node = taffy
             .new_leaf(Style {
-                size: taffy::Size { width: percent(1.0_f32), height: length(self.player_h) },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: length(self.player_h),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -104,7 +112,9 @@ impl Widget for PlayerHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.player.borrow_mut().draw(scene, transform, text_renderer, theme, presence);
+        self.player
+            .borrow_mut()
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -120,7 +130,15 @@ impl Widget for PlayerHost {
         taffy: &TaffyTree<()>,
     ) {
         self.player.borrow_mut().handle_event(
-            event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
     }
 

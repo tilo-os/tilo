@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 
 fn text_of(doc: &AutoCommit) -> String {
@@ -23,8 +23,7 @@ fn text_of(doc: &AutoCommit) -> String {
 #[test]
 #[serial_test::serial(quick_collab_sock)]
 fn live_text_edit_propagates_through_broker() {
-    let sock = std::env::temp_dir()
-        .join(format!("quick-collab-text-{}.sock", std::process::id()));
+    let sock = std::env::temp_dir().join(format!("quick-collab-text-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind broker");
     thread::spawn(move || ui::collaboration::broker::serve(listener));

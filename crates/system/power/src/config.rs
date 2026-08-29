@@ -80,7 +80,10 @@ pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
 pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
     let defaults = default_policy();
 
-    let auto_suspend = section.get("auto_suspend").and_then(|v| v.as_bool()).unwrap_or(true);
+    let auto_suspend = section
+        .get("auto_suspend")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let suspend_minutes = section
         .get("suspend_minutes")
         .and_then(|v| v.as_u64())

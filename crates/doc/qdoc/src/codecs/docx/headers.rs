@@ -4,7 +4,7 @@
 //! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
 //! simple form and the complex `w:instrText` form.
 
-use crate::model::{materialize_region, DocMut, DocRef, Region};
+use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
@@ -18,12 +18,18 @@ pub(super) const FOOTER_REL_ID: &str = "rIdQdocFtr";
 
 /// Resolve the default header + footer part names via `word/_rels/document.xml.rels`.
 /// Prefers the `w:type="default"` reference; falls back to the first of each kind.
-pub(super) fn resolve_default_parts(document_xml: &[u8], rels_xml: Option<&[u8]>) -> (Option<String>, Option<String>) {
+pub(super) fn resolve_default_parts(
+    document_xml: &[u8],
+    rels_xml: Option<&[u8]>,
+) -> (Option<String>, Option<String>) {
     let (hdr_rid, ftr_rid) = sectpr_reference_ids(document_xml);
     let rels = rels_xml.map(rel_targets).unwrap_or_default();
     let resolve = |rid: Option<String>| -> Option<String> {
         let rid = rid?;
-        let target = rels.iter().find(|(id, _)| *id == rid).map(|(_, t)| t.clone())?;
+        let target = rels
+            .iter()
+            .find(|(id, _)| *id == rid)
+            .map(|(_, t)| t.clone())?;
         Some(normalize_target(&target))
     };
     (resolve(hdr_rid), resolve(ftr_rid))
@@ -31,7 +37,9 @@ pub(super) fn resolve_default_parts(document_xml: &[u8], rels_xml: Option<&[u8]>
 
 /// The default (or first) header/footer relationship ids from the first `w:sectPr`.
 fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>) {
-    let Ok(s) = std::str::from_utf8(document_xml) else { return (None, None) };
+    let Ok(s) = std::str::from_utf8(document_xml) else {
+        return (None, None);
+    };
     let mut reader = Reader::from_str(s);
     let mut in_sectpr = false;
     let mut hdr_default: Option<String> = None;
@@ -45,31 +53,29 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
         };
         match ev {
             Event::Start(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = true,
-            Event::Empty(e) | Event::Start(e) if in_sectpr => {
-                match e.name().as_ref() {
-                    b"w:headerReference" => {
-                        let rid = attr_r_id(&e);
-                        let kind = attr_w_val(&e, b"w:type");
-                        if hdr_first.is_none() {
-                            hdr_first = rid.clone();
-                        }
-                        if kind.as_deref() == Some("default") {
-                            hdr_default = rid;
-                        }
+            Event::Empty(e) | Event::Start(e) if in_sectpr => match e.name().as_ref() {
+                b"w:headerReference" => {
+                    let rid = attr_r_id(&e);
+                    let kind = attr_w_val(&e, b"w:type");
+                    if hdr_first.is_none() {
+                        hdr_first = rid.clone();
                     }
-                    b"w:footerReference" => {
-                        let rid = attr_r_id(&e);
-                        let kind = attr_w_val(&e, b"w:type");
-                        if ftr_first.is_none() {
-                            ftr_first = rid.clone();
-                        }
-                        if kind.as_deref() == Some("default") {
-                            ftr_default = rid;
-                        }
+                    if kind.as_deref() == Some("default") {
+                        hdr_default = rid;
                     }
-                    _ => {}
                 }
-            }
+                b"w:footerReference" => {
+                    let rid = attr_r_id(&e);
+                    let kind = attr_w_val(&e, b"w:type");
+                    if ftr_first.is_none() {
+                        ftr_first = rid.clone();
+                    }
+                    if kind.as_deref() == Some("default") {
+                        ftr_default = rid;
+                    }
+                }
+                _ => {}
+            },
             Event::End(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = false,
             Event::Eof => break,
             _ => {}
@@ -80,7 +86,9 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
 
 /// `(Id, Target)` pairs from a `word/_rels/document.xml.rels`.
 fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
-    let Ok(s) = std::str::from_utf8(rels_xml) else { return Vec::new() };
+    let Ok(s) = std::str::from_utf8(rels_xml) else {
+        return Vec::new();
+    };
     let mut reader = Reader::from_str(s);
     let mut out = Vec::new();
     loop {
@@ -120,7 +128,9 @@ fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
 /// Import a `w:hdr`/`w:ftr` part into a region: `w:p` → paragraph blocks, `w:t` → text,
 /// `w:tab`/`w:br` → tab/newline, a `PAGE` field (simple or complex) → a page-number field.
 pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
     let mut prev: Option<String> = None;
     let mut cur: Option<String> = None;
@@ -136,7 +146,10 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut fldsimple_depth = 0usize;
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
         *prev = Some(id.clone());
         *cur = Some(id.clone());
@@ -160,7 +173,13 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     if is_page_instr(&instr) {
                         if let Some(b) = cur.clone() {
                             let start = cur_len;
-                            doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+                            doc.splice_text_in(
+                                region,
+                                &b,
+                                cur_len,
+                                0,
+                                &FIELD_PLACEHOLDER.to_string(),
+                            );
                             cur_len += 1;
                             field_marks.push((b, start));
                         }
@@ -186,7 +205,13 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     if is_page_instr(&instr) {
                         if let Some(b) = cur.clone() {
                             let start = cur_len;
-                            doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+                            doc.splice_text_in(
+                                region,
+                                &b,
+                                cur_len,
+                                0,
+                                &FIELD_PLACEHOLDER.to_string(),
+                            );
                             cur_len += 1;
                             field_marks.push((b, start));
                         }
@@ -205,7 +230,13 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                             if field_pending {
                                 if let Some(b) = cur.clone() {
                                     let start = cur_len;
-                                    doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+                                    doc.splice_text_in(
+                                        region,
+                                        &b,
+                                        cur_len,
+                                        0,
+                                        &FIELD_PLACEHOLDER.to_string(),
+                                    );
                                     cur_len += 1;
                                     field_marks.push((b, start));
                                 }
@@ -256,11 +287,18 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
 
 /// Whether a field instruction string is a PAGE field (`" PAGE "`, `"PAGE \* …"`).
 fn is_page_instr(instr: &str) -> bool {
-    instr.split_whitespace().next().map(|w| w.eq_ignore_ascii_case("PAGE")).unwrap_or(false)
+    instr
+        .split_whitespace()
+        .next()
+        .map(|w| w.eq_ignore_ascii_case("PAGE"))
+        .unwrap_or(false)
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == key).and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -274,9 +312,12 @@ fn push_escaped(out: &mut String, c: char) {
 
 /// Whether character `i` of `b` is a page-number field placeholder.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
-    b.marks
-        .iter()
-        .any(|m| m.name == MARK_FIELD && m.start == i && m.end == i + 1 && m.value.as_str() == Some(FIELD_PAGE_NUMBER))
+    b.marks.iter().any(|m| {
+        m.name == MARK_FIELD
+            && m.start == i
+            && m.end == i + 1
+            && m.value.as_str() == Some(FIELD_PAGE_NUMBER)
+    })
 }
 
 /// Render a region block as `<w:p>`: `w:t` runs, `w:tab`/`w:br` for tabs/breaks, and a
@@ -362,10 +403,14 @@ pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
 pub(super) fn section_references(parts: &ExportedParts) -> String {
     let mut s = String::new();
     if parts.header.is_some() {
-        s.push_str(&format!(r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#));
+        s.push_str(&format!(
+            r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#
+        ));
     }
     if parts.footer.is_some() {
-        s.push_str(&format!(r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#));
+        s.push_str(&format!(
+            r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#
+        ));
     }
     s
 }

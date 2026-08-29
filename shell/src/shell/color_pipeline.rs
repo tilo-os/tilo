@@ -300,7 +300,9 @@ pub fn map_sdr_pixel_to_pq_bt2020(srgb8: [u8; 3]) -> [u16; 3] {
 
 /// Absolute luminance (cd/m²) → 10-bit PQ code value `[0,1023]`.
 pub fn pq10_from_nits(nits: f32) -> u16 {
-    (pq_inverse_eotf(nits.max(0.0)) * 1023.0).round().clamp(0.0, 1023.0) as u16
+    (pq_inverse_eotf(nits.max(0.0)) * 1023.0)
+        .round()
+        .clamp(0.0, 1023.0) as u16
 }
 
 /// The colour space an output is being *scanned out* in.
@@ -494,7 +496,10 @@ mod tests {
         // must stay (1,1,1) (to rounding) across the gamut matrix.
         let w = bt709_to_bt2020_matrix().mul_vec([1.0, 1.0, 1.0]);
         for (i, c) in w.iter().enumerate() {
-            assert!(approx(*c, 1.0, 2e-3), "white channel {i} = {c}, expected 1.0");
+            assert!(
+                approx(*c, 1.0, 2e-3),
+                "white channel {i} = {c}, expected 1.0"
+            );
         }
     }
 
@@ -559,9 +564,14 @@ mod tests {
 
     #[test]
     fn pq_forward_inverse_round_trip() {
-        for &nits in &[0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0] {
+        for &nits in &[
+            0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0,
+        ] {
             let e = pq_inverse_eotf(nits);
-            assert!((0.0..=1.0).contains(&e), "PQ signal out of range for {nits}: {e}");
+            assert!(
+                (0.0..=1.0).contains(&e),
+                "PQ signal out of range for {nits}: {e}"
+            );
             let back = pq_eotf(e);
             // Relative tolerance: PQ is perceptual, error grows with luminance.
             let tol = (nits * 0.01).max(0.5);
@@ -612,7 +622,10 @@ mod tests {
             let v = i as f32 / 255.0;
             let linear = srgb_eotf(v);
             let back = srgb_oetf(linear);
-            assert!(approx(back, v, 1e-3), "sRGB round-trip {v} → {linear} → {back}");
+            assert!(
+                approx(back, v, 1e-3),
+                "sRGB round-trip {v} → {linear} → {back}"
+            );
         }
     }
 
@@ -637,9 +650,12 @@ mod tests {
                 "white channel {i} decodes to {n} nits, expected ~203"
             );
         }
-        let max_delta = code.iter().copied().max().unwrap() as i32
-            - code.iter().copied().min().unwrap() as i32;
-        assert!(max_delta <= 3, "SDR white PQ codes should be neutral, got {code:?}");
+        let max_delta =
+            code.iter().copied().max().unwrap() as i32 - code.iter().copied().min().unwrap() as i32;
+        assert!(
+            max_delta <= 3,
+            "SDR white PQ codes should be neutral, got {code:?}"
+        );
     }
 
     #[test]
@@ -707,7 +723,10 @@ mod tests {
     #[test]
     fn sdr_surface_on_sdr_output_is_passthrough() {
         let out = OutputColorState::sdr_default();
-        assert_eq!(plan_surface_op(sdr(), &out, None), SurfaceColorOp::Passthrough);
+        assert_eq!(
+            plan_surface_op(sdr(), &out, None),
+            SurfaceColorOp::Passthrough
+        );
     }
 
     #[test]
@@ -725,13 +744,19 @@ mod tests {
     #[test]
     fn sdr_surface_on_hdr_output_maps_into_hdr() {
         let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(plan_surface_op(sdr(), &out, None), SurfaceColorOp::MapSdrToHdr);
+        assert_eq!(
+            plan_surface_op(sdr(), &out, None),
+            SurfaceColorOp::MapSdrToHdr
+        );
     }
 
     #[test]
     fn hdr_pq_surface_on_hdr_pq_output_is_passthrough() {
         let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(plan_surface_op(hdr_pq(), &out, None), SurfaceColorOp::Passthrough);
+        assert_eq!(
+            plan_surface_op(hdr_pq(), &out, None),
+            SurfaceColorOp::Passthrough
+        );
     }
 
     #[test]

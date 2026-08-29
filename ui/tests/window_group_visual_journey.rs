@@ -9,23 +9,23 @@
 //! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
 
-use std::collections::HashMap;
 use crate::support::offscreen::OffscreenRenderer;
+use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
-};
+use ui::widget::{AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn make_window_group() -> WindowGroup {

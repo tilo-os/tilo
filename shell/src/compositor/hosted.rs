@@ -122,10 +122,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // merged state with no copy-back. Held alive for the life of `run` so the actor's tokio runtime
     // doesn't drop mid-session; a load failure is logged and treated as "peer-sync stays off".
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
-        match ShellNetwork::spawn(
-            tree_handle.clone(),
-            &peer_key_path(),
-        ) {
+        match ShellNetwork::spawn(tree_handle.clone(), &peer_key_path()) {
             Ok(handle) => {
                 // Subscribe to the default workspace topic so the actor's gossipsub mesh has somewhere to deliver `NeighbourMsg::SyncReq`s as soon as a peer dials in.
                 let _ = handle.join_default_workspace();
@@ -172,7 +169,8 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 }
                 crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
                     let active = tree_for_bridge.read().active;
-                    net.accept_invite(active, &token).map(|room| room.to_string())
+                    net.accept_invite(active, &token)
+                        .map(|room| room.to_string())
                 }
             }))
         }

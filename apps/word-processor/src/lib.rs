@@ -40,7 +40,11 @@ impl EditorDoc {
 
     /// A mutable editing view over the host doc.
     pub fn edit<'a>(&'a mut self, doc: &'a mut AutoCommit) -> qdoc::DocMut<'a> {
-        qdoc::DocMut { doc, c: &self.containers, ids: &mut self.ids }
+        qdoc::DocMut {
+            doc,
+            c: &self.containers,
+            ids: &mut self.ids,
+        }
     }
 
     pub fn blocks(&self, doc: &AutoCommit) -> Vec<String> {
@@ -83,7 +87,12 @@ pub enum WpFormat {
 impl WpFormat {
     /// Pick a format from a path extension (defaults to Markdown).
     pub fn from_path(path: &Path) -> Self {
-        match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref()
+        {
             Some("odt") => WpFormat::Odt,
             Some("docx") => WpFormat::Docx,
             Some("pdf") => WpFormat::Pdf,
@@ -94,7 +103,11 @@ impl WpFormat {
         }
     }
 
-    pub(crate) fn import(&self, bytes: &[u8], dm: &mut qdoc::DocMut) -> Result<(), qdoc::CodecError> {
+    pub(crate) fn import(
+        &self,
+        bytes: &[u8],
+        dm: &mut qdoc::DocMut,
+    ) -> Result<(), qdoc::CodecError> {
         use qdoc::FormatProvider;
         match self {
             WpFormat::Odt => qdoc::OdtCodec.import(bytes, dm),
@@ -162,7 +175,11 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
     let containers = qdoc::model::init(&mut state.doc, &state.root);
     let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut state.doc,
+            c: &containers,
+            ids: &mut ids,
+        };
         format.import(&bytes, &mut dm).map_err(invalid_data)?;
     }
     let mut widget = WordProcessorWidget::new();
@@ -255,7 +272,11 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
     let containers = qdoc::model::init(&mut state.doc, &state.root);
     let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut state.doc,
+            c: &containers,
+            ids: &mut ids,
+        };
         // Templates are bundled and validated by tests, so import cannot fail in
         // practice; if a malformed template ever shipped we'd rather surface it
         // loudly than silently hand back an empty document.
@@ -273,8 +294,13 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
 /// Export the document currently in `state` to `path` using `format`.
 pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::io::Result<()> {
     let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
-    let dr = qdoc::DocRef { doc: &state.doc, c: &containers };
-    let bytes = format.export(dr).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let dr = qdoc::DocRef {
+        doc: &state.doc,
+        c: &containers,
+    };
+    let bytes = format
+        .export(dr)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, bytes)
 }
 
@@ -345,7 +371,9 @@ pub mod recovery {
                     if p.is_absolute() {
                         p.to_path_buf()
                     } else {
-                        std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.to_path_buf())
+                        std::env::current_dir()
+                            .map(|d| d.join(p))
+                            .unwrap_or_else(|_| p.to_path_buf())
                     }
                 });
                 abs.to_string_lossy().into_owned()
@@ -361,9 +389,10 @@ pub mod recovery {
     pub fn write(doc_path: Option<&Path>, markdown: &[u8]) -> Option<PathBuf> {
         let path = recovery_path_for(doc_path);
         if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err() {
-                return None;
-            }
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return None;
+        }
         std::fs::write(&path, markdown).ok().map(|_| path)
     }
 
@@ -388,7 +417,10 @@ pub mod recovery {
     /// on-disk save format. Returns `None` only if the document has no schema yet.
     pub fn markdown_bytes(state: &ui::State) -> Option<Vec<u8>> {
         let containers = qdoc::model::open(&state.doc, &state.root).ok()?;
-        let dr = qdoc::DocRef { doc: &state.doc, c: &containers };
+        let dr = qdoc::DocRef {
+            doc: &state.doc,
+            c: &containers,
+        };
         crate::WpFormat::Markdown.export(dr).ok()
     }
 }
@@ -412,13 +444,19 @@ mod tests {
 
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Title\n\nHello\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Title\n\nHello\n", &mut dm)
+                .unwrap();
         }
         s.commit_action(None, None);
         assert_eq!(first_text(&ed.snapshot(&s.doc)), Some("Title".to_string()));
 
         s.undo(None, None);
-        assert_eq!(ed.snapshot(&s.doc).blocks.len(), 0, "undo reverts to the empty schema");
+        assert_eq!(
+            ed.snapshot(&s.doc).blocks.len(),
+            0,
+            "undo reverts to the empty schema"
+        );
 
         s.redo(None, None);
         assert_eq!(first_text(&ed.snapshot(&s.doc)), Some("Title".to_string()));
@@ -468,17 +506,27 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Title\n\nHello world\n", &mut dm)
+                .unwrap();
         }
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("editor-pdf-test-{}.pdf", std::process::id()));
-        assert_eq!(WpFormat::from_path(&path), WpFormat::Pdf, ".pdf extension picks the Pdf format");
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Pdf,
+            ".pdf extension picks the Pdf format"
+        );
 
         save_document(&s, &path, WpFormat::Pdf).expect("save to pdf");
         let bytes = std::fs::read(&path).expect("read back the pdf");
         let _ = std::fs::remove_file(&path);
-        assert!(bytes.starts_with(b"%PDF"), "output begins with the PDF signature: {:?}", &bytes[..bytes.len().min(8)]);
+        assert!(
+            bytes.starts_with(b"%PDF"),
+            "output begins with the PDF signature: {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
     }
 
     /// PDF import is unsupported and surfaces a clear error.
@@ -487,9 +535,16 @@ mod tests {
         let mut s = ui::State::new();
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut s.doc,
+            c: &containers,
+            ids: &mut ids,
+        };
         let err = WpFormat::Pdf.import(b"%PDF-1.7", &mut dm).unwrap_err();
-        assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
+        assert!(
+            matches!(err, qdoc::CodecError::Unsupported(_)),
+            "got {err:?}"
+        );
     }
 
     /// Saving to a `*.html` path routes through `qdoc-html` and writes a complete
@@ -500,12 +555,18 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Title\n\nHello world\n", &mut dm)
+                .unwrap();
         }
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("editor-html-test-{}.html", std::process::id()));
-        assert_eq!(WpFormat::from_path(&path), WpFormat::Html, ".html extension picks the Html format");
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Html,
+            ".html extension picks the Html format"
+        );
 
         save_document(&s, &path, WpFormat::Html).expect("save to html");
         let bytes = std::fs::read(&path).expect("read back the html");
@@ -527,12 +588,18 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Title\n\nHello world\n", &mut dm)
+                .unwrap();
         }
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("editor-rtf-test-{}.rtf", std::process::id()));
-        assert_eq!(WpFormat::from_path(&path), WpFormat::Rtf, ".rtf extension picks the Rtf format");
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Rtf,
+            ".rtf extension picks the Rtf format"
+        );
 
         save_document(&s, &path, WpFormat::Rtf).expect("save to rtf");
         let bytes = std::fs::read(&path).expect("read back the rtf");
@@ -553,12 +620,18 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Title\n\nHello world\n", &mut dm)
+                .unwrap();
         }
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("editor-epub-test-{}.epub", std::process::id()));
-        assert_eq!(WpFormat::from_path(&path), WpFormat::Epub, ".epub extension picks the Epub format");
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Epub,
+            ".epub extension picks the Epub format"
+        );
 
         save_document(&s, &path, WpFormat::Epub).expect("save to epub");
         let bytes = std::fs::read(&path).expect("read back the epub");
@@ -573,7 +646,10 @@ mod tests {
         // OCF requires the first archive entry to be the literal `mimetype`
         // member (stored uncompressed). The local-file-header filename starts at
         // offset 30; assert it is `mimetype`.
-        assert!(bytes.len() >= 38, "epub is at least one local file header long");
+        assert!(
+            bytes.len() >= 38,
+            "epub is at least one local file header long"
+        );
         assert_eq!(
             &bytes[30..38],
             b"mimetype",
@@ -587,9 +663,16 @@ mod tests {
         let mut s = ui::State::new();
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut s.doc,
+            c: &containers,
+            ids: &mut ids,
+        };
         let err = WpFormat::Epub.import(b"PK\x03\x04", &mut dm).unwrap_err();
-        assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
+        assert!(
+            matches!(err, qdoc::CodecError::Unsupported(_)),
+            "got {err:?}"
+        );
     }
 
     /// `WpFormat::from_path` maps the export-only extensions to their formats,
@@ -598,11 +681,23 @@ mod tests {
     fn from_path_maps_html_htm_rtf() {
         assert_eq!(WpFormat::from_path(Path::new("doc.html")), WpFormat::Html);
         assert_eq!(WpFormat::from_path(Path::new("doc.htm")), WpFormat::Html);
-        assert_eq!(WpFormat::from_path(Path::new("doc.HTML")), WpFormat::Html, "case-insensitive");
+        assert_eq!(
+            WpFormat::from_path(Path::new("doc.HTML")),
+            WpFormat::Html,
+            "case-insensitive"
+        );
         assert_eq!(WpFormat::from_path(Path::new("doc.rtf")), WpFormat::Rtf);
-        assert_eq!(WpFormat::from_path(Path::new("doc.RTF")), WpFormat::Rtf, "case-insensitive");
+        assert_eq!(
+            WpFormat::from_path(Path::new("doc.RTF")),
+            WpFormat::Rtf,
+            "case-insensitive"
+        );
         assert_eq!(WpFormat::from_path(Path::new("doc.epub")), WpFormat::Epub);
-        assert_eq!(WpFormat::from_path(Path::new("doc.EPUB")), WpFormat::Epub, "case-insensitive");
+        assert_eq!(
+            WpFormat::from_path(Path::new("doc.EPUB")),
+            WpFormat::Epub,
+            "case-insensitive"
+        );
     }
 
     /// `WpFormat::Html.import` of a small HTML document produces the expected
@@ -613,15 +708,25 @@ mod tests {
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
             WpFormat::Html
                 .import(b"<h1>Opened from HTML</h1><p>body</p>", &mut dm)
                 .expect("html import succeeds");
         }
         let snap = qdoc::model::materialize(&s.doc, &containers);
-        let first = snap.blocks.first().expect("html import yields at least one block");
+        let first = snap
+            .blocks
+            .first()
+            .expect("html import yields at least one block");
         assert_eq!(first.kind, "heading", "first block is a heading: {snap:?}");
-        assert_eq!(first.text, "Opened from HTML", "first heading text: {snap:?}");
+        assert_eq!(
+            first.text, "Opened from HTML",
+            "first heading text: {snap:?}"
+        );
     }
 
     /// `WpFormat::Rtf.import` of a small `.rtf` document produces the expected
@@ -632,14 +737,27 @@ mod tests {
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
             WpFormat::Rtf
-                .import(b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}", &mut dm)
+                .import(
+                    b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}",
+                    &mut dm,
+                )
                 .expect("rtf import succeeds");
         }
         let snap = qdoc::model::materialize(&s.doc, &containers);
-        let first = snap.blocks.first().expect("rtf import yields at least one block");
-        assert_eq!(first.text, "Opened from RTF", "first paragraph text: {snap:?}");
+        let first = snap
+            .blocks
+            .first()
+            .expect("rtf import yields at least one block");
+        assert_eq!(
+            first.text, "Opened from RTF",
+            "first paragraph text: {snap:?}"
+        );
     }
 
     /// Full round-trip: render a Markdown-built document to `.rtf` via `qdoc-rtf`
@@ -652,12 +770,17 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"Hello **world** today\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"Hello **world** today\n", &mut dm)
+                .unwrap();
         }
 
         // Export to RTF bytes via the editor's export path (qdoc-rtf).
         let containers = qdoc::model::open(&s.doc, &s.root).unwrap();
-        let dr = qdoc::DocRef { doc: &s.doc, c: &containers };
+        let dr = qdoc::DocRef {
+            doc: &s.doc,
+            c: &containers,
+        };
         let rtf = WpFormat::Rtf.export(dr).expect("rtf export");
 
         // Re-import those bytes into a fresh document via the import path.
@@ -665,14 +788,31 @@ mod tests {
         let containers2 = qdoc::model::init(&mut s2.doc, &s2.root);
         let mut ids2 = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s2.doc, c: &containers2, ids: &mut ids2 };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s2.doc,
+                c: &containers2,
+                ids: &mut ids2,
+            };
             WpFormat::Rtf.import(&rtf, &mut dm).expect("rtf import");
         }
         let snap = qdoc::model::materialize(&s2.doc, &containers2);
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("a paragraph survives");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("a paragraph survives");
         assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
-        let strong = p.marks.iter().find(|m| m.name == "strong").expect("bold run survives");
-        assert_eq!(&p.text[strong.start..strong.end], "world", "bold covers the right run: {:?}", p.marks);
+        let strong = p
+            .marks
+            .iter()
+            .find(|m| m.name == "strong")
+            .expect("bold run survives");
+        assert_eq!(
+            &p.text[strong.start..strong.end],
+            "world",
+            "bold covers the right run: {:?}",
+            p.marks
+        );
     }
 
     /// The version timeline + time-travel work over a bound document.
@@ -697,7 +837,10 @@ mod tests {
         assert!(vers.len() >= 2, "multiple authored changes");
         let last = vers.len() - 1;
         assert_eq!(
-            qdoc::history::materialize_at(&mut s.doc, last).unwrap().blocks[0].text,
+            qdoc::history::materialize_at(&mut s.doc, last)
+                .unwrap()
+                .blocks[0]
+                .text,
             "hello world"
         );
         let saw_hello = (0..vers.len()).any(|i| {
@@ -706,7 +849,10 @@ mod tests {
                 .and_then(|sn| sn.blocks.first().map(|b| b.text == "hello"))
                 .unwrap_or(false)
         });
-        assert!(saw_hello, "timeline should expose the intermediate 'hello' state");
+        assert!(
+            saw_hello,
+            "timeline should expose the intermediate 'hello' state"
+        );
     }
 
     // ---- document templates -----------------------------------------------
@@ -716,14 +862,24 @@ mod tests {
     #[test]
     fn new_from_template_report_seeds_expected_heading() {
         let (state, widget, format) = new_from_template(Template::Report);
-        assert_eq!(format, WpFormat::Markdown, "templates are imported as Markdown");
+        assert_eq!(
+            format,
+            WpFormat::Markdown,
+            "templates are imported as Markdown"
+        );
 
         let containers = qdoc::model::open(&state.doc, &state.root)
             .expect("template-seeded state has the canonical schema");
         let snap = qdoc::model::materialize(&state.doc, &containers);
-        let first = snap.blocks.first().expect("report template has at least one block");
+        let first = snap
+            .blocks
+            .first()
+            .expect("report template has at least one block");
         assert_eq!(first.kind, "heading", "the report opens with a heading");
-        assert_eq!(first.text, "Report Title", "the report's first heading text");
+        assert_eq!(
+            first.text, "Report Title",
+            "the report's first heading text"
+        );
 
         // Untitled / unbound: a freshly returned widget hasn't run its `sync`
         // pass yet, so it has no bound containers and no file path — the
@@ -766,7 +922,11 @@ mod tests {
             let containers = qdoc::model::init(&mut s.doc, &s.root);
             let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+                let mut dm = qdoc::DocMut {
+                    doc: &mut s.doc,
+                    c: &containers,
+                    ids: &mut ids,
+                };
                 WpFormat::Markdown
                     .import(t.content().as_bytes(), &mut dm)
                     .unwrap_or_else(|e| panic!("{t:?} imports cleanly: {e:?}"));
@@ -824,10 +984,16 @@ mod tests {
         let p1 = recovery::recovery_path_for(Some(doc));
         let p2 = recovery::recovery_path_for(Some(doc));
         assert_eq!(p1, p2, "the same document maps to the same recovery file");
-        assert!(p1.starts_with(&dir), "recovery file lives under the override dir");
+        assert!(
+            p1.starts_with(&dir),
+            "recovery file lives under the override dir"
+        );
 
         let other = recovery::recovery_path_for(Some(std::path::Path::new("/home/u/Other.md")));
-        assert_ne!(p1, other, "different documents map to different recovery files");
+        assert_ne!(
+            p1, other,
+            "different documents map to different recovery files"
+        );
 
         let u1 = recovery::recovery_path_for(None);
         let u2 = recovery::recovery_path_for(None);
@@ -850,10 +1016,17 @@ mod tests {
         unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
         let doc = std::path::Path::new("/tmp/whatever/doc.md");
 
-        assert!(!recovery::exists(Some(doc)), "no recovery file before any write");
-        let written = recovery::write(Some(doc), b"# Recovered\n\nbody\n").expect("write a recovery copy");
+        assert!(
+            !recovery::exists(Some(doc)),
+            "no recovery file before any write"
+        );
+        let written =
+            recovery::write(Some(doc), b"# Recovered\n\nbody\n").expect("write a recovery copy");
         assert!(written.exists(), "the written recovery file is on disk");
-        assert!(recovery::exists(Some(doc)), "exists() sees the recovery file");
+        assert!(
+            recovery::exists(Some(doc)),
+            "exists() sees the recovery file"
+        );
         assert_eq!(
             recovery::read(Some(doc)).expect("read back"),
             b"# Recovered\n\nbody\n",
@@ -861,7 +1034,10 @@ mod tests {
         );
 
         recovery::clear(Some(doc));
-        assert!(!recovery::exists(Some(doc)), "clear() removes the recovery file");
+        assert!(
+            !recovery::exists(Some(doc)),
+            "clear() removes the recovery file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
@@ -877,7 +1053,9 @@ mod tests {
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
         {
             let mut dm = ed.edit(&mut s.doc);
-            MarkdownCodec.import(b"# Draft Title\n\nUnsaved paragraph\n", &mut dm).unwrap();
+            MarkdownCodec
+                .import(b"# Draft Title\n\nUnsaved paragraph\n", &mut dm)
+                .unwrap();
         }
         let md = recovery::markdown_bytes(&s).expect("render recovery markdown");
 
@@ -885,10 +1063,20 @@ mod tests {
         let containers = qdoc::model::init(&mut s2.doc, &s2.root);
         let mut ids = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s2.doc, c: &containers, ids: &mut ids };
-            MarkdownCodec.import(&md, &mut dm).expect("re-import recovery markdown");
+            let mut dm = qdoc::DocMut {
+                doc: &mut s2.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
+            MarkdownCodec
+                .import(&md, &mut dm)
+                .expect("re-import recovery markdown");
         }
         let snap = qdoc::model::materialize(&s2.doc, &containers);
-        assert_eq!(first_text(&snap).as_deref(), Some("Draft Title"), "recovery copy restores the heading");
+        assert_eq!(
+            first_text(&snap).as_deref(),
+            Some("Draft Title"),
+            "recovery copy restores the heading"
+        );
     }
 }

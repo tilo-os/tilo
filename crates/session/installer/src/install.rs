@@ -344,8 +344,19 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--keyvariant", "dvorak", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--keyvariant",
+                "dvorak",
+                "--yes",
             ]
         );
     }
@@ -367,8 +378,15 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--yes",
             ]
         );
         assert!(!args.iter().any(|a| *a == "--timezone"));
@@ -414,8 +432,18 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--encrypt", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--encrypt",
+                "--yes",
             ]
         );
         // `--encrypt` is a bare flag (no value) and precedes `--yes`.
@@ -448,8 +476,20 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--encrypt", "--pin", "--fido2", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--encrypt",
+                "--pin",
+                "--fido2",
+                "--yes",
             ]
         );
         // The PIN secret must never appear in the argv.
@@ -612,7 +652,10 @@ mod tests {
         let mut lines = Vec::new();
         let ok = stream_command(cmd, "x", &[], |l| lines.push(l)).unwrap();
         assert!(!ok, "non-zero exit should map to failure");
-        assert!(lines.iter().any(|l| l.contains("working")), "stdout relayed");
+        assert!(
+            lines.iter().any(|l| l.contains("working")),
+            "stdout relayed"
+        );
         assert!(
             lines.iter().any(|l| l.contains("boom")),
             "stderr relayed on failure"

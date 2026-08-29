@@ -61,7 +61,8 @@ impl VncSession {
                     if !matches!(*s, SessionStatus::Failed(_)) {
                         // A clean server close reads as EOF; anything else is
                         // an honest failure.
-                        if e.kind() == io::ErrorKind::UnexpectedEof && *s == SessionStatus::Connected
+                        if e.kind() == io::ErrorKind::UnexpectedEof
+                            && *s == SessionStatus::Connected
                         {
                             *s = SessionStatus::Closed;
                         } else {
@@ -72,7 +73,13 @@ impl VncSession {
             })
             .expect("spawn remote-vnc worker");
 
-        VncSession { status, frame, input_tx, last_seen_gen: None, _worker: worker }
+        VncSession {
+            status,
+            frame,
+            input_tx,
+            last_seen_gen: None,
+            _worker: worker,
+        }
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -94,7 +101,11 @@ impl VncSession {
 
     /// The remote framebuffer size, once known.
     pub fn size(&self) -> Option<(u16, u16)> {
-        self.frame.lock().unwrap().as_ref().map(|fb| (fb.width, fb.height))
+        self.frame
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|fb| (fb.width, fb.height))
     }
 
     pub fn send_input(&self, input: VncInput) {
@@ -230,7 +241,10 @@ fn negotiate_security(stream: &mut TcpStream, minor: u8, password: Option<&str>)
         let mut count = [0u8; 1];
         stream.read_exact(&mut count)?;
         if count[0] == 0 {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, read_reason(stream)?));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                read_reason(stream)?,
+            ));
         }
         let mut types = vec![0u8; count[0] as usize];
         stream.read_exact(&mut types)?;
@@ -308,7 +322,10 @@ fn read_server_cut_text(stream: &mut TcpStream) -> io::Result<()> {
 }
 
 fn is_timeout(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 #[cfg(test)]

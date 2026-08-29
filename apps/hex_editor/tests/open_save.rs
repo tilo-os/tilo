@@ -6,8 +6,8 @@
 use automerge::AutoCommit;
 use hex_editor::HexView;
 use hex_editor::portal::PortalOutcome;
-use ui::Widget;
 use taffy::{NodeId, Style, TaffyTree};
+use ui::Widget;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
@@ -56,7 +56,11 @@ fn open_via_portal_loads_real_bytes_through_the_drain_path() {
     view.sync(&mut doc, &root); // drains the pick -> open_path()
 
     assert!(view.has_file(), "opening a file leaves the empty state");
-    assert_eq!(view.model().bytes(), b"HELLO-HEX", "the real file bytes are loaded");
+    assert_eq!(
+        view.model().bytes(),
+        b"HELLO-HEX",
+        "the real file bytes are loaded"
+    );
     assert_eq!(view.path(), Some(path.as_path()));
     assert!(
         hex_editor::doc::HexDoc::is_seeded(&doc),
@@ -91,10 +95,21 @@ fn edit_then_save_writes_back_to_disk() {
         let mut focus = None;
         view.handle_event(
             &key_press(Key::Character(ch.into())),
-            1.0, &none, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &none,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
     }
-    assert_eq!(view.model().bytes()[0], 0xAB, "hex input edited the first byte");
+    assert_eq!(
+        view.model().bytes()[0],
+        0xAB,
+        "hex input edited the first byte"
+    );
     assert!(view.model().dirty_count() > 0, "the edit is marked dirty");
 
     // Ctrl+S saves straight back to the known path.
@@ -102,12 +117,27 @@ fn edit_then_save_writes_back_to_disk() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("s".into())),
-        1.0, &ctrl, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+        1.0,
+        &ctrl,
+        &mut doc,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
     );
 
     let on_disk = std::fs::read(&path).unwrap();
-    assert_eq!(on_disk, vec![0xAB, 0x11, 0x22, 0x33], "Ctrl+S wrote the edit to disk");
-    assert_eq!(view.model().dirty_count(), 0, "a successful save clears the dirty markers");
+    assert_eq!(
+        on_disk,
+        vec![0xAB, 0x11, 0x22, 0x33],
+        "Ctrl+S wrote the edit to disk"
+    );
+    assert_eq!(
+        view.model().dirty_count(),
+        0,
+        "a successful save clears the dirty markers"
+    );
 
     std::fs::remove_file(&path).ok();
 }
@@ -134,7 +164,14 @@ fn keystroke_dispatches_the_same_action_the_palette_does() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("a".into())),
-        1.0, &none, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+        1.0,
+        &none,
+        &mut doc,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
     );
     assert!(handled, "the hex-digit keystroke was consumed");
 
@@ -157,7 +194,10 @@ fn keystroke_dispatches_the_same_action_the_palette_does() {
     // The host drains the captured heads to record ONE undo boundary; reading
     // is rising-edge (cleared on read).
     let before = Widget::take_committed_action(&mut view).expect("heads were captured");
-    assert!(before != doc.get_heads(), "the bracket covers a real change");
+    assert!(
+        before != doc.get_heads(),
+        "the bracket covers a real change"
+    );
     assert!(
         Widget::take_committed_action(&mut view).is_none(),
         "rising-edge: the captured heads are cleared on read",

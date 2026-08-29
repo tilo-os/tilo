@@ -8,10 +8,10 @@
 
 use std::time::Instant;
 
+use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
-use crate::support::offscreen::OffscreenRenderer;
 
 const W: u32 = 1600;
 const H: u32 = 900;
@@ -21,10 +21,22 @@ fn fade() -> Gradient {
         .with_extend(Extend::Pad)
         .with_stops(
             &[
-                ColorStop { offset: 0.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
-                ColorStop { offset: 0.25, color: Color::WHITE.into() },
-                ColorStop { offset: 0.75, color: Color::WHITE.into() },
-                ColorStop { offset: 1.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
+                ColorStop {
+                    offset: 0.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
+                ColorStop {
+                    offset: 0.25,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 0.75,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
             ][..],
         )
 }
@@ -39,9 +51,18 @@ fn body(scene: &mut Scene) {
         .with_extend(Extend::Pad)
         .with_stops(
             &[
-                ColorStop { offset: 0.0, color: Color::from_rgba8(13, 14, 17, 0).into() },
-                ColorStop { offset: 0.7, color: Color::from_rgba8(13, 14, 17, 0).into() },
-                ColorStop { offset: 1.0, color: Color::from_rgba8(13, 14, 17, 168).into() },
+                ColorStop {
+                    offset: 0.0,
+                    color: Color::from_rgba8(13, 14, 17, 0).into(),
+                },
+                ColorStop {
+                    offset: 0.7,
+                    color: Color::from_rgba8(13, 14, 17, 0).into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: Color::from_rgba8(13, 14, 17, 168).into(),
+                },
             ][..],
         );
     scene.fill(
@@ -65,13 +86,25 @@ fn dest_in_mask_layer_is_affordable_at_viewport_size() {
 
     // Control: plain clip layer, no blending.
     let mut plain = Scene::new();
-    plain.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &footprint());
+    plain.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &footprint(),
+    );
     body(&mut plain);
     plain.pop_layer();
 
     // Subject: same content, plus a DestIn mask over the same area.
     let mut masked = Scene::new();
-    masked.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &footprint());
+    masked.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &footprint(),
+    );
     body(&mut masked);
     masked.push_layer(
         Fill::NonZero,

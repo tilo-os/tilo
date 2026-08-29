@@ -8,16 +8,22 @@
 
 use std::time::SystemTime;
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
-    ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint,
-    CompactionError, Ed25519PublicKey, OpClass, Role, RoleAttestation, SignedOp,
-    encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint, CompactionError,
+    Ed25519PublicKey, OpClass, Role, RoleAttestation, SignedOp, encode_compaction_payload,
+    generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
+use ed25519_dalek::SigningKey;
 
 /// Reuse the validator-test convention: a minimal channel state with one
 /// owner, one Editor author, one Note artifact, pre-registered signer.
-fn minimal_state() -> (ChannelState, SigningKey, Ed25519PublicKey, ArtifactId, AttestationId) {
+fn minimal_state() -> (
+    ChannelState,
+    SigningKey,
+    Ed25519PublicKey,
+    ArtifactId,
+    AttestationId,
+) {
     let (owner_sk, owner_pk) = generate_keypair();
     let (author_sk, author_pk) = generate_keypair();
     let artifact = ArtifactId::new();

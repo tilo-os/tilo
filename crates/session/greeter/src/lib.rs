@@ -11,10 +11,10 @@
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the login card).
 
-pub mod sessions;
-pub mod greetd_client;
 pub mod auth;
+pub mod greetd_client;
 pub mod greeter_app;
+pub mod sessions;
 
 pub use greeter_app::GreeterApp;
-pub use sessions::{read_sessions, Session};
+pub use sessions::{Session, read_sessions};

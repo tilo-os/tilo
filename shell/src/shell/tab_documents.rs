@@ -24,10 +24,7 @@ pub const TAB_RECORD_KIND: &str = "tab";
 /// persisted with the workspace tree — so a second one beside it could
 /// only drift.
 pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::for_tab(tab_id),
-        RecordKind::new(TAB_RECORD_KIND),
-    )
+    RecordCheckout::new(RecordId::for_tab(tab_id), RecordKind::new(TAB_RECORD_KIND))
 }
 
 /// Give every tab in `group` its own document. Called once per group as
@@ -54,9 +51,8 @@ mod tests {
     use crate::shell::search::providers::notes::NotesProvider;
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
     use crate::shell::state::{
-        AppKind, GroupId, Strip, StripId, Tab, TileContent as StateTile,
-        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
-        WorkspaceTree, WorkspaceTreeHandle,
+        AppKind, GroupId, Strip, StripId, Tab, TileContent as StateTile, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use automerge::AutoCommit;
     use parking_lot::RwLock;
@@ -97,9 +93,7 @@ mod tests {
         fn type_str(&mut self, doc: &mut AutoCommit, s: &str) {
             self.host.sync(doc, &automerge::ROOT);
             for c in s.chars() {
-                let event = key_press(Key::Character(winit::keyboard::SmolStr::new(
-                    c.to_string(),
-                )));
+                let event = key_press(Key::Character(winit::keyboard::SmolStr::new(c.to_string())));
                 self.dispatch(doc, &event, &Modifiers::default());
             }
         }
@@ -409,10 +403,7 @@ mod tests {
         let ka = a.host.presence_key();
         let kb = b.host.presence_key();
         assert!(ka.is_some(), "a hosted tab has a presence identity");
-        assert_ne!(
-            ka, kb,
-            "two tabs of one app must not share a presence key",
-        );
+        assert_ne!(ka, kb, "two tabs of one app must not share a presence key",);
 
         // Same for the key the *body* publishes under (what
         // `EditorApp::draw` looks caret up by): the record must be part

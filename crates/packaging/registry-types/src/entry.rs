@@ -11,8 +11,8 @@
 //! hash, an added category) flips the digest and fails verification.
 
 use ed25519_dalek::{Signature, Signer, SigningKey};
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 
 /// Domain-separation prefix for a registry-entry publisher signature.
 pub const ENTRY_DOMAIN: &[u8] = b"qos-registry-entry-v1\0";

@@ -223,7 +223,10 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
                     let t = model.reduce(ev);
                     if let Some(visible) = t.visibility_changed {
                         let cmd = if visible { "osk:show" } else { "osk:hide" };
-                        if proxy.send_event(UserEvent::External(cmd.to_string())).is_err() {
+                        if proxy
+                            .send_event(UserEvent::External(cmd.to_string()))
+                            .is_err()
+                        {
                             return; // event loop gone
                         }
                     }

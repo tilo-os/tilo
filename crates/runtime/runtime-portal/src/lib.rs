@@ -82,7 +82,10 @@ impl UnixCapnpClient {
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
     /// ownership, so the caller must not close it afterwards. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
-    pub fn from_connected_fd(fd: RawFd, side: rpc_twoparty_capnp::Side) -> Result<Self, NotAvailable> {
+    pub fn from_connected_fd(
+        fd: RawFd,
+        side: rpc_twoparty_capnp::Side,
+    ) -> Result<Self, NotAvailable> {
         // Hands exclusive ownership to tokio.
         // SAFETY: the launcher guarantees the fd is a connected
         // SOCK_STREAM Unix socket. We checked F_GETFD on it before

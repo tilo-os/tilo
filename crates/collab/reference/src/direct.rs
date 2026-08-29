@@ -148,7 +148,11 @@ mod tests {
         // "a" + "bc"  and  "ab" + "c"  are both "abc" run together.
         let a = DirectRoom::between("a", "bc").unwrap();
         let b = DirectRoom::between("ab", "c").unwrap();
-        assert_ne!(a.members(), b.members(), "the fixture must be two real pairs");
+        assert_ne!(
+            a.members(),
+            b.members(),
+            "the fixture must be two real pairs"
+        );
         assert_ne!(
             a.room_id(),
             b.room_id(),
@@ -170,7 +174,11 @@ mod tests {
     #[test]
     fn a_room_knows_its_two_members_and_who_the_other_one_is() {
         let room = DirectRoom::between(BOB, ADA).unwrap();
-        assert_eq!(room.members(), [ADA, BOB], "members come back in pair order");
+        assert_eq!(
+            room.members(),
+            [ADA, BOB],
+            "members come back in pair order"
+        );
         assert!(room.contains(ADA) && room.contains(BOB));
         assert_eq!(room.other_than(ADA), Some(BOB));
         assert_eq!(room.other_than(BOB), Some(ADA));

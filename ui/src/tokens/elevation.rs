@@ -13,10 +13,22 @@ use vello::peniko::Color;
 ///   dropping it is how the quick-settings panel once rendered a
 ///   43%-black token as a 100%-black smear.
 #[derive(Clone, Copy, Debug)]
-pub struct Shadow { pub offset_y: f32, pub blur: f32, pub color: Color }
+pub struct Shadow {
+    pub offset_y: f32,
+    pub blur: f32,
+    pub color: Color,
+}
 
 #[derive(Clone, Copy, Debug)]
-pub struct Elevation { pub e0: Shadow, pub e1: Shadow, pub e2: Shadow, pub e3: Shadow, pub e4: Shadow, pub glass_inner: Shadow, pub glass_outer: Shadow }
+pub struct Elevation {
+    pub e0: Shadow,
+    pub e1: Shadow,
+    pub e2: Shadow,
+    pub e3: Shadow,
+    pub e4: Shadow,
+    pub glass_inner: Shadow,
+    pub glass_outer: Shadow,
+}
 
 impl Default for Elevation {
     fn default() -> Self {
@@ -33,16 +45,44 @@ impl Default for Elevation {
             // contributes nothing, the edge does the job. Elevation that
             // must be *strong* to work is compensating for a surface that
             // doesn't separate.
-            e0: Shadow { offset_y: 0.0, blur: 0.0, color: c(0) },
-            e1: Shadow { offset_y: 1.0, blur: 4.0, color: c(24) },
-            e2: Shadow { offset_y: 2.0, blur: 8.0, color: c(32) },
-            e3: Shadow { offset_y: 3.0, blur: 12.0, color: c(40) },
-            e4: Shadow { offset_y: 4.0, blur: 16.0, color: c(48) },
+            e0: Shadow {
+                offset_y: 0.0,
+                blur: 0.0,
+                color: c(0),
+            },
+            e1: Shadow {
+                offset_y: 1.0,
+                blur: 4.0,
+                color: c(24),
+            },
+            e2: Shadow {
+                offset_y: 2.0,
+                blur: 8.0,
+                color: c(32),
+            },
+            e3: Shadow {
+                offset_y: 3.0,
+                blur: 12.0,
+                color: c(40),
+            },
+            e4: Shadow {
+                offset_y: 4.0,
+                blur: 16.0,
+                color: c(48),
+            },
             // The glass pair is a different vocabulary — an inner rim
             // light and an outer bloom for the wheel disc, not a drop
             // shadow — and only its hue is read. Left as declared.
-            glass_inner: Shadow { offset_y: 0.0, blur: 1.0, color: Color::from_rgba8(255, 255, 255, 20) },
-            glass_outer: Shadow { offset_y: 12.0, blur: 32.0, color: c(120) },
+            glass_inner: Shadow {
+                offset_y: 0.0,
+                blur: 1.0,
+                color: Color::from_rgba8(255, 255, 255, 20),
+            },
+            glass_outer: Shadow {
+                offset_y: 12.0,
+                blur: 32.0,
+                color: c(120),
+            },
         }
     }
 }

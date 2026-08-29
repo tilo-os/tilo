@@ -11,13 +11,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -40,7 +40,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, themes::app_root(), "dev.qos.themes"));
+        std::process::exit(ui::headless::run(
+            spec,
+            themes::app_root(),
+            "dev.qos.themes",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.themes");
@@ -151,7 +155,13 @@ fn render_shot_to_png(
     );
     // Mirror the live `App` frame: overlays (dropdown lists, the sidebar's
     // right-click actions menu) paint in a second pass on top of the scene.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

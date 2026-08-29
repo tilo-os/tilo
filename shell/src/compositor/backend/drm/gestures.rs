@@ -410,7 +410,11 @@ mod tests {
         t.pinch_begin(3);
         assert_eq!(t.pinch_update(0.9), None);
         assert_eq!(t.pinch_update(0.6), Some(GestureAction::ShowOverview));
-        assert_eq!(t.pinch_update(0.4), None, "latched for the rest of the pinch");
+        assert_eq!(
+            t.pinch_update(0.4),
+            None,
+            "latched for the rest of the pinch"
+        );
         t.pinch_end();
         t.pinch_begin(3);
         assert_eq!(t.pinch_update(0.4), Some(GestureAction::ShowOverview));

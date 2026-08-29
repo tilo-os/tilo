@@ -14,9 +14,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use zbus::zvariant::ObjectPath;
-use zbus::{interface, Connection, DBusError};
+use zbus::{Connection, DBusError, interface};
 
-use crate::model::{address_from_path, reply_answers, PairingPrompt, PairingReply, PairingRequest};
+use crate::model::{PairingPrompt, PairingReply, PairingRequest, address_from_path, reply_answers};
 
 /// Where the agent object lives on our own connection.
 pub const AGENT_PATH: &str = "/org/qos/BluetoothAgent";
@@ -124,7 +124,11 @@ impl PairingAgent {
     /// Push a question to the UI and wait for the answer. Every failure mode collapses to a
     /// D-Bus error rather than a hang: no listener, a dropped reply channel, a reply that
     /// doesn't answer the question, or nobody answering in time.
-    async fn ask(&self, device: &ObjectPath<'_>, prompt: PairingPrompt) -> Result<PairingReply, AgentError> {
+    async fn ask(
+        &self,
+        device: &ObjectPath<'_>,
+        prompt: PairingPrompt,
+    ) -> Result<PairingReply, AgentError> {
         let path = device.as_str().to_string();
         let request = PairingRequest {
             device_path: path.clone(),
@@ -135,7 +139,10 @@ impl PairingAgent {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
-            .send(AgentEvent::Ask { request, reply: reply_tx })
+            .send(AgentEvent::Ask {
+                request,
+                reply: reply_tx,
+            })
             .is_err()
         {
             // Nothing is listening. Refusing is the safe answer — silently accepting would pair a
@@ -156,7 +163,9 @@ impl PairingAgent {
         };
         if !reply_answers(&prompt, &reply) {
             warn!(target: "qos::bluez", device = %path, ?reply, "reply does not answer the prompt");
-            return Err(AgentError::Canceled("reply did not answer the prompt".into()));
+            return Err(AgentError::Canceled(
+                "reply did not answer the prompt".into(),
+            ));
         }
         if matches!(reply, PairingReply::Reject) {
             return Err(AgentError::Rejected("declined".into()));
@@ -191,7 +200,9 @@ impl PairingAgent {
     async fn request_pin_code(&self, device: ObjectPath<'_>) -> Result<String, AgentError> {
         match self.ask(&device, PairingPrompt::RequestPinCode).await? {
             PairingReply::PinCode(pin) => Ok(pin),
-            other => Err(AgentError::Canceled(format!("expected a PIN, got {other:?}"))),
+            other => Err(AgentError::Canceled(format!(
+                "expected a PIN, got {other:?}"
+            ))),
         }
     }
 
@@ -204,7 +215,9 @@ impl PairingAgent {
     async fn request_passkey(&self, device: ObjectPath<'_>) -> Result<u32, AgentError> {
         match self.ask(&device, PairingPrompt::RequestPasskey).await? {
             PairingReply::Passkey(k) => Ok(k),
-            other => Err(AgentError::Canceled(format!("expected a passkey, got {other:?}"))),
+            other => Err(AgentError::Canceled(format!(
+                "expected a passkey, got {other:?}"
+            ))),
         }
     }
 
@@ -216,7 +229,11 @@ impl PairingAgent {
 
     /// Numeric comparison — the strongest common flow. Both ends show the same six digits and
     /// the user confirms they match.
-    async fn request_confirmation(&self, device: ObjectPath<'_>, passkey: u32) -> Result<(), AgentError> {
+    async fn request_confirmation(
+        &self,
+        device: ObjectPath<'_>,
+        passkey: u32,
+    ) -> Result<(), AgentError> {
         self.ask(&device, PairingPrompt::ConfirmPasskey { passkey })
             .await
             .map(|_| ())
@@ -225,12 +242,18 @@ impl PairingAgent {
     /// "Just works" pairing: no number to compare, so the only defence is the user knowing they
     /// asked for this.
     async fn request_authorization(&self, device: ObjectPath<'_>) -> Result<(), AgentError> {
-        self.ask(&device, PairingPrompt::ConfirmPairing).await.map(|_| ())
+        self.ask(&device, PairingPrompt::ConfirmPairing)
+            .await
+            .map(|_| ())
     }
 
     /// An already-paired device wants a profile it has not been authorised for. Trusted devices
     /// never reach here — BlueZ answers for them.
-    async fn authorize_service(&self, device: ObjectPath<'_>, uuid: String) -> Result<(), AgentError> {
+    async fn authorize_service(
+        &self,
+        device: ObjectPath<'_>,
+        uuid: String,
+    ) -> Result<(), AgentError> {
         self.ask(&device, PairingPrompt::AuthorizeService { uuid })
             .await
             .map(|_| ())
@@ -303,7 +326,9 @@ impl AgentRegistration {
             AGENT_MANAGER_IFACE,
         )
         .await?;
-        let unregistered = manager.call_method("UnregisterAgent", &(&object_path,)).await;
+        let unregistered = manager
+            .call_method("UnregisterAgent", &(&object_path,))
+            .await;
         self.connection
             .object_server()
             .remove::<PairingAgent, _>(&object_path)
@@ -347,7 +372,9 @@ mod tests {
             );
             reply.send(PairingReply::Accept).unwrap();
         });
-        a.request_confirmation(dev(), 123_456).await.expect("accepted");
+        a.request_confirmation(dev(), 123_456)
+            .await
+            .expect("accepted");
         ui.await.unwrap();
     }
 
@@ -357,7 +384,9 @@ mod tests {
     async fn declining_returns_rejected() {
         let (a, mut rx) = agent();
         tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else { panic!() };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!()
+            };
             reply.send(PairingReply::Reject).unwrap();
         });
         let err = a.request_confirmation(dev(), 1).await.unwrap_err();
@@ -369,7 +398,9 @@ mod tests {
     async fn typed_passkey_is_returned_verbatim() {
         let (a, mut rx) = agent();
         tokio::spawn(async move {
-            let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else { panic!() };
+            let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else {
+                panic!()
+            };
             assert_eq!(request.prompt, PairingPrompt::RequestPasskey);
             reply.send(PairingReply::Passkey(4321)).unwrap();
         });
@@ -380,7 +411,9 @@ mod tests {
     async fn typed_pin_is_returned_verbatim() {
         let (a, mut rx) = agent();
         tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else { panic!() };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!()
+            };
             reply.send(PairingReply::PinCode("0000".into())).unwrap();
         });
         assert_eq!(a.request_pin_code(dev()).await.unwrap(), "0000");
@@ -399,7 +432,9 @@ mod tests {
     async fn a_dismissed_prompt_is_a_refusal() {
         let (a, mut rx) = agent();
         tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else { panic!() };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!()
+            };
             drop(reply);
         });
         let err = a.request_authorization(dev()).await.unwrap_err();
@@ -422,7 +457,9 @@ mod tests {
     async fn a_mismatched_reply_cancels_rather_than_guessing() {
         let (a, mut rx) = agent();
         tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else { panic!() };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!()
+            };
             reply.send(PairingReply::Accept).unwrap();
         });
         let err = a.request_passkey(dev()).await.unwrap_err();
@@ -434,10 +471,15 @@ mod tests {
     async fn display_passkey_returns_at_once_and_still_notifies() {
         let (a, mut rx) = agent();
         a.display_passkey(dev(), 42, 3).await;
-        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else { panic!() };
+        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
+            panic!()
+        };
         assert_eq!(
             request.prompt,
-            PairingPrompt::DisplayPasskey { passkey: 42, entered: 3 }
+            PairingPrompt::DisplayPasskey {
+                passkey: 42,
+                entered: 3
+            }
         );
         assert_eq!(request.prompt.passkey_text().as_deref(), Some("000042"));
     }
@@ -457,7 +499,9 @@ mod tests {
     async fn unknown_devices_are_named_by_address() {
         let (a, mut rx) = PairingAgent::with_timeout(DeviceNames::new(), Duration::from_millis(50));
         a.display_passkey(dev(), 1, 0).await;
-        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else { panic!() };
+        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
+            panic!()
+        };
         assert_eq!(request.device_name, "AA:BB:CC:DD:EE:FF");
     }
 }

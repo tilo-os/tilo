@@ -137,12 +137,19 @@ mod tests {
         let mut max_len = key.len();
         for _ in 0..4_000 {
             let next = key_between(Some(&key), None);
-            assert_eq!(cmp_keys(&key, &next), Ordering::Less, "each append is strictly greater");
+            assert_eq!(
+                cmp_keys(&key, &next),
+                Ordering::Less,
+                "each append is strictly greater"
+            );
             key = next;
             max_len = max_len.max(key.len());
         }
         // ~128 appends per byte of width → ~32 bytes for 4000, versus a naive ~4000.
-        assert!(max_len <= 40, "append keys must stay short (got {max_len} bytes) or insertion is O(n²)");
+        assert!(
+            max_len <= 40,
+            "append keys must stay short (got {max_len} bytes) or insertion is O(n²)"
+        );
     }
 
     use proptest::prelude::*;

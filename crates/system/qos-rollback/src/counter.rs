@@ -46,8 +46,9 @@ pub const DEFAULT_NV_INDEX: u32 = 0x01D9_1100;
 pub const NV_ATTRS: &str = "authread|policywrite|nt=counter";
 
 /// [`NV_ATTRS`] as the bitmask the TPM reports, for computing the index's Name.
-pub const NV_ATTRS_BITS: u32 =
-    tpm_policy::nv_attr::AUTHREAD | tpm_policy::nv_attr::POLICYWRITE | tpm_policy::nv_attr::NT_COUNTER;
+pub const NV_ATTRS_BITS: u32 = tpm_policy::nv_attr::AUTHREAD
+    | tpm_policy::nv_attr::POLICYWRITE
+    | tpm_policy::nv_attr::NT_COUNTER;
 
 /// Size of the counter's data area, in bytes.
 pub const NV_DATA_SIZE: u16 = 8;
@@ -65,10 +66,7 @@ pub const NV_DATA_SIZE: u16 = 8;
 /// self-limiting since the write sets `TPMA_NV_WRITTEN`, after which `PolicyNvWritten(clear)`
 /// can never be satisfied again. Proven against a TPM in `tests/mechanism.rs`.
 pub fn auth_policy(authority_key_name: &[u8]) -> tpm_policy::Digest256 {
-    tpm_policy::or(&[
-        signed_branch(authority_key_name),
-        first_write_branch(),
-    ])
+    tpm_policy::or(&[signed_branch(authority_key_name), first_write_branch()])
 }
 
 /// The `PolicyAuthorize` branch of [`auth_policy`].
@@ -223,12 +221,7 @@ pub fn define(
     require(
         runner,
         "tpm2_nvdefine",
-        &argv![
-            &i,
-            "-C", "o",
-            "-a", NV_ATTRS,
-            "-L", policy_file.as_os_str(),
-        ],
+        &argv![&i, "-C", "o", "-a", NV_ATTRS, "-L", policy_file.as_os_str(),],
         &format!("defining the rollback floor counter at {i}"),
     )?;
     Ok(true)
@@ -254,7 +247,8 @@ pub fn read(runner: &dyn Runner, index: u32, scratch: &Path) -> Result<Option<u6
             out.last_error_line()
         );
     }
-    let bytes = std::fs::read(&out_path).with_context(|| format!("reading {}", out_path.display()))?;
+    let bytes =
+        std::fs::read(&out_path).with_context(|| format!("reading {}", out_path.display()))?;
     let _ = std::fs::remove_file(&out_path);
     decode(&bytes)
 }
@@ -359,15 +353,18 @@ pub fn increment_approved(
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", authority_public_key.as_os_str(),
-            "-c", ak.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            authority_public_key.as_os_str(),
+            "-c",
+            ak.as_os_str(),
         ],
         "loading the floor authority public key",
     )?;
-    let message =
-        tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
+    let message = tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
     let msg = ws.put("floor_verify_msg.bin", &message)?;
     let sig = ws.put(
         "floor_approval.sig",
@@ -377,11 +374,16 @@ pub fn increment_approved(
     let vs = runner.run(
         "tpm2_verifysignature",
         &argv![
-            "-c", ak.as_os_str(),
-            "-g", "sha256",
-            "-m", msg.as_os_str(),
-            "-s", sig.as_os_str(),
-            "-t", ticket.as_os_str(),
+            "-c",
+            ak.as_os_str(),
+            "-g",
+            "sha256",
+            "-m",
+            msg.as_os_str(),
+            "-s",
+            sig.as_os_str(),
+            "-t",
+            ticket.as_os_str(),
         ],
         None,
     )?;
@@ -420,10 +422,14 @@ pub fn increment_approved(
         let pnv = runner.run(
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand.as_os_str(),
-                &i, "eq",
-                "-C", &i,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand.as_os_str(),
+                &i,
+                "eq",
+                "-C",
+                &i,
             ],
             None,
         )?;
@@ -440,11 +446,16 @@ pub fn increment_approved(
             runner,
             "tpm2_policyauthorize",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", approved_file.as_os_str(),
-                "-n", name_file.as_os_str(),
-                "-q", ref_file.as_os_str(),
-                "-t", ticket.as_os_str(),
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                approved_file.as_os_str(),
+                "-n",
+                name_file.as_os_str(),
+                "-q",
+                ref_file.as_os_str(),
+                "-t",
+                ticket.as_os_str(),
             ],
             "applying the signed floor-advance approval",
         )?;
@@ -486,12 +497,13 @@ pub fn materialise(
         .context("the rollback floor counter is still unreadable after an increment")?;
     // `base` is deliberately allowed to go negative: a fresh TPM's counter reads
     // 1, and the generation being enrolled is usually much larger than that.
-    let base = i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
-        format!(
-            "counter {counter} and initial floor {initial_floor} are too far apart to record a \
+    let base =
+        i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
+            format!(
+                "counter {counter} and initial floor {initial_floor} are too far apart to record a \
              counter base"
-        )
-    })?;
+            )
+        })?;
     Ok(FloorState { counter, base })
 }
 
@@ -604,14 +616,20 @@ mod tests {
 
     #[test]
     fn floor_is_the_counter_minus_the_base() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.floor_generation(), 5);
     }
 
     #[test]
     fn a_negative_base_is_the_normal_case_on_a_fresh_tpm() {
         // Enrolling generation 500 on a TPM whose counter reads 1.
-        let s = FloorState { counter: 1, base: 1 - 498 };
+        let s = FloorState {
+            counter: 1,
+            base: 1 - 498,
+        };
         assert_eq!(s.floor_generation(), 498);
         assert_eq!(s.operand_for(500).unwrap(), 3);
         assert_eq!(s.operand_for(498).unwrap(), 1);
@@ -619,34 +637,49 @@ mod tests {
 
     #[test]
     fn a_base_above_the_counter_reads_as_floor_zero_not_a_wrap() {
-        let s = FloorState { counter: 3, base: 100 };
+        let s = FloorState {
+            counter: 3,
+            base: 100,
+        };
         assert_eq!(s.floor_generation(), 0);
     }
 
     #[test]
     fn operand_is_absolute() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.operand_for(7).unwrap(), 107);
         assert_eq!(s.operand_for(0).unwrap(), 100);
     }
 
     #[test]
     fn a_generation_that_maps_below_zero_is_refused() {
-        let s = FloorState { counter: 1, base: -400 };
+        let s = FloorState {
+            counter: 1,
+            base: -400,
+        };
         let e = s.operand_for(399).unwrap_err().to_string();
         assert!(e.contains("below zero"), "{e}");
     }
 
     #[test]
     fn increments_to_counts_the_gap() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.increments_to(5).unwrap(), 0);
         assert_eq!(s.increments_to(8).unwrap(), 3);
     }
 
     #[test]
     fn increments_to_counts_the_gap_with_a_negative_base() {
-        let s = FloorState { counter: 1, base: -497 };
+        let s = FloorState {
+            counter: 1,
+            base: -497,
+        };
         assert_eq!(s.floor_generation(), 498);
         assert_eq!(s.increments_to(498).unwrap(), 0);
         assert_eq!(s.increments_to(500).unwrap(), 2);
@@ -654,14 +687,20 @@ mod tests {
 
     #[test]
     fn increments_to_refuses_to_go_backwards() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         let e = s.increments_to(4).unwrap_err().to_string();
         assert!(e.contains("do not decrement"), "{e}");
     }
 
     #[test]
     fn operand_overflow_is_an_error() {
-        let s = FloorState { counter: u64::MAX, base: i64::MAX };
+        let s = FloorState {
+            counter: u64::MAX,
+            base: i64::MAX,
+        };
         assert!(s.operand_for(u64::MAX).is_err());
     }
 

@@ -19,7 +19,7 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::engine::{open_engine, LiveEngine};
+use crate::engine::{LiveEngine, open_engine};
 use crate::model::{ConnectionProfile, DatabaseSchema, QueryResult};
 
 /// Work handed to the background thread.

@@ -23,7 +23,11 @@ use crate::{gemtext, html};
 #[derive(Clone, Debug)]
 pub enum FetchRequest {
     /// Re-fetch a known feed and return any new articles.
-    Refresh { feed_id: Id, url: String, kind: FeedKind },
+    Refresh {
+        feed_id: Id,
+        url: String,
+        kind: FeedKind,
+    },
     /// Resolve a brand-new subscription URL: discover the feed metadata
     /// and its initial articles.
     Subscribe { url: String, folder: Option<Id> },
@@ -41,7 +45,10 @@ pub enum FetchResult {
     /// A newly-discovered feed and its initial articles.
     Subscribed { feed: Feed, articles: Vec<Article> },
     /// Something went wrong; `feed_id` is set for a refresh failure.
-    Failed { feed_id: Option<Id>, message: String },
+    Failed {
+        feed_id: Option<Id>,
+        message: String,
+    },
 }
 
 /// Handle to the worker. Dropping it closes the request channel, which
@@ -63,7 +70,11 @@ impl FetchWorker {
             .spawn(move || worker_main(req_rx, res_tx))
             .expect("spawn fetch worker");
 
-        Self { tx: req_tx, rx: res_rx, pending: 0 }
+        Self {
+            tx: req_tx,
+            rx: res_rx,
+            pending: 0,
+        }
     }
 
     /// Queue a request. Increments the in-flight counter.
@@ -101,7 +112,14 @@ impl FetchWorker {
         // `_req_rx` is dropped, so `send()` would fail; keep it alive so the
         // pending counter advances just like the production path.
         std::mem::forget(_req_rx);
-        (Self { tx: req_tx, rx: res_rx, pending: 0 }, res_tx)
+        (
+            Self {
+                tx: req_tx,
+                rx: res_rx,
+                pending: 0,
+            },
+            res_tx,
+        )
     }
 }
 
@@ -149,10 +167,7 @@ fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
     // process exits; for app shutdown that's fine (best-effort fetches).
 }
 
-async fn handle(
-    client: &Option<reqwest::Client>,
-    req: FetchRequest,
-) -> FetchResult {
+async fn handle(client: &Option<reqwest::Client>, req: FetchRequest) -> FetchResult {
     match req {
         FetchRequest::Refresh { feed_id, url, kind } => {
             match fetch_feed(client, &url, kind).await {
@@ -164,9 +179,16 @@ async fn handle(
                             a
                         })
                         .collect();
-                    FetchResult::Articles { feed_id, title, articles }
+                    FetchResult::Articles {
+                        feed_id,
+                        title,
+                        articles,
+                    }
                 }
-                Err(e) => FetchResult::Failed { feed_id: Some(feed_id), message: e },
+                Err(e) => FetchResult::Failed {
+                    feed_id: Some(feed_id),
+                    message: e,
+                },
             }
         }
         FetchRequest::Subscribe { url, folder } => {
@@ -197,7 +219,10 @@ async fn handle(
                         .collect();
                     FetchResult::Subscribed { feed, articles }
                 }
-                Err(e) => FetchResult::Failed { feed_id: None, message: e },
+                Err(e) => FetchResult::Failed {
+                    feed_id: None,
+                    message: e,
+                },
             }
         }
     }
@@ -227,8 +252,7 @@ async fn fetch_feed(
 
 /// Parse RSS/Atom/JSON-feed bytes into our model via feed-rs.
 fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), String> {
-    let parsed = feed_rs::parser::parse(Cursor::new(bytes))
-        .map_err(|e| format!("parse: {e}"))?;
+    let parsed = feed_rs::parser::parse(Cursor::new(bytes)).map_err(|e| format!("parse: {e}"))?;
     let title = parsed.title.map(|t| t.content);
 
     let mut articles = Vec::new();
@@ -255,9 +279,10 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), Strin
 
         // Prefer full content; fall back to summary.
         let (summary, body_html) = match (&entry.summary, &entry.content) {
-            (Some(s), Some(c)) => {
-                (plain_summary(&s.content), c.body.clone().unwrap_or_else(|| s.content.clone()))
-            }
+            (Some(s), Some(c)) => (
+                plain_summary(&s.content),
+                c.body.clone().unwrap_or_else(|| s.content.clone()),
+            ),
             (Some(s), None) => (plain_summary(&s.content), s.content.clone()),
             (None, Some(c)) => {
                 let body = c.body.clone().unwrap_or_default();
@@ -348,9 +373,8 @@ async fn gemini_request(url: &str) -> Result<String, String> {
 
     let config = gemini_tls_config()?;
     let connector = TlsConnector::from(std::sync::Arc::new(config));
-    let server_name =
-        tokio_rustls::rustls::pki_types::ServerName::try_from(host_only.clone())
-            .map_err(|_| "bad host".to_string())?;
+    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host_only.clone())
+        .map_err(|_| "bad host".to_string())?;
 
     let tcp = TcpStream::connect((host_only.as_str(), port))
         .await
@@ -390,8 +414,7 @@ fn gemini_tls_config() -> Result<tokio_rustls::rustls::ClientConfig, String> {
     // process-wide default being installed (reqwest may register a
     // different backend; relying on the global default would be a panic
     // risk). `ring` is enabled via this crate's tokio-rustls feature.
-    let provider =
-        std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let provider = std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
     let config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("tls config: {e}"))?
@@ -416,10 +439,8 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for TofuVerifier {
         _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::ServerCertVerified,
-        tokio_rustls::rustls::Error,
-    > {
+    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
+    {
         Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -447,9 +468,7 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for TofuVerifier {
         Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
-    fn supported_verify_schemes(
-        &self,
-    ) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
         use tokio_rustls::rustls::SignatureScheme as S;
         vec![
             S::RSA_PKCS1_SHA256,
@@ -506,7 +525,11 @@ mod tests {
         // A "worker thread" posts a result; the UI drains it non-blockingly.
         let fid = Uuid::new_v4();
         res_tx
-            .send(FetchResult::Articles { feed_id: fid, title: Some("T".into()), articles: vec![] })
+            .send(FetchResult::Articles {
+                feed_id: fid,
+                title: Some("T".into()),
+                articles: vec![],
+            })
             .unwrap();
         let drained = w.poll();
         assert_eq!(drained.len(), 1);
@@ -531,6 +554,11 @@ mod tests {
         assert_eq!(articles.len(), 1);
         assert_eq!(articles[0].title, "First");
         assert_eq!(articles[0].url, "https://x.com/1");
-        assert!(articles[0].blocks.iter().any(|b| b.text.contains("Hello world")));
+        assert!(
+            articles[0]
+                .blocks
+                .iter()
+                .any(|b| b.text.contains("Hello world"))
+        );
     }
 }

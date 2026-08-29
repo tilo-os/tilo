@@ -186,13 +186,17 @@ impl CodeEditor {
     /// CRDT-bound at `path` (mirrors [`TextInput::new`]). Bind the backing
     /// Automerge `Text` object with [`CodeEditor::bind_text`].
     pub fn new(path: Vec<PathSegment>) -> Self {
-        Self { inner: Self::configure(TextInput::new(path)) }
+        Self {
+            inner: Self::configure(TextInput::new(path)),
+        }
     }
 
     /// Non-CRDT, owns its own string — read with [`CodeEditor::value`],
     /// observe edits with [`CodeEditor::take_dirty`].
     pub fn local() -> Self {
-        Self { inner: Self::configure(TextInput::local()) }
+        Self {
+            inner: Self::configure(TextInput::local()),
+        }
     }
 
     /// Multiline body, monospace face, plain chrome, a line-number gutter,
@@ -401,7 +405,8 @@ impl CodeEditor {
         theme: &Theme,
     ) {
         let presence = PresenceCtx::default();
-        self.inner.draw(scene, transform, text_renderer, theme, &presence);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, &presence);
     }
 
     pub fn inner(&self) -> &TextInput {
@@ -432,7 +437,10 @@ impl Widget for CodeEditor {
         // drives CodeEditor's own passes.
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -469,7 +477,8 @@ impl Widget for CodeEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text_renderer, theme, presence);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_with_presence(
@@ -481,8 +490,14 @@ impl Widget for CodeEditor {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        self.inner
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.inner.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn draw_overlay(
@@ -493,7 +508,8 @@ impl Widget for CodeEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.inner
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -510,7 +526,15 @@ impl Widget for CodeEditor {
         taffy: &TaffyTree<()>,
     ) {
         self.inner.handle_event(
-            event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
     }
 
@@ -614,7 +638,13 @@ impl GenericHighlighter {
         line_comment: Option<&str>,
         case_insensitive: bool,
     ) -> Self {
-        let norm = |s: &str| if case_insensitive { s.to_ascii_uppercase() } else { s.to_string() };
+        let norm = |s: &str| {
+            if case_insensitive {
+                s.to_ascii_uppercase()
+            } else {
+                s.to_string()
+            }
+        };
         Self {
             keywords: keywords.iter().map(|s| norm(s)).collect(),
             constants: constants.iter().map(|s| norm(s)).collect(),
@@ -624,7 +654,11 @@ impl GenericHighlighter {
     }
 
     fn classify_word(&self, w: &str) -> Option<TokenKind> {
-        let key = if self.case_insensitive { w.to_ascii_uppercase() } else { w.to_string() };
+        let key = if self.case_insensitive {
+            w.to_ascii_uppercase()
+        } else {
+            w.to_string()
+        };
         if self.keywords.contains(&key) {
             Some(TokenKind::Keyword)
         } else if self.constants.contains(&key) {
@@ -702,7 +736,9 @@ impl RustHighlighter {
             "type", "unsafe", "use", "where", "while", "union",
         ];
         const CONST: &[&str] = &["true", "false", "None", "Some", "Ok", "Err"];
-        Self { generic: GenericHighlighter::new(KW, CONST, Some("//"), false) }
+        Self {
+            generic: GenericHighlighter::new(KW, CONST, Some("//"), false),
+        }
     }
 }
 
@@ -722,9 +758,15 @@ impl Highlighter for RustHighlighter {
                 shift_spans(&mut ls.spans, end);
                 let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
                 spans.append(&mut ls.spans);
-                return LineSpans { spans, carry: ls.carry };
+                return LineSpans {
+                    spans,
+                    carry: ls.carry,
+                };
             }
-            return LineSpans { spans: vec![Span::new(0..n, TokenKind::Comment)], carry: IN_BLOCK_COMMENT };
+            return LineSpans {
+                spans: vec![Span::new(0..n, TokenKind::Comment)],
+                carry: IN_BLOCK_COMMENT,
+            };
         }
 
         let mut spans = Vec::new();
@@ -802,7 +844,10 @@ impl Highlighter for RustHighlighter {
             }
             i += next_char_len(line, i);
         }
-        LineSpans { spans, carry: carry_out }
+        LineSpans {
+            spans,
+            carry: carry_out,
+        }
     }
 }
 
@@ -815,15 +860,70 @@ pub struct SqlHighlighter {
 impl SqlHighlighter {
     pub fn new() -> Self {
         const KW: &[&str] = &[
-            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
-            "CREATE", "TABLE", "DROP", "ALTER", "ADD", "COLUMN", "INDEX", "VIEW", "JOIN", "INNER",
-            "LEFT", "RIGHT", "OUTER", "FULL", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT",
-            "OFFSET", "AS", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN", "IS", "DISTINCT", "UNION",
-            "ALL", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "CONSTRAINT", "UNIQUE",
-            "CASE", "WHEN", "THEN", "ELSE", "END", "COUNT", "SUM", "AVG", "MIN", "MAX", "WITH",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "INSERT",
+            "INTO",
+            "VALUES",
+            "UPDATE",
+            "SET",
+            "DELETE",
+            "CREATE",
+            "TABLE",
+            "DROP",
+            "ALTER",
+            "ADD",
+            "COLUMN",
+            "INDEX",
+            "VIEW",
+            "JOIN",
+            "INNER",
+            "LEFT",
+            "RIGHT",
+            "OUTER",
+            "FULL",
+            "ON",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "AS",
+            "AND",
+            "OR",
+            "NOT",
+            "IN",
+            "LIKE",
+            "BETWEEN",
+            "IS",
+            "DISTINCT",
+            "UNION",
+            "ALL",
+            "PRIMARY",
+            "KEY",
+            "FOREIGN",
+            "REFERENCES",
+            "DEFAULT",
+            "CONSTRAINT",
+            "UNIQUE",
+            "CASE",
+            "WHEN",
+            "THEN",
+            "ELSE",
+            "END",
+            "COUNT",
+            "SUM",
+            "AVG",
+            "MIN",
+            "MAX",
+            "WITH",
         ];
         const CONST: &[&str] = &["NULL", "TRUE", "FALSE"];
-        Self { generic: GenericHighlighter::new(KW, CONST, None, true) }
+        Self {
+            generic: GenericHighlighter::new(KW, CONST, None, true),
+        }
     }
 }
 
@@ -843,9 +943,15 @@ impl Highlighter for SqlHighlighter {
                 shift_spans(&mut ls.spans, end);
                 let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
                 spans.append(&mut ls.spans);
-                return LineSpans { spans, carry: ls.carry };
+                return LineSpans {
+                    spans,
+                    carry: ls.carry,
+                };
             }
-            return LineSpans { spans: vec![Span::new(0..n, TokenKind::Comment)], carry: IN_BLOCK_COMMENT };
+            return LineSpans {
+                spans: vec![Span::new(0..n, TokenKind::Comment)],
+                carry: IN_BLOCK_COMMENT,
+            };
         }
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
@@ -895,7 +1001,10 @@ impl Highlighter for SqlHighlighter {
             }
             i += next_char_len(line, i);
         }
-        LineSpans { spans, carry: carry_out }
+        LineSpans {
+            spans,
+            carry: carry_out,
+        }
     }
 }
 
@@ -916,13 +1025,22 @@ impl Highlighter for TypstHighlighter {
         // Fence delimiter line toggles the fenced state; it renders as raw.
         if trimmed.starts_with("```") {
             let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
-            return LineSpans { spans: vec![Span::new(0..n, TokenKind::Raw)], carry: next };
+            return LineSpans {
+                spans: vec![Span::new(0..n, TokenKind::Raw)],
+                carry: next,
+            };
         }
         if carry & IN_FENCE != 0 {
-            return LineSpans { spans: vec![Span::new(0..n, TokenKind::Raw)], carry: IN_FENCE };
+            return LineSpans {
+                spans: vec![Span::new(0..n, TokenKind::Raw)],
+                carry: IN_FENCE,
+            };
         }
         if trimmed.starts_with('=') {
-            return LineSpans { spans: vec![Span::new(0..n, TokenKind::Heading)], carry: 0 };
+            return LineSpans {
+                spans: vec![Span::new(0..n, TokenKind::Heading)],
+                carry: 0,
+            };
         }
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
@@ -1105,8 +1223,14 @@ mod tests {
         let hl = RustHighlighter::new();
         let ls = hl.spans("fn main() {", 0);
         let kinds: Vec<_> = ls.spans.iter().map(|s| s.kind).collect();
-        assert!(kinds.contains(&TokenKind::Keyword), "`fn` is a keyword: {kinds:?}");
-        assert!(kinds.contains(&TokenKind::Function), "`main` before `(` is a function: {kinds:?}");
+        assert!(
+            kinds.contains(&TokenKind::Keyword),
+            "`fn` is a keyword: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&TokenKind::Function),
+            "`main` before `(` is a function: {kinds:?}"
+        );
     }
 
     #[test]
@@ -1114,9 +1238,17 @@ mod tests {
         let hl = RustHighlighter::new();
         let line = "let x = 42;";
         let ls = hl.spans(line, 0);
-        let kw = ls.spans.iter().find(|s| s.kind == TokenKind::Keyword).unwrap();
+        let kw = ls
+            .spans
+            .iter()
+            .find(|s| s.kind == TokenKind::Keyword)
+            .unwrap();
         assert_eq!(&line[kw.range.clone()], "let");
-        let num = ls.spans.iter().find(|s| s.kind == TokenKind::Number).unwrap();
+        let num = ls
+            .spans
+            .iter()
+            .find(|s| s.kind == TokenKind::Number)
+            .unwrap();
         assert_eq!(&line[num.range.clone()], "42");
     }
 
@@ -1125,7 +1257,11 @@ mod tests {
         let hl = RustHighlighter::new();
         let line = r#"let s = "hi there";"#;
         let ls = hl.spans(line, 0);
-        let str_span = ls.spans.iter().find(|s| s.kind == TokenKind::StringLit).unwrap();
+        let str_span = ls
+            .spans
+            .iter()
+            .find(|s| s.kind == TokenKind::StringLit)
+            .unwrap();
         assert_eq!(&line[str_span.range.clone()], r#""hi there""#);
     }
 
@@ -1133,12 +1269,20 @@ mod tests {
     fn rust_block_comment_carries_across_lines() {
         let hl = RustHighlighter::new();
         let l0 = hl.spans("code(); /* open", 0);
-        assert_eq!(l0.carry & IN_BLOCK_COMMENT, IN_BLOCK_COMMENT, "unterminated /* carries");
+        assert_eq!(
+            l0.carry & IN_BLOCK_COMMENT,
+            IN_BLOCK_COMMENT,
+            "unterminated /* carries"
+        );
         let l1 = hl.spans("still comment", l0.carry);
         assert!(l1.spans.iter().all(|s| s.kind == TokenKind::Comment));
         assert_eq!(l1.carry & IN_BLOCK_COMMENT, IN_BLOCK_COMMENT);
         let l2 = hl.spans("*/ done();", l1.carry);
-        assert_eq!(l2.carry & IN_BLOCK_COMMENT, 0, "closing */ clears the carry");
+        assert_eq!(
+            l2.carry & IN_BLOCK_COMMENT,
+            0,
+            "closing */ clears the carry"
+        );
         assert_eq!(l2.spans[0].kind, TokenKind::Comment);
         assert!(l2.spans.iter().any(|s| s.kind == TokenKind::Function));
     }
@@ -1222,8 +1366,9 @@ mod tests {
     fn char_event(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1238,8 +1383,9 @@ mod tests {
     fn named_event(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1257,7 +1403,15 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         ed.handle_event(
-            ev, 1.0, m, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+            ev,
+            1.0,
+            m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -1278,7 +1432,12 @@ mod tests {
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
         for ch in ["f", "n", " ", "x"] {
-            assert!(drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false)));
+            assert!(drive(
+                &mut ed,
+                &mut doc,
+                &char_event(ch),
+                &mods(false, false)
+            ));
         }
         assert_eq!(ed.value(), "fn x");
         assert_eq!(ed.cursor_pos(), 4);
@@ -1294,10 +1453,19 @@ mod tests {
             let ch = "a";
             drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false));
         }
-        drive(&mut ed, &mut doc, &named_event(NamedKey::Enter), &mods(false, false));
+        drive(
+            &mut ed,
+            &mut doc,
+            &named_event(NamedKey::Enter),
+            &mods(false, false),
+        );
         drive(&mut ed, &mut doc, &char_event("b"), &mods(false, false));
         assert_eq!(ed.value(), "a\nb");
-        assert_eq!(ed.line_count(), 2, "gutter line count reflects the two logical lines");
+        assert_eq!(
+            ed.line_count(),
+            2,
+            "gutter line count reflects the two logical lines"
+        );
     }
 
     #[test]
@@ -1306,12 +1474,26 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        assert!(drive(&mut ed, &mut doc, &named_event(NamedKey::Tab), &mods(false, false)));
+        assert!(drive(
+            &mut ed,
+            &mut doc,
+            &named_event(NamedKey::Tab),
+            &mods(false, false)
+        ));
         drive(&mut ed, &mut doc, &char_event("x"), &mods(false, false));
         assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
         // Shift+Tab removes one indent level.
-        assert!(drive(&mut ed, &mut doc, &named_event(NamedKey::Tab), &mods(false, true)));
-        assert_eq!(ed.value(), "x", "Shift+Tab outdents the leading four spaces");
+        assert!(drive(
+            &mut ed,
+            &mut doc,
+            &named_event(NamedKey::Tab),
+            &mods(false, true)
+        ));
+        assert_eq!(
+            ed.value(),
+            "x",
+            "Shift+Tab outdents the leading four spaces"
+        );
     }
 
     #[test]
@@ -1320,14 +1502,28 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        assert!(drive(&mut ed, &mut doc, &char_event("a"), &mods(true, false)));
+        assert!(drive(
+            &mut ed,
+            &mut doc,
+            &char_event("a"),
+            &mods(true, false)
+        ));
         assert_eq!(
             ed.inner().selection_range_public(),
             Some((0, 3)),
             "Ctrl+A selects the whole buffer on the real path",
         );
-        assert!(drive(&mut ed, &mut doc, &char_event("x"), &mods(true, false)));
-        assert_eq!(ed.value(), "", "Ctrl+X cuts the selection through the shared core");
+        assert!(drive(
+            &mut ed,
+            &mut doc,
+            &char_event("x"),
+            &mods(true, false)
+        ));
+        assert_eq!(
+            ed.value(),
+            "",
+            "Ctrl+X cuts the selection through the shared core"
+        );
     }
 
     #[test]
@@ -1336,18 +1532,38 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        drive(&mut ed, &mut doc, &named_event(NamedKey::Home), &mods(false, false));
-        drive(&mut ed, &mut doc, &named_event(NamedKey::ArrowRight), &mods(true, true));
-        let sel = ed.inner().selection_range_public().expect("a selection exists");
+        drive(
+            &mut ed,
+            &mut doc,
+            &named_event(NamedKey::Home),
+            &mods(false, false),
+        );
+        drive(
+            &mut ed,
+            &mut doc,
+            &named_event(NamedKey::ArrowRight),
+            &mods(true, true),
+        );
+        let sel = ed
+            .inner()
+            .selection_range_public()
+            .expect("a selection exists");
         assert_eq!(sel.0, 0);
-        assert!(sel.1 >= 5, "word-wise extend covers at least `hello`: {sel:?}");
+        assert!(
+            sel.1 >= 5,
+            "word-wise extend covers at least `hello`: {sel:?}"
+        );
     }
 
     #[test]
     fn goto_line_moves_the_caret_to_the_line_start() {
         let mut ed = CodeEditor::local().with_initial_value("one\ntwo\nthree");
         ed.goto_line(2);
-        assert_eq!(ed.cursor_pos(), 4, "line 2 starts just after the first newline");
+        assert_eq!(
+            ed.cursor_pos(),
+            4,
+            "line 2 starts just after the first newline"
+        );
         assert_eq!(&ed.value()[ed.cursor_pos()..ed.cursor_pos() + 3], "two");
     }
 
@@ -1355,9 +1571,14 @@ mod tests {
     fn accessibility_reports_a_multiline_text_input() {
         use crate::a11y::Role;
         let ed = CodeEditor::local().with_initial_value("fn main() {}");
-        let node = ed.accessibility().expect("code editor exposes an a11y node");
+        let node = ed
+            .accessibility()
+            .expect("code editor exposes an a11y node");
         assert_eq!(node.role, Role::TextInput);
-        assert!(node.state.multiline, "code editor reports a multiline text field");
+        assert!(
+            node.state.multiline,
+            "code editor reports a multiline text field"
+        );
         assert_eq!(node.value.as_deref(), Some("fn main() {}"));
     }
 
@@ -1373,7 +1594,10 @@ mod tests {
         draw_once(&mut ed, &theme);
         let segs = ed.inner().code_row_colors(&theme);
         let rgb = |c: Color| [c.r(), c.g(), c.b()];
-        let kw = segs.iter().find(|(t, _)| t == "let").expect("`let` is a drawn segment");
+        let kw = segs
+            .iter()
+            .find(|(t, _)| t == "let")
+            .expect("`let` is a drawn segment");
         assert_eq!(
             rgb(kw.1),
             rgb(token_color(TokenKind::Keyword, &theme)),
@@ -1395,7 +1619,9 @@ mod tests {
         draw_once(&mut with_g, &theme);
         let caret_with = with_g.inner().caret_rect(&theme, 0).x0;
 
-        let mut without_g = CodeEditor::local().with_gutter(false).with_initial_value("x");
+        let mut without_g = CodeEditor::local()
+            .with_gutter(false)
+            .with_initial_value("x");
         without_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         draw_once(&mut without_g, &theme);
         let caret_without = without_g.inner().caret_rect(&theme, 0).x0;

@@ -25,9 +25,9 @@ mod lint;
 /// entry points the app uses, rather than a copy of them.
 pub mod lsp;
 pub mod model;
-pub mod search_provider;
 mod sample_project;
 mod search;
+pub mod search_provider;
 mod status_bar;
 
 use std::path::{Path, PathBuf};
@@ -118,8 +118,14 @@ mod tests {
 
     #[test]
     fn the_explicit_flag_works_in_both_spellings() {
-        assert_eq!(parse_path_arg(&args(&["--path", "/a"])), Some(PathBuf::from("/a")));
-        assert_eq!(parse_path_arg(&args(&["--path=/b"])), Some(PathBuf::from("/b")));
+        assert_eq!(
+            parse_path_arg(&args(&["--path", "/a"])),
+            Some(PathBuf::from("/a"))
+        );
+        assert_eq!(
+            parse_path_arg(&args(&["--path=/b"])),
+            Some(PathBuf::from("/b"))
+        );
     }
 
     #[test]

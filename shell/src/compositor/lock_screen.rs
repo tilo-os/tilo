@@ -106,7 +106,13 @@ pub fn draw_lock_scene(
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &backdrop);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.bg_app,
+            None,
+            &backdrop,
+        );
     }
 
     // 2. One interactive lock widget per output, centred on that output.

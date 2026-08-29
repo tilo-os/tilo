@@ -284,7 +284,9 @@ pub fn is_first_run() -> bool {
 /// Test/inspection helper: deserialize an account list from a JSON blob.
 #[doc(hidden)]
 pub fn accounts_from_json(json: &str) -> Option<Vec<Account>> {
-    serde_json::from_str::<VaultFile>(json).ok().map(|f| f.accounts)
+    serde_json::from_str::<VaultFile>(json)
+        .ok()
+        .map(|f| f.accounts)
 }
 
 #[cfg(test)]
@@ -302,7 +304,10 @@ mod tests {
         for a in demo_accounts() {
             v.upsert(a);
         }
-        let file = VaultFile { version: VAULT_VERSION, accounts: v.ordered() };
+        let file = VaultFile {
+            version: VAULT_VERSION,
+            accounts: v.ordered(),
+        };
         let json = serde_json::to_string(&file).unwrap();
         let back = accounts_from_json(&json).unwrap();
         assert_eq!(back.len(), v.len());
@@ -339,7 +344,10 @@ mod tests {
         save_at(&dir, &v);
         let enc = dir.join("vault.enc");
         assert!(enc.exists(), "an encrypted vault is written");
-        assert!(!dir.join("vault.json").exists(), "no plaintext vault is written");
+        assert!(
+            !dir.join("vault.json").exists(),
+            "no plaintext vault is written"
+        );
         let raw = std::fs::read(&enc).unwrap();
         // The base32 secret must not appear anywhere in the ciphertext.
         let secret = v.ordered()[0].secret.clone().into_bytes();
@@ -372,7 +380,10 @@ mod tests {
         let dir = temp_dir();
         let v = Vault::new();
         save_at(&dir, &v);
-        let mode = std::fs::metadata(dir.join("vault.key")).unwrap().permissions().mode();
+        let mode = std::fs::metadata(dir.join("vault.key"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -386,13 +397,19 @@ mod tests {
         for a in demo_accounts() {
             v.upsert(a);
         }
-        let file = VaultFile { version: VAULT_VERSION, accounts: v.ordered() };
+        let file = VaultFile {
+            version: VAULT_VERSION,
+            accounts: v.ordered(),
+        };
         std::fs::write(dir.join("vault.json"), serde_json::to_vec(&file).unwrap()).unwrap();
 
         let loaded = load_at(&dir);
         assert_eq!(loaded.len(), v.len(), "migration preserves accounts");
         assert!(dir.join("vault.enc").exists(), "vault is re-sealed");
-        assert!(!dir.join("vault.json").exists(), "plaintext original is removed");
+        assert!(
+            !dir.join("vault.json").exists(),
+            "plaintext original is removed"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

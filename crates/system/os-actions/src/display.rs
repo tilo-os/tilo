@@ -89,8 +89,7 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
     // with no way for the user to see the screen well enough to bring it back.
     let raw = if pct > 0.0 { raw.max(1) } else { raw };
     let path = dev.join("brightness");
-    fs::write(&path, raw.to_string())
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    fs::write(&path, raw.to_string()).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Pick which backlight to drive when the kernel exposes several. `acpi_video*` is the

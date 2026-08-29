@@ -47,10 +47,16 @@ pub struct ActionOutcome {
 
 impl ActionOutcome {
     fn ok(msg: impl Into<String>) -> Self {
-        Self { ok: true, status_line: msg.into() }
+        Self {
+            ok: true,
+            status_line: msg.into(),
+        }
     }
     fn fail(msg: impl Into<String>) -> Self {
-        Self { ok: false, status_line: msg.into() }
+        Self {
+            ok: false,
+            status_line: msg.into(),
+        }
     }
 }
 
@@ -147,11 +153,7 @@ pub fn pin_plan(item: &StoreItem, pin: bool) -> SpawnPlan {
 pub fn flatpak_open_plan(item: &StoreItem) -> SpawnPlan {
     SpawnPlan {
         program: qos_launcher_bin(),
-        args: vec![
-            "run-host".into(),
-            "--desktop-id".into(),
-            item.id.clone(),
-        ],
+        args: vec!["run-host".into(), "--desktop-id".into(), item.id.clone()],
         status_line: format!("Opening {}…", item.name),
     }
 }
@@ -252,9 +254,7 @@ pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Qos { .. })
-        | (ActionKind::Update, StoreSource::Qos { .. }) => {
-            open_qos(item, action, staging_dir)
-        }
+        | (ActionKind::Update, StoreSource::Qos { .. }) => open_qos(item, action, staging_dir),
         (ActionKind::Remove, StoreSource::Qos { .. }) => run_step(&remove_plan(item)),
         (ActionKind::MarkInstalled, StoreSource::Qos { .. }) => run_step(&pin_plan(item, true)),
         (ActionKind::Unmark, StoreSource::Qos { .. }) => run_step(&pin_plan(item, false)),
@@ -326,7 +326,9 @@ fn run_step(plan: &SpawnPlan) -> ActionOutcome {
 }
 
 fn first_line(s: &str) -> Option<String> {
-    s.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
+    s.lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
 }
 
 fn last_line(s: &str) -> String {
@@ -352,7 +354,9 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
-            source: StoreSource::Qos { registry_name: "qOS".into() },
+            source: StoreSource::Qos {
+                registry_name: "qOS".into(),
+            },
             versions: vec![StoreItemVersion {
                 version: "0.1.0".into(),
                 released_at_unix: 0,
@@ -417,20 +421,37 @@ mod tests {
     fn pin_plan_maps_to_pin_and_unpin() {
         let item = qos_item(
             "Notes",
-            InstalledState::Installed { version: "1".into(), available: "1".into(), pinned: false },
+            InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+            },
         );
-        assert_eq!(pin_plan(&item, true).args, vec!["pin".to_string(), "dev.qos.notes".to_string()]);
-        assert_eq!(pin_plan(&item, false).args, vec!["unpin".to_string(), "dev.qos.notes".to_string()]);
+        assert_eq!(
+            pin_plan(&item, true).args,
+            vec!["pin".to_string(), "dev.qos.notes".to_string()]
+        );
+        assert_eq!(
+            pin_plan(&item, false).args,
+            vec!["unpin".to_string(), "dev.qos.notes".to_string()]
+        );
     }
 
     #[test]
     fn remove_plan_uses_qos_install_remove() {
         let item = qos_item(
             "Notes",
-            InstalledState::Installed { version: "1".into(), available: "1".into(), pinned: false },
+            InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+            },
         );
         let plan = remove_plan(&item);
-        assert_eq!(plan.args, vec!["remove".to_string(), "dev.qos.notes".to_string()]);
+        assert_eq!(
+            plan.args,
+            vec!["remove".to_string(), "dev.qos.notes".to_string()]
+        );
     }
 
     #[test]

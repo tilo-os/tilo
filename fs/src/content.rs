@@ -95,7 +95,10 @@ mod tests {
         assert_eq!(a.len(), b.len(), "chunking is deterministic");
         let reassembled: Vec<u8> = a.iter().flat_map(|c| c.iter().copied()).collect();
         assert_eq!(reassembled, data, "chunks reassemble to the original");
-        assert!(a.len() > 1, "a 200KB file should split into multiple chunks");
+        assert!(
+            a.len() > 1,
+            "a 200KB file should split into multiple chunks"
+        );
     }
 
     #[test]
@@ -136,8 +139,14 @@ mod tests {
     fn manifest_roundtrips() {
         let m = Manifest {
             chunks: vec![
-                ChunkRef { hash: [1; 32], len: 10 },
-                ChunkRef { hash: [2; 32], len: 20 },
+                ChunkRef {
+                    hash: [1; 32],
+                    len: 10,
+                },
+                ChunkRef {
+                    hash: [2; 32],
+                    len: 20,
+                },
             ],
         };
         assert_eq!(m.total_len(), 30);

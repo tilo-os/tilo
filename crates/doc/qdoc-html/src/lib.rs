@@ -53,7 +53,11 @@ pub struct HtmlOptions {
 
 impl Default for HtmlOptions {
     fn default() -> Self {
-        Self { fragment: false, title: None, indent: "  ".to_string() }
+        Self {
+            fragment: false,
+            title: None,
+            indent: "  ".to_string(),
+        }
     }
 }
 
@@ -146,7 +150,13 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
 fn style_class(id: &str) -> String {
     let safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("qdoc-style-{safe}")
 }
@@ -159,7 +169,13 @@ fn indent_for(opts: &HtmlOptions, depth: usize) -> String {
 
 /// Render a slice of sibling blocks. Consecutive `list_item`s group into
 /// nested `<ul>`/`<ol>` by `level`; other kinds dispatch individually.
-fn render_blocks(out: &mut String, snap: &DocSnapshot, blocks: &[BlockView], opts: &HtmlOptions, depth: usize) {
+fn render_blocks(
+    out: &mut String,
+    snap: &DocSnapshot,
+    blocks: &[BlockView],
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let mut i = 0;
     while i < blocks.len() {
         if blocks[i].kind == "list_item" {
@@ -178,7 +194,13 @@ fn render_blocks(out: &mut String, snap: &DocSnapshot, blocks: &[BlockView], opt
     }
 }
 
-fn render_block(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_block(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     match block.kind.as_str() {
         "heading" => render_heading(out, block, opts, depth),
         "quote" | "blockquote" => render_quote(out, snap, block, opts, depth),
@@ -221,7 +243,13 @@ fn render_paragraph(out: &mut String, block: &BlockView, opts: &HtmlOptions, dep
     out.push_str("</p>\n");
 }
 
-fn render_quote(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_quote(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth);
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<blockquote{attrs}>");
@@ -307,7 +335,14 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
     }
 }
 
-fn open_list(out: &mut String, item: &BlockView, level: i64, ordered: bool, opts: &HtmlOptions, depth: usize) {
+fn open_list(
+    out: &mut String,
+    item: &BlockView,
+    level: i64,
+    ordered: bool,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth + level as usize);
     if ordered {
         let fmt = match item.attrs.get("num_format") {
@@ -337,17 +372,31 @@ fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, d
 
 // ---- tables -----------------------------------------------------------------
 
-fn render_table(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_table(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols` attr).
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
@@ -378,7 +427,13 @@ fn render_table(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &
 
 // ---- images -----------------------------------------------------------------
 
-fn render_image(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_image(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth);
     let alt = if block.text.is_empty() {
         match block.attrs.get("alt") {
@@ -400,7 +455,10 @@ fn render_image(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &
             let data = base64::encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
             // base64 alphabet (no `"` in b64).
-            let _ = writeln!(out, "{pad}<img src=\"data:{mime};base64,{data}\"{alt_attr}>");
+            let _ = writeln!(
+                out,
+                "{pad}<img src=\"data:{mime};base64,{data}\"{alt_attr}>"
+            );
         }
         None => {
             // Missing/absent blob: emit an inert img with the alt note so
@@ -486,8 +544,10 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
         }
         let segment = &text[seg_start..seg_end];
         // Marks active over this whole segment (a mark covers [start, end)).
-        let active: Vec<&MarkSpan> =
-            marks.iter().filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end).collect();
+        let active: Vec<&MarkSpan> = marks
+            .iter()
+            .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
+            .collect();
         let (open, close) = mark_tags(&active);
         out.push_str(&open);
         out.push_str(&escape_text(segment));
@@ -519,7 +579,11 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
 
     // 2. A <span style> carrying color / font / size, if any of those are set.
     let mut decls: Vec<String> = Vec::new();
-    if let Some(c) = active.iter().find(|m| m.name == "color").and_then(|m| mark_str(m)) {
+    if let Some(c) = active
+        .iter()
+        .find(|m| m.name == "color")
+        .and_then(|m| mark_str(m))
+    {
         decls.push(format!("color: {}", css_value(&c)));
     }
     if let Some(f) = active
@@ -529,11 +593,18 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
     {
         decls.push(format!("font-family: {}", css_font_family(&f)));
     }
-    if let Some(sz) = active.iter().find(|m| m.name == "size" || m.name == "fontSize") {
+    if let Some(sz) = active
+        .iter()
+        .find(|m| m.name == "size" || m.name == "fontSize")
+    {
         decls.push(format!("font-size: {}", css_size_from_mark(sz)));
     }
     if !decls.is_empty() {
-        let _ = write!(open, "<span style=\"{}\">", escape_attr(&format!("{};", decls.join("; "))));
+        let _ = write!(
+            open,
+            "<span style=\"{}\">",
+            escape_attr(&format!("{};", decls.join("; ")))
+        );
         close_stack.push("</span>");
     }
 
@@ -625,7 +696,14 @@ fn css_font_family(f: &str) -> String {
 /// that could break out of the property value (`;`, `{`, `}`, quotes,
 /// `<`, `>`) — additionally HTML-attr-escaped by the caller.
 fn css_value(v: &str) -> String {
-    v.chars().filter(|c| !matches!(c, ';' | '{' | '}' | '"' | '\'' | '<' | '>' | '\\' | '(' | ')')).collect()
+    v.chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                ';' | '{' | '}' | '"' | '\'' | '<' | '>' | '\\' | '(' | ')'
+            )
+        })
+        .collect()
 }
 
 /// Reject dangerous URL schemes (`javascript:`, `data:` as a link
@@ -635,7 +713,10 @@ fn sanitize_href(href: &str) -> String {
     let trimmed = href.trim();
     let lower = trimmed.to_ascii_lowercase();
     // Strip leading control/whitespace that browsers ignore when matching schemes.
-    let scheme_probe: String = lower.chars().filter(|c| !c.is_whitespace() && *c != '\0').collect();
+    let scheme_probe: String = lower
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\0')
+        .collect();
     if scheme_probe.starts_with("javascript:")
         || scheme_probe.starts_with("vbscript:")
         || scheme_probe.starts_with("data:")

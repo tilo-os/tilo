@@ -99,7 +99,11 @@ pub enum WorkerMsg {
     /// Detailed metadata for one app.
     Detail(Box<AppEntry>),
     /// A gated action finished: which app/remote + the outcome.
-    ActionDone { target: String, kind: ActionKind, outcome: ActionOutcome },
+    ActionDone {
+        target: String,
+        kind: ActionKind,
+        outcome: ActionOutcome,
+    },
 }
 
 /// Which mutating action an [`WorkerMsg::ActionDone`] reports on.
@@ -153,7 +157,11 @@ pub struct LruMap<K, V> {
 
 impl<K: Clone + Eq + std::hash::Hash, V> Default for LruMap<K, V> {
     fn default() -> Self {
-        Self { map: HashMap::new(), order: VecDeque::new(), cap: CACHE_CAP }
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap: CACHE_CAP,
+        }
     }
 }
 
@@ -337,27 +345,51 @@ fn handle(req: Request) -> Option<WorkerMsg> {
         }
         Request::Install { remote, app_id } => {
             let outcome = flatpak::install(&remote, &app_id);
-            Some(WorkerMsg::ActionDone { target: app_id, kind: ActionKind::Install, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: app_id,
+                kind: ActionKind::Install,
+                outcome,
+            })
         }
         Request::Update(id) => {
             let outcome = flatpak::update(&id);
-            Some(WorkerMsg::ActionDone { target: id, kind: ActionKind::Update, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: id,
+                kind: ActionKind::Update,
+                outcome,
+            })
         }
         Request::Remove(id) => {
             let outcome = flatpak::uninstall(&id);
-            Some(WorkerMsg::ActionDone { target: id, kind: ActionKind::Remove, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: id,
+                kind: ActionKind::Remove,
+                outcome,
+            })
         }
         Request::InstallRef(path) => {
             let outcome = flatpak::install_ref(&path);
-            Some(WorkerMsg::ActionDone { target: path, kind: ActionKind::InstallRef, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: path,
+                kind: ActionKind::InstallRef,
+                outcome,
+            })
         }
         Request::RemoteAdd { name, url } => {
             let outcome = flatpak::remote_add(&name, &url);
-            Some(WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteAdd, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: name,
+                kind: ActionKind::RemoteAdd,
+                outcome,
+            })
         }
         Request::RemoteDelete(name) => {
             let outcome = flatpak::remote_delete(&name);
-            Some(WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteDelete, outcome })
+            Some(WorkerMsg::ActionDone {
+                target: name,
+                kind: ActionKind::RemoteDelete,
+                outcome,
+            })
         }
         Request::Launch(id) => {
             flatpak::run_app(&id);
@@ -394,7 +426,10 @@ mod tests {
         // the InFlight set directly the way `request` does.
         let mut inflight = InFlight::default();
         assert!(inflight.claim("search:gimp"));
-        assert!(!inflight.claim("search:gimp"), "second claim is a duplicate");
+        assert!(
+            !inflight.claim("search:gimp"),
+            "second claim is a duplicate"
+        );
         inflight.release("search:gimp");
         assert!(inflight.claim("search:gimp"), "re-claim after release");
     }
@@ -402,7 +437,14 @@ mod tests {
     #[test]
     fn mutating_requests_are_never_deduped() {
         // Install/Update/Remove have no dedup key → each is issued.
-        assert!(Request::Install { remote: "flathub".into(), app_id: "a".into() }.dedup_key().is_none());
+        assert!(
+            Request::Install {
+                remote: "flathub".into(),
+                app_id: "a".into()
+            }
+            .dedup_key()
+            .is_none()
+        );
         assert!(Request::Update("a".into()).dedup_key().is_none());
         assert!(Request::Remove("a".into()).dedup_key().is_none());
         // Read-only queries do have one.
@@ -412,7 +454,11 @@ mod tests {
 
     #[test]
     fn lru_evicts_oldest_over_cap() {
-        let mut m: LruMap<u32, u32> = LruMap { map: HashMap::new(), order: VecDeque::new(), cap: 2 };
+        let mut m: LruMap<u32, u32> = LruMap {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap: 2,
+        };
         m.insert(1, 1);
         m.insert(2, 2);
         m.insert(3, 3); // evicts key 1

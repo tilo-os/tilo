@@ -128,8 +128,7 @@ impl Workspace {
                 stack.push(child.id);
             }
         }
-        let removed_set: std::collections::HashSet<PageId> =
-            to_remove.iter().copied().collect();
+        let removed_set: std::collections::HashSet<PageId> = to_remove.iter().copied().collect();
 
         // Record affected parents (so we know which sibling lists to
         // re-densify after the removal).
@@ -142,7 +141,12 @@ impl Workspace {
         }
 
         self.data.pages.retain(|p| !removed_set.contains(&p.id));
-        if self.data.selected.map(|s| removed_set.contains(&s)).unwrap_or(false) {
+        if self
+            .data
+            .selected
+            .map(|s| removed_set.contains(&s))
+            .unwrap_or(false)
+        {
             self.data.selected = None;
         }
 
@@ -169,8 +173,7 @@ impl Workspace {
             None => return false,
         };
         // Siblings sorted by order; find where `id` sits.
-        let siblings: Vec<PageId> =
-            self.children_of(parent).iter().map(|p| p.id).collect();
+        let siblings: Vec<PageId> = self.children_of(parent).iter().map(|p| p.id).collect();
         let pos = match siblings.iter().position(|s| *s == id) {
             Some(p) => p as i32,
             None => return false,
@@ -250,9 +253,10 @@ impl Workspace {
             .filter(|s| *s != id)
             .collect();
         let insert_at = match before {
-            Some(b) if b != id => {
-                siblings.iter().position(|s| *s == b).unwrap_or(siblings.len())
-            }
+            Some(b) if b != id => siblings
+                .iter()
+                .position(|s| *s == b)
+                .unwrap_or(siblings.len()),
             _ => siblings.len(),
         };
         siblings.insert(insert_at, id);
@@ -303,8 +307,7 @@ impl Workspace {
         // The sibling `id` currently sits before in its group — insert the
         // copy right after it (before the sibling that follows `id`).
         let after_sibling = {
-            let group: Vec<PageId> =
-                self.children_of(src.parent).iter().map(|p| p.id).collect();
+            let group: Vec<PageId> = self.children_of(src.parent).iter().map(|p| p.id).collect();
             group
                 .iter()
                 .position(|s| *s == id)
@@ -371,8 +374,7 @@ impl Workspace {
     /// from 0. Used by tests + the storage layer post-load to detect
     /// corruption.
     pub fn check_invariants(&self) -> Result<(), String> {
-        let ids: std::collections::HashSet<PageId> =
-            self.data.pages.iter().map(|p| p.id).collect();
+        let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         for p in &self.data.pages {
             if let Some(parent) = p.parent {
                 if !ids.contains(&parent) {

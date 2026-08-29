@@ -125,8 +125,15 @@ pub const PROP_MODIFIED: &str = "modified"; // Str — dc:date / dcterms:modifie
 pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xml Application
 
 /// The canonical well-known document-property names, in a stable order.
-pub const DOC_PROP_KEYS: [&str; 7] =
-    [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
+pub const DOC_PROP_KEYS: [&str; 7] = [
+    PROP_TITLE,
+    PROP_AUTHOR,
+    PROP_SUBJECT,
+    PROP_KEYWORDS,
+    PROP_CREATED,
+    PROP_MODIFIED,
+    PROP_GENERATOR,
+];
 
 // Bookmarks (named anchors) + cross-references (internal links). A bookmark is a `bookmark` mark
 // valued with its name over `[start, end)` (a point bookmark widens to one character on import);

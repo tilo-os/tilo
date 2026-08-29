@@ -46,10 +46,15 @@ impl MenuItem {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        MenuItem::Action { label: label.into(), action: Arc::new(action) }
+        MenuItem::Action {
+            label: label.into(),
+            action: Arc::new(action),
+        }
     }
 
-    pub fn separator() -> Self { MenuItem::Separator }
+    pub fn separator() -> Self {
+        MenuItem::Separator
+    }
 
     pub fn label(&self) -> Option<&str> {
         match self {
@@ -79,7 +84,9 @@ pub struct ContextMenu {
 }
 
 impl Default for ContextMenu {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ContextMenu {
@@ -95,9 +102,13 @@ impl ContextMenu {
         }
     }
 
-    pub fn push(&mut self, item: MenuItem) { self.items.push(item); }
+    pub fn push(&mut self, item: MenuItem) {
+        self.items.push(item);
+    }
 
-    pub fn items(&self) -> &[MenuItem] { &self.items }
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
+    }
 
     /// Also computes `rect` immediately (via
     /// [`layout_at_position`](Self::layout_at_position)) so
@@ -116,9 +127,16 @@ impl ContextMenu {
     /// standalone consumer (one that owns a `ContextMenu` as a field rather
     /// than a tree node) hit-test and draw the menu directly.
     pub fn layout_at_position(&mut self) {
-        let Some([px, py]) = self.position else { return };
-        let height =
-            PADDING * 2.0 + self.items.iter().map(item_height).sum::<f64>().max(ROW_HEIGHT);
+        let Some([px, py]) = self.position else {
+            return;
+        };
+        let height = PADDING * 2.0
+            + self
+                .items
+                .iter()
+                .map(item_height)
+                .sum::<f64>()
+                .max(ROW_HEIGHT);
         let x0 = px as f64;
         let y0 = py as f64;
         self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
@@ -129,11 +147,15 @@ impl ContextMenu {
         self.open = false;
     }
 
-    pub fn is_open(&self) -> bool { self.open }
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
 
     /// Preserved across `close()` so callers can re-open at the same spot.
     /// `None` before the menu has ever been opened.
-    pub fn position(&self) -> Option<[f32; 2]> { self.position }
+    pub fn position(&self) -> Option<[f32; 2]> {
+        self.position
+    }
 
     /// Lets a consumer route a left-click to
     /// [`click_item`](Self::click_item) without re-deriving the row layout.
@@ -158,14 +180,19 @@ impl ContextMenu {
 
     /// For dismiss-on-click-outside routing.
     pub fn contains(&self, point: [f64; 2]) -> bool {
-        self.open && self.rect.contains(vello::kurbo::Point::new(point[0], point[1]))
+        self.open
+            && self
+                .rect
+                .contains(vello::kurbo::Point::new(point[0], point[1]))
     }
 
     /// No-op for separators / out-of-range indices. Records the index in
     /// [`Self::selection`] so a `&mut self` / CRDT host can react via
     /// [`Self::take_selection`].
     pub fn click_item(&mut self, idx: usize) {
-        let Some(item) = self.items.get(idx) else { return };
+        let Some(item) = self.items.get(idx) else {
+            return;
+        };
         match item {
             MenuItem::Action { action, .. } => {
                 let cb = action.clone();
@@ -194,7 +221,10 @@ impl ContextMenu {
         if n == 0 {
             return;
         }
-        let start = self.hovered.map(|i| i as i32).unwrap_or(if dir > 0 { -1 } else { n as i32 });
+        let start = self
+            .hovered
+            .map(|i| i as i32)
+            .unwrap_or(if dir > 0 { -1 } else { n as i32 });
         let mut i = start;
         for _ in 0..n {
             i += dir.signum();
@@ -233,7 +263,13 @@ impl Widget for ContextMenu {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let height: f64 = if self.open {
-            PADDING * 2.0 + self.items.iter().map(item_height).sum::<f64>().max(ROW_HEIGHT)
+            PADDING * 2.0
+                + self
+                    .items
+                    .iter()
+                    .map(item_height)
+                    .sum::<f64>()
+                    .max(ROW_HEIGHT)
         } else {
             0.0
         };
@@ -257,7 +293,10 @@ impl Widget for ContextMenu {
         let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
             (px as f64, py as f64)
         } else {
-            (origin.x + l.location.x as f64, origin.y + l.location.y as f64)
+            (
+                origin.x + l.location.x as f64,
+                origin.y + l.location.y as f64,
+            )
         };
         self.rect = Rect::new(x0, y0, x0 + l.size.width as f64, y0 + l.size.height as f64);
     }
@@ -270,7 +309,9 @@ impl Widget for ContextMenu {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
 
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         // The near-black overlay tier, so the menu reads as an opaque
@@ -361,8 +402,7 @@ impl Widget for ContextMenu {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
                 // Not marked handled (so cursor presence still flows) —
                 // only presses are.
@@ -415,7 +455,9 @@ impl Widget for ContextMenu {
         }
     }
 
-    fn name(&self) -> &str { "ContextMenu" }
+    fn name(&self) -> &str {
+        "ContextMenu"
+    }
 
     /// Participates in the App's modal-capture contract — suppressing focus
     /// shortcuts while up.
@@ -423,20 +465,20 @@ impl Widget for ContextMenu {
         if self.open { Some(self.rect) } else { None }
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Menu items are drawn rows (not child widgets), so the container
         // carries the semantics; a closed menu is `hidden` so it collapses
         // out of the focus order.
-        Some(
-            AccessNode::new(Role::Menu).with_state(AccessState {
-                expanded: Some(self.open),
-                hidden: !self.open,
-                ..Default::default()
-            }),
-        )
+        Some(AccessNode::new(Role::Menu).with_state(AccessState {
+            expanded: Some(self.open),
+            hidden: !self.open,
+            ..Default::default()
+        }))
     }
 }
 
@@ -452,7 +494,11 @@ mod a11y_tests {
         menu.push(MenuItem::action("Open", || {}));
         let node = Widget::accessibility(&menu).expect("menu is not presentational");
         assert_eq!(node.role, Role::Menu);
-        assert_eq!(node.state.expanded, Some(false), "closed menu is not expanded");
+        assert_eq!(
+            node.state.expanded,
+            Some(false),
+            "closed menu is not expanded"
+        );
         assert!(node.state.hidden, "closed menu is hidden from the tree");
     }
 
@@ -530,8 +576,9 @@ mod tests {
     fn key(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(named);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -573,7 +620,11 @@ mod tests {
         dispatch(&mut m, &cursor_at(p));
         let handled = dispatch(&mut m, &left_press());
         assert!(handled, "a row click is consumed");
-        assert_eq!(fired.load(Ordering::SeqCst), 1, "the first action's callback fired");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the first action's callback fired"
+        );
         assert_eq!(m.take_selection(), Some(0), "selection index is exposed");
         assert!(!m.is_open(), "the menu closes after a selection");
         assert_eq!(m.take_selection(), None, "selection drains exactly once");
@@ -588,7 +639,11 @@ mod tests {
         let handled = dispatch(&mut m, &left_press());
         assert!(handled, "outside click is swallowed (not passed through)");
         assert!(!m.is_open(), "outside click dismisses the menu");
-        assert_eq!(fired.load(Ordering::SeqCst), 0, "no action fires on an outside click");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "no action fires on an outside click"
+        );
     }
 
     #[test]
@@ -610,7 +665,11 @@ mod tests {
         assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
         // Enter selects the hovered row.
         dispatch(&mut m, &key(NamedKey::Enter));
-        assert_eq!(fired.load(Ordering::SeqCst), 100, "Enter fired the second action");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            100,
+            "Enter fired the second action"
+        );
         assert_eq!(m.take_selection(), Some(2));
     }
 
@@ -630,7 +689,10 @@ mod tests {
     #[test]
     fn modal_capture_when_open() {
         let (m, _f) = open_menu();
-        assert!(Widget::modal_capture(&m).is_some(), "open menu reports capture");
+        assert!(
+            Widget::modal_capture(&m).is_some(),
+            "open menu reports capture"
+        );
         let closed = ContextMenu::new();
         assert!(Widget::modal_capture(&closed).is_none());
     }

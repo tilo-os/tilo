@@ -1285,8 +1285,15 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
     let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    assert!(pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), &ctrl));
-    assert!(chrome.borrow().overlays.overview, "precondition: panel is open");
+    assert!(pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::Tab)),
+        &ctrl
+    ));
+    assert!(
+        chrome.borrow().overlays.overview,
+        "precondition: panel is open"
+    );
 
     let no_mods = Modifiers::default();
     let handled = pump_host(
@@ -1300,11 +1307,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
          desktop underneath it scroll"
     );
 
-    let handled = pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::Enter)),
-        &no_mods,
-    );
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), &no_mods);
     assert!(handled, "Enter must be consumed by the open panel");
     assert!(
         !chrome.borrow().overlays.overview,
@@ -1325,7 +1328,10 @@ fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_demo();
     let mut h = Harness::new(&tree);
-    assert!(!h.chrome.borrow().overlays.overview, "precondition: panel shut");
+    assert!(
+        !h.chrome.borrow().overlays.overview,
+        "precondition: panel shut"
+    );
 
     let before = h.chrome.borrow().tree().active;
     h.key(Key::Named(NamedKey::ArrowDown));

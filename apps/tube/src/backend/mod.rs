@@ -90,7 +90,10 @@ pub enum Query {
 pub enum BackendResult {
     Videos(Vec<Video>),
     Video(Box<Video>),
-    Channel { channel: Box<Channel>, uploads: Vec<Video> },
+    Channel {
+        channel: Box<Channel>,
+        uploads: Vec<Video>,
+    },
 }
 
 /// Error surfaced by a backend. Stringly-typed on purpose — the UI only ever
@@ -230,7 +233,9 @@ pub trait YtBackend: Send + Sync {
     /// endpoint (the live one) can produce a stream. The UI degrades to a poster
     /// when this fails.
     fn resolve_video_stream(&self, _id: &str) -> Result<StreamHandle, BackendError> {
-        Err(BackendError("this backend cannot resolve video streams".into()))
+        Err(BackendError(
+            "this backend cannot resolve video streams".into(),
+        ))
     }
 
     /// Resolve a whole directly-playable media URL for `id`, for the GStreamer
@@ -238,7 +243,9 @@ pub trait YtBackend: Send + Sync {
     /// backend that can reach a real extractor (yt-dlp) produces one. The UI
     /// degrades to the poster when this fails.
     fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
-        Err(BackendError("this backend cannot resolve a playback source".into()))
+        Err(BackendError(
+            "this backend cannot resolve a playback source".into(),
+        ))
     }
 
     /// Fan-out the latest uploads across `channel_ids` (the subscriptions
@@ -288,6 +295,9 @@ mod tests {
     #[test]
     fn run_dispatches_trending() {
         let b = default_backend();
-        assert!(matches!(b.run(Query::Trending), Ok(BackendResult::Videos(_))));
+        assert!(matches!(
+            b.run(Query::Trending),
+            Ok(BackendResult::Videos(_))
+        ));
     }
 }

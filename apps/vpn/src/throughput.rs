@@ -10,7 +10,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-
 /// Maximum number of measured points retained / plotted across the chart.
 pub const SAMPLES: usize = 56;
 
@@ -30,7 +29,13 @@ pub fn draw_chart(
 ) {
     let radius = theme.tokens.radii.lg as f64;
     let card = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.base, None, &card);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &card,
+    );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
@@ -102,7 +107,13 @@ fn plot_series(
     }
     area.line_to(Point::new(x_at(n - 1), plot.y1));
     area.close_path();
-    scene.fill(Fill::NonZero, transform, color.multiply_alpha(0.16), None, &area);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color.multiply_alpha(0.16),
+        None,
+        &area,
+    );
 
     // Stroked line on top.
     let mut line = BezPath::new();

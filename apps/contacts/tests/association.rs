@@ -8,8 +8,8 @@
 //! MIME→app resolver in the launcher) is not yet built — only the WASM
 //! format-host reads `providers` today. See the crate's report for detail.
 
-use pkg::{Kind, Manifest};
 use pkg::validate::validate_manifest;
+use pkg::{Kind, Manifest};
 
 fn manifest() -> Manifest {
     let src = include_str!("../qos-app.toml");
@@ -24,7 +24,9 @@ fn manifest_is_a_valid_qos_app() {
     // Passes the real schema validation (identity, entrypoint, runtime form…).
     validate_manifest(&m).expect("the contacts manifest is schema-valid");
     assert!(
-        m.entrypoint.as_ref().is_some_and(|e| e.bin.ends_with("contacts")),
+        m.entrypoint
+            .as_ref()
+            .is_some_and(|e| e.bin.ends_with("contacts")),
         "the app entrypoint launches the contacts binary",
     );
 }

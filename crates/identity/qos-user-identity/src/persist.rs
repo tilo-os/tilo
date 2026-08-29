@@ -503,7 +503,10 @@ mod tests {
             PersistError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
-        assert_eq!(read_device_key(&paths.device_privkey).unwrap().to_bytes(), seed);
+        assert_eq!(
+            read_device_key(&paths.device_privkey).unwrap().to_bytes(),
+            seed
+        );
     }
 
     #[test]

@@ -33,7 +33,11 @@ fn seed_document() -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let h = dm.insert_block(None, "heading");
         dm.set_attr(&h, "level", 1i64);
         dm.splice_text(&h, 0, 0, "Launch plan");
@@ -76,7 +80,11 @@ fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
             .map(|b| b.text.chars().count())
             .unwrap_or(0);
         let mut ids = qdoc::model::seeded_id_gen(doc, &c);
-        let mut dm = qdoc::DocMut { doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.splice_text(block, at, 0, ch);
     }
     doc.commit();
@@ -91,12 +99,14 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
     use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     PermissionContext::from_capabilities(
         Actor::agent(name),
-        vec![CapOverride::grant(
-            Subject::agent(name),
-            Scope::App("word-processor".to_string()),
-            Verb::Write,
-        )
-        .with_id("invited")],
+        vec![
+            CapOverride::grant(
+                Subject::agent(name),
+                Scope::App("word-processor".to_string()),
+                Verb::Write,
+            )
+            .with_id("invited"),
+        ],
     )
 }
 
@@ -112,7 +122,10 @@ fn a_person_typing_and_the_agent_working_both_land() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -156,7 +169,8 @@ fn a_person_typing_and_the_agent_working_both_land() {
             .expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut typed = 0usize;
     let mut table_done = false;
@@ -170,8 +184,10 @@ fn a_person_typing_and_the_agent_working_both_land() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap =
-                    serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
@@ -205,11 +221,13 @@ fn a_person_typing_and_the_agent_working_both_land() {
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
     let b = blocks(&replica);
-    let shown: Vec<(String, String)> =
-        b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
+    let shown: Vec<(String, String)> = b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
 
     // The agent's work is there.
-    assert!(table_done, "the agent's table never landed; blocks: {shown:?}");
+    assert!(
+        table_done,
+        "the agent's table never landed; blocks: {shown:?}"
+    );
     let mut cells: Vec<(i64, i64, String)> = b
         .iter()
         .filter(|x| x.kind == "cell")
@@ -247,7 +265,10 @@ fn a_person_typing_and_the_agent_working_both_land() {
         .iter()
         .find(|x| x.kind == "heading")
         .expect("the heading is still there");
-    let expected: String = format!("Launch plan{}", TYPED.chars().take(typed).collect::<String>());
+    let expected: String = format!(
+        "Launch plan{}",
+        TYPED.chars().take(typed).collect::<String>()
+    );
     assert_eq!(
         heading.text, expected,
         "the person's typing was lost or reordered; blocks: {shown:?}"

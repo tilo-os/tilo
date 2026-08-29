@@ -1,7 +1,7 @@
-use ui::state::State;
-use ui::permissions::UserId;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
+use ui::permissions::UserId;
+use ui::state::State;
 
 #[test]
 fn commit_action_records_no_author_by_default() {
@@ -43,9 +43,11 @@ fn undo_for_author_skips_entries_owned_by_other_users() {
         .expect("alice entry again");
     assert_eq!(popped.author, Some(UserId("alice".into())));
     // No more alice entries: return None (bob's remains untouched).
-    assert!(state
-        .undo_for_author(&UserId("alice".into()), None, None)
-        .is_none());
+    assert!(
+        state
+            .undo_for_author(&UserId("alice".into()), None, None)
+            .is_none()
+    );
     let popped = state
         .undo_for_author(&UserId("bob".into()), None, None)
         .expect("bob entry");

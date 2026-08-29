@@ -793,7 +793,8 @@ impl Widget for SidebarWheelDisc {
                 let slot_bottom = y0_raw + h_raw;
                 let height = y1 - y0;
                 let x1 = p.x.max(origin.x + w);
-                let top = (p.y - height / 2.0).clamp(slot_top, (slot_bottom - height).max(slot_top));
+                let top =
+                    (p.y - height / 2.0).clamp(slot_top, (slot_bottom - height).max(slot_top));
                 Rect::new(x1 - w, top, x1, top + height)
             }
         };
@@ -919,10 +920,22 @@ impl Widget for SidebarWheelDisc {
         .with_extend(Extend::Pad)
         .with_stops(
             &[
-                ColorStop { offset: 0.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
-                ColorStop { offset: FADE_IN_STOP, color: Color::WHITE.into() },
-                ColorStop { offset: 1.0 - FADE_IN_STOP, color: Color::WHITE.into() },
-                ColorStop { offset: 1.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
+                ColorStop {
+                    offset: 0.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
+                ColorStop {
+                    offset: FADE_IN_STOP,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 1.0 - FADE_IN_STOP,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
             ][..],
         );
 
@@ -973,10 +986,8 @@ impl Widget for SidebarWheelDisc {
         // label sweeping past would collide with it.
         let add_span_in = (r_ref * r_ref - add_dy * add_dy).max(0.0).sqrt();
         let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
-        self.plus_rect = Rect::from_center_size(
-            Point::new(add_cx, add_cy),
-            (ADD_BUTTON_D, ADD_BUTTON_D),
-        );
+        self.plus_rect =
+            Rect::from_center_size(Point::new(add_cx, add_cy), (ADD_BUTTON_D, ADD_BUTTON_D));
 
         // Same curve the band is masked with, so a label dissolves where
         // the surface beneath it does rather than ending up a crisp
@@ -1208,8 +1219,7 @@ impl Widget for SidebarWheelDisc {
                             // Empty-initials Avatar chip in the peer's
                             // own colour, matching the cursor/avatar sites.
                             let p = polar(c, dot_r, mid + off);
-                            let dot_rect =
-                                Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
+                            let dot_rect = Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
                             ui::widget::Avatar::draw_at(
                                 scene,
                                 transform,
@@ -1887,7 +1897,9 @@ mod tests {
         let named: Vec<usize> = (0..d.spokes.len())
             .filter(|i| {
                 *i != d.active_idx
-                    && d.spoke_hit_rects[*i].width().max(d.spoke_hit_rects[*i].height())
+                    && d.spoke_hit_rects[*i]
+                        .width()
+                        .max(d.spoke_hit_rects[*i].height())
                         >= LABEL_MIN_W
             })
             .collect();
@@ -1905,9 +1917,17 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
         let cy = (d.rect.y0 + d.rect.y1) / 2.0;
-        let placed: Vec<Rect> =
-            d.spoke_hit_rects.iter().copied().filter(|r| r.area() > 0.0).collect();
-        assert_eq!(placed.len(), 3, "all three workspaces are on screen: {placed:?}");
+        let placed: Vec<Rect> = d
+            .spoke_hit_rects
+            .iter()
+            .copied()
+            .filter(|r| r.area() > 0.0)
+            .collect();
+        assert_eq!(
+            placed.len(),
+            3,
+            "all three workspaces are on screen: {placed:?}"
+        );
         assert!(
             placed.iter().any(|r| r.center().y < cy - 1.0),
             "the workspace before the active one sits above it: {placed:?}"
@@ -1923,8 +1943,12 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
         let cy = (d.rect.y0 + d.rect.y1) / 2.0;
-        let placed: Vec<Rect> =
-            d.spoke_hit_rects.iter().copied().filter(|r| r.area() > 0.0).collect();
+        let placed: Vec<Rect> = d
+            .spoke_hit_rects
+            .iter()
+            .copied()
+            .filter(|r| r.area() > 0.0)
+            .collect();
         assert_eq!(placed.len(), 3, "all three are still on screen: {placed:?}");
         assert!(
             placed.iter().any(|r| r.center().y < cy - 1.0),
@@ -1935,8 +1959,7 @@ mod tests {
         // it produces: a rect map is keyed by workspace, so a duplicate
         // would overwrite itself and leave no trace.
         for slots in 1..=6 {
-            let assigned: Vec<usize> =
-                d.slot_indices(slots).into_iter().flatten().collect();
+            let assigned: Vec<usize> = d.slot_indices(slots).into_iter().flatten().collect();
             let mut seen = assigned.clone();
             seen.sort_unstable();
             seen.dedup();
@@ -1993,8 +2016,7 @@ mod tests {
                 pump(&mut d, wheel_event(dir * 3.0));
                 frames(&mut d, 2);
                 paint(&mut d);
-                let named =
-                    d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
+                let named = d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
                 assert!(
                     named > 0,
                     "the disc went blank while scrolling: rotation {:.1}°, \
@@ -2115,11 +2137,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
-        let named = d
-            .spoke_hit_rects
-            .iter()
-            .filter(|r| r.area() > 0.0)
-            .count();
+        let named = d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
         assert_eq!(
             named,
             d.spokes.len(),
@@ -2157,8 +2175,8 @@ mod tests {
             let reach = slot_reach(sweep_deg.to_radians(), SPOKE_ANGLE_STEP_DEG as f64);
             // The fan runs from `-reach` to `+reach` slots, and each slot
             // spans half a gap either side of its centreline.
-            let covered = reach as f64 * SPOKE_ANGLE_STEP_DEG as f64
-                + SPOKE_ANGLE_STEP_DEG as f64 / 2.0;
+            let covered =
+                reach as f64 * SPOKE_ANGLE_STEP_DEG as f64 + SPOKE_ANGLE_STEP_DEG as f64 / 2.0;
             assert!(
                 covered >= sweep_deg,
                 "at a {sweep_deg}° sweep the fan only reaches {covered}° — \
@@ -2252,7 +2270,10 @@ mod tests {
         d.rect = d.rect.with_origin(Point::new(d.rect.x0 - 120.0, d.rect.y0));
         let panned = d.current_fingerprint();
 
-        assert_ne!(panned, docked, "the origin moved, so the frame is not identical");
+        assert_ne!(
+            panned, docked,
+            "the origin moved, so the frame is not identical"
+        );
         assert!(
             panned.content_eq(&docked),
             "a pan repaints nothing — it must stay a content hit so the scene is replayed, \
@@ -3047,8 +3068,7 @@ mod tests {
             let names: Vec<String> = (0..16).map(|i| format!("W{i}")).collect();
             let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
             let mut d = mk(&refs);
-            let px_per_frame =
-                gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
+            let px_per_frame = gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3088,8 +3108,7 @@ mod tests {
     fn a_flick_carries_past_the_workspace_a_slow_release_settles_on() {
         let land = |gaps_per_frame: f64, pause_frames: usize| -> usize {
             let mut d = mk(&["A", "B", "C", "D", "E", "F", "G", "H"]);
-            let px_per_frame =
-                gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
+            let px_per_frame = gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3253,7 +3272,8 @@ mod tests {
             pump(&mut d, wheel_event(-1.0));
             let expected = if click == 3 { 1 } else { 0 };
             assert_eq!(
-                d.selected_idx(), expected,
+                d.selected_idx(),
+                expected,
                 "after {click} wheel click(s) the wheel should be on workspace \
                  {expected}"
             );
@@ -3310,7 +3330,10 @@ mod tests {
         let chrome = ChromeState::new(tree);
         let spokes: Vec<SpokeLabel> = ws_ids
             .iter()
-            .map(|id| SpokeLabel { text: "W".into(), workspace_id: Some(id.0) })
+            .map(|id| SpokeLabel {
+                text: "W".into(),
+                workspace_id: Some(id.0),
+            })
             .collect();
         let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
         let visible_w = d.visible_width_px();
@@ -3325,7 +3348,11 @@ mod tests {
         // it began.
         drag_to(&mut d, cx, start_y, 400.0, 30);
         assert!(pump(&mut d, release_event()));
-        assert_eq!(d.selected_idx(), 0, "the pull cannot have selected anything");
+        assert_eq!(
+            d.selected_idx(),
+            0,
+            "the pull cannot have selected anything"
+        );
         assert_eq!(
             chrome.borrow().revision,
             before,
@@ -3337,7 +3364,10 @@ mod tests {
         // begins part of a detent from home, so the same pull would no
         // longer reach the next workspace.
         frames(&mut d, 150);
-        assert!(d.visual_rotation_deg().abs() < 0.1, "the bounce has not finished");
+        assert!(
+            d.visual_rotation_deg().abs() < 0.1,
+            "the bounce has not finished"
+        );
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         // A clear detent and a bit, in gaps rather than pixels — pixel

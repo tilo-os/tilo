@@ -1,5 +1,5 @@
-use vello::peniko::Color;
 use crate::color_compat::ColorCompat;
+use vello::peniko::Color;
 
 /// Index into the accent ramp used as the dominant fill (active dot, slider
 /// track, toggle on-state).
@@ -50,11 +50,17 @@ const LIFT_FALLBACK_ALPHA: u8 = 38;
 const GLASS_FILM_LIFT: u8 = 46;
 
 #[derive(Clone, Debug)]
-pub struct ColorRamp { pub stops: [Color; 11] }
+pub struct ColorRamp {
+    pub stops: [Color; 11],
+}
 
 impl ColorRamp {
-    pub fn len(&self) -> usize { self.stops.len() }
-    pub fn is_empty(&self) -> bool { self.stops.is_empty() }
+    pub fn len(&self) -> usize {
+        self.stops.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.stops.is_empty()
+    }
 
     /// Builds an 11-stop ramp from `a` (index 0) to `b` (index 10) eased so
     /// low indices cluster near `a` (`powf(1.5)`) — keeps `neutral[2..5]`
@@ -72,7 +78,9 @@ impl ColorRamp {
 
 impl std::ops::Index<usize> for ColorRamp {
     type Output = Color;
-    fn index(&self, i: usize) -> &Color { &self.stops[i] }
+    fn index(&self, i: usize) -> &Color {
+        &self.stops[i]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +161,12 @@ pub struct AccentChip {
 }
 
 #[derive(Clone, Debug)]
-pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
+pub struct SemanticColors {
+    pub success: Color,
+    pub warning: Color,
+    pub danger: Color,
+    pub info: Color,
+}
 
 #[derive(Clone, Debug)]
 pub struct Colors {
@@ -297,20 +310,29 @@ impl Colors {
 
         // Primary/hover stops pinned to the spec so ACCENT_PRIMARY_IDX /
         // ACCENT_HOVER_IDX land exactly on the theme's chosen accent.
-        let mut accent = ColorRamp::eased(mix8(p.accent, black, 0.62), mix8(p.accent, Color::WHITE, 0.85));
+        let mut accent = ColorRamp::eased(
+            mix8(p.accent, black, 0.62),
+            mix8(p.accent, Color::WHITE, 0.85),
+        );
         accent.stops[ACCENT_HOVER_IDX] = p.accent_hover;
         accent.stops[ACCENT_PRIMARY_IDX] = p.accent;
 
         // Window ground = theme ground, so a window whose app painted
         // nothing matches its neighbour once that app fills `surfaces.base`.
-        let window_card = p.window_card.unwrap_or(if p.dark { p.base } else { Color::WHITE });
+        let window_card = p
+            .window_card
+            .unwrap_or(if p.dark { p.base } else { Color::WHITE });
         let window_card_border = if p.dark {
             Color::from_rgba8(255, 255, 255, 51)
         } else {
             Color::from_rgba8(0, 0, 0, 30)
         };
 
-        let scrim = if p.dark { mix8(p.base, black, 0.55) } else { Color::from_rgb8(12, 12, 14) };
+        let scrim = if p.dark {
+            mix8(p.base, black, 0.55)
+        } else {
+            Color::from_rgb8(12, 12, 14)
+        };
 
         let veneer = if p.dark { Color::WHITE } else { black };
 
@@ -344,11 +366,11 @@ impl Colors {
             // White at every strength failed on light themes (white over
             // `raised` measured 1.01:1 — why filter chips lost their pill),
             // so veneers use the contrasting extreme instead.
-            surface_white_5:  with_a(veneer, 13),
+            surface_white_5: with_a(veneer, 13),
             surface_white_10: with_a(veneer, 26),
             surface_white_20: with_a(veneer, 51),
-            border_white_10:  with_a(veneer, 26),
-            border_white_20:  with_a(veneer, 51),
+            border_white_10: with_a(veneer, 26),
+            border_white_20: with_a(veneer, 51),
         }
     }
 
@@ -514,7 +536,11 @@ impl Colors {
         use crate::a11y::contrast_ratio;
         let black = Color::from_rgb8(0, 0, 0);
         let white = Color::from_rgb8(255, 255, 255);
-        if contrast_ratio(black, ground) >= contrast_ratio(white, ground) { black } else { white }
+        if contrast_ratio(black, ground) >= contrast_ratio(white, ground) {
+            black
+        } else {
+            white
+        }
     }
 
     /// A hairline visible on `ground` whichever side of the light/dark line
@@ -530,7 +556,11 @@ impl Colors {
         let light = Color::from_rgba8(255, 255, 255, alpha);
         let dark = Color::from_rgba8(0, 0, 0, alpha);
         let moved = |c: Color| (relative_luminance(composite(c, ground)) - g).abs();
-        if moved(light) >= moved(dark) { light } else { dark }
+        if moved(light) >= moved(dark) {
+            light
+        } else {
+            dark
+        }
     }
 
     /// The body a control takes when **lifted** off the ground (hovered tab
@@ -582,7 +612,11 @@ impl Colors {
     /// more), but a film must agree with the cards around it which way is
     /// "up" (a paper palette is brighter even though black moves it more).
     pub fn glass_film(&self) -> Color {
-        let step = if self.lifts_bright() { Color::WHITE } else { Color::BLACK };
+        let step = if self.lifts_bright() {
+            Color::WHITE
+        } else {
+            Color::BLACK
+        };
         composite(with_a(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
@@ -613,21 +647,21 @@ impl Colors {
     pub fn dark() -> Self {
         Self::themed(PaletteSpec {
             dark: true,
-            base:          Color::from_rgb8(0x16, 0x17, 0x1B),
-            raised:        Color::from_rgb8(0x1F, 0x20, 0x25),
-            popover:       Color::from_rgb8(0x0D, 0x0E, 0x11),
-            text:          Color::from_rgb8(0xEC, 0xED, 0xF0),
-            text_dim:      Color::from_rgb8(0x9A, 0x9C, 0xA6),
+            base: Color::from_rgb8(0x16, 0x17, 0x1B),
+            raised: Color::from_rgb8(0x1F, 0x20, 0x25),
+            popover: Color::from_rgb8(0x0D, 0x0E, 0x11),
+            text: Color::from_rgb8(0xEC, 0xED, 0xF0),
+            text_dim: Color::from_rgb8(0x9A, 0x9C, 0xA6),
             text_tertiary: Color::from_rgb8(0x6B, 0x6D, 0x77),
-            border:        Color::from_rgb8(0x2B, 0x2C, 0x33),
-            focus:         Color::from_rgb8(0x58, 0x91, 0xE8),
-            accent:        Color::from_rgb8(0x58, 0x91, 0xE8),
-            accent_hover:  Color::from_rgb8(0x48, 0x7B, 0xD1),
-            success:       Color::from_rgb8(0x4F, 0xB4, 0x77),
-            warning:       Color::from_rgb8(0xE2, 0xA9, 0x3C),
-            danger:        Color::from_rgb8(0xE5, 0x61, 0x5F),
-            info:          Color::from_rgb8(0x5E, 0x9B, 0xEA),
-            window_card:   None,
+            border: Color::from_rgb8(0x2B, 0x2C, 0x33),
+            focus: Color::from_rgb8(0x58, 0x91, 0xE8),
+            accent: Color::from_rgb8(0x58, 0x91, 0xE8),
+            accent_hover: Color::from_rgb8(0x48, 0x7B, 0xD1),
+            success: Color::from_rgb8(0x4F, 0xB4, 0x77),
+            warning: Color::from_rgb8(0xE2, 0xA9, 0x3C),
+            danger: Color::from_rgb8(0xE5, 0x61, 0x5F),
+            info: Color::from_rgb8(0x5E, 0x9B, 0xEA),
+            window_card: None,
         })
     }
 
@@ -636,21 +670,21 @@ impl Colors {
     pub fn light() -> Self {
         Self::themed(PaletteSpec {
             dark: false,
-            base:          Color::from_rgb8(0xF3, 0xF3, 0xF1),
-            raised:        Color::from_rgb8(0xFF, 0xFF, 0xFF),
-            popover:       Color::from_rgb8(0xFF, 0xFF, 0xFF),
-            text:          Color::from_rgb8(0x1B, 0x1C, 0x1E),
-            text_dim:      Color::from_rgb8(0x5B, 0x5D, 0x63),
+            base: Color::from_rgb8(0xF3, 0xF3, 0xF1),
+            raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
+            popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
+            text: Color::from_rgb8(0x1B, 0x1C, 0x1E),
+            text_dim: Color::from_rgb8(0x5B, 0x5D, 0x63),
             text_tertiary: Color::from_rgb8(0x8A, 0x8C, 0x92),
-            border:        Color::from_rgb8(0xDE, 0xDE, 0xDB),
-            focus:         Color::from_rgb8(0x2F, 0x6F, 0xD6),
-            accent:        Color::from_rgb8(0x2F, 0x6F, 0xD6),
-            accent_hover:  Color::from_rgb8(0x25, 0x5C, 0xB8),
-            success:       Color::from_rgb8(0x1E, 0x9E, 0x5A),
-            warning:       Color::from_rgb8(0xB5, 0x7A, 0x00),
-            danger:        Color::from_rgb8(0xCB, 0x3B, 0x3B),
-            info:          Color::from_rgb8(0x1E, 0x74, 0xC4),
-            window_card:   None,
+            border: Color::from_rgb8(0xDE, 0xDE, 0xDB),
+            focus: Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            accent: Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            accent_hover: Color::from_rgb8(0x25, 0x5C, 0xB8),
+            success: Color::from_rgb8(0x1E, 0x9E, 0x5A),
+            warning: Color::from_rgb8(0xB5, 0x7A, 0x00),
+            danger: Color::from_rgb8(0xCB, 0x3B, 0x3B),
+            info: Color::from_rgb8(0x1E, 0x74, 0xC4),
+            window_card: None,
         })
     }
 
@@ -659,44 +693,48 @@ impl Colors {
     /// is Tailwind ground truth; see the tests for the mapping.
     pub fn qos_blue() -> Self {
         Self {
-            neutral: ColorRamp { stops: [
-                Color::from_rgb8(  2,   6,  23),
-                Color::from_rgb8( 15,  23,  42),
-                Color::from_rgb8( 30,  41,  59),
-                Color::from_rgb8( 51,  65,  85),
-                Color::from_rgb8( 71,  85, 105),
-                Color::from_rgb8(100, 116, 139),
-                Color::from_rgb8(148, 163, 184),
-                Color::from_rgb8(203, 213, 225),
-                Color::from_rgb8(226, 232, 240),
-                Color::from_rgb8(241, 245, 249),
-                Color::from_rgb8(248, 250, 252),
-            ]},
-            accent: ColorRamp { stops: [
-                Color::from_rgb8( 30,  27,  75),
-                Color::from_rgb8( 49,  46, 129),
-                Color::from_rgb8( 55,  48, 163),
-                Color::from_rgb8( 67,  56, 202),
-                Color::from_rgb8( 79,  70, 229),
-                Color::from_rgb8( 99, 102, 241),
-                Color::from_rgb8(129, 140, 248),
-                Color::from_rgb8(165, 180, 252),
-                Color::from_rgb8(199, 210, 254),
-                Color::from_rgb8(224, 231, 255),
-                Color::from_rgb8(238, 242, 255),
-            ]},
+            neutral: ColorRamp {
+                stops: [
+                    Color::from_rgb8(2, 6, 23),
+                    Color::from_rgb8(15, 23, 42),
+                    Color::from_rgb8(30, 41, 59),
+                    Color::from_rgb8(51, 65, 85),
+                    Color::from_rgb8(71, 85, 105),
+                    Color::from_rgb8(100, 116, 139),
+                    Color::from_rgb8(148, 163, 184),
+                    Color::from_rgb8(203, 213, 225),
+                    Color::from_rgb8(226, 232, 240),
+                    Color::from_rgb8(241, 245, 249),
+                    Color::from_rgb8(248, 250, 252),
+                ],
+            },
+            accent: ColorRamp {
+                stops: [
+                    Color::from_rgb8(30, 27, 75),
+                    Color::from_rgb8(49, 46, 129),
+                    Color::from_rgb8(55, 48, 163),
+                    Color::from_rgb8(67, 56, 202),
+                    Color::from_rgb8(79, 70, 229),
+                    Color::from_rgb8(99, 102, 241),
+                    Color::from_rgb8(129, 140, 248),
+                    Color::from_rgb8(165, 180, 252),
+                    Color::from_rgb8(199, 210, 254),
+                    Color::from_rgb8(224, 231, 255),
+                    Color::from_rgb8(238, 242, 255),
+                ],
+            },
             semantic: SemanticColors {
-                success: Color::from_rgb8( 16, 185, 129),
-                warning: Color::from_rgb8(245, 158,  11),
-                danger:  Color::from_rgb8(239,  68,  68),
-                info:    Color::from_rgb8( 96, 165, 250),
+                success: Color::from_rgb8(16, 185, 129),
+                warning: Color::from_rgb8(245, 158, 11),
+                danger: Color::from_rgb8(239, 68, 68),
+                info: Color::from_rgb8(96, 165, 250),
             },
             surfaces: Surfaces {
-                base:   Color::from_rgb8(15, 23, 42),
+                base: Color::from_rgb8(15, 23, 42),
                 raised: Color::from_rgb8(30, 41, 59),
                 overlay: Color::from_rgba8(0, 0, 0, 255),
                 scrim: Color::from_rgb8(2, 6, 23),
-                glass:   Color::from_rgba8(15, 23, 42, 204),
+                glass: Color::from_rgba8(15, 23, 42, 204),
                 glass_blur_px: 24.0,
                 window_card: Color::WHITE,
                 window_card_border: Color::from_rgba8(255, 255, 255, 51),
@@ -706,11 +744,11 @@ impl Colors {
             text_tertiary: Color::from_rgb8(100, 116, 139),
             border_standard: Color::from_rgb8(51, 65, 85),
             border_focus: Color::from_rgb8(99, 102, 241),
-            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
+            surface_white_5: Color::from_rgba8(255, 255, 255, 13),
             surface_white_10: Color::from_rgba8(255, 255, 255, 26),
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
-            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
-            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+            border_white_10: Color::from_rgba8(255, 255, 255, 26),
+            border_white_20: Color::from_rgba8(255, 255, 255, 51),
         }
     }
 }
@@ -725,13 +763,17 @@ mod tests {
     use crate::a11y::contrast_ratio;
     use crate::color_compat::ColorCompat;
 
-    fn rgb(c: Color) -> [u8; 3] { [c.r(), c.g(), c.b()] }
-    fn rgba(c: Color) -> [u8; 4] { [c.r(), c.g(), c.b(), c.a()] }
+    fn rgb(c: Color) -> [u8; 3] {
+        [c.r(), c.g(), c.b()]
+    }
+    fn rgba(c: Color) -> [u8; 4] {
+        [c.r(), c.g(), c.b(), c.a()]
+    }
 
     #[test]
     fn dark_default_is_neutral_graphite_not_slate_blue() {
         let c = Colors::dark();
-        assert_eq!(rgb(c.surfaces.base),   [0x16, 0x17, 0x1B], "graphite ground");
+        assert_eq!(rgb(c.surfaces.base), [0x16, 0x17, 0x1B], "graphite ground");
         assert_eq!(rgb(c.surfaces.raised), [0x1F, 0x20, 0x25], "raised card");
         // Blue channel leads red by only a hair, nothing like slate-900's
         // 2.8x blue lead.
@@ -745,8 +787,16 @@ mod tests {
     #[test]
     fn dark_default_accent_is_a_restrained_blue() {
         let c = Colors::dark();
-        assert_eq!(rgb(c.accent[ACCENT_PRIMARY_IDX]), [0x58, 0x91, 0xE8], "restrained blue accent");
-        assert_eq!(rgb(c.accent[ACCENT_HOVER_IDX]),   [0x48, 0x7B, 0xD1], "hover one step darker");
+        assert_eq!(
+            rgb(c.accent[ACCENT_PRIMARY_IDX]),
+            [0x58, 0x91, 0xE8],
+            "restrained blue accent"
+        );
+        assert_eq!(
+            rgb(c.accent[ACCENT_HOVER_IDX]),
+            [0x48, 0x7B, 0xD1],
+            "hover one step darker"
+        );
         assert_ne!(rgb(c.surfaces.base), rgb(c.accent[ACCENT_PRIMARY_IDX]));
     }
 
@@ -758,19 +808,34 @@ mod tests {
         let dim = contrast_ratio(c.text_dim, base);
         let tertiary = contrast_ratio(c.text_tertiary, base);
 
-        assert!(primary > dim, "primary ({primary:.2}) must out-contrast secondary ({dim:.2})");
-        assert!(dim > tertiary, "secondary ({dim:.2}) must out-contrast tertiary ({tertiary:.2})");
+        assert!(
+            primary > dim,
+            "primary ({primary:.2}) must out-contrast secondary ({dim:.2})"
+        );
+        assert!(
+            dim > tertiary,
+            "secondary ({dim:.2}) must out-contrast tertiary ({tertiary:.2})"
+        );
 
         assert!(primary >= 4.5, "primary text clears AA (got {primary:.2})");
         assert!(dim >= 4.5, "secondary text clears AA (got {dim:.2})");
-        assert!(tertiary >= 3.0, "tertiary text clears AA-large (got {tertiary:.2})");
+        assert!(
+            tertiary >= 3.0,
+            "tertiary text clears AA-large (got {tertiary:.2})"
+        );
     }
 
     #[test]
     fn dark_default_body_text_clears_aa_on_raised_surfaces_too() {
         let c = Colors::dark();
-        assert!(contrast_ratio(c.text_primary, c.surfaces.raised) >= 4.5, "primary on raised");
-        assert!(contrast_ratio(c.text_dim, c.surfaces.raised) >= 4.5, "secondary on raised");
+        assert!(
+            contrast_ratio(c.text_primary, c.surfaces.raised) >= 4.5,
+            "primary on raised"
+        );
+        assert!(
+            contrast_ratio(c.text_dim, c.surfaces.raised) >= 4.5,
+            "secondary on raised"
+        );
     }
 
     #[test]
@@ -779,7 +844,10 @@ mod tests {
         let base = c.surfaces.base;
         let over = c.surfaces.overlay;
         let lum = |x: Color| 0.2126 * x.r() as f32 + 0.7152 * x.g() as f32 + 0.0722 * x.b() as f32;
-        assert!(lum(over) < lum(base), "popover surface is deeper than the ground");
+        assert!(
+            lum(over) < lum(base),
+            "popover surface is deeper than the ground"
+        );
     }
 
     #[test]
@@ -796,51 +864,51 @@ mod tests {
     #[test]
     fn qos_blue_neutral_ramp_is_tailwind_slate_950_through_50() {
         let n = &Colors::qos_blue().neutral;
-        assert_eq!(rgb(n[0]),  [  2,   6,  23], "slate-950 #020617");
-        assert_eq!(rgb(n[1]),  [ 15,  23,  42], "slate-900 #0f172a");
-        assert_eq!(rgb(n[2]),  [ 30,  41,  59], "slate-800 #1e293b");
-        assert_eq!(rgb(n[3]),  [ 51,  65,  85], "slate-700 #334155");
-        assert_eq!(rgb(n[4]),  [ 71,  85, 105], "slate-600 #475569");
-        assert_eq!(rgb(n[5]),  [100, 116, 139], "slate-500 #64748b");
-        assert_eq!(rgb(n[6]),  [148, 163, 184], "slate-400 #94a3b8");
-        assert_eq!(rgb(n[7]),  [203, 213, 225], "slate-300 #cbd5e1");
-        assert_eq!(rgb(n[8]),  [226, 232, 240], "slate-200 #e2e8f0");
-        assert_eq!(rgb(n[9]),  [241, 245, 249], "slate-100 #f1f5f9");
+        assert_eq!(rgb(n[0]), [2, 6, 23], "slate-950 #020617");
+        assert_eq!(rgb(n[1]), [15, 23, 42], "slate-900 #0f172a");
+        assert_eq!(rgb(n[2]), [30, 41, 59], "slate-800 #1e293b");
+        assert_eq!(rgb(n[3]), [51, 65, 85], "slate-700 #334155");
+        assert_eq!(rgb(n[4]), [71, 85, 105], "slate-600 #475569");
+        assert_eq!(rgb(n[5]), [100, 116, 139], "slate-500 #64748b");
+        assert_eq!(rgb(n[6]), [148, 163, 184], "slate-400 #94a3b8");
+        assert_eq!(rgb(n[7]), [203, 213, 225], "slate-300 #cbd5e1");
+        assert_eq!(rgb(n[8]), [226, 232, 240], "slate-200 #e2e8f0");
+        assert_eq!(rgb(n[9]), [241, 245, 249], "slate-100 #f1f5f9");
         assert_eq!(rgb(n[10]), [248, 250, 252], "slate-50  #f8fafc");
     }
 
     #[test]
     fn qos_blue_accent_ramp_is_tailwind_indigo_950_through_50() {
         let a = &Colors::qos_blue().accent;
-        assert_eq!(rgb(a[0]),  [ 30,  27,  75], "indigo-950 #1e1b4b");
-        assert_eq!(rgb(a[1]),  [ 49,  46, 129], "indigo-900 #312e81");
-        assert_eq!(rgb(a[2]),  [ 55,  48, 163], "indigo-800 #3730a3");
-        assert_eq!(rgb(a[3]),  [ 67,  56, 202], "indigo-700 #4338ca");
-        assert_eq!(rgb(a[4]),  [ 79,  70, 229], "indigo-600 #4f46e5");
-        assert_eq!(rgb(a[5]),  [ 99, 102, 241], "indigo-500 #6366f1");
-        assert_eq!(rgb(a[6]),  [129, 140, 248], "indigo-400 #818cf8");
-        assert_eq!(rgb(a[7]),  [165, 180, 252], "indigo-300 #a5b4fc");
-        assert_eq!(rgb(a[8]),  [199, 210, 254], "indigo-200 #c7d2fe");
-        assert_eq!(rgb(a[9]),  [224, 231, 255], "indigo-100 #e0e7ff");
+        assert_eq!(rgb(a[0]), [30, 27, 75], "indigo-950 #1e1b4b");
+        assert_eq!(rgb(a[1]), [49, 46, 129], "indigo-900 #312e81");
+        assert_eq!(rgb(a[2]), [55, 48, 163], "indigo-800 #3730a3");
+        assert_eq!(rgb(a[3]), [67, 56, 202], "indigo-700 #4338ca");
+        assert_eq!(rgb(a[4]), [79, 70, 229], "indigo-600 #4f46e5");
+        assert_eq!(rgb(a[5]), [99, 102, 241], "indigo-500 #6366f1");
+        assert_eq!(rgb(a[6]), [129, 140, 248], "indigo-400 #818cf8");
+        assert_eq!(rgb(a[7]), [165, 180, 252], "indigo-300 #a5b4fc");
+        assert_eq!(rgb(a[8]), [199, 210, 254], "indigo-200 #c7d2fe");
+        assert_eq!(rgb(a[9]), [224, 231, 255], "indigo-100 #e0e7ff");
         assert_eq!(rgb(a[10]), [238, 242, 255], "indigo-50  #eef2ff");
     }
 
     #[test]
     fn qos_blue_semantic_colors_match_tailwind() {
         let s = &Colors::qos_blue().semantic;
-        assert_eq!(rgb(s.success), [ 16, 185, 129], "emerald-500 #10b981");
-        assert_eq!(rgb(s.warning), [245, 158,  11], "amber-500   #f59e0b");
-        assert_eq!(rgb(s.danger),  [239,  68,  68], "red-500     #ef4444");
-        assert_eq!(rgb(s.info),    [ 96, 165, 250], "blue-400    #60a5fa");
+        assert_eq!(rgb(s.success), [16, 185, 129], "emerald-500 #10b981");
+        assert_eq!(rgb(s.warning), [245, 158, 11], "amber-500   #f59e0b");
+        assert_eq!(rgb(s.danger), [239, 68, 68], "red-500     #ef4444");
+        assert_eq!(rgb(s.info), [96, 165, 250], "blue-400    #60a5fa");
     }
 
     #[test]
     fn qos_blue_surfaces_match_concept_layered_palette() {
         let s = &Colors::qos_blue().surfaces;
-        assert_eq!(rgb(s.base),   [ 15,  23,  42], "slate-900 #0f172a");
-        assert_eq!(rgb(s.raised), [ 30,  41,  59], "slate-800 #1e293b");
+        assert_eq!(rgb(s.base), [15, 23, 42], "slate-900 #0f172a");
+        assert_eq!(rgb(s.raised), [30, 41, 59], "slate-800 #1e293b");
         assert_eq!(rgba(s.overlay), [0, 0, 0, 255], "opaque deep menu surface");
-        assert_eq!(rgba(s.glass), [ 15,  23,  42, 204], "slate-900/80");
+        assert_eq!(rgba(s.glass), [15, 23, 42, 204], "slate-900/80");
         assert_eq!(rgba(s.window_card), [255, 255, 255, 255], "white");
         assert_eq!(rgba(s.window_card_border), [255, 255, 255, 51], "white/20");
     }
@@ -850,25 +918,33 @@ mod tests {
         let c = Colors::qos_blue();
         assert_eq!(rgba(c.text_primary), [255, 255, 255, 255], "white");
         assert_eq!(rgb(c.text_dim), [148, 163, 184], "slate-400 #94a3b8");
-        assert_eq!(rgb(c.border_standard), [ 51,  65,  85], "slate-700 #334155");
-        assert_eq!(rgb(c.border_focus), [ 99, 102, 241], "indigo-500 #6366f1");
+        assert_eq!(rgb(c.border_standard), [51, 65, 85], "slate-700 #334155");
+        assert_eq!(rgb(c.border_focus), [99, 102, 241], "indigo-500 #6366f1");
     }
 
     #[test]
     fn themed_pins_the_accent_and_hover_stops_exactly() {
         let c = Colors::dark();
         assert_eq!(rgb(c.accent[ACCENT_PRIMARY_IDX]), [0x58, 0x91, 0xE8]);
-        assert_eq!(rgb(c.accent[ACCENT_HOVER_IDX]),   [0x48, 0x7B, 0xD1]);
+        assert_eq!(rgb(c.accent[ACCENT_HOVER_IDX]), [0x48, 0x7B, 0xD1]);
     }
 
     #[test]
     fn translucent_white_tokens_match_alpha_bytes() {
         let c = Colors::dark();
-        assert_eq!(rgba(c.surface_white_5),  [255, 255, 255, 13], "white/5");
+        assert_eq!(rgba(c.surface_white_5), [255, 255, 255, 13], "white/5");
         assert_eq!(rgba(c.surface_white_10), [255, 255, 255, 26], "white/10");
         assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
-        assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
-        assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
+        assert_eq!(
+            rgba(c.border_white_10),
+            [255, 255, 255, 26],
+            "border-white/10"
+        );
+        assert_eq!(
+            rgba(c.border_white_20),
+            [255, 255, 255, 51],
+            "border-white/20"
+        );
     }
 
     #[test]
@@ -879,7 +955,11 @@ mod tests {
         let rel_luma = |c: Color| {
             let f = |v: u8| {
                 let v = v as f32 / 255.0;
-                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
             };
             0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
         };

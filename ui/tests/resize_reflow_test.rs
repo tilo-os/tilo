@@ -189,7 +189,10 @@ fn settled_size_redraws_do_not_reshape() {
             misses, 0,
             "settled-size redraw #{i} must not reshape any label",
         );
-        assert!(hits > 0, "settled-size redraw #{i} must reuse cached glyphs");
+        assert!(
+            hits > 0,
+            "settled-size redraw #{i} must reuse cached glyphs"
+        );
     }
 }
 

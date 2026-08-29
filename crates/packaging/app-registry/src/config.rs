@@ -79,9 +79,7 @@ impl RegistryRef {
 
     /// The filesystem path for a `file://` registry, else `None`.
     pub fn file_path(&self) -> Option<PathBuf> {
-        self.base_url
-            .strip_prefix("file://")
-            .map(PathBuf::from)
+        self.base_url.strip_prefix("file://").map(PathBuf::from)
     }
 }
 
@@ -249,7 +247,10 @@ fn load_file(path: &Path) -> Result<Vec<RegistryRef>, ConfigError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    file.registries.into_iter().map(RegistryRow::into_ref).collect()
+    file.registries
+        .into_iter()
+        .map(RegistryRow::into_ref)
+        .collect()
 }
 
 /// `~/.config/qos/registries.toml` (honours `$XDG_CONFIG_HOME`).
@@ -342,11 +343,7 @@ priority = 5
 
         let cfg = RegistriesConfig::load_from(Some(&global), Some(&ws_root)).unwrap();
         // The workspace "central" (file://) must have replaced the global central by name.
-        let central = cfg
-            .registries
-            .iter()
-            .find(|r| r.name == "central")
-            .unwrap();
+        let central = cfg.registries.iter().find(|r| r.name == "central").unwrap();
         assert_eq!(central.base_url, "file:///ws/central");
         // priority 0 comes before priority 5.
         assert_eq!(cfg.registries.first().unwrap().name, "central");

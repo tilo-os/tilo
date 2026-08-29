@@ -13,10 +13,8 @@
 //! espeak-ng (instant) or Piper (quality) as output modules — all without us
 //! re-implementing any of it.
 
-use ssip_client::{
-    ClientName, ClientScope, MessageScope, fifo,
-};
 use ssip_client::Client;
+use ssip_client::{ClientName, ClientScope, MessageScope, fifo};
 use std::os::unix::net::UnixStream;
 
 use crate::error::TtsError;
@@ -48,11 +46,9 @@ impl SpeechDispatcherSpeaker {
     /// Connect with an explicit `user:component` identity. Mainly for callers
     /// that want to distinguish multiple qOS clients to the daemon.
     pub fn with_identity(user: &str, component: &str) -> Result<Self, TtsError> {
-        let mut client = fifo::Builder::new()
-            .build()
-            .map_err(|e| TtsError::Ssip {
-                detail: format!("connect: {e}"),
-            })?;
+        let mut client = fifo::Builder::new().build().map_err(|e| TtsError::Ssip {
+            detail: format!("connect: {e}"),
+        })?;
 
         client
             .set_client_name(ClientName::new(user, component))
@@ -74,10 +70,7 @@ impl SpeechDispatcherSpeaker {
     /// This is how the a11y settings UI switches between the instant and quality
     /// voices: both run behind the same socket, so it's a one-line change.
     pub fn set_output_module(&mut self, module: &str) {
-        if let Err(e) = self
-            .client
-            .set_output_module(ClientScope::Current, module)
-        {
+        if let Err(e) = self.client.set_output_module(ClientScope::Current, module) {
             log::warn!("speechd: set_output_module({module}) failed: {e}");
         }
     }
@@ -143,10 +136,7 @@ impl Speaker for SpeechDispatcherSpeaker {
     fn set_voice(&mut self, voice: &str) {
         // SSIP `SET self SYNTHESIS_VOICE <name>` — a named voice within the
         // current output module.
-        if let Err(e) = self
-            .client
-            .set_synthesis_voice(ClientScope::Current, voice)
-        {
+        if let Err(e) = self.client.set_synthesis_voice(ClientScope::Current, voice) {
             log::warn!("speechd: set_synthesis_voice({voice}) failed: {e}");
         }
     }
@@ -191,7 +181,10 @@ mod tests {
         for milli in 1..=4000u32 {
             let r = milli as f32 / 1000.0; // 0.001 ..= 4.0
             let v = rate_to_ssip(r);
-            assert!((-100..=100).contains(&v), "rate {r} -> {v} out of SSIP range");
+            assert!(
+                (-100..=100).contains(&v),
+                "rate {r} -> {v} out of SSIP range"
+            );
         }
         assert_eq!(rate_to_ssip(1.0), 0);
     }

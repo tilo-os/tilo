@@ -32,18 +32,18 @@ mod process;
 pub mod time;
 
 pub use audio::{
-    get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
-    toggle_source_mute, VolumeState,
+    VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
+    toggle_source_mute,
 };
 pub use bluetooth::{
-    bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth, BtDeviceInfo,
+    BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
 };
 pub use display::{get_brightness, set_brightness};
 pub use network::{
-    connect_wifi, get_link_status, get_wifi, get_wired, list_wifi_networks, set_wifi, LinkKind,
-    LinkStatus, WifiNetworkInfo, WiredInfo,
+    LinkKind, LinkStatus, WifiNetworkInfo, WiredInfo, connect_wifi, get_link_status, get_wifi,
+    get_wired, list_wifi_networks, set_wifi,
 };
-pub use power::{get_power_profile, set_power_profile, PowerProfile};
+pub use power::{PowerProfile, get_power_profile, set_power_profile};
 pub use time::{get_ntp, now_clock, now_date, set_ntp};
 
 use std::time::Duration;
@@ -163,9 +163,7 @@ mod dispatcher_tests {
             Ok(())
         }
         fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("set_wifi({enabled})"));
+            self.calls.borrow_mut().push(format!("set_wifi({enabled})"));
             Ok(())
         }
         fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {

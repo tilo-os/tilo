@@ -43,7 +43,9 @@ impl std::fmt::Debug for MergeStrategy {
         match self {
             MergeStrategy::Text => write!(f, "MergeStrategy::Text"),
             MergeStrategy::Set => write!(f, "MergeStrategy::Set"),
-            MergeStrategy::LastWriterWins { surface_on_conflict } => f
+            MergeStrategy::LastWriterWins {
+                surface_on_conflict,
+            } => f
                 .debug_struct("MergeStrategy::LastWriterWins")
                 .field("surface_on_conflict", surface_on_conflict)
                 .finish(),
@@ -114,9 +116,12 @@ pub fn surface_banner(strategy: &MergeStrategy, kind: &ConflictKind) -> bool {
     match (strategy, kind) {
         (MergeStrategy::Text, _) => false,
         (MergeStrategy::Set, _) => false,
-        (MergeStrategy::LastWriterWins { surface_on_conflict }, kind) => {
-            *surface_on_conflict && !matches!(kind, ConflictKind::Auto)
-        }
+        (
+            MergeStrategy::LastWriterWins {
+                surface_on_conflict,
+            },
+            kind,
+        ) => *surface_on_conflict && !matches!(kind, ConflictKind::Auto),
         (MergeStrategy::Custom(_), kind) => !matches!(kind, ConflictKind::Auto),
     }
 }

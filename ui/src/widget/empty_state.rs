@@ -203,7 +203,11 @@ fn paint_empty_state(
         let x0 = cx - bw / 2.0;
         let action_rect = Rect::new(x0, y, x0 + bw, y + btn_h);
         let hovered = action_rect.contains(hover);
-        let bg = if hovered { theme.accent_hover } else { theme.accent_primary };
+        let bg = if hovered {
+            theme.accent_hover
+        } else {
+            theme.accent_primary
+        };
         let pill = RoundedRect::from_rect(action_rect, theme.tokens.radii.md as f64);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
         let ty = action_rect.y0 + (btn_h - btn_size as f64) / 2.0;
@@ -301,7 +305,16 @@ impl EmptyState {
         hover: Point,
     ) -> Option<Rect> {
         paint_empty_state(
-            scene, transform, text_renderer, theme, rect, icon, title, message, action_label, hover,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            icon,
+            title,
+            message,
+            action_label,
+            hover,
         )
     }
 }
@@ -319,8 +332,14 @@ impl Widget for EmptyState {
         let node = taffy
             .new_leaf(Style {
                 flex_grow: 1.0,
-                size: taffy::Size { width: percent(1.0_f32), height: percent(1.0_f32) },
-                min_size: taffy::Size { width: percent(0.0_f32), height: percent(0.0_f32) },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
+                },
+                min_size: taffy::Size {
+                    width: percent(0.0_f32),
+                    height: percent(0.0_f32),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -336,7 +355,10 @@ impl Widget for EmptyState {
     ) -> taffy::Size<f32> {
         // A sensible intrinsic block so the widget is visible even in an
         // auto-sized slot.
-        taffy::Size { width: 240.0, height: 220.0 }
+        taffy::Size {
+            width: 240.0,
+            height: 220.0,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -392,9 +414,7 @@ impl Widget for EmptyState {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            }
-                if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) =>
-            {
+            } if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) => {
                 self.action_fired = true;
                 *handled = true;
             }
@@ -410,9 +430,13 @@ impl Widget for EmptyState {
         }
     }
 
-    fn name(&self) -> &str { "EmptyState" }
+    fn name(&self) -> &str {
+        "EmptyState"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -465,12 +489,21 @@ mod tests {
         scene
     }
 
-    fn synth() -> winit::event::DeviceId { unsafe { std::mem::zeroed() } }
+    fn synth() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved { device_id: synth(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) }
+        WindowEvent::CursorMoved {
+            device_id: synth(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
     }
     fn press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -479,7 +512,17 @@ mod tests {
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -499,12 +542,19 @@ mod tests {
     /// the bottom edge.
     #[test]
     fn a_short_pane_sheds_the_hero_disc_before_it_overflows() {
-        let want = Parts { icon: true, message: true, action: false };
+        let want = Parts {
+            icon: true,
+            message: true,
+            action: false,
+        };
         let m = metrics();
 
         // Tall pane: everything fits, nothing is dropped.
         let roomy = Fit::choose(400.0, want, m);
-        assert!(roomy.icon && roomy.message, "a full pane keeps the whole stack");
+        assert!(
+            roomy.icon && roomy.message,
+            "a full pane keeps the whole stack"
+        );
         assert!(roomy.total <= 400.0);
 
         // Docked panel: the disc alone is 72px plus a 16px gap, so the stack
@@ -529,7 +579,11 @@ mod tests {
     #[test]
     fn the_action_is_never_shed_and_is_counted() {
         let m = metrics();
-        let with_action = Parts { icon: true, message: true, action: true };
+        let with_action = Parts {
+            icon: true,
+            message: true,
+            action: true,
+        };
         let fit = Fit::choose(120.0, with_action, m);
         assert!(!fit.icon, "the disc gives way to the action");
         assert!(
@@ -550,7 +604,10 @@ mod tests {
         let target = es.action_rect().center();
         assert!(target.x > 0.0, "action rect must resolve after draw");
         dispatch(&mut es, &cursor(target));
-        assert!(dispatch(&mut es, &press()), "click on the action pill is consumed");
+        assert!(
+            dispatch(&mut es, &press()),
+            "click on the action pill is consumed"
+        );
         assert!(es.take_action(), "the action signal fires");
         assert!(!es.take_action(), "the action signal drains after one read");
     }
@@ -562,7 +619,10 @@ mod tests {
         let _ = draw(&mut es);
         // Top-left corner is well outside the centered pill.
         dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
-        assert!(!dispatch(&mut es, &press()), "click away from the pill is not consumed");
+        assert!(
+            !dispatch(&mut es, &press()),
+            "click away from the pill is not consumed"
+        );
         assert!(!es.take_action());
     }
 
@@ -595,7 +655,10 @@ mod tests {
             .count();
         // disc + icon strokes + title glyphs + message glyphs + pill + label
         // glyphs ⇒ comfortably many COLOR tags.
-        assert!(fills > 5, "a fully-populated empty state paints multiple fills, got {fills}");
+        assert!(
+            fills > 5,
+            "a fully-populated empty state paints multiple fills, got {fills}"
+        );
     }
 
     #[test]
@@ -622,8 +685,16 @@ mod tests {
         assert!(rect.contains(r.center()), "pill sits inside the paint rect");
         // No action label ⇒ no returned rect.
         let none = EmptyState::paint(
-            &mut scene, Affine::IDENTITY, &mut tr, &theme, rect,
-            None, "Empty", None, None, Point::new(-1.0, -1.0),
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            rect,
+            None,
+            "Empty",
+            None,
+            None,
+            Point::new(-1.0, -1.0),
         );
         assert!(none.is_none());
     }

@@ -14,9 +14,16 @@ pub struct Modal {
 
 impl Modal {
     pub fn new(id_tag: &str) -> Self {
-        Self { id_tag: id_tag.into(), scrim: Scrim::dark(), title: String::new() }
+        Self {
+            id_tag: id_tag.into(),
+            scrim: Scrim::dark(),
+            title: String::new(),
+        }
     }
-    pub fn with_scrim(mut self, s: Scrim) -> Self { self.scrim = s; self }
+    pub fn with_scrim(mut self, s: Scrim) -> Self {
+        self.scrim = s;
+        self
+    }
 
     /// Set the dialog title used as the accessible name announced on open.
     pub fn with_title(mut self, title: &str) -> Self {
@@ -32,7 +39,10 @@ impl Modal {
         let name = (!title.is_empty()).then_some(title);
         AccessNode::new(Role::Dialog)
             .with_optional_name(name)
-            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            })
     }
 }
 
@@ -46,7 +56,10 @@ mod tests {
         let node = m.accessibility();
         assert_eq!(node.role, Role::Dialog);
         assert_eq!(node.name.as_deref(), Some("Delete file?"));
-        assert!(node.state.modal, "a modal overlay traps focus → modal flag set");
+        assert!(
+            node.state.modal,
+            "a modal overlay traps focus → modal flag set"
+        );
     }
 
     #[test]

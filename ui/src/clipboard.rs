@@ -135,9 +135,7 @@ impl WaylandClipboard {
     /// long as the event loop, which outlives every widget that could copy.
     pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
         Self {
-            inner: std::sync::Mutex::new(unsafe {
-                smithay_clipboard::Clipboard::new(display_ptr)
-            }),
+            inner: std::sync::Mutex::new(unsafe { smithay_clipboard::Clipboard::new(display_ptr) }),
         }
     }
 }
@@ -248,8 +246,14 @@ mod tests {
         let b = RecordingBackend::default();
         b.set_text(ClipboardTarget::Clipboard, "copied");
         b.set_text(ClipboardTarget::Primary, "selected");
-        assert_eq!(b.text(ClipboardTarget::Clipboard).as_deref(), Some("copied"));
-        assert_eq!(b.text(ClipboardTarget::Primary).as_deref(), Some("selected"));
+        assert_eq!(
+            b.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("copied")
+        );
+        assert_eq!(
+            b.text(ClipboardTarget::Primary).as_deref(),
+            Some("selected")
+        );
     }
 
     /// A backend that carries only text must say so rather than pretending an

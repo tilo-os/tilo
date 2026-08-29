@@ -46,7 +46,12 @@ pub struct ListMetrics {
 
 impl ListMetrics {
     pub fn uniform(origin: f64, item_extent: f64, gap: f64, count: usize) -> Self {
-        Self { origin, item_extent, gap, count }
+        Self {
+            origin,
+            item_extent,
+            gap,
+            count,
+        }
     }
 
     /// Distance from one slot's leading edge to the next (item + gap).
@@ -137,7 +142,11 @@ pub struct DragController<Id = ()> {
 
 impl<Id: Clone> DragController<Id> {
     fn new(axis: Axis) -> Self {
-        Self { axis, threshold: REORDER_THRESHOLD_PX, session: None }
+        Self {
+            axis,
+            threshold: REORDER_THRESHOLD_PX,
+            session: None,
+        }
     }
 
     /// A vertical reorderable list (items stack top-to-bottom, ghost slides
@@ -194,7 +203,9 @@ impl<Id: Clone> DragController<Id> {
     pub fn pointer_moved(&mut self, cursor: Point, metrics: &ListMetrics) -> bool {
         let axis = self.axis;
         let threshold = self.threshold;
-        let Some(s) = self.session.as_mut() else { return false };
+        let Some(s) = self.session.as_mut() else {
+            return false;
+        };
         s.current = cursor;
         let mut changed = false;
         if !s.active && s.start.distance(cursor) >= threshold {
@@ -289,7 +300,9 @@ impl<Id: Clone> DragController<Id> {
     /// item collapses into the vacated slot, then shifts past the gap if
     /// the drop lands before it.
     pub fn item_shift(&self, index: usize, metrics: &ListMetrics) -> f64 {
-        let Some(s) = self.session.as_ref() else { return 0.0 };
+        let Some(s) = self.session.as_ref() else {
+            return 0.0;
+        };
         if !s.active || index == s.from {
             return 0.0;
         }
@@ -297,7 +310,11 @@ impl<Id: Clone> DragController<Id> {
         // Index within the list with the dragged item removed.
         let collapsed = if index < s.from { index } else { index - 1 };
         // Index after re-inserting the dragged item at `to`.
-        let final_i = if collapsed < to { collapsed } else { collapsed + 1 };
+        let final_i = if collapsed < to {
+            collapsed
+        } else {
+            collapsed + 1
+        };
         (final_i as f64 - index as f64) * metrics.pitch()
     }
 
@@ -329,7 +346,9 @@ impl<Id: Clone> DragController<Id> {
         let lead = self.ghost_lead()?;
         Some(match self.axis {
             Axis::Vertical => Rect::new(cross_lo, lead, cross_lo + size.width, lead + size.height),
-            Axis::Horizontal => Rect::new(lead, cross_lo, lead + size.width, cross_lo + size.height),
+            Axis::Horizontal => {
+                Rect::new(lead, cross_lo, lead + size.width, cross_lo + size.height)
+            }
         })
     }
 }
@@ -385,7 +404,11 @@ mod tests {
         assert_eq!(c.insertion(), Some(2));
         // Keep dragging past the last item → target follows to the last slot.
         c.pointer_moved(Point::new(200.0, 400.0), &m4());
-        assert_eq!(c.insertion(), Some(3), "gap tracks the ghost live, not on release");
+        assert_eq!(
+            c.insertion(),
+            Some(3),
+            "gap tracks the ghost live, not on release"
+        );
     }
 
     #[test]
@@ -420,7 +443,11 @@ mod tests {
                 "no item reflows while the ghost is in its own slot's dead-zone (i={i})"
             );
         }
-        assert_eq!(c.commit(), None, "dropping where it started changes nothing");
+        assert_eq!(
+            c.commit(),
+            None,
+            "dropping where it started changes nothing"
+        );
     }
 
     #[test]
@@ -431,7 +458,11 @@ mod tests {
         // Just past the neighbour's midpoint downward: ghost lead moves ~0.6
         // slot, which rounds to a one-slot move → the gap finally opens.
         c.pointer_moved(Point::new(200.0, 198.0 + 0.6 * m.pitch()), &m);
-        assert_eq!(c.insertion(), Some(2), "crossing the midpoint opens the gap below");
+        assert_eq!(
+            c.insertion(),
+            Some(2),
+            "crossing the midpoint opens the gap below"
+        );
         assert!(
             c.item_shift(2, &m) != 0.0,
             "the neighbour reflows once the gap has moved onto it"
@@ -495,7 +526,11 @@ mod tests {
         c.pointer_moved(Point::new(200.0, 400.0), &m); // drag item 0 to the end
         let shown = c.insertion();
         assert_eq!(shown, Some(3), "the gap sits at the final slot");
-        assert_eq!(c.commit().map(|(_, to)| to), shown, "drop lands where the gap showed");
+        assert_eq!(
+            c.commit().map(|(_, to)| to),
+            shown,
+            "drop lands where the gap showed"
+        );
     }
 
     #[test]
@@ -524,7 +559,11 @@ mod tests {
         // up with it, so the same ghost now points one slot lower.
         let scrolled = ListMetrics::uniform(32.0, 60.0, 8.0, 4);
         c.sync_insertion(&scrolled);
-        assert_eq!(c.insertion(), Some(3), "gap re-pins to the ghost after scroll");
+        assert_eq!(
+            c.insertion(),
+            Some(3),
+            "gap re-pins to the ghost after scroll"
+        );
     }
 
     #[test]
@@ -534,7 +573,11 @@ mod tests {
         c.begin(0, 0, 40.0, Point::new(40.0, 50.0)); // ghost lead = slot_lead(0)
         c.pointer_moved(Point::new(200.0, 50.0), &m); // slide right ~1.8 slots
         assert!(c.is_active());
-        assert_eq!(c.insertion(), Some(2), "the ghost landed over the last slot");
+        assert_eq!(
+            c.insertion(),
+            Some(2),
+            "the ghost landed over the last slot"
+        );
         assert_eq!(c.ghost_lead(), Some(160.0), "ghost tracks X at grab offset");
         assert_eq!(c.commit(), Some((0, 2)));
     }

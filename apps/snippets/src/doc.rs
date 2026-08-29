@@ -175,7 +175,9 @@ impl SnippetsDoc {
         };
         let mut out = Vec::new();
         for key in doc.keys(&map) {
-            let Ok(id) = key.parse::<SnippetId>() else { continue };
+            let Ok(id) = key.parse::<SnippetId>() else {
+                continue;
+            };
             let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
                 continue;
             };
@@ -260,7 +262,11 @@ mod tests {
         let s = sample();
         SnippetsDoc::upsert(&mut doc, &s);
         SnippetsDoc::upsert(&mut doc, &s);
-        assert_eq!(SnippetsDoc::list(&doc).len(), 1, "second upsert must not duplicate");
+        assert_eq!(
+            SnippetsDoc::list(&doc).len(),
+            1,
+            "second upsert must not duplicate"
+        );
     }
 
     #[test]

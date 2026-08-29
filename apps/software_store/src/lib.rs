@@ -79,7 +79,9 @@ pub use worker::{Request, Worker, WorkerMsg};
 /// (the store registers as the `application/vnd.flatpak.ref` handler).
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     let args: Vec<String> = std::env::args().collect();
-    let is_shots = args.iter().any(|a| a == "--shots" || a.starts_with("--shots="));
+    let is_shots = args
+        .iter()
+        .any(|a| a == "--shots" || a.starts_with("--shots="));
 
     // `SOFTWARE_STORE_SHOT_LIVE` renders the real live cold-start (empty
     // catalog → "Loading apps from Flathub…") for verification, instead of the

@@ -95,14 +95,12 @@ impl WorkspaceRuntime {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
         let doc = if pinned {
             match store.load_snapshot()? {
-                Some(bytes) => Some(
-                    AutoCommit::load(&bytes).map_err(|e| {
-                        crate::store::StoreError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("automerge load: {e}"),
-                        ))
-                    })?,
-                ),
+                Some(bytes) => Some(AutoCommit::load(&bytes).map_err(|e| {
+                    crate::store::StoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("automerge load: {e}"),
+                    ))
+                })?),
                 None => Some(AutoCommit::new()),
             }
         } else {
@@ -184,11 +182,12 @@ impl WorkspaceRuntime {
             if self.subscribers.contains_key(member) {
                 continue;
             }
-            let raw = crate::transport::encode(&envelope)
-                .map_err(|e| crate::store::StoreError::Io(std::io::Error::new(
+            let raw = crate::transport::encode(&envelope).map_err(|e| {
+                crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode: {e}"),
-                )))?;
+                ))
+            })?;
             self.store.enqueue_pending(member, seq, &raw)?;
         }
         // 3. Store-and-forward for offline peer relays — reuses the
@@ -203,11 +202,12 @@ impl WorkspaceRuntime {
                 if self.subscribers.contains_key(pr) {
                     continue;
                 }
-                let raw = crate::transport::encode(&envelope)
-                    .map_err(|e| crate::store::StoreError::Io(std::io::Error::new(
+                let raw = crate::transport::encode(&envelope).map_err(|e| {
+                    crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("encode: {e}"),
-                    )))?;
+                    ))
+                })?;
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
@@ -404,13 +404,7 @@ mod tests {
     #[test]
     fn fanout_prunes_dead_subscribers() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(
-            tmp.path(),
-            5,
-            false,
-            Membership::default(),
-        )
-        .unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx); // channel closed immediately
         rt.add_subscriber(Subscriber {
@@ -464,7 +458,8 @@ mod tests {
         // A local device authors — pr is offline, should be queued.
         let author = [1u8; 32];
         let env = env_delta(12, author);
-        rt.fanout_delta(&author, PeerRole::Device, env, b"x", 42).unwrap();
+        rt.fanout_delta(&author, PeerRole::Device, env, b"x", 42)
+            .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 1);
     }
 
@@ -478,7 +473,8 @@ mod tests {
         // queued (that's the echo across a chain of relays).
         let author = [2u8; 32];
         let env = env_delta(13, author);
-        rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42).unwrap();
+        rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42)
+            .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
     }
 
@@ -578,7 +574,9 @@ mod tests {
             delta: d1.clone(),
             signature: [0u8; 64],
         };
-        let delivered = rt.fanout_delta(&a, PeerRole::Device, env, &d1, 111).unwrap();
+        let delivered = rt
+            .fanout_delta(&a, PeerRole::Device, env, &d1, 111)
+            .unwrap();
         assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
 
         // The gap: a delivered delta is NOT queued, so the pending tier

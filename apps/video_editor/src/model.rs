@@ -39,7 +39,11 @@ pub struct Filters {
 impl Default for Filters {
     fn default() -> Self {
         // 0.5 is the neutral midpoint of every slider.
-        Self { brightness: 0.5, contrast: 0.5, saturation: 0.5 }
+        Self {
+            brightness: 0.5,
+            contrast: 0.5,
+            saturation: 0.5,
+        }
     }
 }
 
@@ -68,7 +72,10 @@ pub struct ClipEffect {
 
 impl ClipEffect {
     pub fn new(kind: EffectKind) -> Self {
-        Self { kind, amount: kind.default_amount() }
+        Self {
+            kind,
+            amount: kind.default_amount(),
+        }
     }
 }
 
@@ -434,20 +441,29 @@ impl Project {
     /// (highest index first), then audio lanes (lowest index first).
     /// This matches every NLE's "video above, audio below" convention.
     pub fn display_tracks(&self) -> Vec<&Track> {
-        let mut video: Vec<&Track> =
-            self.tracks.iter().filter(|t| t.kind == TrackKind::Video).collect();
+        let mut video: Vec<&Track> = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
         video.sort_by(|a, b| b.index.cmp(&a.index));
-        let mut audio: Vec<&Track> =
-            self.tracks.iter().filter(|t| t.kind == TrackKind::Audio).collect();
+        let mut audio: Vec<&Track> = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
         audio.sort_by(|a, b| a.index.cmp(&b.index));
         video.into_iter().chain(audio).collect()
     }
 
     /// Clips on `track`, sorted left-to-right by start.
     pub fn clips_on(&self, track: TrackId) -> Vec<&Clip> {
-        let mut v: Vec<&Clip> =
-            self.clips.iter().filter(|c| c.track == track).collect();
-        v.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        let mut v: Vec<&Clip> = self.clips.iter().filter(|c| c.track == track).collect();
+        v.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         v
     }
 
@@ -467,7 +483,9 @@ impl Project {
     pub fn top_video_clip_at(&self, t: f64) -> Option<&Clip> {
         let mut best: Option<(&Clip, u32)> = None;
         for c in &self.clips {
-            let Some(track) = self.track(c.track) else { continue };
+            let Some(track) = self.track(c.track) else {
+                continue;
+            };
             if track.kind != TrackKind::Video {
                 continue;
             }
@@ -582,7 +600,9 @@ impl Project {
     /// caller can replicate exactly those through the CRDT) — empty if the
     /// clip didn't exist.
     pub fn ripple_delete(&mut self, id: ClipId) -> Vec<ClipId> {
-        let Some(clip) = self.clip(id).cloned() else { return Vec::new() };
+        let Some(clip) = self.clip(id).cloned() else {
+            return Vec::new();
+        };
         let gap = clip.duration();
         let track = clip.track;
         let after = clip.start;
@@ -770,8 +790,7 @@ mod tests {
                 locked: false,
             });
         }
-        let order: Vec<&str> =
-            p.display_tracks().iter().map(|t| t.name.as_str()).collect();
+        let order: Vec<&str> = p.display_tracks().iter().map(|t| t.name.as_str()).collect();
         assert_eq!(order, vec!["V2", "V1", "A1", "A2"]);
     }
 
@@ -828,9 +847,15 @@ mod tests {
         }
         let c = p.clip(cid).unwrap();
         assert!(c.envelope(0.0) < 0.01, "silent at the very head");
-        assert!((c.envelope(1.0) - 0.5).abs() < 1e-6, "half through a 2s fade-in");
+        assert!(
+            (c.envelope(1.0) - 0.5).abs() < 1e-6,
+            "half through a 2s fade-in"
+        );
         assert!((c.envelope(10.0) - 1.0).abs() < 1e-6, "full in the middle");
-        assert!((c.envelope(18.0) - 0.5).abs() < 1e-6, "half through a 4s fade-out");
+        assert!(
+            (c.envelope(18.0) - 0.5).abs() < 1e-6,
+            "half through a 4s fade-out"
+        );
         assert!(c.envelope(20.0) < 0.01, "silent at the tail");
     }
 
@@ -860,12 +885,18 @@ mod tests {
         c.add_effect(EffectKind::Sepia);
         c.add_effect(EffectKind::Invert);
         let kinds = |c: &Clip| c.effects.iter().map(|e| e.kind).collect::<Vec<_>>();
-        assert_eq!(kinds(c), vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]);
+        assert_eq!(
+            kinds(c),
+            vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]
+        );
         // A fresh effect carries its kind's default intensity.
         assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
         // Reorder: move Invert (idx 2) up.
         c.move_effect_up(2);
-        assert_eq!(kinds(c), vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]);
+        assert_eq!(
+            kinds(c),
+            vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]
+        );
         // Remove the head.
         c.remove_effect(0);
         assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
@@ -879,7 +910,10 @@ mod tests {
     #[test]
     fn filters_default_is_identity() {
         assert!(Filters::default().is_identity());
-        assert!((Filters::gain(0.5) - 1.0).abs() < 1e-9, "0.5 slider = unity gain");
+        assert!(
+            (Filters::gain(0.5) - 1.0).abs() < 1e-9,
+            "0.5 slider = unity gain"
+        );
         assert!(Filters::gain(0.0) < 1e-9);
         assert!((Filters::gain(1.0) - 2.0).abs() < 1e-9);
     }

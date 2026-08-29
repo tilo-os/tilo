@@ -158,11 +158,7 @@ impl JobResult {
 /// `dst` is opened for writing (created if absent — for a block device the
 /// node already exists and is opened in place). This is the real copy loop:
 /// in tests `dst` is a temp file; in a gated production run it is `/dev/sdX`.
-pub fn stream_copy(
-    src: &Path,
-    dst: &Path,
-    mut on_progress: impl FnMut(u64),
-) -> io::Result<u64> {
+pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let mut reader = OpenOptions::new().read(true).open(src)?;
     let mut writer = OpenOptions::new().write(true).create(true).open(dst)?;
     let mut buf = vec![0u8; CHUNK];
@@ -508,7 +504,10 @@ mod tests {
         assert!(result.is_success());
         // It really wrote the bytes and drove both phases to completion.
         assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-        assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]);
+        assert_eq!(
+            phases,
+            vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]
+        );
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
     }

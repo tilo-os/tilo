@@ -72,8 +72,7 @@ fn read_registry(path: &Path) -> Result<Vec<InstalledPackage>, RegistryError> {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let reg: Registry = toml::from_str(&raw)
-        .map_err(|e| RegistryError::Parse(e.to_string()))?;
+    let reg: Registry = toml::from_str(&raw).map_err(|e| RegistryError::Parse(e.to_string()))?;
     Ok(reg.entry)
 }
 
@@ -362,7 +361,11 @@ mod tests {
         let payload = tmp.path().join("payloads/dev.qos.notes-cli");
         std::fs::create_dir_all(&payload).unwrap();
         let manifest = payload.join("manifest.toml");
-        std::fs::write(&manifest, "package_id = 'dev.qos.notes-cli'\nversion='0.1.0'\n[entrypoint]\nbin='bin/notes'\n").unwrap();
+        std::fs::write(
+            &manifest,
+            "package_id = 'dev.qos.notes-cli'\nversion='0.1.0'\n[entrypoint]\nbin='bin/notes'\n",
+        )
+        .unwrap();
         let registry_toml = format!(
             "[[entry]]\nid = 'dev.qos.notes-cli'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),

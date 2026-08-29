@@ -77,7 +77,12 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             rgba[i + 3] = 255;
         }
     }
-    Thumb { width: w, height: h, rgba, real: false }
+    Thumb {
+        width: w,
+        height: h,
+        rgba,
+        real: false,
+    }
 }
 
 /// Per-source thumbnail cache. A representative frame is generated synchronously
@@ -124,7 +129,8 @@ impl ThumbnailCache {
     /// (seconds) to sample a real frame from.
     pub fn ensure(&mut self, id: MediaId, palette: u8, source: &MediaSource, at: f64) {
         if !self.map.contains_key(&id) {
-            self.map.insert(id, Arc::new(representative(palette, THUMB_W, THUMB_H)));
+            self.map
+                .insert(id, Arc::new(representative(palette, THUMB_W, THUMB_H)));
         }
         #[cfg(feature = "decode")]
         {
@@ -200,12 +206,19 @@ mod tests {
         assert!(!t.real, "a generated frame is not a real decode");
         assert!(t.rgba.chunks(4).all(|px| px[3] == 255), "opaque");
         // Not a flat black frame — the palette contributes visible colour.
-        assert!(t.rgba.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8));
+        assert!(
+            t.rgba
+                .chunks(4)
+                .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8)
+        );
         // The top row is lighter than the bottom row (the vertical gradient).
         let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| v as u32).sum();
         let last = (17 * 32 * 4) as usize;
         let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| v as u32).sum();
-        assert!(top_lum > bot_lum, "gradient runs light→dark ({top_lum} vs {bot_lum})");
+        assert!(
+            top_lum > bot_lum,
+            "gradient runs light→dark ({top_lum} vs {bot_lum})"
+        );
     }
 
     #[test]

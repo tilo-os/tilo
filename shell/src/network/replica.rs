@@ -25,10 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::{PeerOrigin, RoomId};
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
+use crate::shell::state::{PeerOrigin, RoomId};
 
 /// Replica-side glue: a (shared) [`WorkspaceTree`] **handle**, a peer id,
 /// and a FIFO queue of messages to broadcast on its behalf.
@@ -240,7 +240,6 @@ mod tests {
         }
     }
 
-
     // The claim under test: a peer invited to room A holds nothing of room B.
     // `holdings` walks the guest's cache, tree document (materialised heads
     // and raw change bytes), and every room document for room B's name, id, owner, or capability.
@@ -408,9 +407,8 @@ mod tests {
         // The host replica delivers under the identity its own invite named — a
         // guest takes a room's owner/capabilities from the peer whose signature admitted it.
         let host = Arc::new(Mutex::new(
-            WorkspaceTreeReplica::new(1, host_tree.shared()).with_origin(PeerOrigin::peer(
-                &owner_key.public().to_peer_id(),
-            )),
+            WorkspaceTreeReplica::new(1, host_tree.shared())
+                .with_origin(PeerOrigin::peer(&owner_key.public().to_peer_id())),
         ));
         let guest_handle = guest_tree.shared();
         let guest = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
@@ -472,7 +470,11 @@ mod tests {
         let Some(at) = held.find(needle) else {
             return;
         };
-        let start = held[..at].char_indices().rev().nth(70).map_or(0, |(i, _)| i);
+        let start = held[..at]
+            .char_indices()
+            .rev()
+            .nth(70)
+            .map_or(0, |(i, _)| i);
         let end = held[at..]
             .char_indices()
             .nth(needle.chars().count() + 70)
@@ -657,7 +659,10 @@ mod tests {
 
         let mut guest_tree = WorkspaceTree::default();
         let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-        assert!(guest_tree.set_room(guest_ws, room_a), "the guest joins room A");
+        assert!(
+            guest_tree.set_room(guest_ws, room_a),
+            "the guest joins room A"
+        );
 
         let tree_a = host_tree.shared();
         let tree_b = guest_tree.shared();
@@ -712,7 +717,10 @@ mod tests {
 
         let mut guest_tree = WorkspaceTree::default();
         let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-        assert!(guest_tree.set_room(guest_ws, room_a), "the guest joins room A");
+        assert!(
+            guest_tree.set_room(guest_ws, room_a),
+            "the guest joins room A"
+        );
 
         let tree_a = host_tree.shared();
         let tree_b = guest_tree.shared();

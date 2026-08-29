@@ -62,9 +62,6 @@ pub use caps::{
     Subject, Verb, decide, decide_actor, decide_capability, host_covers, path_covers,
     role_base_applies, role_caps, verb_for_opclass,
 };
-pub use invite::{
-    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
-};
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
@@ -79,6 +76,9 @@ pub use crypto::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
+pub use invite::{
+    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
+};
 pub use op::{EncryptionMetadata, SignedOp};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

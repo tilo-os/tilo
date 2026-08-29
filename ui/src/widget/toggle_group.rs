@@ -6,13 +6,13 @@
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
 use automerge::{AutoCommit, ObjId};
+use std::cell::Cell;
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use std::cell::Cell;
-use std::collections::HashMap;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -25,7 +25,9 @@ pub struct Segment {
 
 impl Segment {
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into() }
+        Self {
+            label: label.into(),
+        }
     }
 }
 
@@ -118,7 +120,8 @@ impl ToggleGroup {
             } else {
                 self.rect.x0 + ((i + 1) as f64) * seg_w
             };
-            self.segment_rects.push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
+            self.segment_rects
+                .push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
         }
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
@@ -237,13 +240,34 @@ impl<'a> SegmentedFace<'a> {
             label_pad_left: None,
         }
     }
-    pub fn style(mut self, style: SegmentedStyle) -> Self { self.style = style; self }
-    pub fn pill(mut self) -> Self { self.style = SegmentedStyle::Pill; self }
-    pub fn hovered(mut self, idx: Option<usize>) -> Self { self.hovered = idx; self }
-    pub fn radius(mut self, r: f64) -> Self { self.radius = r; self }
-    pub fn text_size(mut self, s: f32) -> Self { self.text_size = s; self }
-    pub fn weight(mut self, w: crate::text_render::TextWeight) -> Self { self.weight = w; self }
-    pub fn left_labels(mut self, pad: f64) -> Self { self.label_pad_left = Some(pad); self }
+    pub fn style(mut self, style: SegmentedStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn pill(mut self) -> Self {
+        self.style = SegmentedStyle::Pill;
+        self
+    }
+    pub fn hovered(mut self, idx: Option<usize>) -> Self {
+        self.hovered = idx;
+        self
+    }
+    pub fn radius(mut self, r: f64) -> Self {
+        self.radius = r;
+        self
+    }
+    pub fn text_size(mut self, s: f32) -> Self {
+        self.text_size = s;
+        self
+    }
+    pub fn weight(mut self, w: crate::text_render::TextWeight) -> Self {
+        self.weight = w;
+        self
+    }
+    pub fn left_labels(mut self, pad: f64) -> Self {
+        self.label_pad_left = Some(pad);
+        self
+    }
 }
 
 impl ToggleGroup {
@@ -293,7 +317,13 @@ impl ToggleGroup {
                         &Line::new(Point::new(x, outer.y0), Point::new(x, outer.y1)),
                     );
                 }
-                scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &outer_shape);
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    colors.border_standard,
+                    None,
+                    &outer_shape,
+                );
             }
             SegmentedStyle::Pill => {
                 for (i, seg) in segs.iter().enumerate() {
@@ -319,7 +349,13 @@ impl ToggleGroup {
                 if let Some(seg) = segs.get(face.selected) {
                     let inset = 12.0_f64.min((seg.width() / 2.0 - 2.0).max(0.0));
                     let bar = Rect::new(seg.x0 + inset, seg.y1 - 2.0, seg.x1 - inset, seg.y1);
-                    scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &bar);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme.accent_primary,
+                        None,
+                        &bar,
+                    );
                 }
             }
         }
@@ -331,7 +367,12 @@ impl ToggleGroup {
             if label.is_empty() {
                 continue;
             }
-            let (_, fg) = segment_colors(theme, face.style, i == face.selected, face.hovered == Some(i));
+            let (_, fg) = segment_colors(
+                theme,
+                face.style,
+                i == face.selected,
+                face.hovered == Some(i),
+            );
             let weight = if i == face.selected {
                 crate::text_render::TextWeight::Semibold
             } else {
@@ -414,7 +455,10 @@ impl Widget for ToggleGroup {
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform * Affine::translate((dx, dy))),
+            );
             return;
         }
         self.cached.reset();
@@ -456,17 +500,8 @@ impl Widget for ToggleGroup {
         let separator_stroke = Stroke::new(1.0);
         for i in 0..self.segments.len().saturating_sub(1) {
             let x = self.segment_rects[i].x1;
-            let line = Line::new(
-                Point::new(x, self.rect.y0),
-                Point::new(x, self.rect.y1),
-            );
-            scene.stroke(
-                &separator_stroke,
-                transform,
-                separator_color,
-                None,
-                &line,
-            );
+            let line = Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1));
+            scene.stroke(&separator_stroke, transform, separator_color, None, &line);
         }
 
         // Focus ring: prominent focus colour at 2px.
@@ -515,11 +550,15 @@ impl Widget for ToggleGroup {
             || self.is_focused != self.last_focused
     }
 
-    fn mark_drawn(&mut self) { self.cache_dirty = false; }
+    fn mark_drawn(&mut self) {
+        self.cache_dirty = false;
+    }
 
     /// Fixed intrinsic size; `Rect::ZERO` sentinel covers the
     /// pre-`apply_layout` state.
-    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
 
     fn handle_event(
         &mut self,
@@ -535,10 +574,7 @@ impl Widget for ToggleGroup {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
-                );
+                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor.set(logical_pos);
             }
             WindowEvent::MouseInput {
@@ -568,15 +604,23 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn name(&self) -> &str { "ToggleGroup" }
+    fn name(&self) -> &str {
+        "ToggleGroup"
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -636,7 +680,11 @@ mod tests {
             g.segment_rects = (0..n)
                 .map(|i| {
                     let x0 = rect.x0 + (i as f64) * w;
-                    let x1 = if i == n - 1 { rect.x1 } else { rect.x0 + ((i + 1) as f64) * w };
+                    let x1 = if i == n - 1 {
+                        rect.x1
+                    } else {
+                        rect.x0 + ((i + 1) as f64) * w
+                    };
                     Rect::new(x0, rect.y0, x1, rect.y1)
                 })
                 .collect();
@@ -681,10 +729,7 @@ mod tests {
 
     #[test]
     fn toggle_group_initial_selection_zero() {
-        let g = ToggleGroup::new(
-            vec![Segment::new("a"), Segment::new("b")],
-            0,
-        );
+        let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
         assert_eq!(g.selected(), 0);
     }
 
@@ -723,7 +768,9 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         g.apply_layout(&taffy, node, Point::ZERO);
 
         assert_eq!(
@@ -756,15 +803,14 @@ mod tests {
     /// A focus change swaps the outer border colour, so the encoded stream
     /// differs between focused and unfocused renders.
     fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
-        let mut g = ToggleGroup::new(
-            vec![Segment::new("a"), Segment::new("b")],
-            0,
-        );
+        let mut g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         g.apply_layout(&taffy, node, Point::ZERO);
         g.set_focus(focused);
 
@@ -795,9 +841,16 @@ mod tests {
         let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
         assert_eq!(fill, Some(theme.accent_primary));
         let r = contrast_ratio(fg, fill.unwrap());
-        assert!(r >= ON_FILL_MIN_CONTRAST, "selected segment label is {r:.2}:1 on the accent");
+        assert!(
+            r >= ON_FILL_MIN_CONTRAST,
+            "selected segment label is {r:.2}:1 on the accent"
+        );
         let (ufill, ufg) = segment_colors(&theme, SegmentedStyle::Solid, false, false);
-        assert_eq!(ufill, Some(theme.tokens.colors.surfaces.raised), "unselected solid is a raised fill");
+        assert_eq!(
+            ufill,
+            Some(theme.tokens.colors.surfaces.raised),
+            "unselected solid is a raised fill"
+        );
         assert_eq!(ufg, theme.tokens.colors.text_primary);
     }
 
@@ -838,7 +891,11 @@ mod tests {
             Rect::new(120.0, 0.0, 180.0, 28.0),
         ];
         let labels = ["A", "B", "C"];
-        for style in [SegmentedStyle::Solid, SegmentedStyle::Pill, SegmentedStyle::Underline] {
+        for style in [
+            SegmentedStyle::Solid,
+            SegmentedStyle::Pill,
+            SegmentedStyle::Underline,
+        ] {
             let mut scene = Scene::new();
             ToggleGroup::paint(
                 &mut scene,
@@ -861,7 +918,9 @@ mod tests {
             Affine::IDENTITY,
             &mut tr,
             &theme,
-            &SegmentedFace::new(&segs, &labels, 0).pill().left_labels(14.0),
+            &SegmentedFace::new(&segs, &labels, 0)
+                .pill()
+                .left_labels(14.0),
         );
         assert!(
             scene.encoding().draw_tags.contains(&DrawTag::COLOR),
@@ -873,7 +932,11 @@ mod tests {
     fn accessibility_reports_group_role_and_selected_segment_label() {
         use crate::a11y::Role;
         let g = ToggleGroup::new(
-            vec![Segment::new("Light"), Segment::new("Dark"), Segment::new("Auto")],
+            vec![
+                Segment::new("Light"),
+                Segment::new("Dark"),
+                Segment::new("Auto"),
+            ],
             1,
         );
         let node = Widget::accessibility(&g).expect("toggle group is not presentational");
@@ -899,12 +962,18 @@ mod tests {
         )
         .on_change(move |i| *captured_clone.borrow_mut() = Some(i));
 
-        assert_eq!(Widget::accessibility(&g).unwrap().value.as_deref(), Some("a"));
+        assert_eq!(
+            Widget::accessibility(&g).unwrap().value.as_deref(),
+            Some("a")
+        );
 
         // Click into segment 2 → value follows the new selection.
         dispatch(&mut g, &cursor_moved(250.0, 18.0));
         dispatch(&mut g, &mouse_press());
         assert_eq!(g.selected(), 2);
-        assert_eq!(Widget::accessibility(&g).unwrap().value.as_deref(), Some("c"));
+        assert_eq!(
+            Widget::accessibility(&g).unwrap().value.as_deref(),
+            Some("c")
+        );
     }
 }

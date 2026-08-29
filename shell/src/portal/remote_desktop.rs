@@ -31,9 +31,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use crate::network::streaming::RemoteAction;
 use crate::shell::state::{Capability, Expiry};
 
-use super::{
-    file_chooser::FileChooserBackend, flow, CapabilityKind, PortalContext,
-};
+use super::{CapabilityKind, PortalContext, file_chooser::FileChooserBackend, flow};
 
 /// Device-type bitmask (`RemoteDesktop.AvailableDeviceTypes`).
 pub mod device_type {
@@ -264,12 +262,12 @@ impl RemoteDesktopBackend {
         }
 
         if let Ok(mut s) = self.sessions.lock() {
-            let entry = s
-                .entry(session_handle.to_string())
-                .or_insert_with(|| RemoteDesktopSession {
-                    app_id: app_id.clone(),
-                    ..Default::default()
-                });
+            let entry =
+                s.entry(session_handle.to_string())
+                    .or_insert_with(|| RemoteDesktopSession {
+                        app_id: app_id.clone(),
+                        ..Default::default()
+                    });
             entry.devices = types;
             entry.consented = true;
         }
@@ -471,7 +469,10 @@ mod tests {
         Workspace::test_default(WorkspaceId(id), "rd")
     }
 
-    fn ctx_with(injector: RemoteInputInjectorHandle, resolver: PromptResolver) -> (PortalContext, WorkspaceId) {
+    fn ctx_with(
+        injector: RemoteInputInjectorHandle,
+        resolver: PromptResolver,
+    ) -> (PortalContext, WorkspaceId) {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(70));
         let queue = PromptQueueHandle::new(resolver);
         let map = CallerMap::new();
@@ -498,7 +499,10 @@ mod tests {
         let inj = ChannelInjector::new(tx);
         assert!(inj.inject(RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }));
         let got = rx.recv().expect("action forwarded");
-        assert_eq!(got, RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 });
+        assert_eq!(
+            got,
+            RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }
+        );
     }
 
     #[test]

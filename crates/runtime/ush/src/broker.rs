@@ -69,15 +69,25 @@ pub enum Request {
 pub enum Response {
     Ok,
     /// Allowed, and it will be in force after `restart`.
-    NeedsRestart { detail: String },
-    Denied { reason: String },
-    Perms { entries: Vec<PermEntry> },
-    Check { allowed: bool },
+    NeedsRestart {
+        detail: String,
+    },
+    Denied {
+        reason: String,
+    },
+    Perms {
+        entries: Vec<PermEntry>,
+    },
+    Check {
+        allowed: bool,
+    },
     Diff {
         entries: Vec<DiffEntry>,
         truncated: usize,
     },
-    Status { status: SessionStatus },
+    Status {
+        status: SessionStatus,
+    },
 }
 
 /// One line of `pkg diff`.
@@ -147,7 +157,9 @@ impl BrokerState {
             Request::Check { path, write } => {
                 let verb = if write { Verb::Write } else { Verb::Read };
                 Response::Check {
-                    allowed: self.policy.permits(&path, verb, Some(crate::audit::now_unix())),
+                    allowed: self
+                        .policy
+                        .permits(&path, verb, Some(crate::audit::now_unix())),
                 }
             }
             Request::PkgRecorded {
@@ -188,13 +200,23 @@ impl BrokerState {
             Ok(p) => p,
             Err(e) => {
                 let reason = format!("{}: {e}", path.display());
-                self.log("trust-dir", Some(&path.display().to_string()), false, Some(&reason));
+                self.log(
+                    "trust-dir",
+                    Some(&path.display().to_string()),
+                    false,
+                    Some(&reason),
+                );
                 return Response::Denied { reason };
             }
         };
         if !resolved.is_dir() {
             let reason = format!("{} is not a directory", resolved.display());
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
         if !is_trustable(&resolved) {
@@ -203,20 +225,40 @@ impl BrokerState {
                  the host's copy back on top of your layer",
                 resolved.display()
             );
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
         let Some(id) = self.policy.trust_dir(&resolved) else {
             let reason = format!("{} cannot be trusted", resolved.display());
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         };
         if let Err(e) = self.policy.save(&self.policy_path) {
             let reason = format!("could not save the decision: {e}");
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
-        self.log("trust-dir", Some(&resolved.display().to_string()), true, Some(&id));
+        self.log(
+            "trust-dir",
+            Some(&resolved.display().to_string()),
+            true,
+            Some(&id),
+        );
         Response::NeedsRestart {
             detail: format!(
                 "{} is trusted (capability {id}). Run `restart` to bring it into this session.",
@@ -353,12 +395,7 @@ impl BrokerState {
     }
 
     fn log(&self, request: &str, subject: Option<&str>, allowed: bool, detail: Option<&str>) {
-        let mut rec = AuditRecord::new(
-            &self.session_id,
-            self.profile.as_str(),
-            request,
-            allowed,
-        );
+        let mut rec = AuditRecord::new(&self.session_id, self.profile.as_str(), request, allowed);
         if let Some(s) = subject {
             rec = rec.about(s);
         }
@@ -416,7 +453,10 @@ impl Broker {
 
     /// Did the guest ask for a restart?
     pub fn restart_requested(&self) -> bool {
-        self.state.lock().map(|s| s.restart_requested).unwrap_or(false)
+        self.state
+            .lock()
+            .map(|s| s.restart_requested)
+            .unwrap_or(false)
     }
 
     /// Did the guest ask for its layer to be destroyed?
@@ -544,7 +584,10 @@ mod tests {
 
         let log = s.audit.read_all();
         assert_eq!(log.len(), 1);
-        assert!(!log[0].allowed, "a refusal must be recorded, not only a grant");
+        assert!(
+            !log[0].allowed,
+            "a refusal must be recorded, not only a grant"
+        );
         assert_eq!(log[0].request, "trust-dir");
     }
 
@@ -717,7 +760,10 @@ mod tests {
             panic!("expected perms");
         };
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].scope, target.canonicalize().unwrap().display().to_string());
+        assert_eq!(
+            entries[0].scope,
+            target.canonicalize().unwrap().display().to_string()
+        );
 
         assert!(!broker.restart_requested());
         ask(&sock, &Request::Restart).unwrap();
@@ -731,7 +777,11 @@ mod tests {
         let sock = dir.path().join("broker.sock");
         let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
         let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "broker socket is reachable by other users: {mode:o}");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "broker socket is reachable by other users: {mode:o}"
+        );
         drop(broker);
         assert!(!sock.exists(), "the socket must not outlive the session");
     }

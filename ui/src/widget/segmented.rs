@@ -57,13 +57,21 @@ impl TriStateControl {
     pub fn allow_inherit_deny() -> Self {
         Self::new(
             ["Allow", "Inherit", "Deny"],
-            [SegmentTone::Positive, SegmentTone::Neutral, SegmentTone::Negative],
+            [
+                SegmentTone::Positive,
+                SegmentTone::Neutral,
+                SegmentTone::Negative,
+            ],
         )
     }
 
     pub fn new(labels: [&str; 3], tones: [SegmentTone; 3]) -> Self {
         Self {
-            labels: [labels[0].to_string(), labels[1].to_string(), labels[2].to_string()],
+            labels: [
+                labels[0].to_string(),
+                labels[1].to_string(),
+                labels[2].to_string(),
+            ],
             tones,
             selected: 1,
             choice: None,
@@ -122,7 +130,10 @@ impl Widget for TriStateControl {
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
-                size: taffy::Size { width: percent(1.0_f32), height: length(SEGMENT_HEIGHT as f32) },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: length(SEGMENT_HEIGHT as f32),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -137,7 +148,10 @@ impl Widget for TriStateControl {
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         // 3 × 56, so it works in an auto slot.
-        taffy::Size { width: 168.0, height: SEGMENT_HEIGHT as f32 }
+        taffy::Size {
+            width: 168.0,
+            height: SEGMENT_HEIGHT as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -164,13 +178,29 @@ impl Widget for TriStateControl {
         }
         let radius = theme.tokens.radii.sm as f64;
         let track = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &track);
-        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &track,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &track,
+        );
 
         let active = self.seg_rects[self.selected];
         let tone = self.tones[self.selected];
         let fill = Self::tone_color(theme, tone);
-        let alpha = if tone == SegmentTone::Neutral { 0.18 } else { 0.9 };
+        let alpha = if tone == SegmentTone::Neutral {
+            0.18
+        } else {
+            0.9
+        };
         scene.fill(
             Fill::NonZero,
             transform,
@@ -187,7 +217,10 @@ impl Widget for TriStateControl {
         for i in 0..3 {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
-                theme.tokens.colors.ink_on_any(&[active_ground], Color::WHITE, ON_FILL_MIN_CONTRAST)
+                theme
+                    .tokens
+                    .colors
+                    .ink_on_any(&[active_ground], Color::WHITE, ON_FILL_MIN_CONTRAST)
             } else if on {
                 theme.tokens.colors.ink_on_any(
                     &[active_ground],
@@ -227,8 +260,16 @@ impl Widget for TriStateControl {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if let Some(i) = self.seg_rects.iter().position(|r| r.contains(self.last_cursor)) {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(i) = self
+                    .seg_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor))
+                {
                     let target = if i == self.selected { 1 } else { i };
                     self.selected = target;
                     self.choice = Some(target);
@@ -239,9 +280,13 @@ impl Widget for TriStateControl {
         }
     }
 
-    fn name(&self) -> &str { "TriStateControl" }
+    fn name(&self) -> &str {
+        "TriStateControl"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -293,12 +338,16 @@ pub struct ColorSwatchPicker {
 
 /// Matches the permissions editor.
 pub const DEFAULT_PALETTE: [u32; 12] = [
-    0xE6_4A_4A, 0xE6_8A_3A, 0xE6_C8_4A, 0x6F_C7_4A, 0x4A_C7_7A, 0x4A_C7_B8,
-    0x4A_8F_E6, 0x6A_5A_E6, 0x9A_4A_E6, 0xE6_4A_B8, 0x9A_9A_9A, 0x5A_64_72,
+    0xE6_4A_4A, 0xE6_8A_3A, 0xE6_C8_4A, 0x6F_C7_4A, 0x4A_C7_7A, 0x4A_C7_B8, 0x4A_8F_E6, 0x6A_5A_E6,
+    0x9A_4A_E6, 0xE6_4A_B8, 0x9A_9A_9A, 0x5A_64_72,
 ];
 
 pub fn packed_color(rgb: u32) -> Color {
-    Color::from_rgb8(((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8)
+    Color::from_rgb8(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    )
 }
 
 impl ColorSwatchPicker {
@@ -345,7 +394,12 @@ impl ColorSwatchPicker {
             let c = (i % self.columns) as f64;
             let x = self.rect.x0 + pad + c * self.cell;
             let y = self.rect.y0 + pad + r * self.cell;
-            self.swatch_rects.push(Rect::new(x + 2.0, y + 2.0, x + self.cell - 2.0, y + self.cell - 2.0));
+            self.swatch_rects.push(Rect::new(
+                x + 2.0,
+                y + 2.0,
+                x + self.cell - 2.0,
+                y + self.cell - 2.0,
+            ));
         }
     }
 }
@@ -371,7 +425,10 @@ impl Widget for ColorSwatchPicker {
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
-                size: taffy::Size { width: length(w), height: length(h) },
+                size: taffy::Size {
+                    width: length(w),
+                    height: length(h),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -415,14 +472,38 @@ impl Widget for ColorSwatchPicker {
             return;
         }
         let panel = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &panel);
-        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &panel);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &panel,
+        );
 
         for (i, sr) in self.swatch_rects.iter().enumerate() {
             let shape = RoundedRect::from_rect(*sr, 6.0);
-            scene.fill(Fill::NonZero, transform, packed_color(self.palette[i]), None, &shape);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                packed_color(self.palette[i]),
+                None,
+                &shape,
+            );
             if self.selected == Some(i) {
-                scene.stroke(&Stroke::new(2.5), transform, theme.tokens.colors.border_focus, None, &shape);
+                scene.stroke(
+                    &Stroke::new(2.5),
+                    transform,
+                    theme.tokens.colors.border_focus,
+                    None,
+                    &shape,
+                );
             } else if self.hovered == Some(i) {
                 scene.stroke(&Stroke::new(2.0), transform, Color::WHITE, None, &shape);
             }
@@ -444,10 +525,21 @@ impl Widget for ColorSwatchPicker {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.hovered = self.swatch_rects.iter().position(|r| r.contains(self.last_cursor));
+                self.hovered = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor));
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if let Some(i) = self.swatch_rects.iter().position(|r| r.contains(self.last_cursor)) {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(i) = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor))
+                {
                     self.selected = Some(i);
                     self.choice = Some(i);
                     *handled = true;
@@ -457,9 +549,13 @@ impl Widget for ColorSwatchPicker {
         }
     }
 
-    fn name(&self) -> &str { "ColorSwatchPicker" }
+    fn name(&self) -> &str {
+        "ColorSwatchPicker"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -537,7 +633,11 @@ mod tests {
         }
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -546,7 +646,17 @@ mod tests {
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -569,7 +679,11 @@ mod tests {
         let p = t.seg_rects[2].center();
         dispatch(&mut t, &cursor_at(p));
         dispatch(&mut t, &left_press());
-        assert_eq!(t.selected(), 1, "re-clicking the active segment falls to neutral");
+        assert_eq!(
+            t.selected(),
+            1,
+            "re-clicking the active segment falls to neutral"
+        );
         assert_eq!(t.take_choice(), Some(1));
     }
 

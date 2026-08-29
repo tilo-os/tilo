@@ -18,8 +18,8 @@
 //! names the channel + epoch so the receiver picks the right
 //! `ChannelGroup` before calling [`ChannelGroup::decrypt`].
 
-use openmls::prelude::*;
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
+use openmls::prelude::*;
 
 use collab_types::ChannelId;
 
@@ -130,10 +130,7 @@ impl ChannelGroup {
     /// needs the commit fanned out to existing peers (broker integration);
     /// [`add_member_with_commit`](Self::add_member_with_commit) synthesises
     /// that handoff for the in-crate `third_member_joins` test.
-    pub fn add_member(
-        &mut self,
-        candidate_key_package: KeyPackage,
-    ) -> Result<Vec<u8>> {
+    pub fn add_member(&mut self, candidate_key_package: KeyPackage) -> Result<Vec<u8>> {
         let (_commit, welcome_msg, _gi) = self
             .group
             .add_members(
@@ -186,14 +183,14 @@ impl ChannelGroup {
     /// The only inbound governance message accepted today is a commit from
     /// an already-trusted group member.
     pub fn process_commit(&mut self, commit_bytes: &[u8]) -> Result<()> {
-        let msg_in =
-            MlsMessageIn::tls_deserialize_exact(commit_bytes).map_err(Error::tls_codec)?;
+        let msg_in = MlsMessageIn::tls_deserialize_exact(commit_bytes).map_err(Error::tls_codec)?;
         let protocol_msg: ProtocolMessage =
             msg_in.try_into_protocol_message().map_err(Error::openmls)?;
         // Same defensive panic-catch as `decrypt`; see the comment there for
         // the openmls 0.8.1 debug-assert rationale.
         let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.group.process_message(&self.member.provider, protocol_msg)
+            self.group
+                .process_message(&self.member.provider, protocol_msg)
         }))
         .map_err(|_| Error::OpenMls("commit processing failed (panic absorbed)".to_string()))?
         .map_err(Error::openmls)?;
@@ -261,7 +258,9 @@ impl ChannelGroup {
             None,
         )
         .map_err(Error::openmls)?;
-        let group = staged.into_group(&member.provider).map_err(Error::openmls)?;
+        let group = staged
+            .into_group(&member.provider)
+            .map_err(Error::openmls)?;
         // Sanity: joined group's ciphersuite must match our fixed
         // `CIPHERSUITE` — we never negotiate, so a mismatch means a peer
         // with a different build is on the wire.
@@ -300,8 +299,7 @@ impl ChannelGroup {
     /// fails); wrong group (key schedule rejection). In every case the
     /// message is dropped and the broker's audit log records the reason.
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let msg_in =
-            MlsMessageIn::tls_deserialize_exact(ciphertext).map_err(Error::tls_codec)?;
+        let msg_in = MlsMessageIn::tls_deserialize_exact(ciphertext).map_err(Error::tls_codec)?;
         let protocol_msg: ProtocolMessage =
             msg_in.try_into_protocol_message().map_err(Error::openmls)?;
         // Why catch_unwind: openmls 0.8.1 has a `debug_assert!(false, ...)` on
@@ -312,7 +310,8 @@ impl ChannelGroup {
         // `Error::OpenMls`. One extra `AssertUnwindSafe` per decrypt,
         // negligible. Remove once openmls fixes the debug-assert.
         let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.group.process_message(&self.member.provider, protocol_msg)
+            self.group
+                .process_message(&self.member.provider, protocol_msg)
         }))
         .map_err(|_| Error::OpenMls("decryption failed (panic absorbed)".to_string()))?
         .map_err(Error::openmls)?;

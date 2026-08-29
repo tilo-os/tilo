@@ -44,7 +44,13 @@ pub const INVIDIOUS_INSTANCES: &[&str] = &[
 #[cfg(feature = "live")]
 const KNOWN_AUDIO_ITAGS: &[(u32, &str, &str, &str, u32)] = &[
     // (itag, mime, codec, format, bitrate)
-    (140, "audio/mp4; codecs=\"mp4a.40.2\"", "mp4a", "m4a", 128_000),
+    (
+        140,
+        "audio/mp4; codecs=\"mp4a.40.2\"",
+        "mp4a",
+        "m4a",
+        128_000,
+    ),
     (251, "audio/webm; codecs=\"opus\"", "opus", "webm", 160_000),
 ];
 
@@ -91,7 +97,11 @@ impl InvAudio {
 
 /// The Invidious video-info endpoint for a video id.
 pub fn video_info_url(instance: &str, video_id: &str) -> String {
-    format!("{}/api/v1/videos/{}", instance.trim_end_matches('/'), video_id)
+    format!(
+        "{}/api/v1/videos/{}",
+        instance.trim_end_matches('/'),
+        video_id
+    )
 }
 
 /// The instance's **local media proxy** URL for a specific itag. `local=true`
@@ -125,7 +135,12 @@ pub fn parse_adaptive_audio(json: &serde_json::Value) -> Vec<InvAudio> {
             let itag = num_field(it, "itag")? as u32;
             let bitrate = num_field(it, "bitrate").unwrap_or(0) as u32;
             let clen = num_field(it, "clen").unwrap_or(0);
-            Some(InvAudio { itag, bitrate, mime: mime.to_string(), clen })
+            Some(InvAudio {
+                itag,
+                bitrate,
+                mime: mime.to_string(),
+                clen,
+            })
         })
         .collect()
 }
@@ -133,7 +148,8 @@ pub fn parse_adaptive_audio(json: &serde_json::Value) -> Vec<InvAudio> {
 /// Read a numeric JSON field that Invidious may send as a number *or* a string.
 fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
     let v = it.get(key)?;
-    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// Pick the best audio format to play: prefer the broadly-decodable M4A/AAC
@@ -214,8 +230,7 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
 /// A plain browser `User-Agent` for talking to an Invidious `local` proxy (it
 /// is not a signed googlevideo URL, so no client-specific UA is needed).
 #[cfg(feature = "live")]
-pub(crate) const BROWSER_UA: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
 /// Probe a proxy media URL with a tiny range request: `true` only when the
 /// instance actually serves **audio media bytes** — not merely `2xx + non-empty`.
@@ -359,7 +374,11 @@ mod tests {
             eprintln!("[proxy test] skipped — no Invidious instance reachable");
             return;
         };
-        assert!(stream.url.contains("local=true"), "resolved a proxied URL: {}", stream.url);
+        assert!(
+            stream.url.contains("local=true"),
+            "resolved a proxied URL: {}",
+            stream.url
+        );
         let client = match reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -416,7 +435,9 @@ mod tests {
         assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
         // A real m4a fragment begins with an ISO-BMFF box (`....ftyp`/`....moov`)
         // or arbitrary binary — never HTML.
-        assert!(!body_sniffs_as_html(&[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p']));
+        assert!(!body_sniffs_as_html(&[
+            0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'
+        ]));
         assert!(!body_sniffs_as_html(b"OggS\x00\x02"));
     }
 

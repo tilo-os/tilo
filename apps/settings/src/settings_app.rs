@@ -273,7 +273,7 @@ impl SettingsApp {
 
 impl Widget for SettingsApp {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        use automerge::{transaction::Transactable, ReadDoc, Value};
+        use automerge::{ReadDoc, Value, transaction::Transactable};
 
         // Category selection: each sidebar row writes `settings.select.<slug>`
         // = true on click. Reading it true here switches the active category
@@ -395,7 +395,14 @@ impl Widget for SettingsApp {
         permissions: &ui::permissions::PermissionContext,
     ) {
         if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            shell.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -415,7 +422,14 @@ impl Widget for SettingsApp {
             && let Some(&shell_node) = children.first()
         {
             shell.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, shell_node,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                shell_node,
                 taffy,
             );
         }
@@ -456,7 +470,9 @@ impl Widget for SettingsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.needs_animation_frame())
+        self.shell
+            .as_ref()
+            .is_some_and(|s| s.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -464,7 +480,9 @@ impl Widget for SettingsApp {
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.layout_needs_measure())
+        self.shell
+            .as_ref()
+            .is_some_and(|s| s.layout_needs_measure())
     }
 
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
@@ -486,8 +504,15 @@ impl Widget for SettingsApp {
     /// Navigate to the pane a chosen palette row identifies. Pane selection is
     /// app-local presentation (per-peer, never in the shared doc), so the doc
     /// args are unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
-        if let Some(category) = crate::search_provider::SettingsSearchProvider::parse_action_id(action_id) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        _doc: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) {
+        if let Some(category) =
+            crate::search_provider::SettingsSearchProvider::parse_action_id(action_id)
+        {
             self.select(category);
         }
     }
@@ -654,7 +679,9 @@ mod tests {
     fn narrow_list_shot_shows_the_standalone_list_screen() {
         // The category list remains reachable (and capturable) as its own
         // full-screen screen — it is simply no longer the collapse default.
-        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
+        let mut app = SettingsApp::new()
+            .with_width_hint(440.0)
+            .with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
@@ -688,15 +715,23 @@ mod tests {
     #[test]
     fn narrow_pick_navigates_list_to_content_and_back() {
         // Start on the list screen — the reachable back-tap state.
-        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
+        let mut app = SettingsApp::new()
+            .with_width_hint(440.0)
+            .with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.sidebar_open(), "starts on the list screen");
         // Picking a category drills into its content screen.
         app.select(Category::Users);
         assert!(app.take_structure_dirty(), "the pick requests a rebuild");
         layout_at(&mut app, 440.0, 820.0);
-        assert!(!app.sidebar_open(), "the pick navigated to the content screen");
-        assert!(app.back_button_rect().width() > 0.0, "a back arrow is present");
+        assert!(
+            !app.sidebar_open(),
+            "the pick navigated to the content screen"
+        );
+        assert!(
+            app.back_button_rect().width() > 0.0,
+            "a back arrow is present"
+        );
     }
 
     #[test]

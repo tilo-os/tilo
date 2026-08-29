@@ -21,8 +21,8 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::link_popover::PageEntry;
 use crate::widget::Widget;
+use crate::widget::link_popover::PageEntry;
 
 const WIDTH: f64 = 480.0;
 const ROW_HEIGHT: f64 = 36.0;
@@ -93,7 +93,9 @@ impl PageJumpPalette {
     }
 
     pub fn highlighted(&self) -> Option<&PageEntry> {
-        self.visible.get(self.cursor).and_then(|&i| self.items.get(i))
+        self.visible
+            .get(self.cursor)
+            .and_then(|&i| self.items.get(i))
     }
 
     pub fn take_selection(&mut self) -> Option<PageEntry> {
@@ -136,7 +138,13 @@ impl PageJumpPalette {
             return false;
         }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text,
+                    ..
+                },
             ..
         } = event
         else {
@@ -230,8 +238,7 @@ impl PageJumpPalette {
             rect.x1 - PADDING,
             rect.y0 + PADDING + INPUT_HEIGHT,
         );
-        let input_shape =
-            RoundedRect::from_rect(input_rect, theme.tokens.radii.md as f64);
+        let input_shape = RoundedRect::from_rect(input_rect, theme.tokens.radii.md as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -249,14 +256,17 @@ impl PageJumpPalette {
 
         let text_size = tokens.typography.scale.base;
         let placeholder = "Jump to page…";
-        let display = if self.query.is_empty() { placeholder } else { &self.query };
+        let display = if self.query.is_empty() {
+            placeholder
+        } else {
+            &self.query
+        };
         let text_color = if self.query.is_empty() {
             tokens.colors.text_dim
         } else {
             tokens.colors.text_primary
         };
-        let ty =
-            input_rect.y0 + (input_rect.height() - text_size as f64) / 2.0;
+        let ty = input_rect.y0 + (input_rect.height() - text_size as f64) / 2.0;
         text_renderer.draw_text(
             scene,
             display,
@@ -285,15 +295,9 @@ impl PageJumpPalette {
         for (i, &idx) in self.visible.iter().take(MAX_VISIBLE_ROWS).enumerate() {
             let row = &self.items[idx];
             let y0 = list_top + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + PADDING,
-                y0,
-                rect.x1 - PADDING,
-                y0 + ROW_HEIGHT,
-            );
+            let row_rect = Rect::new(rect.x0 + PADDING, y0, rect.x1 - PADDING, y0 + ROW_HEIGHT);
             if i == self.cursor {
-                let hl =
-                    RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
+                let hl = RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -302,8 +306,7 @@ impl PageJumpPalette {
                     &hl,
                 );
             }
-            let ty =
-                row_rect.y0 + (row_rect.height() - row_size as f64) / 2.0;
+            let ty = row_rect.y0 + (row_rect.height() - row_size as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -377,9 +380,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -398,8 +399,14 @@ mod tests {
     fn seed_two() -> PageJumpPalette {
         let mut p = PageJumpPalette::new();
         p.set_items(vec![
-            PageEntry { id: Uuid::from_u128(1), title: "Welcome".into() },
-            PageEntry { id: Uuid::from_u128(2), title: "Roadmap".into() },
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "Welcome".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "Roadmap".into(),
+            },
         ]);
         p
     }

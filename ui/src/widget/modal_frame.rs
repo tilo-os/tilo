@@ -176,7 +176,10 @@ impl<'a> Default for ModalSpec<'a> {
 
 impl<'a> ModalSpec<'a> {
     pub fn new(title: &'a str) -> Self {
-        Self { title, ..Self::default() }
+        Self {
+            title,
+            ..Self::default()
+        }
     }
     pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
         self.actions = actions;
@@ -321,9 +324,16 @@ impl ModalFrame {
         let body_size = tokens.typography.scale.sm.max(12.0);
 
         let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
-        let w = spec.max_width.min(avail_w).max(MODAL_MIN_WIDTH.min(avail_w));
+        let w = spec
+            .max_width
+            .min(avail_w)
+            .max(MODAL_MIN_WIDTH.min(avail_w));
 
-        let action_h = if spec.actions.is_empty() { 0.0 } else { MODAL_ACTION_ROW_H };
+        let action_h = if spec.actions.is_empty() {
+            0.0
+        } else {
+            MODAL_ACTION_ROW_H
+        };
         let chrome_h = MODAL_TITLE_ROW_H + action_h + MODAL_PAD;
         let wanted_h = chrome_h + spec.body_height.max(0.0);
         let avail_h = (viewport.height() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
@@ -420,8 +430,20 @@ impl ModalFrame {
         // separates it from a panel that happens to be centred.
         crate::surface::shadow(scene, transform, layout.card, radius, &tokens.elevation.e4);
         let card = RoundedRect::from_rect(layout.card, radius);
-        scene.fill(Fill::NonZero, transform, Self::card_fill(theme), None, &card);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &card);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Self::card_fill(theme),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
 
         if !spec.title.is_empty() {
             let size = tokens.typography.scale.base.max(14.0);
@@ -513,8 +535,14 @@ mod tests {
         let l = lay(&spec, &Theme::dark());
         let cx = (l.card.x0 + l.card.x1) / 2.0;
         let cy = (l.card.y0 + l.card.y1) / 2.0;
-        assert!((cx - 800.0).abs() < 0.5, "card centre x = {cx}, viewport centre is 800");
-        assert!((cy - 500.0).abs() < 0.5, "card centre y = {cy}, viewport centre is 500");
+        assert!(
+            (cx - 800.0).abs() < 0.5,
+            "card centre x = {cx}, viewport centre is 800"
+        );
+        assert!(
+            (cy - 500.0).abs() < 0.5,
+            "card centre y = {cy}, viewport centre is 500"
+        );
     }
 
     /// A closable modal always has a close control, and it is a real hit
@@ -524,7 +552,9 @@ mod tests {
         let spec = ModalSpec::new("Workspace invite").body_height(120.0);
         for (name, theme) in themes() {
             let l = lay(&spec, &theme);
-            let close = l.close.unwrap_or_else(|| panic!("{name}: no close control"));
+            let close = l
+                .close
+                .unwrap_or_else(|| panic!("{name}: no close control"));
             assert!(
                 close.width() >= 28.0 && close.height() >= 28.0,
                 "{name}: close target is {}x{} — too small to hit",
@@ -540,7 +570,10 @@ mod tests {
                 Some(ModalHit::Close),
                 "{name}: the close control does not hit-test as Close",
             );
-            assert!(l.dismisses(close.center()), "{name}: clicking close does not dismiss");
+            assert!(
+                l.dismisses(close.center()),
+                "{name}: clicking close does not dismiss"
+            );
         }
     }
 
@@ -587,7 +620,11 @@ mod tests {
         // Hover on something that cannot be clicked is a lie about what will
         // happen.
         assert_eq!(
-            paint(ModalAction::secondary("Cancel").enabled(false).hovered(true)),
+            paint(
+                ModalAction::secondary("Cancel")
+                    .enabled(false)
+                    .hovered(true)
+            ),
             paint(ModalAction::secondary("Cancel").enabled(false)),
             "a disabled action must not react to the pointer",
         );
@@ -635,8 +672,13 @@ mod tests {
     /// edge, which is where the primary action belongs.
     #[test]
     fn actions_are_left_to_right_with_the_last_at_the_right_edge() {
-        let actions = [ModalAction::secondary("Cancel"), ModalAction::primary("Create invite")];
-        let spec = ModalSpec::new("Workspace invite").actions(&actions).body_height(100.0);
+        let actions = [
+            ModalAction::secondary("Cancel"),
+            ModalAction::primary("Create invite"),
+        ];
+        let spec = ModalSpec::new("Workspace invite")
+            .actions(&actions)
+            .body_height(100.0);
         let l = lay(&spec, &Theme::dark());
         assert_eq!(l.actions.len(), 2);
         assert!(
@@ -661,7 +703,9 @@ mod tests {
             ModalAction::secondary("Cancel"),
             ModalAction::primary("Join"),
         ];
-        let spec = ModalSpec::new("Join a workspace").actions(&actions).body_height(120.0);
+        let spec = ModalSpec::new("Join a workspace")
+            .actions(&actions)
+            .body_height(120.0);
         let l = lay(&spec, &Theme::dark());
         for (i, r) in l.actions.iter().enumerate() {
             assert!(r.area() > 0.0, "action {i} has no area");
@@ -671,16 +715,24 @@ mod tests {
                 l.card,
             );
             assert_eq!(l.hit(r.center()), Some(ModalHit::Action(i)));
-            assert!(!l.dismisses(r.center()), "an action click must not dismiss on its own");
+            assert!(
+                !l.dismisses(r.center()),
+                "an action click must not dismiss on its own"
+            );
         }
     }
 
     #[test]
     fn a_disabled_action_is_not_the_default_action() {
         let actions = [ModalAction::primary("Join").enabled(false)];
-        let spec = ModalSpec::new("Join a workspace").actions(&actions).body_height(80.0);
+        let spec = ModalSpec::new("Join a workspace")
+            .actions(&actions)
+            .body_height(80.0);
         let l = lay(&spec, &Theme::dark());
-        assert_eq!(l.primary, None, "a disabled action must not be what Enter fires");
+        assert_eq!(
+            l.primary, None,
+            "a disabled action must not be what Enter fires"
+        );
     }
 
     /// The scrim covers the viewport, and a click on it dismisses only when
@@ -693,9 +745,14 @@ mod tests {
         let l = lay(&spec, &Theme::dark());
         assert_eq!(l.scrim, VIEWPORT, "the scrim must cover the whole viewport");
         assert_eq!(l.hit(corner), Some(ModalHit::Scrim));
-        assert!(l.dismisses(corner), "the default modal dismisses on a scrim click");
+        assert!(
+            l.dismisses(corner),
+            "the default modal dismisses on a scrim click"
+        );
 
-        let sticky = ModalSpec::new("Workspace invite").body_height(100.0).dismiss_on_scrim(false);
+        let sticky = ModalSpec::new("Workspace invite")
+            .body_height(100.0)
+            .dismiss_on_scrim(false);
         let l = lay(&sticky, &Theme::dark());
         assert_eq!(
             l.hit(corner),
@@ -721,7 +778,10 @@ mod tests {
         let actions = [ModalAction::primary("OK")];
         let spec = ModalSpec::new("Tall").actions(&actions).body_height(9000.0);
         let l = lay(&spec, &Theme::dark());
-        assert!(l.body_overflows, "a 9000px body in a 1000px viewport must report overflow");
+        assert!(
+            l.body_overflows,
+            "a 9000px body in a 1000px viewport must report overflow"
+        );
         assert!(
             l.card.y0 >= VIEWPORT.y0 && l.card.y1 <= VIEWPORT.y1,
             "the card {:?} escaped the viewport {:?}",
@@ -789,7 +849,10 @@ mod tests {
             // The dim tier is secondary, so it is held to the large-text bar
             // rather than the body bar.
             let rd = contrast_ratio(dim, card);
-            assert!(rd >= 3.0, "{name}: dim ink contrast is {rd:.2}:1 — unreadable as a sub-label");
+            assert!(
+                rd >= 3.0,
+                "{name}: dim ink contrast is {rd:.2}:1 — unreadable as a sub-label"
+            );
         }
     }
 
@@ -805,8 +868,8 @@ mod tests {
         ];
         for (name, theme) in themes() {
             for (emphasis, style) in styles {
-                let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite")
-                    .style(style);
+                let face =
+                    ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite").style(style);
                 let (bg, _border, painted) = face.colors(&theme);
                 let r = contrast_ratio(painted, bg);
                 assert!(

@@ -4,7 +4,7 @@
 //! paragraph-style. Unmodeled body elements are captured verbatim as fidelity atoms.
 
 use super::container::OdtContainer;
-use super::styles::{attr_val, StyleRegistry};
+use super::styles::{StyleRegistry, attr_val};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
@@ -63,7 +63,13 @@ fn is_layout_whitespace(t: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| c.is_whitespace()) && t.contains(['\n', '\r'])
 }
 
-fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
+fn start_block(
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+    kind: &str,
+) -> String {
     let id = doc.insert_block(prev.as_deref(), kind);
     *prev = Some(id.clone());
     *cur = Some(id.clone());
@@ -86,9 +92,26 @@ fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str
 
 /// Open a paragraph or heading depending on the referenced paragraph style, set
 /// level/alignment, and return the paragraph-level inline marks to apply over the block.
-fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, reg: &StyleRegistry, style: Option<&str>) -> Vec<(String, MarkValue)> {
+fn open_para(
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+    reg: &StyleRegistry,
+    style: Option<&str>,
+) -> Vec<(String, MarkValue)> {
     let level = style.and_then(|s| reg.heading_level(s));
-    let id = start_block(doc, prev, cur, cur_len, if level.is_some() { "heading" } else { "paragraph" });
+    let id = start_block(
+        doc,
+        prev,
+        cur,
+        cur_len,
+        if level.is_some() {
+            "heading"
+        } else {
+            "paragraph"
+        },
+    );
     if let Some(l) = level {
         doc.set_attr(&id, "level", l);
     }
@@ -121,7 +144,12 @@ fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Strin
     }
 }
 
-pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &OdtContainer, doc: &mut DocMut) -> Result<(), CodecError> {
+pub(crate) fn parse_body(
+    content_xml: &[u8],
+    reg: &StyleRegistry,
+    container: &OdtContainer,
+    doc: &mut DocMut,
+) -> Result<(), CodecError> {
     let s = std::str::from_utf8(content_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
@@ -186,7 +214,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
 
     loop {
         let pos_before = reader.buffer_position() as usize;
-        let ev = reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+        let ev = reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
 
         if let Some((start, depth)) = capture.as_mut() {
             match &ev {
@@ -229,7 +259,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 Event::Text(t) => {
                     if let Some(is_title) = fr.collecting {
-                        let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                        let txt = t
+                            .xml10_content()
+                            .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                         if is_title {
                             fr.title.push_str(&txt);
                         } else {
@@ -245,12 +277,19 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     }
                     if fr.depth == 0 {
                         let end = reader.buffer_position() as usize;
-                        let bytes = fr.href.as_deref().and_then(|h| container.get(h).map(|b| b.to_vec()));
+                        let bytes = fr
+                            .href
+                            .as_deref()
+                            .and_then(|h| container.get(h).map(|b| b.to_vec()));
                         if let Some(bytes) = bytes {
                             let hash = doc.put_blob(&bytes);
                             let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "image");
                             doc.set_attr(&id, "blob", hash.as_str());
-                            let alt = if !fr.title.is_empty() { &fr.title } else { &fr.desc };
+                            let alt = if !fr.title.is_empty() {
+                                &fr.title
+                            } else {
+                                &fr.desc
+                            };
                             if !alt.is_empty() {
                                 doc.set_attr(&id, "alt", alt.as_str());
                             }
@@ -276,7 +315,8 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         } else {
                             // Picture missing from the container → preserve verbatim.
                             let raw = s[fr.raw_start..end].to_string();
-                            let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
+                            let id =
+                                start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
                             doc.set_attr(&id, "xml", raw.as_str());
                         }
                         cur = None;
@@ -296,7 +336,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     *depth -= 1;
                     if *depth == 0 {
                         let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let (Some(b), Some(nid)) = (block.clone(), super::notes::import_note(&raw, doc)) {
+                        if let (Some(b), Some(nid)) =
+                            (block.clone(), super::notes::import_note(&raw, doc))
+                        {
                             note_refs.push((b, *idx, nid));
                         }
                         note = None;
@@ -316,7 +358,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     *depth -= 1;
                     if *depth == 0 {
                         let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let (Some(b), Some((name, cid))) = (block.clone(), super::comments::import_annotation(&raw, doc)) {
+                        if let (Some(b), Some((name, cid))) =
+                            (block.clone(), super::comments::import_annotation(&raw, doc))
+                        {
                             match name {
                                 // A ranged comment: stash it until its annotation-end.
                                 Some(n) => {
@@ -375,7 +419,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
                     let style = attr_val(&e, b"text:style-name");
-                    let lvl = outline_level(&e).or_else(|| style.as_deref().and_then(|s| reg.heading_level(s))).unwrap_or(1).clamp(1, 6);
+                    let lvl = outline_level(&e)
+                        .or_else(|| style.as_deref().and_then(|s| reg.heading_level(s)))
+                        .unwrap_or(1)
+                        .clamp(1, 6);
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
                     doc.set_attr(&id, "level", lvl);
                     if let Some(a) = style.as_deref().and_then(|s| reg.para_align(s)) {
@@ -385,7 +432,14 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 b"text:p" if in_text && !in_item && table_id.is_none() => {
                     let style = attr_val(&e, b"text:style-name");
-                    cur_para_marks = open_para(doc, &mut prev, &mut cur, &mut cur_len, reg, style.as_deref());
+                    cur_para_marks = open_para(
+                        doc,
+                        &mut prev,
+                        &mut cur,
+                        &mut cur_len,
+                        reg,
+                        style.as_deref(),
+                    );
                 }
                 b"text:list" if in_text => {
                     // A nested `text:list` often omits its own style-name, continuing the parent list's style at the deeper level — so inherit the parent's ordered-ness instead of defaulting to bulleted.
@@ -400,7 +454,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     let numbering = style.as_deref().and_then(|s| reg.list_numbering.get(s));
                     let mut num_format = numbering.and_then(|n| n.num_format);
                     let mut num_start = numbering.and_then(|n| n.num_start);
-                    if let Some(s) = attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok()) {
+                    if let Some(s) =
+                        attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok())
+                    {
                         num_start = Some(s);
                     }
                     let continuing = attr_val(&e, b"text:continue-numbering")
@@ -445,7 +501,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 b"text:p" if in_text && in_item => {
                     if let Some(id) = cur.clone() {
-                        if let Some(a) = attr_val(&e, b"text:style-name").as_deref().and_then(|s| reg.para_align(s)) {
+                        if let Some(a) = attr_val(&e, b"text:style-name")
+                            .as_deref()
+                            .and_then(|s| reg.para_align(s))
+                        {
                             doc.set_attr(&id, "align", a.as_str());
                         }
                     }
@@ -453,7 +512,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 b"text:p" if in_text && table_id.is_some() => {
                     // The paragraph inside a table cell: lift its alignment onto the cell block so centred/right-aligned cells round-trip.
                     if let Some(id) = cur.clone() {
-                        if let Some(a) = attr_val(&e, b"text:style-name").as_deref().and_then(|s| reg.para_align(s)) {
+                        if let Some(a) = attr_val(&e, b"text:style-name")
+                            .as_deref()
+                            .and_then(|s| reg.para_align(s))
+                        {
                             doc.set_attr(&id, "align", a.as_str());
                         }
                     }
@@ -475,13 +537,17 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     }
                 }
                 b"text:span" if in_text => {
-                    let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
+                    let marks = attr_val(&e, b"text:style-name")
+                        .map(|s| reg.text_marks(&s))
+                        .unwrap_or_default();
                     span_stack.push((marks, cur_len));
                 }
                 b"text:a" if in_text => {
                     // A hyperlink: model the href as an inline `link` mark over the linked range (so it merges with concurrent text edits), plus any text marks the link's own style carries.
                     let href = attr_val(&e, b"xlink:href");
-                    let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
+                    let marks = attr_val(&e, b"text:style-name")
+                        .map(|s| reg.text_marks(&s))
+                        .unwrap_or_default();
                     link_stack.push((href, marks, cur_len));
                 }
                 b"draw:frame" if in_text && table_id.is_none() => {
@@ -499,7 +565,8 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         "page" => "page".to_string(),
                         _ => "paragraph".to_string(),
                     });
-                    let wrap = attr_val(&e, b"draw:style-name").and_then(|s| reg.graphic_wrap.get(&s).cloned());
+                    let wrap = attr_val(&e, b"draw:style-name")
+                        .and_then(|s| reg.graphic_wrap.get(&s).cloned());
                     frame = Some(FrameState {
                         raw_start: pos_before,
                         depth: 1,
@@ -522,12 +589,22 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             },
             Event::Empty(e) => match e.name().as_ref() {
                 b"text:p" if in_text && !in_item && table_id.is_none() => {
-                    open_para(doc, &mut prev, &mut cur, &mut cur_len, reg, attr_val(&e, b"text:style-name").as_deref());
+                    open_para(
+                        doc,
+                        &mut prev,
+                        &mut cur,
+                        &mut cur_len,
+                        reg,
+                        attr_val(&e, b"text:style-name").as_deref(),
+                    );
                     cur = None;
                 }
                 b"text:h" if in_text => {
                     let style = attr_val(&e, b"text:style-name");
-                    let lvl = outline_level(&e).or_else(|| style.as_deref().and_then(|s| reg.heading_level(s))).unwrap_or(1).clamp(1, 6);
+                    let lvl = outline_level(&e)
+                        .or_else(|| style.as_deref().and_then(|s| reg.heading_level(s)))
+                        .unwrap_or(1)
+                        .clamp(1, 6);
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
                     doc.set_attr(&id, "level", lvl);
                     cur = None;
@@ -563,7 +640,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 b"text:change-start" if in_text && cur.is_some() => {
                     // Opens a tracked-change range: remember the current char index; the matching `text:change-end` records the end.
                     if let Some(id) = super::changes::marker_change_id(&e) {
-                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                        if let (Some((cid, kind)), Some(b)) =
+                            (change_decls.get(&id).cloned(), cur.clone())
+                        {
                             open_changes.insert(id, (cid, kind, b, cur_len));
                         }
                     }
@@ -579,7 +658,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 b"text:change" if in_text && cur.is_some() => {
                     // A point change marker (a deletion with no retained body text, or a collapsed insertion). Anchor a 1-char range if there's a character after it (widened on apply), else a zero-width range that drops.
                     if let Some(id) = super::changes::marker_change_id(&e) {
-                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                        if let (Some((cid, kind)), Some(b)) =
+                            (change_decls.get(&id).cloned(), cur.clone())
+                        {
                             change_ranges.push((b, cur_len, cur_len, kind, cid));
                         }
                     }
@@ -587,7 +668,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
                 b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
                 b"text:s" if in_text => {
-                    let n = attr_val(&e, b"text:c").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).min(256);
+                    let n = attr_val(&e, b"text:c")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
                 }
                 b"table:table-cell" if in_text => {
@@ -648,7 +732,13 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     if let Some((href, marks, start)) = link_stack.pop() {
                         if let Some(b) = cur.as_ref() {
                             if let Some(h) = href {
-                                pending_marks.push((b.clone(), start, cur_len, "link".to_string(), MarkValue::Str(h)));
+                                pending_marks.push((
+                                    b.clone(),
+                                    start,
+                                    cur_len,
+                                    "link".to_string(),
+                                    MarkValue::Str(h),
+                                ));
                             }
                             for (name, value) in marks {
                                 pending_marks.push((b.clone(), start, cur_len, name, value));
@@ -660,7 +750,9 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             },
             Event::Text(t) => {
                 if let Some(b) = cur.as_ref() {
-                    let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                    let txt = t
+                        .xml10_content()
+                        .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                     // Skip pretty-printer indentation between structural elements — otherwise list items / headings import with blank leading/trailing lines and huge vertical gaps.
                     if !txt.is_empty() && !is_layout_whitespace(&txt) {
                         doc.splice_text(b, cur_len, 0, &txt);
@@ -734,13 +826,15 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
+    crate::model::block_text(doc.doc, doc.c, block_id)
+        .map(|t| t.chars().count())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_odt, minimal_odt_styled};
     use super::super::OdtCodec;
+    use super::super::container::{minimal_odt, minimal_odt_styled};
     use crate::{AttrVal, Document, FormatProvider};
 
     #[test]
@@ -761,7 +855,10 @@ mod tests {
         assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(2)));
         assert_eq!(snap.blocks[1].kind, "paragraph");
         assert_eq!(snap.blocks[1].text, "Hello");
-        assert_eq!(snap.blocks.iter().filter(|b| b.kind == "list_item").count(), 2);
+        assert_eq!(
+            snap.blocks.iter().filter(|b| b.kind == "list_item").count(),
+            2
+        );
         assert_eq!(snap.blocks[2].text, "one");
         assert_eq!(snap.blocks[3].text, "two");
     }
@@ -783,12 +880,16 @@ mod tests {
         let p = &snap.blocks[0];
         assert_eq!(p.text, "a bold and em");
         assert!(
-            p.marks.iter().any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+            p.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
             "strong over 'bold', got {:?}",
             p.marks
         );
         assert!(
-            p.marks.iter().any(|m| m.name == "em" && m.start == 11 && m.end == 13),
+            p.marks
+                .iter()
+                .any(|m| m.name == "em" && m.start == 11 && m.end == 13),
             "em over 'em', got {:?}",
             p.marks
         );
@@ -807,9 +908,26 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "big");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "{:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "{:?}",
+            b.marks
+        );
     }
 
     #[test]
@@ -830,16 +948,42 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
 
-        assert_eq!(snap.blocks[0].kind, "heading", "named paragraph style → heading: {snap:?}");
+        assert_eq!(
+            snap.blocks[0].kind, "heading",
+            "named paragraph style → heading: {snap:?}"
+        );
         assert_eq!(snap.blocks[0].text, "My Title");
         assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(1)));
-        assert_eq!(snap.blocks[1].kind, "heading", "heading via inherited parent style");
-        assert!(snap.blocks[2].text.contains('\n'), "line-break: {:?}", snap.blocks[2].text);
-        assert!(snap.blocks[2].text.contains('\t'), "tab: {:?}", snap.blocks[2].text);
-        assert!(snap.blocks[2].text.contains("and   spaces"), "text:s spaces: {:?}", snap.blocks[2].text);
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        assert_eq!(
+            snap.blocks[1].kind, "heading",
+            "heading via inherited parent style"
+        );
+        assert!(
+            snap.blocks[2].text.contains('\n'),
+            "line-break: {:?}",
+            snap.blocks[2].text
+        );
+        assert!(
+            snap.blocks[2].text.contains('\t'),
+            "tab: {:?}",
+            snap.blocks[2].text
+        );
+        assert!(
+            snap.blocks[2].text.contains("and   spaces"),
+            "text:s spaces: {:?}",
+            snap.blocks[2].text
+        );
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)), "numbered list-style → ordered");
+        assert_eq!(
+            items[0].attrs.get("ordered"),
+            Some(&AttrVal::Bool(true)),
+            "numbered list-style → ordered"
+        );
     }
 
     #[test]
@@ -858,16 +1002,32 @@ mod tests {
         let snap = d.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
-        assert_eq!(cells[0].attrs.get("table"), Some(&AttrVal::Str("T1".into())));
+        assert_eq!(
+            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"]
+        );
+        assert_eq!(
+            cells[0].attrs.get("table"),
+            Some(&AttrVal::Str("T1".into()))
+        );
         assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
         assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        let cells2: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.text.clone()).collect();
-        assert_eq!(cells2, vec!["a", "b", "c", "d"], "table survives export+import");
+        let cells2: Vec<_> = d2
+            .materialize()
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "cell")
+            .map(|b| b.text.clone())
+            .collect();
+        assert_eq!(
+            cells2,
+            vec!["a", "b", "c", "d"],
+            "table survives export+import"
+        );
     }
 
     #[test]
@@ -880,8 +1040,17 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "see here!");
-        let link = b.marks.iter().find(|m| m.name == "link").expect("link mark present");
-        assert_eq!((link.start, link.end), (4, 8), "link over 'here': {:?}", b.marks);
+        let link = b
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .expect("link mark present");
+        assert_eq!(
+            (link.start, link.end),
+            (4, 8),
+            "link over 'here': {:?}",
+            b.marks
+        );
         assert_eq!(link.value, MarkValue::Str("https://qos.dev/x".into()));
     }
 
@@ -895,7 +1064,13 @@ mod tests {
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "bold");
-        assert!(b.marks.iter().any(|m| m.name == "link" && m.value == MarkValue::Str("http://x/".into())), "{:?}", b.marks);
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "link" && m.value == MarkValue::Str("http://x/".into())),
+            "{:?}",
+            b.marks
+        );
         assert!(b.marks.iter().any(|m| m.name == "strong"), "{:?}", b.marks);
     }
 
@@ -910,7 +1085,10 @@ mod tests {
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "a red");
         assert!(
-            b.marks.iter().any(|m| m.name == "color" && m.start == 2 && m.end == 5 && m.value == MarkValue::Str("#ff0000".into())),
+            b.marks.iter().any(|m| m.name == "color"
+                && m.start == 2
+                && m.end == 5
+                && m.value == MarkValue::Str("#ff0000".into())),
             "color mark normalized + ranged: {:?}",
             b.marks
         );
@@ -929,25 +1107,45 @@ mod tests {
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
-        let cells: Vec<_> = d.materialize().blocks.into_iter().filter(|b| b.kind == "cell").collect();
+        let cells: Vec<_> = d
+            .materialize()
+            .blocks
+            .into_iter()
+            .filter(|b| b.kind == "cell")
+            .collect();
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].attrs.get("align"), Some(&AttrVal::Str("center".into())), "centred cell: {:?}", cells[0].attrs);
+        assert_eq!(
+            cells[0].attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "centred cell: {:?}",
+            cells[0].attrs
+        );
         assert_eq!(cells[1].attrs.get("align"), None, "plain cell has no align");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        let aligns: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.attrs.get("align").cloned()).collect();
-        assert_eq!(aligns, vec![Some(AttrVal::Str("center".into())), None], "cell alignment round-trips");
+        let aligns: Vec<_> = d2
+            .materialize()
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "cell")
+            .map(|b| b.attrs.get("align").cloned())
+            .collect();
+        assert_eq!(
+            aligns,
+            vec![Some(AttrVal::Str("center".into())), None],
+            "cell alignment round-trips"
+        );
     }
 
     /// A valid 1x1 truecolor PNG so the in-paragraph image resolves to a real `image` block (a missing picture would fall back to a fidelity atom).
     const TINY_PNG: [u8; 69] = [
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-        0x44, 0xae, 0x42, 0x60, 0x82,
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
     #[test]
@@ -970,7 +1168,10 @@ mod tests {
         let snap = d.materialize();
 
         assert_eq!(
-            snap.blocks.iter().map(|b| b.kind.as_str()).collect::<Vec<_>>(),
+            snap.blocks
+                .iter()
+                .map(|b| b.kind.as_str())
+                .collect::<Vec<_>>(),
             vec!["paragraph", "image", "paragraph"],
             "image-only wrapper paragraph dropped: {snap:?}"
         );
@@ -981,9 +1182,18 @@ mod tests {
             Some(AttrVal::Str(h)) => h.clone(),
             other => panic!("image missing blob attr: {other:?}"),
         };
-        assert_eq!(snap.blobs.get(&hash).map(|b| b.as_slice()), Some(&TINY_PNG[..]), "blob bytes stored");
+        assert_eq!(
+            snap.blobs.get(&hash).map(|b| b.as_slice()),
+            Some(&TINY_PNG[..]),
+            "blob bytes stored"
+        );
         // svg:width="200pt" → 200*96/72 ≈ 267px.
-        assert_eq!(img.attrs.get("width"), Some(&AttrVal::Int(267)), "{:?}", img.attrs);
+        assert_eq!(
+            img.attrs.get("width"),
+            Some(&AttrVal::Int(267)),
+            "{:?}",
+            img.attrs
+        );
     }
 
     #[test]
@@ -1017,17 +1227,28 @@ mod tests {
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         let level = |b: &crate::snapshot::BlockView| match b.attrs.get("level") {
             Some(AttrVal::Int(n)) => *n,
             _ => 0,
         };
         assert_eq!(
-            items.iter().map(|b| (b.text.clone(), level(b))).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|b| (b.text.clone(), level(b)))
+                .collect::<Vec<_>>(),
             vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1)],
             "nesting depth captured: {items:?}"
         );
-        assert_eq!(items[0].attrs.get("level"), None, "top-level item has no level attr");
+        assert_eq!(
+            items[0].attrs.get("level"),
+            None,
+            "top-level item has no level attr"
+        );
     }
 
     #[test]
@@ -1037,8 +1258,17 @@ mod tests {
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").map(|b| b.text.clone()).collect();
-        assert_eq!(items, vec!["a", "b"], "no indentation whitespace in item text: {items:?}");
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .map(|b| b.text.clone())
+            .collect();
+        assert_eq!(
+            items,
+            vec!["a", "b"],
+            "no indentation whitespace in item text: {items:?}"
+        );
     }
 
     #[test]
@@ -1063,7 +1293,9 @@ mod tests {
             other => panic!("fidelity atom missing xml attr: {other:?}"),
         };
         assert!(
-            raw1.starts_with("<draw:frame") && raw1.contains("pic.png") && raw1.ends_with("</draw:frame>"),
+            raw1.starts_with("<draw:frame")
+                && raw1.contains("pic.png")
+                && raw1.ends_with("</draw:frame>"),
             "captured raw: {raw1}"
         );
 
@@ -1091,7 +1323,10 @@ mod tests {
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "a bonjour");
         assert!(
-            b.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr-FR".into())),
+            b.marks.iter().any(|m| m.name == "lang"
+                && m.start == 2
+                && m.end == 9
+                && m.value == MarkValue::Str("fr-FR".into())),
             "lang mark reassembled from fo:language+fo:country, ranged: {:?}",
             b.marks
         );
@@ -1112,11 +1347,19 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
 
-        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        assert_eq!(
+            snap.language.as_deref(),
+            Some("de-DE"),
+            "document default language survives: {:?}",
+            snap.language
+        );
         let b = &snap.blocks[0];
         assert_eq!(b.text, "bonjour monde");
         assert!(
-            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            b.marks.iter().any(|m| m.name == "lang"
+                && m.start == 0
+                && m.end == 7
+                && m.value == MarkValue::Str("fr".into())),
             "run lang mark `fr` survives over 'bonjour': {:?}",
             b.marks
         );
