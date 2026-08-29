@@ -150,7 +150,7 @@ impl MailEngine for StubEngine {
             }
             EngineRequest::Send { account, draft } => {
                 let from =
-                    crate::model::Addr::new(account.display_name.clone(), account.email.clone());
+                    crate::model::Addr::new(account.display_name.clone(), account.email);
                 match build_mime(&from, &draft) {
                     Ok(bytes) => {
                         let _ = out.send(EngineEvent::Sent {
@@ -217,7 +217,7 @@ pub mod live {
     use accounts::{AccountId, SecretVault};
     use futures::TryStreamExt;
 
-    use super::*;
+    use super::{AccountConfig, Folder, Message, Draft, build_mime, MailEngine, EngineRequest, Sender, EngineEvent};
     // AccountConfig / Draft / Folder / Message / Sender / build_mime come via
     // `super::*`; these are the names the parent doesn't already bring in.
     use crate::model::{Addr, AuthMethod};
@@ -452,7 +452,7 @@ pub mod live {
         let mut tokens =
             oauth::tokens_from_secret(&secret).ok_or("stored credential is not an OAuth token")?;
         if tokens.needs_refresh() {
-            let domain = email.split_once('@').map(|(_, d)| d).unwrap_or("");
+            let domain = email.split_once('@').map_or("", |(_, d)| d);
             let provider = oauth::OAuthProvider::from_domain(domain)
                 .ok_or("cannot refresh: unknown OAuth provider")?;
             let client_id = provider
@@ -484,7 +484,7 @@ pub mod live {
             |url| {
                 let _ = std::process::Command::new("xdg-open").arg(url).spawn();
             },
-            std::time::Duration::from_secs(300),
+            std::time::Duration::from_mins(5),
         )?;
         let mut vault = SecretVault::open();
         vault.put(

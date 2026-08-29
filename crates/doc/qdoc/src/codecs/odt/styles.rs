@@ -14,7 +14,7 @@ use quick_xml::reader::Reader;
 use std::collections::{BTreeMap, HashMap};
 
 /// Decode an ODF style name into the qdoc style-id used as the container key:
-/// LibreOffice encodes spaces (and other chars) as `_20_`, so `Heading_20_1` becomes `Heading 1`.
+/// `LibreOffice` encodes spaces (and other chars) as `_20_`, so `Heading_20_1` becomes `Heading 1`.
 pub(super) fn decode_style_name(name: &str) -> String {
     name.replace("_20_", " ")
 }
@@ -28,7 +28,7 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 pub(super) fn parse_pt(v: &str) -> Option<i64> {
@@ -60,18 +60,17 @@ pub(super) fn generic_font(name: &str) -> String {
 /// is stable and two replicas that imported the same colour converge.
 pub(super) fn normalize_color(v: &str) -> String {
     let t = v.trim();
-    if let Some(hex) = t.strip_prefix('#') {
-        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    if let Some(hex) = t.strip_prefix('#')
+        && hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return format!("#{}", hex.to_ascii_lowercase());
         }
-    }
     t.to_string()
 }
 
 /// Classify an ODF `style:text-position` (`<pos> [height]`) as superscript (`Some(true)`),
 /// subscript (`Some(false)`), or neither: positive/`super` → superscript, negative/`sub` → subscript.
 pub(super) fn text_position_kind(v: &str) -> Option<bool> {
-    let first = v.trim().split_whitespace().next()?;
+    let first = v.split_whitespace().next()?;
     match first {
         "super" => Some(true),
         "sub" => Some(false),
@@ -206,10 +205,10 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
             b"fo:font-weight" if val == "bold" => m.push(("strong".into(), MarkValue::Bool(true))),
             b"fo:font-style" if val == "italic" => m.push(("em".into(), MarkValue::Bool(true))),
             b"style:text-underline-style" if val != "none" => {
-                m.push(("underline".into(), MarkValue::Bool(true)))
+                m.push(("underline".into(), MarkValue::Bool(true)));
             }
             b"style:text-line-through-style" if val != "none" => {
-                m.push(("strike".into(), MarkValue::Bool(true)))
+                m.push(("strike".into(), MarkValue::Bool(true)));
             }
             b"fo:font-size" => {
                 if let Some(n) = parse_pt(&val) {
@@ -217,12 +216,12 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 }
             }
             b"style:font-name" | b"fo:font-family" => {
-                m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val))))
+                m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val))));
             }
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
             // Text background (highlight): fo:background-color, skipping the `transparent` sentinel ("no highlight").
             b"fo:background-color" if val != "transparent" => {
-                m.push(("highlight".into(), MarkValue::Str(normalize_color(&val))))
+                m.push(("highlight".into(), MarkValue::Str(normalize_color(&val))));
             }
             // Vertical alignment: style:text-position is `<pos> <height>`; a positive position (or `super`) is superscript, negative (or `sub`) is subscript.
             b"style:text-position" => match text_position_kind(&val) {
@@ -302,7 +301,7 @@ pub(super) struct StyleRegistry {
 }
 
 impl StyleRegistry {
-    /// Heading level for a paragraph style, following parent chains (LibreOffice derives custom styles from "Heading N").
+    /// Heading level for a paragraph style, following parent chains (`LibreOffice` derives custom styles from "Heading N").
     pub(super) fn heading_level(&self, name: &str) -> Option<i64> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
@@ -369,7 +368,7 @@ impl StyleRegistry {
     }
 
     pub(super) fn is_named_para(&self, name: &str) -> bool {
-        self.para.get(name).map(|p| p.named).unwrap_or(false)
+        self.para.get(name).is_some_and(|p| p.named)
     }
 
     /// The paragraph-style chain (self → parent → …), most-derived first.
@@ -483,8 +482,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
             Event::Empty(e) if e.name().as_ref() == b"style:style" => {
                 if let (Some(nm), Some(fam)) =
                     (attr_val(&e, b"style:name"), attr_val(&e, b"style:family"))
-                {
-                    if fam == "paragraph" {
+                    && fam == "paragraph" {
                         let disp = attr_val(&e, b"style:display-name");
                         let (h, l) = heading_from_name(&nm, disp.as_deref());
                         reg.para.insert(
@@ -501,7 +499,6 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                             },
                         );
                     }
-                }
             }
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
                 b"style:style" => {
@@ -577,8 +574,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     list_numbered = true;
                     // Capture level-1 (0-based level 0) format + start; ODF numbers levels from 1, `text:level="1"` is the model's level 0.
                     let is_lvl0 = attr_val(&e, b"text:level")
-                        .map(|l| l == "1")
-                        .unwrap_or(true);
+                        .is_none_or(|l| l == "1");
                     if is_lvl0 {
                         if let Some(f) = attr_val(&e, b"style:num-format") {
                             list_num_format = Some(map_num_format(&f));

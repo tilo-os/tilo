@@ -85,7 +85,7 @@ impl Category {
             ("historic", _) => Category::Landmark,
             ("leisure", "park" | "garden" | "nature_reserve") => Category::Park,
             ("shop", _) => Category::Shop,
-            ("railway", _) | ("public_transport", _) => Category::Transit,
+            ("railway" | "public_transport", _) => Category::Transit,
             ("highway", "bus_stop") => Category::Transit,
             _ => Category::Other,
         }

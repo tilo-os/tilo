@@ -597,7 +597,7 @@ impl ChatDoc {
         let _ = doc.put(&w, "name", name);
         let _ = doc.put(&w, "glyph", glyph);
         let _ = doc.put(&w, "color_idx", color as i64);
-        let _ = doc.put(&w, "order", order as i64);
+        let _ = doc.put(&w, "order", i64::from(order));
     }
 
     fn put_category(
@@ -612,7 +612,7 @@ impl ChatDoc {
         let cat = get_or_map(doc, &cats, id);
         let _ = doc.put(&cat, "workspace", ws);
         let _ = doc.put(&cat, "name", name);
-        let _ = doc.put(&cat, "order", order as i64);
+        let _ = doc.put(&cat, "order", i64::from(order));
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
@@ -634,7 +634,7 @@ impl ChatDoc {
         let _ = doc.put(&c, "name", name);
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
-        let _ = doc.put(&c, "order", order as i64);
+        let _ = doc.put(&c, "order", i64::from(order));
         // Pre-create the shared, empty voice-membership map for a voice channel
         // at creation time. Without this, two peers who join the same call
         // before syncing each independently create the `voice→channel` map, and
@@ -756,8 +756,8 @@ impl ChatDoc {
                     let _ = doc.put(&a, "kind", "image");
                     let _ = doc.put(&a, "name", name.as_str());
                     let _ = doc.put(&a, "path", path.as_str());
-                    let _ = doc.put(&a, "w", *w as i64);
-                    let _ = doc.put(&a, "h", *h as i64);
+                    let _ = doc.put(&a, "w", i64::from(*w));
+                    let _ = doc.put(&a, "h", i64::from(*h));
                 }
                 Attachment::Video {
                     name,
@@ -769,8 +769,8 @@ impl ChatDoc {
                     let _ = doc.put(&a, "kind", "video");
                     let _ = doc.put(&a, "name", name.as_str());
                     let _ = doc.put(&a, "path", path.as_str());
-                    let _ = doc.put(&a, "w", *w as i64);
-                    let _ = doc.put(&a, "h", *h as i64);
+                    let _ = doc.put(&a, "w", i64::from(*w));
+                    let _ = doc.put(&a, "h", i64::from(*h));
                     let _ = doc.put(&a, "size", *size as i64);
                 }
                 Attachment::File { name, path, size } => {
@@ -794,11 +794,10 @@ impl ChatDoc {
         let root_map = map_at(doc, &ROOT, "messages")?;
         let list = list_at(doc, &root_map, channel)?;
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                if get_str(doc, &m, "id") == msg_id {
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                && get_str(doc, &m, "id") == msg_id {
                     return Some(m);
                 }
-            }
         }
         None
     }
@@ -820,23 +819,19 @@ impl ChatDoc {
         // Find an existing (emoji,user) entry.
         let mut found: Option<usize> = None;
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) {
-                if get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i)
+                && get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
                     found = Some(i);
                     break;
                 }
-            }
         }
-        match found {
-            Some(i) => {
-                let _ = doc.delete(&list, i);
-            }
-            None => {
-                let n = doc.length(&list);
-                let e = doc.insert_object(&list, n, ObjType::Map).expect("rxentry");
-                let _ = doc.put(&e, "emoji", emoji);
-                let _ = doc.put(&e, "user", user);
-            }
+        if let Some(i) = found {
+            let _ = doc.delete(&list, i);
+        } else {
+            let n = doc.length(&list);
+            let e = doc.insert_object(&list, n, ObjType::Map).expect("rxentry");
+            let _ = doc.put(&e, "emoji", emoji);
+            let _ = doc.put(&e, "user", user);
         }
     }
 
@@ -845,11 +840,10 @@ impl ChatDoc {
     /// "already reacted" means.
     fn reaction_index(doc: &AutoCommit, list: &ObjId, emoji: &str, user: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i) {
-                if get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i)
+                && get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
                     return Some(i);
                 }
-            }
         }
         None
     }
@@ -909,12 +903,11 @@ impl ChatDoc {
             return;
         };
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                if get_str(doc, &m, "id") == msg_id {
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                && get_str(doc, &m, "id") == msg_id {
                     let _ = doc.delete(&list, i);
                     return;
                 }
-            }
         }
     }
 
@@ -1095,8 +1088,7 @@ impl ChatDoc {
             .filter(|c| c.workspace == ws)
             .map(|c| c.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 
     /// Next free `order` for a channel within `(ws, category)`.
@@ -1106,8 +1098,7 @@ impl ChatDoc {
             .filter(|c| c.workspace == ws && c.category == category)
             .map(|c| c.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 
     /// Create a category at the end of `ws`. Returns its fresh id.
@@ -1129,8 +1120,7 @@ impl ChatDoc {
             .into_iter()
             .map(|w| w.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+            .map_or(0, |m| m + 1);
         Self::put_workspace(doc, &id, name, &monogram(name), order as usize, order);
         let text_cat = Self::create_category(doc, &id, "Channels");
         Self::create_channel(doc, &id, &text_cat, "general", ChannelKind::Text);
@@ -1174,11 +1164,10 @@ impl ChatDoc {
     /// the sidebar but stay in the document. Guarded so a redundant write doesn't
     /// churn the document.
     pub fn set_channel_archived(doc: &mut AutoCommit, id: &str, archived: bool) {
-        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
-            if get_bool(doc, &c, "archived") != archived {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id)
+            && get_bool(doc, &c, "archived") != archived {
                 let _ = doc.put(&c, "archived", archived);
             }
-        }
     }
 
     pub fn rename_channel(doc: &mut AutoCommit, id: &str, name: &str) {
@@ -1209,8 +1198,7 @@ impl ChatDoc {
         let collapsed = Self::list_categories(doc)
             .into_iter()
             .find(|c| c.id == id)
-            .map(|c| c.collapsed)
-            .unwrap_or(false);
+            .is_some_and(|c| c.collapsed);
         Self::set_category_collapsed(doc, id, !collapsed);
     }
 
@@ -1255,7 +1243,7 @@ impl ChatDoc {
         let order = Self::next_channel_order(doc, &ch.workspace, category);
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
             let _ = doc.put(&c, "category", category);
-            let _ = doc.put(&c, "order", order as i64);
+            let _ = doc.put(&c, "order", i64::from(order));
         }
     }
 
@@ -1283,10 +1271,10 @@ impl ChatDoc {
         let b_order = siblings[swap].order;
         let chans = map_at(doc, &ROOT, "channels").unwrap_or(ROOT);
         if let Some(a) = map_at(doc, &chans, &siblings[pos].id) {
-            let _ = doc.put(&a, "order", b_order as i64);
+            let _ = doc.put(&a, "order", i64::from(b_order));
         }
         if let Some(b) = map_at(doc, &chans, &siblings[swap].id) {
-            let _ = doc.put(&b, "order", a_order as i64);
+            let _ = doc.put(&b, "order", i64::from(a_order));
         }
     }
 
@@ -1318,11 +1306,10 @@ impl ChatDoc {
     }
 
     pub fn voice_leave(doc: &mut AutoCommit, channel: &str, user: &str) {
-        if let Some(voice) = map_at(doc, &ROOT, "voice") {
-            if let Some(ch) = map_at(doc, &voice, channel) {
+        if let Some(voice) = map_at(doc, &ROOT, "voice")
+            && let Some(ch) = map_at(doc, &voice, channel) {
                 let _ = doc.delete(&ch, user);
             }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1392,7 +1379,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let cat = map_at(doc, &cats, &id)?;
                 Some(Category {
-                    id: id.clone(),
+                    id: id,
                     workspace: get_str(doc, &cat, "workspace"),
                     name: get_str(doc, &cat, "name"),
                     order: get_i64(doc, &cat, "order") as u32,
@@ -1418,7 +1405,7 @@ impl ChatDoc {
                 let m = map_at(doc, &ch, &user)?;
                 let ticket = get_str(doc, &m, "ticket");
                 Some(VoiceMember {
-                    user: user.clone(),
+                    user: user,
                     talking: get_bool(doc, &m, "talking"),
                     muted: get_bool(doc, &m, "muted"),
                     deafened: get_bool(doc, &m, "deafened"),
@@ -1449,7 +1436,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let w = map_at(doc, &wss, &id)?;
                 Some(Workspace {
-                    id: id.clone(),
+                    id: id,
                     name: get_str(doc, &w, "name"),
                     glyph: get_str(doc, &w, "glyph"),
                     color_idx: get_i64(doc, &w, "color_idx") as usize,
@@ -1469,7 +1456,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let u = map_at(doc, &us, &id)?;
                 Some(User {
-                    id: id.clone(),
+                    id: id,
                     name: get_str(doc, &u, "name"),
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
@@ -1489,7 +1476,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let c = map_at(doc, &chans, &id)?;
                 Some(Channel {
-                    id: id.clone(),
+                    id: id,
                     workspace: get_str(doc, &c, "workspace"),
                     category: get_str(doc, &c, "category"),
                     name: get_str(doc, &c, "name"),
@@ -1709,7 +1696,7 @@ impl ChatDoc {
         }
         if let Some(text) = say.filter(|t| !t.is_empty())
             && let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&block, "text")
-            && doc.text(&t).map(|s| s.is_empty()).unwrap_or(false)
+            && doc.text(&t).is_ok_and(|s| s.is_empty())
         {
             let _ = doc.splice_text(&t, 0, 0, text);
             changed = true;

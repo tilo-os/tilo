@@ -23,8 +23,7 @@ fn have(tool: &str) -> bool {
         .arg("-c")
         .arg(format!("command -v {tool} >/dev/null 2>&1"))
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 fn missing_tools() -> Vec<&'static str> {
@@ -77,9 +76,8 @@ impl Tpm {
         let missing = missing_tools();
         if !missing.is_empty() {
             eprintln!(
-                "SKIP: this test needs {:?}, which are not installed. Install swtpm, tpm2-tools, \
-                 cryptsetup and openssl to run it.",
-                missing
+                "SKIP: this test needs {missing:?}, which are not installed. Install swtpm, tpm2-tools, \
+                 cryptsetup and openssl to run it."
             );
             return None;
         }
@@ -148,7 +146,6 @@ impl Tpm {
                     std::fs::read_to_string(&log)
                         .unwrap_or_default()
                         .trim()
-                        .to_string()
                 ));
             }
             match Command::new("tpm2_getcap")
@@ -672,7 +669,7 @@ fn a_prediction_signed_by_another_key_is_refused() {
     assert!(f.try_unseal(&token, None).expect("sanity").is_some());
 
     let forged = f.predict(7, &f.evil_priv, "forged");
-    let mut tampered = token.clone();
+    let mut tampered = token;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     tampered.predictions[0].signature = b64.encode(&forged.signature);
@@ -711,7 +708,7 @@ fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
         "generation 7's own prediction must work"
     );
 
-    let mut swapped = token7.clone();
+    let mut swapped = token7;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     swapped.predictions[0].signature = b64.encode(&for_3.signature);

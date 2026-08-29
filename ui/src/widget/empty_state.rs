@@ -123,7 +123,7 @@ fn paint_empty_state(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
-    let gap = theme.tokens.spacing.s4 as f64;
+    let gap = f64::from(theme.tokens.spacing.s4);
     let title_size = theme.tokens.typography.scale.xl;
     let msg_size = theme.tokens.typography.scale.sm;
     let btn_size = theme.tokens.typography.scale.sm;
@@ -131,11 +131,9 @@ fn paint_empty_state(
 
     let (title_w, title_h) = text_renderer.measure(title, title_size, None);
     let (msg_w, msg_h) = message
-        .map(|m| text_renderer.measure(m, msg_size, None))
-        .unwrap_or((0.0, 0.0));
+        .map_or((0.0, 0.0), |m| text_renderer.measure(m, msg_size, None));
     let (act_w, _) = action_label
-        .map(|a| text_renderer.measure(a, btn_size, None))
-        .unwrap_or((0.0, 0.0));
+        .map_or((0.0, 0.0), |a| text_renderer.measure(a, btn_size, None));
 
     let fit = Fit::choose(
         rect.height(),
@@ -145,8 +143,8 @@ fn paint_empty_state(
             action: action_label.is_some(),
         },
         Metrics {
-            title_h: title_h as f64,
-            msg_h: msg_h as f64,
+            title_h: f64::from(title_h),
+            msg_h: f64::from(msg_h),
             gap,
             btn_h,
         },
@@ -178,10 +176,10 @@ fn paint_empty_state(
         title,
         title_size,
         theme.text_primary,
-        transform * Affine::translate((cx - title_w as f64 / 2.0, y)),
+        transform * Affine::translate((cx - f64::from(title_w) / 2.0, y)),
         None,
     );
-    y += title_h as f64;
+    y += f64::from(title_h);
 
     if let Some(msg) = message {
         y += gap * 0.5;
@@ -190,16 +188,16 @@ fn paint_empty_state(
             msg,
             msg_size,
             theme.text_dim,
-            transform * Affine::translate((cx - msg_w as f64 / 2.0, y)),
+            transform * Affine::translate((cx - f64::from(msg_w) / 2.0, y)),
             None,
         );
-        y += msg_h as f64;
+        y += f64::from(msg_h);
     }
 
     if let Some(label) = action_label {
         y += gap;
-        let pad_x = theme.tokens.spacing.s4 as f64;
-        let bw = act_w as f64 + pad_x * 2.0;
+        let pad_x = f64::from(theme.tokens.spacing.s4);
+        let bw = f64::from(act_w) + pad_x * 2.0;
         let x0 = cx - bw / 2.0;
         let action_rect = Rect::new(x0, y, x0 + bw, y + btn_h);
         let hovered = action_rect.contains(hover);
@@ -208,15 +206,15 @@ fn paint_empty_state(
         } else {
             theme.accent_primary
         };
-        let pill = RoundedRect::from_rect(action_rect, theme.tokens.radii.md as f64);
+        let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        let ty = action_rect.y0 + (btn_h - btn_size as f64) / 2.0;
+        let ty = action_rect.y0 + (btn_h - f64::from(btn_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             label,
             btn_size,
             Color::WHITE,
-            transform * Affine::translate((cx - act_w as f64 / 2.0, ty)),
+            transform * Affine::translate((cx - f64::from(act_w) / 2.0, ty)),
             None,
         );
         Some(action_rect)
@@ -343,7 +341,7 @@ impl Widget for EmptyState {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -364,10 +362,10 @@ impl Widget for EmptyState {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -430,7 +428,7 @@ impl Widget for EmptyState {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "EmptyState"
     }
 

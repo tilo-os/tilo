@@ -187,7 +187,7 @@ impl ui::widget::Widget for LiveStore {
     fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
         self.inner.children_mut()
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LiveStore"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -225,7 +225,7 @@ fn spawn_refresh_worker(tx: mpsc::Sender<Snapshot>) {
                 break;
             }
             // Refresh every 15 minutes.
-            std::thread::sleep(Duration::from_secs(15 * 60));
+            std::thread::sleep(Duration::from_mins(15));
         }
     });
 }

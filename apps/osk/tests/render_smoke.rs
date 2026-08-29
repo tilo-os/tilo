@@ -1,5 +1,5 @@
 //! Offscreen render guard for [`OskWidget`]: drives the full
-//! build_layout → compute_layout → apply_layout → draw pipeline and asserts
+//! `build_layout` → `compute_layout` → `apply_layout` → draw pipeline and asserts
 //! the keyboard rasterises substantial non-background content (surface +
 //! toolbar + keycaps + labels).
 //!

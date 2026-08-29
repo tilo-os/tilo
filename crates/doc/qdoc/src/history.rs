@@ -30,8 +30,7 @@ pub struct VersionMeta {
 pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     commit_stamped_at(doc, secs)
 }
 
@@ -78,7 +77,7 @@ pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
         .collect();
     prefix
         .iter()
-        .map(|c| c.hash())
+        .map(automerge::Change::hash)
         .filter(|h| !depended_on.contains(h))
         .collect()
 }

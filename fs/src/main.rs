@@ -7,7 +7,7 @@ use fs::{
     AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
     Refresh, Ticket, Workspace, identity_paths, load_mount_identity,
 };
-use fuser::*;
+use fuser::{Filesystem, Config, MountOption, SessionACL};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -171,7 +171,7 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
             match file.refresh() {
                 Refresh::Unchanged => {}
                 Refresh::Reloaded(n) => {
-                    println!("Capability list {:?} reloaded: {n} in force", file.path())
+                    println!("Capability list {:?} reloaded: {n} in force", file.path());
                 }
                 Refresh::Revoked => eprintln!(
                     "Capability list {:?} is gone; denying every access until it returns",
@@ -472,8 +472,7 @@ async fn run_mount(
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Recursively ingest a directory's contents into the workspace.
@@ -504,25 +503,22 @@ async fn seed_from_dir(
                     .next()
                     .filter(|e| *e != name)
                     .and_then(|e| registry.provider_for_ext(e).map(|_| e.to_lowercase()));
-                match codec {
-                    Some(c) => {
-                        // Recognized rich-text format → seed as a CRDT document.
-                        let mut ns = namespace.lock().unwrap();
-                        if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
-                            ns.import_document(ino, &registry, &data, now_ms());
-                        }
+                if let Some(c) = codec {
+                    // Recognized rich-text format → seed as a CRDT document.
+                    let mut ns = namespace.lock().unwrap();
+                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
+                        ns.import_document(ino, &registry, &data, now_ms());
                     }
-                    None => {
-                        let size = data.len() as u64;
-                        let hash = store.write_content(&data).await?;
-                        namespace.lock().unwrap().create_file(
-                            parent_ino,
-                            &name,
-                            hash.as_ref(),
-                            size,
-                            now_ms(),
-                        );
-                    }
+                } else {
+                    let size = data.len() as u64;
+                    let hash = store.write_content(&data).await?;
+                    namespace.lock().unwrap().create_file(
+                        parent_ino,
+                        &name,
+                        hash.as_ref(),
+                        size,
+                        now_ms(),
+                    );
                 }
             }
         }

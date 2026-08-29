@@ -76,7 +76,7 @@ fn corner_u(ux: f64, uy: f64) -> f64 {
 /// pixel centres so the brush's half-texel offset doesn't skew the
 /// baked profile against the geometry it is stretched over.
 fn band_coord(i: u32, n: u32) -> f64 {
-    2.0 * (i as f64 + 0.5) / n as f64 - 1.0
+    2.0 * (f64::from(i) + 0.5) / f64::from(n) - 1.0
 }
 
 /// The pair of premultiplied-RGBA sprites one tint needs.
@@ -106,9 +106,9 @@ fn bake(r: u8, g: u8, b: u8, w: u32, h: u32, f: impl Fn(u32, u32) -> f64) -> Ima
     for y in 0..h {
         for x in 0..w {
             let a = f(x, y).clamp(0.0, 1.0);
-            data.push((r as f64 * a).round() as u8);
-            data.push((g as f64 * a).round() as u8);
-            data.push((b as f64 * a).round() as u8);
+            data.push((f64::from(r) * a).round() as u8);
+            data.push((f64::from(g) * a).round() as u8);
+            data.push((f64::from(b) * a).round() as u8);
             data.push((a * 255.0).round() as u8);
         }
     }
@@ -145,7 +145,7 @@ fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     // the data instead of taking the whole render path down with it.
     let mut map = cache
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry((r, g, b))
         .or_insert_with(|| Arc::new(build_shadow_sprites(r, g, b)))
         .clone()
@@ -236,8 +236,8 @@ pub fn soft_shadow(
 
     let rgba = color.to_rgba8();
     let sprites = sprites_for(rgba.r, rgba.g, rgba.b);
-    let n = SHADOW_SPRITE_SIZE as f64;
-    let rows = SHADOW_EDGE_ROWS as f64;
+    let n = f64::from(SHADOW_SPRITE_SIZE);
+    let rows = f64::from(SHADOW_EDGE_ROWS);
 
     // `intensity` rides on the brushes, not a group layer: the eight
     // slices are clipped to non-overlapping regions so they can't
@@ -328,7 +328,7 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     }
     scene.draw_blurred_rounded_rect(
         transform,
-        rect + Vec2::new(0.0, token.offset_y as f64),
+        rect + Vec2::new(0.0, f64::from(token.offset_y)),
         token.color,
         radius.clamp(0.0, rect.width().min(rect.height()) / 2.0),
         std_dev_for(token.blur),
@@ -341,7 +341,7 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
 /// `2.5 * std_dev`, so a token's visible falloff ends about `1.25 * blur`
 /// past the surface. One function so every surface agrees.
 pub fn std_dev_for(blur: f32) -> f64 {
-    (blur as f64) / 2.0
+    f64::from(blur) / 2.0
 }
 
 /// Paint an elevation-token shadow under `rect`, square-cornered. For

@@ -96,7 +96,7 @@ fn device_matches(device: &EGLDevice, want_rdev: libc::dev_t) -> bool {
 
 impl GpuImporter {
     /// Build an importer on the DRM node at `node`, which should be the same render node the
-    /// compositor advertises as the dmabuf `main_device` — a cross-device import would work only where the kernel can peer-map, and silently be a PCIe copy where it did.
+    /// compositor advertises as the dmabuf `main_device` — a cross-device import would work only where the kernel can peer-map, and silently be a `PCIe` copy where it did.
     pub fn new(node: &Path) -> Result<Self, GpuImportError> {
         use std::os::unix::fs::MetadataExt as _;
         let want = std::fs::metadata(node)
@@ -228,7 +228,7 @@ impl GpuImporter {
     }
 }
 
-/// Whether a FourCC's fourth channel is padding rather than alpha. Free function so the alpha
+/// Whether a `FourCC`'s fourth channel is padding rather than alpha. Free function so the alpha
 /// fixup is testable without a GL context — getting it wrong makes every GPU client's tile translucent, subtle enough to slip through a glance at a screenshot.
 pub fn is_opaque_fourcc(code: Fourcc) -> bool {
     matches!(code, Fourcc::Xrgb8888 | Fourcc::Xbgr8888)

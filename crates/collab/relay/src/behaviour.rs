@@ -8,7 +8,7 @@
 //!   4/8/12, `ValidationMode::Strict`, signed authenticity) so the
 //!   relay is wire-compatible with every shell on the network.
 //! - **kademlia**: DHT bootstrap. The relay runs in `Server` mode so
-//!   it answers find-peer queries from NATted clients.
+//!   it answers find-peer queries from `NATted` clients.
 //! - **identify**: announces the agent string `qos-relay/<version>`
 //!   so operators can fingerprint the network's relay topology.
 //! - **mdns**: LAN peer discovery for development. Disabled
@@ -47,7 +47,7 @@ pub struct RelayBehaviour {
 impl RelayBehaviour {
     /// Build the combined behaviour from the relay's keypair.
     /// Errors only surface if mdns can't bind its multicast socket
-    /// (kernel without IP_MULTICAST_TTL etc.) or if gossipsub's
+    /// (kernel without `IP_MULTICAST_TTL` etc.) or if gossipsub's
     /// config builder rejects the parameters (which is fatal — the
     /// values are hard-coded).
     pub fn new(
@@ -71,7 +71,7 @@ impl RelayBehaviour {
 
         // ---- kademlia ---------------------------------------------------
         let mut kad_cfg = kad::Config::new(StreamProtocol::new(KAD_PROTOCOL));
-        kad_cfg.set_query_timeout(std::time::Duration::from_secs(60));
+        kad_cfg.set_query_timeout(std::time::Duration::from_mins(1));
         let store = kad::store::MemoryStore::new(local_key.public().to_peer_id());
         let mut kademlia =
             kad::Behaviour::with_config(local_key.public().to_peer_id(), store, kad_cfg);

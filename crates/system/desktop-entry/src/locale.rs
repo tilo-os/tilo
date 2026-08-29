@@ -43,7 +43,7 @@ pub fn candidates_for(locale: &str) -> Vec<String> {
         Some((head, modifier)) => (head, Some(modifier)),
         None => (locale, None),
     };
-    let head = head.split_once('.').map(|(h, _)| h).unwrap_or(head);
+    let head = head.split_once('.').map_or(head, |(h, _)| h);
     let (lang, country) = match head.split_once('_') {
         Some((lang, country)) => (lang, Some(country)),
         None => (head, None),

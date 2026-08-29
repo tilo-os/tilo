@@ -136,7 +136,7 @@ pub(crate) fn step_active_window(
         .position(|&(g, t)| g == cur_group.id && t == cur_group.active_tab)
         .unwrap_or(0);
     let last = windows.len() as i64 - 1;
-    let idx = (cur as i64 + steps as i64).clamp(0, last) as usize;
+    let idx = (cur as i64 + i64::from(steps)).clamp(0, last) as usize;
     if idx == cur {
         return None;
     }
@@ -366,8 +366,8 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
     let bit = match &key.logical_key {
         Key::Named(NamedKey::Shift) => ModifiersState::SHIFT,
         Key::Named(NamedKey::Control) => ModifiersState::CONTROL,
-        Key::Named(NamedKey::Alt) | Key::Named(NamedKey::AltGraph) => ModifiersState::ALT,
-        Key::Named(NamedKey::Super) | Key::Named(NamedKey::Meta) => ModifiersState::SUPER,
+        Key::Named(NamedKey::Alt | NamedKey::AltGraph) => ModifiersState::ALT,
+        Key::Named(NamedKey::Super | NamedKey::Meta) => ModifiersState::SUPER,
         _ => return false,
     };
     let mut mask = modifiers.state();
@@ -549,19 +549,18 @@ pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: 
 /// logical-key table for events synthesised without a physical key — the DRM backend's libinput bridge and the test-control socket both build `KeyEvent`s that way.
 pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     // Only an identified physical key carries a trustworthy scancode: winit maps `PhysicalKey::Unidentified` to `KEY_UNKNOWN` (240), which would otherwise make every synthesised keystroke a dead key.
-    if let PhysicalKey::Code(code) = key.physical_key {
-        if let Some(scancode) = code.to_scancode() {
-            if scancode != 0 {
+    if let PhysicalKey::Code(code) = key.physical_key
+        && let Some(scancode) = code.to_scancode()
+            && scancode != 0 {
                 return Some(scancode);
             }
-        }
-    }
     evdev_from_logical(&key.logical_key)
 }
 
 /// Logical-key → evdev keycode fallback. Values are from `linux/input-event-codes.h`.
 pub fn evdev_from_logical(key: &Key) -> Option<u32> {
-    let named = match key {
+    
+    match key {
         Key::Named(n) => match n {
             NamedKey::Escape => Some(1),
             NamedKey::Backspace => Some(14),
@@ -605,8 +604,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             evdev_from_char(c)
         }
         _ => None,
-    };
-    named
+    }
 }
 
 /// The unshifted key a character sits on, and whether Shift reaches it. A
@@ -766,10 +764,10 @@ pub fn evdev_button(button: MouseButton) -> Option<u32> {
 pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) {
     match delta {
         MouseScrollDelta::LineDelta(h, v) => (
-            (-(h as f64) * WHEEL_STEP, -(v as f64) * WHEEL_STEP),
+            (-f64::from(h) * WHEEL_STEP, -f64::from(v) * WHEEL_STEP),
             Some((
-                (-(h as f64) * 120.0).round() as i32,
-                (-(v as f64) * 120.0).round() as i32,
+                (-f64::from(h) * 120.0).round() as i32,
+                (-f64::from(v) * 120.0).round() as i32,
             )),
         ),
         MouseScrollDelta::PixelDelta(p) => ((-p.x, -p.y), None),
@@ -824,11 +822,7 @@ impl State {
             return;
         }
         let target = match surface_id {
-            Some(id) => match self.client_input.surfaces.get(&id) {
-                Some(s) => Some((id, s.clone())),
-                // Unknown id: treat as "no client focus" rather than leaving the seat pointed at a destroyed surface.
-                None => None,
-            },
+            Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
             None => None,
         };
         let Some(keyboard) = self.seat.get_keyboard() else {
@@ -1201,9 +1195,7 @@ fn insert_foreign_group(
         .and_then(|sid| ws.strips.iter().position(|s| s.id == sid))
         .unwrap_or(0);
     let strip = ws.strips.get_mut(idx)?;
-    let resolved = app_id
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("anon-{surface_id}"));
+    let resolved = app_id.map_or_else(|| format!("anon-{surface_id}"), std::string::ToString::to_string);
     let tab = Tab {
         id: next_id(),
         title: foreign_tab_title(&resolved),
@@ -1230,10 +1222,10 @@ fn insert_foreign_group(
 /// Drop the tab bound to `surface_id`, and the group that hosted it when that leaves it empty — also advances the strip's active-group pointer off a group that just disappeared.
 fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     let mut vacated: Option<(StripId, GroupId)> = None;
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
             let mut hit_group: Option<GroupId> = None;
-            for group in strip.window_groups.iter_mut() {
+            for group in &mut strip.window_groups {
                 let Some(pos) = group.tabs.iter().position(|t| {
                     matches!(&t.tile, TileContent::Foreign { surface_id: s, .. } if *s == surface_id)
                 }) else {
@@ -1241,7 +1233,7 @@ fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
                 };
                 let removed = group.tabs.remove(pos);
                 if group.active_tab == removed.id {
-                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
                 }
                 hit_group = Some(group.id);
                 break;
@@ -1276,21 +1268,19 @@ fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
 
 /// Rewrite the app-id + title of a mirrored foreign tab after a late `xdg_toplevel.set_app_id`.
 fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &str) -> bool {
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
-            for group in strip.window_groups.iter_mut() {
-                for tab in group.tabs.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
                     if let TileContent::Foreign {
                         surface_id: s,
                         app_id,
                     } = &mut tab.tile
-                    {
-                        if *s == surface_id {
+                        && *s == surface_id {
                             *app_id = new_app_id.to_string();
                             tab.title = foreign_tab_title(new_app_id);
                             return true;
                         }
-                    }
                 }
             }
         }

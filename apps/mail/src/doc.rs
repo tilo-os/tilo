@@ -231,10 +231,10 @@ impl MailDoc {
         ui::doc::put_if_changed(doc, &acc, "display_name", cfg.display_name.as_str());
         ui::doc::put_if_changed(doc, &acc, "email", cfg.email.as_str());
         ui::doc::put_if_changed(doc, &acc, "imap_host", cfg.imap_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "imap_port", cfg.imap_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "imap_port", i64::from(cfg.imap_port));
         ui::doc::put_if_changed(doc, &acc, "imap_tls", cfg.imap_tls);
         ui::doc::put_if_changed(doc, &acc, "smtp_host", cfg.smtp_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "smtp_port", cfg.smtp_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "smtp_port", i64::from(cfg.smtp_port));
         ui::doc::put_if_changed(doc, &acc, "smtp_tls", cfg.smtp_tls);
         ui::doc::put_if_changed(doc, &acc, "username", cfg.username.as_str());
         ui::doc::put_if_changed(doc, &acc, "auth", cfg.auth.as_key());
@@ -475,11 +475,10 @@ fn read_str_list(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i) {
-            if let ScalarValue::Str(s) = v.as_ref() {
+        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i)
+            && let ScalarValue::Str(s) = v.as_ref() {
                 out.push(s.to_string());
             }
-        }
     }
     out
 }

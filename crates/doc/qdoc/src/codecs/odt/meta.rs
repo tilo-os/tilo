@@ -4,7 +4,7 @@
 //! preserving any unmodeled child elements verbatim on export.
 
 use crate::model::{DocMut, DocRef, doc_prop};
-use crate::schema::*;
+use crate::schema::{PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_MODIFIED, PROP_CREATED, PROP_GENERATOR, DOC_PROP_KEYS};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
@@ -48,22 +48,20 @@ pub(super) fn import_meta(xml: &[u8], doc: &mut DocMut) {
                 }
             }
             Ok(Event::Text(t)) => {
-                if current.is_some() {
-                    if let Ok(s) = t.xml10_content() {
+                if current.is_some()
+                    && let Ok(s) = t.xml10_content() {
                         text.push_str(&s);
                     }
-                }
             }
             Ok(Event::End(e)) => {
-                if let Some(prop) = prop_for_element(local_name(e.name().as_ref())) {
-                    if current == Some(prop) {
+                if let Some(prop) = prop_for_element(local_name(e.name().as_ref()))
+                    && current == Some(prop) {
                         if !text.is_empty() {
                             doc.set_doc_prop(prop, &text);
                         }
                         current = None;
                         text.clear();
                     }
-                }
             }
             Ok(Event::Eof) => break,
             Err(_) => break,

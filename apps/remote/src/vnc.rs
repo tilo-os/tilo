@@ -91,11 +91,11 @@ impl VncSession {
     pub fn take_frame(&mut self) -> Option<Framebuffer> {
         let guard = self.frame.lock().unwrap();
         let fb = guard.as_ref()?;
-        if self.last_seen_gen != Some(fb.generation) {
+        if self.last_seen_gen == Some(fb.generation) {
+            None
+        } else {
             self.last_seen_gen = Some(fb.generation);
             Some(fb.clone())
-        } else {
-            None
         }
     }
 
@@ -420,16 +420,12 @@ mod tests {
 
         let mut got: Option<Framebuffer> = None;
         for _ in 0..200 {
-            match vnc.status() {
-                SessionStatus::Failed(e) => panic!("vnc connect failed: {e}"),
-                _ => {}
-            }
-            if let Some(fb) = vnc.take_frame() {
-                if fb.data.iter().any(|&b| b != 0) {
+            if let SessionStatus::Failed(e) = vnc.status() { panic!("vnc connect failed: {e}") }
+            if let Some(fb) = vnc.take_frame()
+                && fb.data.iter().any(|&b| b != 0) {
                     got = Some(fb);
                     break;
                 }
-            }
             std::thread::sleep(Duration::from_millis(20));
         }
 

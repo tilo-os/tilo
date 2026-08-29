@@ -61,10 +61,10 @@ impl Default for RecordsProvider {
 }
 
 impl SearchProvider for RecordsProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "records"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Records"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -213,11 +213,10 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 
 /// `~`-shortened path for the subtitle.
 fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rest) = path.strip_prefix(&home) {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home) {
             return format!("~/{}", rest.display());
         }
-    }
     path.display().to_string()
 }
 
@@ -255,7 +254,7 @@ fn starts_a_word(haystack: &str, needle: &str) -> bool {
             || !haystack[..at]
                 .chars()
                 .next_back()
-                .is_some_and(|c| c.is_alphanumeric())
+                .is_some_and(char::is_alphanumeric)
     })
 }
 

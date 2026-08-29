@@ -460,7 +460,7 @@ impl Editor {
         let after = block_texts(&self.doc);
         let mut spans: Vec<(String, usize, usize)> = Vec::new();
         for (id, text) in &after {
-            let was = before.get(id).map(String::as_str).unwrap_or("");
+            let was = before.get(id).map_or("", String::as_str);
             if let Some((start, end)) = added_range(was, text) {
                 spans.push((id.clone(), start, end));
             }

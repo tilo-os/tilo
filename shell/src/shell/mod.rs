@@ -2,16 +2,16 @@
 //!
 //! Run `cargo run -p quick-desktop` and verify:
 //!
-//! - TopBar renders with a live clock; wheel over the center area cycles to
+//! - `TopBar` renders with a live clock; wheel over the center area cycles to
 //!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens GlobalSearch; typing filters; Enter invokes; Escape closes.
-//! - Cmd+Tab toggles the OverviewView; clicking a card activates the workspace.
-//! - The RightTray gear icon opens QuickSettings; sliders are interactive;
+//! - Cmd+K opens `GlobalSearch`; typing filters; Enter invokes; Escape closes.
+//! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
+//! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
 //!   WiFi/BT drill-in and back work.
-//! - The workspace-name button opens WorkspaceSettings; switching to the Roles
-//!   tab lets you toggle per-app permissions via DataTable; the Files tab
+//! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
+//!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
 //!   shows per-role × per-file matrix.
-//! - SidebarWheel scrolls strips; overscrolling past the threshold shows the
+//! - `SidebarWheel` scrolls strips; overscrolling past the threshold shows the
 //!   "New session" hint and commits a new workspace; releasing before the
 //!   threshold snaps back.
 //! - Right-clicking a tile opens the context menu.
@@ -490,7 +490,8 @@ impl Shell {
         }
         self.sidebar.on_wheel(dir, &mut scratch);
         // Snap back the active strip id (if changed) by index lookup.
-        let next_idx = scratch
+        
+        scratch
             .active_strip
             .get(&active_ws)
             .and_then(|id| {
@@ -502,8 +503,7 @@ impl Shell {
                     .iter()
                     .position(|s| s.id == *id)
             })
-            .unwrap_or(0);
-        next_idx
+            .unwrap_or(0)
     }
 
     /// Index of the currently-active strip on the active workspace in the
@@ -577,7 +577,7 @@ impl Shell {
         // Scratch persisted workspace, same reason as the other simulators.
         let mut scratch = state::Workspace::new(
             self.tree.active,
-            &self
+            self
                 .tree
                 .workspaces
                 .iter()
@@ -616,7 +616,7 @@ impl Shell {
         self.ctx_menu
             .items()
             .iter()
-            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect()
     }
 
@@ -685,7 +685,7 @@ fn default_demo_tabs() -> DemoTabs {
                 // Capture the pointer *before* coercing into
                 // `Box<dyn AppWidget>` — the unsizing coercion preserves the
                 // address, so this stays valid for the `Box`'s lifetime.
-                first_terminal_ptr = Some(&*boxed as *const TerminalWidget);
+                first_terminal_ptr = Some(&raw const *boxed);
             }
             let app: Box<dyn AppWidget> = boxed;
             tabs.push(RuntimeTab::new("Terminal", RuntimeTile::App(app)));
@@ -707,7 +707,7 @@ fn default_demo_tabs() -> DemoTabs {
     let fe_boxed: Box<FileExplorerWidget> = Box::new(FileExplorerWidget::new());
     #[cfg(any(test, debug_assertions))]
     {
-        first_file_explorer_ptr = Some(&*fe_boxed as *const FileExplorerWidget);
+        first_file_explorer_ptr = Some(&raw const *fe_boxed);
     }
     let fe_app: Box<dyn AppWidget> = fe_boxed;
     tabs.push(RuntimeTab::new("Files", RuntimeTile::App(fe_app)));
@@ -781,9 +781,7 @@ fn is_editor_label(s: &str) -> bool {
 pub(crate) fn hosted_label_for_title(title: &str) -> String {
     HOSTED_OTHER_APPS
         .iter()
-        .find(|(t, _)| t.eq_ignore_ascii_case(title))
-        .map(|(_, label)| (*label).to_string())
-        .unwrap_or_else(|| title.to_string())
+        .find(|(t, _)| t.eq_ignore_ascii_case(title)).map_or_else(|| title.to_string(), |(_, label)| (*label).to_string())
 }
 
 /// Probe into [`to_ui_tile`] for tests that don't want the full `UiTile`
@@ -999,7 +997,7 @@ pub fn build_workspace_root(
     ));
 
     let topbar: Box<dyn Widget> =
-        Box::new(topbar_chrome::TopBarChrome::from_tree(&tree).with_chrome(chrome.clone()));
+        Box::new(topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()));
 
     let mut content_col = Column::new()
         // Fills the viewport height remaining AFTER the topbar's 40px
@@ -1033,18 +1031,18 @@ pub fn build_workspace_root(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| to_ui_window_group(g, &records))
+                .map(|g| to_ui_window_group(g, records))
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
                     // Reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel
                     // disc (which lives in the overlay layer) so wheel and
                     // strip share the same canvas and pan together.
-                    .with_leading_inset(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64),
+                    .with_leading_inset(f64::from(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)),
             );
             // Captured before unsizing into `Box<dyn Widget>`; the
             // coercion preserves the address, valid for the host's lifetime.
-            let row_ptr: *mut GroupRow = &mut *strip_row;
+            let row_ptr: *mut GroupRow = &raw mut *strip_row;
             group_row_ptrs.insert(strip.id, row_ptr);
             content_col = content_col.push(strip_row as Box<dyn Widget>);
         }
@@ -1145,7 +1143,7 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
             }
             if let Some(tab_id) = c.active_tab {
                 let key = PresenceKey::Tab {
-                    id: format!("{:x}", tab_id),
+                    id: format!("{tab_id:x}"),
                 };
                 ctx.register_presence(&key, UserId(c.id.clone()));
             }

@@ -40,8 +40,8 @@ pub fn dpi_from_physical(px: (u32, u32), mm: (u32, u32)) -> Option<f64> {
     if px.0 == 0 || px.1 == 0 || mm.0 == 0 || mm.1 == 0 {
         return None;
     }
-    let diag_px = ((px.0 as f64).powi(2) + (px.1 as f64).powi(2)).sqrt();
-    let diag_mm = ((mm.0 as f64).powi(2) + (mm.1 as f64).powi(2)).sqrt();
+    let diag_px = (f64::from(px.0).powi(2) + f64::from(px.1).powi(2)).sqrt();
+    let diag_mm = (f64::from(mm.0).powi(2) + f64::from(mm.1).powi(2)).sqrt();
     let diag_in = diag_mm / 25.4;
     if diag_in <= 0.0 {
         return None;
@@ -70,7 +70,7 @@ pub fn derive_scale(px: (u32, u32), mm: Option<(u32, u32)>) -> f64 {
     // Back off while the logical desktop would be narrower than a usable
     // window. One step at a time so a panel that only marginally trips the
     // guard keeps most of its density.
-    while scale > MIN_SCALE && (px.0 as f64 / scale) < MIN_LOGICAL_WIDTH {
+    while scale > MIN_SCALE && (f64::from(px.0) / scale) < MIN_LOGICAL_WIDTH {
         scale -= SCALE_STEP;
     }
     scale.max(MIN_SCALE)
@@ -93,8 +93,8 @@ pub fn resolve_scale(px: (u32, u32), mm: Option<(u32, u32)>, override_scale: Opt
 /// rendering too soft is visible.
 pub fn preferred_scale_at(outputs: &[((i32, i32), (u32, u32), f64)], x: f64, y: f64) -> f64 {
     for &((ox, oy), (ow, oh), scale) in outputs {
-        let (ox, oy) = (ox as f64, oy as f64);
-        if x >= ox && x < ox + ow as f64 && y >= oy && y < oy + oh as f64 {
+        let (ox, oy) = (f64::from(ox), f64::from(oy));
+        if x >= ox && x < ox + f64::from(ow) && y >= oy && y < oy + f64::from(oh) {
             return scale;
         }
     }

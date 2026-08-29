@@ -32,7 +32,7 @@ pub struct ProbeResult {
 /// binary is missing, exits non-zero, or doesn't answer within `timeout`.
 fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
     let program = program.to_string();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let out = Command::new(&program)

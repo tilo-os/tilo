@@ -1,8 +1,8 @@
 //! Builds the C-ABI shim (`csrc/swipe_ffi.cpp`) and links it against the
-//! prebuilt FUTO `libswipe_decoder.a` + ExecuTorch static libraries.
+//! prebuilt FUTO `libswipe_decoder.a` + `ExecuTorch` static libraries.
 //!
 //! The FUTO swipe-library is built out-of-tree via its own `make host`
-//! (clones ExecuTorch as a submodule). Point this build at that tree with:
+//! (clones `ExecuTorch` as a submodule). Point this build at that tree with:
 //!
 //!     QOS_SWIPE_LIB=/path/to/swipe-library   # contains build/ + third_party/executorch/cmake-out-host/ + include/
 //!
@@ -113,7 +113,7 @@ fn main() {
             false,
         ),
         ("flatccrt", et.join("third-party/flatcc_ep/lib"), false),
-        ("swipe_decoder", build_dir.clone(), false),
+        ("swipe_decoder", build_dir, false),
     ];
     for (name, dir, whole) in libs {
         println!("cargo:rustc-link-search=native={}", dir.display());

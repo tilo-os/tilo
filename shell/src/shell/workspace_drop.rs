@@ -67,7 +67,7 @@ pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     let ext = Path::new(&item.name)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     if EDITOR_EXTENSIONS.iter().any(|e| *e == ext) {
         AppKind::Other("Editor".into())

@@ -142,7 +142,7 @@ mod phrase {
     pub fn heading_word(level: u8) -> String {
         let resolved = crate::i18n::I18nManager::format(
             "sr-heading-level",
-            &[("level", (level as f64).into())],
+            &[("level", f64::from(level).into())],
         );
         if resolved == "sr-heading-level" {
             format!("heading level {level}")
@@ -321,7 +321,7 @@ fn is_editable_role(role: Role) -> bool {
 pub struct ScreenReader {
     speaker: Box<dyn Speaker>,
     queue: SpeechQueue,
-    /// `None` until the first read_next/read_prev/read_all.
+    /// `None` until the first `read_next/read_prev/read_all`.
     cursor: Option<usize>,
     /// The flattened reading order captured by the most recent reading command.
     reading_order: Vec<AccessNode>,
@@ -383,7 +383,7 @@ impl ScreenReader {
     /// Speaks [`describe`] of the newly-focused node, interrupting any
     /// previous narration — rapid arrow navigation speaks only the control
     /// landed on, never a backlog (see `focus_storm` test). Resets the
-    /// reading cursor so the next read_next/read_prev re-anchors here.
+    /// reading cursor so the next `read_next/read_prev` re-anchors here.
     pub fn announce_focus(&mut self, node: &AccessNode) {
         let text = describe(node);
         if text.is_empty() {
@@ -549,7 +549,7 @@ impl ScreenReader {
     }
 
     /// Speaks a short "no more" cue and returns `None` when nothing ahead
-    /// matches `pred`. Shared engine behind read_next_heading/read_next_control.
+    /// matches `pred`. Shared engine behind `read_next_heading/read_next_control`.
     pub fn read_next_matching(
         &mut self,
         root: &dyn Widget,
@@ -560,22 +560,19 @@ impl ScreenReader {
             self.cursor = None;
             return None;
         }
-        let start = self.cursor.map(|i| i + 1).unwrap_or(0);
+        let start = self.cursor.map_or(0, |i| i + 1);
         let found = (start..self.reading_order.len()).find(|&i| pred(&self.reading_order[i]));
-        match found {
-            Some(i) => {
-                self.cursor = Some(i);
-                let node = self.reading_order[i].clone();
-                let text = describe(&node);
-                if !text.is_empty() {
-                    self.enqueue(Utterance::new(text));
-                }
-                Some(node)
+        if let Some(i) = found {
+            self.cursor = Some(i);
+            let node = self.reading_order[i].clone();
+            let text = describe(&node);
+            if !text.is_empty() {
+                self.enqueue(Utterance::new(text));
             }
-            None => {
-                self.enqueue(Utterance::new(phrase::no_next()));
-                None
-            }
+            Some(node)
+        } else {
+            self.enqueue(Utterance::new(phrase::no_next()));
+            None
         }
     }
 
@@ -593,20 +590,17 @@ impl ScreenReader {
         // end so the first jump lands on the last matching element.
         let end = self.cursor.unwrap_or(self.reading_order.len());
         let found = (0..end).rev().find(|&i| pred(&self.reading_order[i]));
-        match found {
-            Some(i) => {
-                self.cursor = Some(i);
-                let node = self.reading_order[i].clone();
-                let text = describe(&node);
-                if !text.is_empty() {
-                    self.enqueue(Utterance::new(text));
-                }
-                Some(node)
+        if let Some(i) = found {
+            self.cursor = Some(i);
+            let node = self.reading_order[i].clone();
+            let text = describe(&node);
+            if !text.is_empty() {
+                self.enqueue(Utterance::new(text));
             }
-            None => {
-                self.enqueue(Utterance::new(phrase::no_prev()));
-                None
-            }
+            Some(node)
+        } else {
+            self.enqueue(Utterance::new(phrase::no_prev()));
+            None
         }
     }
 

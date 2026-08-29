@@ -2,7 +2,7 @@
 //!
 //! Each qOS channel becomes one MLS group; the group key rotates on
 //! every membership change; `SignedOp.payload` ships encrypted while
-//! the envelope's metadata (author, artifact, op_class, timestamp, seq)
+//! the envelope's metadata (author, artifact, `op_class`, timestamp, seq)
 //! stays cleartext so the broker routes by artifact and filters by op
 //! class without decrypting.
 //!

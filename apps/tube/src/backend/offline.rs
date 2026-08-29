@@ -35,7 +35,7 @@ impl Default for OfflineBackend {
 }
 
 impl YtBackend for OfflineBackend {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "offline sample"
     }
 
@@ -69,7 +69,7 @@ impl YtBackend for OfflineBackend {
     }
 
     fn trending(&self) -> BackendOutcome {
-        let mut vids: Vec<_> = self.model.videos.to_vec();
+        let mut vids: Vec<_> = self.model.videos.clone();
         vids.sort_by_key(|v| std::cmp::Reverse(v.views));
         Ok(BackendResult::Videos(vids))
     }

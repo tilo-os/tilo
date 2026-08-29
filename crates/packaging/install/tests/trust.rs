@@ -113,7 +113,7 @@ fn attest_and_inject(
         .retain(|a| a.attestor != attestor_id);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: attestor_id.into(),
-        claim_hex: "".into(),
+        claim_hex: String::new(),
         signature_hex: hex::encode(sig),
     });
 }
@@ -152,7 +152,7 @@ fn build_qpkg(
     append(&mut tar, "manifest.toml", &manifest_bytes);
     append(&mut tar, "collection.qcl", &collection_bytes);
     for (h, b) in store.iter() {
-        let name = format!("blobs/{}", h);
+        let name = format!("blobs/{h}");
         append(&mut tar, &name, b);
     }
     tar.finish().unwrap();
@@ -407,7 +407,7 @@ fn install_refuses_revoked_publisher() {
     env.write_trusted_attestors(&TrustedAttestors::default());
     env.write_revocation(&RevocationList {
         revoked: vec![RevokedKey {
-            pubkey_hex: publisher_pub_hex.clone(),
+            pubkey_hex: publisher_pub_hex,
             reason: "compromised 2026-07-05".into(),
         }],
     });

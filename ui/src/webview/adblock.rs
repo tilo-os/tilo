@@ -1,11 +1,11 @@
-//! Filter-list → WebKit content-blocker compiler for the WebView's
+//! Filter-list → `WebKit` content-blocker compiler for the `WebView`'s
 //! built-in ad blocking (feature `webview-adblock`).
 //!
 //! Takes Brave/EasyList-syntax filter lists (the same lists Brave ships)
 //! and compiles them via adblock-rust's `content_blocking` support into
-//! the JSON rule format WebKit's `UserContentFilterStore` consumes.
-//! Blocking then happens natively inside WebKit's network process —
-//! there is no per-request Rust hook (WebKit exposes none to embedders),
+//! the JSON rule format `WebKit`'s `UserContentFilterStore` consumes.
+//! Blocking then happens natively inside `WebKit`'s network process —
+//! there is no per-request Rust hook (`WebKit` exposes none to embedders),
 //! which is also why this is faster than extension-based blockers.
 //!
 //! Fetching and caching the list text is the caller's job (the browser
@@ -20,8 +20,8 @@ pub struct CompiledFilter {
     /// `webkit_user_content_filter_store_save()`.
     pub json: std::sync::Arc<String>,
     pub rule_count: usize,
-    /// Filters with no content-blocker equivalent (WebKit's declarative
-    /// format cannot express every EasyList construct — scriptlets, some
+    /// Filters with no content-blocker equivalent (`WebKit`'s declarative
+    /// format cannot express every `EasyList` construct — scriptlets, some
     /// regex filters, `$redirect`, …).
     pub skipped: usize,
 }
@@ -47,7 +47,7 @@ pub fn compile_filter_lists<'a>(
     }
     let (rules, skipped) = set
         .into_content_blocking()
-        .map_err(|_| AdblockError::Conversion)?;
+        .map_err(|()| AdblockError::Conversion)?;
     if rules.is_empty() {
         return Err(AdblockError::Empty);
     }
@@ -60,17 +60,17 @@ pub fn compile_filter_lists<'a>(
     })
 }
 
-/// WebKit rejects a single content-rule list over this many rules with
+/// `WebKit` rejects a single content-rule list over this many rules with
 /// "Too many rules in JSON array". Its documented cap is higher, but a
 /// conservative split keeps every chunk comfortably valid.
 pub const MAX_RULES_PER_FILTER: usize = 25_000;
 
-/// The full EasyList + uBlock + AdGuard set is far larger than WebKit's
+/// The full `EasyList` + uBlock + `AdGuard` set is far larger than `WebKit`'s
 /// per-list rule cap, so it must be installed as several content filters
-/// rather than one giant array (which WebKit refuses to compile).
+/// rather than one giant array (which `WebKit` refuses to compile).
 pub struct ChunkedFilter {
     /// Each element a JSON array of at most [`MAX_RULES_PER_FILTER`]
-    /// rules — install each as its own WebKit content filter.
+    /// rules — install each as its own `WebKit` content filter.
     pub chunks: Vec<std::sync::Arc<String>>,
     pub rule_count: usize,
     pub skipped: usize,
@@ -86,7 +86,7 @@ pub fn compile_filter_lists_chunked<'a>(
     }
     let (rules, skipped) = set
         .into_content_blocking()
-        .map_err(|_| AdblockError::Conversion)?;
+        .map_err(|()| AdblockError::Conversion)?;
     if rules.is_empty() {
         return Err(AdblockError::Empty);
     }

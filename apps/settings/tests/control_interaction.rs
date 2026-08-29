@@ -224,7 +224,7 @@ fn network_wifi_toggle_drives_state() {
 
 /// Every category is reachable by a real click and renders a non-empty
 /// content pane — the per-panel navigation guard. (Complements
-/// category_nav.rs's deeper per-panel assertions; here we additionally
+/// `category_nav.rs`'s deeper per-panel assertions; here we additionally
 /// confirm the primary CRDT key each interactive pane seeds is present.)
 #[test]
 fn all_panels_navigate_and_seed_their_controls() {

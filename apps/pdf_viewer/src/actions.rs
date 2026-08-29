@@ -24,7 +24,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
@@ -711,7 +710,7 @@ mod tests {
     fn action_replays_byte_identical_on_a_peer() {
         let (_app, state) = open_with_markup();
         // Two replicas sharing history.
-        let mut a = state.doc.clone();
+        let mut a = state.doc;
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();

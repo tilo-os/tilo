@@ -170,7 +170,7 @@ fn draw_image_element(
     let frame = RoundedRect::from_rect(er, radius);
     match images.get(&e.src) {
         ImageState::Ready(img) => {
-            let (iw, ih) = (img.width as f64, img.height as f64);
+            let (iw, ih) = (f64::from(img.width), f64::from(img.height));
             if iw <= 0.0 || ih <= 0.0 || er.width() <= 0.0 || er.height() <= 0.0 {
                 return;
             }
@@ -205,8 +205,8 @@ fn draw_image_element(
                 with_alpha(palette.text_dim, 200),
                 transform
                     * Affine::translate((
-                        er.center().x - tw as f64 / 2.0,
-                        er.center().y - th as f64 / 2.0,
+                        er.center().x - f64::from(tw) / 2.0,
+                        er.center().y - f64::from(th) / 2.0,
                     )),
                 None,
                 TextWeight::Regular,
@@ -231,8 +231,8 @@ fn draw_image_element(
                 with_alpha(palette.text_dim, 210),
                 transform
                     * Affine::translate((
-                        er.center().x - tw as f64 / 2.0,
-                        er.center().y - th as f64 / 2.0,
+                        er.center().x - f64::from(tw) / 2.0,
+                        er.center().y - f64::from(th) / 2.0,
                     )),
                 None,
                 TextWeight::Regular,
@@ -265,7 +265,7 @@ fn draw_text_element(
     // `draw_text_styled` and `measure_*` both lay lines out at `font_px * 1.25`,
     // so match that here and the vertical cursor advances *exactly* past any
     // wrapped continuation rows.
-    let line_h = (font_px as f64) * 1.25;
+    let line_h = f64::from(font_px) * 1.25;
     let wrap_w = (er.width() + 4.0).max(1.0) as f32;
     let lines: Vec<&str> = e.text.split('\n').collect();
     // Each explicit (\n-split) line may itself word-wrap into several visual
@@ -279,7 +279,7 @@ fn draw_text_element(
             } else {
                 let (_, h) =
                     tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
-                ((h as f64 / line_h).round() as usize).max(1)
+                ((f64::from(h) / line_h).round() as usize).max(1)
             }
         })
         .collect();
@@ -306,9 +306,9 @@ fn draw_text_element(
                     let (lw, _) =
                         tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
                     if e.align == TextAlign::Center {
-                        er.x0 + (er.width() - lw as f64) / 2.0
+                        er.x0 + (er.width() - f64::from(lw)) / 2.0
                     } else {
-                        er.x1 - lw as f64
+                        er.x1 - f64::from(lw)
                     }
                 }
             };

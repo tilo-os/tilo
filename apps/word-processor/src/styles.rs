@@ -77,20 +77,20 @@ impl StyleProps {
         let mut m = BTreeMap::new();
         m.insert(STYLE_NAME.into(), AttrVal::Str(self.name.clone()));
         m.insert(STYLE_FONT.into(), AttrVal::Str(self.font.clone()));
-        m.insert(STYLE_SIZE.into(), AttrVal::Float(self.size as f64));
+        m.insert(STYLE_SIZE.into(), AttrVal::Float(f64::from(self.size)));
         m.insert(STYLE_BOLD.into(), AttrVal::Bool(self.bold));
         m.insert(STYLE_ITALIC.into(), AttrVal::Bool(self.italic));
         m.insert(STYLE_COLOR.into(), AttrVal::Str(color_to_hex(self.color)));
         m.insert(STYLE_ALIGN.into(), AttrVal::Str(self.align.clone()));
         m.insert(
             STYLE_SPACE_BEFORE.into(),
-            AttrVal::Float(self.space_before as f64),
+            AttrVal::Float(f64::from(self.space_before)),
         );
         m.insert(
             STYLE_SPACE_AFTER.into(),
-            AttrVal::Float(self.space_after as f64),
+            AttrVal::Float(f64::from(self.space_after)),
         );
-        m.insert(STYLE_INDENT.into(), AttrVal::Float(self.indent as f64));
+        m.insert(STYLE_INDENT.into(), AttrVal::Float(f64::from(self.indent)));
         m
     }
 
@@ -243,7 +243,7 @@ impl StyleSheet {
         let mut out: Vec<String> = BUILTIN_STYLES
             .iter()
             .filter(|k| self.styles.contains_key(**k))
-            .map(|k| k.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         for k in self.styles.keys() {
             if !BUILTIN_STYLES.contains(&k.as_str()) {

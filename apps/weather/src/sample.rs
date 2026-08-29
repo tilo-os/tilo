@@ -48,7 +48,7 @@ struct DaySpec {
 /// observation, from a [`DaySpec`].
 fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     let date = "2026-06-30";
-    let mid = (spec.low + spec.high) / 2.0;
+    let mid = f64::midpoint(spec.low, spec.high);
     let amp = (spec.high - spec.low) / 2.0;
 
     // Temperature follows a cosine that bottoms out near 05:00 and peaks
@@ -101,8 +101,7 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         humidity: spec.humidity,
         precipitation: spec
             .precip_peak
-            .map(|(_, m)| (m / 100.0) * 1.2)
-            .unwrap_or(0.0),
+            .map_or(0.0, |(_, m)| (m / 100.0) * 1.2),
         weather_code: now_code,
         wind_speed: spec.wind,
         wind_direction: spec.wind_dir,

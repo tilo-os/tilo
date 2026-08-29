@@ -54,6 +54,12 @@ pub struct SchemaTree {
     rows: Vec<Row>,
 }
 
+impl Default for SchemaTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SchemaTree {
     pub fn new() -> Self {
         let mut expanded_schemas = HashSet::new();
@@ -235,7 +241,7 @@ impl SchemaTree {
                             &cnt,
                             11.0,
                             theme.text_dim,
-                            t * Affine::translate((r.x1 - cw as f64 - 12.0, y + 5.0)),
+                            t * Affine::translate((r.x1 - f64::from(cw) - 12.0, y + 5.0)),
                             None,
                         );
                     }
@@ -262,7 +268,7 @@ impl SchemaTree {
                     let open = self.expanded_tables.contains(name);
                     let tri = if open { "▾" } else { "▸" };
                     let info = session.schema.find_table(name);
-                    let is_view = info.map(|t| t.kind == RelationKind::View).unwrap_or(false);
+                    let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
                     tr.draw_text(
                         scene,
                         tri,
@@ -295,8 +301,8 @@ impl SchemaTree {
                         Some((r.width() - INDENT - 80.0) as f32),
                     );
                     // Row count badge.
-                    if let Some(info) = info {
-                        if let Some(rc) = info.row_count {
+                    if let Some(info) = info
+                        && let Some(rc) = info.row_count {
                             let badge = format!("{rc}");
                             let (bw, _) = tr.measure(&badge, 10.5, None);
                             tr.draw_text(
@@ -304,11 +310,10 @@ impl SchemaTree {
                                 &badge,
                                 10.5,
                                 theme.text_dim,
-                                t * Affine::translate((r.x1 - bw as f64 - 14.0, y + 5.0)),
+                                t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
                                 None,
                             );
                         }
-                    }
                 }
                 Row::Column {
                     table, text, icon, ..
@@ -326,8 +331,7 @@ impl SchemaTree {
                     // tracks the theme (avoids storing a stale colour).
                     let (icon_color, _cls) = self
                         .column_class(session, table, text)
-                        .map(|c| (theme.type_color(c), c))
-                        .unwrap_or((theme.text_dim, crate::model::TypeClass::Unknown));
+                        .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| (theme.type_color(c), c));
 
                     // Type icon chip.
                     let chip = Rect::new(

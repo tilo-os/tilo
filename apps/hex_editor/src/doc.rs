@@ -136,16 +136,14 @@ impl HexDoc {
         if let Some(c) = Self::read_meta_int(doc, "cursor") {
             model.move_to(c.max(0) as usize, false);
         }
-        if let Some(m) = Self::read_meta_str(doc, "mode") {
-            if (m == "ins") != (model.mode() == EditMode::Insert) {
+        if let Some(m) = Self::read_meta_str(doc, "mode")
+            && (m == "ins") != (model.mode() == EditMode::Insert) {
                 model.toggle_mode();
             }
-        }
-        if let Some(e) = Self::read_meta_str(doc, "endian") {
-            if (e == "be") != (model.endian() == Endian::Big) {
+        if let Some(e) = Self::read_meta_str(doc, "endian")
+            && (e == "be") != (model.endian() == Endian::Big) {
                 model.toggle_endian();
             }
-        }
         Some(model)
     }
 }

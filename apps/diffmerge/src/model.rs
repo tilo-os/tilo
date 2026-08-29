@@ -356,7 +356,7 @@ impl MergeModel {
                 hunks.push(MergeHunk {
                     base: lines.clone(),
                     ours: lines.clone(),
-                    theirs: lines.clone(),
+                    theirs: lines,
                     resolution: Resolution::Unchanged,
                     is_change: false,
                 });
@@ -523,7 +523,7 @@ impl MergeModel {
 
     /// The merged output as a flat line list (no terminators).
     pub fn merged_lines(&self) -> Vec<String> {
-        self.hunks.iter().flat_map(|h| h.resolved_lines()).collect()
+        self.hunks.iter().flat_map(MergeHunk::resolved_lines).collect()
     }
 }
 
@@ -532,7 +532,7 @@ fn split_lines(s: &str) -> Vec<String> {
     if s.is_empty() {
         return Vec::new();
     }
-    s.lines().map(|l| l.to_string()).collect()
+    s.lines().map(std::string::ToString::to_string).collect()
 }
 
 /// One side of the merge aligned against base.
@@ -563,7 +563,7 @@ impl SideAlign {
         // Walk the structured ops. Each op carries a base (old) range and a
         // side (new) range.
         for op in diff.ops() {
-            use similar::DiffOp::*;
+            use similar::DiffOp::{Equal, Delete, Insert, Replace};
             match *op {
                 Equal { .. } => {}
                 Delete {

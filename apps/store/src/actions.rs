@@ -221,14 +221,14 @@ pub fn spawn_plan(plan: &SpawnPlan) -> (i32, String) {
 pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("qos-store/0.1")
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_mins(2))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let bytes = client
         .get(url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
         .map_err(|e| format!("download {url}: {e}"))?;
     if bytes.is_empty() {
         return Err(format!("download {url}: empty body"));
@@ -349,7 +349,7 @@ mod tests {
         StoreItem {
             id: format!("dev.qos.{}", name.to_ascii_lowercase()),
             name: name.into(),
-            description: "".into(),
+            description: String::new(),
             categories: vec![],
             icon_url: None,
             homepage_url: None,
@@ -371,9 +371,9 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("org.example.{}", name),
+            id: format!("org.example.{name}"),
             name: name.into(),
-            description: "".into(),
+            description: String::new(),
             categories: vec![],
             icon_url: None,
             homepage_url: None,

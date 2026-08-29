@@ -626,7 +626,7 @@ impl InvocationStream {
         let r = reply.get()?;
         let text = |t: capnp::text::Reader<'_>, what: &str| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("invalid utf8 {what}: {e}")))
         };
         let resource = text(r.get_resource()?, "invocation resource")?;

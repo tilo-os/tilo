@@ -87,7 +87,7 @@ impl DisksDoc {
     }
 
     pub fn set_selected_part(doc: &mut AutoCommit, part: Option<usize>) {
-        let v = part.map(|p| p as i64).unwrap_or(-1);
+        let v = part.map_or(-1, |p| p as i64);
         let _ = doc.put(&ROOT, "selected_part", v);
     }
 

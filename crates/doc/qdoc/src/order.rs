@@ -25,8 +25,8 @@ fn midpoint(lo: &[u8], hi: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(n);
     let mut rem: u16 = 0;
     for i in 0..n {
-        let l = lo.get(i).copied().unwrap_or(0) as u16;
-        let h = hi.get(i).copied().unwrap_or(0) as u16;
+        let l = u16::from(lo.get(i).copied().unwrap_or(0));
+        let h = u16::from(hi.get(i).copied().unwrap_or(0));
         let total = rem * 256 + l + h;
         out.push((total / 2) as u8);
         rem = total % 2;

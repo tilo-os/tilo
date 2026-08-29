@@ -215,7 +215,7 @@ impl<C: Widget> ModalDialog<C> {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let pad = theme.tokens.spacing.s4 as f64;
+        let pad = f64::from(theme.tokens.spacing.s4);
         let inner = Rect::new(
             self.rect.x0 + pad,
             self.rect.y0 + TITLE_BAR_HEIGHT,
@@ -311,7 +311,7 @@ fn draw_action_button(
     is_primary: bool,
     destructive: bool,
 ) {
-    let radius = theme.tokens.radii.sm as f64;
+    let radius = f64::from(theme.tokens.radii.sm);
     let shape = RoundedRect::from_rect(rect, radius);
     let bg = if is_primary {
         if destructive {
@@ -343,8 +343,8 @@ fn draw_action_button(
     };
     let text_size = theme.tokens.typography.scale.sm;
     let (text_w, _) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (text_w as f64 / 2.0);
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -384,7 +384,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 &[content_node],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -393,10 +393,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // The resolved node rect: the screen-sized parent under a stack
         // overlay, or the window itself when wired directly under `App`.
         self.viewport = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_layout();
         let mut tr = TextRenderer::new();
@@ -419,7 +419,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let backdrop = Color::BLACK.with_alpha_factor(0.7);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.viewport);
 
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let box_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -437,8 +437,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         );
 
         let title_size = theme.tokens.typography.scale.lg;
-        let title_x = self.rect.x0 + theme.tokens.spacing.s4 as f64;
-        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - title_size as f64) / 2.0;
+        let title_x = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
+        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -546,10 +546,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                         path,
                         focus_target,
                     );
-                } else {
-                    if let Some(cb) = self.on_dismiss.as_mut() {
-                        cb();
-                    }
+                } else if let Some(cb) = self.on_dismiss.as_mut() {
+                    cb();
                 }
                 *handled = true;
             }
@@ -572,7 +570,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ModalDialog"
     }
 

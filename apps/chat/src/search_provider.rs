@@ -49,7 +49,7 @@ impl ChannelSearchProvider {
         action_id
             .strip_prefix(ACTION_PREFIX)
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     /// The workspace name a channel belongs to, for its subtitle.

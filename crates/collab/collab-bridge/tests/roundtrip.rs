@@ -37,7 +37,7 @@ use runtime_portal::UnixCapnpClient;
 /// Capture buffer for a fake upstream broker: every request the bridge sends lands here for assertions.
 type Captured = Rc<RefCell<Vec<CollabRequest>>>;
 
-/// Fake broker glue for a single UpstreamHandle: returns the handle the
+/// Fake broker glue for a single `UpstreamHandle`: returns the handle the
 /// bridge uses, the capture list, and a control to push events through.
 struct FakeUpstream {
     handle: UpstreamHandle,
@@ -81,7 +81,7 @@ async fn stand_up_fake_upstream() -> FakeUpstream {
         }
     });
 
-    let writer = fake_writer.clone();
+    let writer = fake_writer;
     let inject: Rc<dyn Fn(CollabEvent)> = Rc::new(move |ev| {
         let bytes = serde_json::to_vec(&ev).unwrap();
         let len = (bytes.len() as u32).to_le_bytes();
@@ -213,7 +213,7 @@ async fn stand_up_bridge() -> (CollabClient, Captured, Rc<dyn Fn(CollabEvent)>) 
             let h = cell
                 .borrow_mut()
                 .clone()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no upstream"))?;
+                .ok_or_else(|| std::io::Error::other("no upstream"))?;
             Ok(h)
         })
     });
@@ -515,7 +515,7 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
         }
         for i in 0..3u32 {
             (inject)(CollabEvent::SignedCRDTIncremental {
-                envelope: Box::new(mk_signed_op(i as u64)),
+                envelope: Box::new(mk_signed_op(u64::from(i))),
                 from_user_id: format!("author-{i}"),
             });
         }
@@ -612,7 +612,7 @@ fn upstream_close_surfaces_as_error_on_next_op_read() {
     });
 }
 
-/// Minimal SignedOp for tests: every canonical-bytes field is a stable
+/// Minimal `SignedOp` for tests: every canonical-bytes field is a stable
 /// placeholder, since the bridge doesn't introspect the op.
 fn mk_signed_op(seq: u64) -> collab_types::SignedOp {
     use collab_types::{ArtifactId, Ed25519PublicKey, OpClass, SignedOp};

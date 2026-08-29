@@ -466,11 +466,11 @@ impl ServiceCatalog {
     }
 
     pub fn name_of(id: &str) -> &str {
-        Self::get(id).map(|s| s.name).unwrap_or(id)
+        Self::get(id).map_or(id, |s| s.name)
     }
 
     pub fn proto_of(id: &str) -> &'static str {
-        Self::get(id).map(|s| s.proto).unwrap_or("tcp")
+        Self::get(id).map_or("tcp", |s| s.proto)
     }
 
     /// The list of catalog ids — used to seed the service dropdown in the

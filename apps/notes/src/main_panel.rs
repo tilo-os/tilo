@@ -57,7 +57,7 @@ const TITLE_SIZE: f32 = 30.0;
 const PADDING_PX: f64 = 32.0;
 /// Vertical gap between the title and the block editor.
 const TITLE_TO_EDITOR_GAP: f64 = 14.0;
-/// Title row height (~ TITLE_SIZE * 1.4) — enough for the editable field's
+/// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
 /// caret band without clipping descenders.
 const TITLE_HEIGHT: f64 = 44.0;
 
@@ -85,7 +85,7 @@ pub struct MainPanel {
     editor: BlockEditor,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
-    /// document — if so we skip the to_markdown serialisation.
+    /// document — if so we skip the `to_markdown` serialisation.
     body: String,
     /// Panel rect, populated by `apply_layout`.
     rect: Rect,
@@ -251,12 +251,11 @@ impl MainPanel {
     /// while the title is itself being edited, so a model echo doesn't stomp
     /// the user's in-flight typing.
     pub fn set_title(&mut self, title: Option<String>) {
-        if let Some(t) = title {
-            if !self.title_label.is_editing() && self.title_label.value() != t {
+        if let Some(t) = title
+            && !self.title_label.is_editing() && self.title_label.value() != t {
                 self.title_label.set_value(&t);
                 self.dirty = true;
             }
-        }
     }
 
     /// Currently displayed page id, if any.
@@ -408,17 +407,17 @@ impl Widget for MainPanel {
                 &[editor_node],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
@@ -613,7 +612,7 @@ impl Widget for MainPanel {
         // delta as a cursor move.
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 40.0,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
                 winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
             };
             if dy != 0.0 {
@@ -642,7 +641,7 @@ impl Widget for MainPanel {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MainPanel"
     }
 

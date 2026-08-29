@@ -1,7 +1,7 @@
 //! Hosted-mode `QOS_TEST_CONTROL` socket listener.
 //!
 //! Headless mode binds the same socket via `compositor::native::
-//! bind_test_control_socket` and drives the FrameBuilder directly.
+//! bind_test_control_socket` and drives the `FrameBuilder` directly.
 //! Hosted mode can't reuse that path because it doesn't own a
 //! `FrameBuilder` — the `App` is driving the event loop. Instead we
 //! spawn a background thread that:

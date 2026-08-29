@@ -115,49 +115,49 @@ fn parse_args() -> Result<Args, String> {
                 args.duration_secs = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--duration expects <secs>".to_string())?
+                    .ok_or_else(|| "--duration expects <secs>".to_string())?;
             }
             "--width" => {
                 args.width = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--width expects <px>".to_string())?
+                    .ok_or_else(|| "--width expects <px>".to_string())?;
             }
             "--height" => {
                 args.height = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--height expects <px>".to_string())?
+                    .ok_or_else(|| "--height expects <px>".to_string())?;
             }
             "--fps" => {
                 args.fps = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--fps expects <n>".to_string())?
+                    .ok_or_else(|| "--fps expects <n>".to_string())?;
             }
             "--latency-ms" => {
                 args.latency_ms = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--latency-ms expects <n>".to_string())?
+                    .ok_or_else(|| "--latency-ms expects <n>".to_string())?;
             }
             "--throughput-kbps" => {
                 args.throughput_kbps = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--throughput-kbps expects <n>".to_string())?
+                    .ok_or_else(|| "--throughput-kbps expects <n>".to_string())?;
             }
             "--out" => {
                 args.out = it
                     .next()
                     .map(PathBuf::from)
-                    .ok_or_else(|| "--out expects <path.mp4>".to_string())?
+                    .ok_or_else(|| "--out expects <path.mp4>".to_string())?;
             }
             "--profile" => {
                 args.profile = it
                     .next()
                     .map(PathBuf::from)
-                    .ok_or_else(|| "--profile expects <path.txt>".to_string())?
+                    .ok_or_else(|| "--profile expects <path.txt>".to_string())?;
             }
             "--source" => {
                 let v = it
@@ -289,7 +289,7 @@ impl SourceRenderer {
         let bytes = font_paths
             .iter()
             .find_map(|p| fs::read(p).ok())
-            .ok_or_else(|| format!("no font found — tried {:?}", font_paths))?;
+            .ok_or_else(|| format!("no font found — tried {font_paths:?}"))?;
         let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let rgba = vec![0u8; (width as usize) * (height as usize) * 4];
         Ok(Self {
@@ -332,7 +332,7 @@ impl SourceRenderer {
             self.draw_disc(x as i32, y as i32, radius as i32, color);
         }
         // Text stamp — top-left, "SOURCE t=NNNNms".
-        let text = format!("t={t_ms:>5}ms   frame #{:>4}", frame_index);
+        let text = format!("t={t_ms:>5}ms   frame #{frame_index:>4}");
         self.draw_text(24, 24, 48.0, &text, (255, 255, 255));
         &self.rgba
     }
@@ -399,8 +399,8 @@ impl SourceRenderer {
 }
 
 fn blend(bg: u8, fg: u8, alpha: f32) -> u8 {
-    let bg = bg as f32;
-    let fg = fg as f32;
+    let bg = f32::from(bg);
+    let fg = f32::from(fg);
     (bg + (fg - bg) * alpha).clamp(0.0, 255.0) as u8
 }
 
@@ -472,8 +472,7 @@ impl CompositeRenderer {
         let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let header_left = "SOURCE".to_string();
         let header_right = format!(
-            "STREAMED · {}ms latency · {} kbps throttle",
-            latency_ms, throughput_kbps
+            "STREAMED · {latency_ms}ms latency · {throughput_kbps} kbps throttle"
         );
         Ok(Self {
             src_w,
@@ -605,7 +604,7 @@ impl CompositeRenderer {
 }
 
 fn round_even(v: u32) -> u32 {
-    if v % 2 == 0 { v } else { v + 1 }
+    if v.is_multiple_of(2) { v } else { v + 1 }
 }
 
 /// Spawn `ffmpeg` to mux the raw H.264 Annex-B stream we're writing to
@@ -794,9 +793,8 @@ fn main() -> Result<(), String> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
         )
         .init();
-    let args = parse_args().map_err(|e| {
+    let args = parse_args().inspect_err(|_e| {
         print_usage();
-        e
     })?;
     eprintln!(
         "flatpak-share-demo: {}x{} @ {}fps for {}s, shim latency={}ms throttle={}kbps → {}",
@@ -810,7 +808,7 @@ fn main() -> Result<(), String> {
     );
 
     let total_frames = args.duration_secs * args.fps;
-    let frame_interval = Duration::from_micros(1_000_000 / args.fps as u64);
+    let frame_interval = Duration::from_micros(1_000_000 / u64::from(args.fps));
 
     // Production encoder — same crate the compositor uses to publish.
     // Sized to 4 Mbps so 720p content has budget for detail; `FrameLink`
@@ -877,7 +875,7 @@ fn main() -> Result<(), String> {
     let mut last_decoded: Option<Vec<u8>> = None;
 
     for i in 0..total_frames {
-        let t_ms = ((i as u64) * 1000) / (args.fps as u64);
+        let t_ms = (u64::from(i) * 1000) / u64::from(args.fps);
         let src = source_renderer.render(t_ms, i);
 
         // Encode the source with the production encoder — same code
@@ -947,14 +945,14 @@ fn main() -> Result<(), String> {
         // last frame.
         let elapsed_this_frame = now.elapsed();
         if elapsed_this_frame < frame_interval && i + 1 < total_frames {
-            std::thread::sleep(frame_interval - elapsed_this_frame);
+            std::thread::sleep(frame_interval.checked_sub(elapsed_this_frame).unwrap());
         }
     }
 
     // Drain anything still in the shim so late-arriving frames land in
     // the composite tail — given a "far future" instant so everything
     // queued is deliverable.
-    let flush_now = Instant::now() + Duration::from_secs(3600);
+    let flush_now = Instant::now() + Duration::from_hours(1);
     for nal_blob in shim.drain_ready(flush_now) {
         if let Some(frame) = recv_decoder.decode(&nal_blob) {
             // last_decoded is dropped at end of scope — the flush loop exists to
@@ -990,7 +988,7 @@ fn main() -> Result<(), String> {
 
     // Snapshot the profile-layer accumulator + write the report.
     let layer_ref = ProfileLayer {
-        inner: inner.clone(),
+        inner,
     };
     write_profile_report(&args.profile, &layer_ref, total_wall)?;
 

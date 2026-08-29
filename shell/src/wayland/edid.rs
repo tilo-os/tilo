@@ -13,7 +13,7 @@
 //! gamut rather than assuming BT.2020 for every HDR display.
 //!
 //! Not parsed: Detailed Timing Descriptors, monitor names, timings,
-//! DisplayID, or the EDID checksum (the parser is defensive against
+//! `DisplayID`, or the EDID checksum (the parser is defensive against
 //! short/malformed blobs and returns `HdrDisplayInfo::default_sdr()`
 //! rather than panicking, so a bogus checksum just falls back to SDR).
 
@@ -23,13 +23,13 @@ use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 ///
 /// Chromaticity fields are CIE 1931 xy coordinates scaled the same
 /// way the Wayland protocol reports them: (x, y) multiplied by
-/// 1_000_000. So (0.708, 0.292) — BT.2020 red — becomes
-/// (708_000, 292_000).
+/// `1_000_000`. So (0.708, 0.292) — BT.2020 red — becomes
+/// (`708_000`, `292_000`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HdrDisplayInfo {
-    /// R, G, B primary chromaticities in (x_micro, y_micro).
+    /// R, G, B primary chromaticities in (`x_micro`, `y_micro`).
     pub display_primaries: [(u32, u32); 3],
-    /// White-point chromaticity in (x_micro, y_micro).
+    /// White-point chromaticity in (`x_micro`, `y_micro`).
     pub white_point: (u32, u32),
     /// Desired content peak luminance in cd/m². `0` = unknown.
     pub max_luminance_cd_m2: u16,
@@ -88,29 +88,29 @@ pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     // B+W); the high 8 bits are bytes 27..=34.
     let lo_rg = edid[25];
     let lo_bw = edid[26];
-    let hi_rx = edid[27] as u16;
-    let hi_ry = edid[28] as u16;
-    let hi_gx = edid[29] as u16;
-    let hi_gy = edid[30] as u16;
-    let hi_bx = edid[31] as u16;
-    let hi_by = edid[32] as u16;
-    let hi_wx = edid[33] as u16;
-    let hi_wy = edid[34] as u16;
+    let hi_rx = u16::from(edid[27]);
+    let hi_ry = u16::from(edid[28]);
+    let hi_gx = u16::from(edid[29]);
+    let hi_gy = u16::from(edid[30]);
+    let hi_bx = u16::from(edid[31]);
+    let hi_by = u16::from(edid[32]);
+    let hi_wx = u16::from(edid[33]);
+    let hi_wy = u16::from(edid[34]);
 
-    let rx = (hi_rx << 2) | ((lo_rg as u16 >> 6) & 0b11);
-    let ry = (hi_ry << 2) | ((lo_rg as u16 >> 4) & 0b11);
-    let gx = (hi_gx << 2) | ((lo_rg as u16 >> 2) & 0b11);
-    let gy = (hi_gy << 2) | ((lo_rg as u16) & 0b11);
-    let bx = (hi_bx << 2) | ((lo_bw as u16 >> 6) & 0b11);
-    let by = (hi_by << 2) | ((lo_bw as u16 >> 4) & 0b11);
-    let wx = (hi_wx << 2) | ((lo_bw as u16 >> 2) & 0b11);
-    let wy = (hi_wy << 2) | ((lo_bw as u16) & 0b11);
+    let rx = (hi_rx << 2) | ((u16::from(lo_rg) >> 6) & 0b11);
+    let ry = (hi_ry << 2) | ((u16::from(lo_rg) >> 4) & 0b11);
+    let gx = (hi_gx << 2) | ((u16::from(lo_rg) >> 2) & 0b11);
+    let gy = (hi_gy << 2) | (u16::from(lo_rg) & 0b11);
+    let bx = (hi_bx << 2) | ((u16::from(lo_bw) >> 6) & 0b11);
+    let by = (hi_by << 2) | ((u16::from(lo_bw) >> 4) & 0b11);
+    let wx = (hi_wx << 2) | ((u16::from(lo_bw) >> 2) & 0b11);
+    let wy = (hi_wy << 2) | (u16::from(lo_bw) & 0b11);
 
     // 10-bit fixed-point → x-micro (× 1e6). Value / 1024 is the raw
     // fractional coordinate; multiplied by 1_000_000 gives micro-CIE.
     let to_micro = |v: u16| -> u32 {
         // Do the divide in u64 to avoid intermediate overflow.
-        ((v as u64 * 1_000_000) / 1024) as u32
+        ((u64::from(v) * 1_000_000) / 1024) as u32
     };
     info.display_primaries = [
         (to_micro(rx), to_micro(ry)),
@@ -161,7 +161,7 @@ fn parse_cta861_data_blocks(ext: &[u8], info: &mut HdrDisplayInfo) {
         dtd_offset.min(127)
     };
     let mut i = 4;
-    while i + 1 <= end {
+    while i < end {
         // High 3 bits = block tag; low 5 bits = payload length.
         let header = ext[i];
         let tag = header >> 5;
@@ -249,19 +249,19 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     // the defaults from `default_sdr` in place if the encoding says
     // "not populated".
     if body.len() >= 3 && body[2] != 0 {
-        let code = body[2] as f32;
+        let code = f32::from(body[2]);
         let max_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
         info.max_luminance_cd_m2 = max_cd_m2.round().min(10_000.0) as u16;
     }
     if body.len() >= 4 && body[3] != 0 {
-        let code = body[3] as f32;
+        let code = f32::from(body[3]);
         let fall_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
         info.max_frame_average_luminance_cd_m2 = fall_cd_m2.round().min(10_000.0) as u16;
     }
     if body.len() >= 5 && body[4] != 0 {
         // min is derived from max: min = (max_lum * (code/255)^2) / 100
-        let max_lum = info.max_luminance_cd_m2.max(1) as f32;
-        let ratio = body[4] as f32 / 255.0;
+        let max_lum = f32::from(info.max_luminance_cd_m2.max(1));
+        let ratio = f32::from(body[4]) / 255.0;
         let min_cd_m2 = max_lum * ratio * ratio / 100.0;
         // Convert cd/m² → 1/10000 units (matching Hdr10 metadata).
         info.min_luminance_micro_cd_m2 = (min_cd_m2 * 10_000.0).round() as u32;

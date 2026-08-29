@@ -42,7 +42,7 @@ pub enum Source<'a> {
     Path(&'a Path),
 }
 
-impl<'a> Source<'a> {
+impl Source<'_> {
     /// Materialise the source bytes, reading the file if necessary.
     fn read(&self) -> Option<Vec<u8>> {
         match self {

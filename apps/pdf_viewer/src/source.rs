@@ -89,7 +89,7 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
         let (mut title, author, subject) = r.metadata();
         prof("metadata", t);
         if title.trim().is_empty() {
-            title = stem.clone();
+            title = stem;
         }
         let (pw, ph) = r.first_page_size();
         let t = Instant::now();
@@ -178,7 +178,7 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
     let addr = *PDFIUM_ADDR.get_or_init(|| match find_pdfium() {
         Some(bindings) => {
             let handle: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
-            handle as *const Pdfium as usize
+            std::ptr::from_ref::<Pdfium>(handle) as usize
         }
         None => 0,
     });
@@ -201,7 +201,7 @@ impl Rasterizer {
         let pages = doc.pages();
         for i in 0..pages.len() {
             if let Ok(rect) = pages.page_size(i) {
-                page_sizes.push((rect.width().value as f64, rect.height().value as f64));
+                page_sizes.push((f64::from(rect.width().value), f64::from(rect.height().value)));
             } else {
                 page_sizes.push((612.0, 792.0));
             }
@@ -320,7 +320,7 @@ impl Rasterizer {
     /// sized to its own aspect ratio.
     pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
         let img = image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
-        let (iw, ih) = (img.width().max(1) as f64, img.height().max(1) as f64);
+        let (iw, ih) = (f64::from(img.width().max(1)), f64::from(img.height().max(1)));
         // A page 612pt wide (US-Letter width) with the image's aspect ratio.
         let pw = 612.0f64;
         let ph = (pw * ih / iw).clamp(72.0, 3000.0);
@@ -386,8 +386,7 @@ impl Rasterizer {
             let page = bm
                 .destination()
                 .and_then(|d| d.page_index().ok())
-                .map(|i| i as usize + 1)
-                .unwrap_or(1);
+                .map_or(1, |i| i as usize + 1);
             if !title.trim().is_empty() {
                 out.push(OutlineItem {
                     title,
@@ -421,7 +420,7 @@ impl Rasterizer {
     /// page-point box) pair, flipping into the reader's top-left space.
     fn extract_page_text(&self, slot: PageSlot) -> Option<PageText> {
         let src = self.sources.get(slot.source)?;
-        let page_h = src.page_sizes.get(slot.page).map(|s| s.1).unwrap_or(792.0);
+        let page_h = src.page_sizes.get(slot.page).map_or(792.0, |s| s.1);
         let page = src.doc.pages().get(slot.page as u16).ok()?;
         let text = page.text().ok()?;
         // Bind `chars` to a local: `PdfPageTextChars::iter` borrows it, so it
@@ -440,10 +439,10 @@ impl Rasterizer {
             // bands.
             let rect = match ch.loose_bounds() {
                 Ok(b) => {
-                    let left = b.left().value as f64;
-                    let right = b.right().value as f64;
-                    let top_pdf = b.top().value as f64;
-                    let bottom_pdf = b.bottom().value as f64;
+                    let left = f64::from(b.left().value);
+                    let right = f64::from(b.right().value);
+                    let top_pdf = f64::from(b.top().value);
+                    let bottom_pdf = f64::from(b.bottom().value);
                     PtRect::new(
                         left,
                         page_h - top_pdf,
@@ -809,13 +808,11 @@ fn pt_tl_to_pdf(x: f64, y: f64, page_h: f64) -> (PdfPoints, PdfPoints) {
 
 /// Locate a usable pdfium library without ever bundling one.
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
-    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB") {
-        if !path.is_empty() {
-            if let Ok(b) = Pdfium::bind_to_library(&path) {
+    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
+        && !path.is_empty()
+            && let Ok(b) = Pdfium::bind_to_library(&path) {
                 return Some(b);
             }
-        }
-    }
     let mut candidates: Vec<String> = vec![
         "/usr/lib64/libpdfium.so".into(),
         "/usr/lib/libpdfium.so".into(),
@@ -827,11 +824,10 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
         candidates.push(format!("{home}/.local/lib/pdfium/libpdfium.so"));
     }
     for cand in candidates {
-        if Path::new(&cand).exists() {
-            if let Ok(b) = Pdfium::bind_to_library(&cand) {
+        if Path::new(&cand).exists()
+            && let Ok(b) = Pdfium::bind_to_library(&cand) {
                 return Some(b);
             }
-        }
     }
     Pdfium::bind_to_system_library().ok()
 }

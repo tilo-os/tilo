@@ -267,8 +267,7 @@ impl PdfApp {
                     .comments
                     .iter()
                     .find(|c| c.id == id)
-                    .map(|c| c.resolved)
-                    .unwrap_or(false);
+                    .is_some_and(|c| c.resolved);
                 self.perform_action(state, crate::actions::set_comment_resolved_action(&id, !cur));
                 self.reload(state);
             }
@@ -332,81 +331,77 @@ impl PdfApp {
             }
             return true;
         }
-        match self.hit_page(p) {
-            Some((page, pt)) => match self.tool {
-                // Select arms one of three gestures. Over real text on a raster
-                // page it begins a text selection; otherwise it is a pan-or-click
-                // (a press that doesn't move is a selection of markup under it; a
-                // press that drags pans the canvas).
-                Tool::Select => {
-                    if let Some((id, nx, ny)) = self.note_marker_at(page, pt) {
-                        // A press on a sticky-note marker begins a reposition drag
-                        // (draggable annotation markers), taking priority over text
-                        // selection or a pan. A press that doesn't move still just
-                        // selects the note (handled on release).
-                        self.clear_selection();
-                        self.selected_anno = Some(id.clone());
-                        self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
-                    } else if self.shift_down && self.raster.is_some() {
-                        // Shift + Select drags a rubber-band image-region marquee
-                        // to copy; it never pans or selects text.
-                        self.clear_selection();
-                        self.region = Some(RegionSelect { page, start: pt, cur: pt });
-                    } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
-                        // Text selection armed; motion extends it, release ends it.
-                    } else {
-                        self.clear_selection();
-                        self.pan = Some(PanState {
-                            start: p,
-                            scroll_x0: self.scroll_x(),
-                            scroll_y0: self.scroll_y(),
-                            moved: false,
-                        });
-                    }
-                    self.dirty = true;
-                }
-                Tool::Highlight | Tool::Ink => {
-                    self.drag = Some(DragState {
-                        tool: self.tool,
-                        page,
-                        start: pt,
-                        cur: pt,
-                        points: vec![pt],
-                    });
-                    self.dirty = true;
-                }
-                Tool::Note => self.create_note(state, page, pt),
-                Tool::Sign => self.place_signature(state, page, pt),
-            },
-            None => {
-                // Empty canvas: with Select, start a pan; otherwise clear.
-                self.clear_selection();
-                if matches!(self.tool, Tool::Select) {
+        if let Some((page, pt)) = self.hit_page(p) { match self.tool {
+            // Select arms one of three gestures. Over real text on a raster
+            // page it begins a text selection; otherwise it is a pan-or-click
+            // (a press that doesn't move is a selection of markup under it; a
+            // press that drags pans the canvas).
+            Tool::Select => {
+                if let Some((id, nx, ny)) = self.note_marker_at(page, pt) {
+                    // A press on a sticky-note marker begins a reposition drag
+                    // (draggable annotation markers), taking priority over text
+                    // selection or a pan. A press that doesn't move still just
+                    // selects the note (handled on release).
+                    self.clear_selection();
+                    self.selected_anno = Some(id.clone());
+                    self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
+                } else if self.shift_down && self.raster.is_some() {
+                    // Shift + Select drags a rubber-band image-region marquee
+                    // to copy; it never pans or selects text.
+                    self.clear_selection();
+                    self.region = Some(RegionSelect { page, start: pt, cur: pt });
+                } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
+                    // Text selection armed; motion extends it, release ends it.
+                } else {
+                    self.clear_selection();
                     self.pan = Some(PanState {
                         start: p,
                         scroll_x0: self.scroll_x(),
                         scroll_y0: self.scroll_y(),
                         moved: false,
                     });
-                } else {
-                    self.selected_anno = None;
-                    self.selected_sig = None;
                 }
                 self.dirty = true;
             }
+            Tool::Highlight | Tool::Ink => {
+                self.drag = Some(DragState {
+                    tool: self.tool,
+                    page,
+                    start: pt,
+                    cur: pt,
+                    points: vec![pt],
+                });
+                self.dirty = true;
+            }
+            Tool::Note => self.create_note(state, page, pt),
+            Tool::Sign => self.place_signature(state, page, pt),
+        } } else {
+            // Empty canvas: with Select, start a pan; otherwise clear.
+            self.clear_selection();
+            if matches!(self.tool, Tool::Select) {
+                self.pan = Some(PanState {
+                    start: p,
+                    scroll_x0: self.scroll_x(),
+                    scroll_y0: self.scroll_y(),
+                    moved: false,
+                });
+            } else {
+                self.selected_anno = None;
+                self.selected_sig = None;
+            }
+            self.dirty = true;
         }
         true
     }
 
     /// Resolve a right-click into a context menu over a deletable item.
     fn open_context_menu(&mut self, p: Point) -> bool {
-        if let Some((page, pt)) = self.hit_page(p) {
-            if let Some(target) = self.delete_target_at(page, pt) {
+        if let Some((page, pt)) = self.hit_page(p)
+            && let Some(target) = self.delete_target_at(page, pt) {
                 self.context_menu = Some(ContextMenu { at: p, target, item_rect: Rect::ZERO });
                 self.dirty = true;
                 return true;
             }
-        }
         // A right-click elsewhere just dismisses any open menu.
         if self.context_menu.take().is_some() {
             self.dirty = true;
@@ -434,7 +429,7 @@ impl PdfApp {
                 if self.sig_stroke.is_some() {
                     let n = self.sig_pad_norm(p);
                     if let Some(st) = self.sig_stroke.as_mut() {
-                        let far = st.last().map(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004).unwrap_or(true);
+                        let far = st.last().is_none_or(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004);
                         if far {
                             st.push(n);
                         }
@@ -449,7 +444,7 @@ impl PdfApp {
                 // page doesn't pan under the selection.
                 if self.editing.is_some() {
                     self.drive_editor(event, scale_factor, modifiers, state);
-                    if self.editing.as_ref().map(|e| e.input.is_dragging()).unwrap_or(false) {
+                    if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
                         self.dirty = true;
                         return;
                     }
@@ -502,13 +497,12 @@ impl PdfApp {
                 // Text selection drag (Select tool over real text). Map the
                 // pointer onto the selection's page even past the card edge so
                 // the drag can reach the end of a line.
-                if let Some(sel) = self.selection {
-                    if sel.dragging {
+                if let Some(sel) = self.selection
+                    && sel.dragging {
                         let pt = self.page_point(sel.page, p);
                         self.update_selection(sel.page, pt);
                         return;
                     }
-                }
 
                 // Drag-to-pan (Select tool).
                 if let Some(pan) = self.pan {
@@ -533,8 +527,7 @@ impl PdfApp {
                             let push = d
                                 .points
                                 .last()
-                                .map(|l| (l.0 - pt.0).hypot(l.1 - pt.1) > 1.5)
-                                .unwrap_or(true);
+                                .is_none_or(|l| (l.0 - pt.0).hypot(l.1 - pt.1) > 1.5);
                             if push {
                                 d.points.push(pt);
                             }
@@ -632,7 +625,7 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
-                if self.sel_hud.as_ref().map(|h| h.contains(p)).unwrap_or(false) {
+                if self.sel_hud.as_ref().is_some_and(|h| h.contains(p)) {
                     // A tap on the bar body (between controls) is swallowed so it
                     // doesn't fall through and clear the selection.
                     *handled = true;
@@ -658,7 +651,7 @@ impl PdfApp {
                     return;
                 }
                 // End an inline-editor drag-selection.
-                if self.editing.as_ref().map(|e| e.input.is_dragging()).unwrap_or(false) {
+                if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
                     self.drive_editor(event, scale_factor, modifiers, state);
                     self.dirty = true;
                     *handled = true;
@@ -702,16 +695,15 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
-                if self.selection.map(|s| s.dragging).unwrap_or(false) {
+                if self.selection.is_some_and(|s| s.dragging) {
                     // End a text-selection drag. A bare click (no drag) selects
                     // nothing textual, so also let it pick markup underneath.
-                    let was_active = self.selection.map(|s| s.is_active()).unwrap_or(false);
+                    let was_active = self.selection.is_some_and(|s| s.is_active());
                     self.finish_selection();
-                    if !was_active {
-                        if let Some((page, pt)) = self.hit_page(self.last_mouse) {
+                    if !was_active
+                        && let Some((page, pt)) = self.hit_page(self.last_mouse) {
                             self.select_at(page, pt);
                         }
-                    }
                     *handled = true;
                 } else if self.rail_drag.take().is_some() {
                     self.dirty = true;
@@ -758,7 +750,7 @@ impl PdfApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 let p = self.last_mouse;
                 let (raw_x, raw_y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
                     MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
                 };
                 let mods = modifiers.state();
@@ -884,7 +876,7 @@ impl PdfApp {
             }
             self.drive_editor(event, scale, modifiers, state);
             let submitted =
-                self.editing.as_mut().map(|e| e.input.take_submit()).unwrap_or(false);
+                self.editing.as_mut().is_some_and(|e| e.input.take_submit());
             if submitted {
                 self.commit_edit(state);
             }
@@ -898,7 +890,7 @@ impl PdfApp {
             match &key_event.logical_key {
                 Key::Named(NamedKey::Escape) => self.close_search(),
                 Key::Named(NamedKey::Enter) => {
-                    self.step_match(if mods.shift_key() { -1 } else { 1 })
+                    self.step_match(if mods.shift_key() { -1 } else { 1 });
                 }
                 Key::Named(NamedKey::Backspace) => {
                     self.query.pop();
@@ -928,8 +920,8 @@ impl PdfApp {
 
         // Ctrl/Cmd shortcuts: find, and zoom (+ / − / 0). Handled up front so
         // the bare-key fallbacks below can keep their own meanings.
-        if ctrl {
-            if let Key::Character(c) = &key_event.logical_key {
+        if ctrl
+            && let Key::Character(c) = &key_event.logical_key {
                 match c.as_str() {
                     "o" | "O" => {
                         self.request_open_via_portal();
@@ -972,7 +964,6 @@ impl PdfApp {
                     _ => {}
                 }
             }
-        }
 
         match &key_event.logical_key {
             Key::Character(c) => {
@@ -1063,7 +1054,7 @@ impl PdfApp {
                 self.scroll_by(KEY_SCROLL_STEP, 0.0);
                 *handled = true;
             }
-            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
+            Key::Named(NamedKey::PageDown | NamedKey::Space) => {
                 let step = (self.canvas_rect.height() * 0.9).max(KEY_SCROLL_STEP);
                 self.scroll_by(0.0, step);
                 *handled = true;
@@ -1081,11 +1072,10 @@ impl PdfApp {
                 self.go_to_page(self.doc.page_count());
                 *handled = true;
             }
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if self.delete_selected(state) {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace)
+                if self.delete_selected(state) => {
                     *handled = true;
                 }
-            }
             _ => {}
         }
     }
@@ -1110,11 +1100,11 @@ mod event_tests {
     fn toolbar_tool_buttons_select_tools() {
         let (mut app, mut st) = app();
         let lay = app.toolbar_layout();
-        for (tool, r) in lay.tools.clone() {
-            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+        for (tool, r) in lay.tools {
+            let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             let hit = app.toolbar_hit(p).expect("a toolbar hit");
             app.apply_toolbar(hit, &mut st.doc);
-            assert_eq!(app.tool, tool, "clicking {:?} should arm it", tool);
+            assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
         }
     }
 
@@ -1347,7 +1337,7 @@ mod event_tests {
             });
         if let Some((id, r)) = chip {
             let before = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
-            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             assert!(app.apply_sidebar(p, &mut st.doc));
             let after = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
             assert_ne!(before, after, "resolve chip should toggle, not open the card");
@@ -1371,7 +1361,7 @@ mod event_tests {
         });
         if let Some((id, r)) = del {
             let n = app.comments.len();
-            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             assert!(app.apply_sidebar(p, &mut st.doc));
             assert_eq!(app.comments.len(), n - 1);
             assert!(!app.comments.iter().any(|c| c.id == id));
@@ -1388,7 +1378,7 @@ mod event_tests {
         });
         if let Some((id, r)) = dels {
             let n = app.signatures.len();
-            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             assert!(app.apply_sidebar(p, &mut st.doc));
             assert_eq!(app.signatures.len(), n - 1);
             assert!(!app.signatures.iter().any(|s| s.id == id));
@@ -1455,7 +1445,7 @@ mod event_tests {
         // Arm the Highlight tool by clicking its real toolbar button.
         let lay = app.toolbar_layout();
         let (_, hb) = lay.tools.iter().find(|(t, _)| *t == Tool::Highlight).unwrap();
-        let btn = ((hb.x0 + hb.x1) / 2.0, (hb.y0 + hb.y1) / 2.0);
+        let btn = (f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
         feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
         assert_eq!(app.tool, Tool::Highlight, "clicking the toolbar arms the tool");
@@ -1480,7 +1470,7 @@ mod event_tests {
 
     /// Build a real `WindowEvent::KeyboardInput` for `key`. winit's
     /// `KeyEventExtra` is `pub(crate)`, so we zero the struct and set the
-    /// public fields — the same trick the terminal + modal_dialog tests use.
+    /// public fields — the same trick the terminal + `modal_dialog` tests use.
     fn key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
         use winit::event::{ElementState, KeyEvent};
         use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
@@ -1529,7 +1519,7 @@ mod event_tests {
         // Arm the Note tool via its real toolbar button.
         let lay = app.toolbar_layout();
         let (_, nb) = lay.tools.iter().find(|(t, _)| *t == Tool::Note).unwrap();
-        let btn = ((nb.x0 + nb.x1) / 2.0, (nb.y0 + nb.y1) / 2.0);
+        let btn = (f64::midpoint(nb.x0, nb.x1), f64::midpoint(nb.y0, nb.y1));
         feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
         assert_eq!(app.tool, Tool::Note, "clicking the toolbar arms the note tool");
@@ -1565,7 +1555,7 @@ mod event_tests {
     }
 
     /// Arrow keys scroll the document by a small nudge through the real key
-    /// path — not a whole-page jump — and PageDown scrolls much further.
+    /// path — not a whole-page jump — and `PageDown` scrolls much further.
     #[test]
     fn arrow_keys_scroll_smoothly_not_by_whole_pages() {
         use ui::Widget as _;
@@ -1666,7 +1656,7 @@ mod event_tests {
 
         // Hit-test: the toolbar Open (folder) button resolves to Open.
         let open = app.toolbar_layout().open;
-        let c = Point::new((open.x0 + open.x1) / 2.0, (open.y0 + open.y1) / 2.0);
+        let c = Point::new(f64::midpoint(open.x0, open.x1), f64::midpoint(open.y0, open.y1));
         assert!(
             matches!(app.toolbar_hit(c), Some(ToolbarHit::Open)),
             "the folder button hit-tests to the Open action"
@@ -1825,7 +1815,7 @@ mod event_tests {
 
         // Left-click the Delete item removes the annotation from the doc.
         let before = app.annotations.len();
-        let ic = ((item.x0 + item.x1) / 2.0, (item.y0 + item.y1) / 2.0);
+        let ic = (f64::midpoint(item.x0, item.x1), f64::midpoint(item.y0, item.y1));
         feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(ic.0, ic.1) });
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
 

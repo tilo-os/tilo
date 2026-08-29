@@ -141,17 +141,17 @@ impl Widget for PathBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.crumbs.apply_layout_external(self.rect);
         self.field.apply_layout_external(self.rect);
@@ -245,7 +245,7 @@ impl Widget for PathBar {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PathBar"
     }
 
@@ -346,7 +346,7 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
             if !lower_prefix.is_empty() && !name.to_lowercase().starts_with(&lower_prefix) {
                 return None;
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
             Some((is_dir, name, e.path()))
         })
         .collect();

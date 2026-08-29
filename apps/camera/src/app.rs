@@ -14,13 +14,13 @@
 //! feed. The hermetic `--shots` / test path uses a self-contained sample
 //! source so screenshots and tests never touch the disk or a device.
 
+use qos_actions::EncodedAction;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::EncodedAction;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -35,7 +35,7 @@ use winit::event::WindowEvent;
 use crate::doc;
 use crate::frame::{self, FrameBuf};
 use crate::library;
-use crate::model::*;
+use crate::model::{CaptureKind, Facing, Screen, CaptureMode, GalleryFilter, Timer, Settings, ScanEntry, Capture, ScannedCode, Resolution, PhotoFormat, CodeKind, classify};
 use crate::paint as p;
 
 /// Uniform inset for floating controls from the window edge. The camera is an
@@ -297,8 +297,8 @@ impl CameraApp {
                     id: id.clone(),
                     kind: CaptureKind::Video,
                     ts: now_secs(),
-                    w: self.latest_frame.as_ref().map(|f| f.w).unwrap_or(0),
-                    h: self.latest_frame.as_ref().map(|f| f.h).unwrap_or(0),
+                    w: self.latest_frame.as_ref().map_or(0, |f| f.w),
+                    h: self.latest_frame.as_ref().map_or(0, |f| f.h),
                     dur_ms: dur,
                     label: "New clip".into(),
                     favorite: false,
@@ -608,25 +608,22 @@ impl CameraApp {
             self.toast = Some("Couldn't read that photo".into());
             return;
         };
-        match crate::scan::decode_and_classify(&luma, w, h, |p| p) {
-            Some(s) => {
-                self.scanned = Some(s.clone());
-                // Decoding is device I/O; recording it into the shared history
-                // is the collaborative action.
-                self.perform_action(
-                    doc,
-                    crate::actions::CameraAction::RecordScan {
-                        raw: s.raw.clone(),
-                        ts: now_secs(),
-                    },
-                );
-                self.scans = doc::read_scans(doc, root);
-                self.toast = Some(format!("{} found", s.kind.title()));
-            }
-            None => {
-                self.scanned = None;
-                self.toast = Some("No code found in that photo".into());
-            }
+        if let Some(s) = crate::scan::decode_and_classify(&luma, w, h, |p| p) {
+            self.scanned = Some(s.clone());
+            // Decoding is device I/O; recording it into the shared history
+            // is the collaborative action.
+            self.perform_action(
+                doc,
+                crate::actions::CameraAction::RecordScan {
+                    raw: s.raw.clone(),
+                    ts: now_secs(),
+                },
+            );
+            self.scans = doc::read_scans(doc, root);
+            self.toast = Some(format!("{} found", s.kind.title()));
+        } else {
+            self.scanned = None;
+            self.toast = Some("No code found in that photo".into());
         }
     }
 
@@ -757,8 +754,7 @@ fn capture_request_dims(res: Resolution) -> (u32, u32) {
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn ago(ts: i64, now: i64) -> String {
@@ -823,8 +819,8 @@ fn sample_captures() -> Vec<Capture> {
         scene,
         path: None,
     };
-    use CaptureKind::*;
-    use Facing::*;
+    use CaptureKind::{Photo, Video};
+    use Facing::{Back, Front, Wide};
     vec![
         mk("c1", Photo, 120, 1, true, Back, "Golden hour", 0),
         mk("c2", Photo, 1100, 2, false, Back, "City lights", 0),
@@ -861,11 +857,10 @@ impl Widget for CameraApp {
         }
         self.screen = doc::read_screen(state, path);
         // Dev/screenshot hook: force a screen without driving the nav.
-        if let Ok(s) = std::env::var("CAMERA_SCREEN") {
-            if let Some(sc) = Screen::from_str(&s) {
+        if let Ok(s) = std::env::var("CAMERA_SCREEN")
+            && let Some(sc) = Screen::from_str(&s) {
                 self.screen = sc;
             }
-        }
         // Don't let a persisted mode flip mid-record.
         if self.recording.is_none() {
             self.mode = doc::read_mode(state, path);
@@ -884,8 +879,7 @@ impl Widget for CameraApp {
             let n = self
                 .recording
                 .as_ref()
-                .map(|s| s.rec.frame_count())
-                .unwrap_or(0);
+                .map_or(0, |s| s.rec.frame_count());
             let seed = Self::viewfinder_seed(self.facing).wrapping_add((n as u8) & 3);
             let fb = frame::viewfinder(seed, 480, 270);
             if let Some(state) = &mut self.recording {
@@ -905,11 +899,10 @@ impl Widget for CameraApp {
             }
         }
         // Drop a stale selection.
-        if let Some(id) = self.selected_capture.clone() {
-            if !self.captures.iter().any(|c| c.id == id) {
+        if let Some(id) = self.selected_capture.clone()
+            && !self.captures.iter().any(|c| c.id == id) {
                 self.selected_capture = None;
             }
-        }
         // Screenshot hook: preselect an item so the detail view can be
         // captured headless. No effect on normal runtime (env is unset).
         if self.selected_capture.is_none() && std::env::var_os("CAMERA_SELECT").is_some() {
@@ -926,23 +919,21 @@ impl Widget for CameraApp {
                 .filter_map(|c| c.path.clone())
                 .collect();
             for p in paths {
-                if let Some((luma, w, h)) = library::load_luma(&p, 1024) {
-                    if let Some(s) = crate::scan::decode_and_classify(&luma, w, h, |q| q) {
+                if let Some((luma, w, h)) = library::load_luma(&p, 1024)
+                    && let Some(s) = crate::scan::decode_and_classify(&luma, w, h, |q| q) {
                         self.scanned = Some(s);
                         self.scan_dismissed = false;
                         break;
                     }
-                }
             }
         }
         // Screenshot hook: pin a scroll position (clamped at draw time) so a
         // scrolled state can be captured headless. No runtime effect.
-        if let Ok(v) = std::env::var("CAMERA_SCROLL") {
-            if let Ok(px) = v.parse::<f64>() {
+        if let Ok(v) = std::env::var("CAMERA_SCROLL")
+            && let Ok(px) = v.parse::<f64>() {
                 self.gallery_scroll = px;
                 self.settings_scroll = px;
             }
-        }
     }
 
     fn build_layout(
@@ -960,7 +951,7 @@ impl Widget for CameraApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -968,10 +959,10 @@ impl Widget for CameraApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1029,7 +1020,7 @@ impl Widget for CameraApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
@@ -1090,7 +1081,7 @@ impl Widget for CameraApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CameraApp"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1379,7 +1370,7 @@ impl CameraApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let tw = p::text_w(tr, &msg, 13.0) as f64;
+        let tw = f64::from(p::text_w(tr, &msg, 13.0));
         let w = tw + 56.0;
         let cx = self.stage_center_x();
         let r = Rect::new(
@@ -1473,8 +1464,7 @@ impl CameraApp {
                     let need = self
                         .cam_view
                         .as_ref()
-                        .map(|(w, h, s, _)| (*w, *h, *s) != (vw, vh, seed))
-                        .unwrap_or(true);
+                        .map_or(true, |(w, h, s, _)| (*w, *h, *s) != (vw, vh, seed));
                     if need {
                         self.cam_view = Some((
                             vw,
@@ -1492,13 +1482,10 @@ impl CameraApp {
                     if self
                         .live_view
                         .as_ref()
-                        .map(|(g, _)| *g != cur_gen)
-                        .unwrap_or(true)
-                    {
-                        if let Some(fb) = self.latest_frame.clone() {
+                        .map_or(true, |(g, _)| *g != cur_gen)
+                        && let Some(fb) = self.latest_frame.clone() {
                             self.live_view = Some((cur_gen, frame_image_cover(fb)));
                         }
-                    }
                     if let Some((_, img)) = self.live_view.as_mut() {
                         img.paint_at(scene, t, full);
                     }
@@ -1561,9 +1548,9 @@ impl CameraApp {
         if self.settings.grid {
             let gc = p::alpha(white(), 0.22);
             for k in 1..3 {
-                let x = vf.x0 + vf.width() * k as f64 / 3.0;
+                let x = vf.x0 + vf.width() * f64::from(k) / 3.0;
                 p::line(scene, t, x, vf.y0, x, vf.y1, gc, 1.0);
-                let y = vf.y0 + vf.height() * k as f64 / 3.0;
+                let y = vf.y0 + vf.height() * f64::from(k) / 3.0;
                 p::line(scene, t, vf.x0, y, vf.x1, y, gc, 1.0);
             }
         }
@@ -1625,7 +1612,7 @@ impl CameraApp {
         let tw = if label.is_empty() {
             0.0
         } else {
-            p::text_w(tr, label, 12.0) as f64
+            f64::from(p::text_w(tr, label, 12.0))
         };
         let gap = if icon.is_some() && !label.is_empty() {
             5.0
@@ -1870,11 +1857,11 @@ impl CameraApp {
     /// a clip is recording.
     fn draw_rec_indicator(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, full: Rect) {
         let scx = self.stage_center_x();
-        let started = self.recording.as_ref().map(|s| s.started).unwrap_or(0);
+        let started = self.recording.as_ref().map_or(0, |s| s.started);
         let elapsed = (now_secs() - started).max(0);
         let label = format!("REC  {}", fmt_dur(elapsed * 1000));
         let red = Color::from_rgb8(240, 60, 60);
-        let tw = p::text_w(tr, &label, 12.5) as f64;
+        let tw = f64::from(p::text_w(tr, &label, 12.5));
         let w = 20.0 + 12.0 + tw + 14.0;
         let pill = Rect::new(scx - w / 2.0, full.y0 + 18.0, scx + w / 2.0, full.y0 + 46.0);
         p::fill_round(
@@ -2014,8 +2001,8 @@ impl CameraApp {
         subtitle: &str,
     ) {
         let c = &theme.tokens.colors;
-        let tw = p::text_w(tr, title, 15.0) as f64;
-        let sw = p::text_w(tr, subtitle, 11.5) as f64;
+        let tw = f64::from(p::text_w(tr, title, 15.0));
+        let sw = f64::from(p::text_w(tr, subtitle, 11.5));
         let w = tw.max(sw) + 32.0;
         let r = Rect::new(x, y, x + w, y + 52.0);
         p::fill_round(scene, t, r, 16.0, p::alpha(c.neutral[0], 0.55));
@@ -2050,8 +2037,7 @@ impl CameraApp {
                 if self
                     .scan_view
                     .as_ref()
-                    .map(|(w, h, _)| (*w, *h) != (vw, vh))
-                    .unwrap_or(true)
+                    .map_or(true, |(w, h, _)| (*w, *h) != (vw, vh))
                 {
                     let (buf, scanned) = frame::scanner_frame(4, vw, vh, SCAN_PAYLOAD);
                     self.scan_view = Some((vw, vh, frame_image_fill(buf)));
@@ -2064,10 +2050,8 @@ impl CameraApp {
                 if self
                     .live_view
                     .as_ref()
-                    .map(|(g, _)| *g != cur_gen)
-                    .unwrap_or(true)
-                {
-                    if let Some(fb) = self.latest_frame.clone() {
+                    .map_or(true, |(g, _)| *g != cur_gen)
+                    && let Some(fb) = self.latest_frame.clone() {
                         let luma = frame::luma(&fb);
                         let (fw, fh) = (fb.w, fb.h);
                         self.scanned = crate::scan::decode_and_classify(
@@ -2079,7 +2063,6 @@ impl CameraApp {
                         self.scan_gen = (fw, fh);
                         self.live_view = Some((cur_gen, frame_image_cover(fb)));
                     }
-                }
             }
         }
 
@@ -2138,10 +2121,10 @@ impl CameraApp {
         // Detected bounding box (decode corners → full-frame coords).
         if let Some(s) = self.scanned.clone() {
             let (gw, gh) = self.scan_gen;
-            let sx = full.width() / gw.max(1) as f64;
-            let sy = full.height() / gh.max(1) as f64;
+            let sx = full.width() / f64::from(gw.max(1));
+            let sy = full.height() / f64::from(gh.max(1));
             let pt =
-                |(x, y): (f32, f32)| Point::new(full.x0 + x as f64 * sx, full.y0 + y as f64 * sy);
+                |(x, y): (f32, f32)| Point::new(full.x0 + f64::from(x) * sx, full.y0 + f64::from(y) * sy);
             let mut bez = BezPath::new();
             let pts: Vec<Point> = s.corners.iter().map(|c| pt(*c)).collect();
             bez.move_to(pts[0]);
@@ -2163,8 +2146,8 @@ impl CameraApp {
             }
             let cxy = s.center();
             let tag = detected_label(&s.symbology);
-            let tw = p::text_w(tr, &tag, 11.0) as f64 + 18.0;
-            let tagx = (full.x0 + cxy.0 as f64 * sx) - tw / 2.0;
+            let tw = f64::from(p::text_w(tr, &tag, 11.0)) + 18.0;
+            let tagx = (full.x0 + f64::from(cxy.0) * sx) - tw / 2.0;
             let top = pts.iter().map(|q| q.y).fold(f64::MAX, f64::min);
             let tagr = Rect::new(tagx, top - 26.0, tagx + tw, top - 6.0);
             p::fill_round(scene, t, tagr, 10.0, green);
@@ -2172,11 +2155,10 @@ impl CameraApp {
         }
 
         // Floating result card, centred on the frame under the scan window.
-        if let Some(s) = self.scanned.clone() {
-            if !self.scan_dismissed {
+        if let Some(s) = self.scanned.clone()
+            && !self.scan_dismissed {
                 self.draw_scan_card(scene, t, tr, theme, full, &s);
             }
-        }
     }
 
     /// No live camera: let the user scan a code out of a photo already in
@@ -2263,11 +2245,10 @@ impl CameraApp {
         }
         p::pop(scene);
 
-        if let Some(s) = self.scanned.clone() {
-            if !self.scan_dismissed {
+        if let Some(s) = self.scanned.clone()
+            && !self.scan_dismissed {
                 self.draw_scan_card(scene, t, tr, theme, stage, &s);
             }
-        }
     }
 
     fn draw_scan_card(
@@ -2337,7 +2318,7 @@ impl CameraApp {
         let mut bx = card.x0 + 16.0;
         let by = card.y1 - 42.0;
         for (i, label) in actions.iter().enumerate() {
-            let tw = p::text_w(tr, label, 13.0) as f64;
+            let tw = f64::from(p::text_w(tr, label, 13.0));
             let bw = tw + 30.0;
             let br = Rect::new(bx, by, bx + bw, by + 30.0);
             if i == 0 {
@@ -2644,8 +2625,8 @@ impl CameraApp {
         }
 
         // Detail — side panel (wide) or full overlay (narrow).
-        if let Some(id) = sel_id {
-            if let Some(cap) = filtered.iter().find(|c| c.id == id).cloned() {
+        if let Some(id) = sel_id
+            && let Some(cap) = filtered.iter().find(|c| c.id == id).cloned() {
                 if wide {
                     let panel = Rect::new(
                         grid.x1 + detail_gap,
@@ -2667,7 +2648,6 @@ impl CameraApp {
                     self.draw_gallery_detail(scene, t, tr, theme, panel, &cap, now, true);
                 }
             }
-        }
     }
 
     fn draw_gallery_card(
@@ -2723,7 +2703,7 @@ impl CameraApp {
             p::icon(scene, t, "play", shrink(pl, 5.0), white(), 1.5);
             if cap.dur_ms > 0 {
                 let dur = fmt_dur(cap.dur_ms);
-                let dw = p::text_w(tr, &dur, 11.0) as f64 + 14.0;
+                let dw = f64::from(p::text_w(tr, &dur, 11.0)) + 14.0;
                 let dr = Rect::new(
                     card.x1 - dw - 8.0,
                     card.y0 + 8.0,
@@ -2862,7 +2842,7 @@ impl CameraApp {
                 "Size",
                 format!(
                     "{:.1} MB",
-                    (cap.w as f64 * cap.h as f64 * 1.5) / 1_000_000.0
+                    (f64::from(cap.w) * f64::from(cap.h) * 1.5) / 1_000_000.0
                 ),
             ));
         }
@@ -2893,7 +2873,7 @@ impl CameraApp {
                 c.text_primary
             };
             p::fill_round(scene, t, br, 12.0, p::alpha(c.neutral[2], 0.9));
-            let lw = p::text_w(tr, label, 11.5) as f64;
+            let lw = f64::from(p::text_w(tr, label, 11.5));
             let group_w = 16.0 + 6.0 + lw;
             let ix = br.center().x - group_w / 2.0;
             p::icon(
@@ -2991,7 +2971,7 @@ impl CameraApp {
         // Capture group.
         y = self.group_title(scene, tr, theme, x0, y, "Capture");
         let cap_rows = 4;
-        let cap_rect = Rect::new(x0, y, x0 + colw, y + cap_rows as f64 * 52.0);
+        let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * 52.0);
         p::fill_round(scene, t, cap_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -3323,13 +3303,13 @@ impl CameraApp {
 
 /// Truncate `s` with an ellipsis so it fits in `max_w` pixels at `size`.
 fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if p::text_w(tr, s, size) as f64 <= max_w {
+    if f64::from(p::text_w(tr, s, size)) <= max_w {
         return s.to_string();
     }
     let mut out = String::new();
     for ch in s.chars() {
         let trial = format!("{out}{ch}…");
-        if p::text_w(tr, &trial, size) as f64 > max_w {
+        if f64::from(p::text_w(tr, &trial, size)) > max_w {
             break;
         }
         out.push(ch);

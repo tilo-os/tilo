@@ -1,4 +1,4 @@
-//! `WorkspaceSettings` — the modal opened from the TopBar's
+//! `WorkspaceSettings` — the modal opened from the `TopBar`'s
 //! workspace-name button, with General / Members / Permissions tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
@@ -38,7 +38,7 @@ const NAV_ROW_GAP: f64 = 4.0;
 /// reserves room for the identity badge + caption.
 const NAV_ROWS_TOP: f64 = 120.0;
 
-/// Tab selector for the WorkspaceSettings modal.
+/// Tab selector for the `WorkspaceSettings` modal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WsTab {
     /// Workspace identity, invite link, collaborators.
@@ -75,7 +75,7 @@ pub fn invite_link(ws: &Workspace) -> String {
     format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
 
-/// The WorkspaceSettings modal state.
+/// The `WorkspaceSettings` modal state.
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
@@ -385,7 +385,7 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
         transform,
         theme.tokens.colors.neutral[3].with_alpha_factor(0.15),
         None,
-        &RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg)),
     );
 }
 
@@ -407,8 +407,8 @@ fn draw_pill(
     let (tw, th) = text_renderer.measure(label, size, None);
     let pad_x = 8.0;
     let pad_y = 4.0;
-    let w = tw as f64 + pad_x * 2.0;
-    let h = th as f64 + pad_y * 2.0;
+    let w = f64::from(tw) + pad_x * 2.0;
+    let h = f64::from(th) + pad_y * 2.0;
     let rect = Rect::new(
         right_edge - w,
         center_y - h / 2.0,
@@ -420,7 +420,7 @@ fn draw_pill(
         transform,
         tint.with_alpha_factor(0.20 * alpha),
         None,
-        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
     text_renderer.draw_text(
         scene,
@@ -448,7 +448,7 @@ fn draw_avatar(
     let colors = &theme.tokens.colors;
     let tint = subject_tint(label, theme);
     let radius = if square {
-        theme.tokens.radii.md as f64
+        f64::from(theme.tokens.radii.md)
     } else {
         rect.width() / 2.0
     };
@@ -461,9 +461,7 @@ fn draw_avatar(
     );
     let initial: String = label
         .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "?".to_string());
+        .next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
     let size = theme.tokens.typography.scale.sm;
     let (tw, th) = text_renderer.measure(&initial, size, None);
     text_renderer.draw_text(
@@ -473,8 +471,8 @@ fn draw_avatar(
         colors.text_primary,
         transform
             * Affine::translate((
-                rect.center().x - tw as f64 / 2.0,
-                rect.center().y - th as f64 / 2.0,
+                rect.center().x - f64::from(tw) / 2.0,
+                rect.center().y - f64::from(th) / 2.0,
             )),
         None,
     );
@@ -484,7 +482,7 @@ fn draw_avatar(
 /// two subjects rarely share a colour and none is hard-coded.
 fn subject_tint(label: &str, theme: &Theme) -> Color {
     let colors = &theme.tokens.colors;
-    let bucket = label.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) as usize % 4;
+    let bucket = label.bytes().fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize % 4;
     match bucket {
         0 => colors.accent[5],
         1 => colors.accent[4],
@@ -507,7 +505,7 @@ fn draw_cycler(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    let track = RoundedRect::from_rect(rect, tokens.radii.md as f64);
+    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.md));
     scene.fill(
         Fill::NonZero,
         transform,
@@ -532,7 +530,7 @@ fn draw_cycler(
         &shown,
         size,
         colors.text_primary.with_alpha_factor(alpha),
-        transform * Affine::translate((rect.x0 + 10.0, rect.center().y - th as f64 / 2.0)),
+        transform * Affine::translate((rect.x0 + 10.0, rect.center().y - f64::from(th) / 2.0)),
         None,
     );
     let glyph = Rect::new(
@@ -559,7 +557,7 @@ fn elide(text: &str, size: f32, max_w: f64, text_renderer: &mut TextRenderer) ->
         return String::new();
     }
     let (w, _) = text_renderer.measure(text, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return text.to_string();
     }
     let mut chars: Vec<char> = text.chars().collect();
@@ -567,7 +565,7 @@ fn elide(text: &str, size: f32, max_w: f64, text_renderer: &mut TextRenderer) ->
         chars.pop();
         let candidate: String = chars.iter().collect::<String>() + "…";
         let (w, _) = text_renderer.measure(&candidate, size, None);
-        if (w as f64) <= max_w {
+        if f64::from(w) <= max_w {
             return candidate;
         }
     }
@@ -612,7 +610,7 @@ fn draw_danger_button(
         transform,
         danger.with_alpha_factor(0.20 * alpha),
         None,
-        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
     let size = tokens.typography.scale.sm;
     let (tw, th) = text_renderer.measure(label, size, None);
@@ -623,8 +621,8 @@ fn draw_danger_button(
         danger.with_alpha_factor(alpha),
         transform
             * Affine::translate((
-                rect.center().x - tw as f64 / 2.0,
-                rect.center().y - th as f64 / 2.0,
+                rect.center().x - f64::from(tw) / 2.0,
+                rect.center().y - f64::from(th) / 2.0,
             )),
         None,
     );
@@ -647,7 +645,7 @@ fn draw_primary_button(
         transform,
         tokens.colors.accent[5].with_alpha_factor(alpha),
         None,
-        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
     let size = tokens.typography.scale.sm;
     let (tw, th) = text_renderer.measure(label, size, None);
@@ -658,8 +656,8 @@ fn draw_primary_button(
         tokens.colors.text_primary.with_alpha_factor(alpha),
         transform
             * Affine::translate((
-                rect.center().x - tw as f64 / 2.0,
-                rect.center().y - th as f64 / 2.0,
+                rect.center().x - f64::from(tw) / 2.0,
+                rect.center().y - f64::from(th) / 2.0,
             )),
         None,
     );
@@ -696,7 +694,7 @@ fn draw_empty_state(
         headline,
         h_size,
         colors.text_primary,
-        transform * Affine::translate((cx - hw as f64 / 2.0, top + glyph + 14.0)),
+        transform * Affine::translate((cx - f64::from(hw) / 2.0, top + glyph + 14.0)),
         None,
     );
     let c_size = tokens.typography.scale.sm;
@@ -706,7 +704,7 @@ fn draw_empty_state(
         caption,
         c_size,
         colors.text_dim,
-        transform * Affine::translate((cx - cw as f64 / 2.0, top + glyph + 36.0)),
+        transform * Affine::translate((cx - f64::from(cw) / 2.0, top + glyph + 36.0)),
         None,
     );
 }
@@ -1424,14 +1422,14 @@ pub fn draw_members_pane(
             transform,
             chip_tint.with_alpha_factor(0.20 * chip_alpha),
             None,
-            &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
+            &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
             None,
-            &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
+            &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
         );
         let role_text = role_label(row.role);
         let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
@@ -1444,14 +1442,14 @@ pub fn draw_members_pane(
             transform
                 * Affine::translate((
                     row.role_rect.x0 + 10.0,
-                    row.role_rect.center().y - rh as f64 / 2.0,
+                    row.role_rect.center().y - f64::from(rh) / 2.0,
                 )),
             None,
         );
         if role_interactive {
             let glyph = 12.0_f64;
             let gx =
-                (row.role_rect.x0 + 10.0 + rw as f64 + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
+                (row.role_rect.x0 + 10.0 + f64::from(rw) + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
             draw_icon(
                 scene,
                 transform,
@@ -1732,7 +1730,7 @@ pub fn draw_permissions_pane(
         pane_rect.x1 - PANE_PAD_X,
         pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
     );
-    let card_rr = RoundedRect::from_rect(card, tokens.radii.lg as f64);
+    let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
         transform,
@@ -1813,7 +1811,7 @@ pub fn draw_permissions_pane(
         layout.expiry_rects[2].x1,
         layout.expiry_rects[2].y1,
     );
-    let track_rr = RoundedRect::from_rect(expiry_track, tokens.radii.md as f64);
+    let track_rr = RoundedRect::from_rect(expiry_track, f64::from(tokens.radii.md));
     let track_alpha = if is_owner { 1.0 } else { DISABLED_ALPHA };
     scene.fill(
         Fill::NonZero,
@@ -1838,7 +1836,7 @@ pub fn draw_permissions_pane(
                 transform,
                 colors.accent[5].with_alpha_factor(0.90 * track_alpha),
                 None,
-                &RoundedRect::from_rect(seg.inset(2.0), tokens.radii.md as f64 - 2.0),
+                &RoundedRect::from_rect(seg.inset(2.0), f64::from(tokens.radii.md) - 2.0),
             );
         }
         let label = expiry_label(expiry);
@@ -1856,8 +1854,8 @@ pub fn draw_permissions_pane(
             color.with_alpha_factor(track_alpha),
             transform
                 * Affine::translate((
-                    seg.center().x - tw as f64 / 2.0,
-                    seg.center().y - th as f64 / 2.0,
+                    seg.center().x - f64::from(tw) / 2.0,
+                    seg.center().y - f64::from(th) / 2.0,
                 )),
             None,
         );

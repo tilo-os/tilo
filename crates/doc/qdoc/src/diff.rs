@@ -665,43 +665,37 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
 
     // New + shared sheets, in new tab order.
     for ns in &new.sheets {
-        match old_by_id.get(ns.id.as_str()) {
-            Some(os) => {
-                let change = diff_sheet(os, ns);
-                match change.op {
-                    SheetOp::Changed => {
-                        for c in &change.cells {
-                            match c.op {
-                                CellOp::Added => summary.cells_added += 1,
-                                CellOp::Removed => summary.cells_removed += 1,
-                                CellOp::Changed => summary.cells_changed += 1,
-                            }
-                        }
+        if let Some(os) = old_by_id.get(ns.id.as_str()) {
+            let change = diff_sheet(os, ns);
+            if change.op == SheetOp::Changed {
+                for c in &change.cells {
+                    match c.op {
+                        CellOp::Added => summary.cells_added += 1,
+                        CellOp::Removed => summary.cells_removed += 1,
+                        CellOp::Changed => summary.cells_changed += 1,
                     }
-                    _ => {}
                 }
-                out.push(change);
             }
-            None => {
-                summary.sheets_added += 1;
-                summary.cells_added += ns.cells.len();
-                out.push(SheetChange {
-                    id: ns.id.clone(),
-                    name: ns.name.clone(),
-                    op: SheetOp::Added,
-                    name_change: None,
-                    cells: ns
-                        .cells
-                        .iter()
-                        .map(|c| CellChange {
-                            reference: c.reference.clone(),
-                            op: CellOp::Added,
-                            old: None,
-                            new: Some(c.clone()),
-                        })
-                        .collect(),
-                });
-            }
+            out.push(change);
+        } else {
+            summary.sheets_added += 1;
+            summary.cells_added += ns.cells.len();
+            out.push(SheetChange {
+                id: ns.id.clone(),
+                name: ns.name.clone(),
+                op: SheetOp::Added,
+                name_change: None,
+                cells: ns
+                    .cells
+                    .iter()
+                    .map(|c| CellChange {
+                        reference: c.reference.clone(),
+                        op: CellOp::Added,
+                        old: None,
+                        new: Some(c.clone()),
+                    })
+                    .collect(),
+            });
         }
     }
     // Removed sheets (present only in old).
@@ -747,7 +741,7 @@ fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
         .collect();
 
     let mut refs: Vec<&str> = old_cells.keys().chain(new_cells.keys()).copied().collect();
-    refs.sort();
+    refs.sort_unstable();
     refs.dedup();
 
     let mut cells = Vec::new();

@@ -1,4 +1,4 @@
-//! Display-capability probe for the receive-side PeerView: can this output
+//! Display-capability probe for the receive-side `PeerView`: can this output
 //! show PQ pixels natively? If yes the tone-mapper is bypassed for
 //! passthrough; otherwise it runs on decode.
 //!

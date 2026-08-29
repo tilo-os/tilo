@@ -90,7 +90,7 @@ impl StatusBubble {
         if e >= self.linger {
             return 0.0;
         }
-        let remain = self.linger - e;
+        let remain = self.linger.checked_sub(e).unwrap();
         if remain < FADE {
             (remain.as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
         } else {
@@ -103,8 +103,7 @@ impl StatusBubble {
         !self.hovered
             && self
                 .shown_at
-                .map(|t| now.saturating_duration_since(t) < self.linger)
-                .unwrap_or(false)
+                .is_some_and(|t| now.saturating_duration_since(t) < self.linger)
     }
 }
 
@@ -113,8 +112,8 @@ impl StatusBubble {
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
-    let w = tw as f64 + 2.0 * pad_x + 2.0 * control;
-    let h = (text_size as f64 + 16.0).max(30.0);
+    let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
+    let h = (f64::from(text_size) + 16.0).max(30.0);
     (w, h)
 }
 
@@ -150,8 +149,8 @@ pub fn draw_pill(
     );
 
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
-    let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
-    let ty = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
+    let ty = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     tr.draw_text_weighted(
         scene,
         text,
@@ -165,8 +164,8 @@ pub fn draw_pill(
 
 pub fn draw_chevron(scene: &mut Scene, transform: Affine, r: Rect, color: Color, left: bool) {
     use vello::kurbo::BezPath;
-    let cx = (r.x0 + r.x1) / 2.0;
-    let cy = (r.y0 + r.y1) / 2.0;
+    let cx = f64::midpoint(r.x0, r.x1);
+    let cy = f64::midpoint(r.y0, r.y1);
     let dx = 3.5;
     let dy = 5.0;
     let mut p = BezPath::new();

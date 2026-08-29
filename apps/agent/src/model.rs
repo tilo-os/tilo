@@ -512,7 +512,7 @@ where
             return Err(give_up(error, made));
         }
         let waiting = policy.wait_before(made, asked_for);
-        if !left().is_some_and(|l| l >= waiting + policy.room_to_answer) {
+        if left().is_none_or(|l| l < waiting + policy.room_to_answer) {
             tracing::warn!(
                 attempts = made,
                 wait_ms = waiting.as_millis() as u64,

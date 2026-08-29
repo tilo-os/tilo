@@ -4,7 +4,7 @@
 //! ## Why a shim
 //!
 //! `bwrap` needs broad filesystem access to *build* the sandbox (mount,
-//! bind, pivot_root), so it can't be Landlocked. But Landlock is
+//! bind, `pivot_root`), so it can't be Landlocked. But Landlock is
 //! path-based and irrevocable for the calling process and all its
 //! descendants, so it must be applied *inside* the namespace, after
 //! mount setup finishes and before the app binary takes over.
@@ -114,7 +114,7 @@ impl ShimArgs {
                                 value
                                     .parse()
                                     .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?,
-                            )
+                            );
                         }
                     }
                     i += 1;
@@ -296,24 +296,17 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cprogram = match CString::new(program.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: program path contains an interior NUL");
-            std::process::exit(2);
-        }
+    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) { c } else {
+        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        std::process::exit(2);
     };
 
-    let cargs: Vec<CString> = match command
+    let cargs: Vec<CString> = if let Ok(v) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
-        .collect::<Result<_, _>>()
-    {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: argument contains an interior NUL");
-            std::process::exit(2);
-        }
+        .collect::<Result<_, _>>() { v } else {
+        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        std::process::exit(2);
     };
 
     let cargv: Vec<*const libc::c_char> = cargs

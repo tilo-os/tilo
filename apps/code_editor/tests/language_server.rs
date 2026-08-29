@@ -55,7 +55,7 @@ use code_editor::model::Language;
 /// rust-analyzer has to run `cargo metadata` and build a crate graph before it
 /// says anything. On a one-file crate that is seconds; the ceiling is generous
 /// so a loaded machine reports the real failure rather than a timeout.
-const BUDGET: Duration = Duration::from_secs(180);
+const BUDGET: Duration = Duration::from_mins(3);
 
 /// A minimal but genuine Cargo project containing one deliberate error.
 fn project_with_a_deliberate_error() -> tempfile::TempDir {
@@ -103,8 +103,7 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
 
 fn require_binary(name: &str) {
     let found = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()))
-        .unwrap_or(false);
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()));
     assert!(
         found,
         "{name} is not on PATH. This test proves the editor's language server \

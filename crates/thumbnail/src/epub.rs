@@ -50,7 +50,7 @@ fn resolve_cover_href(opf: &str, base: &str) -> Option<String> {
                 && n.attribute("content").is_some()
         })
         .and_then(|n| n.attribute("content"))
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     let mut manifest: HashMap<String, String> = HashMap::new();
     let mut cover_by_props: Option<String> = None;

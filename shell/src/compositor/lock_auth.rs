@@ -226,11 +226,10 @@ pub fn select_verifier(
         if let Some(pw) = test_password {
             return VerifierChoice::Fixed(pw);
         }
-        if let Some(prog) = helper_override {
-            if !prog.trim().is_empty() {
+        if let Some(prog) = helper_override
+            && !prog.trim().is_empty() {
                 return VerifierChoice::Helper(prog);
             }
-        }
     }
     if helper_installed {
         return VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.to_string());

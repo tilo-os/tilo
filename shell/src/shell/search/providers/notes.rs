@@ -24,10 +24,10 @@ impl Default for NotesProvider {
 }
 
 impl SearchProvider for NotesProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "notes"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Notes"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {

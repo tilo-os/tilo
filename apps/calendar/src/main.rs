@@ -222,8 +222,8 @@ fn layout_once(
 
 /// Render `widget` offscreen and write RGBA to `out` as PNG.
 ///
-/// Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
-/// apply_layout → draw) but runs the layout pass **twice**. The live event
+/// Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
+/// `apply_layout` → draw) but runs the layout pass **twice**. The live event
 /// loop feeds each frame's allocated rect back into the next frame's
 /// `build_layout`, which is how responsive widths (here: the detail/notes
 /// column) settle. A single offscreen frame would build its layout before the

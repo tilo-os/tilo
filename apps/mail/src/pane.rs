@@ -46,7 +46,7 @@ const ADD_ACCOUNT_ROW_H: f64 = 38.0;
 
 /// Header title placement for the list pane: the x where the folder title
 /// starts, the y (top of its text box) that vertically centres it on the
-/// NavShell collapse chip beside it, and the shared centre line (== the chip's
+/// `NavShell` collapse chip beside it, and the shared centre line (== the chip's
 /// vertical centre). `chip_here` is whether the chip overlays this pane's
 /// header. Pure so the "title lines up with, and is spaced from, the collapse
 /// button" invariant is unit-testable.
@@ -130,8 +130,8 @@ pub struct Pane {
     /// resolved during draw (the card layout is only known then). Clicking one
     /// saves the real attachment bytes to disk.
     reader_attachment_hits: Vec<(Rect, MessageId, usize)>,
-    /// Reader pane only: the sandboxed WebView that renders an HTML mail body,
-    /// its engine, and the (message, block_remote) key currently loaded into it.
+    /// Reader pane only: the sandboxed `WebView` that renders an HTML mail body,
+    /// its engine, and the (message, `block_remote`) key currently loaded into it.
     /// Created lazily on the first HTML mail so text-only usage stays webview-free.
     html_engine: Option<SharedEngine>,
     html_view: Option<WebView>,
@@ -391,8 +391,8 @@ impl Pane {
             let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
             // Icon + label centred as a unit.
-            let group_w = 18.0 + 8.0 + w as f64;
-            let gx = (rect.x0 + rect.x1) / 2.0 - group_w / 2.0;
+            let group_w = 18.0 + 8.0 + f64::from(w);
+            let gx = f64::midpoint(rect.x0, rect.x1) - group_w / 2.0;
             let icon_box = Rect::new(gx, rect.y0 + 11.0, gx + 18.0, rect.y0 + 29.0);
             Icon::Pencil.draw(scene, t, icon_box, Color::WHITE);
             tr.draw_text_weighted(
@@ -563,7 +563,7 @@ impl Pane {
                             let txt = unread.to_string();
                             let (twd, _) =
                                 tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
-                            let bw = (twd as f64 + 14.0).max(20.0);
+                            let bw = (f64::from(twd) + 14.0).max(20.0);
                             let badge = Rect::new(
                                 rect.x1 - bw - 8.0,
                                 rect.y0 + 8.0,
@@ -578,7 +578,7 @@ impl Pane {
                                 11.0,
                                 Color::WHITE,
                                 t * Affine::translate((
-                                    (badge.x0 + badge.x1) / 2.0 - twd as f64 / 2.0,
+                                    f64::midpoint(badge.x0, badge.x1) - f64::from(twd) / 2.0,
                                     badge.y0 + 4.0,
                                 )),
                                 None,
@@ -605,7 +605,7 @@ impl Pane {
         // Whether the collapse chip sits over this pane's header (the list is
         // then the leftmost pane); matches `header_left_inset`'s List branch.
         let chip_here = st.narrow || !st.sidebar_open;
-        let gap = theme.tokens.spacing.s3 as f64;
+        let gap = f64::from(theme.tokens.spacing.s3);
         let (title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap);
         let title_budget = sr.x0 - title_x - 12.0;
         let title_full = st.folder.title();
@@ -623,8 +623,8 @@ impl Pane {
         // Count sits after the full title only when there's room for both,
         // centred on the same line.
         let count = st.mailbox.count(st.folder);
-        let count_x = title_x + twd as f64 + 10.0;
-        if (twd as f64) <= title_budget && count_x + 26.0 < sr.x0 {
+        let count_x = title_x + f64::from(twd) + 10.0;
+        if f64::from(twd) <= title_budget && count_x + 26.0 < sr.x0 {
             let count_y = header_cy - 12.0 * 1.25 / 2.0;
             tr.draw_text(
                 scene,
@@ -727,16 +727,14 @@ impl Pane {
             let len = rows
                 .iter()
                 .find(|(rid, _)| *rid == id)
-                .map(|(_, l)| *l)
-                .unwrap_or(1);
+                .map_or(1, |(_, l)| *l);
             let selected = st.selected == Some(id) && !st.narrow;
             let hov = rect.contains(st.last_mouse);
 
             let swipe_dx = self
                 .swipe
                 .filter(|s| s.id == id)
-                .map(|s| s.dx)
-                .unwrap_or(0.0);
+                .map_or(0.0, |s| s.dx);
             if swipe_dx.abs() > 1.0 {
                 let (col, icon, label, on_left) = if swipe_dx < 0.0 {
                     (c.semantic.warning, Icon::Archive, "Archive", false)
@@ -837,7 +835,7 @@ impl Pane {
                 &date,
                 11.5,
                 c.text_dim,
-                t * Affine::translate((right - dw as f64, row.y0 + 13.0)),
+                t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
                 None,
             );
 
@@ -862,7 +860,7 @@ impl Pane {
             if len > 1 {
                 let badge_txt = len.to_string();
                 let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
-                let bx = right - bw as f64 - 12.0;
+                let bx = right - f64::from(bw) - 12.0;
                 let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
                 fill_round(scene, t, badge, 8.0, c.neutral[3]);
                 tr.draw_text_weighted(
@@ -929,7 +927,7 @@ impl Pane {
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
             self.reader_attachment_hits.clear();
-            let cx = (rr.x0 + rr.x1) / 2.0;
+            let cx = f64::midpoint(rr.x0, rr.x1);
             let cy = rr.y0 + rr.height() / 2.0;
             Icon::Mail.draw(
                 scene,
@@ -944,7 +942,7 @@ impl Pane {
                 hint,
                 14.0,
                 c.text_dim,
-                t * Affine::translate((cx - w as f64 / 2.0, cy)),
+                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
                 None,
             );
             return;
@@ -955,8 +953,7 @@ impl Pane {
         let starred = st
             .selected
             .and_then(|id| st.mailbox.get(id))
-            .map(|m| m.starred)
-            .unwrap_or(false);
+            .is_some_and(|m| m.starred);
         for (rect, hit) in &self.hits {
             let (label, danger, icon) = match hit {
                 Hit::Reply => ("Reply", false, Icon::Reply),
@@ -1032,7 +1029,7 @@ impl Pane {
             &head.thread_subject(),
             20.0,
             TextWeight::Bold,
-            content_w as f64,
+            f64::from(content_w),
         );
         tr.draw_text_weighted(
             scene,
@@ -1088,7 +1085,7 @@ impl Pane {
                     webview_rect = Some(Rect::new(
                         content_x,
                         y,
-                        content_x + content_w as f64,
+                        content_x + f64::from(content_w),
                         bottom,
                     ));
                 }
@@ -1115,28 +1112,25 @@ impl Pane {
         // borrow is released (they need `&mut self`).
         self.html_view_rect = None;
         self.html_toggle_rect = None;
-        match (webview_rect, head_html) {
-            (Some(rect), Some(html)) => {
-                // Switching to a different message re-blocks remote content
-                // (keyed on the shown id, not `html_key`, which the toggle
-                // clears to force a reload of the *same* message).
-                if self.html_shown_id != Some(head_id) {
-                    self.html_load_remote = false;
-                    self.html_shown_id = Some(head_id);
-                }
-                self.load_html_body(head_id, &html);
-                let view = self.ensure_html_view();
-                view.set_viewport(rect, 1.0);
-                view.draw(scene, t, tr, theme, presence);
-                self.html_view_rect = Some(rect);
-                self.draw_remote_toggle(scene, t, tr, theme, rect);
+        if let (Some(rect), Some(html)) = (webview_rect, head_html) {
+            // Switching to a different message re-blocks remote content
+            // (keyed on the shown id, not `html_key`, which the toggle
+            // clears to force a reload of the *same* message).
+            if self.html_shown_id != Some(head_id) {
+                self.html_load_remote = false;
+                self.html_shown_id = Some(head_id);
             }
-            _ => {
-                // Plain-text mail this frame — drop any stale load so returning
-                // to an HTML mail reloads fresh (and blocked again by default).
-                self.html_key = None;
-                self.html_shown_id = None;
-            }
+            self.load_html_body(head_id, &html);
+            let view = self.ensure_html_view();
+            view.set_viewport(rect, 1.0);
+            view.draw(scene, t, tr, theme, presence);
+            self.html_view_rect = Some(rect);
+            self.draw_remote_toggle(scene, t, tr, theme, rect);
+        } else {
+            // Plain-text mail this frame — drop any stale load so returning
+            // to an HTML mail reloads fresh (and blocked again by default).
+            self.html_key = None;
+            self.html_shown_id = None;
         }
     }
 
@@ -1163,7 +1157,7 @@ impl Pane {
             )
         };
         let (lw, _) = tr.measure(label, 11.5, None);
-        let pill = Rect::new(body.x0, y, body.x0 + 30.0 + lw as f64 + 14.0, y + 28.0);
+        let pill = Rect::new(body.x0, y, body.x0 + 30.0 + f64::from(lw) + 14.0, y + 28.0);
         let hov = pill.contains(self.shared.borrow().last_mouse);
         fill_round(
             scene,
@@ -1194,7 +1188,7 @@ impl Pane {
         self.html_toggle_rect = Some(pill);
     }
 
-    /// Lazily create the reader's HTML-body WebView (and its engine) on first
+    /// Lazily create the reader's HTML-body `WebView` (and its engine) on first
     /// use. Text-only mail never touches this, so it stays webview-free.
     fn ensure_html_view(&mut self) -> &mut WebView {
         if self.html_view.is_none() {
@@ -1236,7 +1230,7 @@ impl Pane {
 
     /// Draw the per-message card header (avatar · sender · date · recipients)
     /// and return the y where the body should start. Shared by the text card
-    /// path and the HTML-body (WebView) path so both read identically.
+    /// path and the HTML-body (`WebView`) path so both read identically.
     fn draw_card_header(
         &self,
         scene: &mut Scene,
@@ -1249,7 +1243,7 @@ impl Pane {
         w: f32,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let card_x1 = x + w as f64;
+        let card_x1 = x + f64::from(w);
         let st = self.shared.borrow();
         draw_avatar(
             scene,
@@ -1267,7 +1261,7 @@ impl Pane {
             &m.from.display(),
             13.5,
             TextWeight::Semibold,
-            (w - 150.0) as f64,
+            f64::from(w - 150.0),
         );
         tr.draw_text_weighted(
             scene,
@@ -1283,7 +1277,7 @@ impl Pane {
             &m.from.email,
             11.5,
             TextWeight::Regular,
-            (w - 150.0) as f64,
+            f64::from(w - 150.0),
         );
         tr.draw_text(
             scene,
@@ -1300,7 +1294,7 @@ impl Pane {
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((card_x1 - dw as f64, y + 8.0)),
+            t * Affine::translate((card_x1 - f64::from(dw), y + 8.0)),
             None,
         );
         let to_line = elide(
@@ -1308,7 +1302,7 @@ impl Pane {
             &format!(
                 "to {}",
                 m.to.iter()
-                    .map(|a| a.display())
+                    .map(super::model::Addr::display)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -1342,7 +1336,7 @@ impl Pane {
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let card_x1 = x + w as f64;
+        let card_x1 = x + f64::from(w);
         let mut yy = self.draw_card_header(scene, t, tr, theme, m, x, y, w);
         if expanded {
             for para in m.body.split('\n') {
@@ -1361,7 +1355,7 @@ impl Pane {
                     t * Affine::translate((x, yy)),
                     Some(w - 8.0),
                 );
-                yy += ph.max(18.0) as f64 + 2.0;
+                yy += f64::from(ph.max(18.0)) + 2.0;
             }
             if m.has_attachments() {
                 yy += 8.0;
@@ -1385,7 +1379,7 @@ impl Pane {
                     let label = format!("{}  {}", a.filename, a.size_human());
                     let (lw, _) = tr.measure(&label, 11.5, None);
                     // Room for the trailing download/state glyph.
-                    let chip_w = lw as f64 + 64.0;
+                    let chip_w = f64::from(lw) + 64.0;
                     if ax + chip_w > card_x1 {
                         ax = x;
                         yy += 36.0;
@@ -1453,7 +1447,7 @@ impl Pane {
                 &m.snippet(),
                 12.0,
                 TextWeight::Regular,
-                (w - 8.0) as f64,
+                f64::from(w - 8.0),
             );
             tr.draw_text(
                 scene,
@@ -1491,7 +1485,7 @@ impl Pane {
                             self.shared.borrow_mut().push_intent(Intent::Settings(None));
                         }
                         Hit::AccountToggle(ai) => {
-                            self.shared.borrow_mut().toggle_account_collapsed(ai)
+                            self.shared.borrow_mut().toggle_account_collapsed(ai);
                         }
                         Hit::Account(ai) => {
                             let mut st = self.shared.borrow_mut();
@@ -1554,8 +1548,7 @@ impl Pane {
                                 .borrow()
                                 .mailbox
                                 .get(id)
-                                .map(|m| m.folder == Folder::Drafts)
-                                .unwrap_or(false);
+                                .is_some_and(|m| m.folder == Folder::Drafts);
                             if is_draft {
                                 // A Drafts row reopens the composer, not the reader.
                                 self.shared.borrow_mut().push_intent(Intent::EditDraft(id));
@@ -1580,8 +1573,7 @@ impl Pane {
                 // in to (or back out of) loading remote content.
                 if self
                     .html_toggle_rect
-                    .map(|r| r.contains(pt))
-                    .unwrap_or(false)
+                    .is_some_and(|r| r.contains(pt))
                 {
                     self.html_load_remote = !self.html_load_remote;
                     // Force a reload with the new policy on the next draw.
@@ -1596,7 +1588,7 @@ impl Pane {
                     .reader_attachment_hits
                     .iter()
                     .find(|(rc, _, _)| rc.contains(pt))
-                    .cloned()
+                    .copied()
                 {
                     self.save_attachment_click(mid, ai);
                     *handled = true;
@@ -1660,7 +1652,7 @@ impl Pane {
 }
 
 /// The web engine backing HTML-mail rendering. Under the `html-webview`
-/// feature this is the real WPE WebKit engine (the same one the browser uses),
+/// feature this is the real WPE `WebKit` engine (the same one the browser uses),
 /// falling back to the hermetic test engine if it can't start; otherwise it is
 /// the deterministic test engine — which still exercises the full
 /// sandbox/remote-block plumbing in the default build and `--shots`.
@@ -1698,17 +1690,17 @@ impl Widget for Pane {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.rebuild_hits();
     }
@@ -1847,8 +1839,8 @@ impl Widget for Pane {
                 self.on_left_press(state, pt, handled);
             }
             WindowEvent::CursorMoved { .. } => {
-                if self.role == Role::List {
-                    if let Some((id, start)) = self.mouse_down_row {
+                if self.role == Role::List
+                    && let Some((id, start)) = self.mouse_down_row {
                         let dx = self.shared.borrow().last_mouse.x - start.x;
                         if dx.abs() > 6.0 {
                             self.swipe = Some(SwipeState { id, dx });
@@ -1856,14 +1848,13 @@ impl Widget for Pane {
                             self.shared.borrow_mut().dirty = true;
                         }
                     }
-                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.role == Role::List {
+            }
+                if self.role == Role::List => {
                     if let Some(s) = self.swipe.take() {
                         if s.dx <= -SWIPE_THRESHOLD {
                             self.shared.borrow_mut().apply_message_action(
@@ -1882,7 +1873,6 @@ impl Widget for Pane {
                     }
                     self.mouse_down_row = None;
                 }
-            }
             _ => {}
         }
     }
@@ -1916,8 +1906,7 @@ impl Widget for Pane {
             || self
                 .search_input
                 .as_ref()
-                .map(|i| i.needs_redraw())
-                .unwrap_or(false)
+                .is_some_and(ui::Widget::needs_redraw)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1925,8 +1914,7 @@ impl Widget for Pane {
         // rendered engine frame the scene hasn't painted yet.
         self.html_view
             .as_ref()
-            .map(|v| v.needs_animation_frame())
-            .unwrap_or(false)
+            .is_some_and(ui::Widget::needs_animation_frame)
     }
 
     fn mark_drawn(&mut self) {

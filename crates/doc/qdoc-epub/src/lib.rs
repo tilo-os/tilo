@@ -396,8 +396,7 @@ fn inject_id(frag: &str, id: &str) -> String {
         let after = &frag[lt + 1..];
         let name_end = after
             .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-            .map(|p| lt + 1 + p)
-            .unwrap_or(frag.len());
+            .map_or(frag.len(), |p| lt + 1 + p);
         let mut out = String::with_capacity(frag.len() + id.len() + 8);
         out.push_str(&frag[..name_end]);
         out.push_str(&format!(" id=\"{}\"", escape_xml_attr(id)));
@@ -497,8 +496,7 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
         // A nav must contain at least one toc target; link to the first chapter.
         let href = chapters
             .first()
-            .map(|c| c.href.as_str())
-            .unwrap_or("chapter-1.xhtml");
+            .map_or("chapter-1.xhtml", |c| c.href.as_str());
         list.push_str("  <ol>\n");
         list.push_str(&format!(
             "    <li><a href=\"{}\">{}</a></li>\n",
@@ -558,7 +556,7 @@ fn build_nav_forest(entries: &[(u8, String, String)]) -> Vec<NavNode> {
 
     for (level, label, link) in entries {
         // Pop ancestors that are not strictly shallower than this heading.
-        while path.last().map(|(l, _)| *l >= *level).unwrap_or(false) {
+        while path.last().is_some_and(|(l, _)| *l >= *level) {
             path.pop();
         }
         let node = NavNode {
@@ -741,7 +739,7 @@ fn stable_id(snap: &DocSnapshot, title: &str) -> String {
     // FNV-1a 64-bit over title + block count — cheap, dependency-free, stable.
     let mut hash: u64 = 0xcbf29ce484222325;
     let feed = |hash: &mut u64, byte: u8| {
-        *hash ^= byte as u64;
+        *hash ^= u64::from(byte);
         *hash = hash.wrapping_mul(0x100000001b3);
     };
     for b in title.as_bytes() {

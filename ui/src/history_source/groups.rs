@@ -67,8 +67,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let by = str_at(doc, &rec, "by");
         let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map(|ms| UNIX_EPOCH + Duration::from_millis(ms as u64))
-            .unwrap_or(UNIX_EPOCH);
+            .map_or(UNIX_EPOCH, |ms| UNIX_EPOCH + Duration::from_millis(ms as u64));
         out.push(NamedRange {
             id: key.clone(),
             label,
@@ -98,8 +97,7 @@ pub fn name_range(
     let by = doc.get_actor().to_hex_string();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as i64);
     // Replacing the whole record rather than patching fields keeps a rename and
     // a re-scope atomic: a peer never observes the new label against the old
     // range.

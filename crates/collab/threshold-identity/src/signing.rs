@@ -87,7 +87,7 @@ pub struct SigningRound2Partial {
     /// The signed message bytes — all partials in one aggregation must agree.
     #[serde(with = "serde_bytes")]
     pub signed_message_bytes: Vec<u8>,
-    /// Share indices participating in this run, in BTree order — all
+    /// Share indices participating in this run, in `BTree` order — all
     /// partials must agree.
     pub commitment_indices: Vec<u16>,
     /// Serialised commitments for every signer in `commitment_indices`, same

@@ -57,7 +57,7 @@ impl InhibitRegistry {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let reason = reason.into();
         {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.held.insert(id, reason);
         }
         InhibitToken {
@@ -72,7 +72,7 @@ impl InhibitRegistry {
         !self
             .inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
             .is_empty()
     }
@@ -81,7 +81,7 @@ impl InhibitRegistry {
     pub fn count(&self) -> usize {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
             .len()
     }
@@ -91,7 +91,7 @@ impl InhibitRegistry {
     pub fn active_reasons(&self) -> Vec<String> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
             .values()
             .cloned()
@@ -122,7 +122,7 @@ impl Drop for InhibitToken {
         if let Some(inner) = self.inner.upgrade() {
             inner
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .held
                 .remove(&self.id);
         }

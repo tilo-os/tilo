@@ -169,7 +169,7 @@ fn draw_button(
     is_disabled: bool,
     is_primary: bool,
 ) {
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
     let mut bg = if is_primary {
@@ -208,8 +208,8 @@ fn draw_button(
 
     let text_size = theme.tokens.typography.scale.sm;
     let (text_w, _) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (text_w as f64 / 2.0);
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -242,17 +242,17 @@ impl Widget for PermissionPrompt {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.apply_layout_helper();
     }
@@ -267,7 +267,7 @@ impl Widget for PermissionPrompt {
     ) {
         // `surfaces.overlay` is a darker tint than `raised` so the prompt
         // reads as a layer above the strip's content, not another tile.
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -289,7 +289,7 @@ impl Widget for PermissionPrompt {
         let icon_x = self.rect.x0 + PADDING_X;
         let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
         let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
-        let icon_shape = RoundedRect::from_rect(icon_rect, theme.tokens.radii.sm as f64);
+        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -298,11 +298,11 @@ impl Widget for PermissionPrompt {
             &icon_shape,
         );
 
-        let label_x = icon_x + ICON_SIZE + theme.tokens.spacing.s2 as f64;
+        let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
         let app_id_size = theme.tokens.typography.scale.sm;
         let cap_size = theme.tokens.typography.scale.base;
         let label_y =
-            self.rect.y0 + (PROMPT_HEIGHT - (app_id_size as f64 + cap_size as f64 + 4.0)) / 2.0;
+            self.rect.y0 + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.app_id,
@@ -316,7 +316,7 @@ impl Widget for PermissionPrompt {
             &self.capability_label,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((label_x, label_y + app_id_size as f64 + 4.0)),
+            transform * Affine::translate((label_x, label_y + f64::from(app_id_size) + 4.0)),
             None,
         );
 
@@ -406,7 +406,7 @@ impl Widget for PermissionPrompt {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PermissionPrompt"
     }
 

@@ -98,7 +98,7 @@ pub fn dots(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     let cy = y + s / 2.0;
     let r = (s * 0.09).max(1.2);
     for i in 0..3 {
-        let cx = x + s * (0.12 + 0.38 * i as f64);
+        let cx = x + s * (0.12 + 0.38 * f64::from(i));
         circle(scene, t, Point::new(cx, cy), r, color);
     }
 }
@@ -176,7 +176,7 @@ pub fn close(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
 pub fn list(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.26);
     for i in 0..3 {
-        let yy = y + s * (0.15 + 0.35 * i as f64);
+        let yy = y + s * (0.15 + 0.35 * f64::from(i));
         line(scene, t, Point::new(x, yy), Point::new(x + s, yy), color, w);
     }
 }
@@ -212,7 +212,7 @@ pub fn bookmark(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64, 
     p.move_to(Point::new(left, top));
     p.line_to(Point::new(right, top));
     p.line_to(Point::new(right, bottom));
-    p.line_to(Point::new((left + right) / 2.0, notch));
+    p.line_to(Point::new(f64::midpoint(left, right), notch));
     p.line_to(Point::new(left, bottom));
     p.close_path();
     if filled {
@@ -439,7 +439,7 @@ pub fn spark(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, 
 pub fn progress(scene: &mut Scene, t: Affine, rect: Rect, frac: f32, track: Color, fill: Color) {
     let r = rect.height() / 2.0;
     fill_round(scene, t, rect, r, track);
-    let f = frac.clamp(0.0, 1.0) as f64;
+    let f = f64::from(frac.clamp(0.0, 1.0));
     if f > 0.001 {
         let w = (rect.width() * f).max(rect.height());
         let fr = Rect::new(rect.x0, rect.y0, rect.x0 + w, rect.y1);

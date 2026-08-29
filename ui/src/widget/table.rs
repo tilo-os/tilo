@@ -160,8 +160,8 @@ pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
 /// `(rows, cols)` dimensions.
 pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
     (
-        rows_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
-        cols_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
+        rows_list(doc, t).map_or(0, |l| doc.length(&l)),
+        cols_list(doc, t).map_or(0, |l| doc.length(&l)),
     )
 }
 
@@ -477,14 +477,14 @@ impl Table {
 
     /// Rect of the delete handle for column `c` (centred in the top gutter).
     fn delete_col_rect(&self, xs: &[f64], c: usize) -> Rect {
-        let cx = (xs[c] + xs[c + 1]) / 2.0;
+        let cx = f64::midpoint(xs[c], xs[c + 1]);
         let cy = self.rect.y0 + TOP_GUTTER / 2.0;
         Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
     }
     /// Rect of the delete handle for row `r` (centred in the left gutter).
     fn delete_row_rect(&self, ys: &[f64], r: usize) -> Rect {
         let cx = self.rect.x0 + LEFT_GUTTER / 2.0;
-        let cy = (ys[r] + ys[r + 1]) / 2.0;
+        let cy = f64::midpoint(ys[r], ys[r + 1]);
         Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
     }
 
@@ -703,17 +703,17 @@ impl Widget for Table {
                 )
                 .unwrap()
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let cell_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
@@ -732,7 +732,7 @@ impl Widget for Table {
         presence: &PresenceCtx,
     ) {
         let tk = &theme.tokens;
-        let radius = tk.radii.md as f64;
+        let radius = f64::from(tk.radii.md);
 
         // Outer frame (spans the gutters too).
         let frame = RoundedRect::from_rect(self.rect, radius);
@@ -1084,7 +1084,7 @@ impl Widget for Table {
             } if key_event.state == ElementState::Pressed => {
                 // Enter moves the caret down one row (Shift+Enter → up).
                 if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
-                    && let Some(focused) = self.cells.iter().position(|c| c.is_focused())
+                    && let Some(focused) = self.cells.iter().position(super::Widget::is_focused)
                 {
                     let cols = self.n_cols().max(1);
                     let up = modifiers.state().shift_key();
@@ -1109,7 +1109,7 @@ impl Widget for Table {
         // ---- forward to cell editors ----
         if let Some(cells_obj) = self.cells_obj.clone() {
             // Pointer-capture short-circuit (a cell dragging a selection).
-            if let Some(idx) = self.cells.iter().position(|c| c.wants_pointer_capture())
+            if let Some(idx) = self.cells.iter().position(super::Widget::wants_pointer_capture)
                 && let Some(&cn) = child_nodes.get(idx)
             {
                 self.cells[idx].handle_event(
@@ -1154,7 +1154,7 @@ impl Widget for Table {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Table"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1177,35 +1177,35 @@ impl Widget for Table {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.resize.is_some() || self.cells.iter().any(|c| c.wants_pointer_capture())
+        self.resize.is_some() || self.cells.iter().any(super::Widget::wants_pointer_capture)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = self.structure_dirty;
         self.structure_dirty = false;
-        d |= self.cells.iter_mut().any(|c| c.take_structure_dirty());
+        d |= self.cells.iter_mut().any(super::Widget::take_structure_dirty);
         d
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.cells.iter().any(|c| c.needs_redraw())
+        self.dirty || self.cells.iter().any(super::Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        for c in self.cells.iter_mut() {
+        for c in &mut self.cells {
             c.mark_drawn();
         }
     }
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.cells.iter().any(|c| c.is_layout_dirty())
+        self.structure_dirty || self.cells.iter().any(super::Widget::is_layout_dirty)
     }
 
     fn needs_commit(&self) -> bool {
-        self.pending_commit || self.cells.iter().any(|c| c.needs_commit())
+        self.pending_commit || self.cells.iter().any(super::Widget::needs_commit)
     }
     fn on_commit(&mut self) {
         self.pending_commit = false;
-        for c in self.cells.iter_mut() {
+        for c in &mut self.cells {
             c.on_commit();
         }
     }

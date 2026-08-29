@@ -157,7 +157,7 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// available (`lyrics` or the `live` build), so `--features live,audio` fetches
 /// real lyrics for the playing track.
 ///
-/// - **normalisation** — YouTube titles/artists carry noise (`(Official Music
+/// - **normalisation** — `YouTube` titles/artists carry noise (`(Official Music
 ///   Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
 ///   metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
 ///   querying, so `Californication (Official Music Video)` by
@@ -167,7 +167,7 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 ///   an 8 s per-request timeout.
 /// - **cache** — a resolved result (hit *or* miss) is memoised by normalised
 ///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
-/// - **fallback** — an exact `/api/get` miss (YouTube durations rarely match
+/// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
 ///   to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
@@ -251,8 +251,7 @@ fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> O
         if rec
             .get("syncedLyrics")
             .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
+            .is_some_and(|s| !s.trim().is_empty())
         {
             return lyrics_from_record(rec);
         }
@@ -287,7 +286,7 @@ fn enc(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -345,7 +344,7 @@ fn strip_feat(s: &str) -> String {
     s.to_string()
 }
 
-/// Normalise a (YouTube) track title for an LRCLIB lookup: drop bracketed tag
+/// Normalise a (`YouTube`) track title for an LRCLIB lookup: drop bracketed tag
 /// segments (`(Official Music Video)`, `[Remastered 2011]`, …) and any trailing
 /// `feat.` credit, then collapse whitespace. Idempotent on already-clean titles,
 /// so a plain `Neon Mileage` is returned unchanged.
@@ -383,7 +382,7 @@ pub fn normalize_title(raw: &str) -> String {
     collapse_ws(&strip_feat(&out))
 }
 
-/// Normalise a (YouTube Music) artist name for an LRCLIB lookup: strip the
+/// Normalise a (`YouTube` Music) artist name for an LRCLIB lookup: strip the
 /// auto-generated `… - Topic` channel suffix and collapse whitespace.
 pub fn normalize_artist(raw: &str) -> String {
     let mut s = collapse_ws(raw);
@@ -504,7 +503,7 @@ impl Default for LyricsWorker {
 /// The bundled offline sample lyrics keyed by seed track id. Synced where it
 /// makes a more interesting screenshot; plain otherwise.
 pub mod bundled {
-    use super::*;
+    use super::{Lyrics, parse_lrc, plain};
 
     /// Look up bundled lyrics for a seed track id, if any.
     pub fn for_track(track_id: &str) -> Option<Lyrics> {

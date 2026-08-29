@@ -159,7 +159,7 @@ pub struct ModalSpec<'a> {
     pub dismiss_on_scrim: bool,
 }
 
-impl<'a> Default for ModalSpec<'a> {
+impl Default for ModalSpec<'_> {
     fn default() -> Self {
         Self {
             title: "",
@@ -342,8 +342,8 @@ impl ModalFrame {
         // reach is worse than a body that scrolls.
         let body_overflows = wanted_h > avail_h + 0.5;
 
-        let cx = (viewport.x0 + viewport.x1) / 2.0;
-        let cy = (viewport.y0 + viewport.y1) / 2.0;
+        let cx = f64::midpoint(viewport.x0, viewport.x1);
+        let cy = f64::midpoint(viewport.y0, viewport.y1);
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
 
         let close = if spec.closable {
@@ -360,7 +360,7 @@ impl ModalFrame {
         };
         // The title stops where the close control starts, so a long title
         // elides instead of running under the X.
-        let title_x1 = close.map(|c| c.x0 - 10.0).unwrap_or(card.x1 - MODAL_PAD);
+        let title_x1 = close.map_or(card.x1 - MODAL_PAD, |c| c.x0 - 10.0);
         let title = Rect::new(
             card.x0 + MODAL_PAD,
             card.y0,
@@ -383,7 +383,7 @@ impl ModalFrame {
             let mut bx = card.x1 - MODAL_PAD;
             for a in spec.actions.iter().rev() {
                 let (tw, _) = text_renderer.measure(a.label, body_size, None);
-                let bw = (tw as f64 + ACTION_PAD_X).max(ACTION_MIN_W);
+                let bw = (f64::from(tw) + ACTION_PAD_X).max(ACTION_MIN_W);
                 let r = Rect::new(bx - bw, by, bx, by + ACTION_H);
                 actions.push(r);
                 bx = r.x0 - ACTION_GAP;
@@ -424,7 +424,7 @@ impl ModalFrame {
 
         crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
 
-        let radius = tokens.radii.lg as f64;
+        let radius = f64::from(tokens.radii.lg);
         // Top of the elevation ramp: a modal is the one surface that is
         // unambiguously above everything, and reading as *lifted* is what
         // separates it from a panel that happens to be centred.
@@ -449,7 +449,7 @@ impl ModalFrame {
             let size = tokens.typography.scale.base.max(14.0);
             let shown = text_renderer.elide_to_width(spec.title, size, layout.title.width() as f32);
             let (_, th) = text_renderer.measure(&shown, size, None);
-            let ty = (layout.title.y0 + layout.title.y1) / 2.0 - th as f64 / 2.0;
+            let ty = f64::midpoint(layout.title.y0, layout.title.y1) - f64::from(th) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &shown,
@@ -468,7 +468,7 @@ impl ModalFrame {
             let face = ButtonFace::new(c, "")
                 .style(ButtonStyle::Ghost)
                 .icon(Icon::X)
-                .radius(tokens.radii.sm as f64)
+                .radius(f64::from(tokens.radii.sm))
                 .hovered(spec.close_hovered)
                 .focused(spec.close_focused)
                 .accessible_name("Close");

@@ -145,11 +145,10 @@ impl Addr {
     /// Best display string: the name if present, otherwise the local-part
     /// of the address, otherwise the full address.
     pub fn display(&self) -> String {
-        if let Some(n) = &self.name {
-            if !n.is_empty() {
+        if let Some(n) = &self.name
+            && !n.is_empty() {
                 return n.clone();
             }
-        }
         self.email.clone()
     }
 
@@ -271,7 +270,7 @@ pub struct Message {
     /// fallback).
     pub body: String,
     /// The original `text/html` part, when the message carried one. Rendered
-    /// sandboxed in the reader's WebView (remote content blocked by default);
+    /// sandboxed in the reader's `WebView` (remote content blocked by default);
     /// `None` for plain-text-only mail, which renders as text. Never
     /// serialised into the shared settings store — it is message content.
     #[serde(default)]
@@ -305,7 +304,7 @@ impl Message {
         let s = self
             .body
             .lines()
-            .map(|l| l.trim())
+            .map(str::trim)
             .find(|l| !l.is_empty())
             .unwrap_or("");
         let cleaned: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -357,7 +356,7 @@ pub enum AuthMethod {
     /// Username + password (the field the setup form collects).
     #[default]
     Password,
-    /// OAuth2 authorization-code + PKCE; the account holds a bearer token
+    /// `OAuth2` authorization-code + PKCE; the account holds a bearer token
     /// instead of a password (see [`crate::oauth`]).
     OAuth,
 }
@@ -501,18 +500,15 @@ impl AccountConfig {
 /// Which representation the compose body is authored in. Persisted so the
 /// user's choice is remembered across compose windows and sessions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ComposeFormat {
     /// WYSIWYG rich text, serialised to an HTML MIME part on send.
+    #[default]
     Html,
     /// Plain text, serialised to a `text/plain` MIME part on send.
     Text,
 }
 
-impl Default for ComposeFormat {
-    fn default() -> Self {
-        ComposeFormat::Html
-    }
-}
 
 impl ComposeFormat {
     pub fn as_key(self) -> &'static str {

@@ -101,11 +101,6 @@ impl RunError {
     }
 }
 
-impl Default for LaunchMode {
-    fn default() -> Self {
-        LaunchMode::Gui
-    }
-}
 
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone, Default)]
@@ -224,8 +219,8 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
         return Some(p.clone());
     }
     let file_name = "primary.json";
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty() {
             let p = PathBuf::from(xdg)
                 .join("qos")
                 .join("identity")
@@ -234,9 +229,8 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
                 return Some(p);
             }
         }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        if !home.is_empty() {
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty() {
             let p = PathBuf::from(home)
                 .join(".config")
                 .join("qos")
@@ -246,7 +240,6 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
                 return Some(p);
             }
         }
-    }
     None
 }
 
@@ -266,8 +259,8 @@ pub fn resolve_gpu_selection(
         package = %manifest.package_id,
         node = %selection.node.display(),
         driver = selection.driver.as_deref().unwrap_or("<unknown>"),
-        egl = selection.egl_vendor_json.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<loader default>".into()),
-        vulkan = selection.vulkan_icd_json.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<loader default>".into()),
+        egl = selection.egl_vendor_json.as_ref().map_or_else(|| "<loader default>".into(), |p| p.display().to_string()),
+        vulkan = selection.vulkan_icd_json.as_ref().map_or_else(|| "<loader default>".into(), |p| p.display().to_string()),
         "pinning the app to the compositor's render node",
     );
     Some(selection)
@@ -281,9 +274,7 @@ pub fn resolve_runtime(
     //    as the manifest path.
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
-            .runtime_ref()
-            .map(|(_, v)| v.to_string())
-            .unwrap_or_else(|| "1".to_string());
+            .runtime_ref().map_or_else(|| "1".to_string(), |(_, v)| v.to_string());
         enforce_bundle_policy(explicit, opts)?;
         return Ok(Some((explicit.clone(), version)));
     }
@@ -297,7 +288,7 @@ pub fn resolve_runtime(
     // Look up: per-user first, then system.
     let per_user = runtime_bundle::default_bundle_path(version).ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system]).collect();
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
             enforce_bundle_policy(cand, opts)?;
@@ -340,13 +331,12 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
         Ok(manifest) => {
             // Multi-publisher trust list: `require_publisher` above was `None`
             // (only one key can be pinned there), so check by hand here.
-            if let Some(list) = load_trusted_publisher_list() {
-                if !list.is_empty() {
+            if let Some(list) = load_trusted_publisher_list()
+                && !list.is_empty() {
                     let ok = manifest
                         .publisher_hex
                         .as_deref()
-                        .map(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)))
-                        .unwrap_or(false);
+                        .is_some_and(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)));
                     if !ok {
                         return Err(RunError::RuntimeBundleSignature {
                             path: path.to_path_buf(),
@@ -357,7 +347,6 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
                         });
                     }
                 }
-            }
             Ok(())
         }
         Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
@@ -394,7 +383,7 @@ fn load_trusted_publisher_list() -> Option<Vec<String>> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     Some(list)
 }
@@ -413,8 +402,10 @@ pub fn run(
 /// Launch mode — which of the entrypoint binaries we're targeting
 /// and what extra args to forward.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum LaunchMode {
     /// The default: GUI-flavour bin, used implicitly by `run`/`run_with`.
+    #[default]
     Gui,
     /// CLI-flavour bin. `passthrough_argv` follows `--` on the shim command
     /// line, forwarded verbatim; `command` names the manifest entry resolved.
@@ -805,8 +796,7 @@ pub fn run_with(
     if need_shim {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         let launcher = std::env::current_exe().map_err(|e| {
-            RunError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RunError::Io(std::io::Error::other(
                 format!("current_exe: {e}"),
             ))
         })?;
@@ -934,7 +924,7 @@ pub fn run_with(
     // Insert --seccomp <child_fd> at the front so bwrap installs it
     // before any other action (matches the compositor pattern).
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.extend(argv.drain(..));
+    prefix.append(&mut argv);
     argv = prefix;
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
@@ -982,7 +972,7 @@ pub fn run_with(
     tracing::info!(
         target: "qos_launcher::netgate",
         gated = net_gate.is_some(),
-        hosts = ?egress.policy().map(|p| p.hosts()),
+        hosts = ?egress.policy().map(super::netgate::EgressPolicy::hosts),
         shares_host_network = egress.shares_host_network(),
         "egress resolved",
     );
@@ -1119,7 +1109,7 @@ pub fn run_with_captured(
         argv.push(entry);
     }
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.extend(argv.drain(..));
+    prefix.append(&mut argv);
     argv = prefix;
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
@@ -1192,7 +1182,7 @@ fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
     let raw_fd = unsafe {
         libc::syscall(
             libc::SYS_memfd_create,
-            name.as_ptr() as *const libc::c_char,
+            name.as_ptr().cast::<libc::c_char>(),
             0u32,
         )
     } as RawFd;
@@ -1226,7 +1216,7 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
         let n = unsafe {
             libc::pwrite(
                 fd,
-                bytes[written..].as_ptr() as *const libc::c_void,
+                bytes[written..].as_ptr().cast::<libc::c_void>(),
                 bytes.len() - written,
                 written as libc::off_t,
             )
@@ -1330,23 +1320,20 @@ fn resolve_dbus_bind(
 
     // Fallback: raw bus path. Only works for unix:path=... — abstract
     // sockets degrade to "portal unavailable".
-    match crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
-        Some(path) => {
-            let path_buf = PathBuf::from(&path);
-            let plan = DBusBindPlan {
-                host_socket: path_buf.clone(),
-                sandbox_path: path_buf,
-                kind: DBusBindKind::Direct,
-            };
-            (Some(plan), None)
-        }
-        None => {
-            tracing::warn!(
-                bus_addr = %bus_addr,
-                "cannot bind D-Bus into sandbox: address is not `unix:path=` and no proxy is available"
-            );
-            (None, None)
-        }
+    if let Some(path) = crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
+        let path_buf = PathBuf::from(&path);
+        let plan = DBusBindPlan {
+            host_socket: path_buf.clone(),
+            sandbox_path: path_buf,
+            kind: DBusBindKind::Direct,
+        };
+        (Some(plan), None)
+    } else {
+        tracing::warn!(
+            bus_addr = %bus_addr,
+            "cannot bind D-Bus into sandbox: address is not `unix:path=` and no proxy is available"
+        );
+        (None, None)
     }
 }
 

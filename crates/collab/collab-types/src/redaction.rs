@@ -103,7 +103,7 @@ pub struct RedactRequest {
 
     /// SHA-256 of the target op's canonical bytes (full envelope, signature
     /// included). Lets a peer verify "this redaction targets the op I have"
-    /// without re-deriving the OpId — and, for an MLS-encrypted op, without
+    /// without re-deriving the `OpId` — and, for an MLS-encrypted op, without
     /// decrypting (we hash the ciphertext, not the cleartext).
     pub target_op_hash: [u8; 32],
 
@@ -164,7 +164,7 @@ pub enum RedactionError {
     /// should only surface from the lower-level parser.
     #[error("redaction op had the wrong op_class: {actual:?}")]
     WrongOpClass {
-        /// The op_class the envelope actually carried.
+        /// The `op_class` the envelope actually carried.
         actual: OpClass,
     },
 

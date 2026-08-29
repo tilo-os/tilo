@@ -79,17 +79,17 @@ impl Widget for StepIndicator {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -168,7 +168,7 @@ impl Widget for StepIndicator {
                 &num,
                 NUMBER_SIZE,
                 num_color,
-                transform * Affine::translate((cx - nw as f64 / 2.0, cy - nh as f64 / 2.0)),
+                transform * Affine::translate((cx - f64::from(nw) / 2.0, cy - f64::from(nh) / 2.0)),
                 None,
             );
 
@@ -184,7 +184,7 @@ impl Widget for StepIndicator {
                 label,
                 LABEL_SIZE,
                 label_color,
-                transform * Affine::translate((cx - lw as f64 / 2.0, self.rect.y0 + LABEL_TOP)),
+                transform * Affine::translate((cx - f64::from(lw) / 2.0, self.rect.y0 + LABEL_TOP)),
                 None,
             );
         }
@@ -204,7 +204,7 @@ impl Widget for StepIndicator {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StepIndicator"
     }
 

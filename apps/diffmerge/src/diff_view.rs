@@ -44,6 +44,12 @@ pub struct DiffView {
     hovered_minimap: bool,
 }
 
+impl Default for DiffView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiffView {
     pub fn new() -> Self {
         Self {
@@ -183,17 +189,17 @@ impl Widget for DiffView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -353,7 +359,7 @@ impl Widget for DiffView {
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * 60.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 // Only consume when the pointer is plausibly over us — but the
@@ -381,7 +387,7 @@ impl Widget for DiffView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DiffView"
     }
 
@@ -537,7 +543,7 @@ fn draw_code_line(
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += w as f64;
+        x += f64::from(w);
     }
 }
 

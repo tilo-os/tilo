@@ -34,12 +34,9 @@ fn main() -> ExitCode {
     let mut needle: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--contains" => match args.next() {
-                Some(v) => needle = Some(v),
-                None => {
-                    eprintln!("--contains needs a value");
-                    return ExitCode::from(2);
-                }
+            "--contains" => if let Some(v) = args.next() { needle = Some(v) } else {
+                eprintln!("--contains needs a value");
+                return ExitCode::from(2);
             },
             other => {
                 eprintln!("unknown argument {other:?}");
@@ -118,11 +115,10 @@ fn collect(
     }
     match doc.object_type(obj) {
         Ok(ObjType::Text) => {
-            if let Ok(t) = doc.text(obj) {
-                if !t.is_empty() {
+            if let Ok(t) = doc.text(obj)
+                && !t.is_empty() {
                     out.push((path.to_string(), t));
                 }
-            }
         }
         Ok(ObjType::List) => {
             for i in 0..doc.length(obj) {
@@ -157,11 +153,10 @@ fn push_scalar(
     scalar: &std::borrow::Cow<'_, automerge::ScalarValue>,
     out: &mut Vec<(String, String)>,
 ) {
-    if let automerge::ScalarValue::Str(s) = scalar.as_ref() {
-        if !s.is_empty() {
+    if let automerge::ScalarValue::Str(s) = scalar.as_ref()
+        && !s.is_empty() {
             out.push((path.to_string(), s.to_string()));
         }
-    }
 }
 
 #[cfg(test)]
@@ -299,7 +294,7 @@ mod tests {
 
         let mut rows: Vec<Vec<String>> = NAMED
             .iter()
-            .map(|r| r.iter().map(|s| s.to_string()).collect())
+            .map(|r| r.iter().map(std::string::ToString::to_string).collect())
             .collect();
         for row in NAMED.len()..NAMED.len() + PADDING_ROWS {
             rows.push(

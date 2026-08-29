@@ -18,12 +18,10 @@ pub fn default_socket_path() -> PathBuf {
     if let Some(p) = std::env::var_os("QUICK_COLLAB_SOCK") {
         return PathBuf::from(p);
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
             let uid = unsafe { libc_getuid() };
             PathBuf::from(format!("/run/user/{uid}"))
-        });
+        }, PathBuf::from);
     runtime
         .join("qos")
         .join("services")
@@ -60,7 +58,7 @@ impl Link {
         self.stream.set_nonblocking(false)?;
         self.stream
             .write_all(&(body.len() as u32).to_le_bytes())
-            .and_then(|_| self.stream.write_all(&body))
+            .and_then(|()| self.stream.write_all(&body))
             .context("write to the broker")?;
         Ok(())
     }

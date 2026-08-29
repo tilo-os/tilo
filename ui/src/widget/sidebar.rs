@@ -228,8 +228,7 @@ impl SidebarDrawer {
         let now = Instant::now();
         let dt = self
             .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
         self.last_tick = Some(now);
 
         if reduce_motion {
@@ -405,7 +404,7 @@ impl SidebarDrawer {
     ) {
         let c = &theme.tokens.colors;
         let open = self.is_open();
-        let radius = (theme.tokens.radii.md as f64).min(rect.height() * 0.5);
+        let radius = f64::from(theme.tokens.radii.md).min(rect.height() * 0.5);
 
         let bg = if open {
             mix(c.surfaces.raised, c.accent[ACCENT_IDX], 0.20)
@@ -476,7 +475,7 @@ fn glyph_box(rect: Rect) -> Rect {
 
 fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
+    let lerp = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
     Color::from_rgba8(
         lerp(a.r(), b.r()),
         lerp(a.g(), b.g()),

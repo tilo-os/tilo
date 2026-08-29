@@ -367,17 +367,17 @@ impl Widget for RichTextLine {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.inner.apply_layout_external(rect);
     }
@@ -406,7 +406,7 @@ impl Widget for RichTextLine {
         }
 
         let text_size = self.font_size;
-        let line_height = (text_size as f64) * 1.25;
+        let line_height = f64::from(text_size) * 1.25;
         let rect = self.inner.get_rect();
         let pad = self.inner.text_padding_x(theme);
         let scroll_x = self.inner.scroll_x();
@@ -418,7 +418,7 @@ impl Widget for RichTextLine {
         }
 
         // Clips overpaint so a scrolled long line doesn't bleed glyphs past the column.
-        let clip_shape = vello::kurbo::RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let clip_shape = vello::kurbo::RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -699,7 +699,7 @@ impl Widget for RichTextLine {
         self.prev_cursor = self.inner.cursor_pos();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RichTextLine"
     }
 
@@ -744,12 +744,11 @@ impl Widget for RichTextLine {
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 
 /// Returns `(at, inserted, removed)`. The simple LCP/LCS-prefix algorithm is
-/// fine because a TextInput always splices at the caret, so the diff is a
+/// fine because a `TextInput` always splices at the caret, so the diff is a
 /// single insertion or deletion.
 pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let oa = old.as_bytes();
@@ -783,7 +782,7 @@ pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
 /// unit-testable independent of the full draw path.
 pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32) -> f64 {
     let (w, _) = text_renderer.measure_styled(slice, size, None, TextWeight::Regular, false, true);
-    w as f64
+    f64::from(w)
 }
 
 /// Used by `MainPanel::handle_event` to route clicks on link spans to

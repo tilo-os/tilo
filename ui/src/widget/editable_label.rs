@@ -166,7 +166,7 @@ impl EditableLabel {
 
     /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
     fn text_band(&self) -> (f64, f64) {
-        let line_height = (self.size * LINE_HEIGHT_RATIO) as f64;
+        let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
         let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (top, line_height)
     }
@@ -192,7 +192,7 @@ impl Widget for EditableLabel {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -219,10 +219,10 @@ impl Widget for EditableLabel {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.input.apply_layout_external(self.rect);
     }
@@ -350,7 +350,7 @@ impl Widget for EditableLabel {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "EditableLabel"
     }
 

@@ -109,13 +109,12 @@ fn split_terse(line: &str) -> Vec<String> {
     let mut buf = String::new();
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
+        if c == '\\'
+            && let Some(&next) = chars.peek() {
                 buf.push(next);
                 chars.next();
                 continue;
             }
-        }
         if c == ':' {
             out.push(std::mem::take(&mut buf));
         } else {
@@ -187,11 +186,10 @@ pub fn get_link_status() -> Result<LinkStatus, String> {
         ],
     )?;
     let mut status = parse_nmcli_device_status(&out);
-    if status.kind == LinkKind::Wifi {
-        if let Some(pct) = wireless_link_quality_pct() {
+    if status.kind == LinkKind::Wifi
+        && let Some(pct) = wireless_link_quality_pct() {
             status.signal = signal_pct_to_bucket(pct);
         }
-    }
     Ok(status)
 }
 
@@ -223,9 +221,9 @@ fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
                     signal: 0,
                 };
             }
-            "wifi" => {
+            "wifi"
                 // Remember it, but keep scanning for a wired link.
-                if wifi.is_none() {
+                if wifi.is_none() => {
                     // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws as "no signal".
                     wifi = Some(LinkStatus {
                         kind: LinkKind::Wifi,
@@ -233,7 +231,6 @@ fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
                         signal: 4,
                     });
                 }
-            }
             _ => {}
         }
     }

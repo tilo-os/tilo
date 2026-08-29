@@ -343,8 +343,7 @@ impl Session {
         // if it is the one addressed to us and what we hold is not.
         let ours_asks = ed
             .snapshot()
-            .map(|s| plan::find_addressed(&plan::blocks(&s), &self.cfg.name).is_some())
-            .unwrap_or(false);
+            .is_ok_and(|s| plan::find_addressed(&plan::blocks(&s), &self.cfg.name).is_some());
         if !ours_asks && Editor::is_addressed_to(data, &self.cfg.name) {
             ed.replace_with(data)?;
             tracing::info!(
@@ -688,8 +687,7 @@ impl Session {
         let n = blocks
             .iter()
             .find(|b| b.id == ins_id)
-            .map(|b| b.text.chars().count())
-            .unwrap_or(0);
+            .map_or(0, |b| b.text.chars().count());
         self.edit(
             ins_id,
             wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply),
@@ -711,7 +709,7 @@ impl Session {
         }
         let lines: Vec<&str> = bullets.iter().map(|&i| blocks[i].text.as_str()).collect();
         let rows = plan::table_cells(&lines);
-        let cols = rows.first().map(Vec::len).unwrap_or(1).max(1);
+        let cols = rows.first().map_or(1, Vec::len).max(1);
         let last_bullet = blocks[*bullets.last().expect("non-empty")].id.clone();
         let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
 

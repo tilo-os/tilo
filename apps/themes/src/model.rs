@@ -95,13 +95,13 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
 /// Linearly mix two colours in straight-u8 space. `t = 0` → `a`, `t = 1` → `b`.
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     [lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2])]
 }
 
 /// Relative luminance (0..1), used to pick legible on-colours.
 pub fn luminance(c: Rgb) -> f32 {
-    (0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32) / 255.0
+    (0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])) / 255.0
 }
 
 /// Black or white, whichever contrasts better against `bg`.
@@ -367,7 +367,7 @@ impl ThemeSpec {
         t.accent_primary = color(self.accent);
         t.accent_hover = color(self.accent_hover);
         t.status_success = color(self.success);
-        t.radius_standard = radius as f64;
+        t.radius_standard = f64::from(radius);
         t.padding_standard = sp;
         t.gap_standard = sp;
         t

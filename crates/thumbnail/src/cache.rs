@@ -141,8 +141,8 @@ impl ThumbCache {
             return;
         };
         let mut entries: Vec<(std::time::SystemTime, PathBuf)> = rd
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
             .filter_map(|e| {
                 let path = e.path();
                 let mtime = e.metadata().ok()?.modified().ok()?;

@@ -3,7 +3,7 @@
 //!
 //! A long-lived libp2p node that joins the same gossipsub mesh the shells
 //! form (so `qos.*` topics fan out without direct shell-to-shell
-//! connections), participates in a Kademlia DHT so NATed peers can find
+//! connections), participates in a Kademlia DHT so `NATed` peers can find
 //! each other via a bootstrap relay, stays online with a stable
 //! [`PeerId`](libp2p::PeerId) (ed25519 keypair on disk, so its
 //! `/dns4/.../tcp/4001/p2p/<peerid>` multiaddr doesn't need to rotate),
@@ -11,7 +11,7 @@
 //!
 //! The relay is a forwarding intermediary, not a channel member. Once MLS
 //! encryption lands it will see only ciphertext + metadata (topic,
-//! message size, timestamp, signing PeerId) — CRDT contents stay
+//! message size, timestamp, signing `PeerId`) — CRDT contents stay
 //! encrypted to channel members. Today's wire format is plaintext JSON;
 //! the relay is structured so the MLS switch is a layer below it and
 //! needs no relay-side changes.

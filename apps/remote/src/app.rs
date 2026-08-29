@@ -651,8 +651,8 @@ impl RemoteApp {
                         data: Blob::new(Arc::new(fb.data)),
                         format: ImageFormat::Rgba8,
                         alpha_type: ImageAlphaType::Alpha,
-                        width: fb.width as u32,
-                        height: fb.height as u32,
+                        width: u32::from(fb.width),
+                        height: u32::from(fb.height),
                     });
                     changed = true;
                 }
@@ -676,8 +676,7 @@ impl RemoteApp {
     fn live_active(&self) -> bool {
         self.live
             .as_ref()
-            .map(|l| l.status().is_live())
-            .unwrap_or(false)
+            .is_some_and(|l| l.status().is_live())
     }
 
     /// The connected VNC session, if that's the current live transport.
@@ -700,8 +699,8 @@ impl RemoteApp {
         if w == 0 || h == 0 {
             return None;
         }
-        let fx = ((p.x - canvas.x0) / canvas.width() * w as f64).clamp(0.0, (w - 1) as f64) as u16;
-        let fy = ((p.y - canvas.y0) / canvas.height() * h as f64).clamp(0.0, (h - 1) as f64) as u16;
+        let fx = ((p.x - canvas.x0) / canvas.width() * f64::from(w)).clamp(0.0, f64::from(w - 1)) as u16;
+        let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1)) as u16;
         Some((fx, fy))
     }
 
@@ -793,7 +792,7 @@ impl RemoteApp {
     fn commit_field(&mut self, f: Field) {
         let mut value = self.inputs.get(f).value().to_string();
         if f == Field::Port {
-            let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+            let digits: String = value.chars().filter(char::is_ascii_digit).collect();
             if digits != value {
                 // Push the cleaned text back so what is stored is what is
                 // shown; the caret follows to the end of it.
@@ -1062,7 +1061,17 @@ impl Widget for RemoteApp {
         // into the CRDT — only the demo build (or the user's real, persisted
         // connections) has anything to publish here.
         let doc_conns = RemoteDoc::list(state);
-        if !self.seeded {
+        if self.seeded {
+            // Pull any connections a peer added that we don't have yet.
+            let local: std::collections::HashSet<ConnectionId> =
+                self.workspace.connections().iter().map(|c| c.id).collect();
+            for dc in doc_conns {
+                if !local.contains(&dc.id) {
+                    self.workspace.connections.push(dc);
+                    self.dirty = true;
+                }
+            }
+        } else {
             if doc_conns.is_empty() {
                 // We're the origin — publish our list (empty when live).
                 for c in self.workspace.connections().to_vec() {
@@ -1077,16 +1086,6 @@ impl Widget for RemoteApp {
             }
             self.seeded = true;
             self.dirty = true;
-        } else {
-            // Pull any connections a peer added that we don't have yet.
-            let local: std::collections::HashSet<ConnectionId> =
-                self.workspace.connections().iter().map(|c| c.id).collect();
-            for dc in doc_conns {
-                if !local.contains(&dc.id) {
-                    self.workspace.connections.push(dc);
-                    self.dirty = true;
-                }
-            }
         }
     }
 
@@ -1111,17 +1110,17 @@ impl Widget for RemoteApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Drive the rail's docked-vs-overlay choice from our *allocated*
         // width, then reconcile so a window resize across the breakpoint
@@ -1207,7 +1206,7 @@ impl Widget for RemoteApp {
 
         match self.screen.clone() {
             Screen::List => {
-                self.draw_list(scene, transform, text_renderer, theme, presence, content)
+                self.draw_list(scene, transform, text_renderer, theme, presence, content);
             }
             Screen::Form { editing } => self.draw_form(
                 scene,
@@ -1398,7 +1397,7 @@ impl Widget for RemoteApp {
             } => {
                 self.handle_key(
                     logical_key,
-                    text.as_ref().map(|s| s.as_str()),
+                    text.as_ref().map(winit::keyboard::SmolStr::as_str),
                     modifiers.state(),
                     state,
                     handled,
@@ -1422,7 +1421,7 @@ impl Widget for RemoteApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RemoteApp"
     }
 
@@ -1578,7 +1577,7 @@ impl RemoteApp {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) => {
                 if matches!(self.screen, Screen::List) && self.focus.is_none() {
                     let down = matches!(key, Key::Named(NamedKey::ArrowDown));
                     self.move_selection(down);
@@ -1760,7 +1759,7 @@ impl RemoteApp {
                 glyph,
                 22.0,
                 color,
-                transform * Affine::translate((btn.center().x - gw as f64 / 2.0, btn.y0 + 6.0)),
+                transform * Affine::translate((btn.center().x - f64::from(gw) / 2.0, btn.y0 + 6.0)),
                 None,
                 TextWeight::Bold,
             );
@@ -1769,7 +1768,7 @@ impl RemoteApp {
             let bar_h = 2.0;
             let cx = btn.center().x - bar_w / 2.0;
             for i in 0..3 {
-                let by = btn.center().y - 6.0 + i as f64 * 6.0;
+                let by = btn.center().y - 6.0 + f64::from(i) * 6.0;
                 let bar = Rect::new(cx, by, cx + bar_w, by + bar_h);
                 scene.fill(
                     Fill::NonZero,
@@ -1827,7 +1826,7 @@ impl RemoteApp {
             glyph,
             22.0,
             color,
-            transform * Affine::translate((btn.center().x - gw as f64 / 2.0, btn.y0 + 6.0)),
+            transform * Affine::translate((btn.center().x - f64::from(gw) / 2.0, btn.y0 + 6.0)),
             None,
         );
         btn
@@ -1931,7 +1930,7 @@ impl RemoteApp {
                     tokens.colors.text_dim,
                     transform
                         * Affine::translate((
-                            region.center().x - mw as f64 / 2.0,
+                            region.center().x - f64::from(mw) / 2.0,
                             region.y0 + 48.0,
                         )),
                     None,
@@ -2016,7 +2015,7 @@ impl RemoteApp {
             title,
             19.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((mid - tw as f64 / 2.0, y)),
+            transform * Affine::translate((mid - f64::from(tw) / 2.0, y)),
             None,
             TextWeight::Bold,
         );
@@ -2029,7 +2028,7 @@ impl RemoteApp {
             sub,
             13.5,
             tokens.colors.text_dim,
-            transform * Affine::translate((mid - sw as f64 / 2.0, y)),
+            transform * Affine::translate((mid - f64::from(sw) / 2.0, y)),
             None,
         );
         y += 34.0;
@@ -2124,7 +2123,7 @@ impl RemoteApp {
             TextWeight::Semibold,
         );
         let (name_w, _) = text_renderer.measure_weighted(&c.name, 16.0, None, TextWeight::Semibold);
-        let star_center = Point::new(name_x + name_w as f64 + 16.0, row.y0 + 21.0);
+        let star_center = Point::new(name_x + f64::from(name_w) + 16.0, row.y0 + 21.0);
         let star_color = if c.favorite {
             tokens.colors.semantic.warning
         } else {
@@ -2161,7 +2160,7 @@ impl RemoteApp {
             None,
         );
         let (aw, _) = text_renderer.measure(&c.address(), 13.0, None);
-        x += aw as f64 + 14.0;
+        x += f64::from(aw) + 14.0;
         // Group chip.
         if !c.group.is_empty() {
             let g = format!("· {}", c.group);
@@ -2204,7 +2203,7 @@ impl RemoteApp {
             &c.last_used,
             12.0,
             tokens.colors.neutral[5],
-            transform * Affine::translate((edit.x0 - 20.0 - uw as f64, row.center().y - 7.0)),
+            transform * Affine::translate((edit.x0 - 20.0 - f64::from(uw), row.center().y - 7.0)),
             None,
         );
     }
@@ -2223,7 +2222,7 @@ impl RemoteApp {
         let (label, accent) = (kind.tag(), kind_color(kind, theme));
         let size = 11.0f32;
         let (tw, _) = text_renderer.measure(label, size, None);
-        let w = tw as f64 + 16.0;
+        let w = f64::from(tw) + 16.0;
         let h = 18.0;
         let badge = Rect::new(top_left.x, top_left.y, top_left.x + w, top_left.y + h);
         scene.fill(
@@ -2239,7 +2238,7 @@ impl RemoteApp {
             size,
             accent,
             transform
-                * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - size as f64) / 2.0 - 1.0)),
+                * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - f64::from(size)) / 2.0 - 1.0)),
             None,
             TextWeight::Semibold,
         );
@@ -2297,7 +2296,7 @@ impl RemoteApp {
             13.0,
             color,
             transform
-                * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - 8.0)),
+                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 8.0)),
             None,
             TextWeight::Semibold,
         );
@@ -2552,7 +2551,35 @@ impl RemoteApp {
         y += 56.0;
 
         // -- User + Group row (user hidden for qOS) --
-        if !qos {
+        if qos {
+            // qOS: authentication is implicit via device identity.
+            y = self.draw_form_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card_x,
+                y,
+                "Authentication",
+            );
+            let info = Rect::new(card_x, y, card_x + card_w, y + 40.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.accent[5].at_alpha(0.10),
+                None,
+                &RoundedRect::from_rect(info, 8.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                "Authenticated by qOS device identity over the P2P fabric — no password needed.",
+                12.5,
+                tokens.colors.text_dim,
+                transform * Affine::translate((info.x0 + 12.0, info.center().y - 7.0)),
+                Some(card_w as f32 - 24.0),
+            );
+            y += 56.0;
+        } else {
             y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
             let half = (card_w - 12.0) / 2.0;
             let user = Rect::new(card_x, y, card_x + half, y + 40.0);
@@ -2611,34 +2638,6 @@ impl RemoteApp {
                 );
                 self.push_hit(seg, Action::SetAuth(a));
             }
-            y += 56.0;
-        } else {
-            // qOS: authentication is implicit via device identity.
-            y = self.draw_form_label(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                card_x,
-                y,
-                "Authentication",
-            );
-            let info = Rect::new(card_x, y, card_x + card_w, y + 40.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.accent[5].at_alpha(0.10),
-                None,
-                &RoundedRect::from_rect(info, 8.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                "Authenticated by qOS device identity over the P2P fabric — no password needed.",
-                12.5,
-                tokens.colors.text_dim,
-                transform * Affine::translate((info.x0 + 12.0, info.center().y - 7.0)),
-                Some(card_w as f32 - 24.0),
-            );
             y += 56.0;
         }
 
@@ -2713,7 +2712,7 @@ impl RemoteApp {
                 13.0,
                 tokens.colors.semantic.danger,
                 transform
-                    * Affine::translate((del.center().x - tw as f64 / 2.0, del.center().y - 8.0)),
+                    * Affine::translate((del.center().x - f64::from(tw) / 2.0, del.center().y - 8.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -2791,7 +2790,7 @@ impl RemoteApp {
             13.0,
             color,
             transform
-                * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - 8.0)),
+                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 8.0)),
             None,
             TextWeight::Medium,
         );
@@ -2828,7 +2827,7 @@ impl RemoteApp {
         // session when REMOTE_LIVE_SESSIONS is set), so a `None` here means
         // either the default gated build or a not-yet-opened session — never
         // a fabricated terminal or desktop.
-        let Some(status) = self.live.as_ref().map(|l| l.status()) else {
+        let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
                 scene,
                 transform,
@@ -3005,7 +3004,7 @@ impl RemoteApp {
             tag,
             15.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((mid - tagw as f64 / 2.0, emblem.y - 10.0)),
+            transform * Affine::translate((mid - f64::from(tagw) / 2.0, emblem.y - 10.0)),
             None,
             TextWeight::Bold,
         );
@@ -3018,7 +3017,7 @@ impl RemoteApp {
             &c.name,
             20.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((mid - nw as f64 / 2.0, y)),
+            transform * Affine::translate((mid - f64::from(nw) / 2.0, y)),
             None,
             TextWeight::Bold,
         );
@@ -3032,14 +3031,14 @@ impl RemoteApp {
             &addr,
             13.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((mid - aw as f64 / 2.0, y)),
+            transform * Affine::translate((mid - f64::from(aw) / 2.0, y)),
             None,
         );
         y += 30.0;
 
         // Status pill — the state as a labelled, tone-coloured form.
         let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
-        let pill_w = pw as f64 + 44.0;
+        let pill_w = f64::from(pw) + 44.0;
         let pill = Rect::new(mid - pill_w / 2.0, y, mid + pill_w / 2.0, y + 30.0);
         scene.fill(
             Fill::NonZero,
@@ -3074,7 +3073,7 @@ impl RemoteApp {
                 line,
                 13.0,
                 tokens.colors.text_dim,
-                transform * Affine::translate((mid - lw as f64 / 2.0, y)),
+                transform * Affine::translate((mid - f64::from(lw) / 2.0, y)),
                 None,
             );
             y += 22.0;
@@ -3146,8 +3145,8 @@ impl RemoteApp {
             return;
         };
 
-        let iw = img.width.max(1) as f64;
-        let ih = img.height.max(1) as f64;
+        let iw = f64::from(img.width.max(1));
+        let ih = f64::from(img.height.max(1));
         let canvas = if self.scale_to_fit {
             let scale = (surface.width() / iw).min(surface.height() / ih);
             let (w, h) = (iw * scale, ih * scale);
@@ -3247,7 +3246,7 @@ impl RemoteApp {
             &mode,
             12.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((bar.x0 + 40.0 + nw as f64, bar.center().y - 7.0)),
+            transform * Affine::translate((bar.x0 + 40.0 + f64::from(nw), bar.center().y - 7.0)),
             None,
         );
 
@@ -3312,7 +3311,7 @@ impl RemoteApp {
     ) -> Rect {
         let tokens = &theme.tokens;
         let (tw, _) = text_renderer.measure(label, 12.5, None);
-        let w = tw as f64 + 24.0;
+        let w = f64::from(tw) + 24.0;
         let rect = Rect::new(
             right_x - w,
             bar.center().y - 16.0,
@@ -3375,8 +3374,8 @@ impl RemoteApp {
             &surface,
         );
         let font_size = 14.0f32;
-        let char_w = font_size as f64 * 0.6; // monospace advance approximation
-        let line_h = font_size as f64 * 1.5;
+        let char_w = f64::from(font_size) * 0.6; // monospace advance approximation
+        let line_h = f64::from(font_size) * 1.5;
         let pad = 16.0;
 
         for (row, line) in lines.iter().enumerate() {
@@ -3421,7 +3420,7 @@ impl RemoteApp {
             caret_x,
             caret_y,
             caret_x + char_w,
-            caret_y + font_size as f64 * 1.2,
+            caret_y + f64::from(font_size) * 1.2,
         );
         scene.fill(
             Fill::NonZero,
@@ -3501,7 +3500,7 @@ fn draw_star(
     for i in 0..10 {
         let radius = if i % 2 == 0 { r } else { inner };
         // Start at the top point (-90°) and step every 36°.
-        let angle = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+        let angle = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
         let p = Point::new(
             center.x + radius * angle.cos(),
             center.y + radius * angle.sin(),

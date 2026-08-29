@@ -179,8 +179,7 @@ impl PeerView {
         }
         self.decoder
             .last_colorimetry()
-            .map(|c| c.is_hdr())
-            .unwrap_or(false)
+            .is_some_and(super::super::collab::colorimetry::Colorimetry::is_hdr)
     }
 
     pub fn metrics(&self) -> &PeerSurfaceMetrics {
@@ -281,8 +280,8 @@ impl PeerView {
     /// SDR RGBA frames upload straight through; HDR P010 frames are CPU
     /// tone-mapped into RGBA.
     fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
-        if self.cached_image.is_none() {
-            if let Some(frame) = &self.latest {
+        if self.cached_image.is_none()
+            && let Some(frame) = &self.latest {
                 let rgba = match &frame.pixels {
                     DecodedPixels::Rgba8(bytes) => bytes.clone(),
                     DecodedPixels::P010 {
@@ -313,7 +312,6 @@ impl PeerView {
                     height: frame.height,
                 });
             }
-        }
         self.cached_image.as_ref()
     }
 }
@@ -336,17 +334,17 @@ impl Widget for PeerView {
                 ..Default::default()
             })
             .expect("peer-view leaf");
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).expect("layout");
         let new_rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
@@ -379,8 +377,8 @@ impl Widget for PeerView {
 
         if let Some(image) = self.ensure_image() {
             // Scale + translate so the natural-size image fills `rect`.
-            let img_w = image.width as f64;
-            let img_h = image.height as f64;
+            let img_w = f64::from(image.width);
+            let img_h = f64::from(image.height);
             if img_w > 0.0 && img_h > 0.0 {
                 let sx = rect.width() / img_w;
                 let sy = rect.height() / img_h;
@@ -392,8 +390,8 @@ impl Widget for PeerView {
             let label = "Awaiting peer surface…";
             let size = tokens.typography.scale.base;
             let (lw, lh) = text_renderer.measure(label, size, None);
-            let cx = rect.center().x - lw as f64 / 2.0;
-            let cy = rect.center().y - lh as f64 / 2.0;
+            let cx = rect.center().x - f64::from(lw) / 2.0;
+            let cy = rect.center().y - f64::from(lh) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -421,7 +419,7 @@ impl Widget for PeerView {
         // which calls `record_*` directly.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PeerView"
     }
 
@@ -429,7 +427,7 @@ impl Widget for PeerView {
         self.rect
     }
 
-    /// Lets the App's CursorMoved redraw gate skip frames over an idle
+    /// Lets the App's `CursorMoved` redraw gate skip frames over an idle
     /// peer surface.
     fn needs_redraw(&self) -> bool {
         self.dirty

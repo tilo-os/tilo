@@ -95,6 +95,12 @@ pub struct WorkspaceState {
     pub is_sidebar_open: bool,
 }
 
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorkspaceState {
     pub fn new() -> Self {
         let ws_id = Uuid::new_v4();

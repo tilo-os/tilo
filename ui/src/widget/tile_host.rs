@@ -52,7 +52,7 @@ const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
 fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     let size = SHADOW_SPRITE_SIZE;
-    let s = size as f64;
+    let s = f64::from(size);
     let cx = (s - 1.0) * 0.5;
     let cy = (s - 1.0) * 0.5;
     let max_r = cx.max(cy);
@@ -61,17 +61,17 @@ fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     let mut data = Vec::<u8>::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let dx = (x as f64 - cx) / max_r;
-            let dy = (y as f64 - cy) / max_r;
+            let dx = (f64::from(x) - cx) / max_r;
+            let dy = (f64::from(y) - cy) / max_r;
             let d = (dx * dx + dy * dy).sqrt();
             let bump = (-((d - d_peak) / k).powi(2)).exp();
             let inner = (d / d_peak).min(1.0);
             let outer = (1.0 - d).max(0.0);
             let a = (bump * inner * outer).clamp(0.0, 1.0);
             let a8 = (a * 255.0).round() as u8;
-            data.push((r as f64 * a).round() as u8);
-            data.push((g as f64 * a).round() as u8);
-            data.push((b as f64 * a).round() as u8);
+            data.push((f64::from(r) * a).round() as u8);
+            data.push((f64::from(g) * a).round() as u8);
+            data.push((f64::from(b) * a).round() as u8);
             data.push(a8);
         }
     }
@@ -99,7 +99,7 @@ fn focus_bloom_sprite(tint: Color) -> Image {
     let rgba = tint.to_rgba8();
     let key = [rgba.r, rgba.g, rgba.b];
     let cache = SPRITES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache
         .entry(key)
         .or_insert_with(|| build_shadow_sprite(key[0], key[1], key[2]))
@@ -119,8 +119,8 @@ fn draw_shadow_sprite(
     if tw <= 0.0 || th <= 0.0 || alpha <= 0.0 {
         return;
     }
-    let sx = tw / sprite.width as f64;
-    let sy = th / sprite.height as f64;
+    let sx = tw / f64::from(sprite.width);
+    let sy = th / f64::from(sprite.height);
     let brush_transform =
         transform * Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(sx, sy);
     scene.push_layer(
@@ -136,7 +136,7 @@ fn draw_shadow_sprite(
         brush_transform,
         &sprite_brush,
         None,
-        &Rect::new(0.0, 0.0, sprite.width as f64, sprite.height as f64),
+        &Rect::new(0.0, 0.0, f64::from(sprite.width), f64::from(sprite.height)),
     );
     scene.pop_layer();
 }
@@ -500,16 +500,16 @@ impl Widget for TileHost {
                 })
                 .unwrap(),
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
@@ -552,7 +552,7 @@ impl Widget for TileHost {
             let t = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3);
             let alpha = eased;
-            let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * eased as f64;
+            let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * f64::from(eased);
             // 160 px clip so the shadow sprites (ambient_pad=50,
             // bloom_pad=120) aren't chopped mid-fade.
             let clip = Rect::new(
@@ -653,10 +653,10 @@ impl Widget for TileHost {
                 focus_target,
                 child_node,
                 taffy,
-            )
+            );
         });
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TileHost"
     }
     /// Only an app can answer anything but `true` — a stub/notice is
@@ -753,7 +753,7 @@ impl TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let radius = theme.tokens.radii.xl as f64;
+        let radius = f64::from(theme.tokens.radii.xl);
         // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`): 25 px
         // downward offset, ~50 px bleed so the falloff clears the corners.
         let ambient_pad = 50.0_f64;
@@ -935,7 +935,7 @@ fn draw_opening_card(
     let cx = rect.center().x;
     // Above centre, so name + indicator reads as one centred pair rather
     // than the name alone with the indicator hanging below.
-    let y = rect.center().y - size as f64;
+    let y = rect.center().y - f64::from(size);
     if !name.is_empty() {
         let (tw, _) = tr.measure(name, size, None);
         tr.draw_text(
@@ -943,11 +943,11 @@ fn draw_opening_card(
             name,
             size,
             on_card,
-            transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+            transform * Affine::translate((cx - f64::from(tw) / 2.0, y)),
             None,
         );
     }
-    let top = y + size as f64 + OPENING_SPINNER_GAP;
+    let top = y + f64::from(size) + OPENING_SPINNER_GAP;
     spinner.set_rect(Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,
@@ -981,8 +981,8 @@ fn draw_card_text(
         .ink_dim;
     let text_size = theme.tokens.typography.scale.xl;
     let (tw, _) = tr.measure(title, text_size, None);
-    let x = rect.center().x - tw as f64 / 2.0;
-    let y = rect.center().y - text_size as f64 / 2.0;
+    let x = rect.center().x - f64::from(tw) / 2.0;
+    let y = rect.center().y - f64::from(text_size) / 2.0;
     tr.draw_text(
         scene,
         title,
@@ -996,13 +996,13 @@ fn draw_card_text(
     }
     let sm = theme.tokens.typography.scale.sm;
     let (sw, _) = tr.measure(detail, sm, None);
-    let sx = rect.center().x - sw as f64 / 2.0;
+    let sx = rect.center().x - f64::from(sw) / 2.0;
     tr.draw_text(
         scene,
         detail,
         sm,
         on_card_dim,
-        transform * Affine::translate((sx, y + text_size as f64 + 8.0)),
+        transform * Affine::translate((sx, y + f64::from(text_size) + 8.0)),
         None,
     );
 }

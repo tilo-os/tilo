@@ -1,4 +1,4 @@
-//! OAuth2 (authorization-code + PKCE) for the mail providers that block
+//! `OAuth2` (authorization-code + PKCE) for the mail providers that block
 //! plain-password IMAP/SMTP — Gmail and Outlook now **require** OAuth, so the
 //! setup flow signs the user in through the browser instead of asking for a
 //! password.
@@ -139,7 +139,7 @@ pub struct AuthRequest {
 }
 
 impl AuthRequest {
-    /// Build the browser authorization URL (response_type=code + PKCE S256).
+    /// Build the browser authorization URL (`response_type=code` + PKCE S256).
     pub fn authorization_url(&self) -> String {
         let e = self.provider.endpoints();
         let mut url = String::from(e.auth_url);
@@ -232,7 +232,7 @@ pub fn parse_token_response(json: &str) -> Option<OAuthTokens> {
         .and_then(|t| t.as_str())
         .unwrap_or_default()
         .to_string();
-    let expires_in = v.get("expires_in").and_then(|t| t.as_u64()).unwrap_or(0);
+    let expires_in = v.get("expires_in").and_then(serde_json::Value::as_u64).unwrap_or(0);
     Some(OAuthTokens {
         access_token,
         refresh_token,
@@ -273,9 +273,9 @@ pub fn base64_standard(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
@@ -297,8 +297,7 @@ pub fn base64_standard(input: &[u8]) -> String {
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Exchange an authorization `code` for tokens at the provider's token
@@ -461,7 +460,7 @@ pub enum RedirectResult {
 /// favicon fetch, a bare `/`). Pure + testable.
 pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     let path = line.split_whitespace().nth(1)?;
-    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let query = path.split_once('?').map_or("", |(_, q)| q);
     let mut code = None;
     let mut state = String::new();
     let mut error = None;
@@ -555,9 +554,9 @@ pub fn base64url_nopad(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
@@ -577,7 +576,7 @@ fn percent_encode(s: &str) -> String {
     for &b in s.as_bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             _ => out.push_str(&format!("%{b:02X}")),
         }

@@ -37,7 +37,7 @@ pub fn request_open() -> PortalChannel {
         .send()
 }
 
-/// The result of an OpenDocument Presentation open/save interaction. The two
+/// The result of an `OpenDocument` Presentation open/save interaction. The two
 /// success variants are the same path with different meanings: one to load
 /// from, one to write to.
 #[derive(Debug, Clone, PartialEq, Eq)]

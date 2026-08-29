@@ -10,7 +10,7 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE WebKit — the qOS system engine, rendering real pages offscreen.
+//!  * WPE `WebKit` — the qOS system engine, rendering real pages offscreen.
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
@@ -121,11 +121,11 @@ pub enum WebViewCommand {
     },
     /// Keyboard focus entered / left the page surface.
     SetFocused(bool),
-    /// Compiled WebKit content-blocker JSON (`None` clears the filter).
+    /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
     /// Several compiled content-blocker JSON blobs, split because the full
-    /// filter-list rule set exceeds WebKit's per-filter cap. An empty
+    /// filter-list rule set exceeds `WebKit`'s per-filter cap. An empty
     /// `chunks` clears all filters.
     ///
     /// `version` hashes the *source* filter lists (not the compiled JSON,
@@ -138,7 +138,7 @@ pub enum WebViewCommand {
         chunks: Arc<Vec<Arc<String>>>,
     },
     /// Scriptlet-style blocking the declarative content filter can't
-    /// express (e.g. skipping YouTube video ads). Run at document-start
+    /// express (e.g. skipping `YouTube` video ads). Run at document-start
     /// in all frames.
     SetUserScripts(Arc<Vec<String>>),
     /// Clear all persistent website data (cookies, caches, storage,
@@ -243,7 +243,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),

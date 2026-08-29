@@ -258,17 +258,17 @@ impl Widget for InviteAcceptScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 560.0;
         let card_h = 440.0;
@@ -389,7 +389,7 @@ impl Widget for InviteAcceptScreen {
             .to_rfc3339();
             text_renderer.draw_text(
                 scene,
-                &format!("Expires {}", when),
+                &format!("Expires {when}"),
                 12.0,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((card.x0 + pad, card.y0 + 200.0)),
@@ -459,7 +459,7 @@ impl Widget for InviteAcceptScreen {
             label_color,
             transform
                 * Affine::translate((
-                    self.accept_rect.x0 + (self.accept_rect.width() - aw as f64) / 2.0,
+                    self.accept_rect.x0 + (self.accept_rect.width() - f64::from(aw)) / 2.0,
                     self.accept_rect.y0 + (self.accept_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -490,7 +490,7 @@ impl Widget for InviteAcceptScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InviteAcceptScreen"
     }
 

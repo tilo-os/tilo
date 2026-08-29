@@ -123,7 +123,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -197,7 +197,7 @@ fn render_shot_to_png(
     Ok(())
 }
 
-/// One full frame pass (sync → build_layout → compute → apply → draw), mirroring
+/// One full frame pass (sync → `build_layout` → compute → apply → draw), mirroring
 /// `ui::App`. Returns the drawn scene, the live taffy tree + root child node
 /// (to dispatch events into the just-laid-out tree) and per-pass microseconds
 /// `[sync, build, layout, apply, draw]`.

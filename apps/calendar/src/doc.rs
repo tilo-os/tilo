@@ -64,7 +64,7 @@ impl CalDoc {
             let m = Self::ensure_child(doc, &projects, &p.id.to_string());
             let _ = doc.put(&m, "name", p.name.as_str());
             let _ = doc.put(&m, "color", p.color.index() as i64);
-            let _ = doc.put(&m, "order", p.order as i64);
+            let _ = doc.put(&m, "order", i64::from(p.order));
         }
 
         let events = Self::map_at(doc, "events");
@@ -103,7 +103,7 @@ impl CalDoc {
         let _ = doc.put(m, "title", t.title.as_str());
         let _ = doc.put(m, "done", t.done);
         let _ = doc.put(m, "due", t.due.map(|d| d.to_string()).unwrap_or_default());
-        let _ = doc.put(m, "priority", t.priority.rank() as i64);
+        let _ = doc.put(m, "priority", i64::from(t.priority.rank()));
         let _ = doc.put(
             m,
             "project",
@@ -250,11 +250,10 @@ impl CalDoc {
         let list = Self::outbox_list(doc);
         let target = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target) {
                     return;
                 }
-            }
         }
         let idx = doc.length(&list);
         let _ = doc.insert(&list, idx, target.as_str());
@@ -288,13 +287,11 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    if let Ok(id) = s.as_str().parse::<Id>() {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+                    && let Ok(id) = s.as_str().parse::<Id>() {
                         out.push(id);
                     }
-                }
-            }
         }
         out
     }
@@ -324,13 +321,11 @@ impl CalDoc {
         let list = Self::del_outbox_list(doc);
         let uid = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    if s.as_str().split('\t').nth(1) == Some(uid.as_str()) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+                    && s.as_str().split('\t').nth(1) == Some(uid.as_str()) {
                         return;
                     }
-                }
-            }
         }
         let entry = format!("{calendar_id}\t{uid}");
         let idx = doc.length(&list);
@@ -366,16 +361,14 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref() {
                     let mut parts = s.as_str().splitn(2, '\t');
-                    if let (Some(cal), Some(uid)) = (parts.next(), parts.next()) {
-                        if let Ok(id) = uid.parse::<Id>() {
+                    if let (Some(cal), Some(uid)) = (parts.next(), parts.next())
+                        && let Ok(id) = uid.parse::<Id>() {
                             out.push((cal.to_string(), id));
                         }
-                    }
                 }
-            }
         }
         out
     }

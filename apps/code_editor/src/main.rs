@@ -71,7 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Seed the width up front so this single offscreen frame resolves the
         // responsive layout (docked vs. overlay) correctly — `build_layout`
         // runs before `apply_layout` would otherwise measure the window.
-        app.set_width_hint(viewport.0 as f64);
+        app.set_width_hint(f64::from(viewport.0));
         if open_sidebar {
             app.shots_snap_sidebar(true);
         }
@@ -146,8 +146,8 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
 }
 
 /// Render one offscreen frame of the `CodeApp`, optionally staging a scenario
-/// first. Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
-/// apply_layout → draw); for the `terminal` scenario it also drives the live
+/// first. Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
+/// `apply_layout` → draw); for the `terminal` scenario it also drives the live
 /// PTY and pumps `sync` a few times so real shell output lands in the frame.
 fn render_scenario_to_png(
     mut app: code_editor::CodeApp,
@@ -181,7 +181,7 @@ fn render_scenario_to_png(
     // from the tree; on the demo tree `main.rs` is already open.
     if matches!(
         scenario,
-        Some("find") | Some("conflict") | Some("indexing") | Some("goto") | Some("close-prompt")
+        Some("find" | "conflict" | "indexing" | "goto" | "close-prompt")
     ) {
         if let Some(path) = std::env::var_os("QOS_SHOTS_OPEN") {
             app.shots_open_path(std::path::Path::new(&path));
@@ -287,7 +287,7 @@ fn render_scenario_to_png(
     // The staged scenarios change the layout (the find bar appears, the search
     // panel is taller), so the tree has to be rebuilt before the final draw or
     // the new surfaces get last frame's geometry.
-    if matches!(scenario, Some("find") | Some("search")) {
+    if matches!(scenario, Some("find" | "search")) {
         let mut taffy2: TaffyTree<()> = TaffyTree::new();
         let mut map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child2 = app.build_layout(&mut taffy2, &theme, &mut map2);

@@ -164,7 +164,7 @@ impl SshSession {
                     self.grid.feed(&bytes);
                     changed = true;
                 }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         changed
@@ -181,7 +181,7 @@ impl SshSession {
 }
 
 /// The russh client event handler. We accept the server's host key
-/// trust-on-first-use — there is no known_hosts verification yet, which is
+/// trust-on-first-use — there is no `known_hosts` verification yet, which is
 /// why live sessions stay gated behind `REMOTE_LIVE_SESSIONS`.
 struct Handler;
 
@@ -205,7 +205,7 @@ async fn run_session(
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(3600)),
+        inactivity_timeout: Some(Duration::from_hours(1)),
         ..Default::default()
     });
 
@@ -240,8 +240,8 @@ async fn run_session(
         .request_pty(
             false,
             "xterm-256color",
-            cfg.cols as u32,
-            cfg.rows as u32,
+            u32::from(cfg.cols),
+            u32::from(cfg.rows),
             0,
             0,
             &[],
@@ -261,7 +261,7 @@ async fn run_session(
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
                     if output_tx.send(data.to_vec()).is_err() { break; }
                 }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             },
             input = input_rx.recv() => match input {

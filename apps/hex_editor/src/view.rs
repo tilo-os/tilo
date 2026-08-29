@@ -327,9 +327,7 @@ impl HexView {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "untitled".to_string());
+                    .file_name().map_or_else(|| "untitled".to_string(), |s| s.to_string_lossy().into_owned());
                 let n = bytes.len();
                 self.model = HexModel::new(bytes);
                 self.file_name = name;
@@ -534,8 +532,8 @@ impl HexView {
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
 
-        let pad = tokens.spacing.s4 as f64;
-        let cy = bar.y0 + (bar.height() - tokens.typography.scale.lg as f64) / 2.0;
+        let pad = f64::from(tokens.spacing.s4);
+        let cy = bar.y0 + (bar.height() - f64::from(tokens.typography.scale.lg)) / 2.0;
 
         // File name (semibold) + byte count (dim).
         tr.draw_text_weighted(
@@ -560,8 +558,8 @@ impl HexView {
             tokens.typography.scale.sm,
             tokens.colors.text_dim,
             t * Affine::translate((
-                bar.x0 + pad + name_w as f64 + 12.0,
-                bar.y0 + (bar.height() - tokens.typography.scale.sm as f64) / 2.0,
+                bar.x0 + pad + f64::from(name_w) + 12.0,
+                bar.y0 + (bar.height() - f64::from(tokens.typography.scale.sm)) / 2.0,
             )),
             None,
         );
@@ -624,7 +622,7 @@ impl HexView {
         let size = theme.tokens.typography.scale.xs;
         let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Bold);
         let pad_x = 8.0;
-        let w = tw as f64 + pad_x * 2.0;
+        let w = f64::from(tw) + pad_x * 2.0;
         let h = 18.0;
         let x0 = right_x - w;
         let y0 = bar.y0 + (bar.height() - h) / 2.0;
@@ -635,7 +633,7 @@ impl HexView {
             label,
             size,
             contrast_on(fill),
-            t * Affine::translate((x0 + pad_x, y0 + (h - size as f64) / 2.0 + 0.5)),
+            t * Affine::translate((x0 + pad_x, y0 + (h - f64::from(size)) / 2.0 + 0.5)),
             None,
             TextWeight::Bold,
         );
@@ -669,7 +667,7 @@ impl HexView {
             true,
         );
         for c in 0..bpr {
-            let label = format!("{:02X}", c);
+            let label = format!("{c:02X}");
             let x = m.hex_x0 + c as f64 * m.hex_col_w;
             tr.draw_text_styled(
                 scene,
@@ -730,10 +728,10 @@ impl HexView {
                 break;
             }
             let y = m.grid_top + vr as f64 * m.row_h;
-            let text_y = y + (m.row_h - size as f64) / 2.0;
+            let text_y = y + (m.row_h - f64::from(size)) / 2.0;
 
             // Offset gutter.
-            let gutter = format!("{:08X}", row_off);
+            let gutter = format!("{row_off:08X}");
             tr.draw_text_styled(
                 scene,
                 &gutter,
@@ -755,11 +753,9 @@ impl HexView {
                 let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
 
                 let selected = selection
-                    .map(|(lo, hi)| off >= lo && off <= hi)
-                    .unwrap_or(false);
+                    .is_some_and(|(lo, hi)| off >= lo && off <= hi);
                 let inspected = inspector_span
-                    .map(|(lo, hi)| off >= lo && off <= hi)
-                    .unwrap_or(false);
+                    .is_some_and(|(lo, hi)| off >= lo && off <= hi);
                 let is_cursor = off == cursor;
                 let is_match = self.matches.iter().any(|&mh| {
                     // Highlight cells inside any match span.
@@ -832,7 +828,7 @@ impl HexView {
                 };
                 tr.draw_text_styled(
                     scene,
-                    &format!("{:02X}", byte),
+                    &format!("{byte:02X}"),
                     size,
                     hex_color,
                     t * Affine::translate((hex_x, text_y)),
@@ -910,7 +906,7 @@ impl HexView {
             &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
         );
 
-        let pad = tokens.spacing.s4 as f64;
+        let pad = f64::from(tokens.spacing.s4);
         let x = panel.x0 + pad;
         let mut y = panel.y0 + pad;
 
@@ -1003,7 +999,7 @@ impl HexView {
         let mut s = format!("0x{:08X}  ({})", self.model.cursor(), self.model.cursor());
         let sel = self.model.selection_len();
         if sel > 0 {
-            s.push_str(&format!("   sel {} B", sel));
+            s.push_str(&format!("   sel {sel} B"));
         }
         if self.model.dirty_count() > 0 {
             s.push_str(&format!("   ●{} edited", self.model.dirty_count()));
@@ -1086,7 +1082,7 @@ impl HexView {
             title,
             tsz,
             c.text_primary,
-            t * Affine::translate((cx - tw as f64 / 2.0, cy - 78.0)),
+            t * Affine::translate((cx - f64::from(tw) / 2.0, cy - 78.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1100,7 +1096,7 @@ impl HexView {
             sub,
             ssz,
             c.text_dim,
-            t * Affine::translate((cx - sw as f64 / 2.0, cy - 40.0)),
+            t * Affine::translate((cx - f64::from(sw) / 2.0, cy - 40.0)),
             None,
         );
 
@@ -1108,7 +1104,7 @@ impl HexView {
         let label = "Open file…";
         let bsz = tokens.typography.scale.base;
         let (lw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-        let bw = lw as f64 + 44.0;
+        let bw = f64::from(lw) + 44.0;
         let bh = 40.0;
         let bx0 = cx - bw / 2.0;
         let by0 = cy - 8.0;
@@ -1126,7 +1122,7 @@ impl HexView {
             label,
             bsz,
             contrast_on(accent),
-            t * Affine::translate((bx0 + (bw - lw as f64) / 2.0, by0 + (bh - bsz as f64) / 2.0)),
+            t * Affine::translate((bx0 + (bw - f64::from(lw)) / 2.0, by0 + (bh - f64::from(bsz)) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1141,24 +1137,23 @@ impl HexView {
             hint,
             hsz,
             c.text_dim,
-            t * Affine::translate((cx - hw as f64 / 2.0, by0 + bh + 16.0)),
+            t * Affine::translate((cx - f64::from(hw) / 2.0, by0 + bh + 16.0)),
             None,
         );
 
         // A pending open error (e.g. unreadable path) surfaces here.
-        if let Some((msg, error, _)) = &self.flash {
-            if *error {
+        if let Some((msg, error, _)) = &self.flash
+            && *error {
                 let (mw, _) = tr.measure(msg, ssz, None);
                 tr.draw_text(
                     scene,
                     msg,
                     ssz,
                     c.semantic.danger,
-                    t * Affine::translate((cx - mw as f64 / 2.0, by0 + bh + 44.0)),
+                    t * Affine::translate((cx - f64::from(mw) / 2.0, by0 + bh + 44.0)),
                     None,
                 );
             }
-        }
     }
 
     fn draw_search_overlay(
@@ -1220,7 +1215,7 @@ impl HexView {
 
         // Query text + caret.
         let qx = x0 + pad + chip_w + 12.0;
-        let qy = y0 + (h - size as f64) / 2.0;
+        let qy = y0 + (h - f64::from(size)) / 2.0;
         let display = if self.search_query.is_empty() {
             "search…".to_string()
         } else {
@@ -1251,7 +1246,7 @@ impl HexView {
                 "no matches".to_string()
             }
         } else {
-            let pos = self.match_idx.map(|i| i + 1).unwrap_or(0);
+            let pos = self.match_idx.map_or(0, |i| i + 1);
             format!("{}/{}", pos, self.matches.len())
         };
         if !count.is_empty() {
@@ -1267,8 +1262,8 @@ impl HexView {
                 tokens.typography.scale.sm,
                 ccolor,
                 t * Affine::translate((
-                    x0 + w - pad - cw as f64,
-                    y0 + (h - tokens.typography.scale.sm as f64) / 2.0,
+                    x0 + w - pad - f64::from(cw),
+                    y0 + (h - f64::from(tokens.typography.scale.sm)) / 2.0,
                 )),
                 None,
             );
@@ -1454,25 +1449,22 @@ impl Widget for HexView {
         // diverge from ours. A local keystroke keeps model and document in step
         // (the edit is applied to both), so this is a no-op on the common path
         // and never clobbers an in-progress edit.
-        if self.seeded && self.has_file {
-            if let Some(bytes) = HexDoc::read_bytes(doc) {
-                if bytes != self.model.bytes() {
+        if self.seeded && self.has_file
+            && let Some(bytes) = HexDoc::read_bytes(doc)
+                && bytes != self.model.bytes() {
                     self.model.adopt_bytes(bytes);
                     if self.overlay == Overlay::Search {
                         self.recompute_matches();
                     }
                     self.dirty = true;
                 }
-            }
-        }
 
         // Expire a status flash so an idle window settles back to no message.
-        if let Some((_, _, born)) = &self.flash {
-            if born.elapsed().as_millis() > FLASH_MS {
+        if let Some((_, _, born)) = &self.flash
+            && born.elapsed().as_millis() > FLASH_MS {
                 self.flash = None;
                 self.dirty = true;
             }
-        }
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1502,17 +1494,17 @@ impl Widget for HexView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -1612,7 +1604,7 @@ impl Widget for HexView {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
                 };
                 self.model.scroll_by(-(lines.round() as isize) * 3);
@@ -1627,14 +1619,12 @@ impl Widget for HexView {
 
                 // Empty state: the only meaningful key action is opening a file.
                 if !self.has_file {
-                    if ctrl {
-                        if let Key::Character(c) = key {
-                            if c.eq_ignore_ascii_case("o") {
+                    if ctrl
+                        && let Key::Character(c) = key
+                            && c.eq_ignore_ascii_case("o") {
                                 self.begin_open();
                                 *handled = true;
                             }
-                        }
-                    }
                     return;
                 }
 
@@ -1647,8 +1637,8 @@ impl Widget for HexView {
                 }
 
                 // Global chords.
-                if ctrl {
-                    if let Key::Character(c) = key {
+                if ctrl
+                    && let Key::Character(c) = key {
                         match c.as_str() {
                             "o" | "O" => {
                                 self.begin_open();
@@ -1682,7 +1672,6 @@ impl Widget for HexView {
                             _ => {}
                         }
                     }
-                }
 
                 let mut moved = true;
                 match key {
@@ -1757,7 +1746,7 @@ impl Widget for HexView {
         self.actions.take_committed()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "HexView"
     }
 
@@ -1924,7 +1913,7 @@ fn with_alpha(c: Color, a: u8) -> Color {
 /// Choose black or white text for legibility on `bg` (relative luminance).
 fn contrast_on(bg: Color) -> Color {
     let rgba = bg.to_rgba8();
-    let lum = 0.299 * rgba.r as f64 + 0.587 * rgba.g as f64 + 0.114 * rgba.b as f64;
+    let lum = 0.299 * f64::from(rgba.r) + 0.587 * f64::from(rgba.g) + 0.114 * f64::from(rgba.b);
     if lum > 140.0 {
         Color::from_rgb8(10, 12, 20)
     } else {

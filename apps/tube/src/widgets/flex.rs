@@ -126,7 +126,7 @@ pub struct Flex {
     /// Like `overlay` for positioning (absolute, fills the containing block and
     /// stacks over siblings) but WITHOUT the modal pointer capture: events that
     /// miss this box's interactive children fall through to the content beneath.
-    /// Used for a small on-video affordance (the SponsorBlock "Skip" button).
+    /// Used for a small on-video affordance (the `SponsorBlock` "Skip" button).
     float: bool,
 
     surface: Option<Surface>,
@@ -436,11 +436,11 @@ impl Widget for Flex {
                 height: self.height.dim(),
             },
             min_size: taffy::Size {
-                width: self.min_w.map(length).unwrap_or(taffy::Dimension::auto()),
-                height: self.min_h.map(length).unwrap_or(taffy::Dimension::auto()),
+                width: self.min_w.map_or(taffy::Dimension::auto(), length),
+                height: self.min_h.map_or(taffy::Dimension::auto(), length),
             },
             max_size: taffy::Size {
-                width: self.max_w.map(length).unwrap_or(taffy::Dimension::auto()),
+                width: self.max_w.map_or(taffy::Dimension::auto(), length),
                 height: taffy::Dimension::auto(),
             },
             flex_grow: self.grow,
@@ -470,19 +470,19 @@ impl Widget for Flex {
         } else {
             taffy.new_with_children(style, &child_nodes).unwrap()
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let w = layout.size.width.max(layout.content_size.width) as f64;
-        let h = layout.size.height.max(layout.content_size.height) as f64;
+        let w = f64::from(layout.size.width.max(layout.content_size.width));
+        let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + w,
-            origin.y + layout.location.y as f64 + h,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + w,
+            origin.y + f64::from(layout.location.y) + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
@@ -700,7 +700,7 @@ impl Widget for Flex {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children.iter().map(std::convert::AsRef::as_ref).collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.children
@@ -743,7 +743,7 @@ impl Widget for Flex {
         dirty
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Flex"
     }
     fn test_id(&self) -> Option<&str> {

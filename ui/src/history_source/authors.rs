@@ -148,7 +148,7 @@ pub fn actor_handle(actor_hex: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8(bytes).ok()?;
-    if s.chars().any(|c| c.is_control()) {
+    if s.chars().any(char::is_control) {
         return None;
     }
     let trimmed = s.trim();
@@ -170,7 +170,7 @@ pub fn short_id(actor_hex: &str) -> String {
 pub fn stable_hue(actor_hex: &str) -> f32 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in actor_hex.as_bytes() {
-        hash ^= *b as u64;
+        hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
     (hash % 360) as f32
@@ -180,9 +180,9 @@ pub fn stable_hue(actor_hex: &str) -> f32 {
 /// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
-    let r = rgb[0] as f32 / 255.0;
-    let g = rgb[1] as f32 / 255.0;
-    let b = rgb[2] as f32 / 255.0;
+    let r = f32::from(rgb[0]) / 255.0;
+    let g = f32::from(rgb[1]) / 255.0;
+    let b = f32::from(rgb[2]) / 255.0;
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -205,7 +205,7 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 fn hex_lower(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }

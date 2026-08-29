@@ -330,6 +330,12 @@ pub struct DisksApp {
     laid_out: bool,
 }
 
+impl Default for DisksApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DisksApp {
     pub fn new() -> Self {
         Self {
@@ -404,7 +410,7 @@ impl DisksApp {
     /// or — when the whole disk is selected and it carries exactly one
     /// filesystem — that sole partition, so single-fs drives (USB sticks,
     /// data disks) mount without first drilling into the map.
-    fn mount_target_part<'a>(&self, drive: &'a Drive) -> Option<usize> {
+    fn mount_target_part(&self, drive: &Drive) -> Option<usize> {
         if let Some(i) = self.part_index() {
             return Some(i);
         }
@@ -441,7 +447,7 @@ impl DisksApp {
             v.x1 - PAD - 110.0,
             (TOPBAR_H - 32.0) / 2.0,
             v.x1 - PAD,
-            (TOPBAR_H + 32.0) / 2.0,
+            f64::midpoint(TOPBAR_H, 32.0),
         );
 
         // Responsive split: in a wide window the drive list is a permanent
@@ -478,7 +484,7 @@ impl DisksApp {
                     PAD,
                     (TOPBAR_H - 30.0) / 2.0,
                     PAD + 38.0,
-                    (TOPBAR_H + 30.0) / 2.0,
+                    f64::midpoint(TOPBAR_H, 30.0),
                 );
                 (sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
             }
@@ -517,8 +523,7 @@ impl DisksApp {
         for a in ActionKind::bar() {
             let w = (a.label().len() as f64) * 8.0 + 30.0;
             let enabled = drive_ref
-                .map(|d| self.action_enabled(d, a))
-                .unwrap_or(false);
+                .is_some_and(|d| self.action_enabled(d, a));
             action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
             bx += w + 10.0;
         }
@@ -572,8 +577,8 @@ impl DisksApp {
         let modal = self.pending.map(|_| {
             let w = 480.0;
             let h = 258.0;
-            let cx = (v.x0 + v.x1) / 2.0;
-            let cy = (v.y0 + v.y1) / 2.0;
+            let cx = f64::midpoint(v.x0, v.x1);
+            let cy = f64::midpoint(v.y0, v.y1);
             let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
             let input = Rect::new(
                 card.x0 + 22.0,
@@ -663,7 +668,7 @@ impl DisksApp {
             s,
             size,
             color,
-            right - w as f64,
+            right - f64::from(w),
             top,
             None,
             weight,
@@ -688,7 +693,7 @@ impl DisksApp {
             s,
             size,
             color,
-            cx - w as f64 / 2.0,
+            cx - f64::from(w) / 2.0,
             top,
             None,
             weight,
@@ -760,7 +765,7 @@ impl DisksApp {
             Self::stroke_rr(scene, t, hb, 8.0, c.border_standard, 1.0);
             let lx = hb.x0 + 11.0;
             for i in 0..3 {
-                let ly = hb.y0 + 10.0 + i as f64 * 5.0;
+                let ly = hb.y0 + 10.0 + f64::from(i) * 5.0;
                 scene.stroke(
                     &Stroke::new(2.0),
                     t,
@@ -810,7 +815,7 @@ impl DisksApp {
             "↻ Rescan",
             13.0,
             c.text_primary,
-            (r.x0 + r.x1) / 2.0,
+            f64::midpoint(r.x0, r.x1),
             r.y0 + 8.0,
             TextWeight::Medium,
         );
@@ -912,7 +917,7 @@ impl DisksApp {
                 drive.kind.tag(),
                 12.0,
                 Color::WHITE,
-                (badge.x0 + badge.x1) / 2.0,
+                f64::midpoint(badge.x0, badge.x1),
                 badge.y0 + 4.0,
                 TextWeight::Bold,
             );
@@ -1097,7 +1102,7 @@ impl DisksApp {
         let sx = bar.x0 + 14.0;
         // Small scope tag.
         let (tw, _) = tr.measure_weighted(scope, 10.5, None, TextWeight::Bold);
-        let tag = Rect::new(sx, bar.y0 + 9.0, sx + tw as f64 + 16.0, bar.y0 + 9.0 + 18.0);
+        let tag = Rect::new(sx, bar.y0 + 9.0, sx + f64::from(tw) + 16.0, bar.y0 + 9.0 + 18.0);
         Self::fill_rr(scene, t, tag, 6.0, with_alpha(scope_c, 46));
         self.txt(
             scene,
@@ -1135,7 +1140,7 @@ impl DisksApp {
                     a.label(),
                     13.0,
                     with_alpha(c.text_dim, 130),
-                    (r.x0 + r.x1) / 2.0,
+                    f64::midpoint(r.x0, r.x1),
                     r.y0 + 9.0,
                     TextWeight::Medium,
                 );
@@ -1166,7 +1171,7 @@ impl DisksApp {
                 a.label(),
                 13.0,
                 fg,
-                (r.x0 + r.x1) / 2.0,
+                f64::midpoint(r.x0, r.x1),
                 r.y0 + 9.0,
                 TextWeight::Medium,
             );
@@ -1211,7 +1216,7 @@ impl DisksApp {
         color: Color,
     ) {
         let (w, _) = tr.measure_weighted(label, 12.0, None, TextWeight::Semibold);
-        let r = Rect::new(x, y, x + w as f64 + 22.0, y + 24.0);
+        let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + 24.0);
         Self::fill_rr(scene, t, r, 12.0, with_alpha(color, 38));
         Self::stroke_rr(scene, t, r, 12.0, with_alpha(color, 120), 1.0);
         self.txt(
@@ -1326,7 +1331,7 @@ impl DisksApp {
             "◍ Whole disk",
             11.5,
             if whole { pill_c } else { c.text_dim },
-            (pill.x0 + pill.x1) / 2.0,
+            f64::midpoint(pill.x0, pill.x1),
             pill.y0 + 4.0,
             TextWeight::Semibold,
         );
@@ -1358,7 +1363,7 @@ impl DisksApp {
             // heading + map(78) + legend(gap 12 + 56) = 146, then the columns.
             Tab::Overview => 146.0 + overview_cols_h(drive) + 12.0,
             Tab::Smart => {
-                let attrs = drive.smart.as_ref().map(|s| s.attrs.len()).unwrap_or(0);
+                let attrs = drive.smart.as_ref().map_or(0, |s| s.attrs.len());
                 258.0 + attrs as f64 * 24.0
             }
             Tab::Partitions => 24.0 + drive.partitions.len() as f64 * 38.0 + 16.0,
@@ -1387,73 +1392,70 @@ impl DisksApp {
             let radius = if si == 0 || si == n - 1 { 6.0 } else { 3.0 };
             let is_sel = idx.is_some() && idx == sel;
             let is_hov = idx.is_some() && idx == self.hover_part;
-            match idx {
-                Some(i) => {
-                    let p = &drive.partitions[i];
-                    let mut col = role_color(theme, p.role());
-                    // Dim the unselected segments once something is selected so
-                    // the chosen partition reads as the focus.
-                    if any_sel && !is_sel {
-                        col = with_alpha(col, 150);
-                    }
-                    Self::fill_rr(scene, t, seg, radius, col);
-                    if let Some(f) = p.used_frac() {
-                        let uh = (seg.height() - 6.0) * f;
-                        let used_r = Rect::new(seg.x0, seg.y1 - 3.0 - uh, seg.x1, seg.y1 - 3.0);
-                        Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
-                    }
-                    if seg.width() > 64.0 {
-                        self.txt(
-                            scene,
-                            tr,
-                            &p.display_label(),
-                            11.0,
-                            Color::WHITE,
-                            seg.x0 + 8.0,
-                            seg.y0 + 8.0,
-                            Some((seg.width() - 12.0) as f32),
-                            TextWeight::Semibold,
-                        );
-                        self.txt(
-                            scene,
-                            tr,
-                            &fmt_size(p.size),
-                            11.0,
-                            with_alpha(Color::WHITE, 200),
-                            seg.x0 + 8.0,
-                            seg.y0 + 24.0,
-                            None,
-                            TextWeight::Regular,
-                        );
-                    }
+            if let Some(i) = idx {
+                let p = &drive.partitions[i];
+                let mut col = role_color(theme, p.role());
+                // Dim the unselected segments once something is selected so
+                // the chosen partition reads as the focus.
+                if any_sel && !is_sel {
+                    col = with_alpha(col, 150);
                 }
-                None => {
-                    // Free tail.
-                    Self::fill_rr(scene, t, seg, radius, role_color(theme, PartRole::Free));
-                    if seg.width() > 64.0 {
-                        self.txt(
-                            scene,
-                            tr,
-                            "Free",
-                            11.0,
-                            c.text_dim,
-                            seg.x0 + 8.0,
-                            seg.y0 + 8.0,
-                            None,
-                            TextWeight::Semibold,
-                        );
-                        self.txt(
-                            scene,
-                            tr,
-                            &fmt_size(drive.free_tail()),
-                            11.0,
-                            c.text_dim,
-                            seg.x0 + 8.0,
-                            seg.y0 + 24.0,
-                            None,
-                            TextWeight::Regular,
-                        );
-                    }
+                Self::fill_rr(scene, t, seg, radius, col);
+                if let Some(f) = p.used_frac() {
+                    let uh = (seg.height() - 6.0) * f;
+                    let used_r = Rect::new(seg.x0, seg.y1 - 3.0 - uh, seg.x1, seg.y1 - 3.0);
+                    Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
+                }
+                if seg.width() > 64.0 {
+                    self.txt(
+                        scene,
+                        tr,
+                        &p.display_label(),
+                        11.0,
+                        Color::WHITE,
+                        seg.x0 + 8.0,
+                        seg.y0 + 8.0,
+                        Some((seg.width() - 12.0) as f32),
+                        TextWeight::Semibold,
+                    );
+                    self.txt(
+                        scene,
+                        tr,
+                        &fmt_size(p.size),
+                        11.0,
+                        with_alpha(Color::WHITE, 200),
+                        seg.x0 + 8.0,
+                        seg.y0 + 24.0,
+                        None,
+                        TextWeight::Regular,
+                    );
+                }
+            } else {
+                // Free tail.
+                Self::fill_rr(scene, t, seg, radius, role_color(theme, PartRole::Free));
+                if seg.width() > 64.0 {
+                    self.txt(
+                        scene,
+                        tr,
+                        "Free",
+                        11.0,
+                        c.text_dim,
+                        seg.x0 + 8.0,
+                        seg.y0 + 8.0,
+                        None,
+                        TextWeight::Semibold,
+                    );
+                    self.txt(
+                        scene,
+                        tr,
+                        &fmt_size(drive.free_tail()),
+                        11.0,
+                        c.text_dim,
+                        seg.x0 + 8.0,
+                        seg.y0 + 24.0,
+                        None,
+                        TextWeight::Regular,
+                    );
                 }
             }
             // Selection / hover outline — lifts the chosen segment above a track.
@@ -1715,22 +1717,19 @@ impl DisksApp {
             TextWeight::Bold,
         );
 
-        let smart = match &drive.smart {
-            Some(s) => s,
-            None => {
-                self.txt(
-                    scene,
-                    tr,
-                    "No SMART data available.",
-                    12.0,
-                    c.text_dim,
-                    x,
-                    pill.y1 + 14.0,
-                    None,
-                    TextWeight::Regular,
-                );
-                return;
-            }
+        let smart = if let Some(s) = &drive.smart { s } else {
+            self.txt(
+                scene,
+                tr,
+                "No SMART data available.",
+                12.0,
+                c.text_dim,
+                x,
+                pill.y1 + 14.0,
+                None,
+                TextWeight::Regular,
+            );
+            return;
         };
 
         // No usable telemetry: explain *why* (privilege / bridge / absent)
@@ -1936,36 +1935,31 @@ impl DisksApp {
                 "Temperature".into(),
                 smart
                     .temp_c
-                    .map(|v| format!("{v} °C"))
-                    .unwrap_or("—".into()),
+                    .map_or("—".into(), |v| format!("{v} °C")),
             ),
             (
                 "Power-on hours".into(),
                 smart
                     .power_on_hours
-                    .map(|v| v.to_string())
-                    .unwrap_or("—".into()),
+                    .map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Power cycles".into(),
                 smart
                     .power_cycles
-                    .map(|v| v.to_string())
-                    .unwrap_or("—".into()),
+                    .map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Reallocated".into(),
                 smart
                     .reallocated
-                    .map(|v| v.to_string())
-                    .unwrap_or("—".into()),
+                    .map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Wear used".into(),
                 smart
                     .pct_used
-                    .map(|v| format!("{v} %"))
-                    .unwrap_or("—".into()),
+                    .map_or("—".into(), |v| format!("{v} %")),
             ),
         ];
         let n = tiles.len() as f64;
@@ -2394,7 +2388,7 @@ impl DisksApp {
             1.4,
         );
         let shown = if self.confirm_input.is_empty() {
-            expected.clone()
+            expected
         } else {
             self.confirm_input.clone()
         };
@@ -2449,7 +2443,7 @@ impl DisksApp {
             "Cancel",
             14.0,
             c.text_primary,
-            (ml.cancel.x0 + ml.cancel.x1) / 2.0,
+            f64::midpoint(ml.cancel.x0, ml.cancel.x1),
             ml.cancel.y0 + 9.0,
             TextWeight::Medium,
         );
@@ -2481,7 +2475,7 @@ impl DisksApp {
             label,
             14.0,
             label_c,
-            (ml.confirm.x0 + ml.confirm.x1) / 2.0,
+            f64::midpoint(ml.confirm.x0, ml.confirm.x1),
             ml.confirm.y0 + 9.0,
             TextWeight::Semibold,
         );
@@ -2503,7 +2497,7 @@ impl DisksApp {
         // A centred card in the detail region (geometry shared with layout so
         // the Rescan button hit-tests exactly where it is painted).
         let (card, btn) = empty_state_rects(self.rect, lay.header);
-        let cx = (card.x0 + card.x1) / 2.0;
+        let cx = f64::midpoint(card.x0, card.x1);
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 16.0, c.border_standard, 1.0);
 
@@ -2512,7 +2506,7 @@ impl DisksApp {
         let gx = cx;
         let gy = card.y0 + 44.0;
         for i in 0..3 {
-            let yy = gy + i as f64 * 11.0;
+            let yy = gy + f64::from(i) * 11.0;
             let ell = Rect::new(gx - 26.0, yy, gx + 26.0, yy + 16.0);
             Self::fill_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 40));
             Self::stroke_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 110), 1.2);
@@ -2653,7 +2647,7 @@ impl DisksApp {
                     "{}:{}:{}",
                     action.key(),
                     self.selected,
-                    part.map(|i| i as i64).unwrap_or(-1)
+                    part.map_or(-1, |i| i as i64)
                 ),
             );
             self.dirty = true;
@@ -2670,9 +2664,7 @@ impl DisksApp {
         let (leaf, fstype) = {
             let Some(drive) = self.drive() else { return };
             let p = part.and_then(|i| drive.partitions.get(i));
-            let leaf = p
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| drive.name.clone());
+            let leaf = p.map_or_else(|| drive.name.clone(), |p| p.name.clone());
             let fstype = p.and_then(|p| p.fstype.clone());
             (leaf, fstype)
         };
@@ -2780,8 +2772,8 @@ fn empty_state_rects(viewport: Rect, header: Rect) -> (Rect, Rect) {
     let region = Rect::new(header.x0, header.y0, header.x1, viewport.y1 - PAD);
     let cw = 460.0_f64.min(region.width().max(1.0));
     let ch = 210.0;
-    let cx = (region.x0 + region.x1) / 2.0;
-    let cy = (region.y0 + region.y1) / 2.0;
+    let cx = f64::midpoint(region.x0, region.x1);
+    let cy = f64::midpoint(region.y0, region.y1);
     let card = Rect::new(cx - cw / 2.0, cy - ch / 2.0, cx + cw / 2.0, cy + ch / 2.0);
     let bw = 130.0;
     let btn = Rect::new(cx - bw / 2.0, card.y1 - 46.0, cx + bw / 2.0, card.y1 - 14.0);
@@ -2910,15 +2902,13 @@ impl Widget for DisksApp {
             self.seeded = true;
         }
 
-        if let Some(json) = DisksDoc::topology_json(state) {
-            if json != self.topo_json_cache {
-                if let Ok(t) = serde_json::from_str::<Topology>(&json) {
+        if let Some(json) = DisksDoc::topology_json(state)
+            && json != self.topo_json_cache
+                && let Ok(t) = serde_json::from_str::<Topology>(&json) {
                     self.topo = t;
                     self.topo_json_cache = json;
                     self.dirty = true;
                 }
-            }
-        }
 
         let sel = DisksDoc::selected(state).min(self.topo.drives.len().saturating_sub(1));
         if sel != self.selected {
@@ -2968,11 +2958,10 @@ impl Widget for DisksApp {
             self.status = res.text.clone();
             DisksDoc::set_status(state, &res.text);
             // A mount/format/unmount/eject changed the on-disk topology.
-            if res.refresh && self.live {
-                if let Some(topo) = crate::probe::probe() {
+            if res.refresh && self.live
+                && let Some(topo) = crate::probe::probe() {
                     DisksDoc::write_topology(state, &topo);
                 }
-            }
             self.dirty = true;
         }
         if clear {
@@ -2989,24 +2978,24 @@ impl Widget for DisksApp {
         let node = taffy
             .new_leaf(Style {
                 size: ui::taffy::Size {
-                    width: percent(1.0),
-                    height: percent(1.0),
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Now that the width is known, reconcile the flap so a window resize
         // across the breakpoint drops a stale toggle and returns to the new
@@ -3237,7 +3226,7 @@ impl Widget for DisksApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
                     MouseScrollDelta::PixelDelta(pos) => -pos.y,
                 };
                 let p = self.last_mouse;
@@ -3303,8 +3292,8 @@ impl Widget for DisksApp {
                     return;
                 }
                 // Drive cards are only clickable when the list is shown.
-                if self.list_open() {
-                    if let Some(i) = lay.cards.iter().position(|r| r.contains(p)) {
+                if self.list_open()
+                    && let Some(i) = lay.cards.iter().position(|r| r.contains(p)) {
                         self.select(state, i);
                         // Selecting from the overlay flap dismisses it so the
                         // detail is immediately visible (single-pane feel).
@@ -3315,7 +3304,6 @@ impl Widget for DisksApp {
                         self.dirty = true;
                         return;
                     }
-                }
                 if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
                     self.set_tab(state, *tab);
                     *handled = true;
@@ -3348,16 +3336,13 @@ impl Widget for DisksApp {
                             self.select_part(state, Some(*i));
                             *handled = true;
                             self.dirty = true;
-                            return;
                         }
-                    } else if self.tab == Tab::Partitions {
-                        if let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc)) {
+                    } else if self.tab == Tab::Partitions
+                        && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc)) {
                             self.select_part(state, Some(*i));
                             *handled = true;
                             self.dirty = true;
-                            return;
                         }
-                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3468,7 +3453,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DisksApp"
     }
 

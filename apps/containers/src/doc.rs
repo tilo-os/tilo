@@ -205,7 +205,7 @@ impl ViewDoc {
         }
     }
 
-    /// ObjId of one of the create-form's Text fields, so a `TextInput`-style
+    /// `ObjId` of one of the create-form's Text fields, so a `TextInput`-style
     /// edit can splice directly into the shared draft.
     pub fn create_field_obj(doc: &mut AutoCommit, field: CreateField) -> ObjId {
         let m = Self::create_map(doc);

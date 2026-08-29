@@ -494,7 +494,7 @@ impl ComposeWindow {
             );
             self.rect = match self.dock {
                 DockState::Docked => {
-                    let cx = (bounds.x0 + bounds.x1) / 2.0;
+                    let cx = f64::midpoint(bounds.x0, bounds.x1);
                     let y0 = bounds.y0 + (bounds.height() - h) / 2.0;
                     Rect::new(cx - w / 2.0, y0.max(bounds.y0 + 8.0), cx + w / 2.0, y0 + h)
                 }
@@ -682,8 +682,7 @@ impl ComposeWindow {
         self.hits
             .iter()
             .find(|(_, h)| *h == ComposeHit::Body)
-            .map(|(r, _)| *r)
-            .unwrap_or(Rect::ZERO)
+            .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
     // ---- event handling ----
@@ -1421,7 +1420,7 @@ impl ComposeWindow {
             for path in &self.attachments {
                 let name = attachment_display_name(path);
                 let (lw, _) = tr.measure(name, 11.5, None);
-                let chip = Rect::new(ax, ay, ax + lw as f64 + 34.0, ay + 24.0);
+                let chip = Rect::new(ax, ay, ax + f64::from(lw) + 34.0, ay + 24.0);
                 fill_round(scene, t, chip, 7.0, c.surface_white_10);
                 tr.draw_text(
                     scene,
@@ -1470,8 +1469,7 @@ impl ComposeWindow {
         self.hits
             .iter()
             .find(|(_, h)| *h == hit)
-            .map(|(r, _)| *r)
-            .unwrap_or(Rect::ZERO)
+            .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1547,7 +1545,7 @@ impl ComposeWindow {
             label,
             11.5,
             c.neutral[8],
-            t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - lw as f64 / 2.0, rect.y0 + 8.0)),
+            t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0, rect.y0 + 8.0)),
             None,
         );
     }
@@ -1610,7 +1608,7 @@ impl ComposeWindow {
                 glyph,
                 13.0,
                 col,
-                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - gw as f64 / 2.0, rect.y0 + 7.0)),
+                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0, rect.y0 + 7.0)),
                 None,
                 weight,
                 italic,
@@ -1622,9 +1620,9 @@ impl ComposeWindow {
                     scene,
                     t,
                     Rect::new(
-                        (rect.x0 + rect.x1) / 2.0 - gw as f64 / 2.0,
+                        f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
                         uy,
-                        (rect.x0 + rect.x1) / 2.0 + gw as f64 / 2.0,
+                        f64::midpoint(rect.x0, rect.x1) + f64::from(gw) / 2.0,
                         uy + 1.0,
                     ),
                     col,
@@ -1672,7 +1670,7 @@ impl ComposeWindow {
             label,
             11.5,
             c.neutral[8],
-            t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - lw as f64 / 2.0, rect.y0 + 8.0)),
+            t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0, rect.y0 + 8.0)),
             None,
         );
     }
@@ -1768,7 +1766,7 @@ impl ComposeWindow {
             12.5,
             Color::WHITE,
             t * Affine::translate((
-                (confirm.x0 + confirm.x1) / 2.0 - aw as f64 / 2.0,
+                f64::midpoint(confirm.x0, confirm.x1) - f64::from(aw) / 2.0,
                 confirm.y0 + 7.0,
             )),
             None,
@@ -1793,7 +1791,7 @@ impl ComposeWindow {
             12.0,
             c.neutral[8],
             t * Affine::translate((
-                (cancel.x0 + cancel.x1) / 2.0 - cw as f64 / 2.0,
+                f64::midpoint(cancel.x0, cancel.x1) - f64::from(cw) / 2.0,
                 cancel.y0 + 7.0,
             )),
             None,
@@ -1842,7 +1840,7 @@ impl ComposeWindow {
                 label,
                 13.5,
                 Color::WHITE,
-                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)),
+                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 10.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -1865,7 +1863,7 @@ impl ComposeWindow {
                 label,
                 13.0,
                 c.neutral[8],
-                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)),
+                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 10.0)),
                 None,
             );
         }

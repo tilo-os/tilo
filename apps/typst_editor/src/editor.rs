@@ -75,7 +75,7 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.code.line_height().max(FONT_SIZE as f64)
+        self.code.line_height().max(f64::from(FONT_SIZE))
     }
 
     /// Bind the editor to the Automerge `Text` object holding the source and
@@ -137,7 +137,7 @@ impl SourceEditor {
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
-        self.code.scroll_by(dy as f64);
+        self.code.scroll_by(f64::from(dy));
     }
 
     /// Scroll the caret into view. The shared widget follows the caret after
@@ -250,19 +250,17 @@ impl SourceEditor {
 
         // Hover tooltip for a diagnostic squiggle — drawn last and outside the
         // clip so it floats above the source and can overflow the pane.
-        if let Some(hp) = self.hover {
-            if self.rect.contains(hp) {
+        if let Some(hp) = self.hover
+            && self.rect.contains(hp) {
                 let byte = self.code.byte_at_point(hp);
                 let text = self.code.value().to_string();
                 if let Some(d) = diags.iter().find(|d| {
                     diag_byte_span(d, &text)
-                        .map(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-                        .unwrap_or(false)
+                        .is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
                 }) {
                     self.draw_tooltip(scene, transform, tr, theme, hp, d);
                 }
             }
-        }
     }
 
     /// Gutter severity markers + inline squiggles, positioned from the shared
@@ -338,8 +336,8 @@ impl SourceEditor {
         let mut heights = Vec::with_capacity(lines.len());
         for (s, _) in &lines {
             let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
-            w = w.max(tw as f64);
-            let h = (th as f64).max(font as f64 * 1.2);
+            w = w.max(f64::from(tw));
+            let h = f64::from(th).max(f64::from(font) * 1.2);
             heights.push(h);
             total_h += h + gap;
         }
@@ -433,8 +431,7 @@ fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
             let add = l
                 .char_indices()
                 .nth(col0)
-                .map(|(o, _)| o)
-                .unwrap_or(l.len());
+                .map_or(l.len(), |(o, _)| o);
             return byte + add;
         }
         byte += l.len() + 1; // + '\n'

@@ -323,15 +323,15 @@ impl CalculatorApp {
             self.deg_rect.y1 + 4.0,
         );
         draw::fill_rrect(scene, t, outer2, 10.0, c.neutral[2]);
-        if !self.model.deg {
-            draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
-        } else {
+        if self.model.deg {
             draw::fill_rrect(scene, t, self.deg_rect, 8.0, c.accent[5]);
-        }
-        let rad_col = if !self.model.deg {
-            Color::WHITE
         } else {
+            draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
+        }
+        let rad_col = if self.model.deg {
             c.text_dim
+        } else {
+            Color::WHITE
         };
         let deg_col = if self.model.deg {
             Color::WHITE
@@ -480,13 +480,12 @@ impl CalculatorApp {
                 self.perform_action(doc, actions::clear_history_action());
                 self.model_dirty = true;
             }
-        } else if let Some(hi) = self.calc.history_at(p) {
-            if let Some(e) = self.model.history.get(hi).cloned() {
+        } else if let Some(hi) = self.calc.history_at(p)
+            && let Some(e) = self.model.history.get(hi).cloned() {
                 self.model.expr = e.expr;
                 self.model.after_equals = false;
                 self.model_dirty = true;
             }
-        }
     }
 
     fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
@@ -647,8 +646,8 @@ impl CalculatorApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
-        if ctrl {
-            if let WKey::Character(s) = key {
+        if ctrl
+            && let WKey::Character(s) = key {
                 match s.as_str() {
                     "1" => {
                         self.set_mode(Mode::Calc);
@@ -665,7 +664,6 @@ impl CalculatorApp {
                     _ => {}
                 }
             }
-        }
 
         // The graph editors own a real math field; route their input there.
         match self.model.mode {
@@ -719,7 +717,7 @@ impl CalculatorApp {
                     self.model_dirty = true;
                 }
             }
-            WKey::Named(NamedKey::Escape) | WKey::Named(NamedKey::Delete) => {
+            WKey::Named(NamedKey::Escape | NamedKey::Delete) => {
                 if self.model.mode == Mode::Calc {
                     model::apply_key(&mut self.model, &model::Key::Clear);
                     self.model_dirty = true;
@@ -835,7 +833,7 @@ fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
         .remote_cursors
         .iter()
         .map(|rc| {
-            let p = Point::new(rc.position[0] as f64, rc.position[1] as f64);
+            let p = Point::new(f64::from(rc.position[0]), f64::from(rc.position[1]));
             let to_u8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
             let col = Color::from_rgba8(
                 to_u8(rc.color[0]),
@@ -927,7 +925,7 @@ impl Widget for CalculatorApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -935,10 +933,10 @@ impl Widget for CalculatorApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.area = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.relayout();
     }
@@ -975,11 +973,11 @@ impl Widget for CalculatorApp {
             match self.model.mode {
                 Mode::Graph2d => {
                     self.g2
-                        .draw_remote_carets(scene, t, self.model.active_fn, &remote)
+                        .draw_remote_carets(scene, t, self.model.active_fn, &remote);
                 }
                 Mode::Graph3d => {
                     self.g3
-                        .draw_remote_carets(scene, t, self.model.active_surface, &remote)
+                        .draw_remote_carets(scene, t, self.model.active_surface, &remote);
                 }
                 Mode::Calc => {}
             }
@@ -1062,7 +1060,7 @@ impl Widget for CalculatorApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let step = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
                 self.on_wheel(step);
@@ -1087,7 +1085,7 @@ impl Widget for CalculatorApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CalculatorApp"
     }
 

@@ -1,4 +1,4 @@
-//! Live backend — real YouTube data via the pure-Rust `rustypipe` InnerTube
+//! Live backend — real `YouTube` data via the pure-Rust `rustypipe` `InnerTube`
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`YtBackend`] trait is sync because it is
@@ -15,10 +15,10 @@
 //! * `query.channel_videos(id).await` → channel + uploads
 //! * `query.trending().await` → `Vec<VideoItem>`
 //! * `query.player(id).await` → `VideoPlayer` (stream URLs) — gated behind a
-//!   PoToken
+//!   `PoToken`
 //!
-//! ## PoToken
-//! rustypipe has **no `PoTokenProvider` trait**; it drives PoTokens through an
+//! ## `PoToken`
+//! rustypipe has **no `PoTokenProvider` trait**; it drives `PoTokens` through an
 //! external `rustypipe-botguard` *binary* (`RustyPipeBuilder::botguard_bin` /
 //! `no_botguard` / `botguard_snapshot_file` / `po_token_cache`) or you mint
 //! in-process with the `rustypipe-botguard` library's `Botguard::mint_token`.
@@ -85,12 +85,12 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// Construct with the default (null) PoToken provider — metadata only.
+    /// Construct with the default (null) `PoToken` provider — metadata only.
     pub fn new() -> Result<Self, BackendError> {
         Self::with_potoken(Box::new(NullPoToken))
     }
 
-    /// Construct with an explicit PoToken provider. The provider's capability
+    /// Construct with an explicit `PoToken` provider. The provider's capability
     /// selects whether rustypipe's botguard path is enabled.
     pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
         // A multi-thread runtime (not current-thread): rustypipe fires internal
@@ -135,7 +135,7 @@ impl RustyPipeBackend {
 
     /// Run one search and split the results into videos, playlists and creator
     /// rows — the enrichment source for the primary backend, which returns only
-    /// videos (and no avatars). Real InnerTube data in a single call.
+    /// videos (and no avatars). Real `InnerTube` data in a single call.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
@@ -164,9 +164,7 @@ impl RustyPipeBackend {
             .map_err(|e| BackendError(format!("playlist {id}: {e}")))?;
         let videos: Vec<Video> = pl.videos.items.into_iter().map(map_video_item).collect();
         let (channel_id, channel_name) = pl
-            .channel
-            .map(|c| (c.id, c.name))
-            .unwrap_or_else(|| (String::new(), "Unknown".into()));
+            .channel.map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
         let thumb = best_thumb(&pl.thumbnail);
         let thumbnail_url = if thumb.is_empty() {
             videos
@@ -192,12 +190,10 @@ impl RustyPipeBackend {
 
 /// Map a rustypipe [`VideoItem`] onto Tube's [`Video`]. Fields rustypipe doesn't
 /// carry on a list item (description, likes, comments, sponsor) default empty
-/// and are filled in by a later `video_details` / SponsorBlock fetch.
+/// and are filled in by a later `video_details` / `SponsorBlock` fetch.
 fn map_video_item(it: VideoItem) -> Video {
     let channel = it.channel;
-    let (channel_id, channel_name, channel_avatar_url) = channel
-        .map(|c| (c.id, c.name, best_thumb(&c.avatar)))
-        .unwrap_or_else(|| (String::new(), "Unknown".into(), String::new()));
+    let (channel_id, channel_name, channel_avatar_url) = channel.map_or_else(|| (String::new(), "Unknown".into(), String::new()), |c| (c.id, c.name, best_thumb(&c.avatar)));
     Video {
         id: it.id.clone(),
         title: it.name,
@@ -233,7 +229,7 @@ fn map_video_item(it: VideoItem) -> Video {
 fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
     thumbs
         .iter()
-        .max_by_key(|t| t.width as u64 * t.height as u64)
+        .max_by_key(|t| u64::from(t.width) * u64::from(t.height))
         .map(|t| absolute_url(&t.url))
         .unwrap_or_default()
 }
@@ -266,9 +262,7 @@ fn initials(name: &str) -> String {
 /// [`Playlist`]. The video list is empty until the playlist page is opened.
 fn map_playlist_item(p: PlaylistItem) -> Playlist {
     let (channel_id, channel_name) = p
-        .channel
-        .map(|c| (c.id, c.name))
-        .unwrap_or_else(|| (String::new(), "Unknown".into()));
+        .channel.map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
     Playlist {
         id: p.id.clone(),
         title: p.name,
@@ -299,13 +293,13 @@ fn map_channel_item(c: ChannelItem) -> Channel {
 
 /// Map a rustypipe [`RpComment`] onto Tube's plain [`Comment`].
 fn map_comment(c: RpComment) -> Comment {
-    let author = c.author.map(|a| a.name).unwrap_or_else(|| "Unknown".into());
+    let author = c.author.map_or_else(|| "Unknown".into(), |a| a.name);
     let initials = initials(&author);
     Comment {
         author,
         initials,
         text: c.text.to_plaintext(),
-        likes: c.like_count.unwrap_or(0) as u64,
+        likes: u64::from(c.like_count.unwrap_or(0)),
         time_ago: c.publish_date_txt,
         pinned: c.pinned,
         hearted: c.hearted,
@@ -333,7 +327,7 @@ fn pick_avc_mp4(player: &RpVideoPlayer) -> Option<(&VideoStream, bool)> {
     let decodable = |s: &VideoStream| {
         s.codec == VideoCodec::Avc1 && s.format == VideoFormat::Mp4 && s.drm_systems.is_empty()
     };
-    let area = |s: &VideoStream| s.width as u64 * s.height as u64;
+    let area = |s: &VideoStream| u64::from(s.width) * u64::from(s.height);
 
     if let Some(s) = player
         .video_only_streams
@@ -385,7 +379,7 @@ impl YtBackend for RustyPipeBackend {
             duration: 0,
             // `description` is rustypipe's `RichText`; flatten to plain text.
             description: d.description.to_plaintext(),
-            likes: d.like_count.unwrap_or(0) as u64,
+            likes: u64::from(d.like_count.unwrap_or(0)),
             thumbnail_url: crate::backend::yt_thumb_url(&d.id),
             seed: d.id,
             category: "Video".into(),
@@ -514,11 +508,11 @@ impl YtBackend for RustyPipeBackend {
             init_range: s
                 .init_range
                 .as_ref()
-                .map(|r| (r.start as u64, r.end as u64)),
+                .map(|r| (u64::from(r.start), u64::from(r.end))),
             index_range: s
                 .index_range
                 .as_ref()
-                .map(|r| (r.start as u64, r.end as u64)),
+                .map(|r| (u64::from(r.start), u64::from(r.end))),
         })
     }
 }

@@ -445,7 +445,7 @@ impl Widget for CodeEditor {
             })
             .unwrap();
         let _ = theme;
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -461,10 +461,10 @@ impl Widget for CodeEditor {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.inner.apply_layout_external(rect);
     }
@@ -538,7 +538,7 @@ impl Widget for CodeEditor {
         );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CodeEditor"
     }
 
@@ -648,7 +648,7 @@ impl GenericHighlighter {
         Self {
             keywords: keywords.iter().map(|s| norm(s)).collect(),
             constants: constants.iter().map(|s| norm(s)).collect(),
-            line_comment: line_comment.map(|s| s.to_string()),
+            line_comment: line_comment.map(std::string::ToString::to_string),
             case_insensitive,
         }
     }
@@ -663,7 +663,7 @@ impl GenericHighlighter {
             Some(TokenKind::Keyword)
         } else if self.constants.contains(&key) {
             Some(TokenKind::Constant)
-        } else if w.chars().next().is_some_and(|c| c.is_uppercase()) {
+        } else if w.chars().next().is_some_and(char::is_uppercase) {
             Some(TokenKind::Type)
         } else {
             None
@@ -791,7 +791,7 @@ impl Highlighter for RustHighlighter {
             }
             let c = bytes[i] as char;
             if c == '#' && (line[i..].starts_with("#[") || line[i..].starts_with("#![")) {
-                let end = find_from(line, i, ']').map(|e| e + 1).unwrap_or(n);
+                let end = find_from(line, i, ']').map_or(n, |e| e + 1);
                 spans.push(Span::new(i..end, TokenKind::Attribute));
                 i = end;
                 continue;
@@ -1052,19 +1052,19 @@ impl Highlighter for TypstHighlighter {
                 break;
             }
             if c == '"' {
-                let end = find_from(line, i + 1, '"').map(|e| e + 1).unwrap_or(n);
+                let end = find_from(line, i + 1, '"').map_or(n, |e| e + 1);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
             }
             if c == '`' {
-                let end = find_from(line, i + 1, '`').map(|e| e + 1).unwrap_or(n);
+                let end = find_from(line, i + 1, '`').map_or(n, |e| e + 1);
                 spans.push(Span::new(i..end, TokenKind::Raw));
                 i = end;
                 continue;
             }
             if c == '$' {
-                let end = find_from(line, i + 1, '$').map(|e| e + 1).unwrap_or(n);
+                let end = find_from(line, i + 1, '$').map_or(n, |e| e + 1);
                 spans.push(Span::new(i..end, TokenKind::Math));
                 i = end;
                 continue;
@@ -1124,7 +1124,7 @@ impl Highlighter for TypstHighlighter {
 // ---------------------------------------------------------------------------
 
 fn next_char_len(s: &str, i: usize) -> usize {
-    s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+    s[i..].chars().next().map_or(1, char::len_utf8)
 }
 
 fn is_ident_start(c: char) -> bool {

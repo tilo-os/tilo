@@ -213,24 +213,20 @@ impl FileToolbar {
     /// The ⋯ is always the last control on the right.
     pub fn view_menu_anchor(&self) -> Point {
         self.right
-            .last()
-            .map(|b| {
+            .last().map_or_else(|| Point::new(self.rect.x1, self.rect.y1), |b| {
                 let r = b.get_rect();
                 Point::new(r.x1, r.y1 + 2.0)
             })
-            .unwrap_or_else(|| Point::new(self.rect.x1, self.rect.y1))
     }
 
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
     /// where it is the second control on the right, before the ⋯).
     pub fn sort_menu_anchor(&self) -> Point {
         self.right
-            .get(1)
-            .map(|b| {
+            .get(1).map_or_else(|| Point::new(self.rect.x1, self.rect.y1), |b| {
                 let r = b.get_rect();
                 Point::new(r.x1, r.y1 + 2.0)
             })
-            .unwrap_or_else(|| Point::new(self.rect.x1, self.rect.y1))
     }
 
     /// The Up nav button's on-screen rect, so a drag can be dropped on it to
@@ -293,17 +289,17 @@ impl Widget for FileToolbar {
             ..Default::default()
         };
         let node = taffy.new_with_children(row_style, &child_nodes).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
@@ -432,9 +428,9 @@ impl Widget for FileToolbar {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = self.left.iter().map(|c| c.as_ref()).collect();
+        let mut v: Vec<&dyn Widget> = self.left.iter().map(std::convert::AsRef::as_ref).collect();
         v.push(&self.path_bar);
-        v.extend(self.right.iter().map(|c| c.as_ref()));
+        v.extend(self.right.iter().map(std::convert::AsRef::as_ref));
         v
     }
 
@@ -454,7 +450,7 @@ impl Widget for FileToolbar {
         self.path_bar.cursor_shape(point)
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FileToolbar"
     }
 

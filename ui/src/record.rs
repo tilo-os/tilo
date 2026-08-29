@@ -53,9 +53,7 @@ impl RecordId {
         let abs = if p.is_absolute() {
             p.to_path_buf()
         } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(p))
-                .unwrap_or_else(|_| p.to_path_buf())
+            std::env::current_dir().map_or_else(|_| p.to_path_buf(), |cwd| cwd.join(p))
         };
         // Not `canonicalize`: it fails for a file that doesn't exist yet
         // (Save As), and a record must be nameable before its bytes are.
@@ -150,7 +148,7 @@ fn normalise(path: &Path) -> PathBuf {
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
@@ -356,7 +354,7 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 /// records the room references. Removing a reference stops future changes
 /// flowing; it cannot un-share bytes a peer already synced.
 pub mod room {
-    use super::*;
+    use super::{AutoCommit, ObjId, ReadDoc, ROOT, INDEX, Value, ObjType, Transactable, RecordId, RecordKind, str_at, RecordCheckout, RecordSet};
 
     fn index_obj(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, INDEX) {
@@ -383,22 +381,19 @@ pub mod room {
             Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
             _ => None,
         };
-        match existing {
-            Some(obj) => {
-                // Refresh the type only if it actually differs, so
-                // re-opening a record is not itself an edit.
-                if str_at(doc, &obj, "kind").as_deref() != Some(kind.as_str()) {
-                    let _ = doc.put(&obj, "kind", kind.as_str());
-                }
-                false
+        if let Some(obj) = existing {
+            // Refresh the type only if it actually differs, so
+            // re-opening a record is not itself an edit.
+            if str_at(doc, &obj, "kind").as_deref() != Some(kind.as_str()) {
+                let _ = doc.put(&obj, "kind", kind.as_str());
             }
-            None => {
-                let entry = doc
-                    .put_object(&idx, id.as_str(), ObjType::Map)
-                    .expect("put_object into the index never fails");
-                let _ = doc.put(&entry, "kind", kind.as_str());
-                true
-            }
+            false
+        } else {
+            let entry = doc
+                .put_object(&idx, id.as_str(), ObjType::Map)
+                .expect("put_object into the index never fails");
+            let _ = doc.put(&entry, "kind", kind.as_str());
+            true
         }
     }
 
@@ -419,8 +414,7 @@ pub mod room {
     /// Whether this room references `id`.
     pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
         index_ro(doc)
-            .map(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
-            .unwrap_or(false)
+            .is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
     }
 
     /// Every record this room references.
@@ -458,12 +452,11 @@ pub mod room {
             .into_iter()
             .filter(|c| {
                 docs.peek(&c.id)
-                    .map(|d| {
+                    .is_some_and(|d| {
                         super::references(d)
                             .iter()
                             .any(|r| &r.target == target && r.relation == relation)
                     })
-                    .unwrap_or(false)
             })
             .collect()
     }
@@ -650,22 +643,19 @@ impl RecordSet {
             }
         }
 
-        let incoming = match self.open.get_mut(&want.id) {
-            Some(slot) => slot.doc.take().unwrap_or_else(AutoCommit::new),
-            None => {
-                let (mut doc, autosave) = self.load(&want.id);
-                let history = crate::state::UndoLog::new(&mut doc);
-                self.open.insert(
-                    want.id.clone(),
-                    Parked {
-                        doc: None,
-                        kind: want.kind.clone(),
-                        autosave,
-                        history,
-                    },
-                );
-                doc
-            }
+        let incoming = if let Some(slot) = self.open.get_mut(&want.id) { slot.doc.take().unwrap_or_else(AutoCommit::new) } else {
+            let (mut doc, autosave) = self.load(&want.id);
+            let history = crate::state::UndoLog::new(&mut doc);
+            self.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: None,
+                    kind: want.kind.clone(),
+                    autosave,
+                    history,
+                },
+            );
+            doc
         };
 
         state.adopt_doc(incoming);

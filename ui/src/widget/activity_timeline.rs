@@ -778,8 +778,7 @@ impl ActivityTimeline {
         let first = self.row_at_offset(self.scroll_y).unwrap_or(0);
         let last = self
             .row_at_offset(self.scroll_y + vp)
-            .map(|i| i + 1)
-            .unwrap_or(n);
+            .map_or(n, |i| i + 1);
         first.min(n)..last.min(n)
     }
 
@@ -870,7 +869,7 @@ impl ActivityTimeline {
         }
         let depth = self.row_depth(i);
         let chip_h = ROW_HEIGHT - 16.0;
-        let cy = (row.y0 + row.y1) / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         let _ = depth;
         Some(Rect::new(
             row.x1 - self.revert_chip_w() - 6.0,
@@ -1221,7 +1220,7 @@ fn draw_chip(
     if rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -1254,8 +1253,8 @@ fn draw_chip(
         theme.tokens.colors.text_primary,
         transform
             * Affine::translate((
-                rect.x0 + (rect.width() - lw as f64) / 2.0,
-                rect.y0 + (rect.height() - lh as f64) / 2.0,
+                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
             )),
         None,
     );
@@ -1299,7 +1298,7 @@ impl ActivityTimeline {
         if is_selected {
             // A neutral raise plus an accent edge, not an accent *fill*: the
             // pale end of the accent ramp behind primary text is unreadable.
-            let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1319,7 +1318,7 @@ impl ActivityTimeline {
                 &edge,
             );
         } else if is_hovered {
-            let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1329,7 +1328,7 @@ impl ActivityTimeline {
             );
         }
 
-        let cy = (row.y0 + row.y1) / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         let (r, g, b) = hue_to_rgb(entry.author.avatar_hue);
         let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
@@ -1352,15 +1351,15 @@ impl ActivityTimeline {
         let short_size = (text_size - 2.0).max(10.0);
         let short = entry.author.identity_short.as_str();
         let slot_end = row.x0 + author_slot_w - 6.0;
-        let full_name_w = text_renderer
+        let full_name_w = f64::from(text_renderer
             .measure(entry.author.name.as_str(), text_size, None)
-            .0 as f64;
+            .0);
         // The hash is shown out of whatever the name leaves over, and
         // dropped rather than truncating the name.
         let short_w = if compact || short.is_empty() {
             0.0
         } else {
-            let w = text_renderer.measure(short, short_size, None).0 as f64 + 6.0;
+            let w = f64::from(text_renderer.measure(short, short_size, None).0) + 6.0;
             if x_cursor + full_name_w + w <= slot_end {
                 w
             } else {
@@ -1379,11 +1378,11 @@ impl ActivityTimeline {
             &name,
             text_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((x_cursor, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((x_cursor, cy - f64::from(text_size) / 2.0)),
             None,
         );
         let (name_w, _) = text_renderer.measure(&name, text_size, None);
-        x_cursor += name_w as f64 + 6.0;
+        x_cursor += f64::from(name_w) + 6.0;
 
         if short_w > 0.0 {
             text_renderer.draw_text(
@@ -1391,7 +1390,7 @@ impl ActivityTimeline {
                 short,
                 short_size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x_cursor, cy - short_size as f64 / 2.0)),
+                transform * Affine::translate((x_cursor, cy - f64::from(short_size) / 2.0)),
                 None,
             );
         }
@@ -1403,7 +1402,7 @@ impl ActivityTimeline {
             glyph,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((glyph_x, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((glyph_x, cy - f64::from(text_size) / 2.0)),
             None,
         );
 
@@ -1447,7 +1446,7 @@ impl ActivityTimeline {
             &drawn_summary,
             text_size,
             summary_color,
-            transform * Affine::translate((summary_x, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((summary_x, cy - f64::from(text_size) / 2.0)),
             None,
         );
         // Drawn after the text so a regression that forgets to gate on
@@ -1456,7 +1455,7 @@ impl ActivityTimeline {
             let (dw, _) = text_renderer.measure(&drawn_summary, text_size, None);
             let strike = Line::new(
                 Point::new(summary_x, cy),
-                Point::new(summary_x + dw as f64, cy),
+                Point::new(summary_x + f64::from(dw), cy),
             );
             scene.stroke(
                 &Stroke::new(1.0),
@@ -1474,13 +1473,13 @@ impl ActivityTimeline {
             self.time_slot_w(),
         );
         let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - chip_reserve - 12.0 - tw as f64;
+        let time_x = row.x1 - chip_reserve - 12.0 - f64::from(tw);
         text_renderer.draw_text(
             scene,
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((time_x, cy - text_size as f64 / 2.0)),
+            transform * Affine::translate((time_x, cy - f64::from(text_size) / 2.0)),
             None,
         );
 
@@ -1538,7 +1537,7 @@ impl ActivityTimeline {
             );
         }
 
-        let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1624,14 +1623,14 @@ impl ActivityTimeline {
             if rg.open {
                 // "Still open" has to read as live, not as a label.
                 let (w, _) = tr.measure(&title, title_size, None);
-                let dot_x = title_x + w as f64 + 8.0;
+                let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
                         colors.accent[4],
                         None,
-                        &Circle::new(Point::new(dot_x, title_y + title_size as f64 / 2.0), 3.0),
+                        &Circle::new(Point::new(dot_x, title_y + f64::from(title_size) / 2.0), 3.0),
                     );
                 }
             }
@@ -1648,7 +1647,7 @@ impl ActivityTimeline {
         } else {
             0.0
         };
-        let sub_budget = (row.x1 - title_x - rel_w as f64 - dots_w - 24.0).max(0.0);
+        let sub_budget = (row.x1 - title_x - f64::from(rel_w) - dots_w - 24.0).max(0.0);
         let sub = fit_text(tr, &rg.subtitle, meta_size, sub_budget);
         tr.draw_text(
             scene,
@@ -1663,12 +1662,12 @@ impl ActivityTimeline {
             &rel,
             meta_size,
             colors.text_dim,
-            transform * Affine::translate((row.x1 - 8.0 - rel_w as f64, meta_y)),
+            transform * Affine::translate((row.x1 - 8.0 - f64::from(rel_w), meta_y)),
             None,
         );
 
         // Author dots, packed tight.
-        let mut dx = row.x1 - 16.0 - rel_w as f64;
+        let mut dx = row.x1 - 16.0 - f64::from(rel_w);
         for a in rg.authors.iter().take(3) {
             let (r, g, b) = hue_to_rgb(a.avatar_hue);
             scene.fill(
@@ -1676,7 +1675,7 @@ impl ActivityTimeline {
                 transform,
                 Color::from_rgba8(r, g, b, 255),
                 None,
-                &Circle::new(Point::new(dx, meta_y + meta_size as f64 / 2.0), 4.0),
+                &Circle::new(Point::new(dx, meta_y + f64::from(meta_size) / 2.0), 4.0),
             );
             dx -= 10.0;
         }
@@ -1765,7 +1764,7 @@ impl ActivityTimeline {
         } else {
             format!("author:{}", self.author_query)
         };
-        let author_full_w = (text_renderer.measure(&author_label, chip_text_size, None).0 as f64
+        let author_full_w = (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0)
             + 16.0)
             .min(strip.width() * 0.45);
         let chips_budget = (strip.width() - author_full_w - 8.0).max(0.0);
@@ -1778,7 +1777,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += tr.measure(l, chip_text_size, None).0 as f64 + 16.0 + 6.0;
+                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + 6.0;
             }
             total
         };
@@ -1792,9 +1791,9 @@ impl ActivityTimeline {
                 chip.label()
             };
             let (w, _) = text_renderer.measure(label, chip_text_size, None);
-            let chip_w = w as f64 + 16.0;
+            let chip_w = f64::from(w) + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
-            let cy = (strip.y0 + strip.y1) / 2.0;
+            let cy = f64::midpoint(strip.y0, strip.y1);
             // Stop rather than paint a chip half-under the author pill; an
             // unpainted chip is not in `chip_rects`, so it cannot be clicked.
             if x + chip_w > strip.x0 + chips_budget && !self.chip_rects.is_empty() {
@@ -1815,15 +1814,15 @@ impl ActivityTimeline {
                 text_color,
                 transform
                     * Affine::translate((
-                        chip_rect.x0 + (chip_rect.width() - lw as f64) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - lh as f64) / 2.0,
+                        chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
+                        chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
                     )),
                 None,
             );
             x += chip_w + 6.0;
         }
 
-        let cy = (strip.y0 + strip.y1) / 2.0;
+        let cy = f64::midpoint(strip.y0, strip.y1);
         let chip_h = (strip.height() - 8.0).max(20.0);
         let arx1 = strip.x1;
         let arx0 = arx1 - author_full_w;
@@ -1855,8 +1854,8 @@ impl ActivityTimeline {
             text_color,
             transform
                 * Affine::translate((
-                    chip_rect.x0 + (chip_rect.width() - lw as f64) / 2.0,
-                    chip_rect.y0 + (chip_rect.height() - lh as f64) / 2.0,
+                    chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
+                    chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
                 )),
             None,
         );
@@ -1879,7 +1878,7 @@ impl ActivityTimeline {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(bar, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1921,12 +1920,12 @@ impl ActivityTimeline {
             &shown,
             size,
             colors.text_primary,
-            transform * Affine::translate((bar.x0 + 10.0, bar.center().y - size as f64 / 2.0)),
+            transform * Affine::translate((bar.x0 + 10.0, bar.center().y - f64::from(size) / 2.0)),
             None,
         );
 
         if naming {
-            let field_x0 = bar.x0 + 10.0 + tr.measure(&shown, size, None).0 as f64 + 12.0;
+            let field_x0 = bar.x0 + 10.0 + f64::from(tr.measure(&shown, size, None).0) + 12.0;
             let field = Rect::new(
                 field_x0,
                 bar.center().y - 12.0,
@@ -1974,7 +1973,7 @@ impl Widget for ActivityTimeline {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -1982,10 +1981,10 @@ impl Widget for ActivityTimeline {
         let layout = taffy.layout(node).unwrap();
         let prev = self.rect;
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if prev != self.rect {
             self.dirty = true;
@@ -2001,7 +2000,7 @@ impl Widget for ActivityTimeline {
         _presence: &PresenceCtx,
     ) {
         if self.draws_own_surface {
-            let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -2027,23 +2026,23 @@ impl Widget for ActivityTimeline {
             let size = theme.tokens.typography.scale.sm;
             let small = (size - 1.0).max(10.0);
             let rows_top = self.rows_top();
-            let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+            let cx = f64::midpoint(self.rect.x0, self.rect.x1);
             let cy = (rows_top + self.rect.y1 - PADDING) / 2.0;
             let budget = (self.rect.width() - 2.0 * PADDING - 16.0).max(0.0);
 
             let title = fit_text(text_renderer, &title, size, budget);
             let (w, h) = text_renderer.measure(&title, size, None);
             let title_y = if detail.is_some() {
-                cy - h as f64 - 14.0
+                cy - f64::from(h) - 14.0
             } else {
-                cy - h as f64 / 2.0
+                cy - f64::from(h) / 2.0
             };
             text_renderer.draw_text(
                 scene,
                 &title,
                 size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((cx - w as f64 / 2.0, title_y)),
+                transform * Affine::translate((cx - f64::from(w) / 2.0, title_y)),
                 None,
             );
 
@@ -2051,13 +2050,13 @@ impl Widget for ActivityTimeline {
             if let Some(detail) = detail {
                 let detail = fit_text(text_renderer, &detail, small, budget);
                 let (dw, dh) = text_renderer.measure(&detail, small, None);
-                let detail_y = title_y + h as f64 + 8.0;
+                let detail_y = title_y + f64::from(h) + 8.0;
                 text_renderer.draw_text(
                     scene,
                     &detail,
                     small,
                     theme.tokens.colors.text_dim,
-                    transform * Affine::translate((cx - dw as f64 / 2.0, detail_y)),
+                    transform * Affine::translate((cx - f64::from(dw) / 2.0, detail_y)),
                     None,
                 );
 
@@ -2065,9 +2064,9 @@ impl Widget for ActivityTimeline {
                 // to remember which chip they pressed to get here.
                 let label = "Clear filters";
                 let (lw, lh) = text_renderer.measure(label, small, None);
-                let chip_w = (lw as f64 + 20.0).min(budget.max(24.0));
-                let chip_h = lh as f64 + 10.0;
-                let chip_y0 = detail_y + dh as f64 + 12.0;
+                let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
+                let chip_h = f64::from(lh) + 10.0;
+                let chip_y0 = detail_y + f64::from(dh) + 12.0;
                 if chip_y0 + chip_h <= self.rect.y1 - PADDING {
                     let chip = Rect::new(
                         cx - chip_w / 2.0,
@@ -2187,8 +2186,7 @@ impl Widget for ActivityTimeline {
                 let outcome = self
                     .naming
                     .as_mut()
-                    .map(|n| n.field.handle_event(event, modifiers))
-                    .unwrap_or(NameFieldOutcome::Ignored);
+                    .map_or(NameFieldOutcome::Ignored, |n| n.field.handle_event(event, modifiers));
                 match outcome {
                     NameFieldOutcome::Commit(_) => {
                         self.commit_naming();
@@ -2394,7 +2392,7 @@ impl Widget for ActivityTimeline {
             WindowEvent::MouseWheel { delta, .. } => {
                 const LINE_PX: f64 = 60.0;
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * LINE_PX,
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * LINE_PX,
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 let new_scroll = (self.scroll_y + dy).clamp(0.0, self.max_scroll());
@@ -2411,7 +2409,7 @@ impl Widget for ActivityTimeline {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ActivityTimeline"
     }
 

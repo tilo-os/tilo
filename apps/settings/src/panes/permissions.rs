@@ -337,7 +337,7 @@ mod tests {
     use ui::Theme;
 
     fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = if w.name() == name { 1 } else { 0 };
+        let mut n = usize::from(w.name() == name);
         for c in w.children() {
             n += count_named(c, name);
         }

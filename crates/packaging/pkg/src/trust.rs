@@ -51,8 +51,10 @@ pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8
 /// The scope an attestor is trusted for, parsed from the `scope`
 /// string: `"all"`, `"mime:<mime>[,...]"`, or `"prefix:<pref>[,...]"`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum AttestorScope {
     /// Trusts every package the attestor signs.
+    #[default]
     All,
     /// Only trusts packages whose manifest declares one of these MIME types in [providers].mime.
     Mime(Vec<String>),
@@ -60,11 +62,6 @@ pub enum AttestorScope {
     Prefix(Vec<String>),
 }
 
-impl Default for AttestorScope {
-    fn default() -> Self {
-        AttestorScope::All
-    }
-}
 
 impl AttestorScope {
     /// Parse the scope string in the TOML config.
@@ -75,14 +72,14 @@ impl AttestorScope {
         }
         if let Some(rest) = raw.strip_prefix("mime:") {
             let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
-            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+            if items.is_empty() || items.iter().any(std::string::String::is_empty) {
                 return Err(TrustLoadError::BadScope(raw.to_string()));
             }
             return Ok(AttestorScope::Mime(items));
         }
         if let Some(rest) = raw.strip_prefix("prefix:") {
             let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
-            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+            if items.is_empty() || items.iter().any(std::string::String::is_empty) {
                 return Err(TrustLoadError::BadScope(raw.to_string()));
             }
             return Ok(AttestorScope::Prefix(items));
@@ -281,11 +278,10 @@ impl RevocationList {
     /// Test a raw pubkey against the revocation list; returns the matching `RevokedKey` if any.
     pub fn find(&self, pubkey: &[u8; 32]) -> Option<&RevokedKey> {
         for entry in &self.revoked {
-            if let Ok(bytes) = entry.pubkey_bytes() {
-                if &bytes == pubkey {
+            if let Ok(bytes) = entry.pubkey_bytes()
+                && &bytes == pubkey {
                     return Some(entry);
                 }
-            }
         }
         None
     }
@@ -303,16 +299,14 @@ pub fn default_revoked_keys_path() -> Option<PathBuf> {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.is_empty() {
             return Some(PathBuf::from(xdg).join("qos"));
         }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty() {
             return Some(PathBuf::from(home).join(".config").join("qos"));
         }
-    }
     None
 }
 

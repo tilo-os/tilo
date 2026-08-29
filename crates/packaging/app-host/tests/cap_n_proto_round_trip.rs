@@ -39,7 +39,7 @@ impl Harness {
                 }
             }
         }
-        Err(anyhow::anyhow!("connect failed: {:?}", last))
+        Err(anyhow::anyhow!("connect failed: {last:?}"))
     }
 }
 

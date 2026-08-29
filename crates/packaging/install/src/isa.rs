@@ -1,7 +1,7 @@
 //! Detect the local CPU's highest supported architecture-specific
 //! feature level.
 //!
-//! Two-arch today (x86_64, aarch64); adding a new arch is a matching
+//! Two-arch today (`x86_64`, aarch64); adding a new arch is a matching
 //! extension to `pkg::manifest::Arch`, a new detector function here,
 //! plus a `pick_variant` case.
 //!
@@ -168,7 +168,7 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::NoBuildForArch(arch) => {
-                write!(f, "no build available for host architecture {:?}", arch)
+                write!(f, "no build available for host architecture {arch:?}")
             }
             InstallError::HostTooOld { required, host } => write!(
                 f,

@@ -122,11 +122,10 @@ impl CrdtTextBody {
                 }
             }
             _ => {
-                if let Ok(id) = state.put_object(root, self.key, ObjType::Text) {
-                    if !self.text.is_empty() {
+                if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
+                    && !self.text.is_empty() {
                         let _ = state.splice_text(&id, 0, 0, &self.text);
                     }
-                }
             }
         }
     }
@@ -178,15 +177,13 @@ impl CrdtTextBody {
         self.text
             .char_indices()
             .nth(char_idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.text.len())
+            .map_or(self.text.len(), |(b, _)| b)
     }
 
     /// Whether the typing burst has gone quiet long enough to close an undo entry.
     pub fn needs_commit(&self) -> bool {
         self.last_edit
-            .map(|t| t.elapsed() >= COMMIT_DEBOUNCE)
-            .unwrap_or(false)
+            .is_some_and(|t| t.elapsed() >= COMMIT_DEBOUNCE)
     }
 
     /// `Widget::on_commit` delegate — the burst is now closed.
@@ -222,10 +219,10 @@ pub fn full_bleed_leaf(
 pub fn full_bleed_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     let l = taffy.layout(node).unwrap();
     Rect::new(
-        origin.x + l.location.x as f64,
-        origin.y + l.location.y as f64,
-        origin.x + l.location.x as f64 + l.size.width as f64,
-        origin.y + l.location.y as f64 + l.size.height as f64,
+        origin.x + f64::from(l.location.x),
+        origin.y + f64::from(l.location.y),
+        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
     )
 }
 

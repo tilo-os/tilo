@@ -97,9 +97,7 @@ pub fn state_json_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    dirs::config_dir()
-        .map(|c| c.join("qos").join("state.json"))
-        .unwrap_or_else(|| PathBuf::from("state.json"))
+    dirs::config_dir().map_or_else(|| PathBuf::from("state.json"), |c| c.join("qos").join("state.json"))
 }
 
 /// One path, named once, so the compositor and `qos-fs --acl` cannot
@@ -110,9 +108,7 @@ pub fn fs_capability_export_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    dirs::config_dir()
-        .map(|c| c.join("qos").join("fs-capabilities.json"))
-        .unwrap_or_else(|| PathBuf::from("fs-capabilities.json"))
+    dirs::config_dir().map_or_else(|| PathBuf::from("fs-capabilities.json"), |c| c.join("qos").join("fs-capabilities.json"))
 }
 
 /// Atomic. Capabilities whose expiry doesn't survive a restart
@@ -124,7 +120,7 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     }
     let mut durable = tree.clone();
     for ws in &mut durable.workspaces {
-        ws.capabilities.retain(|c| c.persists_across_restart());
+        ws.capabilities.retain(ui::CapOverride::persists_across_restart);
     }
     let json = serde_json::to_string_pretty(&durable)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

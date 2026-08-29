@@ -46,11 +46,11 @@ impl StripView {
     pub fn try_paginate(&mut self, direction: i32, now_since_start: Duration) -> bool {
         let now_ms = now_since_start.as_millis();
         if let Some(last) = self.last_paginate_ms
-            && now_ms.saturating_sub(last) < STRIP_COOLDOWN_MS as u128
+            && now_ms.saturating_sub(last) < u128::from(STRIP_COOLDOWN_MS)
         {
             return false;
         }
-        let new_idx = self.active_index as i64 + direction as i64;
+        let new_idx = self.active_index as i64 + i64::from(direction);
         if new_idx < 0 || new_idx >= self.strip_names.len() as i64 {
             return false;
         }
@@ -81,16 +81,16 @@ impl Widget for StripView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
     fn draw(
@@ -129,7 +129,7 @@ impl Widget for StripView {
             }
         }
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StripView"
     }
     fn get_rect(&self) -> Rect {

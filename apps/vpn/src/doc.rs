@@ -78,7 +78,7 @@ impl VpnDoc {
         let _ = doc.put(
             &obj,
             "last_handshake",
-            c.last_handshake_secs.map(|s| s as i64).unwrap_or(-1),
+            c.last_handshake_secs.map_or(-1, |s| s as i64),
         );
         let _ = doc.put(&obj, "rx", c.rx_bytes as i64);
         let _ = doc.put(&obj, "tx", c.tx_bytes as i64);

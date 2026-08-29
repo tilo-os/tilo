@@ -245,11 +245,10 @@ fn worker_loop(rx: Arc<Mutex<Receiver<Job>>>, shared: Arc<Shared>) {
 
 fn run_job(cache: &ThumbCache, job: &Job) -> Slot {
     // A prior session (or a peer, via content-addressing) may already hold it.
-    if let Some(png) = cache.get(&job.key) {
-        if let Some(thumb) = generate::decode_png(&png) {
+    if let Some(png) = cache.get(&job.key)
+        && let Some(thumb) = generate::decode_png(&png) {
             return Slot::Ready(Arc::new(thumb));
         }
-    }
     match &job.kind {
         JobKind::File { path, category } => {
             match generate::generate(&Source::Path(path), *category, job.edge) {

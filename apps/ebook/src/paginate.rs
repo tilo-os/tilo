@@ -68,7 +68,7 @@ pub struct LaidBlock {
     pub bottom: f32,
     pub size: f32,
     pub line_height: f32,
-    /// Left inset for text + decorations, relative to content_x.
+    /// Left inset for text + decorations, relative to `content_x`.
     pub indent: f32,
     pub lines: Vec<LaidLine>,
     /// Bullet/number glyph for list items.

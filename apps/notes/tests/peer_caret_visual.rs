@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::permissions::UserId;
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -129,7 +129,7 @@ fn ghost_caret_repro() {
     let mut presence_with_peer = PresenceCtx::empty();
     let bob = UserId("bob".to_string());
     let block_key = ui::widget::block_editor::block_presence_key(0);
-    presence_with_peer.set_caret(&block_key, bob.clone(), 10);
+    presence_with_peer.set_caret(&block_key, bob, 10);
     render(
         &mut app,
         &presence_with_peer,
@@ -141,7 +141,7 @@ fn ghost_caret_repro() {
     // 4) Add the LOCAL user as a peer too (the suspected bug — the
     //    local user appearing in the remote-presence map).
     let alice = UserId("alice".to_string());
-    presence_with_peer.set_caret(&block_key, alice.clone(), 5);
+    presence_with_peer.set_caret(&block_key, alice, 5);
     render(
         &mut app,
         &presence_with_peer,

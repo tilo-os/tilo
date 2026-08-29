@@ -36,13 +36,12 @@ fn new_channel_id() -> String {
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(NOW)
+        .map_or(NOW, |d| d.as_secs() as i64)
 }
 
 /// Byte offset of character index `ci` in `s` (clamped to the end).
 fn char_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
+    s.char_indices().nth(ci).map_or(s.len(), |(b, _)| b)
 }
 
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
@@ -103,7 +102,7 @@ impl ChatApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 44.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale,
                 };
                 self.scroll += dy;
@@ -221,7 +220,7 @@ impl ChatApp {
     /// (Shift+Enter inserts a newline — the composer is multiline with
     /// enter-submits); any text edit is written back into the per-channel /
     /// thread draft `Text` in the CRDT (diff-spliced) so a draft stays
-    /// collaborative + persistent. On an empty composer, ArrowUp loads your
+    /// collaborative + persistent. On an empty composer, `ArrowUp` loads your
     /// last message into the inline editor (Slack/Discord convention).
     fn route_composer_key(
         &mut self,
@@ -238,15 +237,13 @@ impl ChatApp {
                 },
             ..
         } = event
-        {
-            if !modifiers.state().shift_key() && self.focused_composer().value().is_empty() {
+            && !modifiers.state().shift_key() && self.focused_composer().value().is_empty() {
                 if let Some(id) = self.last_own_message_id() {
                     self.begin_edit(id);
                     self.reload(doc);
                 }
                 return;
             }
-        }
         let key = self.draft_key();
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
         if self.focused_composer_mut().take_submit() {
@@ -486,12 +483,10 @@ impl ChatApp {
                     let channel = self
                         .ws_channels()
                         .into_iter()
-                        .find(|c| c.kind == ChannelKind::Voice)
-                        .map(|c| c.id.clone())
-                        .unwrap_or_else(|| {
+                        .find(|c| c.kind == ChannelKind::Voice).map_or_else(|| {
                             let ws = self.active_ws.clone();
                             ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
-                        });
+                        }, |c| c.id.clone());
                     self.join_voice(&channel, doc);
                 }
             }
@@ -595,7 +590,7 @@ impl ChatApp {
                 doc,
                 actions::ChatAction::SetCallTicket {
                     channel: channel.to_string(),
-                    user: me.clone(),
+                    user: me,
                     ticket,
                 },
             );
@@ -736,7 +731,7 @@ impl ChatApp {
                 MenuAction::EditMessage => self.begin_edit(id),
                 MenuAction::PinMessage => {
                     let channel = self.active_channel.clone();
-                    let pinned = self.message(&id).map(|m| m.pinned).unwrap_or(false);
+                    let pinned = self.message(&id).is_some_and(|m| m.pinned);
                     self.perform_action(doc, actions::pin_message_action(&channel, &id, !pinned));
                 }
                 MenuAction::DeleteMessage => {
@@ -765,7 +760,7 @@ impl ChatApp {
                 }
             }
             MenuAction::Archive => {
-                let archived = self.channel(id).map(|c| c.archived).unwrap_or(false);
+                let archived = self.channel(id).is_some_and(|c| c.archived);
                 self.perform_action(doc, actions::archive_channel_action(id, !archived));
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
@@ -839,7 +834,7 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.perform_action(doc, actions::rename_channel_action(&id, text))
+                        self.perform_action(doc, actions::rename_channel_action(&id, text));
                     }
                     // Categories are structural view grouping (not part of the
                     // exported channel/message action set) — a direct write.
@@ -983,12 +978,11 @@ impl ChatApp {
                 true
             }
             Key::Character(s) => {
-                if let Some((_, text)) = &mut self.rename {
-                    if s.chars().all(|c| !c.is_control()) {
+                if let Some((_, text)) = &mut self.rename
+                    && s.chars().all(|c| !c.is_control()) {
                         text.push_str(s);
                         self.caret = text.chars().count();
                     }
-                }
                 true
             }
             _ => true, // swallow everything else while renaming
@@ -1188,11 +1182,9 @@ impl ChatApp {
         }
         let path_str = path.to_string_lossy().into_owned();
         let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".into());
+            .file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
         let attachment = if crate::picker::is_video_name(&name) {
-            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(path).map_or(0, |m| m.len());
             // A video's pixel dimensions need a container probe (unavailable in
             // the default build); post 0×0 and let the card use a 16:9 poster.
             Attachment::Video {

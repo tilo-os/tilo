@@ -1,4 +1,4 @@
-//! TimePicker — three side-by-side vertical spinners for `HH : MM : SS`.
+//! `TimePicker` — three side-by-side vertical spinners for `HH : MM : SS`.
 //!
 //! Each spinner is a column of three regions: an up-arrow, the two-digit
 //! value cell, and a down-arrow. Clicking an arrow steps the value by 1
@@ -119,10 +119,10 @@ impl TimePicker {
             self.digit_buffer.clear();
         }
         let mut candidate = self.digit_buffer.clone();
-        candidate.push(char::from_digit(d as u32, 10).unwrap());
+        candidate.push(char::from_digit(u32::from(d), 10).unwrap());
         let parsed: u8 = candidate.parse().unwrap_or(0);
         if parsed > max {
-            self.digit_buffer = char::from_digit(d as u32, 10).unwrap().to_string();
+            self.digit_buffer = char::from_digit(u32::from(d), 10).unwrap().to_string();
         } else {
             self.digit_buffer = candidate;
         }
@@ -229,8 +229,8 @@ impl TimePicker {
     /// [`Widget::apply_layout`] does, so click/scroll/keyboard all work.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        let cell_w = SPINNER_WIDTH as f64;
-        let colon_w = COLON_WIDTH as f64;
+        let cell_w = f64::from(SPINNER_WIDTH);
+        let colon_w = f64::from(COLON_WIDTH);
         let y0 = self.rect.y0;
         let y1 = self.rect.y1;
         let mut x = self.rect.x0;
@@ -250,8 +250,8 @@ impl TimePicker {
     /// [`Self::apply_layout_external`].
     pub fn intrinsic_size(&self) -> (f64, f64) {
         let n = if self.seconds.is_some() { 3.0 } else { 2.0 };
-        let w = n * SPINNER_WIDTH as f64 + (n - 1.0) * COLON_WIDTH as f64;
-        (w, PICKER_HEIGHT as f64)
+        let w = n * f64::from(SPINNER_WIDTH) + (n - 1.0) * f64::from(COLON_WIDTH);
+        (w, f64::from(PICKER_HEIGHT))
     }
 
     /// Compute the three sub-rects (up arrow / value cell / down arrow) for
@@ -359,17 +359,17 @@ impl Widget for TimePicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.apply_layout_external(Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         ));
     }
 
@@ -382,7 +382,7 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = theme.tokens.radii.sm as f64;
+        let radius = f64::from(theme.tokens.radii.sm);
         let text_size = theme.tokens.typography.scale.lg;
 
         let mut cells: Vec<(Rect, u8)> = vec![
@@ -413,10 +413,10 @@ impl Widget for TimePicker {
                 scene.stroke(&Stroke::new(2.0), transform, colors.border_focus, None, &bg);
             }
 
-            let label = format!("{:02}", value);
+            let label = format!("{value:02}");
             let (w, h) = text_renderer.measure(&label, text_size, None);
-            let tx = value_rect.x0 + (value_rect.width() - w as f64) / 2.0;
-            let ty = value_rect.y0 + (value_rect.height() - h as f64) / 2.0;
+            let tx = value_rect.x0 + (value_rect.width() - f64::from(w)) / 2.0;
+            let ty = value_rect.y0 + (value_rect.height() - f64::from(h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &label,
@@ -431,7 +431,7 @@ impl Widget for TimePicker {
         }
 
         // Colons at the same point size as the value text so baselines line up.
-        let between_h_m_x = (self.hour_rect.x1 + self.minute_rect.x0) / 2.0;
+        let between_h_m_x = f64::midpoint(self.hour_rect.x1, self.minute_rect.x0);
         let centre_y = self.rect.center().y;
         let colon = ":";
         let (cw, ch) = text_renderer.measure(colon, text_size, None);
@@ -441,11 +441,11 @@ impl Widget for TimePicker {
             text_size,
             colors.text_dim,
             transform
-                * Affine::translate((between_h_m_x - cw as f64 / 2.0, centre_y - ch as f64 / 2.0)),
+                * Affine::translate((between_h_m_x - f64::from(cw) / 2.0, centre_y - f64::from(ch) / 2.0)),
             None,
         );
         if self.seconds.is_some() {
-            let between_m_s_x = (self.minute_rect.x1 + self.second_rect.x0) / 2.0;
+            let between_m_s_x = f64::midpoint(self.minute_rect.x1, self.second_rect.x0);
             text_renderer.draw_text(
                 scene,
                 colon,
@@ -453,8 +453,8 @@ impl Widget for TimePicker {
                 colors.text_dim,
                 transform
                     * Affine::translate((
-                        between_m_s_x - cw as f64 / 2.0,
-                        centre_y - ch as f64 / 2.0,
+                        between_m_s_x - f64::from(cw) / 2.0,
+                        centre_y - f64::from(ch) / 2.0,
                     )),
                 None,
             );
@@ -623,7 +623,7 @@ impl Widget for TimePicker {
                 let p = self.last_cursor;
                 // Wheel up increments, matching native OS time pickers.
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(pp) => pp.y,
                 };
                 let step: i8 = if dy > 0.0 {
@@ -659,7 +659,7 @@ impl Widget for TimePicker {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TimePicker"
     }
 

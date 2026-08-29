@@ -133,7 +133,7 @@ fn render_nodes() -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut nodes: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| {
             p.file_name()

@@ -7,7 +7,7 @@
 //! FUSE `read` handler uses.
 //!
 //! `#[ignore]`d real-mount tests spin up a real FUSE3 session via
-//! `Mount::spawn`, cat a file with std::fs, and check the bytes; they
+//! `Mount::spawn`, cat a file with `std::fs`, and check the bytes; they
 //! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
 //! (`cargo test -p app-fs -- --include-ignored` locally).
 
@@ -106,7 +106,7 @@ fn partial_read_does_not_fetch_whole_blob() {
     // At most one page's worth of bytes were requested from the store — regardless of what the caller asked for.
     let bytes_from_store = after_first.bytes_requested - baseline.bytes_requested;
     assert!(
-        bytes_from_store <= PAGE_SIZE as u64,
+        bytes_from_store <= u64::from(PAGE_SIZE),
         "store fetched {bytes_from_store} bytes; expected <= {PAGE_SIZE} (one page)"
     );
 
@@ -123,7 +123,7 @@ fn partial_read_does_not_fetch_whole_blob() {
 
 // Real-mount tests — need /dev/fuse and a working fusermount3.
 
-/// Full end-to-end: mount + std::fs::read + unmount — verifies the
+/// Full end-to-end: mount + `std::fs::read` + unmount — verifies the
 /// FUSE kernel path stitches together, not just the internal handler code.
 #[test]
 #[ignore = "requires /dev/fuse + fusermount3; run with --include-ignored"]

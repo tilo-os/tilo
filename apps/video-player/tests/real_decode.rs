@@ -1,13 +1,13 @@
-//! Real GStreamer decode proof for the local video player.
+//! Real `GStreamer` decode proof for the local video player.
 //!
 //! Compiled only with `--features decode` (which turns on `media/decode`, the
 //! real `playbin`→`appsink` pipeline). It synthesizes a tiny real media file on
-//! disk with GStreamer's own encoders, decodes it back through the exact engine
+//! disk with `GStreamer`'s own encoders, decodes it back through the exact engine
 //! the app uses, and asserts that genuine RGBA frames are produced and their
 //! presentation timestamps advance — i.e. the file actually plays.
 //!
 //! Honest gate, matching the engine's own `is_real_decode` fallback: if the host
-//! has no usable encoder/muxer (so no sample can be made) or GStreamer can't
+//! has no usable encoder/muxer (so no sample can be made) or `GStreamer` can't
 //! initialise at runtime, the test prints why and returns instead of asserting.
 //! It never weakens a check and is never `#[ignore]`d — when a real decode stack
 //! is present (the CI/host that runs `--features decode`) the assertions bite.
@@ -38,11 +38,11 @@ fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
         cmd.arg(tok);
     }
     let ok = matches!(cmd.status(), Ok(s) if s.success());
-    ok && sample.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    ok && sample.metadata().is_ok_and(|m| m.len() > 0)
 }
 
 /// Produce a small real media file, trying formats in order of how ubiquitous
-/// their GStreamer plugins are. `None` when the host has no usable encoder —
+/// their `GStreamer` plugins are. `None` when the host has no usable encoder —
 /// the honest skip path. The file we make is decodable by the same host (having
 /// an encoder for a format essentially guarantees the matching decoder), so a
 /// produced sample is a fair test of the real decode path.
@@ -70,8 +70,7 @@ fn scratch_dir() -> PathBuf {
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!(
         "qos-vp-real-decode-{}-{}-{}",
         std::process::id(),

@@ -135,7 +135,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut app: contacts::ContactsApp,
     viewport: (u32, u32),

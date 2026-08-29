@@ -2,7 +2,7 @@
 //! in any host's automerge doc (e.g. `ui::State.doc`), not only an owned [`crate::Document`].
 
 use crate::document::{DocError, MarkSpan};
-use crate::schema::*;
+use crate::schema::{NOTE_KIND_FOOTNOTE, NOTE_KIND_ENDNOTE, KEY_SCHEMA, SCHEMA_ID, KEY_SCHEMA_VERSION, SCHEMA_VERSION, KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS, KEY_NOTES, KEY_COMMENTS, KEY_CHANGES, KEY_HEADER, KEY_FOOTER, NOTE_BLOCKS, NOTE_KIND, COMMENT_BLOCKS, COMMENT_AUTHOR, COMMENT_DATE, MARK_COMMENT, MARK_BOOKMARK, HEADING_REF_PREFIX, CHANGE_AUTHOR, CHANGE_DATE, CHANGE_KIND, MARK_INS, MARK_DEL, BLOB_MIME, BLOB_LEN, BLOB_W, BLOB_H, BLOCK_ORDER, META_COLUMNS, DEFAULT_COLUMNS, META_COLUMN_GAP, META_LANGUAGE, KEY_PROPS, BLOCK_KIND, BLOCK_TEXT, PRESERVED_SEG_ORD, PRESERVED_SEG_BYTES, BLOCK_ATTRS, ATTR_BLOB_MIME, ATTR_BLOB_BYTES, ATTR_BLOB_W, ATTR_BLOB_H, BLOCK_CHILDREN, FIELD_PLACEHOLDER, MARK_FIELD, FIELD_PAGE_NUMBER, MARK_NOTE_REF, CROSS_REF_PREFIX, MARK_LINK};
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
@@ -148,11 +148,10 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
     let prefix = format!("{actor_hex}.");
     let mut next = 0u64;
     let mut bump = |id: &str| {
-        if let Some(rest) = id.strip_prefix(&prefix) {
-            if let Ok(n) = rest.parse::<u64>() {
+        if let Some(rest) = id.strip_prefix(&prefix)
+            && let Ok(n) = rest.parse::<u64>() {
                 next = next.max(n + 1);
             }
-        }
     };
     for id in blocks_in_order(doc, c) {
         bump(&id);
@@ -248,11 +247,10 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     if root == &ROOT {
         // The genesis has no dependencies, so it applies to any document, and a
         // replica already holding it is unaffected: same hash, one copy kept.
-        if doc.load_incremental(genesis()).is_ok() {
-            if let Ok(adopted) = open(doc, root) {
+        if doc.load_incremental(genesis()).is_ok()
+            && let Ok(adopted) = open(doc, root) {
                 return adopted;
             }
-        }
         // Falling back to a private schema would reintroduce exactly the
         // silent-loss conflict the genesis exists to prevent, so say so.
         tracing::error!(
@@ -348,8 +346,7 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
         .iter()
         .filter(|key| {
             doc.get_all(root, **key)
-                .map(|found| found.len() > 1)
-                .unwrap_or(false)
+                .is_ok_and(|found| found.len() > 1)
         })
         .map(|key| (*key).to_string())
         .collect()
@@ -571,7 +568,7 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
     match doc.get(&comment, COMMENT_AUTHOR) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -580,7 +577,7 @@ pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<Stri
 pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
     match doc.get(&comment, COMMENT_DATE) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -638,14 +635,13 @@ pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::Bookm
     let mut out: Vec<crate::snapshot::BookmarkView> = Vec::new();
     for bid in blocks_in_order(doc, c) {
         for m in marks(doc, c, &bid) {
-            if m.name == MARK_BOOKMARK {
-                if let crate::document::MarkValue::Str(name) = &m.value {
+            if m.name == MARK_BOOKMARK
+                && let crate::document::MarkValue::Str(name) = &m.value {
                     out.push(crate::snapshot::BookmarkView {
                         name: name.clone(),
                         range: (bid.clone(), m.start, m.end),
                     });
                 }
-            }
         }
     }
     out.sort_by(|a, b| {
@@ -702,7 +698,7 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_AUTHOR) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -711,7 +707,7 @@ pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<Strin
 pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_DATE) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -881,7 +877,7 @@ thread_local! {
 /// The number of full container scans this thread has performed (see [`ORDERED_KEYS_SCANS`]). Sample it
 /// around a bulk insert to prove the order index kept work near-constant rather than O(n).
 pub fn ordered_keys_scan_count() -> u64 {
-    ORDERED_KEYS_SCANS.with(|c| c.get())
+    ORDERED_KEYS_SCANS.with(std::cell::Cell::get)
 }
 
 fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
@@ -910,7 +906,7 @@ pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
 /// Read a document-level meta string (e.g. the serialized stylesheet).
 pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     match doc.get(&c.meta, key) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -945,7 +941,7 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
 /// Round-trips through the `.odt` default-paragraph-style `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
     match doc.get(&c.meta, META_LANGUAGE) {
-        Ok(Some((v, _))) => v.to_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().filter(|s| !s.is_empty()).map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -962,7 +958,7 @@ fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -972,11 +968,10 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(props) = props_obj(doc, c) {
         for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k) {
-                if let Some(s) = v.to_str() {
+            if let Ok(Some((v, _))) = doc.get(&props, &k)
+                && let Some(s) = v.to_str() {
                     out.insert(k, s.to_string());
                 }
-            }
         }
     }
     out
@@ -985,7 +980,7 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
     match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -1153,8 +1148,7 @@ pub fn split_preserved_atoms(bytes: &[u8]) -> Vec<Vec<u8>> {
         let trimmed = head
             .iter()
             .position(|b| !b.is_ascii_whitespace())
-            .map(|p| &head[p..])
-            .unwrap_or(head);
+            .map_or(head, |p| &head[p..]);
         trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<")
     };
     if !looks_xml {
@@ -1254,7 +1248,7 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         }
         atoms.push(bytes[prev..].to_vec());
         // Byte-fidelity guard: atoms MUST concatenate back to the source exactly.
-        let total: usize = atoms.iter().map(|a| a.len()).sum();
+        let total: usize = atoms.iter().map(std::vec::Vec::len).sum();
         if total != bytes.len() {
             return None;
         }
@@ -1331,13 +1325,10 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
                     continue;
                 }
             };
-            let meta = match cache.get(&hash) {
-                Some(m) => m.clone(),
-                None => {
-                    let m = blob_meta(doc, c, &hash).unwrap_or_default();
-                    cache.insert(hash.clone(), m.clone());
-                    m
-                }
+            let meta = if let Some(m) = cache.get(&hash) { m.clone() } else {
+                let m = blob_meta(doc, c, &hash).unwrap_or_default();
+                cache.insert(hash.clone(), m.clone());
+                m
             };
             if !meta.mime.is_empty() {
                 b.attrs
@@ -1347,9 +1338,9 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
                 .insert(ATTR_BLOB_BYTES.to_string(), AttrVal::Int(meta.len as i64));
             if meta.w > 0 && meta.h > 0 {
                 b.attrs
-                    .insert(ATTR_BLOB_W.to_string(), AttrVal::Int(meta.w as i64));
+                    .insert(ATTR_BLOB_W.to_string(), AttrVal::Int(i64::from(meta.w)));
                 b.attrs
-                    .insert(ATTR_BLOB_H.to_string(), AttrVal::Int(meta.h as i64));
+                    .insert(ATTR_BLOB_H.to_string(), AttrVal::Int(i64::from(meta.h)));
             }
             walk(doc, c, cache, &mut b.children);
         }
@@ -1358,10 +1349,10 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
     walk(doc, c, &mut cache, &mut snap.blocks);
     walk(doc, c, &mut cache, &mut snap.header);
     walk(doc, c, &mut cache, &mut snap.footer);
-    for n in snap.notes.iter_mut() {
+    for n in &mut snap.notes {
         walk(doc, c, &mut cache, &mut n.blocks);
     }
-    for cm in snap.comments.iter_mut() {
+    for cm in &mut snap.comments {
         walk(doc, c, &mut cache, &mut cm.blocks);
     }
 }
@@ -1469,13 +1460,13 @@ pub struct DocRef<'a> {
     pub c: &'a Containers,
 }
 
-impl<'a> DocRef<'a> {
+impl DocRef<'_> {
     pub fn materialize(&self) -> DocSnapshot {
         materialize(self.doc, self.c)
     }
 }
 
-impl<'a> DocMut<'a> {
+impl DocMut<'_> {
     /// Resolve-or-create a region's block container. The body always exists; header/footer maps are created
     /// lazily on first write and cached back into `Containers` for later reads. Takes `&Containers` by
     /// value-copy of the relevant id so this doesn't need a mutable borrow of `self.c` (which is shared `&`).
@@ -1574,14 +1565,13 @@ impl<'a> DocMut<'a> {
     /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
     /// yet — it will rebuild from the (already-updated) document on next use.
     fn forget_order(&mut self, container: &ObjId, id: &str) {
-        if let Some(co) = self.ids.order.by_container.get_mut(container) {
-            if let Some(old) = co.by_id.remove(id) {
+        if let Some(co) = self.ids.order.by_container.get_mut(container)
+            && let Some(old) = co.by_id.remove(id) {
                 co.entries.remove(&OrderKey {
                     key: old,
                     id: id.to_string(),
                 });
             }
-        }
     }
 
     // NOTE: DocMut does NOT commit the automerge transaction — the host owns the transaction boundary.
@@ -2027,19 +2017,17 @@ impl<'a> DocMut<'a> {
         match kind {
             crate::snapshot::ChangeKind::Ins => {
                 // Keep the text; just remove the revision mark over its range.
-                if let Some((b, start, end)) = range {
-                    if end > start {
+                if let Some((b, start, end)) = range
+                    && end > start {
                         self.remove_mark(&b, start, end, MARK_INS);
                     }
-                }
             }
             crate::snapshot::ChangeKind::Del => {
                 // Remove the struck text (the `del` mark goes with it).
-                if let Some((b, start, end)) = range {
-                    if end > start {
+                if let Some((b, start, end)) = range
+                    && end > start {
                         self.splice_text(&b, start, (end - start) as isize, "");
                     }
-                }
             }
         }
         self.remove_change_record(change_id);
@@ -2056,19 +2044,17 @@ impl<'a> DocMut<'a> {
         match kind {
             crate::snapshot::ChangeKind::Ins => {
                 // Undo the insertion: delete the inserted text.
-                if let Some((b, start, end)) = range {
-                    if end > start {
+                if let Some((b, start, end)) = range
+                    && end > start {
                         self.splice_text(&b, start, (end - start) as isize, "");
                     }
-                }
             }
             crate::snapshot::ChangeKind::Del => {
                 // Keep the text; just drop the deletion mark over its range.
-                if let Some((b, start, end)) = range {
-                    if end > start {
+                if let Some((b, start, end)) = range
+                    && end > start {
                         self.remove_mark(&b, start, end, MARK_DEL);
                     }
-                }
             }
         }
         self.remove_change_record(change_id);
@@ -2091,8 +2077,7 @@ impl<'a> DocMut<'a> {
         if e <= s {
             // Widen a point bookmark to one character so the mark has somewhere to live.
             let blen = crate::model::block_text(self.doc, self.c, block_id)
-                .map(|t| t.chars().count())
-                .unwrap_or(0);
+                .map_or(0, |t| t.chars().count());
             if s < blen {
                 e = s + 1;
             } else if blen > 0 {
@@ -2222,7 +2207,7 @@ impl<'a> DocMut<'a> {
         if count <= 1 {
             let _ = self.doc.delete(&self.c.meta, META_COLUMNS);
         } else {
-            let _ = self.doc.put(&self.c.meta, META_COLUMNS, count as u64);
+            let _ = self.doc.put(&self.c.meta, META_COLUMNS, u64::from(count));
         }
         match gap {
             Some(g) => {
@@ -2379,8 +2364,8 @@ impl<'a> DocMut<'a> {
             let _ = self
                 .doc
                 .put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
-            let _ = self.doc.put(&d, BLOB_W, ScalarValue::Int(meta.w as i64));
-            let _ = self.doc.put(&d, BLOB_H, ScalarValue::Int(meta.h as i64));
+            let _ = self.doc.put(&d, BLOB_W, ScalarValue::Int(i64::from(meta.w)));
+            let _ = self.doc.put(&d, BLOB_H, ScalarValue::Int(i64::from(meta.h)));
         }
         hash
     }
@@ -2612,7 +2597,7 @@ mod genesis_detection_tests {
 #[cfg(test)]
 mod region_tests {
     use super::*;
-    use crate::schema::*;
+    
     use automerge::{AutoCommit, ROOT};
 
     #[test]
@@ -2733,7 +2718,7 @@ mod region_tests {
 
         let footer = materialize_region(&doc, &c, Region::Footer);
         assert_eq!(footer.len(), 1);
-        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER));
+        assert_eq!(footer[0].text, format!("Page {FIELD_PLACEHOLDER}"));
         let field = footer[0]
             .marks
             .iter()
@@ -2801,7 +2786,7 @@ mod region_tests {
         let p = materialize_block(&doc, &c.blocks, &pid);
         assert_eq!(
             p.text,
-            format!("see {}ref", FIELD_PLACEHOLDER),
+            format!("see {FIELD_PLACEHOLDER}ref"),
             "placeholder spliced inline"
         );
         let nref = p
@@ -2923,7 +2908,7 @@ mod region_tests {
         assert_eq!(snap.comments.len(), 1);
         assert_eq!(snap.comments[0].author, "Ada");
         assert_eq!(snap.comments[0].blocks[0].text, "note: fix");
-        assert_eq!(snap.comments[0].range, Some((pid.clone(), 11, 20)));
+        assert_eq!(snap.comments[0].range, Some((pid, 11, 20)));
     }
 
     #[test]
@@ -3051,7 +3036,7 @@ mod region_tests {
         assert_eq!(ins.range, Some((pid.clone(), 5, 11)));
         let del = snap.changes.iter().find(|ch| ch.id == del_id).unwrap();
         assert_eq!(del.kind, crate::snapshot::ChangeKind::Del);
-        assert_eq!(del.range, Some((pid.clone(), 12, 17)));
+        assert_eq!(del.range, Some((pid, 12, 17)));
     }
 
     #[test]
@@ -3229,7 +3214,7 @@ mod region_tests {
         let snap = materialize(&doc, &c);
         assert_eq!(snap.bookmarks.len(), 1);
         assert_eq!(snap.bookmarks[0].name, "intro");
-        assert_eq!(snap.bookmarks[0].range, (target.clone(), 4, 9));
+        assert_eq!(snap.bookmarks[0].range, (target, 4, 9));
     }
 
     #[test]
@@ -3276,7 +3261,7 @@ mod region_tests {
             .clone();
         assert_eq!(
             link.value,
-            crate::document::MarkValue::Str(format!("#{}{}", HEADING_REF_PREFIX, h))
+            crate::document::MarkValue::Str(format!("#{HEADING_REF_PREFIX}{h}"))
         );
     }
 

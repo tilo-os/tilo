@@ -43,7 +43,7 @@ impl FilePickerQueue {
 
     /// How many requests are waiting. For tests and for the state dump.
     pub fn len(&self) -> usize {
-        self.pending.lock().map(|q| q.len()).unwrap_or(0)
+        self.pending.lock().map_or(0, |q| q.len())
     }
 
     pub fn is_empty(&self) -> bool {

@@ -16,7 +16,7 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 /// OOXML toggle property (`<w:b/>`, `<w:i/>`, …): present means *on* unless `w:val` explicitly turns it off.
@@ -325,7 +325,7 @@ impl StyleRegistry {
     /// Whether `id` is a user-facing *named* paragraph style. Built-in heading styles resolve to a heading level first, so
     /// the body parser never lifts them even though they are also "named".
     pub(super) fn is_named_para(&self, id: &str) -> bool {
-        self.para.get(id).map(|p| p.named).unwrap_or(false)
+        self.para.get(id).is_some_and(|p| p.named)
     }
 
     /// The paragraph-style chain (self → basedOn → …), most-derived first.

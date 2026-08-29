@@ -23,7 +23,7 @@ use crate::shell::state::{CapOverride, RoomId};
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
-const CATALOGUE_TTL: Duration = Duration::from_secs(120);
+const CATALOGUE_TTL: Duration = Duration::from_mins(2);
 
 /// Without this an unreachable registry would start a fresh HTTP
 /// attempt every time the palette opened.
@@ -76,16 +76,14 @@ static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 /// The same search the launcher does for `qos-launcher`.
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(explicit) = std::env::var_os("QOS_CATALOGUE_BIN") {
-        if !explicit.is_empty() {
+    if let Some(explicit) = std::env::var_os("QOS_CATALOGUE_BIN")
+        && !explicit.is_empty() {
             out.push(PathBuf::from(explicit));
         }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
             out.push(dir.join("qos-catalogue"));
         }
-    }
     out.push(PathBuf::from("/usr/libexec/qos-catalogue"));
     out.push(PathBuf::from("/usr/bin/qos-catalogue"));
     out

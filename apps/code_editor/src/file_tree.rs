@@ -32,7 +32,7 @@ pub struct FileTree {
     rect: Rect,
     /// Snapshot of the visible rows (node ids) computed in `set_project`.
     rows: Vec<TreeId>,
-    /// Cached node metadata for the rows: (id, name, depth, is_folder,
+    /// Cached node metadata for the rows: (id, name, depth, `is_folder`,
     /// expanded). Decoupled from `Project` so `draw` doesn't borrow it.
     row_meta: Vec<RowMeta>,
     project_name: String,
@@ -157,17 +157,17 @@ impl Widget for FileTree {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -328,10 +328,10 @@ impl Widget for FileTree {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.rect.contains(self.last_cursor) {
+            WindowEvent::MouseWheel { delta, .. }
+                if self.rect.contains(self.last_cursor) => {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * ROW_HEIGHT,
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * ROW_HEIGHT,
                         MouseScrollDelta::PixelDelta(p) => p.y,
                     };
                     let content = self.row_meta.len() as f64 * ROW_HEIGHT;
@@ -341,12 +341,11 @@ impl Widget for FileTree {
                     self.dirty = true;
                     *handled = true;
                 }
-            }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FileTree"
     }
 

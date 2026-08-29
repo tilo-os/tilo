@@ -110,7 +110,7 @@ impl ApplicationsProvider {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
         for app in apps {
-            if installed.iter().any(|id| *id == app.package_id) {
+            if installed.contains(&app.package_id) {
                 continue;
             }
             let name_lower = app.display_name.to_lowercase();
@@ -180,7 +180,7 @@ impl ApplicationsProvider {
                                 "Loading…".to_string(),
                             )
                             .with_app_name("Applications")
-                            .with_dismiss_after(std::time::Duration::from_secs(120)),
+                            .with_dismiss_after(std::time::Duration::from_mins(2)),
                         );
                         st.bump();
                         id
@@ -221,7 +221,7 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
         st.tree().active
     };
     let granted = {
-        let mut st = chrome.borrow_mut();
+        let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
         grant_file_manager_home(&mut tree, ws_id, package_id)
     };
@@ -311,7 +311,7 @@ pub(crate) fn launch_installed_app(
         let id = st.push_notification_full(
             Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
                 .with_app_name("Applications")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
+                .with_dismiss_after(std::time::Duration::from_mins(2)),
         );
         st.bump();
         id
@@ -369,7 +369,7 @@ impl Default for ApplicationsProvider {
 }
 
 impl SearchProvider for ApplicationsProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "applications"
     }
     fn name(&self) -> &str {

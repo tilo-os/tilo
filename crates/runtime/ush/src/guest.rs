@@ -413,9 +413,7 @@ pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
     }
     // The guest-visible path is the resolved one with the base stripped off.
     let inside = resolved
-        .strip_prefix(base)
-        .map(|p| PathBuf::from("/").join(p))
-        .unwrap_or_else(|_| resolved.clone());
+        .strip_prefix(base).map_or_else(|_| resolved.clone(), |p| PathBuf::from("/").join(p));
     Some((resolved, inside))
 }
 
@@ -480,9 +478,9 @@ pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
                 libc::_exit(1);
             }
             let byte = 1u8;
-            libc::write(ready[1], &byte as *const u8 as *const libc::c_void, 1);
+            libc::write(ready[1], (&raw const byte).cast::<libc::c_void>(), 1);
             let mut buf = 0u8;
-            libc::read(go[0], &mut buf as *mut u8 as *mut libc::c_void, 1);
+            libc::read(go[0], (&raw mut buf).cast::<libc::c_void>(), 1);
             libc::_exit(0)
         }
     }
@@ -494,7 +492,7 @@ pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
     }
     let mut buf = 0u8;
     // SAFETY: `ready[0]` is a live read end owned by this process.
-    let got = unsafe { libc::read(ready[0], &mut buf as *mut u8 as *mut libc::c_void, 1) };
+    let got = unsafe { libc::read(ready[0], (&raw mut buf).cast::<libc::c_void>(), 1) };
     if got != 1 {
         reap(pid, go[1], ready[0]);
         return None;
@@ -519,11 +517,11 @@ fn reap(pid: libc::pid_t, go_write: i32, ready_read: i32) {
     let byte = 1u8;
     // SAFETY: descriptors and a child pid this process owns.
     unsafe {
-        libc::write(go_write, &byte as *const u8 as *const libc::c_void, 1);
+        libc::write(go_write, (&raw const byte).cast::<libc::c_void>(), 1);
         libc::close(go_write);
         libc::close(ready_read);
         let mut status = 0i32;
-        libc::waitpid(pid, &mut status, 0);
+        libc::waitpid(pid, &raw mut status, 0);
     }
 }
 
@@ -615,19 +613,16 @@ fn userns_for(plan: &GuestPlan) -> (Option<std::fs::File>, Option<std::os::fd::R
     if !plan.profile.grants_subid_range() {
         return (None, None);
     }
-    match prepare_userns(Path::new("/etc")) {
-        Some(file) => {
-            let fd = file.as_raw_fd();
-            (Some(file), Some(fd))
-        }
-        None => {
-            tracing::warn!(
-                "no subordinate id range is available; this session gets a \
-                 single mapped uid and nested rootless containers will need \
-                 storage.conf's ignore_chown_errors"
-            );
-            (None, None)
-        }
+    if let Some(file) = prepare_userns(Path::new("/etc")) {
+        let fd = file.as_raw_fd();
+        (Some(file), Some(fd))
+    } else {
+        tracing::warn!(
+            "no subordinate id range is available; this session gets a \
+             single mapped uid and nested rootless containers will need \
+             storage.conf's ignore_chown_errors"
+        );
+        (None, None)
     }
 }
 

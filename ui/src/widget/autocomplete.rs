@@ -414,17 +414,17 @@ impl Widget for Autocomplete {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.input.apply_layout_external(self.rect);
     }
@@ -456,7 +456,7 @@ impl Widget for Autocomplete {
         };
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
-        let shape = RoundedRect::from_rect(panel, tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
         // Raised panel + hairline border, matching the toolkit's other popovers.
         scene.fill(
             Fill::NonZero,
@@ -479,7 +479,7 @@ impl Widget for Autocomplete {
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let ty = panel.y0 + (panel.height() - text_size as f64) / 2.0;
+                let ty = panel.y0 + (panel.height() - f64::from(text_size)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     status,
@@ -502,7 +502,7 @@ impl Widget for Autocomplete {
                     transform,
                     accent,
                     None,
-                    &RoundedRect::from_rect(row, tokens.radii.sm as f64),
+                    &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
                 );
             } else if hovered {
                 scene.fill(
@@ -510,7 +510,7 @@ impl Widget for Autocomplete {
                     transform,
                     tokens.colors.surface_white_10,
                     None,
-                    &RoundedRect::from_rect(row, tokens.radii.sm as f64),
+                    &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
                 );
             }
             let on_accent = tokens
@@ -550,19 +550,19 @@ impl Widget for Autocomplete {
                 );
                 x += ICON_PX + 10.0;
             }
-            let ty = row.y0 + (ROW_H - text_size as f64) / 2.0;
+            let ty = row.y0 + (ROW_H - f64::from(text_size)) / 2.0;
             // Right-aligned detail first, so we can bound the label width.
             let mut label_x1 = row.x1 - ROW_PAD_X;
             if let Some(detail) = &s.detail {
                 let (dw, _) = text_renderer.measure(detail, detail_size, None);
-                let dx = row.x1 - ROW_PAD_X - dw as f64;
+                let dx = row.x1 - ROW_PAD_X - f64::from(dw);
                 text_renderer.draw_text(
                     scene,
                     detail,
                     detail_size,
                     dim_color,
                     transform
-                        * Affine::translate((dx, row.y0 + (ROW_H - detail_size as f64) / 2.0)),
+                        * Affine::translate((dx, row.y0 + (ROW_H - f64::from(detail_size)) / 2.0)),
                     None,
                 );
                 label_x1 = dx - 8.0;
@@ -619,9 +619,7 @@ impl Widget for Autocomplete {
                 }
                 Key::Named(NamedKey::Enter) => {
                     let value = self
-                        .highlighted()
-                        .map(|s| s.value.clone())
-                        .unwrap_or_else(|| self.input.value().to_string());
+                        .highlighted().map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
                     self.accept(value);
                     *handled = true;
                 }
@@ -674,8 +672,7 @@ impl Widget for Autocomplete {
             } if !self.rect.contains(self.last_pointer)
                 && self
                     .dropdown_rect()
-                    .map(|r| !r.contains(self.last_pointer))
-                    .unwrap_or(true) =>
+                    .is_none_or(|r| !r.contains(self.last_pointer)) =>
             {
                 self.cancel();
             }
@@ -700,7 +697,7 @@ impl Widget for Autocomplete {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Autocomplete"
     }
 

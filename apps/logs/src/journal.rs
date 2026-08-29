@@ -88,17 +88,16 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
     let unit = field(v, "_SYSTEMD_UNIT")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            if !identifier.is_empty() {
-                identifier.clone()
-            } else {
+            if identifier.is_empty() {
                 "(unknown)".to_string()
+            } else {
+                identifier.clone()
             }
         });
 
     let priority = field(v, "PRIORITY")
         .and_then(|s| s.parse::<i64>().ok())
-        .map(Priority::from_level)
-        .unwrap_or(Priority::Info);
+        .map_or(Priority::Info, Priority::from_level);
 
     let message = field(v, "MESSAGE").unwrap_or_default();
     let pid = field(v, "_PID").and_then(|s| s.parse::<u32>().ok());

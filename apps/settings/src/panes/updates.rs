@@ -506,7 +506,7 @@ impl UpdatesPane {
             }
             (Some(target), true) => {
                 out.push(format!("Roll back to {target}?"));
-                out.extend(ROLLBACK_CAVEATS.iter().map(|s| s.to_string()));
+                out.extend(ROLLBACK_CAVEATS.iter().map(std::string::ToString::to_string));
                 out.push("Roll back and restart later".into());
             }
         }
@@ -515,7 +515,7 @@ impl UpdatesPane {
 
     /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
-        HOW_UPDATES_WORK.iter().map(|s| s.to_string()).collect()
+        HOW_UPDATES_WORK.iter().map(std::string::ToString::to_string).collect()
     }
 
     pub fn status(&self) -> &UpdateStatus {
@@ -564,7 +564,7 @@ impl UpdatesPane {
                     "Release channel",
                     Box::new(
                         Dropdown::new(
-                            CHANNELS.iter().map(|c| c.to_string()).collect(),
+                            CHANNELS.iter().map(std::string::ToString::to_string).collect(),
                             CHANNEL_KEY,
                         )
                         .with_id("updates.channel")
@@ -833,17 +833,17 @@ impl Widget for UpdatesPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -912,7 +912,7 @@ impl Widget for UpdatesPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "UpdatesPane"
     }
 
@@ -925,8 +925,7 @@ impl Widget for UpdatesPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -976,7 +975,7 @@ mod tests {
     fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesPane {
         let status = UpdateStatus {
             current_version: "qOS 2026.06".into(),
-            staged_version: staged.map(|s| s.to_string()),
+            staged_version: staged.map(std::string::ToString::to_string),
         };
         let requeried = UpdateStatus {
             current_version: "qOS 2026.06".into(),

@@ -6,7 +6,7 @@
 //! navigation, progress, filter loading) around the `ui` toolkit's
 //! `WebView` widget. The web engine itself lives behind
 //! `ui::webview::WebViewEngine`; there is no tab UI — tabbing is the
-//! compositor's WindowGroup frame primitive.
+//! compositor's `WindowGroup` frame primitive.
 
 pub mod address_overlay;
 pub mod blocker;

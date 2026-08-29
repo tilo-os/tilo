@@ -142,7 +142,7 @@ pub fn pill(
 ) -> f64 {
     let pad = 6.0;
     let size = (height - 6.0).max(9.0) as f32;
-    let tw = tr.measure_weighted(label, size, None, TextWeight::Medium).0 as f64;
+    let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
     let w = tw + pad * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
     fill_round(scene, t, rect, height / 2.0, bg);
@@ -157,7 +157,7 @@ pub fn pill(
         size,
         fg,
         x + pad,
-        y + (height - size as f64) / 2.0 - 1.0,
+        y + (height - f64::from(size)) / 2.0 - 1.0,
         None,
         TextWeight::Medium,
     );

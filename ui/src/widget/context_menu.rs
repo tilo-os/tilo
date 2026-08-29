@@ -137,8 +137,8 @@ impl ContextMenu {
                 .map(item_height)
                 .sum::<f64>()
                 .max(ROW_HEIGHT);
-        let x0 = px as f64;
-        let y0 = py as f64;
+        let x0 = f64::from(px);
+        let y0 = f64::from(py);
         self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
     }
 
@@ -223,8 +223,7 @@ impl ContextMenu {
         }
         let start = self
             .hovered
-            .map(|i| i as i32)
-            .unwrap_or(if dir > 0 { -1 } else { n as i32 });
+            .map_or(if dir > 0 { -1 } else { n as i32 }, |i| i as i32);
         let mut i = start;
         for _ in 0..n {
             i += dir.signum();
@@ -282,7 +281,7 @@ impl Widget for ContextMenu {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -291,14 +290,14 @@ impl Widget for ContextMenu {
         // taffy-assigned position keeps offscreen/closed menus sensible.
         let l = taffy.layout(node).unwrap();
         let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
-            (px as f64, py as f64)
+            (f64::from(px), f64::from(py))
         } else {
             (
-                origin.x + l.location.x as f64,
-                origin.y + l.location.y as f64,
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
             )
         };
-        self.rect = Rect::new(x0, y0, x0 + l.size.width as f64, y0 + l.size.height as f64);
+        self.rect = Rect::new(x0, y0, x0 + f64::from(l.size.width), y0 + f64::from(l.size.height));
     }
 
     fn draw(
@@ -313,7 +312,7 @@ impl Widget for ContextMenu {
             return;
         }
 
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // The near-black overlay tier, so the menu reads as an opaque
         // raised sheet, never bleeding the content beneath.
         scene.fill(
@@ -343,7 +342,7 @@ impl Widget for ContextMenu {
                             self.rect.x1 - 4.0,
                             y + ROW_HEIGHT - 1.0,
                         );
-                        let hl_shape = RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64);
+                        let hl_shape = RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm));
                         // Matches the dropdown / autocomplete row hover.
                         scene.fill(
                             vello::peniko::Fill::NonZero,
@@ -353,7 +352,7 @@ impl Widget for ContextMenu {
                             &hl_shape,
                         );
                     }
-                    let label_y = y + (ROW_HEIGHT - text_size as f64) / 2.0;
+                    let label_y = y + (ROW_HEIGHT - f64::from(text_size)) / 2.0;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -455,7 +454,7 @@ impl Widget for ContextMenu {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ContextMenu"
     }
 

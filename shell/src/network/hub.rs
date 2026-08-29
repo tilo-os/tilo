@@ -52,10 +52,8 @@ impl Hub {
         let origin = self
             .subscribers
             .iter()
-            .find(|s| s.id() == from)
-            .map(|s| s.origin())
-            .unwrap_or_else(|| PeerOrigin::hub(from));
-        for sub in self.subscribers.iter_mut() {
+            .find(|s| s.id() == from).map_or_else(|| PeerOrigin::hub(from), |s| s.origin());
+        for sub in &mut self.subscribers {
             if sub.id() != from {
                 sub.handle(&origin, &msg);
             }

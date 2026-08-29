@@ -52,6 +52,12 @@ pub struct SqlEditor {
     last_cursor: Point,
 }
 
+impl Default for SqlEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SqlEditor {
     pub fn new() -> Self {
         Self {
@@ -310,28 +316,26 @@ impl SqlEditor {
                         *handled = true;
                     }
                     Key::Character(_) => {
-                        if let Some(t) = text {
-                            if !ctrl {
+                        if let Some(t) = text
+                            && !ctrl {
                                 self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
                                 self.buffer = EditorDoc::read_sql(doc);
                                 self.mutated = true;
                                 self.ensure_caret_visible();
                                 *handled = true;
                             }
-                        }
                     }
                     _ => {
                         // Some layouts deliver printable text without a
                         // Character key; honour `text` as a fallback.
-                        if let Some(t) = text {
-                            if !ctrl && !t.is_empty() {
+                        if let Some(t) = text
+                            && !ctrl && !t.is_empty() {
                                 self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
                                 self.buffer = EditorDoc::read_sql(doc);
                                 self.mutated = true;
                                 self.ensure_caret_visible();
                                 *handled = true;
                             }
-                        }
                     }
                 }
             }
@@ -345,7 +349,7 @@ impl SqlEditor {
         let line =
             (((p.y - body_y) / LINE_HEIGHT).floor() as isize).max(0) as usize + self.scroll_line;
         // Approximate column from a monospace advance.
-        let char_w = FONT_SIZE as f64 * 0.6;
+        let char_w = f64::from(FONT_SIZE) * 0.6;
         let col = (((p.x - body_x) / char_w).round() as isize).max(0) as usize;
         self.move_caret_to(line, col);
     }
@@ -379,7 +383,7 @@ impl SqlEditor {
         let lines: Vec<&str> = self.buffer.split('\n').collect();
         let total = lines.len();
         let vis = self.visible_lines();
-        let char_w = FONT_SIZE as f64 * 0.6;
+        let char_w = f64::from(FONT_SIZE) * 0.6;
         let body_x = self.rect.x0 + GUTTER_W + PAD;
 
         let (caret_line, caret_col) = self.caret_line_col();
@@ -393,7 +397,7 @@ impl SqlEditor {
 
             // Line number, right-aligned in the gutter.
             let num = (li + 1).to_string();
-            let num_w = num.chars().count() as f64 * (FONT_SIZE as f64 * 0.55);
+            let num_w = num.chars().count() as f64 * (f64::from(FONT_SIZE) * 0.55);
             let num_color = if li == caret_line {
                 theme.text_primary
             } else {

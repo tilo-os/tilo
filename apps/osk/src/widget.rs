@@ -56,18 +56,15 @@ use crate::predict::Predictor;
 use crate::suggest::{Suggestion, suggestion_rects};
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
-/// The default swipe decoder: the real FUTO ExecuTorch model when its libs
+/// The default swipe decoder: the real FUTO `ExecuTorch` model when its libs
 /// and model assets are available, else the geometric SHARK²-style decoder.
 pub fn default_swipe_model() -> Box<dyn SwipeModel> {
-    match FutoSwipeModel::default_load() {
-        Some(m) => {
-            tracing::info!("osk: using FUTO ExecuTorch swipe decoder");
-            Box::new(m)
-        }
-        None => {
-            tracing::info!("osk: FUTO unavailable — using geometric swipe decoder");
-            Box::new(GeometricSwipeModel::english())
-        }
+    if let Some(m) = FutoSwipeModel::default_load() {
+        tracing::info!("osk: using FUTO ExecuTorch swipe decoder");
+        Box::new(m)
+    } else {
+        tracing::info!("osk: FUTO unavailable — using geometric swipe decoder");
+        Box::new(GeometricSwipeModel::english())
     }
 }
 use crate::toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
@@ -512,7 +509,7 @@ impl OskWidget {
                 }
                 // Track the current word: letters extend it, punctuation ends
                 // it (commits a word boundary).
-                if s.chars().all(|c| c.is_alphabetic()) {
+                if s.chars().all(char::is_alphabetic) {
                     self.current_word.push_str(s);
                     self.refresh_completion_suggestions();
                 } else {
@@ -677,7 +674,7 @@ impl OskWidget {
     /// scale). Falls back to a sane default before the first layout.
     fn key_scale(&self) -> f64 {
         if self.key_geom.is_empty() {
-            return self.target_key_height as f64;
+            return f64::from(self.target_key_height);
         }
         let sum: f64 = self
             .key_geom
@@ -738,7 +735,7 @@ fn draw_cell(
     } else {
         t.colors.surfaces.raised
     };
-    let shape = RoundedRect::from_rect(cell, t.radii.md as f64);
+    let shape = RoundedRect::from_rect(cell, f64::from(t.radii.md));
     scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
     let border = if accent {
         theme.border_focus
@@ -786,8 +783,8 @@ fn draw_cell(
     }
     let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
     let (tw, _th) = text_renderer.measure(label, font, None);
-    let tx = cell.center().x - tw as f64 / 2.0;
-    let ty = cell.y0 + (cell.height() - font as f64) / 2.0;
+    let tx = cell.center().x - f64::from(tw) / 2.0;
+    let ty = cell.y0 + (cell.height() - f64::from(font)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -832,7 +829,7 @@ fn draw_suggestion_chip(
     } else {
         theme.tokens.colors.surfaces.base
     };
-    let shape = RoundedRect::from_rect(chip, (chip.height() * 0.45).min(t.radii.lg as f64));
+    let shape = RoundedRect::from_rect(chip, (chip.height() * 0.45).min(f64::from(t.radii.lg)));
     scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
     if top {
         scene.stroke(
@@ -854,8 +851,8 @@ fn draw_suggestion_chip(
     }
     let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
     let (tw, _th) = text_renderer.measure(word, font, None);
-    let tx = chip.center().x - tw as f64 / 2.0;
-    let ty = chip.y0 + (chip.height() - font as f64) / 2.0;
+    let tx = chip.center().x - f64::from(tw) / 2.0;
+    let ty = chip.y0 + (chip.height() - f64::from(font)) / 2.0;
     text_renderer.draw_text(
         scene,
         word,
@@ -899,24 +896,24 @@ impl Widget for OskWidget {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
 
         // Top → bottom bands: toolbar, suggestion bar, keys (keys fill the
         // rest). Clamp each band so a too-short surface degrades gracefully.
         let h = self.rect.height();
-        let toolbar_h = (self.toolbar_height as f64).min(h);
-        let suggestion_h = (self.suggestion_height as f64).min((h - toolbar_h).max(0.0));
+        let toolbar_h = f64::from(self.toolbar_height).min(h);
+        let suggestion_h = f64::from(self.suggestion_height).min((h - toolbar_h).max(0.0));
         let toolbar_y1 = self.rect.y0 + toolbar_h;
         let suggestion_y1 = toolbar_y1 + suggestion_h;
 
@@ -1068,7 +1065,7 @@ impl Widget for OskWidget {
                 if let Some(path) = self.gesture_path.as_mut() {
                     // Only record once the pointer has moved a touch, to keep
                     // the path tight.
-                    if path.last().map(|&l| l.distance(p) > 1.0).unwrap_or(true) {
+                    if path.last().is_none_or(|&l| l.distance(p) > 1.0) {
                         path.push(p);
                     }
                 }
@@ -1101,8 +1098,7 @@ impl Widget for OskWidget {
                         .key_geom
                         .iter()
                         .find(|(kid, _)| *kid == id)
-                        .map(|(_, r)| r.center())
-                        .unwrap_or(self.rect.center());
+                        .map_or(self.rect.center(), |(_, r)| r.center());
                     self.gesture_path = Some(vec![start]);
                     *handled = true;
                 } else if let Some(i) = self.hovered_sugg {
@@ -1124,15 +1120,13 @@ impl Widget for OskWidget {
                     let scale = self.key_scale();
                     let is_swipe = path
                         .as_ref()
-                        .map(|p| crate::swipe::is_swipe(p, scale))
-                        .unwrap_or(false);
+                        .is_some_and(|p| crate::swipe::is_swipe(p, scale));
                     if is_swipe {
                         // A swipe: decode the path. If it yields nothing, fall
                         // back to the key under the release point as a tap.
                         let decoded = path
                             .as_ref()
-                            .map(|p| self.decode_and_apply_swipe(p))
-                            .unwrap_or(false);
+                            .is_some_and(|p| self.decode_and_apply_swipe(p));
                         if !decoded && self.hovered_key == Some(id) {
                             self.activate_key(id);
                         }
@@ -1157,7 +1151,7 @@ impl Widget for OskWidget {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OnScreenKeyboard"
     }
 
@@ -1577,7 +1571,7 @@ mod tests {
             if let Some(prev) = pts.last().copied() {
                 let prev: Point = prev;
                 for k in 1..=5 {
-                    let t = k as f64 / 5.0;
+                    let t = f64::from(k) / 5.0;
                     pts.push(Point::new(
                         prev.x + (centre.x - prev.x) * t,
                         prev.y + (centre.y - prev.y) * t,

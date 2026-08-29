@@ -196,7 +196,7 @@ impl WorkspaceDirectory {
     /// Key under `ROOT` for a workspace entry. We deliberately use
     /// `ROOT` as the workspaces map (rather than nesting under
     /// `ROOT/workspaces`) so two devices concurrently creating
-    /// their first workspaces do not both put_object on the same
+    /// their first workspaces do not both `put_object` on the same
     /// container key — that would produce a Map register conflict
     /// under which the losing peer's workspace contents become
     /// unreachable through `get`. Top-level keys are namespaced with
@@ -207,7 +207,7 @@ impl WorkspaceDirectory {
     }
 
     /// Ensure a workspace entry (identified by `w:{id}` key at
-    /// ROOT) exists and return its ObjId.
+    /// ROOT) exists and return its `ObjId`.
     ///
     /// When two devices concurrently `add_workspace(id, ...)` for
     /// the *same* id, both `put_object` operations create a map
@@ -363,17 +363,14 @@ impl WorkspaceDirectory {
         let len = self.doc.length(&list_obj);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            match self.doc.get(&list_obj, i) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                    ScalarValue::Bytes(b) if b.len() == 32 => {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(b);
-                        out.push(arr);
-                    }
-                    _ => {}
-                },
+            if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&list_obj, i) { match s.as_ref() {
+                ScalarValue::Bytes(b) if b.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(b);
+                    out.push(arr);
+                }
                 _ => {}
-            }
+            } }
         }
         out
     }

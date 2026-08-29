@@ -49,7 +49,7 @@ impl qos_actions::Action for BackupsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             BackupsAction::SetRetention { field, count } => {
-                let target = (*count as i64).clamp(0, 999) as u32;
+                let target = i64::from(*count).clamp(0, 999) as u32;
                 // Change-guard: read the current value and skip the write when it
                 // already matches, so a redundant / reordered replay leaves the
                 // document (its heads) untouched and can't wedge a peer.
@@ -97,7 +97,7 @@ pub fn set_retention_action(field: PolicyField, count: u32) -> BackupsAction {
 /// increment/decrement specs resolve a bump into an absolute target, so a
 /// button and its Ctrl+K row build the byte-identical action.
 pub fn bump_retention_action(field: PolicyField, cur: u32, delta: i64) -> BackupsAction {
-    let count = (cur as i64 + delta).clamp(0, 999) as u32;
+    let count = (i64::from(cur) + delta).clamp(0, 999) as u32;
     BackupsAction::SetRetention { field, count }
 }
 

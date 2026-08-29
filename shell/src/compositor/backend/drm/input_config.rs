@@ -61,14 +61,13 @@ impl InputSettings {
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
         let bool_at =
-            |k: &str, fallback: bool| section.get(k).and_then(|v| v.as_bool()).unwrap_or(fallback);
+            |k: &str, fallback: bool| section.get(k).and_then(serde_json::Value::as_bool).unwrap_or(fallback);
         let unit_at = |k: &str, fallback: f64| {
             section
                 .get(k)
-                .and_then(|v| v.as_f64())
+                .and_then(serde_json::Value::as_f64)
                 .filter(|v| v.is_finite())
-                .map(|v| v.clamp(0.0, 1.0))
-                .unwrap_or(fallback)
+                .map_or(fallback, |v| v.clamp(0.0, 1.0))
         };
         Self {
             natural_scroll: bool_at(NATURAL_SCROLL_KEY, d.natural_scroll),
@@ -92,9 +91,9 @@ impl InputSettings {
     /// opposite directions — "faster" means both a shorter wait before it starts and a shorter gap between keys — so exposing them as one slider is only honest if the mapping does that.
     pub fn key_repeat_params(&self) -> (Duration, u32) {
         let t = self.key_repeat.clamp(0.0, 1.0);
-        let rate = REPEAT_RATE_MIN as f64 + t * (REPEAT_RATE_MAX - REPEAT_RATE_MIN) as f64;
+        let rate = f64::from(REPEAT_RATE_MIN) + t * f64::from(REPEAT_RATE_MAX - REPEAT_RATE_MIN);
         let delay =
-            REPEAT_DELAY_MAX_MS as f64 - t * (REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS) as f64;
+            f64::from(REPEAT_DELAY_MAX_MS) - t * f64::from(REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS);
         (
             Duration::from_millis(delay.round() as u64),
             rate.round() as u32,
@@ -149,11 +148,10 @@ impl SettingsWatch {
 
     /// Whether the settings file has changed since the last time this returned `true`. Rate-limited to [`Self::with_interval`]; calls in between are free.
     pub fn changed(&mut self, now: Instant) -> bool {
-        if let Some(next) = self.next_check {
-            if now < next {
+        if let Some(next) = self.next_check
+            && now < next {
                 return false;
             }
-        }
         self.next_check = Some(now + self.interval);
         let Some(path) = self.path.as_ref() else {
             return false;
@@ -207,7 +205,7 @@ pub struct DevicePlan {
 impl DevicePlan {
     /// libinput's acceleration speed, back in its own `-1.0 … 1.0` units.
     pub fn accel_speed(&self) -> Option<f64> {
-        self.accel_speed_milli.map(|m| m as f64 / 1000.0)
+        self.accel_speed_milli.map(|m| f64::from(m) / 1000.0)
     }
 }
 

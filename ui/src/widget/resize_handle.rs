@@ -114,7 +114,7 @@ impl ResizeHandle {
     pub fn set_neighbour_rects(&mut self, left: Rect, right: Rect) {
         self.left_rect = left;
         self.right_rect = right;
-        let mid_x = (left.x1 + right.x0) / 2.0;
+        let mid_x = f64::midpoint(left.x1, right.x0);
         self.rect = Rect::new(
             mid_x - HANDLE_HIT_HALF_PX,
             left.y0.min(right.y0),
@@ -200,7 +200,7 @@ impl Widget for ResizeHandle {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -224,7 +224,7 @@ impl Widget for ResizeHandle {
         } else {
             HANDLE_VISIBLE_PX
         };
-        let mid_x = (self.left_rect.x1 + self.right_rect.x0) / 2.0;
+        let mid_x = f64::midpoint(self.left_rect.x1, self.right_rect.x0);
         let y0 = self.left_rect.y0.min(self.right_rect.y0);
         let y1 = self.left_rect.y1.max(self.right_rect.y1);
         // A handle whose row hasn't run `apply_layout` yet (degenerate
@@ -293,7 +293,7 @@ impl Widget for ResizeHandle {
                 // `GroupRow::handle_event` always dispatches CursorMoved
                 // before any MouseInput on the same frame, so the centre
                 // of `self.rect` is accurate to the nearest pixel here.
-                let cursor_x = (self.rect.x0 + self.rect.x1) / 2.0;
+                let cursor_x = f64::midpoint(self.rect.x0, self.rect.x1);
                 self.drag = Some(DragOrigin {
                     cursor_x,
                     left_w,
@@ -315,7 +315,7 @@ impl Widget for ResizeHandle {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ResizeHandle"
     }
 

@@ -248,7 +248,7 @@ impl Project {
         if self.nodes.contains_key(&id) {
             return;
         }
-        let depth = self.nodes.get(&self.root).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&self.root).map_or(0, |n| n.depth + 1);
         let lang = Language::from_path(name);
         self.nodes.insert(
             id,
@@ -300,7 +300,7 @@ impl Project {
         disk_path: Option<PathBuf>,
         expanded: bool,
     ) -> NodeId {
-        let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&parent).map_or(0, |n| n.depth + 1);
         let id = self.alloc();
         // A disk-backed folder starts unloaded (children read on expand); an
         // in-memory folder is fully known, so it is `loaded`.
@@ -331,7 +331,7 @@ impl Project {
         seed: &str,
         disk_path: Option<PathBuf>,
     ) -> NodeId {
-        let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&parent).map_or(0, |n| n.depth + 1);
         let lang = Language::from_path(name);
         let id = self.alloc();
         self.nodes.insert(
@@ -402,7 +402,7 @@ impl Project {
         // Point the root at the real directory and mark it unloaded so
         // `load_children` reads it.
         if let Some(node) = p.nodes.get_mut(&root) {
-            node.disk_path = Some(path.clone());
+            node.disk_path = Some(path);
             if let NodeKind::Folder {
                 loaded, expanded, ..
             } = &mut node.kind
@@ -483,13 +483,9 @@ impl Project {
         // than silently opening an empty tab.
         let _ = std::fs::metadata(path)?;
         let file_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+            .file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string());
         let parent_name = path
-            .parent()
-            .map(dir_display_name)
-            .unwrap_or_else(|| "/".to_string());
+            .parent().map_or_else(|| "/".to_string(), dir_display_name);
         let mut p = Project::new(&parent_name);
         let root = p.root;
         let node = p.add_disk_file(root, &file_name, path);
@@ -545,8 +541,8 @@ impl Project {
                 files.push((name, child_path));
             }
         }
-        folders.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-        files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        folders.sort_by_key(|a| a.0.to_lowercase());
+        files.sort_by_key(|a| a.0.to_lowercase());
         for (name, p) in folders {
             self.add_disk_folder(id, &name, &p);
         }
@@ -594,13 +590,12 @@ impl Project {
     /// Point a file node at a real path (used by Save As), updating its name
     /// and inferred language to match. No-op on folders / missing nodes.
     pub fn set_file_path(&mut self, id: NodeId, path: &Path, name: &str) {
-        if let Some(node) = self.nodes.get_mut(&id) {
-            if let NodeKind::File { language, .. } = &mut node.kind {
+        if let Some(node) = self.nodes.get_mut(&id)
+            && let NodeKind::File { language, .. } = &mut node.kind {
                 *language = Language::from_path(name);
                 node.name = name.to_string();
                 node.disk_path = Some(path.to_path_buf());
             }
-        }
     }
 
     /// The real filesystem path a node projects, if any.
@@ -641,8 +636,8 @@ impl Project {
         });
         for kid in kids {
             out.push(kid);
-            if *expanded {
-                if let Some(TreeNode {
+            if *expanded
+                && let Some(TreeNode {
                     kind:
                         NodeKind::Folder {
                             expanded: child_expanded,
@@ -650,12 +645,9 @@ impl Project {
                         },
                     ..
                 }) = self.nodes.get(&kid)
-                {
-                    if *child_expanded {
+                    && *child_expanded {
                         self.push_children(kid, out);
                     }
-                }
-            }
         }
     }
 
@@ -679,9 +671,7 @@ impl Project {
 /// A human-friendly name for a directory path — its last component, or the
 /// whole path for a root like `/`. Used to label a project opened from disk.
 fn dir_display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string())
 }
 
 /// An open editor buffer: a file the user has opened into a tab. The actual

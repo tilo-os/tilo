@@ -433,8 +433,7 @@ impl AddAccountPanel {
             return Err("Enter a secret key".to_string());
         }
         if crate::totp::decode_secret(&secret)
-            .map(|b| b.is_empty())
-            .unwrap_or(true)
+            .is_none_or(|b| b.is_empty())
         {
             return Err("That secret isn\u{2019}t valid base32".to_string());
         }
@@ -531,7 +530,7 @@ impl AddAccountPanel {
             &self.window,
         );
         // Modal card.
-        let card = RoundedRect::from_rect(self.modal, theme.tokens.radii.xl as f64);
+        let card = RoundedRect::from_rect(self.modal, f64::from(theme.tokens.radii.xl));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -789,7 +788,7 @@ impl AddAccountPanel {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
         let bg = if primary {
             if hovered {
                 theme.accent_hover
@@ -846,7 +845,7 @@ impl AddAccountPanel {
             transform,
             tile_bg,
             None,
-            &RoundedRect::from_rect(tile, theme.tokens.radii.md as f64),
+            &RoundedRect::from_rect(tile, f64::from(theme.tokens.radii.md)),
         );
         draw_glyph(scene, transform, tile, glyph, icon_color);
 
@@ -997,7 +996,7 @@ impl AddAccountPanel {
         rect: Rect,
         text: &str,
     ) {
-        let pad = theme.padding_standard as f64;
+        let pad = f64::from(theme.padding_standard);
         text_renderer.draw_text(
             scene,
             text,
@@ -1020,10 +1019,10 @@ impl AddAccountPanel {
         let left = self.modal.x0 + PAD;
         let right = self.modal.x1 - PAD;
         let (tw, _) = text_renderer.measure(text, 11.0, None);
-        let cx = (left + right) / 2.0;
+        let cx = f64::midpoint(left, right);
         let line = theme.tokens.colors.border_standard.with_alpha_factor(0.6);
-        let l1 = Rect::new(left, y, cx - tw as f64 / 2.0 - 10.0, y + 1.0);
-        let l2 = Rect::new(cx + tw as f64 / 2.0 + 10.0, y, right, y + 1.0);
+        let l1 = Rect::new(left, y, cx - f64::from(tw) / 2.0 - 10.0, y + 1.0);
+        let l2 = Rect::new(cx + f64::from(tw) / 2.0 + 10.0, y, right, y + 1.0);
         scene.fill(Fill::NonZero, transform, line, None, &l1);
         scene.fill(Fill::NonZero, transform, line, None, &l2);
         text_renderer.draw_text(
@@ -1031,7 +1030,7 @@ impl AddAccountPanel {
             text,
             11.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((cx - tw as f64 / 2.0, y - 7.0)),
+            transform * Affine::translate((cx - f64::from(tw) / 2.0, y - 7.0)),
             None,
         );
     }
@@ -1047,7 +1046,7 @@ impl AddAccountPanel {
         selected: bool,
         hovered: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         let bg = if selected {
             theme.accent_primary
         } else if hovered {
@@ -1078,8 +1077,8 @@ impl AddAccountPanel {
             color,
             transform
                 * Affine::translate((
-                    rect.center().x - tw as f64 / 2.0,
-                    rect.center().y - th as f64 / 2.0,
+                    rect.center().x - f64::from(tw) / 2.0,
+                    rect.center().y - f64::from(th) / 2.0,
                 )),
             None,
             TextWeight::Medium,
@@ -1097,7 +1096,7 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         let bg = if hovered && enabled {
             theme.bg_hover
         } else {
@@ -1124,8 +1123,8 @@ impl AddAccountPanel {
             color,
             transform
                 * Affine::translate((
-                    rect.center().x - tw as f64 / 2.0,
-                    rect.center().y - th as f64 / 2.0,
+                    rect.center().x - f64::from(tw) / 2.0,
+                    rect.center().y - f64::from(th) / 2.0,
                 )),
             None,
             TextWeight::Medium,
@@ -1143,7 +1142,7 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         let bg = if !enabled {
             theme.accent_primary.with_alpha_factor(0.4)
         } else if hovered {
@@ -1160,8 +1159,8 @@ impl AddAccountPanel {
             Color::WHITE,
             transform
                 * Affine::translate((
-                    rect.center().x - tw as f64 / 2.0,
-                    rect.center().y - th as f64 / 2.0,
+                    rect.center().x - f64::from(tw) / 2.0,
+                    rect.center().y - f64::from(th) / 2.0,
                 )),
             None,
             TextWeight::Semibold,
@@ -1220,7 +1219,7 @@ impl AddAccountPanel {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             if self.max_scroll > 0.0 {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 40.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);

@@ -80,17 +80,17 @@ impl Widget for DiskRow {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -139,7 +139,7 @@ impl Widget for DiskRow {
             None,
         );
         if !self.disk.model.is_empty() {
-            let y2 = y1 + NAME_SIZE as f64 + 4.0;
+            let y2 = y1 + f64::from(NAME_SIZE) + 4.0;
             text_renderer.draw_text(
                 scene,
                 &self.disk.model,
@@ -212,7 +212,7 @@ impl Widget for DiskRow {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DiskRow"
     }
 

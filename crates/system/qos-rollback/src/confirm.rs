@@ -442,43 +442,40 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         .context("no token for the generation being confirmed")?
         .1
         .keyslot()?;
-    let proof: Vec<u8> = match req.proof {
-        Some(p) => {
-            if !keyslots::verify_passphrase(runner, ws, device, p, Some(running_slot))? {
-                bail!(
-                    "the supplied proof secret does not open generation {}'s keyslot ({running_slot}) \
-                     on {} — refusing to confirm a generation on someone else's secret",
-                    req.generation,
-                    device.display()
-                );
-            }
-            p.to_vec()
+    let proof: Vec<u8> = if let Some(p) = req.proof {
+        if !keyslots::verify_passphrase(runner, ws, device, p, Some(running_slot))? {
+            bail!(
+                "the supplied proof secret does not open generation {}'s keyslot ({running_slot}) \
+                 on {} — refusing to confirm a generation on someone else's secret",
+                req.generation,
+                device.display()
+            );
         }
-        None => {
-            let (_, running_token) = tokens
-                .iter()
-                .find(|(_, t)| t.generation == req.generation)
-                .expect("found above");
-            let s = keyslots::unseal(
-                runner,
-                ws,
-                running_token,
-                Path::new(&cfg.pcr_public_key),
-                req.pin,
-            )?
-            .context(
-                "the token for the generation being confirmed does not unseal on this machine, so \
-                 there is nothing to confirm; refusing to touch the floor",
-            )?;
-            if !keyslots::verify_passphrase(runner, ws, device, &s, None)? {
-                bail!(
-                    "the unsealed secret for generation {} does not open {}",
-                    req.generation,
-                    device.display()
-                );
-            }
-            s.to_vec()
+        p.to_vec()
+    } else {
+        let (_, running_token) = tokens
+            .iter()
+            .find(|(_, t)| t.generation == req.generation)
+            .expect("found above");
+        let s = keyslots::unseal(
+            runner,
+            ws,
+            running_token,
+            Path::new(&cfg.pcr_public_key),
+            req.pin,
+        )?
+        .context(
+            "the token for the generation being confirmed does not unseal on this machine, so \
+             there is nothing to confirm; refusing to touch the floor",
+        )?;
+        if !keyslots::verify_passphrase(runner, ws, device, &s, None)? {
+            bail!(
+                "the unsealed secret for generation {} does not open {}",
+                req.generation,
+                device.display()
+            );
         }
+        s.to_vec()
     };
 
     // The `true` is the independent-unlock-path check at the top of this function: it bails

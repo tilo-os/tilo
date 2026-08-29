@@ -62,7 +62,7 @@ impl OdtContainer {
     }
 }
 
-/// Build a minimal valid `.odt` body for self-contained tests (no LibreOffice dependency).
+/// Build a minimal valid `.odt` body for self-contained tests (no `LibreOffice` dependency).
 #[cfg(test)]
 pub(crate) fn minimal_odt(body_xml: &str) -> Vec<u8> {
     minimal_odt_styled("", body_xml)

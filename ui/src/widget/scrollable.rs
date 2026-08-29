@@ -369,16 +369,16 @@ impl Scrollable {
 
     fn v_metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(
-            self.content_h as f64,
-            self.viewport_h as f64,
-            self.offset_y as f64,
+            f64::from(self.content_h),
+            f64::from(self.viewport_h),
+            f64::from(self.offset_y),
         )
     }
     fn h_metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(
-            self.content_w as f64,
-            self.viewport_w as f64,
-            self.offset_x as f64,
+            f64::from(self.content_w),
+            f64::from(self.viewport_w),
+            f64::from(self.offset_x),
         )
     }
 
@@ -586,7 +586,7 @@ impl Widget for Scrollable {
         if ticking {
             self.tick(1.0 / 60.0);
         }
-        let child = self.child.as_mut().map(|c| c.update(s, p)).unwrap_or(false);
+        let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
         ticking || child
     }
 
@@ -629,17 +629,17 @@ impl Widget for Scrollable {
             Some(c) => taffy.new_with_children(style, &[c]).unwrap(),
             None => taffy.new_leaf(style).unwrap(),
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
@@ -649,8 +649,8 @@ impl Widget for Scrollable {
                 taffy,
                 child_node,
                 Point::new(
-                    self.rect.x0 - self.offset_x as f64,
-                    self.rect.y0 - self.offset_y as f64,
+                    self.rect.x0 - f64::from(self.offset_x),
+                    self.rect.y0 - f64::from(self.offset_y),
                 ),
             );
             let cl = taffy.layout(child_node).unwrap();
@@ -661,7 +661,7 @@ impl Widget for Scrollable {
             // a flex column shorter than the literal sum of its children.
             // Walk the subtree and take the deeper of the two so scrolling
             // always reaches the real last pixel.
-            let scroll_origin_y = self.rect.y0 - self.offset_y as f64;
+            let scroll_origin_y = self.rect.y0 - f64::from(self.offset_y);
             let max_y = max_bottom_edge(self.child.as_deref().unwrap());
             let walked_h = (max_y - scroll_origin_y).max(0.0) as f32;
             if walked_h > self.content_h {
@@ -808,7 +808,7 @@ impl Widget for Scrollable {
                             return;
                         }
                         PressOutcome::Page(target) => {
-                            let dir = (target - self.offset_y as f64).signum();
+                            let dir = (target - f64::from(self.offset_y)).signum();
                             self.scroll_by(0.0, target as f32 - self.offset_y);
                             if dir != 0.0 {
                                 self.hold = Some(TrackHold {
@@ -834,7 +834,7 @@ impl Widget for Scrollable {
                             return;
                         }
                         PressOutcome::Page(target) => {
-                            let dir = (target - self.offset_x as f64).signum();
+                            let dir = (target - f64::from(self.offset_x)).signum();
                             self.scroll_by(target as f32 - self.offset_x, 0.0);
                             if dir != 0.0 {
                                 self.hold = Some(TrackHold {
@@ -988,7 +988,7 @@ impl Widget for Scrollable {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Scrollable"
     }
 
@@ -1070,8 +1070,7 @@ impl Widget for Scrollable {
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false)
+            .is_some_and(|c| c.take_structure_dirty())
     }
 }
 

@@ -101,8 +101,8 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
-/// apply_layout → draw) and additionally pre-warms the attachment image cache
+/// Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
+/// `apply_layout` → draw) and additionally pre-warms the attachment image cache
 /// so the single frame paints real decoded thumbnails rather than a loading
 /// placeholder.
 fn render_shot_to_png(

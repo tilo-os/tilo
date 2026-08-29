@@ -120,7 +120,7 @@ fn is_spellable(word: &str) -> bool {
     // A token that begins with a digit is number-like: ordinals ("100th",
     // "1st"), versions ("3a"), measurements ("12px"). These are not dictionary
     // words, so skip them rather than flag them.
-    if word.chars().next().is_some_and(|c| c.is_numeric()) {
+    if word.chars().next().is_some_and(char::is_numeric) {
         return false;
     }
 
@@ -177,7 +177,7 @@ fn looks_like_domain(word: &str) -> bool {
     // Require the trailing label to be alphabetic (a TLD-ish), so that decimals
     // like `3.14` (handled by the no-alpha path anyway) and ordinary sentence
     // text never reach here.
-    alnum(before) && alnum(after) && after.chars().any(|c| c.is_alphabetic())
+    alnum(before) && alnum(after) && after.chars().any(char::is_alphabetic)
 }
 
 #[cfg(test)]

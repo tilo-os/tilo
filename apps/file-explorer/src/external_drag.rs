@@ -34,7 +34,7 @@ static SLOT: Mutex<Slot> = Mutex::new(Slot {
 });
 
 fn slot() -> std::sync::MutexGuard<'static, Slot> {
-    SLOT.lock().unwrap_or_else(|e| e.into_inner())
+    SLOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Files started carrying `paths`.

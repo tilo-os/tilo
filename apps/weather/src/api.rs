@@ -7,8 +7,8 @@
 //! sample data (`sample.rs`).
 //!
 //! Endpoints (no API key required):
-//!   * Forecast:  https://api.open-meteo.com/v1/forecast
-//!   * Geocoding: https://geocoding-api.open-meteo.com/v1/search
+//!   * Forecast:  <https://api.open-meteo.com/v1/forecast>
+//!   * Geocoding: <https://geocoding-api.open-meteo.com/v1/search>
 
 use serde::Deserialize;
 
@@ -43,12 +43,9 @@ pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
 /// are all unitless indices or µg/m³, so no unit preference is threaded here.
 pub fn air_quality_url(lat: f64, lon: f64) -> String {
     format!(
-        "{base}?latitude={lat:.4}&longitude={lon:.4}\
+        "{AIR_QUALITY_BASE}?latitude={lat:.4}&longitude={lon:.4}\
          &current=european_aqi,us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone\
          &timezone=auto",
-        base = AIR_QUALITY_BASE,
-        lat = lat,
-        lon = lon,
     )
 }
 
@@ -66,7 +63,7 @@ fn url_encode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             other => out.push_str(&format!("%{other:02X}")),

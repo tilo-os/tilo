@@ -20,8 +20,8 @@ pub fn norm_channel_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// SponsorBlock segment categories. These map 1:1 onto the official
-/// SponsorBlock API category strings (`api_key`), so the same enum is
+/// `SponsorBlock` segment categories. These map 1:1 onto the official
+/// `SponsorBlock` API category strings (`api_key`), so the same enum is
 /// used both for the on-screen seek-bar markers and for the live query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum Category {
@@ -48,7 +48,7 @@ impl Category {
         Category::Filler,
     ];
 
-    /// The SponsorBlock API key (`category` field in the JSON response).
+    /// The `SponsorBlock` API key (`category` field in the JSON response).
     pub fn api_key(self) -> &'static str {
         match self {
             Category::Sponsor => "sponsor",
@@ -93,7 +93,7 @@ impl Category {
         }
     }
 
-    /// The official SponsorBlock colour identity (RGB), kept here so the
+    /// The official `SponsorBlock` colour identity (RGB), kept here so the
     /// seek-bar legend matches what users already recognise. These are the
     /// brand colours of the *data source*, not OS chrome — chrome (panels,
     /// text, surfaces) still comes from the [`ui::theme::Theme`].
@@ -111,7 +111,7 @@ impl Category {
     }
 }
 
-/// How Tube treats a SponsorBlock category, per-category. This is the
+/// How Tube treats a `SponsorBlock` category, per-category. This is the
 /// Grayjay-style three-way mode (not a plain on/off): each category can be
 /// auto-skipped, merely marked with a manual skip button, or ignored entirely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl SkipMode {
     }
 }
 
-/// One SponsorBlock segment within a video, in seconds.
+/// One `SponsorBlock` segment within a video, in seconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
     pub category: Category,
@@ -315,14 +315,14 @@ pub struct Channel {
 pub struct Video {
     pub id: VideoId,
     pub title: String,
-    /// DeArrow community-sourced, non-clickbait title. When DeArrow is
+    /// `DeArrow` community-sourced, non-clickbait title. When `DeArrow` is
     /// enabled this replaces [`title`]; an indicator badge marks it.
     #[serde(default)]
     pub dearrow_title: Option<String>,
     pub channel_id: ChannelId,
     pub channel_name: String,
     pub channel_seed: String,
-    /// Real uploader avatar URL carried on a feed/search list item (YouTube
+    /// Real uploader avatar URL carried on a feed/search list item (`YouTube`
     /// returns it on the channel tag). Used to populate the channel record's
     /// [`Channel::avatar_url`] so Home/Search cards show the real creator icon
     /// without a separate channel-page fetch. Empty on the offline sample.
@@ -340,7 +340,7 @@ pub struct Video {
     #[serde(default)]
     pub thumbnail_url: String,
     pub category: String,
-    /// Marks whether DeArrow has a community thumbnail for this video
+    /// Marks whether `DeArrow` has a community thumbnail for this video
     /// (we render a "neutral frame" treatment instead of the clickbait
     /// frame when [`Settings::dearrow_thumbnails`] is on).
     #[serde(default)]
@@ -354,7 +354,7 @@ pub struct Video {
 }
 
 impl Video {
-    /// The title to display given the DeArrow toggle.
+    /// The title to display given the `DeArrow` toggle.
     pub fn display_title(&self, dearrow: bool) -> &str {
         if dearrow && let Some(t) = &self.dearrow_title {
             return t;
@@ -362,7 +362,7 @@ impl Video {
         &self.title
     }
 
-    /// Whether a DeArrow alternative exists *and* is active.
+    /// Whether a `DeArrow` alternative exists *and* is active.
     pub fn dearrow_active(&self, dearrow: bool) -> bool {
         dearrow && self.dearrow_title.is_some()
     }
@@ -376,14 +376,14 @@ pub struct Settings {
     /// to auto-skip (matches the upstream extension default of "skip everything
     /// but filler").
     pub categories: BTreeMap<String, SkipMode>,
-    /// DeArrow master switch. When off, neither titles nor thumbnails are
+    /// `DeArrow` master switch. When off, neither titles nor thumbnails are
     /// replaced regardless of the two sub-toggles below.
     pub dearrow_enabled: bool,
     /// Replace clickbait titles with the community-sourced factual one.
     #[serde(default = "default_true")]
     pub dearrow_titles: bool,
     pub dearrow_thumbnails: bool,
-    /// Show the crowdsourced dislike count (Return YouTube Dislike) on the watch
+    /// Show the crowdsourced dislike count (Return `YouTube` Dislike) on the watch
     /// page alongside likes.
     #[serde(default = "default_true")]
     pub return_dislike_enabled: bool,
@@ -427,7 +427,7 @@ impl Default for Settings {
 
 impl Settings {
     /// The effective [`SkipMode`] for a category: the master switch forces
-    /// `Disabled` when SponsorBlock is off; otherwise the stored per-category
+    /// `Disabled` when `SponsorBlock` is off; otherwise the stored per-category
     /// mode (defaulting to auto-skip for an absent key).
     pub fn mode_of(&self, c: Category) -> SkipMode {
         if !self.sponsorblock_enabled {
@@ -464,12 +464,12 @@ impl Settings {
         self.categories.insert(c.api_key().to_string(), cur.next());
     }
 
-    /// Whether DeArrow title replacement is active (master + titles sub-toggle).
+    /// Whether `DeArrow` title replacement is active (master + titles sub-toggle).
     pub fn dearrow_titles_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_titles
     }
 
-    /// Whether DeArrow thumbnail replacement is active (master + thumbs toggle).
+    /// Whether `DeArrow` thumbnail replacement is active (master + thumbs toggle).
     pub fn dearrow_thumbs_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_thumbnails
     }
@@ -477,7 +477,7 @@ impl Settings {
 
 /// Where the catalogue currently on screen came from. Drives the top-bar
 /// status pill ("Live" vs "Sample") so the user always knows whether they are
-/// looking at real YouTube data or the bundled offline sample.
+/// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
     /// True once a live backend has actually returned real data this session.
@@ -586,13 +586,13 @@ pub struct TubeModel {
     /// Ordered related-video ids returned by the live backend for [`related_of`].
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
-    /// Crowdsourced dislike counts (Return YouTube Dislike), keyed by video id.
+    /// Crowdsourced dislike counts (Return `YouTube` Dislike), keyed by video id.
     /// Kept off [`Video`] so the API result folds in without a catalogue rewrite.
     #[serde(default)]
     pub dislikes: BTreeMap<VideoId, u64>,
-    /// DeArrow community thumbnail URLs (a rendered frame at the top-voted
+    /// `DeArrow` community thumbnail URLs (a rendered frame at the top-voted
     /// timestamp, or a submitted image), keyed by video id. Used in place of the
-    /// clickbait frame when DeArrow thumbnails are enabled.
+    /// clickbait frame when `DeArrow` thumbnails are enabled.
     #[serde(default)]
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
     /// Whether the home/trending feed is currently being fetched from the live
@@ -717,10 +717,10 @@ impl TubeModel {
     /// The like count to display for a video: the base count plus one while the
     /// user has liked it this session, so the pill's number tracks its state.
     pub fn display_likes(&self, v: &Video) -> u64 {
-        v.likes + if self.is_liked(&v.id) { 1 } else { 0 }
+        v.likes + u64::from(self.is_liked(&v.id))
     }
 
-    /// The crowdsourced dislike count for a video (Return YouTube Dislike), once
+    /// The crowdsourced dislike count for a video (Return `YouTube` Dislike), once
     /// fetched. `None` until it lands (or when disabled).
     pub fn dislikes_of(&self, id: &str) -> Option<u64> {
         self.dislikes.get(id).copied()
@@ -773,7 +773,7 @@ impl TubeModel {
             .collect()
     }
 
-    /// Insert or update a video by id, preserving any SponsorBlock segments /
+    /// Insert or update a video by id, preserving any `SponsorBlock` segments /
     /// comments already fetched for it (a fresh list item carries neither).
     pub fn upsert_video(&mut self, v: Video) {
         if let Some(slot) = self.videos.iter_mut().find(|x| x.id == v.id) {
@@ -868,7 +868,7 @@ impl TubeModel {
         }
         let nname = norm_channel_name(name);
         let mut changed = false;
-        for ch in self.channels.iter_mut() {
+        for ch in &mut self.channels {
             let matches = (!id.is_empty() && ch.id == id)
                 || (!nname.is_empty() && norm_channel_name(&ch.name) == nname);
             if matches && ch.avatar_url.is_empty() {
@@ -895,7 +895,7 @@ impl TubeModel {
         if by_name.is_empty() {
             return;
         }
-        for ch in self.channels.iter_mut() {
+        for ch in &mut self.channels {
             if ch.avatar_url.is_empty()
                 && let Some(url) = by_name.get(&norm_channel_name(&ch.name))
             {

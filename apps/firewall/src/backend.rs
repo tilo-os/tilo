@@ -134,8 +134,7 @@ pub fn import() -> Option<FirewallConfig> {
     let default_name = query(&["--get-default-zone"]).ok()?;
     let default_zone = ZoneKind::from_name(&default_name).unwrap_or(ZoneKind::Public);
     let panic_mode = query(&["--query-panic"])
-        .map(|s| s == "yes")
-        .unwrap_or(false);
+        .is_ok_and(|s| s == "yes");
 
     let zone_names = query(&["--get-zones"]).unwrap_or_default();
     let mut zones = Vec::new();
@@ -183,7 +182,7 @@ pub fn parse_list_all(kind: ZoneKind, text: &str) -> Zone {
         match key {
             "target" => zone.target = parse_target(value),
             "interfaces" => {
-                zone.interfaces = value.split_whitespace().map(str::to_string).collect()
+                zone.interfaces = value.split_whitespace().map(str::to_string).collect();
             }
             "services" => zone.services = value.split_whitespace().map(str::to_string).collect(),
             "ports" => {
@@ -243,14 +242,13 @@ pub fn parse_rich_rule(line: &str) -> Option<Rule> {
     let source = quoted_after(line, "source address=").unwrap_or_default();
     let matcher = if let Some(svc) = quoted_after(line, "service name=") {
         Matcher::Service(svc)
-    } else if let Some(port) = quoted_after(line, "port port=") {
+    } else {
+        let port = quoted_after(line, "port port=")?;
         let proto = match quoted_after(line, "protocol=").as_deref() {
             Some("udp") => Proto::Udp,
             _ => Proto::Tcp,
         };
         Matcher::Port { port, proto }
-    } else {
-        return None;
     };
     Some(Rule::new(matcher, action, source))
 }
@@ -316,14 +314,13 @@ fn plan_zone(z: &Zone, out: &mut Vec<String>) {
 fn rich_rule(zone: &str, matcher: Matcher, action: Action, source: &str) -> String {
     let has_source = !source.trim().is_empty();
     // Simple fast-path: allow a port from anywhere → plain --add-port.
-    if action == Action::Allow && !has_source {
-        if let Matcher::Port { port, proto } = &matcher {
+    if action == Action::Allow && !has_source
+        && let Matcher::Port { port, proto } = &matcher {
             return format!(
                 "firewall-cmd --permanent --zone={zone} --add-port={port}/{}",
                 proto.label()
             );
         }
-    }
 
     let mut rule = String::from("rule family=\"ipv4\"");
     if has_source {

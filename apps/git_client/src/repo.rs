@@ -42,9 +42,7 @@ pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     if let Some(wd) = repo.workdir() {
         model.workdir = wd.to_string_lossy().to_string();
         model.name = wd
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "repository".into());
+            .file_name().map_or_else(|| "repository".into(), |s| s.to_string_lossy().to_string());
     }
 
     read_identity(&repo, &mut model);
@@ -76,9 +74,7 @@ fn read_head(repo: &Repository, model: &mut RepoModel) {
                 model.head = head.shorthand().unwrap_or("HEAD").to_string();
             } else {
                 let short = head
-                    .target()
-                    .map(|o| short_id(&o.to_string()))
-                    .unwrap_or_else(|| "HEAD".into());
+                    .target().map_or_else(|| "HEAD".into(), |o| short_id(&o.to_string()));
                 model.head = format!("detached @ {short}");
             }
         }
@@ -310,9 +306,7 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
         let author = commit.author();
         let summary = commit.summary().unwrap_or("").to_string();
         let full = commit.message().unwrap_or("");
-        let body = full
-            .splitn(2, '\n')
-            .nth(1)
+        let body = full.split_once('\n').map(|x| x.1)
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
@@ -338,14 +332,13 @@ fn ref_decorations(repo: &Repository) -> HashMap<String, Vec<RefLabel>> {
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
 
     // HEAD pointer.
-    if let Ok(head) = repo.head() {
-        if let Some(oid) = head.target() {
+    if let Ok(head) = repo.head()
+        && let Some(oid) = head.target() {
             map.entry(oid.to_string()).or_default().push(RefLabel {
                 name: "HEAD".into(),
                 kind: RefKind::Head,
             });
         }
-    }
 
     if let Ok(refs) = repo.references() {
         for r in refs.flatten() {
@@ -387,7 +380,7 @@ fn read_branches(repo: &Repository, model: &mut RepoModel) {
         let upstream = branch
             .upstream()
             .ok()
-            .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()));
+            .and_then(|u| u.name().ok().flatten().map(std::string::ToString::to_string));
         let (ahead, behind) = upstream_delta(repo, &branch);
         model.branches.push(Branch {
             name: name.to_string(),
@@ -404,11 +397,10 @@ fn read_branches(repo: &Repository, model: &mut RepoModel) {
 fn upstream_delta(repo: &Repository, branch: &git2::Branch) -> (u32, u32) {
     let local = branch.get().target();
     let upstream = branch.upstream().ok().and_then(|u| u.get().target());
-    if let (Some(l), Some(u)) = (local, upstream) {
-        if let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u) {
+    if let (Some(l), Some(u)) = (local, upstream)
+        && let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u) {
             return (ahead as u32, behind as u32);
         }
-    }
     (0, 0)
 }
 
@@ -543,8 +535,7 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let rel = Path::new(file);
     let wt_exists = repo
         .workdir()
-        .map(|w| w.join(rel).exists())
-        .unwrap_or(false);
+        .is_some_and(|w| w.join(rel).exists());
     if wt_exists {
         index
             .add_path(rel)
@@ -565,18 +556,15 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
 pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
-    match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-        Some(head_commit) => {
-            // Reset just this path in the index to its HEAD blob.
-            repo.reset_default(Some(head_commit.as_object()), [rel])
-                .with_context(|| format!("git reset HEAD -- {file}"))?;
-        }
-        None => {
-            // No commits yet: unstaging means removing it from the index.
-            let mut index = repo.index()?;
-            let _ = index.remove_path(rel);
-            index.write()?;
-        }
+    if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        // Reset just this path in the index to its HEAD blob.
+        repo.reset_default(Some(head_commit.as_object()), [rel])
+            .with_context(|| format!("git reset HEAD -- {file}"))?;
+    } else {
+        // No commits yet: unstaging means removing it from the index.
+        let mut index = repo.index()?;
+        let _ = index.remove_path(rel);
+        index.write()?;
     }
     Ok(())
 }
@@ -596,17 +584,14 @@ pub fn stage_all(path: &Path) -> anyhow::Result<()> {
 /// Unstage every staged change back to HEAD. Mirrors `git reset HEAD`.
 pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
     let repo = open(path)?;
-    match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-        Some(head_commit) => {
-            repo.reset(head_commit.as_object(), ResetType::Mixed, None)
-                .context("git reset HEAD")?;
-        }
-        None => {
-            // Empty repo: clear the index entirely.
-            let mut index = repo.index()?;
-            index.clear()?;
-            index.write()?;
-        }
+    if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        repo.reset(head_commit.as_object(), ResetType::Mixed, None)
+            .context("git reset HEAD")?;
+    } else {
+        // Empty repo: clear the index entirely.
+        let mut index = repo.index()?;
+        index.clear()?;
+        index.write()?;
     }
     Ok(())
 }
@@ -680,8 +665,7 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
     // Restrict to our file so hunk ordering matches the single-file diff.
     apply_opts.delta_callback(move |delta| {
         delta
-            .map(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
-            .unwrap_or(false)
+            .is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
     });
 
     repo.apply(&diff, location, Some(&mut apply_opts))
@@ -760,8 +744,7 @@ pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Resul
     });
     apply_opts.delta_callback(move |delta| {
         delta
-            .map(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
-            .unwrap_or(false)
+            .is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
     });
 
     repo.apply(&diff, ApplyLocation::WorkDir, Some(&mut apply_opts))
@@ -862,11 +845,10 @@ pub fn create_branch(
 /// `-D`, since the GUI confirms intent).
 pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
-    if let Ok(head) = repo.head() {
-        if head.shorthand() == Some(name) {
+    if let Ok(head) = repo.head()
+        && head.shorthand() == Some(name) {
             bail!("cannot delete the checked-out branch {name}");
         }
-    }
     let mut branch = repo
         .find_branch(name, BranchType::Local)
         .with_context(|| format!("no such local branch {name}"))?;
@@ -891,7 +873,7 @@ pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
         .fetch_refspecs()?
         .iter()
         .flatten()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     remote
         .fetch(&refspecs, Some(&mut fo), None)
@@ -990,7 +972,7 @@ pub fn stash_save(path: &Path, message: &str) -> anyhow::Result<String> {
 /// first configured remote, else an error.
 fn resolve_remote(repo: &Repository, want: Option<&str>) -> anyhow::Result<String> {
     let names = repo.remotes()?;
-    let all: Vec<String> = names.iter().flatten().map(|s| s.to_string()).collect();
+    let all: Vec<String> = names.iter().flatten().map(std::string::ToString::to_string).collect();
     if let Some(w) = want {
         if all.iter().any(|n| n == w) {
             return Ok(w.to_string());
@@ -1014,13 +996,11 @@ fn default_credentials(
     username: Option<&str>,
     allowed: git2::CredentialType,
 ) -> Result<git2::Cred, git2::Error> {
-    if allowed.contains(git2::CredentialType::SSH_KEY) {
-        if let Some(user) = username {
-            if let Ok(cred) = git2::Cred::ssh_key_from_agent(user) {
+    if allowed.contains(git2::CredentialType::SSH_KEY)
+        && let Some(user) = username
+            && let Ok(cred) = git2::Cred::ssh_key_from_agent(user) {
                 return Ok(cred);
             }
-        }
-    }
     if allowed.contains(git2::CredentialType::DEFAULT) {
         return git2::Cred::default();
     }
@@ -1032,7 +1012,7 @@ fn default_credentials(
 /// parent when bare. Returns `None` when no repo is reachable.
 pub fn workdir(path: &Path) -> Option<PathBuf> {
     let repo = Repository::discover(path).ok()?;
-    repo.workdir().map(|w| w.to_path_buf())
+    repo.workdir().map(std::path::Path::to_path_buf)
 }
 
 /// Mark a path as an object kind for callers that want to validate a tree
@@ -1043,10 +1023,9 @@ pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool>
     let tree = obj.peel_to_tree()?;
     let found = tree.get_path(Path::new(file)).is_ok();
     // Ensure we only report committed blobs, not directories.
-    if found {
-        if let Ok(entry) = tree.get_path(Path::new(file)) {
+    if found
+        && let Ok(entry) = tree.get_path(Path::new(file)) {
             return Ok(entry.kind() == Some(ObjectType::Blob));
         }
-    }
     Ok(false)
 }

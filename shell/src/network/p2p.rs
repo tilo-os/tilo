@@ -66,7 +66,7 @@ impl P2PClient {
 
                 Ok(DesktopBehaviour { gossipsub, mdns })
             })?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_mins(1)))
             .build();
 
         let topic = gossipsub::IdentTopic::new("quick-desktop-global");

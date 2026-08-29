@@ -378,8 +378,8 @@ impl RegistryIndex {
         serde_json::to_vec_pretty(self)
     }
 
-    /// Insert-or-replace an entry keyed by (app_id, version, arch, isa)
-    /// and refresh generated_unix; re-sign afterwards.
+    /// Insert-or-replace an entry keyed by (`app_id`, version, arch, isa)
+    /// and refresh `generated_unix`; re-sign afterwards.
     pub fn upsert(&mut self, entry: IndexEntry) {
         self.packages.retain(|e| {
             !(e.app_id == entry.app_id
@@ -472,11 +472,10 @@ impl RegistryIndex {
                 continue;
             }
             let Ok(ver) = e.semver() else { continue };
-            if let Some(req) = req {
-                if !req.matches(&ver) {
+            if let Some(req) = req
+                && !req.matches(&ver) {
                     continue;
                 }
-            }
             if e.verify_publisher().is_err() {
                 continue;
             }
@@ -485,8 +484,8 @@ impl RegistryIndex {
                 Some((cur, cur_ver)) => {
                     ver > *cur_ver
                         || (ver == *cur_ver
-                            && e.isa_level().map(|l| l.rank()).unwrap_or(0)
-                                > cur.isa_level().map(|l| l.rank()).unwrap_or(0))
+                            && e.isa_level().map_or(0, pkg::manifest::IsaLevel::rank)
+                                > cur.isa_level().map_or(0, pkg::manifest::IsaLevel::rank))
                 }
             };
             if better {
@@ -500,8 +499,7 @@ impl RegistryIndex {
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

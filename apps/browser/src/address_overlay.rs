@@ -178,7 +178,7 @@ impl AddressSuggestions {
         self.rect = Rect::new(
             top_left.x,
             top_left.y,
-            top_left.x + self.width as f64,
+            top_left.x + f64::from(self.width),
             top_left.y + self.panel_height(),
         );
     }
@@ -229,7 +229,7 @@ impl AddressSuggestions {
 
         let title_size = theme.tokens.typography.scale.sm;
         let url_size = theme.tokens.typography.scale.xs;
-        let text_max = (self.width as f64 - ROW_PAD_X * 2.0).max(0.0) as f32;
+        let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
 
         for (idx, entry) in self.items.iter().enumerate() {
             let row_top = self.rect.y0 + PAD + idx as f64 * ROW_H;
@@ -249,7 +249,7 @@ impl AddressSuggestions {
                     self.rect.x1 - 3.0,
                     row_top + ROW_H - 1.0,
                 );
-                let shape = RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
+                let shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
                 if is_selected {
                     let bar = Rect::new(
@@ -289,7 +289,7 @@ impl AddressSuggestions {
                 &entry.url,
                 url_size,
                 theme.text_dim,
-                transform * Affine::translate((x, row_top + 8.0 + title_size as f64 + 6.0)),
+                transform * Affine::translate((x, row_top + 8.0 + f64::from(title_size) + 6.0)),
                 Some(text_max),
             );
         }
@@ -314,15 +314,15 @@ impl Widget for AddressSuggestions {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         let taffy_origin = Point::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
         );
         self.relayout(taffy_origin);
     }
@@ -407,7 +407,7 @@ impl Widget for AddressSuggestions {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AddressSuggestions"
     }
 

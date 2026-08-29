@@ -100,7 +100,7 @@ impl FileSearchProvider {
 }
 
 impl SearchProvider for FileSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         // Rows carry their own kind ("Open files" / "Project files"); this is
         // the default/diagnostic label.
         "Files"
