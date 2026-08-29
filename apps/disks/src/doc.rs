@@ -17,7 +17,7 @@
 //! ```
 
 use ui::automerge::transaction::Transactable;
-use ui::automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use ui::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::Topology;
 
@@ -39,7 +39,10 @@ impl DisksDoc {
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
             let _ = doc.put(&ROOT, "selected", 0i64);
         }
-        if !matches!(doc.get(&ROOT, "selected_part"), Ok(Some((Value::Scalar(_), _)))) {
+        if !matches!(
+            doc.get(&ROOT, "selected_part"),
+            Ok(Some((Value::Scalar(_), _)))
+        ) {
             let _ = doc.put(&ROOT, "selected_part", -1i64);
         }
         if Self::get_str(doc, "pending").is_none() {

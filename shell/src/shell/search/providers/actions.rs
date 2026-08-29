@@ -242,12 +242,9 @@ impl Action {
                     let room = ws_id.raw().to_string();
                     // An ordinary grant on the room, through the tree so it
                     // reaches the room document (and other members) and disk.
-                    let cap = CapOverride::membership(
-                        Subject::agent(agent.clone()),
-                        room,
-                        Verb::Write,
-                    )
-                    .with_id(format!("agent-member:{agent}"));
+                    let cap =
+                        CapOverride::membership(Subject::agent(agent.clone()), room, Verb::Write)
+                            .with_id(format!("agent-member:{agent}"));
                     tree.grant_in_workspace(ws_id, &user, cap)
                 };
                 if granted.is_none() {
@@ -334,7 +331,11 @@ impl Action {
                     )));
                 }
                 let kind = args.text("kind").unwrap_or("document");
-                let kind = if kind.trim().is_empty() { "document" } else { kind };
+                let kind = if kind.trim().is_empty() {
+                    "document"
+                } else {
+                    kind
+                };
                 st.push_record_request(id, kind);
                 Ok(())
             },
@@ -381,7 +382,8 @@ impl SearchProvider for ActionsProvider {
             // broker (peer sync is not required — an agent uses this
             // session's own broker socket).
             if action.id.starts_with("agent.")
-                && (!ctx.chrome.collab_available() || ctx.chrome.tree().active_workspace().is_none())
+                && (!ctx.chrome.collab_available()
+                    || ctx.chrome.tree().active_workspace().is_none())
             {
                 continue;
             }
@@ -557,10 +559,7 @@ mod tests {
         );
         let mut connect = query(&cs, "connect");
         connect.sort_by_key(|r| -r.score);
-        assert_eq!(
-            connect.first().map(|r| r.id.as_str()),
-            Some("peer.connect"),
-        );
+        assert_eq!(connect.first().map(|r| r.id.as_str()), Some("peer.connect"),);
     }
 
     #[test]
@@ -717,7 +716,10 @@ mod tests {
             .active_workspace()
             .expect("fixture has a room")
             .agent_members();
-        assert!(before.is_empty(), "nobody is admitted before the action runs");
+        assert!(
+            before.is_empty(),
+            "nobody is admitted before the action runs"
+        );
 
         let action = Action::ALL
             .iter()

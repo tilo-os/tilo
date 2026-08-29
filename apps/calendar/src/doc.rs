@@ -48,7 +48,10 @@ impl CalDoc {
 
     /// True if the document has never been seeded.
     pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(doc.get(&ROOT, "events"), Ok(Some((Value::Object(ObjType::Map), _))))
+        !matches!(
+            doc.get(&ROOT, "events"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
     }
 
     /// Mirror the whole in-memory model into the CRDT. Idempotent —
@@ -88,7 +91,11 @@ impl CalDoc {
         let _ = doc.put(m, "color", e.color.index() as i64);
         let _ = doc.put(m, "rrule", e.recurrence.to_rrule());
         let _ = doc.put(m, "reminder", e.reminder_min.unwrap_or(-1));
-        let _ = doc.put(m, "project", e.project.map(|p| p.to_string()).unwrap_or_default());
+        let _ = doc.put(
+            m,
+            "project",
+            e.project.map(|p| p.to_string()).unwrap_or_default(),
+        );
         let _ = doc.put(m, "cal", e.calendar_id.clone().unwrap_or_default());
     }
 
@@ -97,8 +104,16 @@ impl CalDoc {
         let _ = doc.put(m, "done", t.done);
         let _ = doc.put(m, "due", t.due.map(|d| d.to_string()).unwrap_or_default());
         let _ = doc.put(m, "priority", t.priority.rank() as i64);
-        let _ = doc.put(m, "project", t.project.map(|p| p.to_string()).unwrap_or_default());
-        let _ = doc.put(m, "parent", t.parent.map(|p| p.to_string()).unwrap_or_default());
+        let _ = doc.put(
+            m,
+            "project",
+            t.project.map(|p| p.to_string()).unwrap_or_default(),
+        );
+        let _ = doc.put(
+            m,
+            "parent",
+            t.parent.map(|p| p.to_string()).unwrap_or_default(),
+        );
     }
 
     /// Update just an event's scalar fields (after an inline edit) so the
@@ -195,7 +210,11 @@ impl CalDoc {
             let block = doc
                 .insert_object(list, i, ObjType::Map)
                 .expect("insert notes block never fails");
-            let kind = if line.starts_with("# ") { "heading1" } else { "paragraph" };
+            let kind = if line.starts_with("# ") {
+                "heading1"
+            } else {
+                "paragraph"
+            };
             let body = line.strip_prefix("# ").unwrap_or(line);
             let _ = doc.put(&block, "kind", kind);
             let text_id = doc
@@ -456,17 +475,15 @@ fn get_int(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
 
 fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
     match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(
-            v.as_ref(),
-            automerge::ScalarValue::Boolean(true)
-        ),
+        Ok(Some((Value::Scalar(v), _))) => {
+            matches!(v.as_ref(), automerge::ScalarValue::Boolean(true))
+        }
         _ => false,
     }
 }
 
 fn parse_dt(s: &str) -> NaiveDateTime {
-    NaiveDateTime::parse_from_str(s, DT_FMT)
-        .unwrap_or_else(|_| chrono::Local::now().naive_local())
+    NaiveDateTime::parse_from_str(s, DT_FMT).unwrap_or_else(|_| chrono::Local::now().naive_local())
 }
 
 fn parse_opt_id(s: &str) -> Option<Id> {
@@ -494,7 +511,11 @@ mod tests {
         assert_eq!(back.tasks.len(), model.tasks.len());
 
         // Spot-check a known event survives the round trip.
-        let standup = back.events.iter().find(|e| e.title == "Team standup").unwrap();
+        let standup = back
+            .events
+            .iter()
+            .find(|e| e.title == "Team standup")
+            .unwrap();
         assert_eq!(standup.recurrence, Recurrence::Weekdays);
         assert_eq!(standup.reminder_min, Some(10));
 
@@ -525,7 +546,10 @@ mod tests {
         CalDoc::delete_event(&mut doc, victim);
         let after = CalDoc::read_model(&doc);
         assert_eq!(after.events.len(), before - 1);
-        assert!(!after.events.iter().any(|e| e.id == victim), "deleted event is gone");
+        assert!(
+            !after.events.iter().any(|e| e.id == victim),
+            "deleted event is gone"
+        );
         // Idempotent.
         CalDoc::delete_event(&mut doc, victim);
         assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
@@ -541,7 +565,10 @@ mod tests {
         CalDoc::delete_task(&mut doc, victim);
         let after = CalDoc::read_model(&doc);
         assert_eq!(after.tasks.len(), before - 1);
-        assert!(!after.tasks.iter().any(|t| t.id == victim), "deleted task is gone");
+        assert!(
+            !after.tasks.iter().any(|t| t.id == victim),
+            "deleted task is gone"
+        );
     }
 
     #[test]
@@ -554,10 +581,16 @@ mod tests {
         CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
         assert_eq!(
             CalDoc::delete_outbox(&doc),
-            vec![("work/default".to_string(), a), ("icloud/personal".to_string(), b)]
+            vec![
+                ("work/default".to_string(), a),
+                ("icloud/personal".to_string(), b)
+            ]
         );
         CalDoc::dequeue_delete(&mut doc, a);
-        assert_eq!(CalDoc::delete_outbox(&doc), vec![("icloud/personal".to_string(), b)]);
+        assert_eq!(
+            CalDoc::delete_outbox(&doc),
+            vec![("icloud/personal".to_string(), b)]
+        );
     }
 
     #[test]

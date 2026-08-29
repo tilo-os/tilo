@@ -223,7 +223,14 @@ fn visit(
 
             let mut my_children: Vec<AkNodeId> = Vec::new();
             for child in w.children() {
-                visit(child, ptr_to_taffy, scale, walk_counter, nodes, &mut my_children);
+                visit(
+                    child,
+                    ptr_to_taffy,
+                    scale,
+                    walk_counter,
+                    nodes,
+                    &mut my_children,
+                );
             }
             // Synthetic children with no backing widget — a table's rows/cells.
             for synth in &access_node.children {
@@ -238,7 +245,14 @@ fn visit(
             // Presentational: collapse out, reparent children onto the parent.
             *walk_counter += 1;
             for child in w.children() {
-                visit(child, ptr_to_taffy, scale, walk_counter, nodes, parent_children);
+                visit(
+                    child,
+                    ptr_to_taffy,
+                    scale,
+                    walk_counter,
+                    nodes,
+                    parent_children,
+                );
             }
         }
     }
@@ -509,7 +523,11 @@ mod tests {
     /// Exactly as the App does before `build_tree_update`.
     fn lay_out(
         root: &mut dyn Widget,
-    ) -> (TaffyTree<()>, HashMap<taffy::NodeId, *mut dyn Widget>, taffy::NodeId) {
+    ) -> (
+        TaffyTree<()>,
+        HashMap<taffy::NodeId, *mut dyn Widget>,
+        taffy::NodeId,
+    ) {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let theme = Theme::dark();
@@ -598,11 +616,7 @@ mod tests {
         );
 
         // The window root owns BOTH the Group and the reparented Label.
-        let (_, window) = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == ROOT_ID)
-            .unwrap();
+        let (_, window) = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
         assert_eq!(
             window.children().len(),
             2,
@@ -632,8 +646,12 @@ mod tests {
             AccessNode::new(Role::Row)
                 .with_position(pos, size)
                 .with_children(vec![
-                    AccessNode::new(Role::Cell).with_name("Name").with_position(1, 2),
-                    AccessNode::new(Role::Cell).with_name("Age").with_position(2, 2),
+                    AccessNode::new(Role::Cell)
+                        .with_name("Name")
+                        .with_position(1, 2),
+                    AccessNode::new(Role::Cell)
+                        .with_name("Age")
+                        .with_position(2, 2),
                 ])
         };
         let table_access = AccessNode::new(Role::Table)
@@ -661,7 +679,10 @@ mod tests {
         assert_eq!(row_nodes.len(), 2, "two row nodes reached the tree");
         for (_, r) in &row_nodes {
             assert_eq!(r.size_of_set(), Some(2), "row knows the table has 2 rows");
-            assert!(r.position_in_set().is_some(), "row carries its 1-based position");
+            assert!(
+                r.position_in_set().is_some(),
+                "row carries its 1-based position"
+            );
             assert_eq!(r.children().len(), 2, "each row owns two cells");
         }
 
@@ -672,8 +693,14 @@ mod tests {
             .filter(|(_, n)| n.role() == AkRole::Cell)
             .map(|(_, n)| n.label())
             .collect();
-        assert!(cell_labels.contains(&Some("Name")), "a cell is named for the Name column");
-        assert!(cell_labels.contains(&Some("Age")), "a cell is named for the Age column");
+        assert!(
+            cell_labels.contains(&Some("Name")),
+            "a cell is named for the Name column"
+        );
+        assert!(
+            cell_labels.contains(&Some("Age")),
+            "a cell is named for the Age column"
+        );
         assert_eq!(cell_labels.len(), 4, "two cells per row across two rows");
     }
 
@@ -699,9 +726,15 @@ mod tests {
         assert!(focused_taffy.is_some());
 
         let update = build_tree_update(&root, &node_map, focused_taffy, 1.0);
-        assert_ne!(update.focus, ROOT_ID, "focus should be the button, not root");
+        assert_ne!(
+            update.focus, ROOT_ID,
+            "focus should be the button, not root"
+        );
         assert!(
-            update.nodes.iter().any(|(id, n)| *id == update.focus && n.role() == AkRole::Button),
+            update
+                .nodes
+                .iter()
+                .any(|(id, n)| *id == update.focus && n.role() == AkRole::Button),
             "focus must point at the Button node"
         );
     }
@@ -839,7 +872,11 @@ mod tests {
             .iter()
             .find(|(_, n)| n.role() == AkRole::TextInput)
             .unwrap();
-        assert_eq!(node.value(), None, "protected value must not leak to the AT");
+        assert_eq!(
+            node.value(),
+            None,
+            "protected value must not leak to the AT"
+        );
     }
 
     #[test]

@@ -32,7 +32,9 @@ pub struct NavStack<T> {
 impl<T: Clone + PartialEq> NavStack<T> {
     /// A stack rooted at `root` (the first, un-poppable view).
     pub fn new(root: T) -> Self {
-        Self { entries: vec![root] }
+        Self {
+            entries: vec![root],
+        }
     }
 
     /// The view currently on screen (the top of the stack). Never `None` — the
@@ -202,10 +204,18 @@ mod tests {
     fn duplicate_push_is_a_noop() {
         let mut s = NavStack::new("home");
         s.push("home");
-        assert_eq!(s.depth(), 1, "pushing the current view does not grow history");
+        assert_eq!(
+            s.depth(),
+            1,
+            "pushing the current view does not grow history"
+        );
         s.push("results");
         s.push("results");
-        assert_eq!(s.depth(), 2, "a repeated push of the same new view is ignored");
+        assert_eq!(
+            s.depth(),
+            2,
+            "a repeated push of the same new view is ignored"
+        );
     }
 
     #[test]
@@ -231,7 +241,11 @@ mod tests {
         let mut g = EdgeSwipeBack::new(24.0, 80.0);
         g.pointer_down(Point::new(8.0, 400.0));
         assert!(g.is_armed());
-        assert_eq!(g.pointer_move(Point::new(40.0, 402.0)), None, "short drag: not yet");
+        assert_eq!(
+            g.pointer_move(Point::new(40.0, 402.0)),
+            None,
+            "short drag: not yet"
+        );
         assert_eq!(
             g.pointer_move(Point::new(100.0, 404.0)),
             Some(NavAction::Back),
@@ -251,7 +265,11 @@ mod tests {
         let mut g = EdgeSwipeBack::new(24.0, 80.0);
         g.pointer_down(Point::new(300.0, 400.0));
         assert!(!g.is_armed());
-        assert_eq!(g.pointer_move(Point::new(500.0, 400.0)), None, "no arm → no fire");
+        assert_eq!(
+            g.pointer_move(Point::new(500.0, 400.0)),
+            None,
+            "no arm → no fire"
+        );
     }
 
     #[test]

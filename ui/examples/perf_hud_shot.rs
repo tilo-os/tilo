@@ -112,5 +112,8 @@ fn main() {
     );
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.bg_app, &out);
-    println!("wrote {} ({WIDTH}x{HEIGHT} px, {frames} frames)", out.display());
+    println!(
+        "wrote {} ({WIDTH}x{HEIGHT} px, {frames} frames)",
+        out.display()
+    );
 }

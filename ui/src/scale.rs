@@ -28,7 +28,11 @@ pub fn composite_transform(device_scale: f64) -> Affine {
 /// device scale before layout.
 #[inline]
 pub fn logical_size(physical: (u32, u32), device_scale: f64) -> (f64, f64) {
-    let s = if device_scale > 0.0 { device_scale } else { 1.0 };
+    let s = if device_scale > 0.0 {
+        device_scale
+    } else {
+        1.0
+    };
     (physical.0 as f64 / s, physical.1 as f64 / s)
 }
 
@@ -105,18 +109,30 @@ mod tests {
 
             let mut scene = Scene::new();
             let rect = Rect::new(20.0, 15.0, 60.0, 45.0); // logical
-            scene.fill(Fill::NonZero, composite_transform(scale), Color::WHITE, None, &rect);
+            scene.fill(
+                Fill::NonZero,
+                composite_transform(scale),
+                Color::WHITE,
+                None,
+                &rect,
+            );
 
             let mut r = OffscreenRenderer::new(pw, ph);
             let buf = r.render(&scene, Color::BLACK);
 
             let (cx, cy) = physical_point((40.0, 30.0), scale);
             let (cr, _, _, _) = OffscreenRenderer::sample(&buf, pw, cx as u32, cy as u32);
-            assert!(cr > 200, "rect centre inked at physical ({cx:.0},{cy:.0}) for scale {scale}, got r={cr}");
+            assert!(
+                cr > 200,
+                "rect centre inked at physical ({cx:.0},{cy:.0}) for scale {scale}, got r={cr}"
+            );
 
             let (ox, oy) = physical_point((6.0, 6.0), scale);
             let (obr, _, _, _) = OffscreenRenderer::sample(&buf, pw, ox as u32, oy as u32);
-            assert!(obr < 60, "background stays black outside the rect for scale {scale}, got r={obr}");
+            assert!(
+                obr < 60,
+                "background stays black outside the rect for scale {scale}, got r={obr}"
+            );
         }
     }
 
@@ -127,9 +143,16 @@ mod tests {
         assert!(lw > 0.0 && lh > 0.0);
         for scale in [1.0f64, 1.25, 1.5, 1.75] {
             let (w2, h2) = tr.measure("Fractional scaling", 16.0, None);
-            assert_eq!((w2, h2), (lw, lh), "measure is scale-free (logical) at {scale}");
+            assert_eq!(
+                (w2, h2),
+                (lw, lh),
+                "measure is scale-free (logical) at {scale}"
+            );
             let pw = physical_len(lw as f64, scale);
-            assert!((pw - lw as f64 * scale).abs() < 1e-6, "physical width = logical × {scale}");
+            assert!(
+                (pw - lw as f64 * scale).abs() < 1e-6,
+                "physical width = logical × {scale}"
+            );
         }
     }
 
@@ -194,6 +217,9 @@ mod tests {
             "native 2× render must carry more anti-alias detail than an upscale: \
              native={native_levels} upscaled={upscaled_levels}",
         );
-        assert!(native_levels > 4, "the native render produced real anti-aliased text");
+        assert!(
+            native_levels > 4,
+            "the native render produced real anti-aliased text"
+        );
     }
 }

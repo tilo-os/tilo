@@ -139,10 +139,10 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let stored = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            let deflated = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+            let stored =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let deflated =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             // The mimetype must be first and stored.
             zip.start_file("mimetype", stored).unwrap();
@@ -172,7 +172,8 @@ mod tests {
             .unwrap();
 
             zip.start_file("OEBPS/ch1.xhtml", deflated).unwrap();
-            zip.write_all(b"<html><body><p>hi</p></body></html>").unwrap();
+            zip.write_all(b"<html><body><p>hi</p></body></html>")
+                .unwrap();
 
             zip.start_file("OEBPS/cover.png", deflated).unwrap();
             zip.write_all(cover_png).unwrap();

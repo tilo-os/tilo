@@ -171,8 +171,7 @@ async fn round_trip_join_send_subscribe_read() {
             // 2. Stand up the server RPC system.
             let captured_joins = Rc::new(RefCell::new(Vec::<(String, Vec<u8>)>::new()));
             let captured_ops = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
-            let seed_backlog: Vec<Vec<u8>> =
-                vec![b"first-op".to_vec(), b"second-op".to_vec()];
+            let seed_backlog: Vec<Vec<u8>> = vec![b"first-op".to_vec(), b"second-op".to_vec()];
 
             let broker = FakeBroker {
                 captured_joins: captured_joins.clone(),

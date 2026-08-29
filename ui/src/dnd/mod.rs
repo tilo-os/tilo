@@ -21,15 +21,27 @@ pub struct DragDropManager {
 }
 
 impl DragDropManager {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn start(&mut self, payload: DragPayload, origin: Point) {
-        self.active = Some(DragState { payload, origin, current: origin });
+        self.active = Some(DragState {
+            payload,
+            origin,
+            current: origin,
+        });
     }
     pub fn update_position(&mut self, p: Point) {
-        if let Some(s) = &mut self.active { s.current = p; }
+        if let Some(s) = &mut self.active {
+            s.current = p;
+        }
     }
-    pub fn end(&mut self) -> Option<DragState> { self.active.take() }
-    pub fn is_active(&self) -> bool { self.active.is_some() }
+    pub fn end(&mut self) -> Option<DragState> {
+        self.active.take()
+    }
+    pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
 }
 
 impl DragDropManager {
@@ -38,7 +50,9 @@ impl DragDropManager {
             let dx = s.current.x - s.origin.x;
             let dy = s.current.y - s.origin.y;
             (dx * dx + dy * dy).sqrt()
-        } else { 0.0 }
+        } else {
+            0.0
+        }
     }
 }
 
@@ -103,8 +117,7 @@ fn percent_encode_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.as_bytes() {
         let c = *b;
-        let unreserved = c.is_ascii_alphanumeric()
-            || matches!(c, b'-' | b'_' | b'.' | b'~' | b'/');
+        let unreserved = c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'~' | b'/');
         if unreserved {
             out.push(c as char);
         } else {

@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use collab_types::{
     ArtifactId, ArtifactKind, ChannelEvent, ChannelId, ChannelState, Ed25519PublicKey, Identity,
-    OpClass, Role, SignedOp, Signature, SpaceId, canonical_bytes, verify_event,
+    OpClass, Role, Signature, SignedOp, SpaceId, canonical_bytes, verify_event,
 };
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -37,11 +37,7 @@ fn dkg_two() -> (ThresholdIdentity, ThresholdIdentity) {
     (a, b)
 }
 
-fn threshold_sign(
-    a: &ThresholdIdentity,
-    b: &ThresholdIdentity,
-    canon: &[u8],
-) -> Signature {
+fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) -> Signature {
     let mut rng_a = ChaCha20Rng::from_seed([40u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([41u8; 32]);
     let r1_a: SigningRound1 = a.sign_round1(&mut rng_a).unwrap();
@@ -95,10 +91,7 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
     // Re-verify via verify_event, the way the validator would — it
     // consumes the signing-bytes view, not the full enum, since the
     // signature doesn't cover its own field.
-    if let ChannelEvent::Genesis {
-        ref signature, ..
-    } = genesis
-    {
+    if let ChannelEvent::Genesis { ref signature, .. } = genesis {
         let bytes = genesis.signing_bytes().unwrap();
         verify_event(&bytes, signature, &a.group_public_key)
             .expect("threshold-signed Genesis must verify via verify_event");

@@ -94,10 +94,13 @@ fn rematerialize_group_cost() {
         let _ = to_ui_window_group(&placeholder_group(UiKind::Terminal, "Terminal"), &records);
     });
     let notes = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(
-            UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
-            "Notes",
-        ), &records);
+        let _ = to_ui_window_group(
+            &placeholder_group(
+                UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
+                "Notes",
+            ),
+            &records,
+        );
     });
 
     println!("--- re-materialize cost (render-thread stall per detached group) ---");

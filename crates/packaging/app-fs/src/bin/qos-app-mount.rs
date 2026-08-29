@@ -19,8 +19,8 @@
 //! on the command line so the crate is usable standalone.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -65,8 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = DiskBlobStore::new(&cli.store);
     let collection_bytes = read_all(&store, &collection_hash)
         .map_err(|e| format!("read collection blob from store: {e}"))?;
-    let collection = Collection::decode(&collection_bytes)
-        .map_err(|e| format!("decode collection: {e}"))?;
+    let collection =
+        Collection::decode(&collection_bytes).map_err(|e| format!("decode collection: {e}"))?;
 
     let options = MountOptions {
         allow_other: cli.allow_other,
@@ -92,9 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("unmounted cleanly");
             Ok(())
         }
-        Err(MountError::Fuse(_, e)) => {
-            Err(format!("unmount: {e}").into())
-        }
+        Err(MountError::Fuse(_, e)) => Err(format!("unmount: {e}").into()),
         Err(e) => Err(Box::new(e)),
     }
 }

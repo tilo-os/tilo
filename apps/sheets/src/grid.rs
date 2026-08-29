@@ -11,17 +11,17 @@
 
 use std::collections::HashMap;
 
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::ColorCompat;
 
-use crate::model::{addr_to_a1, format_value, Addr, CellFormat, CellValue};
+use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
 
 pub const ROW_HEADER_W: f64 = 56.0;
 pub const COL_HEADER_H: f64 = 28.0;
@@ -403,7 +403,10 @@ impl Grid {
 
     /// The live (in-progress / most-recent) selection range.
     fn current_range(&self) -> SelRange {
-        SelRange { anchor: self.anchor, active: self.active }
+        SelRange {
+            anchor: self.anchor,
+            active: self.active,
+        }
     }
 
     /// Every selection range: the committed discontiguous ones plus the live
@@ -423,12 +426,10 @@ impl Grid {
     /// Whether column `c` intersects any selected range (drives the header
     /// highlight — a column header lights up when it holds a selected cell).
     fn col_in_selection(&self, c: u32) -> bool {
-        self.current_range().spans_col(c)
-            || self.extra_ranges.iter().any(|rg| rg.spans_col(c))
+        self.current_range().spans_col(c) || self.extra_ranges.iter().any(|rg| rg.spans_col(c))
     }
     fn row_in_selection(&self, r: u32) -> bool {
-        self.current_range().spans_row(r)
-            || self.extra_ranges.iter().any(|rg| rg.spans_row(r))
+        self.current_range().spans_row(r) || self.extra_ranges.iter().any(|rg| rg.spans_row(r))
     }
 
     /// Every cell across all selected ranges, de-duplicated so overlapping
@@ -440,8 +441,7 @@ impl Grid {
         // summary) skips the dedup set entirely.
         if self.extra_ranges.is_empty() {
             let (c0, r0, c1, r1) = self.current_range().bounds();
-            let mut out =
-                Vec::with_capacity(((c1 - c0 + 1) as usize) * ((r1 - r0 + 1) as usize));
+            let mut out = Vec::with_capacity(((c1 - c0 + 1) as usize) * ((r1 - r0 + 1) as usize));
             for r in r0..=r1 {
                 for c in c0..=c1 {
                     out.push((c, r));
@@ -469,7 +469,8 @@ impl Grid {
     /// bottom_right)`, inclusive and normalized. Drives copy/cut and fill.
     pub fn selection_bounds(&self) -> (Addr, Addr) {
         let mut ranges = self.all_ranges().into_iter();
-        let (mut c0, mut r0, mut c1, mut r1) = ranges.next().map(|r| r.bounds()).unwrap_or_default();
+        let (mut c0, mut r0, mut c1, mut r1) =
+            ranges.next().map(|r| r.bounds()).unwrap_or_default();
         for range in ranges {
             let (a, b, cc, d) = range.bounds();
             c0 = c0.min(a);
@@ -535,8 +536,14 @@ impl Grid {
         if self.anchor == self.active {
             addr_to_a1(self.active.0, self.active.1)
         } else {
-            let (c0, c1) = (self.anchor.0.min(self.active.0), self.anchor.0.max(self.active.0));
-            let (r0, r1) = (self.anchor.1.min(self.active.1), self.anchor.1.max(self.active.1));
+            let (c0, c1) = (
+                self.anchor.0.min(self.active.0),
+                self.anchor.0.max(self.active.0),
+            );
+            let (r0, r1) = (
+                self.anchor.1.min(self.active.1),
+                self.anchor.1.max(self.active.1),
+            );
             format!("{}:{}", addr_to_a1(c0, r0), addr_to_a1(c1, r1))
         }
     }
@@ -651,7 +658,10 @@ impl Grid {
     /// the `--shots` scenarios to exercise the real fill without a display.
     pub fn start_fill_to(&mut self, target: Addr) {
         let (c0, r0, c1, r1) = self.current_range().bounds();
-        self.fill_drag = Some(FillDrag { src: ((c0, r0), (c1, r1)), target });
+        self.fill_drag = Some(FillDrag {
+            src: ((c0, r0), (c1, r1)),
+            target,
+        });
         self.pointer_up();
     }
 
@@ -803,10 +813,21 @@ impl Grid {
     pub fn begin_edit(&mut self, seed: Option<String>) {
         let chars: Vec<char> = match seed {
             Some(s) => s.chars().collect(),
-            None => self.raw.get(&self.active).cloned().unwrap_or_default().chars().collect(),
+            None => self
+                .raw
+                .get(&self.active)
+                .cloned()
+                .unwrap_or_default()
+                .chars()
+                .collect(),
         };
         let caret = chars.len();
-        self.edit = Some(EditState { addr: self.active, chars, caret, sel: None });
+        self.edit = Some(EditState {
+            addr: self.active,
+            chars,
+            caret,
+            sel: None,
+        });
         self.point_anchor = None;
         self.point_selecting = false;
         self.dirty = true;
@@ -814,7 +835,10 @@ impl Grid {
 
     fn commit_edit(&mut self, out: &mut Vec<GridCmd>) {
         if let Some(e) = self.edit.take() {
-            out.push(GridCmd::SetCell { addr: e.addr, raw: e.text() });
+            out.push(GridCmd::SetCell {
+                addr: e.addr,
+                raw: e.text(),
+            });
             out.push(GridCmd::Commit);
             self.point_anchor = None;
             self.point_selecting = false;
@@ -864,7 +888,11 @@ impl Grid {
         if self.point_anchor.is_some() {
             return true;
         }
-        let prev = if e.caret == 0 { None } else { e.chars.get(e.caret - 1).copied() };
+        let prev = if e.caret == 0 {
+            None
+        } else {
+            e.chars.get(e.caret - 1).copied()
+        };
         matches!(
             prev,
             Some('=' | '+' | '-' | '*' | '/' | '^' | '(' | ',' | ':' | '&' | '<' | '>' | '%')
@@ -901,7 +929,9 @@ impl Grid {
     /// Extend the pending point-mode reference into the range
     /// `point_drag_start:addr` as the pointer is dragged.
     fn point_drag_to(&mut self, addr: Addr) {
-        let Some(anchor) = self.point_anchor else { return };
+        let Some(anchor) = self.point_anchor else {
+            return;
+        };
         let start = self.point_drag_start;
         let text = if start == addr {
             addr_to_a1(addr.0, addr.1)
@@ -948,7 +978,13 @@ impl Grid {
     /// Handle a left-press. `shift` extends the live range from its anchor;
     /// `ctrl` starts a new discontiguous range (Ctrl+click / Ctrl+drag),
     /// keeping the existing selection. Returns true if consumed by the grid.
-    pub fn pointer_down(&mut self, p: Point, shift: bool, ctrl: bool, out: &mut Vec<GridCmd>) -> bool {
+    pub fn pointer_down(
+        &mut self,
+        p: Point,
+        shift: bool,
+        ctrl: bool,
+        out: &mut Vec<GridCmd>,
+    ) -> bool {
         self.last_cursor = p;
         if !self.rect.contains(p) {
             return false;
@@ -978,7 +1014,11 @@ impl Grid {
                 ResizeTarget::Col(_) => p.x,
                 ResizeTarget::Row(_) => p.y,
             };
-            self.resize = Some(ResizeDrag { target, origin_px, origin_size });
+            self.resize = Some(ResizeDrag {
+                target,
+                origin_px,
+                origin_size,
+            });
             return true;
         }
         // Fill handle: grab the selection's bottom-right corner and drag to
@@ -991,7 +1031,10 @@ impl Grid {
                 if grab.contains(p) {
                     self.commit_edit(out);
                     let (c0, r0, c1, r1) = self.current_range().bounds();
-                    self.fill_drag = Some(FillDrag { src: ((c0, r0), (c1, r1)), target: (c1, r1) });
+                    self.fill_drag = Some(FillDrag {
+                        src: ((c0, r0), (c1, r1)),
+                        target: (c1, r1),
+                    });
                     self.dirty = true;
                     return true;
                 }
@@ -1143,12 +1186,7 @@ impl Grid {
     }
 
     /// Handle a keyboard event. Returns true if consumed.
-    pub fn key(
-        &mut self,
-        event: &WindowEvent,
-        mods: &Modifiers,
-        out: &mut Vec<GridCmd>,
-    ) -> bool {
+    pub fn key(&mut self, event: &WindowEvent, mods: &Modifiers, out: &mut Vec<GridCmd>) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
             return false;
         };
@@ -1212,7 +1250,10 @@ impl Grid {
             }
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
                 for addr in self.selected_cells() {
-                    out.push(GridCmd::SetCell { addr, raw: String::new() });
+                    out.push(GridCmd::SetCell {
+                        addr,
+                        raw: String::new(),
+                    });
                 }
                 out.push(GridCmd::Commit);
                 self.dirty = true;
@@ -1330,8 +1371,12 @@ impl Grid {
     /// Remove the selected characters (if any), collapsing the caret to the
     /// selection start. Returns whether anything was removed.
     fn delete_selection(&mut self) -> bool {
-        let Some(e) = &mut self.edit else { return false };
-        let Some((start, end)) = e.selection() else { return false };
+        let Some(e) = &mut self.edit else {
+            return false;
+        };
+        let Some((start, end)) = e.selection() else {
+            return false;
+        };
         e.chars.drain(start..end);
         e.caret = start;
         e.sel = None;
@@ -1530,7 +1575,13 @@ impl Grid {
         let rows = self.visible_rows();
 
         // Body background.
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &self.rect,
+        );
 
         // Selection ranges (translucent accent fill) under the cells. Every
         // discontiguous range paints; overlaps just deepen slightly. Iterate
@@ -1599,7 +1650,16 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    self.draw_cell_text(scene, transform, tr, &text, text_size, color, cell, right_align);
+                    self.draw_cell_text(
+                        scene,
+                        transform,
+                        tr,
+                        &text,
+                        text_size,
+                        color,
+                        cell,
+                        right_align,
+                    );
                 }
             }
         }
@@ -1624,7 +1684,13 @@ impl Grid {
                 .round()
                 + 0.5;
             if x < body.x1 {
-                scene.stroke(&stroke, transform, line_color, None, &Line::new((x, body.y0), (x, body.y1)));
+                scene.stroke(
+                    &stroke,
+                    transform,
+                    line_color,
+                    None,
+                    &Line::new((x, body.y0), (x, body.y1)),
+                );
             }
         }
         for &r in &rows {
@@ -1642,19 +1708,19 @@ impl Grid {
                 .round()
                 + 0.5;
             if y < body.y1 {
-                scene.stroke(&stroke, transform, line_color, None, &Line::new((body.x0, y), (body.x1, y)));
+                scene.stroke(
+                    &stroke,
+                    transform,
+                    line_color,
+                    None,
+                    &Line::new((body.x0, y), (body.x1, y)),
+                );
             }
         }
 
         // Active-cell highlight border.
         if let Some(ar) = intersect(self.cell_screen_rect(self.active.0, self.active.1), body) {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                colors.accent[5],
-                None,
-                &ar,
-            );
+            scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &ar);
         }
 
         // Fill handle + drag preview. While dragging, a dashed outline shows
@@ -1673,7 +1739,13 @@ impl Grid {
             if let Some(cr) = intersect(hr, body) {
                 // A thin base-coloured ring keeps the accent square legible on
                 // any cell fill underneath.
-                scene.stroke(&Stroke::new(2.0), transform, colors.surfaces.base, None, &hr);
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    colors.surfaces.base,
+                    None,
+                    &hr,
+                );
                 scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
             }
         }
@@ -1745,7 +1817,14 @@ impl Grid {
             cell.x0 + CELL_PAD_X
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &inner);
-        tr.draw_text(scene, text, size, color, transform * Affine::translate((tx, ty)), None);
+        tr.draw_text(
+            scene,
+            text,
+            size,
+            color,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
         scene.pop_layer();
     }
 
@@ -1763,22 +1842,51 @@ impl Grid {
 
         // Column header strip.
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &col_strip);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &col_strip);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &col_strip,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &col_strip,
+        );
         for &c in cols {
             let cell = self.cell_screen_rect(c, 0);
             let hx = cell.x0;
             let hrect = Rect::new(hx, self.rect.y0, hx + self.col_w(c), self.grid_y0());
             let selected = self.col_in_selection(c);
             if selected {
-                scene.fill(Fill::NonZero, transform, colors.accent[5].with_alpha_factor(0.30), None, &hrect);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5].with_alpha_factor(0.30),
+                    None,
+                    &hrect,
+                );
             }
             let label = crate::model::col_to_letters(c);
             let (lw, _) = tr.measure(&label, size, None);
             let tx = hrect.center().x - lw as f64 / 2.0;
             let ty = self.rect.y0 + (COL_HEADER_H - size as f64) / 2.0;
-            let color = if selected { colors.text_primary } else { colors.text_dim };
-            tr.draw_text(scene, &label, size, color, transform * Affine::translate((tx, ty)), None);
+            let color = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
+            tr.draw_text(
+                scene,
+                &label,
+                size,
+                color,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
         }
         scene.pop_layer();
         // bottom border of column strip
@@ -1787,27 +1895,59 @@ impl Grid {
             transform,
             colors.border_standard,
             None,
-            &Line::new((self.rect.x0, self.grid_y0()), (self.rect.x1, self.grid_y0())),
+            &Line::new(
+                (self.rect.x0, self.grid_y0()),
+                (self.rect.x1, self.grid_y0()),
+            ),
         );
 
         // Row header strip.
         let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &row_strip);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &row_strip);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &row_strip,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &row_strip,
+        );
         for &r in rows {
             let cell = self.cell_screen_rect(0, r);
             let hy = cell.y0;
             let hrect = Rect::new(self.rect.x0, hy, self.grid_x0(), hy + self.row_h(r));
             let selected = self.row_in_selection(r);
             if selected {
-                scene.fill(Fill::NonZero, transform, colors.accent[5].with_alpha_factor(0.30), None, &hrect);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5].with_alpha_factor(0.30),
+                    None,
+                    &hrect,
+                );
             }
             let label = format!("{}", r + 1);
             let (lw, _) = tr.measure(&label, size, None);
             let tx = hrect.center().x - lw as f64 / 2.0;
             let ty = hy + (self.row_h(r) - size as f64) / 2.0;
-            let color = if selected { colors.text_primary } else { colors.text_dim };
-            tr.draw_text(scene, &label, size, color, transform * Affine::translate((tx, ty)), None);
+            let color = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
+            tr.draw_text(
+                scene,
+                &label,
+                size,
+                color,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
         }
         scene.pop_layer();
         // right border of row strip
@@ -1816,12 +1956,21 @@ impl Grid {
             transform,
             colors.border_standard,
             None,
-            &Line::new((self.grid_x0(), self.rect.y0), (self.grid_x0(), self.rect.y1)),
+            &Line::new(
+                (self.grid_x0(), self.rect.y0),
+                (self.grid_x0(), self.rect.y1),
+            ),
         );
 
         // Corner box.
         let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &corner);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &corner,
+        );
     }
 
     /// Is a cell non-empty in the current data? Used to decide how far the
@@ -1899,19 +2048,39 @@ impl Grid {
 
         // Solid backing so underlying empty cells/gridlines don't bleed
         // through, then a crisp accent border — the "clean Excel" look.
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &edit_rect);
-        scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &edit_rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &edit_rect,
+        );
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            colors.accent[5],
+            None,
+            &edit_rect,
+        );
 
         // Text + caret, clipped to the editor box. A formula draws each cell
         // reference in its own colour; anything else draws in the body colour.
         let ty = edit_rect.y0 + (edit_rect.height() - size as f64) / 2.0;
         let tx = edit_rect.x0 + CELL_PAD_X;
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &edit_rect);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &edit_rect,
+        );
         // Selection highlight behind the text.
         if let Some((sel_s, sel_e)) = e.selection() {
             let chars: Vec<char> = text.chars().collect();
             let pre: String = chars[..sel_s.min(chars.len())].iter().collect();
-            let mid: String = chars[sel_s.min(chars.len())..sel_e.min(chars.len())].iter().collect();
+            let mid: String = chars[sel_s.min(chars.len())..sel_e.min(chars.len())]
+                .iter()
+                .collect();
             let (x0w, _) = tr.measure(&pre, size, None);
             let (midw, _) = tr.measure(&mid, size, None);
             let sel_rect = Rect::new(
@@ -2099,7 +2268,10 @@ mod tests {
         let label_w = tr.measure(label, size, None).0 as f64;
         let want = label_w + CELL_PAD_X * 2.0;
         // Precondition: this label really does overflow a default-width column.
-        assert!(want > DEFAULT_COL_W, "test label must exceed the default width");
+        assert!(
+            want > DEFAULT_COL_W,
+            "test label must exceed the default width"
+        );
 
         g.autofit_columns(&mut tr, size);
 
@@ -2109,7 +2281,11 @@ mod tests {
             g.col_w(0),
         );
         assert!(g.col_w(0) <= MAX_AUTOFIT_W + 0.5, "auto-fit stays clamped");
-        assert_eq!(g.col_w(1), DEFAULT_COL_W, "short occupied neighbour is left alone");
+        assert_eq!(
+            g.col_w(1),
+            DEFAULT_COL_W,
+            "short occupied neighbour is left alone"
+        );
     }
 
     #[test]
@@ -2152,7 +2328,10 @@ mod tests {
         let right = g.editor_right_extent((0, 0), desired, body_right);
         // Reaches the end of B0 (= start of C0) but not into C0.
         let c0_left = g.cell_screen_rect(2, 0).x0;
-        assert!((right - c0_left).abs() < 0.5, "right={right} c0_left={c0_left}");
+        assert!(
+            (right - c0_left).abs() < 0.5,
+            "right={right} c0_left={c0_left}"
+        );
     }
 
     #[test]
@@ -2162,7 +2341,11 @@ mod tests {
         let cell = g.cell_screen_rect(0, 0);
         let body_right = g.body_rect().x1;
         let right = g.editor_right_extent((0, 0), DEFAULT_COL_W * 4.0, body_right);
-        assert!((right - cell.x1).abs() < 0.5, "right={right} cell.x1={}", cell.x1);
+        assert!(
+            (right - cell.x1).abs() < 0.5,
+            "right={right} cell.x1={}",
+            cell.x1
+        );
     }
 
     #[test]
@@ -2171,7 +2354,10 @@ mod tests {
         let g = grid_with(&[]);
         let body_right = g.body_rect().x1;
         let right = g.editor_right_extent((10, 0), DEFAULT_COL_W * 50.0, body_right);
-        assert!(right <= body_right + 0.5, "right={right} body_right={body_right}");
+        assert!(
+            right <= body_right + 0.5,
+            "right={right} body_right={body_right}"
+        );
     }
 
     /// The screen point at the centre of a cell — where a click would land.
@@ -2224,7 +2410,10 @@ mod tests {
         assert!(g.is_multi_range());
         assert_eq!(g.active(), (5, 5));
         let cells = g.selected_cells();
-        assert!(cells.contains(&(1, 1)) && cells.contains(&(2, 2)), "first range kept");
+        assert!(
+            cells.contains(&(1, 1)) && cells.contains(&(2, 2)),
+            "first range kept"
+        );
         assert!(cells.contains(&(5, 5)), "second range added");
         assert!(!cells.contains(&(3, 3)), "gap between ranges not selected");
     }
@@ -2286,7 +2475,10 @@ mod tests {
             }
         }
         assert_eq!(count, 6, "six numeric cells across both rectangles");
-        assert!((sum - 660.0).abs() < 1e-9, "sum over both ranges = 660, got {sum}");
+        assert!(
+            (sum - 660.0).abs() < 1e-9,
+            "sum over both ranges = 660, got {sum}"
+        );
         // The gap column's label is inside neither rectangle.
         assert!(!g.selected_cells().contains(&(2, 1)), "gap column excluded");
     }
@@ -2318,7 +2510,10 @@ mod tests {
         g.begin_edit(Some("=".into()));
         assert!(g.pointer_down(cell_point(&g, 1, 0), false, false, &mut out));
         g.pointer_up();
-        assert!(out.is_empty(), "a point-mode click must not commit the edit");
+        assert!(
+            out.is_empty(),
+            "a point-mode click must not commit the edit"
+        );
         assert_eq!(g.active_display_raw(), "=B1", "clicked cell's ref inserted");
         assert!(g.is_editing(), "still editing the original cell");
         assert_eq!(g.active(), (0, 4), "selection stayed on the edited cell");

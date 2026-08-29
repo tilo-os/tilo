@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 
-use smithay::output::{Mode as OutputMode, Output as WlOutputHandle, PhysicalProperties, Scale, Subpixel};
+use smithay::output::{
+    Mode as OutputMode, Output as WlOutputHandle, PhysicalProperties, Scale, Subpixel,
+};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Size, Transform};
@@ -317,13 +319,13 @@ mod tests {
         let first = out(0, (0, 0), (1920, 1080), 1.0);
         let second = out(1, (1920, 0), (2560, 1440), 1.0);
         let second_moved = out(1, (0, 0), (2560, 1440), 1.0);
-        let changes = plan(
-            &[advertised(&first), advertised(&second)],
-            &[second_moved],
-        );
+        let changes = plan(&[advertised(&first), advertised(&second)], &[second_moved]);
         assert_eq!(
             changes,
-            vec![GlobalChange::Update(OutputId(1)), GlobalChange::Destroy(OutputId(0))]
+            vec![
+                GlobalChange::Update(OutputId(1)),
+                GlobalChange::Destroy(OutputId(0))
+            ]
         );
     }
 

@@ -135,11 +135,11 @@ impl Language {
             | Language::C
             | Language::Cpp
             | Language::Go => Some("//"),
-            Language::Python
-            | Language::Shell
-            | Language::Toml
-            | Language::Yaml => Some("#"),
-            Language::Markdown | Language::Html | Language::Css | Language::Json
+            Language::Python | Language::Shell | Language::Toml | Language::Yaml => Some("#"),
+            Language::Markdown
+            | Language::Html
+            | Language::Css
+            | Language::Json
             | Language::PlainText => None,
         }
     }
@@ -169,8 +169,15 @@ pub enum NodeKind {
     /// `loaded` is `false` for a disk-backed folder whose children have not yet
     /// been read from the filesystem; the first expansion reads them lazily
     /// (`Project::load_children`). In-memory folders are always `loaded`.
-    Folder { expanded: bool, loaded: bool, children: Vec<NodeId> },
-    File { language: Language, seed: String },
+    Folder {
+        expanded: bool,
+        loaded: bool,
+        children: Vec<NodeId>,
+    },
+    File {
+        language: Language,
+        seed: String,
+    },
 }
 
 impl TreeNode {
@@ -396,7 +403,10 @@ impl Project {
         // `load_children` reads it.
         if let Some(node) = p.nodes.get_mut(&root) {
             node.disk_path = Some(path.clone());
-            if let NodeKind::Folder { loaded, expanded, .. } = &mut node.kind {
+            if let NodeKind::Folder {
+                loaded, expanded, ..
+            } = &mut node.kind
+            {
                 *loaded = false;
                 *expanded = true;
             }
@@ -561,7 +571,10 @@ impl Project {
     /// An unreadable file that opened as a silently-empty buffer would be saved
     /// back as an empty file the moment the user pressed Ctrl+S — the read
     /// error has to reach them before that.
-    pub fn file_seed(&self, id: NodeId) -> Result<(String, Option<crate::disk::Stamp>), crate::disk::LoadError> {
+    pub fn file_seed(
+        &self,
+        id: NodeId,
+    ) -> Result<(String, Option<crate::disk::Stamp>), crate::disk::LoadError> {
         match self.nodes.get(&id) {
             Some(TreeNode {
                 kind: NodeKind::File { seed, .. },
@@ -608,7 +621,10 @@ impl Project {
         let Some(node) = self.nodes.get(&parent) else {
             return;
         };
-        let NodeKind::Folder { expanded, children, .. } = &node.kind else {
+        let NodeKind::Folder {
+            expanded, children, ..
+        } = &node.kind
+        else {
             return;
         };
         // Root's own children are the top-level rows; the root itself isn't
@@ -627,7 +643,11 @@ impl Project {
             out.push(kid);
             if *expanded {
                 if let Some(TreeNode {
-                    kind: NodeKind::Folder { expanded: child_expanded, .. },
+                    kind:
+                        NodeKind::Folder {
+                            expanded: child_expanded,
+                            ..
+                        },
                     ..
                 }) = self.nodes.get(&kid)
                 {
@@ -645,7 +665,9 @@ impl Project {
         let mut chain = Vec::new();
         let mut cur = Some(id);
         while let Some(c) = cur {
-            let Some(node) = self.nodes.get(&c) else { break };
+            let Some(node) = self.nodes.get(&c) else {
+                break;
+            };
             chain.push(node.name.clone());
             cur = node.parent;
         }
@@ -913,7 +935,10 @@ mod tests {
         assert!(top.contains(&"src".to_string()));
         assert!(top.contains(&"Cargo.toml".to_string()));
         // …build output and VCS internals are not…
-        assert!(!top.contains(&"target".to_string()), "target/ must be hidden");
+        assert!(
+            !top.contains(&"target".to_string()),
+            "target/ must be hidden"
+        );
         assert!(!top.contains(&".git".to_string()), ".git/ must be hidden");
         // …and the nested file has NOT been read: the tree is lazy, which is
         // what makes opening a large repository instant.
@@ -944,7 +969,11 @@ mod tests {
         p.load_children(src).unwrap();
         let after_first = p.nodes.len();
         p.load_children(src).unwrap();
-        assert_eq!(p.nodes.len(), after_first, "a second read adds no duplicates");
+        assert_eq!(
+            p.nodes.len(),
+            after_first,
+            "a second read adds no duplicates"
+        );
     }
 
     #[test]

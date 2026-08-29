@@ -161,8 +161,6 @@ pub fn build_argv(
     // no Ctrl-Z). `bwrap` documents it as incompatible with interactive use; what
     // it defends against — `TIOCSTI` injection — the kernel already refuses.
 
-
-
     for subtree in BASE_SUBTREES {
         // `--overlay-src` entries accumulate for the next `--overlay`; layers are
         // pushed nearest-the-upper first, base last, so the base ends at the bottom.
@@ -384,7 +382,12 @@ pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
         found.sort();
         out.extend(found);
     }
-    for (target, link) in [("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64")] {
+    for (target, link) in [
+        ("usr/bin", "/bin"),
+        ("usr/sbin", "/sbin"),
+        ("usr/lib", "/lib"),
+        ("usr/lib64", "/lib64"),
+    ] {
         let link = PathBuf::from(link);
         if !out.iter().any(|(_, l)| *l == link) {
             out.push((PathBuf::from(target), link));
@@ -499,15 +502,8 @@ pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
 
     // uid 0 in the guest is the real user; 1.. is the subordinate range. The
     // same shape rootless podman installs on the host.
-    let ok = run_idmap(
-        "newuidmap",
-        pid,
-        &[(0, uid, 1), (1, uid_start, uid_count)],
-    ) && run_idmap(
-        "newgidmap",
-        pid,
-        &[(0, gid, 1), (1, gid_start, gid_count)],
-    );
+    let ok = run_idmap("newuidmap", pid, &[(0, uid, 1), (1, uid_start, uid_count)])
+        && run_idmap("newgidmap", pid, &[(0, gid, 1), (1, gid_start, gid_count)]);
     if !ok {
         reap(pid, go[1], ready[0]);
         return None;
@@ -570,9 +566,7 @@ fn clear_cloexec(file: std::fs::File) -> std::io::Result<std::fs::File> {
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
 /// `O_CLOEXEC` must come off so the number in the argv still names this file
 /// after `exec`; the `File` is returned too so the caller keeps it alive.
-pub fn open_seccomp_fd(
-    blob: &Path,
-) -> std::io::Result<(std::fs::File, std::os::fd::RawFd)> {
+pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::fd::RawFd)> {
     use std::os::fd::AsRawFd;
     let file = std::fs::File::open(blob)?;
     let fd = file.as_raw_fd();
@@ -663,7 +657,9 @@ mod tests {
     }
 
     fn strings(argv: &[OsString]) -> Vec<String> {
-        argv.iter().map(|s| s.to_string_lossy().into_owned()).collect()
+        argv.iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
     }
 
     fn window(argv: &[OsString], n: usize) -> Vec<Vec<String>> {
@@ -757,10 +753,7 @@ mod tests {
              root account: {links:?}"
         );
         assert_eq!(
-            links
-                .iter()
-                .filter(|(_, l)| l == Path::new("/bin"))
-                .count(),
+            links.iter().filter(|(_, l)| l == Path::new("/bin")).count(),
             1,
             "a link the base already declares must not be added twice: {links:?}"
         );
@@ -781,15 +774,13 @@ mod tests {
         let argv = build_argv(&plan(), Some(9), None);
         let w3 = window(&argv, 3);
         assert!(
-            w3.iter().any(|w| w[0] == "--bind"
-                && w[1] == "/store/home"
-                && w[2] == "/var/home/you"),
+            w3.iter()
+                .any(|w| w[0] == "--bind" && w[1] == "/store/home" && w[2] == "/var/home/you"),
             "the store's home must be bound over the real home path"
         );
         assert!(
-            w3.iter().any(|w| w[0] == "--symlink"
-                && w[1] == "/var/home/you"
-                && w[2] == "/root"),
+            w3.iter()
+                .any(|w| w[0] == "--symlink" && w[1] == "/var/home/you" && w[2] == "/root"),
             "the guest is uid 0, so getpwuid points at /root; it has to reach              the same directory as $HOME"
         );
         assert!(
@@ -859,7 +850,10 @@ mod tests {
     #[test]
     fn the_seccomp_blob_is_applied_and_the_guest_argv_comes_last() {
         let argv = strings(&build_argv(&plan(), Some(9), None));
-        let sep = argv.iter().position(|a| a == "--").expect("no -- separator");
+        let sep = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("no -- separator");
         let blob = argv
             .iter()
             .position(|a| a == "--seccomp")
@@ -1020,8 +1014,11 @@ mod tests {
         std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
         let real = base.join("run/systemd/resolve/stub-resolv.conf");
         std::fs::write(&real, b"nameserver 127.0.0.53\n").unwrap();
-        std::os::unix::fs::symlink("../run/systemd/resolve/stub-resolv.conf", base.join("etc/resolv.conf"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            "../run/systemd/resolve/stub-resolv.conf",
+            base.join("etc/resolv.conf"),
+        )
+        .unwrap();
 
         let (src, dst) = resolv_bind(base).expect("no resolver bind");
         assert_eq!(src, real.canonicalize().unwrap());
@@ -1042,8 +1039,11 @@ mod tests {
         let base = dir.path();
         std::fs::create_dir_all(base.join("etc")).unwrap();
         std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
-        std::fs::write(base.join("run/systemd/resolve/stub-resolv.conf"), b"nameserver 1.1.1.1\n")
-            .unwrap();
+        std::fs::write(
+            base.join("run/systemd/resolve/stub-resolv.conf"),
+            b"nameserver 1.1.1.1\n",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(
             "../run/systemd/resolve/stub-resolv.conf",
             base.join("etc/resolv.conf"),

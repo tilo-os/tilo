@@ -87,7 +87,10 @@ pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Resu
         bases.push(("state file".into(), s.nv_base));
     }
     for (id, t) in tokens {
-        bases.push((format!("token {id} (generation {})", t.generation), t.nv_base));
+        bases.push((
+            format!("token {id} (generation {})", t.generation),
+            t.nv_base,
+        ));
     }
     let Some((_, first)) = bases.first().cloned() else {
         return Ok(None);
@@ -202,24 +205,47 @@ mod tests {
         (
             gen_num as u32,
             RollbackToken::new(
-                1, gen_num, 0x01D9_1100, crate::counter::operand(base, gen_num).unwrap(), base,
-                "sha256", &[7, 11], false,
-                b"p", b"q", b"n", b"d",
-                &[Prediction { approved_policy: b"a".to_vec(), signature: b"s".to_vec(), label: String::new() }],
+                1,
+                gen_num,
+                0x01D9_1100,
+                crate::counter::operand(base, gen_num).unwrap(),
+                base,
+                "sha256",
+                &[7, 11],
+                false,
+                b"p",
+                b"q",
+                b"n",
+                b"d",
+                &[Prediction {
+                    approved_policy: b"a".to_vec(),
+                    signature: b"s".to_vec(),
+                    label: String::new(),
+                }],
             ),
         )
     }
 
     #[test]
     fn base_comes_from_agreeing_sources() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
+        let s = State {
+            nv_index: 1,
+            nv_base: 100,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        };
         let toks = vec![tok(7, 100), tok(6, 100)];
         assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
     }
 
     #[test]
     fn a_disagreeing_base_is_refused() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
+        let s = State {
+            nv_index: 1,
+            nv_base: 100,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        };
         let toks = vec![tok(7, 999)];
         let e = load_base(Some(&s), &toks).unwrap_err().to_string();
         assert!(e.contains("disagrees between sources"), "{e}");
@@ -237,7 +263,10 @@ mod tests {
 
     #[test]
     fn planning_confirms_the_window_and_the_prune() {
-        let floor = FloorState { counter: 100, base: 100 }; // floor generation 0
+        let floor = FloorState {
+            counter: 100,
+            base: 100,
+        }; // floor generation 0
         let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
         assert_eq!(p.floor.target_floor, 8);
         assert_eq!(p.keep, vec![10, 9, 8]);
@@ -246,7 +275,10 @@ mod tests {
 
     #[test]
     fn planning_honours_a_declared_floor() {
-        let floor = FloorState { counter: 100, base: 100 };
+        let floor = FloorState {
+            counter: 100,
+            base: 100,
+        };
         let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
         assert_eq!(p.floor.target_floor, 10);
         // The keyslots are still retained even though the floor closed the window — the floor
@@ -258,7 +290,12 @@ mod tests {
     fn state_round_trips() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s.json");
-        let s = State { nv_index: 0x01D9_1100, nv_base: 5, last_confirmed: None, foreign_keyslots: vec![0, 1] };
+        let s = State {
+            nv_index: 0x01D9_1100,
+            nv_base: 5,
+            last_confirmed: None,
+            foreign_keyslots: vec![0, 1],
+        };
         assert_eq!(load_state(&p).unwrap(), None);
         save_state(&p, &s).unwrap();
         assert_eq!(load_state(&p).unwrap(), Some(s));
@@ -342,7 +379,10 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
     let counter_value = counter::read(runner, cfg.nv_index, req.scratch)?
         .context("the rollback floor counter has never been incremented")?;
-    let mut floor = FloorState { counter: counter_value, base };
+    let mut floor = FloorState {
+        counter: counter_value,
+        base,
+    };
 
     // The generation must have a keyslot before the floor can pass it.
     let mut enrolled = None;

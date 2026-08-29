@@ -41,7 +41,9 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         icon_url: None,
         homepage_url: None,
         source_url: None,
-        source: StoreSource::Qos { registry_name: "qOS main".into() },
+        source: StoreSource::Qos {
+            registry_name: "qOS main".into(),
+        },
         versions: vec![StoreItemVersion {
             version: ver.into(),
             released_at_unix: 0,
@@ -139,10 +141,7 @@ pub fn seeded_app() -> StoreApp {
 }
 
 /// Public entry point the binary's `--shots` path calls.
-pub fn render_to_path(
-    viewport: (u32, u32),
-    out: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn render_to_path(viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     // Force the floating status chip fully visible so this single
     // headless frame captures it (a still can't hover it).
@@ -216,7 +215,13 @@ pub fn render_widget(
     );
     // Top-layer overlay pass — the floating status bubble paints here,
     // matching the live event loop's dedicated overlay pass.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -229,9 +234,7 @@ pub fn render_widget(
 
 /// Parse `WxH` into `(u32, u32)`.
 pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s
-        .split_once('x')
-        .or_else(|| s.split_once('X'))?;
+    let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 

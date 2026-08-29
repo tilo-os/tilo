@@ -232,10 +232,7 @@ mod tests {
                 .push(size);
         }
         fn set_dpms(&mut self, on: bool) {
-            self.dpms
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(on);
+            self.dpms.lock().unwrap_or_else(|e| e.into_inner()).push(on);
         }
     }
 

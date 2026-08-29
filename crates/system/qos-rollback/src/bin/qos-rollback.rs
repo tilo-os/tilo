@@ -366,7 +366,11 @@ fn run() -> Result<()> {
             device,
             output.as_deref(),
             pin_file.as_deref(),
-            if *no_proof_file { None } else { Some(proof_file) },
+            if *no_proof_file {
+                None
+            } else {
+                Some(proof_file)
+            },
         ),
         Cmd::Confirm {
             device,
@@ -401,9 +405,15 @@ fn run() -> Result<()> {
             device.as_deref(),
             *json,
         ),
-        Cmd::Certify { nonce, out_dir } => {
-            cmd_certify(&runner, &ws, &cfg, &state_path, scratch.path(), nonce, out_dir)
-        }
+        Cmd::Certify { nonce, out_dir } => cmd_certify(
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            scratch.path(),
+            nonce,
+            out_dir,
+        ),
         Cmd::FloorRequest { device, out } => cmd_floor_request(
             &runner,
             &ws,
@@ -474,7 +484,11 @@ fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
     println!("  failure counter     {}", params.counter);
     println!(
         "  reset authorisation {}",
-        if params.lockout_auth_set { "set" } else { "EMPTY" }
+        if params.lockout_auth_set {
+            "set"
+        } else {
+            "EMPTY"
+        }
     );
     println!("  in lockout          {}", params.in_lockout);
     for c in &a.critical {
@@ -503,7 +517,11 @@ fn cmd_harden(
         before.max_tries,
         before.recovery_time,
         before.lockout_recovery,
-        if before.lockout_auth_set { "set" } else { "empty" }
+        if before.lockout_auth_set {
+            "set"
+        } else {
+            "empty"
+        }
     );
 
     if !before.lockout_auth_set && !have_recovery_key {
@@ -535,7 +553,10 @@ fn cmd_harden(
             std::fs::set_permissions(auth_file, std::fs::Permissions::from_mode(0o600))?;
         }
         lockout::set_reset_auth(runner, &auth, None)?;
-        println!("reset authorisation set; recorded in {}", auth_file.display());
+        println!(
+            "reset authorisation set; recorded in {}",
+            auth_file.display()
+        );
         println!(
             "note: that file lives on the encrypted root, which is what keeps it away from an \
              attacker holding a powered-off machine — and also means a TPM lockout cannot be \
@@ -615,7 +636,10 @@ fn cmd_enroll(
         Some(b) => {
             let c = counter::read(runner, cfg.nv_index, scratch)?
                 .context("the rollback floor counter exists but has never been incremented")?;
-            counter::FloorState { counter: c, base: b }
+            counter::FloorState {
+                counter: c,
+                base: b,
+            }
         }
         None => {
             // First enrollment starts the floor at the bottom of the window, not at this generation —
@@ -685,7 +709,9 @@ fn cmd_enroll(
              exercised until that image boots. Its keyslot is verified; the running generation's \
              keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
              back instead of failing.",
-            running.map(|g| g.to_string()).unwrap_or_else(|| "unknown".into())
+            running
+                .map(|g| g.to_string())
+                .unwrap_or_else(|| "unknown".into())
         );
     }
 
@@ -747,7 +773,7 @@ fn cmd_unlock(
     output: Option<&Path>,
     pin_file: Option<&Path>,
     proof_file: Option<&Path>,
-) -> Result<()>  {
+) -> Result<()> {
     let pin = pin_file.map(read_secret).transpose()?;
     let tokens = keyslots::list_tokens(runner, device)?;
     if tokens.is_empty() {
@@ -898,7 +924,11 @@ fn cmd_confirm(
     );
     println!(
         "independent unlock path re-checked ({}).",
-        if unattended { "keyslots present" } else { "recovery key verified" }
+        if unattended {
+            "keyslots present"
+        } else {
+            "recovery key verified"
+        }
     );
     Ok(())
 }
@@ -919,7 +949,10 @@ fn cmd_status(
     let base = confirm::load_base(state.as_ref(), &tokens)?;
     let counter_value = counter::read(runner, cfg.nv_index, scratch).ok().flatten();
     let floor = match (base, counter_value) {
-        (Some(b), Some(c)) => Some(counter::FloorState { counter: c, base: b }),
+        (Some(b), Some(c)) => Some(counter::FloorState {
+            counter: c,
+            base: b,
+        }),
         _ => None,
     };
     let gens: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
@@ -1121,14 +1154,7 @@ fn cmd_approve_floor(
     let req: approval::Request =
         serde_json::from_str(&text).context("parsing the floor request")?;
     let up_to = up_to_floor.unwrap_or(req.safe_target_floor);
-    let approvals = approval::issue(
-        runner,
-        ws,
-        &req,
-        private_key,
-        up_to,
-        allow_past_safe_bound,
-    )?;
+    let approvals = approval::issue(runner, ws, &req, private_key, up_to, allow_past_safe_bound)?;
     if approvals.is_empty() {
         println!(
             "nothing to approve: the floor is already at generation {}",

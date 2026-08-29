@@ -237,7 +237,8 @@ impl Widget for EditableLabel {
     ) {
         if self.editing {
             self.input.apply_layout_external(self.rect);
-            self.input.draw(scene, transform, text_renderer, theme, presence);
+            self.input
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
         if self.value.is_empty() {
@@ -319,7 +320,14 @@ impl Widget for EditableLabel {
             WindowEvent::CursorMoved { .. } => {
                 let was = *handled;
                 self.input.handle_event(
-                    event, scale_factor, modifiers, state, root, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
                 if !self.input.is_dragging() {
@@ -328,7 +336,14 @@ impl Widget for EditableLabel {
             }
             _ => {
                 self.input.handle_event(
-                    event, scale_factor, modifiers, state, root, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
             }
@@ -404,13 +419,26 @@ impl Widget for EditableLabel {
 mod tests {
     use super::*;
 
-    fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: &Modifiers) -> bool {
+    fn drive(
+        el: &mut EditableLabel,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        m: &Modifiers,
+    ) -> bool {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         el.handle_event(
-            ev, 1.0, m, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+            ev,
+            1.0,
+            m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -418,8 +446,9 @@ mod tests {
     fn char_key(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -434,8 +463,9 @@ mod tests {
     fn named_key(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -479,7 +509,11 @@ mod tests {
         drive(&mut el, &mut doc, &char_key("N"), &no_mods());
         drive(&mut el, &mut doc, &char_key("e"), &no_mods());
         drive(&mut el, &mut doc, &char_key("w"), &no_mods());
-        assert_eq!(el.current_text(), "New", "typing replaced the selected value");
+        assert_eq!(
+            el.current_text(),
+            "New",
+            "typing replaced the selected value"
+        );
         assert!(el.is_editing(), "still editing until a commit trigger");
 
         // Move the pointer well outside the field, then press — a click away.
@@ -493,7 +527,11 @@ mod tests {
             "the outside click is not swallowed — it still reaches the host",
         );
         assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
-        assert_eq!(el.take_outcome(), EditOutcome::None, "outcome is rising-edge");
+        assert_eq!(
+            el.take_outcome(),
+            EditOutcome::None,
+            "outcome is rising-edge"
+        );
     }
 
     #[test]
@@ -532,7 +570,12 @@ mod tests {
         el.begin_edit(); // selects all
         // select-all is already active; type a space then backspace to empty it.
         drive(&mut el, &mut doc, &char_key(" "), &no_mods()); // → " "
-        drive(&mut el, &mut doc, &named_key(NamedKey::Backspace), &no_mods()); // → ""
+        drive(
+            &mut el,
+            &mut doc,
+            &named_key(NamedKey::Backspace),
+            &no_mods(),
+        ); // → ""
         assert_eq!(el.current_text(), "", "field is empty before commit");
         el.commit();
         assert_eq!(el.value(), "Original", "blank commit keeps the old value");
@@ -558,7 +601,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         el.begin_edit();
         // Collapse the initial select-all by pressing Right (caret to end).
-        drive(&mut el, &mut doc, &named_key(NamedKey::ArrowRight), &no_mods());
+        drive(
+            &mut el,
+            &mut doc,
+            &named_key(NamedKey::ArrowRight),
+            &no_mods(),
+        );
         // Now Ctrl+A must reselect everything, then typing replaces it all.
         let mut ctrl = winit::keyboard::ModifiersState::empty();
         ctrl |= winit::keyboard::ModifiersState::CONTROL;

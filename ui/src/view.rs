@@ -238,18 +238,18 @@ pub trait FreezeThaw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PresenceCtx;
+    use crate::TextRenderer;
+    use crate::Theme;
     use crate::app::App;
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::widget::Widget;
-    use crate::PresenceCtx;
-    use crate::TextRenderer;
-    use crate::Theme;
-    use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ROOT};
+    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
-    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use vello::Scene;
+    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use winit::event::WindowEvent;
 
     /// A minimal root widget that owns all the presentation state a View
@@ -404,7 +404,10 @@ mod tests {
         // App 2: a fresh app with an EMPTY doc and a default root.
         let mut app2 = App::new(State::new(), Box::new(DocRoot::new()));
         app2.init_layout();
-        assert_eq!(text_at(&app2.state_mut_for_test().doc.clone(), "body"), None);
+        assert_eq!(
+            text_at(&app2.state_mut_for_test().doc.clone(), "body"),
+            None
+        );
 
         app2.thaw(&frozen).expect("thaw a well-formed envelope");
 
@@ -450,7 +453,10 @@ mod tests {
         // A valid envelope truncated mid-way still fails cleanly.
         let good = app.freeze();
         let truncated = &good[..good.len() / 2];
-        assert!(app.thaw(truncated).is_err(), "truncated bytes error, not panic");
+        assert!(
+            app.thaw(truncated).is_err(),
+            "truncated bytes error, not panic"
+        );
 
         // A future version is refused, not silently mis-decoded.
         let future = FrozenApp {

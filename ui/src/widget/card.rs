@@ -80,11 +80,7 @@ impl Card {
 
     /// `action` (e.g. an "Add" button or a count badge) sits on the same
     /// line as the title.
-    pub fn titled_with_action(
-        title: impl Into<String>,
-        action: Element,
-        body: Element,
-    ) -> Self {
+    pub fn titled_with_action(title: impl Into<String>, action: Element, body: Element) -> Self {
         Self {
             inner: surface(Some(title.into()), Some(action), body),
         }
@@ -154,7 +150,8 @@ impl Widget for Card {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text_renderer, theme, presence);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_with_presence(
@@ -166,8 +163,14 @@ impl Widget for Card {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        self.inner
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.inner.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn handle_event(
@@ -357,12 +360,7 @@ impl CardGrid {
         }
 
         let rects: Vec<Rect> = (0..self.cards.len()).map(|i| self.cell_rect(i)).collect();
-        for ((card, &node), cell) in self
-            .cards
-            .iter_mut()
-            .zip(nodes.iter())
-            .zip(rects.iter())
-        {
+        for ((card, &node), cell) in self.cards.iter_mut().zip(nodes.iter()).zip(rects.iter()) {
             card.apply_layout(&taffy, node, Point::new(cell.x0, cell.y0));
         }
 
@@ -398,10 +396,13 @@ impl Widget for CardGrid {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.map(|w| w as f64).unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(w) => w as f64,
-            _ => self.min_card_w,
-        });
+        let width = known
+            .width
+            .map(|w| w as f64)
+            .unwrap_or(match available.width {
+                taffy::AvailableSpace::Definite(w) => w as f64,
+                _ => self.min_card_w,
+            });
         let columns = self.columns_for_width(width);
         let height = self.content_height(columns);
         taffy::Size {
@@ -544,7 +545,10 @@ mod tests {
         assert!((w - 262.6667).abs() < 0.01, "got {w}");
         // The columns + gaps exactly refill the width (they line up edge-to-edge).
         let total = 3.0 * w + 2.0 * 16.0;
-        assert!((total - 820.0).abs() < 0.01, "columns must refill width, got {total}");
+        assert!(
+            (total - 820.0).abs() < 0.01,
+            "columns must refill width, got {total}"
+        );
     }
 
     #[test]
@@ -592,30 +596,47 @@ mod tests {
     #[test]
     fn grid_resolves_columns_from_allocated_width() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(6))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             900.0,
             2000.0,
         );
         // 900px → 3 columns of ~(900-32)/3 = 289.3px each.
         assert_eq!(g.columns, 3, "900px / 260-min → 3 columns");
-        assert!((g.cell_w - 289.333).abs() < 0.1, "equal column width, got {}", g.cell_w);
+        assert!(
+            (g.cell_w - 289.333).abs() < 0.1,
+            "equal column width, got {}",
+            g.cell_w
+        );
     }
 
     #[test]
     fn grid_cells_align_to_shared_columns() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(6))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             900.0,
             2000.0,
         );
         // Card 0 and card 3 are in the same (first) column → identical x0.
-        assert!((g.cell_rect(0).x0 - g.cell_rect(3).x0).abs() < 0.01, "column 0 x aligns across rows");
+        assert!(
+            (g.cell_rect(0).x0 - g.cell_rect(3).x0).abs() < 0.01,
+            "column 0 x aligns across rows"
+        );
         // Card 0 and card 1 are in adjacent columns → x1 vs x2 separated by one gap.
         let gap_between = g.cell_rect(1).x0 - g.cell_rect(0).x1;
-        assert!((gap_between - 16.0).abs() < 0.5, "adjacent cards separated by one gap, got {gap_between}");
+        assert!(
+            (gap_between - 16.0).abs() < 0.5,
+            "adjacent cards separated by one gap, got {gap_between}"
+        );
         // Every cell has the same width → they line up.
         for i in 0..6 {
-            assert!((g.cell_rect(i).width() - g.cell_w).abs() < 0.01, "cell {i} width matches column");
+            assert!(
+                (g.cell_rect(i).width() - g.cell_w).abs() < 0.01,
+                "cell {i} width matches column"
+            );
         }
     }
 
@@ -636,12 +657,17 @@ mod tests {
     #[test]
     fn grid_narrow_falls_to_single_column() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(4)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(4))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             300.0,
             2000.0,
         );
         assert_eq!(g.columns, 1, "300px < 2-col stride → single column");
-        assert!((g.cell_w - 300.0).abs() < 0.5, "single column spans full width");
+        assert!(
+            (g.cell_w - 300.0).abs() < 0.5,
+            "single column spans full width"
+        );
     }
 
     // ---- Card surface ----
@@ -668,7 +694,11 @@ mod tests {
     fn card_stretches_to_column_width() {
         // A card with no pinned width fills its column so a stack lines up.
         let rect = lay_out_card(Card::new(Box::new(Text::new("hi"))));
-        assert!((rect.width() - 600.0).abs() < 0.5, "card fills width, got {}", rect.width());
+        assert!(
+            (rect.width() - 600.0).abs() < 0.5,
+            "card fills width, got {}",
+            rect.width()
+        );
     }
 
     #[test]

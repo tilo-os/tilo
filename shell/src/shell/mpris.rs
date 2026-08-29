@@ -82,8 +82,7 @@ fn run(cmd: Command) -> Option<Outcome> {
         .ok()?;
 
     let name = active_player(&conn)?;
-    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
-        .ok()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
 
     // Read status *before* acting: reading after would race the player's
     // own (asynchronous) state change.
@@ -123,8 +122,7 @@ fn active_player(conn: &zbus::blocking::Connection) -> Option<String> {
         return None;
     }
     for name in &players {
-        let Ok(proxy) =
-            zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
+        let Ok(proxy) = zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
         else {
             continue;
         };

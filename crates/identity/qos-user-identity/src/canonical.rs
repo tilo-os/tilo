@@ -67,8 +67,8 @@ pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalErro
 /// over the exact-length preimage). To close that hole we use
 /// `take_from_bytes` and reject any non-empty remainder.
 pub fn from_canonical_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CanonicalError> {
-    let (value, rest) = postcard::take_from_bytes(bytes)
-        .map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
+    let (value, rest) =
+        postcard::take_from_bytes(bytes).map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
     if !rest.is_empty() {
         return Err(CanonicalError::Deserialize(format!(
             "{} trailing bytes after value",

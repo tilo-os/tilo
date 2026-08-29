@@ -22,9 +22,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use runtime_collab::raw::{
     action_input, action_stream, blob_stream, channel_handle, collab_service, invocation_stream,
 };
-use runtime_collab::{
-    CollabClient, CollabServiceClient, ExportedAction, ExportedInput,
-};
+use runtime_collab::{CollabClient, CollabServiceClient, ExportedAction, ExportedInput};
 use runtime_portal::UnixCapnpClient;
 
 // shared capture state
@@ -382,7 +380,10 @@ async fn offer_and_want_blob_reach_the_broker_verbatim() {
             let collab = stand_up_client(broker).await;
             let channel = collab.join_channel("chan-blob", b"identity").await.unwrap();
 
-            channel.offer_blob("b3-abc", b"\x00\x01\x02binary").await.unwrap();
+            channel
+                .offer_blob("b3-abc", b"\x00\x01\x02binary")
+                .await
+                .unwrap();
             channel.want_blob("b3-def").await.unwrap();
 
             let c = captures.borrow();
@@ -408,7 +409,10 @@ async fn subscribe_blobs_yields_hash_and_bytes() {
                 ..Default::default()
             };
             let collab = stand_up_client(broker).await;
-            let channel = collab.join_channel("chan-blob-rx", b"identity").await.unwrap();
+            let channel = collab
+                .join_channel("chan-blob-rx", b"identity")
+                .await
+                .unwrap();
             let stream = channel.subscribe_blobs().await.unwrap();
 
             let first = stream.read().await.unwrap();
@@ -460,15 +464,14 @@ async fn subscribe_actions_keeps_sender_attribution_separate_from_payload() {
     local
         .run_until(async {
             let broker = FakeBroker {
-                action_backlog: vec![(
-                    "chat.remark".into(),
-                    b"payload".to_vec(),
-                    "peer-3".into(),
-                )],
+                action_backlog: vec![("chat.remark".into(), b"payload".to_vec(), "peer-3".into())],
                 ..Default::default()
             };
             let collab = stand_up_client(broker).await;
-            let channel = collab.join_channel("chan-act-rx", b"identity").await.unwrap();
+            let channel = collab
+                .join_channel("chan-act-rx", b"identity")
+                .await
+                .unwrap();
             let stream = channel.subscribe_actions().await.unwrap();
 
             let ev = stream.read().await.unwrap();
@@ -644,7 +647,10 @@ async fn compose_remark_carries_the_reference_and_the_window_local_rect() {
                 ..Default::default()
             };
             let collab = stand_up_client(broker).await;
-            let channel = collab.join_channel("chan-remark", b"identity").await.unwrap();
+            let channel = collab
+                .join_channel("chan-remark", b"identity")
+                .await
+                .unwrap();
 
             let reference = r#"{"referent":{"Doc":{"id":"plan"}}}"#;
             channel

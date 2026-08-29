@@ -20,9 +20,7 @@ use crate::shell::search::visibility::CapabilityVisibility;
 /// An unresolved workspace is an error, never a fallback to "show
 /// everything". Parameters are typed + required-ness on the wire, so a
 /// caller with no screen can build a valid invocation from them alone.
-fn params_json(
-    params: &[crate::shell::search::action_api::ActionParam],
-) -> Vec<serde_json::Value> {
+fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<serde_json::Value> {
     params
         .iter()
         .map(|p| {
@@ -334,9 +332,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     });
                     // What the client actually drew, beside the tab it was drawn into — an
                     // opening-then-resizing window is those two disagreeing for a moment.
-                    let buffer = store.frame_size(tab.surface_id).map(|(w, h)| {
-                        serde_json::json!({ "w": w, "h": h })
-                    });
+                    let buffer = store
+                        .frame_size(tab.surface_id)
+                        .map(|(w, h)| serde_json::json!({ "w": w, "h": h }));
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
@@ -390,7 +388,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
     }
 
-/// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
+    /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
     fn revoke_capability(&self, id: &str) -> Result<serde_json::Value, String> {
         let chrome = self.fb.chrome();
         let user = chrome.local_user_id.clone();
@@ -476,7 +474,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb.host().action_catalog(query, chrome, doc, root, gate)
+            self.fb
+                .host()
+                .action_catalog(query, chrome, doc, root, gate)
         })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()
@@ -512,9 +512,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         id: &str,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, test_control::ActionRefusal> {
-        let (doc, root) = self
-            .doc
-            .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
+        let (doc, root) = self.doc.ok_or_else(|| {
+            test_control::ActionRefusal::unknown("control state has no live document")
+        })?;
         let chrome_handle = self.fb.chrome_handle();
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
             self.fb.host().action_catalog("", chrome, doc, root, gate)
@@ -804,7 +804,10 @@ fn execute_planned_action(
         }
         PlannedAction::SetGroupWidth { permille } => {
             let touched = fb.host_mut().set_group_widths(*permille);
-            tracing::info!("test_control: set {} group(s) to {permille}permille", touched.len());
+            tracing::info!(
+                "test_control: set {} group(s) to {permille}permille",
+                touched.len()
+            );
             fb.with_chrome(|st| st.bump());
         }
         PlannedAction::MouseLeftButton { pressed } => {
@@ -856,8 +859,8 @@ fn execute_planned_action(
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(winit_key, *pressed);
-    // Keep the running mask in step with the injected key stream — this wire
-    // carries no `ModifiersChanged`, so a held modifier would otherwise be invisible.
+            // Keep the running mask in step with the injected key stream — this wire
+            // carries no `ModifiersChanged`, so a held modifier would otherwise be invisible.
             if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
@@ -908,7 +911,10 @@ fn execute_planned_action(
             let drag = state.as_ref().and_then(|s| {
                 (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
                     let (cx, cy) = s.client_input.cursor();
-                    (vello::kurbo::Point::new(cx, cy), s.selection.dnd_label.get())
+                    (
+                        vello::kurbo::Point::new(cx, cy),
+                        s.selection.dnd_label.get(),
+                    )
                 })
             });
             write_snapshot_png(fb, path, drag);
@@ -1079,7 +1085,9 @@ fn write_snapshot_png(
     let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
     // A panic elsewhere poisons the mutex without damaging what it guards (an
     // intact renderer or empty slot) — recover rather than compound the failure.
-    let mut slot = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut slot = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let stale = match slot.as_ref() {
         Some(renderer) => renderer.width != w || renderer.height != h,
         None => true,
@@ -1190,7 +1198,7 @@ pub(crate) fn read_bounded_line<R: BufRead>(
             None => (available.len(), false),
         };
         if buf.len() + consumed > max_bytes {
-        // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
+            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
             let remaining = max_bytes.saturating_sub(buf.len());
             buf.extend_from_slice(&available[..remaining]);
             reader.consume(remaining);
@@ -1236,12 +1244,12 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
-    // Settle layout before anything reads a rect. The relayout after an action
-    // (below) covers a tree the *socket* changed, not one a **client** changed
-    // — a window map/close/resize rearranges the strip with no command sent,
-    // so a caller asking mid-frame would get a stale rect. So layout is
-    // settled per command, not per action: idempotent, and cheap relative to
-    // the round-trip that asked for it.
+                        // Settle layout before anything reads a rect. The relayout after an action
+                        // (below) covers a tree the *socket* changed, not one a **client** changed
+                        // — a window map/close/resize rearranges the strip with no command sent,
+                        // so a caller asking mid-frame would get a stale rect. So layout is
+                        // settled per command, not per action: idempotent, and cheap relative to
+                        // the round-trip that asked for it.
                         frame_builder.relayout();
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
@@ -1251,13 +1259,13 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
-        // A planned action that could not run replaces this command's answer.
-        // Actions execute before the reply is written; first failure wins, the rest still run.
+                // A planned action that could not run replaces this command's answer.
+                // Actions execute before the reply is written; first failure wins, the rest still run.
                 let mut failed: Option<InvokeFailure> = None;
                 for action in &actions {
                     if session.is_locked() {
-                // While locked the socket is captured by the lock surface like live input
-                // — actions go to the password field; `poll_verification` delivers unlock.
+                        // While locked the socket is captured by the lock surface like live input
+                        // — actions go to the password field; `poll_verification` delivers unlock.
                         execute_locked_action(action, lock);
                     } else if let Some(failure) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
@@ -1327,8 +1335,8 @@ fn apply_session_transition(
                 p.set_dpms(true);
             }
         }
-    // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
-    // gated by the inhibitor registry + issued through the power service, never here.
+        // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
+        // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
 }
@@ -1360,7 +1368,7 @@ fn power_notification_to_incoming(
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
-    // Critical battery lingers until dismissed; the low heads-up uses the server default expiry.
+        // Critical battery lingers until dismissed; the low heads-up uses the server default expiry.
         expire_timeout: if n.critical { 0 } else { -1 },
         urgency: if n.critical { 2 } else { 1 },
         caller: None,
@@ -1726,9 +1734,7 @@ fn start_portal_backend(
 
     // The queues are useless until drained; attaching them to the overlay host
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
-    frame_builder
-        .host_mut()
-        .set_portal_queues(prompts, pickers);
+    frame_builder.host_mut().set_portal_queues(prompts, pickers);
 
     tracing::info!(
         "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {}",
@@ -1830,7 +1836,11 @@ pub fn run() -> ! {
     frame_builder.set_output_geometry(output_geometry(backend.outputs()));
     // Room record durability and discovery are switched on here, beside the
     // rest of the durable state, so a test/screenshot compositor touches nobody's.
-    frame_builder.host().room_records().borrow_mut().attach_store();
+    frame_builder
+        .host()
+        .room_records()
+        .borrow_mut()
+        .attach_store();
 
     // The xdg-desktop-portal backend, served from *this* process on the tree
     // it owns — see `start_portal_backend` for why not the separate daemon.
@@ -1849,21 +1859,22 @@ pub fn run() -> ! {
                 let net = Arc::new(handle);
                 let bridge_net = Arc::clone(&net);
                 let bridge_tree = tree_handle.clone();
-                frame_builder.host_mut().set_peer_sync_bridge(std::rc::Rc::new(
-                    move |req| {
+                frame_builder
+                    .host_mut()
+                    .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
                         let active = bridge_tree.read().active;
                         match req {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
-                            PeerSyncRequest::IssueInviteFor(name) => bridge_net
-                                .issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name),
+                            PeerSyncRequest::IssueInviteFor(name) => {
+                                bridge_net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
+                            }
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string()),
                         }
-                    },
-                ));
+                    }));
                 Some(net)
             }
             Err(e) => {
@@ -1972,7 +1983,9 @@ pub fn run() -> ! {
             }
         }
         Err(e) => {
-            eprintln!("nirios compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect");
+            eprintln!(
+                "nirios compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect"
+            );
         }
     }
 
@@ -2010,7 +2023,7 @@ pub fn run() -> ! {
         lock_auth::verifier_from_env(),
         std::env::var("USER").unwrap_or_else(|_| "user".to_string()),
     );
-        // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
+    // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
@@ -2109,7 +2122,7 @@ pub fn run() -> ! {
             pacing::FrameClock::new(interval, Instant::now())
         }
         None => {
-    // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
+            // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
             eprintln!(
                 "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
                 1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
@@ -2125,12 +2138,11 @@ pub fn run() -> ! {
         eprintln!("nirios compositor: presenting on a dedicated render thread");
         // Wake the loop when a frame retires — otherwise a tick that declined to
         // paint for lack of pipe capacity would park out the whole interval, halving throughput.
-        let (ping, ping_source) =
-            calloop::ping::make_ping().expect("create present-retire ping");
+        let (ping, ping_source) = calloop::ping::make_ping().expect("create present-retire ping");
         event_loop
             .handle()
             .insert_source(ping_source, |_, _, _| {
-    // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
+                // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
             })
             .expect("insert present-retire ping source");
         present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
@@ -2152,35 +2164,38 @@ pub fn run() -> ! {
             refresh_mhz_of(&*backend),
         );
     }
-        // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
+    // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
 
-        // Pointer/keyboard preferences are read once at startup; this notices a
-        // new Settings write so changes take effect this session, not the next.
-    let mut settings_watch =
-        crate::compositor::backend::drm::input_config::SettingsWatch::new();
-        // Redraw gating: painting every tick regardless of change would pin a CPU
-        // core at 100%. Repaint only when: a backend event arrived
-        // (input/resize/focus/redraw); the widget tree is animating; the chrome
-        // revision bumped; a session transition fired; or the keepalive interval
-        // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
+    // Pointer/keyboard preferences are read once at startup; this notices a
+    // new Settings write so changes take effect this session, not the next.
+    let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    // Redraw gating: painting every tick regardless of change would pin a CPU
+    // core at 100%. Repaint only when: a backend event arrived
+    // (input/resize/focus/redraw); the widget tree is animating; the chrome
+    // revision bumped; a session transition fired; or the keepalive interval
+    // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
     let keepalive = Duration::from_millis(1000);
     let mut last_paint = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
     let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
-        // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
-        // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
+    // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
+    // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
     let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
-        // Frame-loop instrumentation (`QOS_FRAME_TRACE`/`QOS_FRAME_SUMMARY`), free
-        // when neither is set. See `compositor::metrics`.
+    // Frame-loop instrumentation (`QOS_FRAME_TRACE`/`QOS_FRAME_SUMMARY`), free
+    // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
     metrics.set_target_period(frame_period);
-        // Bench hook: shut down cleanly after N seconds so the frame trace/summary
-        // flush via the normal exit path instead of a SIGKILL. Unset in production.
+    // Bench hook: shut down cleanly after N seconds so the frame trace/summary
+    // flush via the normal exit path instead of a SIGKILL. Unset in production.
     let run_deadline = metrics::run_seconds_from_env().map(|d| {
-        eprintln!("nirios compositor: {}={:?}; will exit cleanly after that", metrics::RUN_SECONDS_ENV, d);
+        eprintln!(
+            "nirios compositor: {}={:?}; will exit cleanly after that",
+            metrics::RUN_SECONDS_ENV,
+            d
+        );
         Instant::now() + d
     });
     let mut stats_since = Instant::now();
@@ -2207,9 +2222,8 @@ pub fn run() -> ! {
                         frame_builder.set_viewport(size);
                         // A resize is also how the compositor learns a monitor changed, so
                         // re-derive per-display widths alongside the scene extent.
-                        frame_builder
-                            .set_output_geometry(output_geometry(backend.outputs()));
-                // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
+                        frame_builder.set_output_geometry(output_geometry(backend.outputs()));
+                        // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
                         state.output_size = (size.0 as i32, size.1 as i32);
                         // The swap chain lives on the render thread now, so the reconfigure
                         // travels with the frames rather than inline, keeping it ordered against any frame already queued at the old size.
@@ -2241,9 +2255,7 @@ pub fn run() -> ! {
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
-                    state
-                        .remote_input_firewall
-                        .note_local_input(Instant::now());
+                    state.remote_input_firewall.note_local_input(Instant::now());
 
                     if session.is_locked() {
                         // Locked: every input is captured by the lock surface, into the password
@@ -2262,7 +2274,11 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Lock) => {
                                 for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                                    apply_session_transition(
+                                        t,
+                                        backend.as_mut(),
+                                        present_pipe.as_ref(),
+                                    );
                                 }
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
@@ -2310,7 +2326,7 @@ pub fn run() -> ! {
                             &test_control_ctx.modifiers,
                         );
                         if !to_client {
-                        // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
+                            // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             frame_builder.dispatch_event(
                                 &wev,
                                 &test_control_ctx.modifiers,
@@ -2358,7 +2374,7 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
+                    // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
                 }
             }
         }
@@ -2433,7 +2449,7 @@ pub fn run() -> ! {
             } else {
                 apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
-        // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
+            // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
             session_changed = true;
         }
 
@@ -2448,7 +2464,7 @@ pub fn run() -> ! {
                     }
                 }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
-        // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
+                    // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.note_activity(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
@@ -2519,10 +2535,10 @@ pub fn run() -> ! {
         frame_builder.set_fullscreen(state.fullscreen_group);
 
         {
-        // Mirror foreign toplevels adopted at the protocol layer into the rendered
-        // tab tree, reaping tabs whose client went away — a diff of protocol tree
-        // against rendered, so idempotent and self-healing (no phantom tabs from a
-        // dropped event). A real change bumps the chrome revision, driving the strip resync that splices the tab into the widget tree next layout.
+            // Mirror foreign toplevels adopted at the protocol layer into the rendered
+            // tab tree, reaping tabs whose client went away — a diff of protocol tree
+            // against rendered, so idempotent and self-healing (no phantom tabs from a
+            // dropped event). A real change bumps the chrome revision, driving the strip resync that splices the tab into the widget tree next layout.
             let mirrored = {
                 let chrome = frame_builder.chrome();
                 let mut rendered = chrome.tree_mut();
@@ -2531,8 +2547,8 @@ pub fn run() -> ! {
             if mirrored {
                 frame_builder.with_chrome(|st| st.bump());
             }
-        // The mirror above is the single source of tab adoption, so the input
-        // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
+            // The mirror above is the single source of tab adoption, so the input
+            // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
             state.client_input.clear_pending();
         }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
@@ -2672,7 +2688,10 @@ pub fn run() -> ! {
                         .as_ref()
                         .map(|p| p.presented().to_string())
                         .unwrap_or_else(|| "inline".to_string()),
-                    present_pipe.as_ref().map(|p| p.backpressured()).unwrap_or(0),
+                    present_pipe
+                        .as_ref()
+                        .map(|p| p.backpressured())
+                        .unwrap_or(0),
                 );
                 frames_total = 0;
                 frames_painted = 0;
@@ -2696,8 +2715,8 @@ pub fn run() -> ! {
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let scene = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
-            // The lock overlay covers every known output, centred on each (single on
-            // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
+                // The lock overlay covers every known output, centred on each (single on
+                // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
                 let lock_outputs: Vec<LockOutput> = backend
                     .outputs()
                     .iter()
@@ -2717,7 +2736,7 @@ pub fn run() -> ! {
                 };
                 // Count-only summary on the lock screen — no bodies leak.
                 let notif_count = frame_builder.chrome().notification_count();
-        // Wall clock/date computed here (not in the pure paint) so the lock surface renders as themed compositor chrome.
+                // Wall clock/date computed here (not in the pure paint) so the lock surface renders as themed compositor chrome.
                 let now = chrono::Local::now();
                 let clock = now.format("%H:%M").to_string();
                 let date = now.format("%A, %B %-d").to_string();
@@ -2832,7 +2851,7 @@ pub fn run() -> ! {
                     &mut test_control_ctx,
                     &session,
                     &mut lock,
-        &mut state,
+                    &mut state,
                 );
                 if injected {
                     // Socket-driven input starts the same latency clock hardware input does.
@@ -2926,10 +2945,10 @@ pub fn run() -> ! {
 
 #[cfg(test)]
 mod tests {
-//! Unit coverage for the test-control execution path. The integration test
-//! (`tests/control_socket_test.rs`) needs a Wayland display and is
-//! `#[ignore]` by default; these exercise the same `execute_planned_action`
-//! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
+    //! Unit coverage for the test-control execution path. The integration test
+    //! (`tests/control_socket_test.rs`) needs a Wayland display and is
+    //! `#[ignore]` by default; these exercise the same `execute_planned_action`
+    //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
 
     /// The compositor binds the socket the launcher dials. Assert across both
@@ -3698,7 +3717,7 @@ mod tests {
         apply_session_transition(SessionTransition::Woke, &mut backend, None);
         apply_session_transition(SessionTransition::Locked, &mut backend, None);
         apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
-    // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
+        // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
     }
 }
@@ -3810,7 +3829,7 @@ mod vt_chord_tests {
 
     #[test]
     fn either_modifier_alone_is_not_the_chord() {
-    // Alt+F4 closes a window on every desktop; claiming it as a VT switch would be a spectacular regression.
+        // Alt+F4 closes a window on every desktop; claiming it as a VT switch would be a spectacular regression.
         assert_eq!(
             vt_switch_chord(
                 &key(NamedKey::F4, ElementState::Pressed),
@@ -3942,17 +3961,20 @@ mod output_geometry_tests {
     use super::output_geometry;
     use crate::compositor::backend::{Output, OutputId};
 
-/// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
+    /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
     #[test]
     fn single_output_maps_to_one_display() {
         let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
         let geo = output_geometry(&outs);
         assert_eq!(geo.len(), 1);
-        assert_eq!((geo[0].x, geo[0].width, geo[0].height), (0.0, 3840.0, 2160.0));
+        assert_eq!(
+            (geo[0].x, geo[0].width, geo[0].height),
+            (0.0, 3840.0, 2160.0)
+        );
     }
 
-/// Two monitors side by side stay two displays, each with its own width —
-/// what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
+    /// Two monitors side by side stay two displays, each with its own width —
+    /// what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
     #[test]
     fn side_by_side_outputs_stay_separate_displays() {
         let outs = [
@@ -3970,7 +3992,7 @@ mod output_geometry_tests {
         assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
     }
 
-/// A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
+    /// A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
     #[test]
     fn zero_sized_outputs_are_dropped() {
         let outs = [

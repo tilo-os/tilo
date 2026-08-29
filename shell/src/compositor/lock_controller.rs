@@ -461,8 +461,7 @@ mod tests {
 
     #[test]
     fn async_wrong_password_stays_locked_with_nonleaky_error() {
-        let (v, gate) =
-            GateVerifier::new(Err("Incorrect username or password".to_string()));
+        let (v, gate) = GateVerifier::new(Err("Incorrect username or password".to_string()));
         let mut c = LockController::new(Arc::new(v), "alice");
         c.push_str("wrong");
         assert_eq!(c.submit(), UnlockOutcome::StillLocked);
@@ -489,7 +488,10 @@ mod tests {
         );
         assert_eq!(c.buffer_len(), 0, "text is swallowed while verifying");
         assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
-        assert!(c.is_verifying(), "a second submit does not replace the verify");
+        assert!(
+            c.is_verifying(),
+            "a second submit does not replace the verify"
+        );
         release(&gate);
         assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
     }

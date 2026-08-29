@@ -144,7 +144,8 @@ impl Avatar {
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
         let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
-        let (tw, th) = text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
+        let (tw, th) =
+            text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
         let ty = centre.y - th as f64 / 2.0;
         text_renderer.draw_text_weighted(
@@ -196,7 +197,15 @@ impl Avatar {
             return;
         }
         Self::draw_ring(scene, transform, rect, ring_color, ring_width);
-        Self::draw_at(scene, transform, rect, initials, color, theme, text_renderer);
+        Self::draw_at(
+            scene,
+            transform,
+            rect,
+            initials,
+            color,
+            theme,
+            text_renderer,
+        );
     }
 
     /// Trailing "+N overflow" chip — same separator ring as
@@ -315,7 +324,8 @@ impl Avatar {
         // Text size is proportional to the avatar size so a 24px chip
         // and a 64px header avatar both look balanced.
         let text_size = self.size * 0.4;
-        let (tw, th) = text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
+        let (tw, th) =
+            text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
         let ty = centre.y - th as f64 / 2.0;
         text_renderer.draw_text_weighted(
@@ -384,7 +394,10 @@ impl Widget for Avatar {
             // Pure translation since the cache was emitted.
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform * Affine::translate((dx, dy))),
+            );
             return;
         }
         // paint_* helpers borrow `&self`, so move the cache out, mutate
@@ -404,11 +417,17 @@ impl Widget for Avatar {
         self.cache_rect = self.rect;
     }
 
-    fn needs_redraw(&self) -> bool { self.dirty }
-    fn mark_drawn(&mut self) { self.dirty = false; }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
     /// `Rect::ZERO` sentinel until the first `apply_layout`; stable
     /// after that since avatars are fixed-size leaves.
-    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
 
     fn handle_event(
         &mut self,
@@ -472,7 +491,11 @@ mod tests {
         );
 
         let lower = Avatar::from_initials("qd", 40.0);
-        assert_eq!(lower.display_initials(), "QD", "must uppercase lowercase input");
+        assert_eq!(
+            lower.display_initials(),
+            "QD",
+            "must uppercase lowercase input"
+        );
         let long = Avatar::from_initials("Quickdesktop", 40.0);
         assert_eq!(
             long.display_initials(),
@@ -537,9 +560,9 @@ mod tests {
         // alphabet and require at least one difference.
         let candidates = ["AA", "BB", "CC", "DD", "EE", "FF", "GG"];
         let qd_color = a.background_color(&theme);
-        let any_different = candidates.iter().any(|s| {
-            Avatar::from_initials(s, 40.0).background_color(&theme) != qd_color
-        });
+        let any_different = candidates
+            .iter()
+            .any(|s| Avatar::from_initials(s, 40.0).background_color(&theme) != qd_color);
         assert!(
             any_different,
             "background_color collapsed all initials to one ramp stop — \
@@ -594,9 +617,16 @@ mod tests {
         assert_eq!(Avatar::initials_for_name("Ada Lovelace"), "AL");
         assert_eq!(Avatar::initials_for_name("ada lovelace"), "AL");
         assert_eq!(Avatar::initials_for_name("mononym"), "M");
-        assert_eq!(Avatar::initials_for_name("Grace Brewster Murray Hopper"), "GB");
+        assert_eq!(
+            Avatar::initials_for_name("Grace Brewster Murray Hopper"),
+            "GB"
+        );
         assert_eq!(Avatar::initials_for_name("   spaced   out  "), "SO");
-        assert_eq!(Avatar::initials_for_name(""), "", "empty name yields empty — caller supplies its own fallback glyph");
+        assert_eq!(
+            Avatar::initials_for_name(""),
+            "",
+            "empty name yields empty — caller supplies its own fallback glyph"
+        );
     }
 
     #[test]

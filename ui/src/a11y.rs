@@ -312,8 +312,7 @@ impl AccessNode {
 /// Stored in the per-user settings CRDT and mirrored into spawned sandboxes
 /// via `QOS_A11Y_*` env vars. Defaults are all-off so existing single-user
 /// setups are unaffected until a user opts in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct A11ySettings {
     /// Use a high-contrast theme track (see [`Theme::high_contrast`]).
     ///
@@ -326,7 +325,6 @@ pub struct A11ySettings {
     /// flowing for live regions.
     pub screen_reader: bool,
 }
-
 
 /// WCAG 2.1 relative luminance of an sRGB colour, in `[0.0, 1.0]`. Alpha is
 /// ignored (colours are assumed opaque for contrast purposes).
@@ -387,7 +385,11 @@ mod tests {
         assert!(!s.read_only);
 
         let unchecked = AccessState::new().checked(false);
-        assert_eq!(unchecked.checked, Some(false), "checked(false) is Some(false), not None");
+        assert_eq!(
+            unchecked.checked,
+            Some(false),
+            "checked(false) is Some(false), not None"
+        );
 
         let collapsed = AccessState::new().expanded(false);
         assert_eq!(collapsed.expanded, Some(false));
@@ -460,12 +462,24 @@ mod tests {
         assert_eq!(Action::SetValue("a".into()), Action::SetValue("a".into()));
         assert_ne!(Action::SetValue("a".into()), Action::SetValue("b".into()));
         assert_eq!(
-            Action::SetSelection { anchor: 0, focus: 3 },
-            Action::SetSelection { anchor: 0, focus: 3 },
+            Action::SetSelection {
+                anchor: 0,
+                focus: 3
+            },
+            Action::SetSelection {
+                anchor: 0,
+                focus: 3
+            },
         );
         assert_ne!(
-            Action::SetSelection { anchor: 0, focus: 3 },
-            Action::SetSelection { anchor: 1, focus: 3 },
+            Action::SetSelection {
+                anchor: 0,
+                focus: 3
+            },
+            Action::SetSelection {
+                anchor: 1,
+                focus: 3
+            },
         );
     }
 
@@ -495,7 +509,10 @@ mod tests {
         let black = Color::from_rgb8(0, 0, 0);
         // Black-on-white is the WCAG maximum, 21:1.
         let r = contrast_ratio(white, black);
-        assert!((r - 21.0).abs() < 0.01, "black/white contrast should be ~21:1, got {r}");
+        assert!(
+            (r - 21.0).abs() < 0.01,
+            "black/white contrast should be ~21:1, got {r}"
+        );
         assert!((contrast_ratio(black, white) - r).abs() < 1e-9);
         assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
     }

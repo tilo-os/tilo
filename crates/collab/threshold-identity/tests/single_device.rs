@@ -95,7 +95,9 @@ fn single_device_seed_reconstructs_the_same_identity() {
     // same public key and produce verifying signatures.
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let seed = id.single_device_seed().expect("1-of-1 identity exports a seed");
+    let seed = id
+        .single_device_seed()
+        .expect("1-of-1 identity exports a seed");
 
     let back = ThresholdIdentity::from_single_device_seed(&seed);
     assert_eq!(back.group_public_key, id.group_public_key);

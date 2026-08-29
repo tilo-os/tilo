@@ -258,7 +258,10 @@ mod tests {
         let src = ramp(3, 3);
         let out = rotate(&src, 1);
         assert_eq!((out.w, out.h), (3, 3));
-        assert_ne!(out.bytes, src.bytes, "a square rotation must still move pixels");
+        assert_ne!(
+            out.bytes, src.bytes,
+            "a square rotation must still move pixels"
+        );
         assert_eq!(out.pixel(0, 0).unwrap()[0..2], [0, 2]);
     }
 

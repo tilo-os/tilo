@@ -154,10 +154,7 @@ impl FilePickerSpawnerHandle {
     }
 
     /// Issue a request carrying everything the calling app asked for.
-    pub fn request_with(
-        &self,
-        opts: FilePickerOptions,
-    ) -> oneshot::Receiver<Option<Vec<PathBuf>>> {
+    pub fn request_with(&self, opts: FilePickerOptions) -> oneshot::Receiver<Option<Vec<PathBuf>>> {
         let (tx, rx) = oneshot::channel();
         let req = FilePickerRequest {
             caller: opts.caller,

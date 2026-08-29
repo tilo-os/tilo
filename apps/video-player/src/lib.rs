@@ -9,7 +9,7 @@ pub mod app;
 pub mod collab;
 pub mod portal;
 
-pub use app::{source_for_path, PlayerApp};
+pub use app::{PlayerApp, source_for_path};
 
 use std::path::PathBuf;
 use ui::widget::Widget;

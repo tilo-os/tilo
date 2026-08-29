@@ -42,7 +42,15 @@ pub fn text(
     color: Color,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, font, color, t * Affine::translate((pos.x, pos.y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        font,
+        color,
+        t * Affine::translate((pos.x, pos.y)),
+        None,
+        weight,
+    );
 }
 
 /// Draw a line of text centred inside `rect` (both axes).
@@ -60,7 +68,15 @@ pub fn text_centered(
     let (w, h) = tr.measure_weighted(s, font, None, weight);
     let x = rect.x0 + (rect.width() - w as f64) / 2.0;
     let y = rect.y0 + (rect.height() - h as f64) / 2.0;
-    tr.draw_text_weighted(scene, s, font, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        font,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// Draw a line of text vertically centred, left-aligned at `x`.
@@ -78,5 +94,13 @@ pub fn text_vcenter(
 ) {
     let (_, h) = tr.measure_weighted(s, font, None, weight);
     let y = rect.y0 + (rect.height() - h as f64) / 2.0;
-    tr.draw_text_weighted(scene, s, font, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        font,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }

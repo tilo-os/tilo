@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use capnp::Error;
 
-use crate::app_host_capnp::{app_host, Pinning as WirePinning};
+use crate::app_host_capnp::{Pinning as WirePinning, app_host};
 use crate::gc;
 use crate::install::install_qpkg;
 use crate::registry::{Pinning, RegistryEntry};
@@ -100,8 +100,7 @@ impl app_host::Server for AppHostServer {
         async move {
             let entries = tokio::task::spawn_blocking(move || {
                 let entries = store.list();
-                let sizes: Vec<u64> =
-                    entries.iter().map(|e| payload_size(&store, e)).collect();
+                let sizes: Vec<u64> = entries.iter().map(|e| payload_size(&store, e)).collect();
                 (entries, sizes)
             })
             .await
@@ -123,7 +122,10 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p.get_id().map_err(|e| Error::failed(e.to_string()))?.to_vec();
+            let id_bytes = p
+                .get_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
             let id = parse_id(&id_bytes)?;
             let (entry, size) = tokio::task::spawn_blocking(move || {
                 store
@@ -151,7 +153,10 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p.get_id().map_err(|e| Error::failed(e.to_string()))?.to_vec();
+            let id_bytes = p
+                .get_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
             let id = parse_id(&id_bytes)?;
             tokio::task::spawn_blocking(move || store.pin(id))
                 .await
@@ -169,7 +174,10 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p.get_id().map_err(|e| Error::failed(e.to_string()))?.to_vec();
+            let id_bytes = p
+                .get_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
             let id = parse_id(&id_bytes)?;
             tokio::task::spawn_blocking(move || store.unpin(id))
                 .await
@@ -187,7 +195,10 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p.get_id().map_err(|e| Error::failed(e.to_string()))?.to_vec();
+            let id_bytes = p
+                .get_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
             let id = parse_id(&id_bytes)?;
             tokio::task::spawn_blocking(move || store.remove(id))
                 .await
@@ -205,7 +216,10 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p.get_id().map_err(|e| Error::failed(e.to_string()))?.to_vec();
+            let id_bytes = p
+                .get_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
             let id = parse_id(&id_bytes)?;
             tokio::task::spawn_blocking(move || store.mark_used(id))
                 .await
@@ -228,12 +242,9 @@ impl app_host::Server for AppHostServer {
                 .get_qpkg_bytes()
                 .map_err(|e| Error::failed(e.to_string()))?
                 .to_vec();
-            let pinning = parse_pinning(
-                p.get_pinning().map_err(|e| Error::failed(e.to_string()))?,
-            );
+            let pinning = parse_pinning(p.get_pinning().map_err(|e| Error::failed(e.to_string()))?);
             let id = tokio::task::spawn_blocking(move || {
-                let id = install_qpkg(&store, &qpkg_bytes, pinning)
-                    .map_err(|e| e.to_string())?;
+                let id = install_qpkg(&store, &qpkg_bytes, pinning).map_err(|e| e.to_string())?;
                 // Best-effort post-install sweep. Errors here should not
                 // fail the install — we already have the bytes on disk.
                 if let Err(e) = gc::sweep(&store, max_bytes) {

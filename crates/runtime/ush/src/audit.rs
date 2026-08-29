@@ -171,7 +171,10 @@ mod tests {
         assert!(all[0].allowed);
         assert_eq!(all[0].subject.as_deref(), Some("/var/home/you/src"));
         assert!(!all[1].allowed);
-        assert_eq!(all[1].detail.as_deref(), Some("the overlay owns this subtree"));
+        assert_eq!(
+            all[1].detail.as_deref(),
+            Some("the overlay owns this subtree")
+        );
     }
 
     /// A log that only recorded successes could not answer the question it

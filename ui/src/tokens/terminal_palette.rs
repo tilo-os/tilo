@@ -1,6 +1,6 @@
-use vello::peniko::Color;
+use super::colors::{ACCENT_PRIMARY_IDX, Colors};
 use crate::color_compat::ColorCompat;
-use super::colors::{Colors, ACCENT_PRIMARY_IDX};
+use vello::peniko::Color;
 
 /// Palette used by terminal-style widgets. Exposes default fg/bg and a 16-slot
 /// ANSI base palette. Higher-index colors (256/truecolor) are out of scope —
@@ -40,7 +40,11 @@ impl TerminalPalette {
         // "Bright" tier of a chromatic anchor: toward white on a dark ground,
         // toward black on a light ground, so brights gain (not lose) contrast.
         let bright = |col: Color| {
-            if dark { mix8(col, Color::WHITE, 0.25) } else { mix8(col, Color::BLACK, 0.22) }
+            if dark {
+                mix8(col, Color::WHITE, 0.25)
+            } else {
+                mix8(col, Color::BLACK, 0.22)
+            }
         };
         // A grey anchored on the ground→foreground axis; both ends are known
         // legible against the ground because the foreground is.

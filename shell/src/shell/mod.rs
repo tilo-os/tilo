@@ -35,21 +35,21 @@ pub mod editor_app;
 pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
-pub mod identity_provisioning;
 pub mod host_apps;
+pub mod identity_provisioning;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
-pub mod overlay_host;
 pub mod osd;
-pub mod peer_presence;
-pub mod peer_windows;
+pub mod overlay_host;
 pub mod overview;
 pub mod peer_join_toast;
+pub mod peer_presence;
 pub mod peer_view;
+pub mod peer_windows;
 pub mod persist;
 pub mod placement;
 pub mod qs_actions;
@@ -63,8 +63,8 @@ pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
 pub mod sidebar_wheel_disc;
 pub mod split_row;
-pub mod status;
 pub mod state;
+pub mod status;
 pub mod system_monitor;
 pub mod tab_documents;
 pub mod test_support;
@@ -656,7 +656,6 @@ impl Shell {
     }
 }
 
-
 /// Builder output for the default demo workspace. Carries the tab list plus
 /// test-only raw pointers to the `TerminalWidget` / `FileExplorerWidget`
 /// allocations inside two of those tabs, so `Shell` can expose introspection
@@ -1060,7 +1059,6 @@ pub fn build_workspace_root(
         .push(topbar)
         .push(Box::new(content_col));
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
-
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()

@@ -396,7 +396,10 @@ mod room_tests {
         let elsewhere = ws("Design");
         let tree = tree_with(vec![here, elsewhere]);
         let cards = room_cards(&tree);
-        assert_eq!(room_presence_label(&cards[0]).as_deref(), Some("You are here"));
+        assert_eq!(
+            room_presence_label(&cards[0]).as_deref(),
+            Some("You are here")
+        );
         assert_eq!(
             room_presence_label(&cards[1]),
             None,

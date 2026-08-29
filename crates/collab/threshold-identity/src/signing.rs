@@ -21,10 +21,10 @@
 
 use std::collections::BTreeMap;
 
-use frost_ed25519::round1::{SigningCommitments, SigningNonces};
-use frost_ed25519::round2::SignatureShare;
 use frost_ed25519::SigningPackage;
 use frost_ed25519::keys::{PublicKeyPackage, VerifyingShare};
+use frost_ed25519::round1::{SigningCommitments, SigningNonces};
+use frost_ed25519::round2::SignatureShare;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 
@@ -240,5 +240,6 @@ pub fn verify_threshold_signature(
         .map_err(|_| VerifyError::InvalidPublicKey)?;
     let sig = frost_ed25519::Signature::deserialize(signature.as_bytes())
         .map_err(|_| VerifyError::BadSignature)?;
-    vk.verify(message, &sig).map_err(|_| VerifyError::BadSignature)
+    vk.verify(message, &sig)
+        .map_err(|_| VerifyError::BadSignature)
 }

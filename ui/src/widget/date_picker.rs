@@ -13,7 +13,7 @@
 //! they manage.
 
 use automerge::{AutoCommit, ObjId};
-use chrono::{Datelike, NaiveDate, Local};
+use chrono::{Datelike, Local, NaiveDate};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -102,7 +102,10 @@ impl DatePicker {
     /// The visible month follows the selection so arrowing off the end of
     /// a month reveals the next one, matching every native date grid.
     fn move_selection(&mut self, days: i64) {
-        if let Some(d) = self.selected.checked_add_signed(chrono::Duration::days(days)) {
+        if let Some(d) = self
+            .selected
+            .checked_add_signed(chrono::Duration::days(days))
+        {
             self.selected = d;
             self.month_view = (d.year(), d.month());
             if let Some(cb) = self.on_change.as_mut() {
@@ -268,8 +271,7 @@ impl Widget for DatePicker {
             transform
                 * Affine::translate((
                     self.prev_button_rect.center().x - (lw as f64) / 2.0,
-                    self.prev_button_rect.y0
-                        + (HEADER_HEIGHT - text_size as f64) / 2.0,
+                    self.prev_button_rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0,
                 )),
             None,
         );
@@ -281,16 +283,13 @@ impl Widget for DatePicker {
             transform
                 * Affine::translate((
                     self.next_button_rect.center().x - (rw as f64) / 2.0,
-                    self.next_button_rect.y0
-                        + (HEADER_HEIGHT - text_size as f64) / 2.0,
+                    self.next_button_rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0,
                 )),
             None,
         );
 
         let cell_w = self.rect.width() / GRID_COLS as f64;
-        let weekday_y = self.rect.y0
-            + HEADER_HEIGHT
-            + (WEEKDAY_HEIGHT - text_size as f64) / 2.0;
+        let weekday_y = self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - text_size as f64) / 2.0;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
             let (lw, _) = text_renderer.measure(label, text_size, None);
             let cx = self.rect.x0 + col as f64 * cell_w + cell_w / 2.0;
@@ -352,7 +351,9 @@ impl Widget for DatePicker {
 
             let day_str = date.day().to_string();
             let color = if is_selected {
-                tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else if is_in_view_month {
                 text_color
             } else {
@@ -386,18 +387,41 @@ impl Widget for DatePicker {
     ) {
         match event {
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } if self.is_focused => {
                 // Arrows walk a day/week; PageUp/PageDown page the month;
                 // Enter/Space (re-)commit. Every move fires `on_change`.
                 match logical_key {
-                    Key::Named(NamedKey::ArrowLeft) => { self.move_selection(-1); *handled = true; }
-                    Key::Named(NamedKey::ArrowRight) => { self.move_selection(1); *handled = true; }
-                    Key::Named(NamedKey::ArrowUp) => { self.move_selection(-7); *handled = true; }
-                    Key::Named(NamedKey::ArrowDown) => { self.move_selection(7); *handled = true; }
-                    Key::Named(NamedKey::PageUp) => { self.retreat_month(); *handled = true; }
-                    Key::Named(NamedKey::PageDown) => { self.advance_month(); *handled = true; }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.move_selection(-1);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.move_selection(1);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        self.move_selection(-7);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.move_selection(7);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        self.retreat_month();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::PageDown) => {
+                        self.advance_month();
+                        *handled = true;
+                    }
                     Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
                         let d = self.selected;
                         if let Some(cb) = self.on_change.as_mut() {
@@ -409,8 +433,7 @@ impl Widget for DatePicker {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -449,12 +472,24 @@ impl Widget for DatePicker {
         }
     }
 
-    fn name(&self) -> &str { "DatePicker" }
-    fn test_id(&self) -> Option<&str> { Some("date_picker") }
-    fn get_rect(&self) -> Rect { self.rect }
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn name(&self) -> &str {
+        "DatePicker"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("date_picker")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     /// Value is the selected date in ISO `YYYY-MM-DD` form; `expanded` is
     /// left unset since the grid is rendered inline.
@@ -634,7 +669,10 @@ mod tests {
         dp.move_selection(1);
         assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 1).unwrap());
         assert_eq!(dp.month_view(), (2024, 7));
-        assert_eq!(*captured.borrow(), Some(NaiveDate::from_ymd_opt(2024, 7, 1).unwrap()));
+        assert_eq!(
+            *captured.borrow(),
+            Some(NaiveDate::from_ymd_opt(2024, 7, 1).unwrap())
+        );
 
         dp.move_selection(7);
         assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 8).unwrap());
@@ -656,7 +694,9 @@ mod tests {
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let node = dp.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy.compute_layout(node, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(node, taffy::Size::MAX_CONTENT)
+            .unwrap();
         dp.apply_layout(&taffy, node, Point::ZERO);
         dp.set_focus(focused);
 

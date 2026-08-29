@@ -328,7 +328,10 @@ impl Driver {
         if order.is_empty() {
             return None;
         }
-        let next = match self.focused.and_then(|f| order.iter().position(|&x| x == f)) {
+        let next = match self
+            .focused
+            .and_then(|f| order.iter().position(|&x| x == f))
+        {
             Some(idx) => {
                 if back {
                     if idx == 0 { order.len() - 1 } else { idx - 1 }
@@ -337,7 +340,11 @@ impl Driver {
                 }
             }
             None => {
-                if back { order.len() - 1 } else { 0 }
+                if back {
+                    order.len() - 1
+                } else {
+                    0
+                }
             }
         };
         let target = order[next];
@@ -741,7 +748,11 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     if let Some(p) = v.get("targets").and_then(|x| x.as_str()) {
         spec.targets = Some(p.into());
     }
-    for a in v.get("actions").and_then(|x| x.as_array()).unwrap_or(&vec![]) {
+    for a in v
+        .get("actions")
+        .and_then(|x| x.as_array())
+        .unwrap_or(&vec![])
+    {
         let obj = a
             .as_object()
             .ok_or_else(|| format!("action must be an object, got {a}"))?;
@@ -865,7 +876,10 @@ mod tests {
         )
         .expect("spec parses");
         assert_eq!(spec.viewport, Some((800, 600)));
-        assert_eq!(spec.dump.as_deref(), Some(std::path::Path::new("/tmp/d.json")));
+        assert_eq!(
+            spec.dump.as_deref(),
+            Some(std::path::Path::new("/tmp/d.json"))
+        );
         assert_eq!(spec.actions.len(), 5);
         assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
         assert!(matches!(&spec.actions[3], Action::Type(t) if t == "hi"));
@@ -899,7 +913,11 @@ mod tests {
 
     #[test]
     fn clicking_a_missing_target_is_an_error() {
-        let mut driver = Driver::new(State::new(), Box::new(Button::new("b", "B", None)), (400, 200));
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(Button::new("b", "B", None)),
+            (400, 200),
+        );
         let err = driver.click_named("no_such_widget").unwrap_err();
         assert!(err.contains("no_such_widget"), "{err}");
     }

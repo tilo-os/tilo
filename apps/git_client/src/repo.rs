@@ -23,8 +23,8 @@ use git2::{
 
 use crate::diff::{language_for, parse_unified};
 use crate::model::{
-    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, RefKind,
-    RefLabel, Remote, RepoModel, Stash, Tag,
+    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, RefKind, RefLabel,
+    Remote, RepoModel, Stash, Tag,
 };
 
 /// How many commits to walk for the history view. Bounded so a huge repo
@@ -123,11 +123,7 @@ fn classify_worktree(status: Status) -> Option<(ChangeArea, ChangeKind)> {
     None
 }
 
-fn read_status(
-    repo: &Repository,
-    model: &mut RepoModel,
-    diffs: &mut DiffMap,
-) {
+fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
@@ -177,11 +173,7 @@ fn read_status(
     collect_index_diffs(repo, model, diffs);
 }
 
-fn collect_worktree_diffs(
-    repo: &Repository,
-    model: &mut RepoModel,
-    diffs: &mut DiffMap,
-) {
+fn collect_worktree_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
     let mut opts = DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
@@ -192,15 +184,8 @@ fn collect_worktree_diffs(
     fold_diff(&diff, model, diffs, false);
 }
 
-fn collect_index_diffs(
-    repo: &Repository,
-    model: &mut RepoModel,
-    diffs: &mut DiffMap,
-) {
-    let head_tree = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_tree().ok());
+fn collect_index_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let mut opts = DiffOptions::new();
     opts.context_lines(3);
     let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) else {
@@ -211,12 +196,7 @@ fn collect_index_diffs(
 
 /// Render a `git2::Diff` to unified text per-file, parse it, store it, and
 /// fold +/- counts back onto the matching list entries.
-fn fold_diff(
-    diff: &git2::Diff,
-    model: &mut RepoModel,
-    diffs: &mut DiffMap,
-    staged: bool,
-) {
+fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, staged: bool) {
     // Accumulate raw unified text per new-path.
     let mut raw_by_path: HashMap<String, String> = HashMap::new();
     let _ = diff.print(DiffFormat::Patch, |delta, _hunk, line| {
@@ -269,7 +249,13 @@ fn fold_diff(
         }
         // Store the diff under its side-specific key so the staged and
         // worktree diffs of the same path never collide.
-        diffs.insert(DiffKey { staged, path: path.clone() }, fd);
+        diffs.insert(
+            DiffKey {
+                staged,
+                path: path.clone(),
+            },
+            fd,
+        );
     }
 }
 
@@ -288,11 +274,7 @@ fn find_delta(diff: &git2::Diff, path: &str) -> Option<Delta> {
     None
 }
 
-fn read_history(
-    repo: &Repository,
-    model: &mut RepoModel,
-    _diffs: &mut DiffMap,
-) {
+fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) {
     // Map oid -> ref labels so each commit row can show its decorations.
     let ref_map = ref_decorations(repo);
 
@@ -321,7 +303,9 @@ fn read_history(
         if i >= HISTORY_LIMIT {
             break;
         }
-        let Ok(commit) = repo.find_commit(oid) else { continue };
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
         let id = oid.to_string();
         let author = commit.author();
         let summary = commit.summary().unwrap_or("").to_string();
@@ -356,9 +340,10 @@ fn ref_decorations(repo: &Repository) -> HashMap<String, Vec<RefLabel>> {
     // HEAD pointer.
     if let Ok(head) = repo.head() {
         if let Some(oid) = head.target() {
-            map.entry(oid.to_string())
-                .or_default()
-                .push(RefLabel { name: "HEAD".into(), kind: RefKind::Head });
+            map.entry(oid.to_string()).or_default().push(RefLabel {
+                name: "HEAD".into(),
+                kind: RefKind::Head,
+            });
         }
     }
 
@@ -386,9 +371,13 @@ fn ref_decorations(repo: &Repository) -> HashMap<String, Vec<RefLabel>> {
 
 fn read_branches(repo: &Repository, model: &mut RepoModel) {
     let head_name = model.head.clone();
-    let Ok(branches) = repo.branches(None) else { return };
+    let Ok(branches) = repo.branches(None) else {
+        return;
+    };
     for (branch, btype) in branches.flatten() {
-        let Some(name) = branch.name().ok().flatten() else { continue };
+        let Some(name) = branch.name().ok().flatten() else {
+            continue;
+        };
         let is_remote = btype == BranchType::Remote;
         let tip = branch
             .get()
@@ -424,7 +413,9 @@ fn upstream_delta(repo: &Repository, branch: &git2::Branch) -> (u32, u32) {
 }
 
 fn read_tags(repo: &Repository, model: &mut RepoModel) {
-    let Ok(names) = repo.tag_names(None) else { return };
+    let Ok(names) = repo.tag_names(None) else {
+        return;
+    };
     for name in names.iter().flatten() {
         let full = format!("refs/tags/{name}");
         let target = repo
@@ -628,12 +619,7 @@ pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
 /// `hunk_index` is the 0-based position of the hunk within the file's diff
 /// in the relevant direction (worktree diff for staging, index diff for
 /// unstaging) — the same ordering the UI assigns to its hunk buttons.
-pub fn apply_hunk(
-    path: &Path,
-    file: &str,
-    hunk_index: usize,
-    unstage: bool,
-) -> anyhow::Result<()> {
+pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
 
@@ -694,9 +680,7 @@ pub fn apply_hunk(
     // Restrict to our file so hunk ordering matches the single-file diff.
     apply_opts.delta_callback(move |delta| {
         delta
-            .map(|d| {
-                d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel)
-            })
+            .map(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
             .unwrap_or(false)
     });
 
@@ -730,8 +714,7 @@ pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
         if let Some(wd) = repo.workdir() {
             let full = wd.join(rel);
             if full.exists() {
-                std::fs::remove_file(&full)
-                    .with_context(|| format!("remove untracked {file}"))?;
+                std::fs::remove_file(&full).with_context(|| format!("remove untracked {file}"))?;
             }
         }
         return Ok(());
@@ -833,9 +816,7 @@ pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
         .with_context(|| format!("checkout tree for {name}"))?;
     match reference {
         Some(r) => {
-            let refname = r
-                .name()
-                .ok_or_else(|| anyhow!("branch ref has no name"))?;
+            let refname = r.name().ok_or_else(|| anyhow!("branch ref has no name"))?;
             repo.set_head(refname)?;
         }
         None => {

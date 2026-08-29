@@ -15,11 +15,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill, Gradient, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::ImageStore;
 
 use crate::util::seed_gradient;
 
@@ -69,11 +69,9 @@ impl ImageBox {
         } else {
             let (top, bottom) = seed_gradient(&self.seed);
             let shape = RoundedRect::from_rect(self.rect, self.radius);
-            let grad = Gradient::new_linear(
-                (self.rect.x0, self.rect.y0),
-                (self.rect.x1, self.rect.y1),
-            )
-            .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
+            let grad =
+                Gradient::new_linear((self.rect.x0, self.rect.y0), (self.rect.x1, self.rect.y1))
+                    .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
             scene.fill(Fill::NonZero, transform, &grad, None, &shape);
             // Faint bottom vignette so overlaid header text stays legible.
             let veil = Color::from_rgba8(0, 0, 0, 30);
@@ -186,7 +184,12 @@ mod tests {
     }
 
     fn count(scene: &Scene, tag: DrawTag) -> usize {
-        scene.encoding().draw_tags.iter().filter(|t| **t == tag).count()
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == tag)
+            .count()
     }
 
     /// A real banner image paints an IMAGE draw; without one, only a COLOR
@@ -201,11 +204,21 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(count(&paint(Some(img)), DrawTag::IMAGE) >= 1, "real banner → IMAGE draw");
+        assert!(
+            count(&paint(Some(img)), DrawTag::IMAGE) >= 1,
+            "real banner → IMAGE draw"
+        );
 
         let gradient = paint(None);
-        assert_eq!(count(&gradient, DrawTag::IMAGE), 0, "no image → no IMAGE draw");
+        assert_eq!(
+            count(&gradient, DrawTag::IMAGE),
+            0,
+            "no image → no IMAGE draw"
+        );
         // The gradient fallback still paints (gradient + a solid COLOR veil).
-        assert!(!gradient.encoding().draw_tags.is_empty(), "gradient fallback painted something");
+        assert!(
+            !gradient.encoding().draw_tags.is_empty(),
+            "gradient fallback painted something"
+        );
     }
 }

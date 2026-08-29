@@ -30,7 +30,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;
@@ -240,11 +240,7 @@ pub fn parse_hover(msg: &Value) -> Option<String> {
     let contents = result.get("contents").unwrap_or(result);
     let text = marked_to_string(contents);
     let text = text.trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn marked_to_string(v: &Value) -> String {
@@ -287,7 +283,8 @@ fn parse_location(v: &Value) -> Option<Location> {
     // LocationLink.
     if let (Some(uri), Some(range)) = (
         v.get("targetUri").and_then(Value::as_str),
-        v.get("targetSelectionRange").or_else(|| v.get("targetRange")),
+        v.get("targetSelectionRange")
+            .or_else(|| v.get("targetRange")),
     ) {
         return Some(Location {
             uri: uri.to_string(),
@@ -346,14 +343,13 @@ impl<R: BufRead> MessageReader<R> {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "LSP message missing Content-Length header",
-                ))
+                ));
             }
         };
         let mut body = vec![0u8; len];
         self.reader.read_exact(&mut body)?;
-        let value = serde_json::from_slice(&body).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let value = serde_json::from_slice(&body)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         Ok(Some(value))
     }
 }
@@ -397,7 +393,10 @@ pub struct Progress {
 pub enum LspEvent {
     /// The server finished initializing and is ready for document syncs.
     Initialized,
-    Diagnostics { uri: String, diagnostics: Vec<LspDiagnostic> },
+    Diagnostics {
+        uri: String,
+        diagnostics: Vec<LspDiagnostic>,
+    },
     Completion(Vec<CompletionItem>),
     Hover(Option<String>),
     Definition(Vec<Location>),
@@ -609,7 +608,10 @@ impl LspClient {
             self.progress.remove(&p.token);
             return None;
         }
-        let entry = self.progress.entry(p.token.clone()).or_insert_with(|| p.clone());
+        let entry = self
+            .progress
+            .entry(p.token.clone())
+            .or_insert_with(|| p.clone());
         if !p.title.is_empty() {
             entry.title = p.title.clone();
         }
@@ -820,12 +822,8 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
 
         // No id: a plain notification.
         let event = match method {
-            "textDocument/publishDiagnostics" => {
-                parse_publish_diagnostics(msg).map(|(uri, diagnostics)| LspEvent::Diagnostics {
-                    uri,
-                    diagnostics,
-                })
-            }
+            "textDocument/publishDiagnostics" => parse_publish_diagnostics(msg)
+                .map(|(uri, diagnostics)| LspEvent::Diagnostics { uri, diagnostics }),
             "$/progress" => parse_progress(msg).map(LspEvent::Progress),
             _ => None,
         };
@@ -1109,7 +1107,13 @@ mod tests {
         assert_eq!(uri, "file:///proj/src/main.rs");
         assert_eq!(diags.len(), 2);
         assert_eq!(diags[0].severity, 1);
-        assert_eq!(diags[0].range.start, Position { line: 9, character: 4 });
+        assert_eq!(
+            diags[0].range.start,
+            Position {
+                line: 9,
+                character: 4
+            }
+        );
         assert_eq!(diags[0].source.as_deref(), Some("rustc"));
 
         // Projection onto the panel model converts to 1-based coordinates.
@@ -1180,7 +1184,8 @@ mod tests {
     #[test]
     fn parses_hover_markup_marked_string_and_array() {
         // MarkupContent { kind, value }.
-        let markup = json!({ "result": { "contents": { "kind": "markdown", "value": "fn main()" } } });
+        let markup =
+            json!({ "result": { "contents": { "kind": "markdown", "value": "fn main()" } } });
         assert_eq!(parse_hover(&markup).as_deref(), Some("fn main()"));
 
         // Bare string MarkedString.
@@ -1205,7 +1210,13 @@ mod tests {
         let locs = parse_definition(&single);
         assert_eq!(locs.len(), 1);
         assert_eq!(locs[0].uri, "file:///proj/src/prime.rs");
-        assert_eq!(locs[0].range.start, Position { line: 3, character: 7 });
+        assert_eq!(
+            locs[0].range.start,
+            Position {
+                line: 3,
+                character: 7
+            }
+        );
 
         // LocationLink[] (targetUri / targetSelectionRange).
         let links = json!({ "result": [ {

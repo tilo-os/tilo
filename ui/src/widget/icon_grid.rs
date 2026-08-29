@@ -17,7 +17,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
@@ -32,7 +32,10 @@ pub struct IconGridItem {
 
 impl IconGridItem {
     pub fn new(icon: Icon, label: impl Into<String>) -> Self {
-        Self { icon, label: label.into() }
+        Self {
+            icon,
+            label: label.into(),
+        }
     }
 }
 
@@ -188,7 +191,11 @@ impl IconGrid {
             return None;
         }
         let idx = row * self.columns + col;
-        if idx < self.items.len() { Some(idx) } else { None }
+        if idx < self.items.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 }
 
@@ -214,10 +221,13 @@ impl Widget for IconGrid {
     ) -> taffy::Size<f32> {
         // known wins, else the definite available width, else enough
         // for one cell.
-        let width = known.width.map(|w| w as f64).unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(w) => w as f64,
-            _ => self.cell_w,
-        });
+        let width = known
+            .width
+            .map(|w| w as f64)
+            .unwrap_or(match available.width {
+                taffy::AvailableSpace::Definite(w) => w as f64,
+                _ => self.cell_w,
+            });
         let columns = self.columns_for_width(width);
         self.columns = columns;
         let height = self.content_height(columns);
@@ -271,22 +281,45 @@ impl Widget for IconGrid {
             let icon_y = cell.y0 + 10.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
             let glyph_color = if selected {
-                tokens.colors.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };
-            draw_icon(scene, transform, icon_rect, self.items[i].icon, glyph_color, LUCIDE_DEFAULT_STROKE_PX);
+            draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                self.items[i].icon,
+                glyph_color,
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
 
-            let label = truncate_to_width(text_renderer, &self.items[i].label, label_size, self.cell_w - 8.0);
+            let label = truncate_to_width(
+                text_renderer,
+                &self.items[i].label,
+                label_size,
+                self.cell_w - 8.0,
+            );
             let (tw, _) = text_renderer.measure(&label, label_size, None);
             let tx = cell.x0 + (self.cell_w - tw as f64) / 2.0;
             let ty = icon_y + self.icon_px + 8.0;
             let label_color = if selected {
-                tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };
-            text_renderer.draw_text(scene, &label, label_size, label_color, transform * Affine::translate((tx, ty)), None);
+            text_renderer.draw_text(
+                scene,
+                &label,
+                label_size,
+                label_color,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
         }
 
         // So arrow-key navigation is visible without relying on the
@@ -330,7 +363,11 @@ impl Widget for IconGrid {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if let Some(i) = self.item_at(self.last_cursor) {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
                     let shift = modifiers.state().shift_key();
@@ -367,10 +404,18 @@ impl Widget for IconGrid {
                 let cols = self.columns.max(1);
                 let cur = self.selection.primary();
                 let target = match &ke.logical_key {
-                    Key::Named(NamedKey::ArrowRight) => Some(cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowLeft) => Some(cur.map(|c| c.saturating_sub(1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowDown) => Some(cur.map(|c| (c + cols).min(len - 1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowUp) => Some(cur.map(|c| c.saturating_sub(cols)).unwrap_or(0)),
+                    Key::Named(NamedKey::ArrowRight) => {
+                        Some(cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0))
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        Some(cur.map(|c| c.saturating_sub(1)).unwrap_or(0))
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        Some(cur.map(|c| (c + cols).min(len - 1)).unwrap_or(0))
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        Some(cur.map(|c| c.saturating_sub(cols)).unwrap_or(0))
+                    }
                     Key::Named(NamedKey::Enter) => {
                         if let (Some(c), Some(cb)) = (cur, self.on_activate.as_mut()) {
                             cb(c);
@@ -378,7 +423,9 @@ impl Widget for IconGrid {
                         *handled = true;
                         None
                     }
-                    Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
+                    Key::Character(s)
+                        if (s == "a" || s == "A") && modifiers.state().control_key() =>
+                    {
                         self.selection.select_all(len);
                         *handled = true;
                         None
@@ -471,7 +518,9 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
-        (0..n).map(|i| IconGridItem::new(Icon::File, format!("f{i}"))).collect()
+        (0..n)
+            .map(|i| IconGridItem::new(Icon::File, format!("f{i}")))
+            .collect()
     }
 
     #[test]
@@ -530,10 +579,25 @@ mod tests {
         let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
             let mut h = false;
             let mut f = None;
-            g.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree);
+            g.handle_event(
+                &ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree,
+            );
         };
-        feed(&mut g, WindowEvent::CursorMoved { device_id: device, position: (156.0, 144.0).into() });
-        feed(&mut g, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(
+            &mut g,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (156.0, 144.0).into(),
+            },
+        );
+        feed(
+            &mut g,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert!(g.selection().is_selected(4));
         assert_eq!(*log.borrow(), vec![(4, false, false)]);
     }
@@ -561,13 +625,21 @@ mod tests {
             std::collections::HashMap::new();
         let node = g.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         g.apply_layout(&taffy, node, Point::ZERO);
 
         let mut tr = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
         let mut scene = Scene::new();
-        g.draw(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, theme, &presence);
+        g.draw(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &presence,
+        );
         scene
             .encoding()
             .draw_tags

@@ -16,20 +16,18 @@
 use std::thread;
 use std::time::Duration;
 
-use ui::collaboration::{
-    CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
-};
+use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::presence::PresenceKey;
 
 #[test]
 #[serial_test::serial(quick_collab_sock)]
 fn n_peer_fanout_and_per_peer_attribution() {
-    let socket_path = std::env::temp_dir()
-        .join(format!("quick-collab-n-{}.sock", std::process::id()));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-n-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
 
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path)
-        .expect("bind broker listener");
+    let listener =
+        std::os::unix::net::UnixListener::bind(&socket_path).expect("bind broker listener");
 
     // Run the production broker on a side thread; it serves until the
     // process exits (which kills the thread).
@@ -62,7 +60,9 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let _ = c.poll();
 
     // --- 1. Fan-out excludes the sender -----------------------------
-    a.send(CollabRequest::SyncIncremental { data: b"X".to_vec() });
+    a.send(CollabRequest::SyncIncremental {
+        data: b"X".to_vec(),
+    });
     thread::sleep(Duration::from_millis(150));
 
     let count_incremental = |evs: &[CollabEvent]| {
@@ -73,9 +73,21 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let b_evs = b.poll();
     let c_evs = c.poll();
     let a_evs = a.poll();
-    assert_eq!(count_incremental(&b_evs), 1, "B should get A's incremental once: {b_evs:?}");
-    assert_eq!(count_incremental(&c_evs), 1, "C should get A's incremental once: {c_evs:?}");
-    assert_eq!(count_incremental(&a_evs), 0, "A must not receive its own incremental: {a_evs:?}");
+    assert_eq!(
+        count_incremental(&b_evs),
+        1,
+        "B should get A's incremental once: {b_evs:?}"
+    );
+    assert_eq!(
+        count_incremental(&c_evs),
+        1,
+        "C should get A's incremental once: {c_evs:?}"
+    );
+    assert_eq!(
+        count_incremental(&a_evs),
+        0,
+        "A must not receive its own incremental: {a_evs:?}"
+    );
 
     // --- 2. Per-peer presence attribution ---------------------------
     // A announces on Workspace "1"; B announces on Workspace "2".

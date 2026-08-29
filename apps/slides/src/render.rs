@@ -7,12 +7,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::ColorCompat;
 
 use crate::assets::{ImageState, ImageStore};
-use crate::model::{Element, ElementKind, Palette, Slide, TextAlign, SLIDE_W};
+use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 
 /// Map a point from slide space to destination pixels.
 #[inline]
@@ -72,7 +72,10 @@ fn draw_decor(
     // Footer hairline on content (surface) slides.
     if slide.background == Background::Surface {
         let y = dest.y0 + 660.0 * s;
-        let line = Line::new(map(dest, s, 96.0, 660.0), Point::new(dest.x0 + 1184.0 * s, y));
+        let line = Line::new(
+            map(dest, s, 96.0, 660.0),
+            Point::new(dest.x0 + 1184.0 * s, y),
+        );
         scene.stroke(
             &Stroke::new((1.5 * s).max(0.5)),
             transform,
@@ -127,10 +130,7 @@ fn draw_element(
             }
         }
         ElementKind::Line => {
-            let line = Line::new(
-                map(dest, s, e.x, e.y),
-                map(dest, s, e.x + e.w, e.y + e.h),
-            );
+            let line = Line::new(map(dest, s, e.x, e.y), map(dest, s, e.x + e.w, e.y + e.h));
             let stroke_col = palette
                 .resolve_role(&e.stroke)
                 .or_else(|| palette.resolve_role(&e.fill))
@@ -251,7 +251,11 @@ fn draw_text_element(
     s: f64,
 ) {
     let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
-    let weight = if e.bold { TextWeight::Bold } else { TextWeight::Regular };
+    let weight = if e.bold {
+        TextWeight::Bold
+    } else {
+        TextWeight::Regular
+    };
     // Text scales *with* the slide — a thumbnail is just a smaller slide, so
     // the font shrinks proportionally. The previous 6px floor oversized body
     // text relative to its shrunken box at thumbnail scale, forcing spurious
@@ -273,7 +277,8 @@ fn draw_text_element(
             if line.is_empty() {
                 1
             } else {
-                let (_, h) = tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
+                let (_, h) =
+                    tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
                 ((h as f64 / line_h).round() as usize).max(1)
             }
         })

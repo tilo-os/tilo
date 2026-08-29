@@ -179,7 +179,13 @@ impl CellValue {
             CellValue::Empty => String::new(),
             CellValue::Number(n) => format_number_general(*n),
             CellValue::Text(t) => t.clone(),
-            CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+            CellValue::Bool(b) => {
+                if *b {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
             CellValue::Error(e) => e.text().to_string(),
         }
     }
@@ -212,8 +218,8 @@ impl Currency {
     pub fn symbol(self) -> &'static str {
         match self {
             Currency::USD | Currency::CAD | Currency::AUD => "$",
-            Currency::EUR => "\u{20AC}", // €
-            Currency::GBP => "\u{00A3}", // £
+            Currency::EUR => "\u{20AC}",                 // €
+            Currency::GBP => "\u{00A3}",                 // £
             Currency::JPY | Currency::CNY => "\u{00A5}", // ¥
             Currency::CHF => "CHF",
             Currency::INR => "\u{20B9}", // ₹
@@ -372,11 +378,16 @@ impl CellFormat {
         match head {
             "number" => CellFormat::Number,
             "currency" => CellFormat::Currency(
-                sub.and_then(Currency::from_code).unwrap_or(default_currency),
+                sub.and_then(Currency::from_code)
+                    .unwrap_or(default_currency),
             ),
             "percent" => CellFormat::Percent,
-            "date" => CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso)),
-            "time" => CellFormat::Time(sub.and_then(time_style_from_code).unwrap_or(TimeStyle::H24)),
+            "date" => {
+                CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso))
+            }
+            "time" => {
+                CellFormat::Time(sub.and_then(time_style_from_code).unwrap_or(TimeStyle::H24))
+            }
             "boolean" => CellFormat::Boolean,
             "text" => CellFormat::Text,
             _ => CellFormat::General,
@@ -471,7 +482,13 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
         CellValue::Empty => String::new(),
         CellValue::Error(e) => e.text().to_string(),
         CellValue::Text(t) => t.clone(),
-        CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+        CellValue::Bool(b) => {
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
         CellValue::Number(n) => match fmt {
             CellFormat::General => format_number_general(*n),
             CellFormat::Text => format_number_general(*n),
@@ -480,7 +497,13 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
             CellFormat::Percent => format!("{:.2}%", *n * 100.0),
             CellFormat::Date(s) => serial_to_date(*n, s),
             CellFormat::Time(s) => serial_to_time(*n, s),
-            CellFormat::Boolean => if *n != 0.0 { "TRUE".into() } else { "FALSE".into() },
+            CellFormat::Boolean => {
+                if *n != 0.0 {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
         },
     }
 }
@@ -494,7 +517,13 @@ pub fn format_number_general(n: f64) -> String {
         return "0".to_string();
     }
     if !n.is_finite() {
-        return if n.is_nan() { "#NUM!".into() } else if n > 0.0 { "∞".into() } else { "-∞".into() };
+        return if n.is_nan() {
+            "#NUM!".into()
+        } else if n > 0.0 {
+            "∞".into()
+        } else {
+            "-∞".into()
+        };
     }
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);
@@ -618,7 +647,9 @@ fn month_abbrev(m: u32) -> &'static str {
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("Jan")
+    M.get((m.max(1).min(12) - 1) as usize)
+        .copied()
+        .unwrap_or("Jan")
 }
 
 /// Convert a calendar date to an Excel serial (days since 1899-12-30).

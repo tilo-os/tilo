@@ -208,7 +208,10 @@ impl AccountStore {
 
     /// Every account of `type_id`, in insertion order.
     pub fn list(&self, type_id: &AccountTypeId) -> Vec<&Account> {
-        self.accounts.iter().filter(|a| &a.type_id == type_id).collect()
+        self.accounts
+            .iter()
+            .filter(|a| &a.type_id == type_id)
+            .collect()
     }
 
     /// Look up an account by id, regardless of type.
@@ -256,7 +259,11 @@ impl AccountStore {
     /// account, else `None`.
     pub fn active(&self, type_id: &AccountTypeId) -> Option<&Account> {
         if let Some(id) = self.active.get(type_id) {
-            if let Some(a) = self.accounts.iter().find(|a| &a.id == id && &a.type_id == type_id) {
+            if let Some(a) = self
+                .accounts
+                .iter()
+                .find(|a| &a.id == id && &a.type_id == type_id)
+            {
                 return Some(a);
             }
         }
@@ -332,7 +339,10 @@ mod tests {
     fn email(id: &str, host: &str) -> Account {
         let mut a = Account::new(id, "email");
         a.display_name = format!("{id} inbox");
-        a.set_config(&DemoConfig { host: host.into(), port: 993 });
+        a.set_config(&DemoConfig {
+            host: host.into(),
+            port: 993,
+        });
         a
     }
 
@@ -356,7 +366,12 @@ mod tests {
         store.upsert(email("a@x.example", "imap.new"));
         assert_eq!(store.list(&"email".into()).len(), 2);
         assert_eq!(
-            store.get(&"a@x.example".into()).unwrap().config_as::<DemoConfig>().unwrap().host,
+            store
+                .get(&"a@x.example".into())
+                .unwrap()
+                .config_as::<DemoConfig>()
+                .unwrap()
+                .host,
             "imap.new"
         );
     }

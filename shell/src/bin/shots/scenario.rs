@@ -459,12 +459,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 && h > 0
             {
                 let px = (w as usize) * (h as usize) * 4;
-                shell::compositor::foreign::store().publish_rgba(
-                    surface_id,
-                    &vec![0xF4; px],
-                    w,
-                    h,
-                );
+                shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
             }
         }
         Action::AddHostedTab { app, title } => {
@@ -569,8 +564,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     // A third of the way in from the rim, vertically
                     // centred: inside the arc at every rotation, and
                     // clear of the add-workspace button at the bottom.
-                    let p =
-                        Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
+                    let p = Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
                     driver.move_cursor(p);
                     driver.press();
                     p
@@ -615,8 +609,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     eprintln!("scenario: no wheel settle recorded to sample at {ms} ms");
                 }
                 driver.relayout();
-                let name: &'static str =
-                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
                 sink.capture(driver, name);
             }
         }
@@ -639,36 +632,36 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             }
             #[cfg(debug_assertions)]
             {
-            // Lay out once so the hover that preceded this has latched a
-            // curve, then freeze it before a render's worth of wall time
-            // can retire it.
-            driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in at_ms.iter() {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        for g in row.groups.iter_mut() {
-                            any |= g
-                                .bar_mut_for_tests()
-                                .hold_reveal_at(std::time::Duration::from_millis(*ms));
+                // Lay out once so the hover that preceded this has latched a
+                // curve, then freeze it before a render's worth of wall time
+                // can retire it.
+                driver.relayout();
+                let strips: Vec<_> = {
+                    let st = driver.chrome();
+                    let tree = st.tree();
+                    tree.active_workspace()
+                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                        .unwrap_or_default()
+                };
+                for ms in at_ms.iter() {
+                    let mut any = false;
+                    for sid in &strips {
+                        if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                            for g in row.groups.iter_mut() {
+                                any |= g
+                                    .bar_mut_for_tests()
+                                    .hold_reveal_at(std::time::Duration::from_millis(*ms));
+                            }
                         }
                     }
+                    if !any {
+                        eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
+                    }
+                    driver.relayout();
+                    let name: &'static str =
+                        Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                    sink.capture(driver, name);
                 }
-                if !any {
-                    eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str =
-                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
             }
         }
         Action::SampleMakeSpace { prefix, at_ms } => {
@@ -693,13 +686,10 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     }
                 }
                 if !any {
-                    eprintln!(
-                        "scenario: no make-space slide in flight to sample at {ms} ms"
-                    );
+                    eprintln!("scenario: no make-space slide in flight to sample at {ms} ms");
                 }
                 driver.relayout();
-                let name: &'static str =
-                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
                 sink.capture(driver, name);
             }
         }
@@ -711,8 +701,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     if let Some(ws) = tree.active_workspace_mut() {
                         for strip in ws.strips.iter_mut() {
                             for g in strip.window_groups.iter_mut() {
-                                g.width =
-                                    shell::shell::state::WindowWidth::Fraction(permille);
+                                g.width = shell::shell::state::WindowWidth::Fraction(permille);
                             }
                         }
                     }
@@ -766,15 +755,20 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             }
             driver.host_mut().pump_file_picker();
             let queue = FilePickerQueue::new();
-            driver
-                .host_mut()
-                .set_portal_queues(PromptQueueHandle::new(PromptResolver::Channel), queue.clone());
+            driver.host_mut().set_portal_queues(
+                PromptQueueHandle::new(PromptResolver::Channel),
+                queue.clone(),
+            );
 
             let save = mode == "save";
             let caller = PortalCaller::new(WorkspaceId(1), "dev.qos.word-processor");
             let opts = FilePickerOptions::new(
                 caller,
-                if save { "Save Document" } else { "Open Document" },
+                if save {
+                    "Save Document"
+                } else {
+                    "Open Document"
+                },
                 save,
             )
             .multiple(mode == "open_multiple")
@@ -826,8 +820,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 match preset {
                     "typed" => {
                         p.password = "hunter2pass".into();
-                        p.selection =
-                            ui::text_selection::Selection::collapsed(p.password.len());
+                        p.selection = ui::text_selection::Selection::collapsed(p.password.len());
                     }
                     "rejected" => {
                         p.password = "wrongpass".into();
@@ -1568,7 +1561,10 @@ fn tab_pill_reveal() -> Scenario {
             Action::Relayout,
             Action::Snapshot("01-idle"),
             Action::MoveCursorNamed("tab:Files"),
-            Action::SampleTabReveal { prefix: "02-opening", at_ms: REVEAL_SAMPLES },
+            Action::SampleTabReveal {
+                prefix: "02-opening",
+                at_ms: REVEAL_SAMPLES,
+            },
             Action::Wait(12),
             Action::Snapshot("03-open"),
             // Off the bar entirely: the pill closes again, and its body
@@ -1577,7 +1573,10 @@ fn tab_pill_reveal() -> Scenario {
             // left edge reacts to a pointer near it, which would move
             // the whole strip and confuse what this is measuring.
             Action::MoveCursor(Point::new(800.0, 500.0)),
-            Action::SampleTabReveal { prefix: "04-closing", at_ms: REVEAL_SAMPLES },
+            Action::SampleTabReveal {
+                prefix: "04-closing",
+                at_ms: REVEAL_SAMPLES,
+            },
             Action::Wait(12),
             Action::Snapshot("05-idle-again"),
         ],
@@ -1601,34 +1600,58 @@ fn tab_pill_reveal_narrow() -> Scenario {
             Action::Wait(4),
             Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
             Action::Wait(2),
-            Action::OpenHostedWindow { app: "Files", title: "Files" },
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
             Action::SelectGroup(Some(1)),
             Action::Wait(4),
-            Action::OpenHostedWindow { app: "Terminal", title: "Terminal" },
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
             Action::SelectGroup(Some(0)),
             Action::Wait(2),
-            Action::AddHostedTab { app: "Editor", title: "Editor" },
+            Action::AddHostedTab {
+                app: "Editor",
+                title: "Editor",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
-            Action::AddHostedTab { app: "Settings", title: "Settings" },
+            Action::AddHostedTab {
+                app: "Settings",
+                title: "Settings",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
-            Action::AddHostedTab { app: "Browser", title: "Browser" },
+            Action::AddHostedTab {
+                app: "Browser",
+                title: "Browser",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
-            Action::AddHostedTab { app: "Notes", title: "Document" },
+            Action::AddHostedTab {
+                app: "Notes",
+                title: "Document",
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
             Action::Wait(4),
             Action::Relayout,
             Action::Snapshot("01-idle"),
             Action::MoveCursorNamed("tab:Editor"),
-            Action::SampleTabReveal { prefix: "02-opening", at_ms: REVEAL_SAMPLES },
+            Action::SampleTabReveal {
+                prefix: "02-opening",
+                at_ms: REVEAL_SAMPLES,
+            },
             Action::Wait(12),
             Action::Snapshot("03-open"),
             Action::MoveCursor(Point::new(800.0, 500.0)),
-            Action::SampleTabReveal { prefix: "04-closing", at_ms: REVEAL_SAMPLES },
+            Action::SampleTabReveal {
+                prefix: "04-closing",
+                at_ms: REVEAL_SAMPLES,
+            },
             Action::Wait(12),
             Action::Snapshot("05-idle-again"),
         ],
@@ -1782,7 +1805,10 @@ fn two_notes_tabs_keep_their_own_text() -> Scenario {
             Action::Type("first tab writes alpha".into()),
             Action::Wait(2),
             Action::Snapshot("01-first-tab-typed"),
-            Action::AddHostedTab { app: "Notes", title: "Notes" },
+            Action::AddHostedTab {
+                app: "Notes",
+                title: "Notes",
+            },
             Action::Wait(20),
             Action::Snapshot("02-second-tab-opened"),
             // Reach the new tab the way a person does — its pill — so
@@ -1982,7 +2008,10 @@ fn window_open_beside_selection() -> Scenario {
         actions: vec![
             Action::LoneWindow(0),
             // A neighbour to the right, so there is something to move.
-            Action::OpenWindow { app_id: "org.example.right", surface_id: 5001 },
+            Action::OpenWindow {
+                app_id: "org.example.right",
+                surface_id: 5001,
+            },
             Action::Wait(20),
             // Windows at a third of the display each: a capture of windows
             // moving needs more than one of them on screen, and the
@@ -1991,7 +2020,10 @@ fn window_open_beside_selection() -> Scenario {
             Action::SelectGroup(Some(0)),
             Action::Wait(4),
             Action::Snapshot("01-before"),
-            Action::OpenWindow { app_id: "org.example.new", surface_id: 5002 },
+            Action::OpenWindow {
+                app_id: "org.example.new",
+                surface_id: 5002,
+            },
             Action::SampleMakeSpace {
                 prefix: "02-making-room",
                 at_ms: MAKE_SPACE_SAMPLES,
@@ -2015,7 +2047,10 @@ fn window_open_into_tabbed_group() -> Scenario {
             Action::SelectGroup(Some(0)),
             Action::Wait(4),
             Action::Snapshot("01-before"),
-            Action::OpenWindow { app_id: "org.example.tab", surface_id: 5003 },
+            Action::OpenWindow {
+                app_id: "org.example.tab",
+                surface_id: 5003,
+            },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::Snapshot("02-joined-the-group"),
         ],
@@ -2031,15 +2066,24 @@ fn window_open_at_visible_seam() -> Scenario {
                       lands at that border.",
         actions: vec![
             Action::LoneWindow(0),
-            Action::OpenWindow { app_id: "org.example.second", surface_id: 5011 },
+            Action::OpenWindow {
+                app_id: "org.example.second",
+                surface_id: 5011,
+            },
             Action::Wait(20),
-            Action::OpenWindow { app_id: "org.example.third", surface_id: 5012 },
+            Action::OpenWindow {
+                app_id: "org.example.third",
+                surface_id: 5012,
+            },
             Action::Wait(20),
             Action::SetWindowWidths(333),
             Action::SelectGroup(None),
             Action::Wait(4),
             Action::Snapshot("01-before"),
-            Action::OpenWindow { app_id: "org.example.atseam", surface_id: 5013 },
+            Action::OpenWindow {
+                app_id: "org.example.atseam",
+                surface_id: 5013,
+            },
             Action::SampleMakeSpace {
                 prefix: "02-at-seam",
                 at_ms: MAKE_SPACE_SAMPLES,
@@ -2060,9 +2104,15 @@ fn window_open_at_next_seam_rightwards() -> Scenario {
                       new window takes the next border rightwards.",
         actions: vec![
             Action::LoneWindow(0),
-            Action::OpenWindow { app_id: "org.example.second", surface_id: 5021 },
+            Action::OpenWindow {
+                app_id: "org.example.second",
+                surface_id: 5021,
+            },
             Action::Wait(20),
-            Action::OpenWindow { app_id: "org.example.third", surface_id: 5022 },
+            Action::OpenWindow {
+                app_id: "org.example.third",
+                surface_id: 5022,
+            },
             Action::Wait(20),
             // Full width: the border after the window you are looking at
             // lands exactly on the screen's right edge, so none of the
@@ -2071,7 +2121,10 @@ fn window_open_at_next_seam_rightwards() -> Scenario {
             Action::SelectGroup(None),
             Action::Wait(4),
             Action::Snapshot("01-before"),
-            Action::OpenWindow { app_id: "org.example.nextseam", surface_id: 5023 },
+            Action::OpenWindow {
+                app_id: "org.example.nextseam",
+                surface_id: 5023,
+            },
             Action::SampleMakeSpace {
                 prefix: "02-next-seam",
                 at_ms: MAKE_SPACE_SAMPLES,
@@ -2180,14 +2233,23 @@ fn wheel_drag_feel() -> Scenario {
             // not one HALF — that is exactly the boundary, and a
             // capture there tips one way or the other and shows neither
             // state clearly.
-            Action::DragWheelRim { dy: -PER_WORKSPACE_PX * 0.35, steps: 10 },
+            Action::DragWheelRim {
+                dy: -PER_WORKSPACE_PX * 0.35,
+                steps: 10,
+            },
             Action::Snapshot("01-part-way"),
             Action::MouseRelease,
             Action::Wait(45),
             // One, two, three workspaces, each captured while still held.
-            Action::DragWheelRim { dy: -PER_WORKSPACE_PX, steps: 14 },
+            Action::DragWheelRim {
+                dy: -PER_WORKSPACE_PX,
+                steps: 14,
+            },
             Action::Snapshot("02-one-workspace-held"),
-            Action::DragWheelRim { dy: -PER_WORKSPACE_PX, steps: 14 },
+            Action::DragWheelRim {
+                dy: -PER_WORKSPACE_PX,
+                steps: 14,
+            },
             Action::Snapshot("03-two-workspaces-held"),
             Action::MouseRelease,
             Action::Wait(60),
@@ -2198,9 +2260,15 @@ fn wheel_drag_feel() -> Scenario {
             // from rest has almost nothing to show, whereas a flick has
             // to coast the length of the list and decelerate, which is
             // the entire claim about weight.
-            Action::DragWheelRim { dy: PER_WORKSPACE_PX * 1.6, steps: 5 },
+            Action::DragWheelRim {
+                dy: PER_WORKSPACE_PX * 1.6,
+                steps: 5,
+            },
             Action::MouseRelease,
-            Action::SampleWheelSettle { prefix: "05-coast", at_ms: SETTLE_SAMPLES },
+            Action::SampleWheelSettle {
+                prefix: "05-coast",
+                at_ms: SETTLE_SAMPLES,
+            },
             Action::Wait(60),
             Action::Snapshot("06-landed"),
         ],
@@ -2221,17 +2289,26 @@ fn wheel_overscroll_at_the_end() -> Scenario {
             Action::Snapshot("00-rest"),
             // Downward from the first workspace is off the top of the
             // list. 90 px asks for 13.5°; resistance gives back far less.
-            Action::DragWheelRim { dy: 90.0, steps: 12 },
+            Action::DragWheelRim {
+                dy: 90.0,
+                steps: 12,
+            },
             Action::Snapshot("01-pulled"),
             // More than three times the pull, for nowhere near three
             // times the give. Kept inside the disc's own column: the
             // pointer has to still be over the wheel when the button
             // comes up, or the release is routed to whatever is under
             // it instead and the gesture never ends.
-            Action::DragWheelRim { dy: 200.0, steps: 20 },
+            Action::DragWheelRim {
+                dy: 200.0,
+                steps: 20,
+            },
             Action::Snapshot("02-pulled-hard"),
             Action::MouseRelease,
-            Action::SampleWheelSettle { prefix: "03-returning", at_ms: SETTLE_SAMPLES },
+            Action::SampleWheelSettle {
+                prefix: "03-returning",
+                at_ms: SETTLE_SAMPLES,
+            },
             Action::Wait(60),
             Action::Snapshot("04-back-at-the-end"),
         ],

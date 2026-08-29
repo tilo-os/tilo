@@ -206,7 +206,9 @@ fn adopt_legacy_state_into_personal_room(
         let _ = std::fs::write(&marker, b"nothing to adopt\n");
         return;
     }
-    let dest = app_dir.join(".local/share").join(sanitise_component(package_id));
+    let dest = app_dir
+        .join(".local/share")
+        .join(sanitise_component(package_id));
     if dest.exists() {
         let _ = std::fs::write(&marker, b"destination already present\n");
         return;
@@ -222,10 +224,7 @@ fn adopt_legacy_state_into_personal_room(
                 "adopted pre-partition app state into the personal room \
                  (the original was copied, not moved)",
             );
-            let _ = std::fs::write(
-                &marker,
-                format!("{}\n", legacy.display()).as_bytes(),
-            );
+            let _ = std::fs::write(&marker, format!("{}\n", legacy.display()).as_bytes());
         }
         Err(e) => {
             // A failed adoption must not refuse the launch: the app still has a
@@ -409,7 +408,10 @@ mod tests {
     #[test]
     fn the_bind_is_read_write_at_the_fixed_path() {
         let mut argv = Vec::new();
-        push_app_dir(&mut argv, Path::new("/data/qos-rooms/personal/dev.qos.notes"));
+        push_app_dir(
+            &mut argv,
+            Path::new("/data/qos-rooms/personal/dev.qos.notes"),
+        );
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind"
                 && w[1] == "/data/qos-rooms/personal/dev.qos.notes"
@@ -441,10 +443,11 @@ mod tests {
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
 
-        let workspace =
-            prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.qos.notes").unwrap();
+        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.qos.notes").unwrap();
         assert!(
-            !workspace.join(".local/share/dev.qos.notes/state.bin").exists(),
+            !workspace
+                .join(".local/share/dev.qos.notes/state.bin")
+                .exists(),
             "a workspace room must start empty"
         );
 

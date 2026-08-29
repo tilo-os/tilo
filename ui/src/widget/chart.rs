@@ -65,7 +65,11 @@ pub struct Series {
 
 impl Series {
     pub fn new(data: Vec<f32>, color: Color) -> Self {
-        Self { data, color, legend: String::new() }
+        Self {
+            data,
+            color,
+            legend: String::new(),
+        }
     }
 
     pub fn with_legend(mut self, legend: impl Into<String>) -> Self {
@@ -78,7 +82,11 @@ impl Series {
 /// scaling against `ceil` (the shared series max, floored away from zero).
 /// `n` is the series length. Shared by [`Chart`] and [`Sparkline`].
 fn map_point(plot: Rect, i: usize, v: f32, n: usize, ceil: f32) -> Point {
-    let dx = if n > 1 { plot.width() / (n as f64 - 1.0) } else { 0.0 };
+    let dx = if n > 1 {
+        plot.width() / (n as f64 - 1.0)
+    } else {
+        0.0
+    };
     let x = plot.x0 + dx * i as f64;
     let frac = (v / ceil).clamp(0.0, 1.0) as f64;
     // y-down: the baseline is `plot.y1`, larger values rise toward `y0`.
@@ -246,7 +254,10 @@ impl Chart {
                 None,
             );
             lx -= 8.0;
-            let dot = Circle::new(Point::new(lx, rect.y0 + 4.0 + legend_size as f64 / 2.0), 3.0);
+            let dot = Circle::new(
+                Point::new(lx, rect.y0 + 4.0 + legend_size as f64 / 2.0),
+                3.0,
+            );
             scene.fill(Fill::NonZero, transform, s.color, None, &dot);
             lx -= 12.0;
         }
@@ -412,7 +423,14 @@ impl Sparkline {
     /// Construct a sparkline of `data` in `color`. Defaults to a 64×20
     /// intrinsic size and a data-derived max.
     pub fn new(data: Vec<f32>, color: Color) -> Self {
-        Self { data, color, max: None, width: 64.0, height: 20.0, rect: Rect::ZERO }
+        Self {
+            data,
+            color,
+            max: None,
+            width: 64.0,
+            height: 20.0,
+            rect: Rect::ZERO,
+        }
     }
 
     /// Builder: pin the vertical max.
@@ -508,7 +526,14 @@ impl Widget for Sparkline {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        Sparkline::draw_at(scene, transform, self.rect, &self.data, self.ceiling(), self.color);
+        Sparkline::draw_at(
+            scene,
+            transform,
+            self.rect,
+            &self.data,
+            self.ceiling(),
+            self.color,
+        );
     }
 
     fn handle_event(
@@ -563,7 +588,10 @@ mod tests {
         let bottom = map_point(plot, 2, 0.0, 3, 10.0);
         let mid = map_point(plot, 1, 5.0, 3, 10.0);
         assert!((top.y - plot.y0).abs() < 1e-6, "max sits at plot top");
-        assert!((bottom.y - plot.y1).abs() < 1e-6, "zero sits at the baseline");
+        assert!(
+            (bottom.y - plot.y1).abs() < 1e-6,
+            "zero sits at the baseline"
+        );
         assert!((mid.y - 25.0).abs() < 1e-6, "half value lands mid-plot");
         // x marches evenly: dx = 100/(3-1) = 50.
         assert!((top.x - 0.0).abs() < 1e-6);
@@ -590,13 +618,31 @@ mod tests {
 
         let mut plain = Scene::new();
         Chart::draw_at(
-            &mut plain, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 5.0, false, "", "", "",
+            &mut plain,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            5.0,
+            false,
+            "",
+            "",
+            "",
         );
         let mut filled = Scene::new();
         Chart::draw_at(
-            &mut filled, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 5.0, true, "", "", "",
+            &mut filled,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            5.0,
+            true,
+            "",
+            "",
+            "",
         );
         assert!(
             count_color_tags(&filled) > count_color_tags(&plain),
@@ -617,8 +663,17 @@ mod tests {
         let empty: Vec<Series> = vec![];
         let mut grid_only = Scene::new();
         Chart::draw_at(
-            &mut grid_only, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &empty, 1.0, false, "", "", "",
+            &mut grid_only,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &empty,
+            1.0,
+            false,
+            "",
+            "",
+            "",
         );
         let grid_tags = count_color_tags(&grid_only);
         assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
@@ -626,10 +681,22 @@ mod tests {
         let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
         let mut with_line = Scene::new();
         Chart::draw_at(
-            &mut with_line, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 3.0, false, "", "", "",
+            &mut with_line,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            3.0,
+            false,
+            "",
+            "",
+            "",
         );
-        assert!(count_color_tags(&with_line) > grid_tags, "series line adds fills");
+        assert!(
+            count_color_tags(&with_line) > grid_tags,
+            "series line adds fills"
+        );
     }
 
     /// A single-point series is skipped (no line drawn) — a sparkline or
@@ -639,15 +706,23 @@ mod tests {
         let theme = Theme::dark();
         let mut one = Scene::new();
         Sparkline::draw_at(
-            &mut one, Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 64.0, 20.0), &[5.0], 5.0, theme.accent_primary,
+            &mut one,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 64.0, 20.0),
+            &[5.0],
+            5.0,
+            theme.accent_primary,
         );
         assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
 
         let mut many = Scene::new();
         Sparkline::draw_at(
-            &mut many, Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 64.0, 20.0), &[5.0, 3.0, 7.0], 7.0, theme.accent_primary,
+            &mut many,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 64.0, 20.0),
+            &[5.0, 3.0, 7.0],
+            7.0,
+            theme.accent_primary,
         );
         assert!(count_color_tags(&many) >= 2, "area + line both paint");
     }

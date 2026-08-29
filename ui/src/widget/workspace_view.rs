@@ -1,17 +1,20 @@
+use crate::animation::Spring;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::tokens::SpringParams;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::PresenceCtx;
-use crate::animation::Spring;
-use crate::tokens::SpringParams;
 
 #[derive(Clone, Copy, Debug)]
-pub enum WorkspaceSwitchDirection { Up, Down }
+pub enum WorkspaceSwitchDirection {
+    Up,
+    Down,
+}
 
 pub struct WorkspaceView {
     workspace_count: usize,
@@ -26,22 +29,37 @@ impl WorkspaceView {
         Self {
             workspace_count: wc,
             active_index: active_index.min(wc - 1),
-            slide: Spring::new(0.0, SpringParams { stiffness: 220.0, damping: 24.0, mass: 1.0 }),
+            slide: Spring::new(
+                0.0,
+                SpringParams {
+                    stiffness: 220.0,
+                    damping: 24.0,
+                    mass: 1.0,
+                },
+            ),
             rect: Rect::ZERO,
         }
     }
-    pub fn active_index(&self) -> usize { self.active_index }
+    pub fn active_index(&self) -> usize {
+        self.active_index
+    }
     /// Non-zero while a switch transition is in flight; the spring eases it
     /// back to 0.
-    pub fn slide_target(&self) -> f32 { self.slide.value() }
+    pub fn slide_target(&self) -> f32 {
+        self.slide.value()
+    }
     pub fn switch(&mut self, d: WorkspaceSwitchDirection) -> bool {
         let (new_idx, direction_sign) = match d {
             WorkspaceSwitchDirection::Up => {
-                if self.active_index == 0 { return false; }
+                if self.active_index == 0 {
+                    return false;
+                }
                 (self.active_index - 1, -1.0_f32)
             }
             WorkspaceSwitchDirection::Down => {
-                if self.active_index + 1 >= self.workspace_count { return false; }
+                if self.active_index + 1 >= self.workspace_count {
+                    return false;
+                }
                 (self.active_index + 1, 1.0_f32)
             }
         };
@@ -52,18 +70,39 @@ impl WorkspaceView {
         self.slide.set_target(0.0);
         true
     }
-    pub fn tick_animation(&mut self, dt: f32) { self.slide.step(dt); }
+    pub fn tick_animation(&mut self, dt: f32) {
+        self.slide.step(dt);
+    }
 }
 
 impl Widget for WorkspaceView {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
-        if !self.slide.is_settled() { self.tick_animation(1.0 / 60.0); true } else { false }
+        if !self.slide.is_settled() {
+            self.tick_animation(1.0 / 60.0);
+            true
+        } else {
+            false
+        }
     }
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         // Zero-height: this is a keyboard-handler + animation driver, not a
         // visible rect. Workspace chrome lives in the top bar.
-        let n = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
+        let n = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(0.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(n, self as *mut dyn Widget);
         n
     }
@@ -76,26 +115,70 @@ impl Widget for WorkspaceView {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
     }
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _tr: &mut TextRenderer,
+        theme: &Theme,
+        _p: &PresenceCtx,
+    ) {
         // A static workspace inherits the app background and doesn't need
         // to re-paint it.
         let offset = self.slide.value();
         if offset.abs() > f32::EPSILON {
             let t = transform * Affine::translate((0.0, offset as f64));
-            scene.fill(vello::peniko::Fill::NonZero, t, theme.tokens.colors.surfaces.base, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                t,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &self.rect,
+            );
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, _sf: f64, modifiers: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _f: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
-        if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(k), state: winit::event::ElementState::Pressed, .. }, .. } = event
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        _sf: f64,
+        modifiers: &winit::event::Modifiers,
+        _s: &mut AutoCommit,
+        _p: &ObjId,
+        handled: &mut bool,
+        _f: &mut Option<NodeId>,
+        _n: NodeId,
+        _t: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(k),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
             && (modifiers.state().super_key() || modifiers.state().control_key())
         {
             match k {
-                winit::keyboard::NamedKey::ArrowUp => { if self.switch(WorkspaceSwitchDirection::Up) { *handled = true; } }
-                winit::keyboard::NamedKey::ArrowDown if self.switch(WorkspaceSwitchDirection::Down) => { *handled = true; }
+                winit::keyboard::NamedKey::ArrowUp => {
+                    if self.switch(WorkspaceSwitchDirection::Up) {
+                        *handled = true;
+                    }
+                }
+                winit::keyboard::NamedKey::ArrowDown
+                    if self.switch(WorkspaceSwitchDirection::Down) =>
+                {
+                    *handled = true;
+                }
                 _ => {}
             }
         }
     }
-    fn name(&self) -> &str { "WorkspaceView" }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &str {
+        "WorkspaceView"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }

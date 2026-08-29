@@ -8,8 +8,8 @@
 //     filename (any name containing `narrow` selects the responsive
 //     single-pane shot), so one binary produces both required snapshots.
 
-use settings::shots::render_for_path;
 use settings::SettingsApp;
+use settings::shots::render_for_path;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -25,7 +25,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.settings"));
+        std::process::exit(ui::headless::run(
+            spec,
+            Box::new(widget),
+            "dev.qos.settings",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.settings");

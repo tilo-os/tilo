@@ -49,7 +49,11 @@ pub enum ShellMode {
 
 impl ShellMode {
     pub fn from_width(total_w: f64, breakpoint: f64) -> Self {
-        if total_w >= breakpoint { ShellMode::Wide } else { ShellMode::Narrow }
+        if total_w >= breakpoint {
+            ShellMode::Wide
+        } else {
+            ShellMode::Narrow
+        }
     }
 }
 
@@ -428,8 +432,11 @@ impl NavShell {
             self.detail_rect = Rect::ZERO;
             match self.mode() {
                 ShellMode::Wide => {
-                    let inset =
-                        if has_sidebar { sw * self.sidebar_flap.reveal() } else { 0.0 };
+                    let inset = if has_sidebar {
+                        sw * self.sidebar_flap.reveal()
+                    } else {
+                        0.0
+                    };
                     self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
                     self.overview_rect = Rect::new(r.x0 + inset, r.y0, r.x1, r.y1);
                     self.scrim_rect = Rect::ZERO;
@@ -459,7 +466,11 @@ impl NavShell {
             ShellMode::Wide => {
                 // Content is inset by the eased sidebar width so the collapse
                 // plays smoothly without overlap.
-                let inset = if has_sidebar { sw * self.sidebar_flap.reveal() } else { 0.0 };
+                let inset = if has_sidebar {
+                    sw * self.sidebar_flap.reveal()
+                } else {
+                    0.0
+                };
                 self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
 
                 let content_x0 = r.x0 + inset;
@@ -475,14 +486,9 @@ impl NavShell {
             ShellMode::Narrow => {
                 // Overview slides off-screen left as detail slides in right.
                 let p = self.push.slide(); // 0 = overview, 1 = detail
-                self.overview_rect =
-                    Rect::new(r.x0 - w * p, r.y0, r.x1 - w * p, r.y1);
-                self.detail_rect = Rect::new(
-                    r.x0 + w * (1.0 - p),
-                    r.y0,
-                    r.x1 + w * (1.0 - p),
-                    r.y1,
-                );
+                self.overview_rect = Rect::new(r.x0 - w * p, r.y0, r.x1 - w * p, r.y1);
+                self.detail_rect =
+                    Rect::new(r.x0 + w * (1.0 - p), r.y0, r.x1 + w * (1.0 - p), r.y1);
 
                 if has_sidebar {
                     let slide = self.sidebar_flap.slide();
@@ -690,12 +696,7 @@ impl NavShell {
             &bg,
         );
 
-        let glyph_box = Rect::new(
-            rect.x0,
-            rect.y0,
-            rect.x0 + CHIP_SIZE,
-            rect.y1,
-        );
+        let glyph_box = Rect::new(rect.x0, rect.y0, rect.x0 + CHIP_SIZE, rect.y1);
         match self.affordance {
             Affordance::None => {}
             Affordance::Back => {
@@ -739,7 +740,9 @@ impl NavShell {
         let cy = box_rect.center().y;
         let half_w = 9.0;
         let gap = 5.5;
-        let stroke = Stroke::new(2.0).with_caps(Cap::Round).with_join(Join::Round);
+        let stroke = Stroke::new(2.0)
+            .with_caps(Cap::Round)
+            .with_join(Join::Round);
         for dy in [-gap, 0.0, gap] {
             let line = Line::new(
                 Point::new(cx - half_w, cy + dy),
@@ -838,7 +841,8 @@ impl Widget for NavShell {
 
         // Content first, behind the overlay drawer; off-screen push panes
         // simply fall outside the framebuffer.
-        self.overview.draw(scene, transform, text_renderer, theme, presence);
+        self.overview
+            .draw(scene, transform, text_renderer, theme, presence);
         if let Some(d) = self.detail.as_mut() {
             d.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -871,10 +875,23 @@ impl Widget for NavShell {
         if presence.should_cull(self.get_rect()) {
             return;
         }
-        self.overview
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.overview.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
         if let Some(d) = self.detail.as_mut() {
-            d.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            d.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
         if self.sidebar_visible() {
             if self.scrim_rect.width() > 0.0 {
@@ -885,7 +902,12 @@ impl Widget for NavShell {
             Self::fill_panel(scene, transform, theme, self.sidebar_rect);
             if let Some(s) = self.sidebar.as_mut() {
                 s.draw_with_presence(
-                    scene, transform, text_renderer, theme, presence, permissions,
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    permissions,
                 );
             }
         }
@@ -906,8 +928,7 @@ impl Widget for NavShell {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -919,9 +940,7 @@ impl Widget for NavShell {
                 ..
             } => {
                 // Dismiss the overlay drawer, else pop the pushed detail.
-                if self.is_sidebar_open()
-                    && self.sidebar_split_layout() == SplitLayout::Overlay
-                {
+                if self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay {
                     self.close_sidebar();
                     *handled = true;
                     return;
@@ -965,8 +984,7 @@ impl Widget for NavShell {
                 if self.detail.is_some()
                     && !(self.sidebar_visible() && self.sidebar_rect.contains(self.last_cursor))
                 {
-                    if self.detail_rect.width() > 0.0
-                        && self.detail_rect.contains(self.last_cursor)
+                    if self.detail_rect.width() > 0.0 && self.detail_rect.contains(self.last_cursor)
                     {
                         self.active_pane_hint = Some(NavPane::Detail);
                     } else if self.overview_rect.width() > 0.0
@@ -989,8 +1007,8 @@ impl Widget for NavShell {
             return;
         };
         let d_node = self.detail_node;
-        let sidebar_first = self.is_sidebar_open()
-            && self.sidebar_split_layout() == SplitLayout::Overlay;
+        let sidebar_first =
+            self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay;
 
         enum Which {
             Sidebar,
@@ -998,9 +1016,7 @@ impl Widget for NavShell {
             Detail,
         }
         let mut order: Vec<(Which, NodeId)> = Vec::new();
-        if sidebar_first
-            && let Some(sn) = self.sidebar_node
-        {
+        if sidebar_first && let Some(sn) = self.sidebar_node {
             order.push((Which::Sidebar, sn));
         }
         // Front content pane first for narrow push; harmless order in wide.
@@ -1015,9 +1031,7 @@ impl Widget for NavShell {
             }
             (_, None) => order.push((Which::Overview, o_node)),
         }
-        if !sidebar_first
-            && let Some(sn) = self.sidebar_node
-        {
+        if !sidebar_first && let Some(sn) = self.sidebar_node {
             order.push((Which::Sidebar, sn));
         }
 
@@ -1062,8 +1076,7 @@ impl Widget for NavShell {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> =
-            vec![self.overview.as_mut()];
+        let mut v: Vec<&mut (dyn Widget + '_)> = vec![self.overview.as_mut()];
         if let Some(s) = self.sidebar.as_mut() {
             v.push(s.as_mut());
         }
@@ -1083,7 +1096,10 @@ impl Widget for NavShell {
             || self.sidebar_flap.is_animating(self.sidebar_split_layout())
             || self.push.is_animating(SplitLayout::Docked)
             || self.overview.needs_animation_frame()
-            || self.detail.as_ref().is_some_and(|d| d.needs_animation_frame())
+            || self
+                .detail
+                .as_ref()
+                .is_some_and(|d| d.needs_animation_frame())
             || self
                 .sidebar
                 .as_ref()
@@ -1157,10 +1173,16 @@ mod tests {
 
     fn shell(w: f64, with_sidebar: bool) -> NavShell {
         let mut ns = if with_sidebar {
-            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
-                .with_sidebar(Box::new(Text::new("sidebar")))
+            NavShell::new(
+                Box::new(Text::new("overview")),
+                Box::new(Text::new("detail")),
+            )
+            .with_sidebar(Box::new(Text::new("sidebar")))
         } else {
-            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
+            NavShell::new(
+                Box::new(Text::new("overview")),
+                Box::new(Text::new("detail")),
+            )
         };
         lay_out(&mut ns, w, 640.0);
         ns
@@ -1262,13 +1284,11 @@ mod tests {
             "the content pane must span the whole narrow window",
         );
         assert_eq!(
-            ns.overview_rect().x0, 0.0,
+            ns.overview_rect().x0,
+            0.0,
             "and start at the window's left edge, not offset by a sidebar",
         );
-        assert!(
-            !ns.is_detail_shown(),
-            "there is no detail pane to push in",
-        );
+        assert!(!ns.is_detail_shown(), "there is no detail pane to push in",);
         assert_eq!(
             ns.detail_rect(),
             Rect::ZERO,
@@ -1319,7 +1339,8 @@ mod tests {
             "the content starts where the sidebar ends",
         );
         assert_eq!(
-            ns.overview_rect().x1, 1200.0,
+            ns.overview_rect().x1,
+            1200.0,
             "and runs to the window's right edge",
         );
         assert_eq!(ns.detail_rect(), Rect::ZERO);
@@ -1333,7 +1354,8 @@ mod tests {
             lay_out(&mut ns, w, 640.0);
             ns.snap();
             assert_eq!(
-                ns.overview_rect().x1, w,
+                ns.overview_rect().x1,
+                w,
                 "the content pane must reach the right edge at width {w}",
             );
             assert!(
@@ -1377,7 +1399,10 @@ mod tests {
         assert_eq!(ns.mode(), ShellMode::Narrow);
         assert_eq!(ns.content_layout(), ContentLayout::Push);
         assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-        assert!(!ns.is_sidebar_open(), "overlay sidebar is closed by default");
+        assert!(
+            !ns.is_sidebar_open(),
+            "overlay sidebar is closed by default"
+        );
         assert!(
             (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
             "overview is full-width by default"
@@ -1429,7 +1454,10 @@ mod tests {
         let mut ns = shell(1200.0, true);
         ns.show_detail(); // sets target, but wide keeps both abreast
         ns.snap();
-        assert!(ns.overview_rect().width() > 1.0, "overview still visible wide");
+        assert!(
+            ns.overview_rect().width() > 1.0,
+            "overview still visible wide"
+        );
         assert!(ns.detail_rect().width() > 1.0, "detail still visible wide");
     }
 
@@ -1447,7 +1475,10 @@ mod tests {
     fn affordance_is_hamburger_to_summon_narrow_drawer() {
         let ns = shell(420.0, true);
         assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-        assert!(!ns.is_sidebar_open(), "glyph should be the hamburger (closed)");
+        assert!(
+            !ns.is_sidebar_open(),
+            "glyph should be the hamburger (closed)"
+        );
     }
 
     #[test]
@@ -1480,7 +1511,11 @@ mod tests {
             ns.overview_rect().x0 < overview_x_open - 1.0,
             "collapsing the docked sidebar reclaims its width for content"
         );
-        assert_eq!(ns.scrim_rect(), Rect::ZERO, "docked collapse shows no scrim");
+        assert_eq!(
+            ns.scrim_rect(),
+            Rect::ZERO,
+            "docked collapse shows no scrim"
+        );
     }
 
     #[test]
@@ -1489,7 +1524,10 @@ mod tests {
         ns.toggle_sidebar();
         ns.snap_sidebar(true);
         assert!(ns.is_sidebar_open());
-        assert!(ns.scrim_rect().width() > 0.0, "open drawer dims the content");
+        assert!(
+            ns.scrim_rect().width() > 0.0,
+            "open drawer dims the content"
+        );
         assert!(
             (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
             "revealed drawer sits flush at the left edge"
@@ -1543,7 +1581,10 @@ mod tests {
         dispatch(&mut ns, &cursor_at(c), &mut handled);
         dispatch(&mut ns, &left_press(), &mut handled);
         assert!(handled, "the collapse chip owns its click");
-        assert!(!ns.is_sidebar_open(), "clicking the collapse button collapses the sidebar");
+        assert!(
+            !ns.is_sidebar_open(),
+            "clicking the collapse button collapses the sidebar"
+        );
     }
 
     #[test]
@@ -1587,7 +1628,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
         let fills = scene
             .encoding()
             .draw_tags
@@ -1610,7 +1658,10 @@ mod tests {
         draw_frame(&mut ns);
         let r = ns.push.reveal();
         assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
-        assert!(ns.needs_animation_frame(), "mid-slide keeps requesting frames");
+        assert!(
+            ns.needs_animation_frame(),
+            "mid-slide keeps requesting frames"
+        );
 
         for _ in 0..240 {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1619,8 +1670,14 @@ mod tests {
                 break;
             }
         }
-        assert!((ns.push.reveal() - 1.0).abs() < 0.01, "slide settles fully in");
-        assert!(!ns.needs_animation_frame(), "a settled shell requests no frames");
+        assert!(
+            (ns.push.reveal() - 1.0).abs() < 0.01,
+            "slide settles fully in"
+        );
+        assert!(
+            !ns.needs_animation_frame(),
+            "a settled shell requests no frames"
+        );
     }
 
     #[test]
@@ -1631,8 +1688,15 @@ mod tests {
         assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
         std::thread::sleep(std::time::Duration::from_millis(20));
         draw_frame(&mut ns);
-        assert_eq!(ns.push.reveal(), 1.0, "a snapped shell must not drift on draw");
-        assert!(!ns.needs_animation_frame(), "a settled shell requests no frames");
+        assert_eq!(
+            ns.push.reveal(),
+            1.0,
+            "a snapped shell must not drift on draw"
+        );
+        assert!(
+            !ns.needs_animation_frame(),
+            "a settled shell requests no frames"
+        );
     }
 
     #[test]
@@ -1643,7 +1707,10 @@ mod tests {
 
         ns.set_overview(Box::new(Text::new("new-overview")));
         ns.set_detail(Box::new(Text::new("new-detail")));
-        assert!(ns.is_detail_shown(), "the swap kept the shell showing the detail");
+        assert!(
+            ns.is_detail_shown(),
+            "the swap kept the shell showing the detail"
+        );
 
         lay_out(&mut ns, 420.0, 640.0);
         ns.snap_pane(NavPane::Detail);
@@ -1656,7 +1723,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
         let fills = scene
             .encoding()
             .draw_tags
@@ -1681,7 +1755,11 @@ mod tests {
         assert_eq!(ns.mode(), ShellMode::Narrow);
         assert_eq!(ns.content_layout(), ContentLayout::Push);
 
-        assert_eq!(ns.pane(), NavPane::Detail, "a cold collapse keeps the right-most content, not the sidebar");
+        assert_eq!(
+            ns.pane(),
+            NavPane::Detail,
+            "a cold collapse keeps the right-most content, not the sidebar"
+        );
         assert!(
             (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0
                 && (ns.detail_rect().width() - ns.get_rect().width()).abs() < 1.0,
@@ -1693,12 +1771,18 @@ mod tests {
         );
 
         assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-        assert!(!ns.is_sidebar_open(), "the sidebar collapses to a closed drawer, not the shown pane");
+        assert!(
+            !ns.is_sidebar_open(),
+            "the sidebar collapses to a closed drawer, not the shown pane"
+        );
         assert_eq!(ns.scrim_rect(), Rect::ZERO, "a closed drawer lays no scrim");
         // `Back` wins the top-left while detail is pushed, so summon by call.
         ns.toggle_sidebar();
         ns.snap();
-        assert!(ns.is_sidebar_open(), "the collapsed sidebar is still summonable as a drawer");
+        assert!(
+            ns.is_sidebar_open(),
+            "the collapsed sidebar is still summonable as a drawer"
+        );
     }
 
     #[test]
@@ -1707,20 +1791,30 @@ mod tests {
         ns.hint_active_pane(NavPane::Overview);
         lay_out(&mut ns, 520.0, 640.0);
         assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(ns.pane(), NavPane::Overview, "the hinted master content overrides the right-most default");
+        assert_eq!(
+            ns.pane(),
+            NavPane::Overview,
+            "the hinted master content overrides the right-most default"
+        );
         assert!(
             (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0
                 && (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
             "the overview spans the whole narrow window",
         );
-        assert!(!ns.is_sidebar_open(), "the sidebar is still a closed overlay drawer");
+        assert!(
+            !ns.is_sidebar_open(),
+            "the sidebar is still a closed overlay drawer"
+        );
     }
 
     #[test]
     fn three_pane_collapse_keeps_the_last_interacted_pane() {
         let mut ns = shell(1200.0, true);
         let ov = ns.overview_rect();
-        assert!(ov.width() > 1.0, "wide side-by-side shows an overview column");
+        assert!(
+            ov.width() > 1.0,
+            "wide side-by-side shows an overview column"
+        );
         let pt = Point::new((ov.x0 + ov.x1) / 2.0, (ov.y0 + ov.y1) / 2.0);
         let mut handled = false;
         dispatch(&mut ns, &cursor_at(pt), &mut handled);
@@ -1759,7 +1853,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
     }
 
     use winit::event::DeviceId;
@@ -1782,8 +1883,9 @@ mod tests {
     fn esc_event() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;

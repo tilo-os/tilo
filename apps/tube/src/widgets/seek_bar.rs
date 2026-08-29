@@ -44,7 +44,13 @@ pub struct SeekBar {
 }
 
 impl SeekBar {
-    pub fn new(bus: &ActionBus, duration: f64, playhead: f64, segments: Vec<Segment>, enabled: Vec<bool>) -> Self {
+    pub fn new(
+        bus: &ActionBus,
+        duration: f64,
+        playhead: f64,
+        segments: Vec<Segment>,
+        enabled: Vec<bool>,
+    ) -> Self {
         Self {
             duration: duration.max(1.0),
             playhead,
@@ -113,13 +119,23 @@ impl Widget for SeekBar {
         _presence: &PresenceCtx,
     ) {
         let cy = self.rect.center().y;
-        let track_h = if self.hovered || self.dragging { 8.0 } else { 6.0 };
+        let track_h = if self.hovered || self.dragging {
+            8.0
+        } else {
+            6.0
+        };
         let x0 = self.rect.x0;
         let x1 = self.rect.x1;
         let w = (x1 - x0).max(1.0);
 
         // Track.
-        let track = RoundedRect::new(x0, cy - track_h / 2.0, x1, cy + track_h / 2.0, track_h / 2.0);
+        let track = RoundedRect::new(
+            x0,
+            cy - track_h / 2.0,
+            x1,
+            cy + track_h / 2.0,
+            track_h / 2.0,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -137,7 +153,13 @@ impl Widget for SeekBar {
             cy + track_h / 2.0,
             track_h / 2.0,
         );
-        scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &played);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &played,
+        );
 
         // SponsorBlock segment bands, in their category colours.
         for (i, seg) in self.segments.iter().enumerate() {
@@ -152,7 +174,13 @@ impl Widget for SeekBar {
             // Bands sit a few px taller than the track so the SponsorBlock
             // segments read clearly even when short.
             let bh = track_h / 2.0 + 3.0;
-            let band = RoundedRect::new(x0 + w * s, cy - bh, (x0 + w * e).max(x0 + w * s + 2.0), cy + bh, 2.0);
+            let band = RoundedRect::new(
+                x0 + w * s,
+                cy - bh,
+                (x0 + w * e).max(x0 + w * s + 2.0),
+                cy + bh,
+                2.0,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -164,7 +192,11 @@ impl Widget for SeekBar {
 
         // Playhead knob.
         let kx = x0 + w * frac;
-        let kr = if self.hovered || self.dragging { 8.0 } else { 6.0 };
+        let kr = if self.hovered || self.dragging {
+            8.0
+        } else {
+            6.0
+        };
         scene.fill(
             Fill::NonZero,
             transform,

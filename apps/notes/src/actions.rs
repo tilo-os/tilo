@@ -267,11 +267,7 @@ fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
 
 /// Build one page resource and, recursively, its child pages.
 fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
-    let mut res = Resource::new(
-        format!("notes.page:{}", m.id),
-        "notes.page",
-        page_label(m),
-    );
+    let mut res = Resource::new(format!("notes.page:{}", m.id), "notes.page", page_label(m));
 
     // Rename — a prompted action carrying the rest of the page's metadata
     // unchanged so only the title diff-splices.
@@ -286,7 +282,11 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     ));
 
     // Delete the whole page (and its subtree).
-    res = res.with_action(immediate_spec("delete", "Delete page", &delete_page_action(m.id)));
+    res = res.with_action(immediate_spec(
+        "delete",
+        "Delete page",
+        &delete_page_action(m.id),
+    ));
 
     // New child — prompted; the child id is minted once at commit time and the
     // append position is resolved from the current tree.
@@ -306,8 +306,7 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     ));
 
     // Child pages, in tree order.
-    let mut children: Vec<&PageMeta> =
-        pages.iter().filter(|p| p.parent == Some(m.id)).collect();
+    let mut children: Vec<&PageMeta> = pages.iter().filter(|p| p.parent == Some(m.id)).collect();
     children.sort_by_key(|p| p.order);
     for child in children {
         res = res.with_child(page_resource(child, pages));
@@ -391,25 +390,47 @@ mod tests {
         let inbox = Uuid::from_u128(0x4444);
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: projects, title: "Projects".into(), parent: None, order: 0 },
+            &PageMeta {
+                id: projects,
+                title: "Projects".into(),
+                parent: None,
+                order: 0,
+            },
         );
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: a, title: "Launch".into(), parent: Some(projects), order: 0 },
+            &PageMeta {
+                id: a,
+                title: "Launch".into(),
+                parent: Some(projects),
+                order: 0,
+            },
         );
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: b, title: "Notes".into(), parent: Some(projects), order: 1 },
+            &PageMeta {
+                id: b,
+                title: "Notes".into(),
+                parent: Some(projects),
+                order: 1,
+            },
         );
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: inbox, title: "Inbox".into(), parent: None, order: 1 },
+            &PageMeta {
+                id: inbox,
+                title: "Inbox".into(),
+                parent: None,
+                order: 1,
+            },
         );
         (doc, projects, a, b, inbox)
     }
 
     fn ctx_from(doc: &AutoCommit) -> NotesResourceCtx {
-        NotesResourceCtx { pages: NotesDoc::list_pages(doc) }
+        NotesResourceCtx {
+            pages: NotesDoc::list_pages(doc),
+        }
     }
 
     /// Ctrl+K on Notes yields the nested tree: the notebook with a "New page"
@@ -440,7 +461,11 @@ mod tests {
         assert!(p_actions.contains(&"new-child"), "{p_actions:?}");
 
         // Its two children nest underneath, in order.
-        assert_eq!(projects.children.len(), 2, "Launch + Notes nest under Projects");
+        assert_eq!(
+            projects.children.len(),
+            2,
+            "Launch + Notes nest under Projects"
+        );
         assert_eq!(projects.children[0].label, "Launch");
         assert_eq!(projects.children[1].label, "Notes");
 
@@ -450,8 +475,14 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New page")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename page")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete page")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Rename page")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete page")),
+            "{labels:?}"
+        );
     }
 
     /// Deleting a page through its action removes the page *and* its whole
@@ -468,7 +499,11 @@ mod tests {
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = NotesDoc::list_pages(&doc);
-        assert_eq!(left.len(), 1, "only Inbox survives (Projects + 2 children gone)");
+        assert_eq!(
+            left.len(),
+            1,
+            "only Inbox survives (Projects + 2 children gone)"
+        );
         assert_eq!(left[0].id, inbox);
         // Inbox was order 1; as the sole surviving root it re-densifies to 0.
         assert_eq!(left[0].order, 0, "surviving root sibling renumbers to 0");
@@ -500,10 +535,15 @@ mod tests {
             "the action created a page"
         );
         assert!(
-            NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == new_id),
+            NotesDoc::list_pages(&state.doc)
+                .iter()
+                .any(|p| p.id == new_id),
             "the created page is present"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
         state.undo(None, None).expect("an undo entry to pop");
@@ -513,7 +553,9 @@ mod tests {
             "undo reverted the created page and nothing else"
         );
         assert!(
-            !NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == new_id),
+            !NotesDoc::list_pages(&state.doc)
+                .iter()
+                .any(|p| p.id == new_id),
             "the created page is gone after undo"
         );
     }
@@ -528,19 +570,34 @@ mod tests {
         doc_a.commit();
         let bytes = doc_a.save();
         let mut doc_b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Rename a page: a whole-page upsert that diff-splices the title.
-        let meta = NotesDoc::list_pages(&doc_a).into_iter().find(|p| p.id == a).unwrap();
+        let meta = NotesDoc::list_pages(&doc_a)
+            .into_iter()
+            .find(|p| p.id == a)
+            .unwrap();
         let action = rename_page_action(&meta, "Renamed via action");
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
         qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "replay reproduced the identical change");
         assert_eq!(
-            NotesDoc::list_pages(&doc_b).into_iter().find(|p| p.id == a).unwrap().title,
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert_eq!(
+            NotesDoc::list_pages(&doc_b)
+                .into_iter()
+                .find(|p| p.id == a)
+                .unwrap()
+                .title,
             "Renamed via action",
             "the rename landed on the peer"
         );
@@ -561,7 +618,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
         qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "delete replayed identically");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "delete replayed identically"
+        );
         assert_eq!(NotesDoc::list_pages(&doc_b).len(), 1);
     }
 
@@ -582,14 +643,23 @@ mod tests {
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_page_action(projects));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // Rename spec == rename builder for the same title.
-        let meta = NotesDoc::list_pages(&doc).into_iter().find(|p| p.id == projects).unwrap();
+        let meta = NotesDoc::list_pages(&doc)
+            .into_iter()
+            .find(|p| p.id == projects)
+            .unwrap();
         let rename_spec = page.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Renamed");
         let from_builder = encode(&rename_page_action(&meta, "Renamed"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
 
         // New-child spec builds an UpsertPage under the right parent at the right
         // order (the minted id differs each call, so compare the stable fields).
@@ -599,7 +669,11 @@ mod tests {
             serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
         match decoded {
             NotesAction::UpsertPage(d) => {
-                assert_eq!(d.parent, projects.to_string(), "child parented under Projects");
+                assert_eq!(
+                    d.parent,
+                    projects.to_string(),
+                    "child parented under Projects"
+                );
                 assert_eq!(d.title, "Child");
                 assert_eq!(d.order, 2, "appended after the two existing children");
             }
@@ -629,7 +703,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
         qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "move replayed identically");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "move replayed identically"
+        );
         let pb = NotesDoc::list_pages(&doc_b);
         assert_eq!(pb.iter().find(|p| p.id == a).unwrap().parent, None);
         // Untouched pages are still there.
@@ -659,7 +737,10 @@ mod tests {
             .node(&ui::SemanticId("r:notes.notebook".into()))
             .expect("notebook node present");
         assert_eq!(notebook.name.as_deref(), Some("Notes"));
-        assert!(notebook.action("new-page").is_some(), "the notebook affords new-page");
+        assert!(
+            notebook.action("new-page").is_some(),
+            "the notebook affords new-page"
+        );
         let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
 
         let d2 = tree.refresh(&root, &node_map, None, &resources);
@@ -695,9 +776,22 @@ mod tests {
         dispatch_encoded(&mut via_a11y, exposed);
         dispatch_encoded(&mut via_affordance, encode(&delete_page_action(projects)));
 
-        let a: Vec<_> = NotesDoc::list_pages(&via_a11y).iter().map(|p| p.id).collect();
-        let b: Vec<_> = NotesDoc::list_pages(&via_affordance).iter().map(|p| p.id).collect();
-        assert_eq!(a, b, "invoking the a11y affordance deletes the same page + subtree");
-        assert_eq!(NotesDoc::list_pages(&via_a11y).len(), 1, "only Inbox survives");
+        let a: Vec<_> = NotesDoc::list_pages(&via_a11y)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        let b: Vec<_> = NotesDoc::list_pages(&via_affordance)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(
+            a, b,
+            "invoking the a11y affordance deletes the same page + subtree"
+        );
+        assert_eq!(
+            NotesDoc::list_pages(&via_a11y).len(),
+            1,
+            "only Inbox survives"
+        );
     }
 }

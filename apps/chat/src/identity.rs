@@ -103,7 +103,9 @@ impl LocalIdentity {
     /// Deterministic last resort: a `user@host` hash, so even with no disk and
     /// no runtime identity two different machines/users still differ.
     fn from_user_host() -> Self {
-        let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_default();
         let host = hostname();
         let seed = format!("{user}@{host}");
         let id = if seed == "@" {
@@ -169,7 +171,11 @@ fn user_display() -> String {
         .map(capitalise)
         .collect::<Vec<_>>()
         .join(" ");
-    if display.is_empty() { "You".to_string() } else { display }
+    if display.is_empty() {
+        "You".to_string()
+    } else {
+        display
+    }
 }
 
 fn capitalise(p: &str) -> String {
@@ -198,7 +204,11 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
         .unwrap_or_default()
 }
 

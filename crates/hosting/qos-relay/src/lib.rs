@@ -71,9 +71,7 @@ pub mod workspace;
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
-pub use coedit::{
-    AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession,
-};
+pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use policy::TrustPolicy;

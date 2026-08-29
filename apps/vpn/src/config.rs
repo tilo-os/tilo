@@ -53,7 +53,9 @@ fn parse_wireguard(name: &str, text: &str) -> Connection {
             };
             continue;
         }
-        let Some((key, value)) = split_kv(line) else { continue };
+        let Some((key, value)) = split_kv(line) else {
+            continue;
+        };
         match (section, key.as_str()) {
             ("interface", "Address") => conn.address = value,
             ("interface", "DNS") => conn.dns = value,
@@ -77,7 +79,9 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
             continue;
         }
         let mut parts = line.split_whitespace();
-        let Some(directive) = parts.next() else { continue };
+        let Some(directive) = parts.next() else {
+            continue;
+        };
         let rest: Vec<&str> = parts.collect();
         match directive {
             "remote" => {
@@ -100,7 +104,11 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
             }
             "dhcp-option" => {
                 // dhcp-option DNS <ip>
-                if rest.first().map(|s| s.eq_ignore_ascii_case("DNS")).unwrap_or(false) {
+                if rest
+                    .first()
+                    .map(|s| s.eq_ignore_ascii_case("DNS"))
+                    .unwrap_or(false)
+                {
                     if let Some(ip) = rest.get(1) {
                         if conn.dns.is_empty() {
                             conn.dns = ip.to_string();
@@ -131,9 +139,7 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
 
 fn strip_comment(line: &str) -> &str {
     // WireGuard uses '#', OpenVPN uses '#' and ';'.
-    let cut = line
-        .find(|c| c == '#' || c == ';')
-        .unwrap_or(line.len());
+    let cut = line.find(|c| c == '#' || c == ';').unwrap_or(line.len());
     &line[..cut]
 }
 
@@ -456,9 +462,15 @@ dhcp-option DNS 172.20.4.1
         assert_eq!(iface_name(&c), "home");
         let up = connect_plan(&c, Backend::WgQuick);
         assert_eq!(up.program, "wg-quick");
-        assert_eq!(up.args, vec!["up", "/home/u/.local/share/qos-vpn/home.conf"]);
+        assert_eq!(
+            up.args,
+            vec!["up", "/home/u/.local/share/qos-vpn/home.conf"]
+        );
         let down = disconnect_plan(&c, Backend::WgQuick);
-        assert_eq!(down.args, vec!["down", "/home/u/.local/share/qos-vpn/home.conf"]);
+        assert_eq!(
+            down.args,
+            vec!["down", "/home/u/.local/share/qos-vpn/home.conf"]
+        );
     }
 
     #[test]
@@ -469,24 +481,37 @@ dhcp-option DNS 172.20.4.1
         assert_eq!(up.program, "openvpn");
         assert_eq!(
             up.args,
-            vec!["--config", "/home/u/.local/share/qos-vpn/work.ovpn", "--daemon"]
+            vec![
+                "--config",
+                "/home/u/.local/share/qos-vpn/work.ovpn",
+                "--daemon"
+            ]
         );
         // Teardown targets *this* tunnel's config, not every openvpn process.
         let down = disconnect_plan(&c, Backend::OpenVpnCli);
         assert_eq!(down.program, "pkill");
-        assert_eq!(down.args, vec!["-f", "/home/u/.local/share/qos-vpn/work.ovpn"]);
+        assert_eq!(
+            down.args,
+            vec!["-f", "/home/u/.local/share/qos-vpn/work.ovpn"]
+        );
     }
 
     #[test]
     fn iface_name_is_sanitised_and_bounded() {
         let mut c = Connection::new("My Work VPN (São Paulo)!!", ConnKind::WireGuard);
         let n = iface_name(&c);
-        assert!(crate::net::is_valid_iface(&n), "derived name {n:?} must be a valid iface");
+        assert!(
+            crate::net::is_valid_iface(&n),
+            "derived name {n:?} must be a valid iface"
+        );
         assert!(n.len() <= 15);
         // An empty name still yields a valid, unique-ish interface.
         c.name = "   ".into();
         let n2 = iface_name(&c);
-        assert!(crate::net::is_valid_iface(&n2), "fallback {n2:?} must be valid");
+        assert!(
+            crate::net::is_valid_iface(&n2),
+            "fallback {n2:?} must be valid"
+        );
     }
 
     #[test]

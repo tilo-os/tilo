@@ -29,7 +29,12 @@ pub fn mix(a: Color, b: Color, t: f64) -> Color {
 /// Same colour at a reduced alpha. Used for faint veneers derived from a
 /// theme colour.
 pub fn alpha(c: Color, a: f64) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), (a.clamp(0.0, 1.0) * 255.0).round() as u8)
+    Color::from_rgba8(
+        c.r(),
+        c.g(),
+        c.b(),
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -84,7 +89,15 @@ pub fn text_w(
     y: f64,
     max_w: Option<f32>,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), max_w, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        max_w,
+        weight,
+    );
 }
 
 pub fn measure(tr: &mut TextRenderer, s: &str, size: f32) -> (f64, f64) {
@@ -149,7 +162,11 @@ pub fn rating_stars(
     let mut cx = x + star_r;
     for i in 0..5 {
         let threshold = i as f32 + 1.0;
-        let c = if rating >= threshold - 0.25 { fill } else { empty };
+        let c = if rating >= threshold - 0.25 {
+            fill
+        } else {
+            empty
+        };
         let path = star_path(Point::new(cx, y_center), star_r);
         scene.fill(Fill::NonZero, t, c, None, &path);
         cx += star_r * 2.0 + gap;

@@ -4,7 +4,9 @@
 //! serializes a complete valid package back. Untrusted bytes enter only through
 //! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
 
-use crate::codecs::sheet_common::{attr_local, end_local_name, local_name, xml_escape, SheetPackage, SheetProvider};
+use crate::codecs::sheet_common::{
+    SheetPackage, SheetProvider, attr_local, end_local_name, local_name, xml_escape,
+};
 use crate::format::{CodecError, Confidence};
 use crate::sheet::snapshot::CellType;
 use crate::sheet::{CellInput, Workbook};
@@ -35,15 +37,25 @@ impl SheetProvider for XlsxCodec {
         let workbook_xml = pkg
             .get("xl/workbook.xml")
             .ok_or_else(|| CodecError::Parse("xlsx: missing xl/workbook.xml".into()))?;
-        let rels = pkg.get("xl/_rels/workbook.xml.rels").map(parse_workbook_rels).unwrap_or_default();
-        let sst = pkg.get("xl/sharedStrings.xml").map(parse_shared_strings).unwrap_or_default();
+        let rels = pkg
+            .get("xl/_rels/workbook.xml.rels")
+            .map(parse_workbook_rels)
+            .unwrap_or_default();
+        let sst = pkg
+            .get("xl/sharedStrings.xml")
+            .map(parse_shared_strings)
+            .unwrap_or_default();
         let sheet_defs = parse_workbook_sheets(workbook_xml)?;
 
         for (name, rid) in sheet_defs {
             let sheet_id = wb.add_sheet(&name);
-            let Some(target) = rels.get(&rid) else { continue };
+            let Some(target) = rels.get(&rid) else {
+                continue;
+            };
             let part = normalize_xl_target(target);
-            let Some(ws_xml) = pkg.get(&part) else { continue };
+            let Some(ws_xml) = pkg.get(&part) else {
+                continue;
+            };
             parse_worksheet(ws_xml, &sst, wb, &sheet_id)?;
         }
 
@@ -68,21 +80,35 @@ impl SheetProvider for XlsxCodec {
         let styles_xml = wb.preserved_part("xlsx/part/xl/styles.xml");
         let has_styles = styles_xml.is_some();
 
-        pkg.set("[Content_Types].xml", content_types_xml(snap.sheets.len(), has_styles).into_bytes());
+        pkg.set(
+            "[Content_Types].xml",
+            content_types_xml(snap.sheets.len(), has_styles).into_bytes(),
+        );
         pkg.set("_rels/.rels", root_rels_xml().into_bytes());
         pkg.set("xl/workbook.xml", workbook_xml(&snap).into_bytes());
-        pkg.set("xl/_rels/workbook.xml.rels", workbook_rels_xml(snap.sheets.len(), has_styles).into_bytes());
+        pkg.set(
+            "xl/_rels/workbook.xml.rels",
+            workbook_rels_xml(snap.sheets.len(), has_styles).into_bytes(),
+        );
         for (i, sheet) in snap.sheets.iter().enumerate() {
-            pkg.set(&format!("xl/worksheets/sheet{}.xml", i + 1), worksheet_xml(sheet).into_bytes());
+            pkg.set(
+                &format!("xl/worksheets/sheet{}.xml", i + 1),
+                worksheet_xml(sheet).into_bytes(),
+            );
         }
         // styles.xml: re-emit the preserved original, else a minimal default.
-        pkg.set("xl/styles.xml", styles_xml.unwrap_or_else(|| minimal_styles_xml().into_bytes()));
-        pkg.set("docProps/core.xml", core_props_xml(&snap.properties).into_bytes());
+        pkg.set(
+            "xl/styles.xml",
+            styles_xml.unwrap_or_else(|| minimal_styles_xml().into_bytes()),
+        );
+        pkg.set(
+            "docProps/core.xml",
+            core_props_xml(&snap.properties).into_bytes(),
+        );
 
         pkg.write_opc()
     }
 }
-
 
 /// `(sheet name, r:id)` in document order.
 fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError> {
@@ -90,7 +116,10 @@ fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError
     let mut reader = Reader::from_str(s);
     let mut out = Vec::new();
     loop {
-        match reader.read_event().map_err(|e| CodecError::Parse(format!("workbook xml: {e}")))? {
+        match reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("workbook xml: {e}")))?
+        {
             Event::Empty(e) | Event::Start(e) if local_name(&e) == b"sheet" => {
                 let name = attr_local(&e, b"name").unwrap_or_default();
                 let rid = attr_local(&e, b"id").unwrap_or_default(); // r:id
@@ -106,12 +135,15 @@ fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError
 /// `rId → target path` from xl/_rels/workbook.xml.rels.
 fn parse_workbook_rels(xml: &[u8]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else { return out };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return out;
+    };
     let mut reader = Reader::from_str(s);
     while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if local_name(&e) == b"Relationship" => {
-                if let (Some(id), Some(target)) = (attr_local(&e, b"Id"), attr_local(&e, b"Target")) {
+                if let (Some(id), Some(target)) = (attr_local(&e, b"Id"), attr_local(&e, b"Target"))
+                {
                     out.insert(id, target);
                 }
             }
@@ -132,11 +164,12 @@ fn normalize_xl_target(target: &str) -> String {
     }
 }
 
-
 /// The shared-string table: each `<si>` → its concatenated `<t>` text.
 fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(s) = std::str::from_utf8(xml) else { return out };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return out;
+    };
     let mut reader = Reader::from_str(s);
     let mut in_si = false;
     let mut in_t = false;
@@ -171,11 +204,15 @@ fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
     out
 }
 
-
 /// Parses a worksheet's `<sheetData>` into the workbook model, resolving shared
 /// strings and preserving formulas: `<f>` is the formula source, `<v>` the value
 /// (or a shared-string index when `t="s"`), `<is><t>` an inline string.
-fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str) -> Result<(), CodecError> {
+fn parse_worksheet(
+    xml: &[u8],
+    sst: &[String],
+    wb: &mut Workbook,
+    sheet_id: &str,
+) -> Result<(), CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
@@ -190,10 +227,23 @@ fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str
     let mut has_formula = false;
 
     loop {
-        match reader.read_event().map_err(|e| CodecError::Parse(format!("worksheet xml: {e}")))? {
+        match reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("worksheet xml: {e}")))?
+        {
             // A self-closing `<c .../>` — an empty (possibly styled) cell.
             Event::Empty(e) if local_name(&e) == b"c" => {
-                flush_cell(wb, sheet_id, sst, attr_local(&e, b"r"), &attr_local(&e, b"t").unwrap_or_default(), attr_local(&e, b"s"), "", "", false);
+                flush_cell(
+                    wb,
+                    sheet_id,
+                    sst,
+                    attr_local(&e, b"r"),
+                    &attr_local(&e, b"t").unwrap_or_default(),
+                    attr_local(&e, b"s"),
+                    "",
+                    "",
+                    false,
+                );
             }
             Event::Start(e) if local_name(&e) == b"c" => {
                 cur_ref = attr_local(&e, b"r");
@@ -220,12 +270,24 @@ fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str
                 b"v" => in_v = false,
                 b"t" => in_is_t = false,
                 b"c" => {
-                    flush_cell(wb, sheet_id, sst, cur_ref.take(), &cur_t, cur_s.take(), &value, &formula, has_formula);
+                    flush_cell(
+                        wb,
+                        sheet_id,
+                        sst,
+                        cur_ref.take(),
+                        &cur_t,
+                        cur_s.take(),
+                        &value,
+                        &formula,
+                        has_formula,
+                    );
                 }
                 _ => {}
             },
             Event::Text(t) => {
-                let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
+                let txt = t
+                    .xml10_content()
+                    .map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
                 if in_f {
                     formula.push_str(&txt);
                 } else if in_v || in_is_t {
@@ -242,7 +304,17 @@ fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str
 /// Resolves one parsed `<c>` cell into a [`CellInput`] and writes it (skipped if it
 /// carries no value/formula/style — the grid is sparse); `t="s"` resolves against `sst`.
 #[allow(clippy::too_many_arguments)]
-fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Option<String>, t: &str, style: Option<String>, value: &str, formula: &str, has_formula: bool) {
+fn flush_cell(
+    wb: &mut Workbook,
+    sheet_id: &str,
+    sst: &[String],
+    reference: Option<String>,
+    t: &str,
+    style: Option<String>,
+    value: &str,
+    formula: &str,
+    has_formula: bool,
+) {
     let Some(reference) = reference else { return };
     let (mut cell_type, resolved) = match t {
         "s" => {
@@ -250,7 +322,14 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Opti
             (CellType::Text, sst.get(idx).cloned().unwrap_or_default())
         }
         "str" | "inlineStr" => (CellType::Text, value.to_string()),
-        "b" => (CellType::Bool, if value.trim() == "1" || value.eq_ignore_ascii_case("true") { "true".to_string() } else { "false".to_string() }),
+        "b" => (
+            CellType::Bool,
+            if value.trim() == "1" || value.eq_ignore_ascii_case("true") {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            },
+        ),
         "e" => (CellType::Error, value.to_string()),
         "d" => (CellType::Text, value.to_string()), // ISO date string, preserved as text
         _ => (CellType::Number, value.to_string()), // absent or "n"
@@ -271,9 +350,10 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, sst: &[String], reference: Opti
     wb.set_cell(sheet_id, &reference, input);
 }
 
-
 fn import_core_props(xml: &[u8], wb: &mut Workbook) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
     let mut cur: Option<&'static str> = None;
     let mut buf = String::new();
@@ -308,7 +388,6 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
         }
     }
 }
-
 
 fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
     let mut overrides = String::new();
@@ -397,8 +476,16 @@ fn bool01(value: &str) -> &'static str {
 }
 
 fn cell_xml(cell: &crate::sheet::CellView) -> String {
-    let s_attr = cell.style.as_deref().map(|s| format!(r#" s="{}""#, xml_escape(s))).unwrap_or_default();
-    let f_xml = cell.formula.as_deref().map(|f| format!("<f>{}</f>", xml_escape(f))).unwrap_or_default();
+    let s_attr = cell
+        .style
+        .as_deref()
+        .map(|s| format!(r#" s="{}""#, xml_escape(s)))
+        .unwrap_or_default();
+    let f_xml = cell
+        .formula
+        .as_deref()
+        .map(|f| format!("<f>{}</f>", xml_escape(f)))
+        .unwrap_or_default();
     let has_formula = cell.formula.is_some();
 
     // Value serialization + the `t` attribute per cell type: a formula's string result
@@ -406,11 +493,20 @@ fn cell_xml(cell: &crate::sheet::CellView) -> String {
     let (t_attr, body): (&str, String) = match cell.cell_type {
         CellType::Number => ("", format!("{f_xml}<v>{}</v>", xml_escape(&cell.value))),
         CellType::Bool => (" t=\"b\"", format!("{f_xml}<v>{}</v>", bool01(&cell.value))),
-        CellType::Error => (" t=\"e\"", format!("{f_xml}<v>{}</v>", xml_escape(&cell.value))),
-        CellType::Text if has_formula => (" t=\"str\"", format!("{f_xml}<v>{}</v>", xml_escape(&cell.value))),
+        CellType::Error => (
+            " t=\"e\"",
+            format!("{f_xml}<v>{}</v>", xml_escape(&cell.value)),
+        ),
+        CellType::Text if has_formula => (
+            " t=\"str\"",
+            format!("{f_xml}<v>{}</v>", xml_escape(&cell.value)),
+        ),
         CellType::Text => (
             " t=\"inlineStr\"",
-            format!(r#"<is><t xml:space="preserve">{}</t></is>"#, xml_escape(&cell.value)),
+            format!(
+                r#"<is><t xml:space="preserve">{}</t></is>"#,
+                xml_escape(&cell.value)
+            ),
         ),
         CellType::Empty => ("", f_xml),
     };
@@ -432,10 +528,16 @@ fn core_props_xml(props: &BTreeMap<String, String>) -> String {
         fields.push_str(&format!("<dc:creator>{}</dc:creator>", xml_escape(v)));
     }
     if let Some(v) = props.get("created") {
-        fields.push_str(&format!(r#"<dcterms:created xsi:type="dcterms:W3CDTF">{}</dcterms:created>"#, xml_escape(v)));
+        fields.push_str(&format!(
+            r#"<dcterms:created xsi:type="dcterms:W3CDTF">{}</dcterms:created>"#,
+            xml_escape(v)
+        ));
     }
     if let Some(v) = props.get("modified") {
-        fields.push_str(&format!(r#"<dcterms:modified xsi:type="dcterms:W3CDTF">{}</dcterms:modified>"#, xml_escape(v)));
+        fields.push_str(&format!(
+            r#"<dcterms:modified xsi:type="dcterms:W3CDTF">{}</dcterms:modified>"#,
+            xml_escape(v)
+        ));
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -455,4 +557,3 @@ fn is_preserved_part(name: &str) -> bool {
         || name.ends_with('/');
     !structural
 }
-

@@ -143,7 +143,11 @@ pub fn list_remotes() -> Vec<Remote> {
         let options = parts.next().unwrap_or("");
         remotes.push(Remote {
             name: name.to_string(),
-            title: if title.is_empty() { name.to_string() } else { title },
+            title: if title.is_empty() {
+                name.to_string()
+            } else {
+                title
+            },
             url,
             disabled: options.contains("disabled"),
         });
@@ -208,8 +212,17 @@ fn run_action(args: &[&str]) -> ActionOutcome {
         Ok(o) if o.status.success() => ActionOutcome::Ok,
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            let msg = err.lines().last().unwrap_or("flatpak failed").trim().to_string();
-            ActionOutcome::Failed(if msg.is_empty() { "flatpak failed".into() } else { msg })
+            let msg = err
+                .lines()
+                .last()
+                .unwrap_or("flatpak failed")
+                .trim()
+                .to_string();
+            ActionOutcome::Failed(if msg.is_empty() {
+                "flatpak failed".into()
+            } else {
+                msg
+            })
         }
         Err(e) => ActionOutcome::Failed(format!("could not run flatpak: {e}")),
     }
@@ -226,7 +239,14 @@ fn run_action(args: &[&str]) -> ActionOutcome {
 pub fn http_get(url: &str) -> Option<String> {
     run_with_timeout(
         "curl",
-        &["-sSL", "--max-time", "8", "-H", "Accept: application/json", url],
+        &[
+            "-sSL",
+            "--max-time",
+            "8",
+            "-H",
+            "Accept: application/json",
+            url,
+        ],
         Duration::from_secs(10),
     )
 }
@@ -236,8 +256,18 @@ pub fn http_post_json(url: &str, body: &str) -> Option<String> {
     run_with_timeout(
         "curl",
         &[
-            "-sSL", "--max-time", "8", "-X", "POST", "-H", "Content-Type: application/json", "-H",
-            "Accept: application/json", "-d", body, url,
+            "-sSL",
+            "--max-time",
+            "8",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "-d",
+            body,
+            url,
         ],
         Duration::from_secs(10),
     )
@@ -338,8 +368,16 @@ fn entry_from_search_hit(hit: &serde_json::Value) -> Option<AppEntry> {
 
 /// Map a full AppStream record into a detailed [`AppEntry`].
 fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEntry> {
-    let name = json.get("name").and_then(|v| v.as_str()).unwrap_or(app_id).to_string();
-    let summary = json.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(app_id)
+        .to_string();
+    let summary = json
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let developer = json
         .get("developer_name")
         .and_then(|v| v.as_str())
@@ -396,7 +434,11 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
                     .and_then(|v| v.as_str())
                     .unwrap_or("Screenshot")
                     .to_string();
-                Shot { tone_a: 4 + i % 5, tone_b: 1 + i % 4, caption }
+                Shot {
+                    tone_a: 4 + i % 5,
+                    tone_b: 1 + i % 4,
+                    caption,
+                }
             })
             .collect();
     }
@@ -501,7 +543,10 @@ fn monogram_for(name: &str) -> String {
     let mut chars = name.chars().filter(|c| c.is_alphanumeric());
     let first = chars.next().unwrap_or('?').to_uppercase().to_string();
     // Second char from a word boundary if present.
-    if let Some(rest) = name.split(|c: char| c == ' ' || c == '-' || c == '.').nth(1) {
+    if let Some(rest) = name
+        .split(|c: char| c == ' ' || c == '-' || c == '.')
+        .nth(1)
+    {
         if let Some(c2) = rest.chars().next() {
             return format!("{first}{}", c2.to_lowercase());
         }
@@ -556,7 +601,10 @@ mod tests {
         assert_eq!(category_from_appstream("Graphics"), Category::Graphics);
         assert_eq!(category_from_appstream("Network"), Category::Internet);
         assert_eq!(category_from_appstream("Game"), Category::Games);
-        assert_eq!(category_from_appstream("Development"), Category::Development);
+        assert_eq!(
+            category_from_appstream("Development"),
+            Category::Development
+        );
         assert_eq!(category_from_appstream("Office"), Category::Productivity);
     }
 

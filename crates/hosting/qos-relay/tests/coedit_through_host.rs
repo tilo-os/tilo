@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use qos_relay::{Inbound, RelayClient, RelayCoeditSession};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -248,7 +248,9 @@ async fn never_both_online_coedit_converges_through_host() {
             .expect("B closed");
         match inbound {
             Inbound::Delta { data, .. } => {
-                doc_b.load_incremental(&data).expect("B applies queued co-edit");
+                doc_b
+                    .load_incremental(&data)
+                    .expect("B applies queued co-edit");
                 got_delta = true;
             }
             Inbound::Ready { pending } => {
@@ -267,7 +269,11 @@ async fn never_both_online_coedit_converges_through_host() {
         doc_b.get_heads(),
         "B converges with A across a host restart, never having been online together"
     );
-    assert_eq!(pending_count(&pending_dir), 0, "queue drains after delivery");
+    assert_eq!(
+        pending_count(&pending_dir),
+        0,
+        "queue drains after delivery"
+    );
 
     drop(host2);
 }

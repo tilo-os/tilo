@@ -178,7 +178,10 @@ impl Entry {
     /// attribute at all, which is what an ordinary path (or a workspace root
     /// that is a plain directory rather than a live FUSE mount) looks like.
     pub fn content_is_local(&self) -> bool {
-        !matches!(self.sync_state, Some(SyncState::Projected) | Some(SyncState::Downloading))
+        !matches!(
+            self.sync_state,
+            Some(SyncState::Projected) | Some(SyncState::Downloading)
+        )
     }
 }
 
@@ -200,13 +203,24 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortBy { Name, Size, Modified, Type }
+pub enum SortBy {
+    Name,
+    Size,
+    Modified,
+    Type,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortOrder { Ascending, Descending }
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode { List, Grid }
+pub enum ViewMode {
+    List,
+    Grid,
+}
 
 pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
@@ -216,7 +230,11 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
             SortBy::Modified => a.modified.cmp(&b.modified),
             SortBy::Type => a.mime.cmp(&b.mime),
         };
-        let final_cmp = if sort_order == SortOrder::Descending { cmp.reverse() } else { cmp };
+        let final_cmp = if sort_order == SortOrder::Descending {
+            cmp.reverse()
+        } else {
+            cmp
+        };
         // Directories always first, regardless of order direction.
         b.is_dir.cmp(&a.is_dir).then(final_cmp)
     });
@@ -240,16 +258,25 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         let meta = entry.metadata().ok();
         let path = entry.path();
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-        let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+        let mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
         // Content hydration state only applies to files — a directory's structure
         // is always fully projected — so we don't query (or badge) folders.
-        let sync_state = if in_workspace && !is_dir { read_sync_state(&path) } else { None };
+        let sync_state = if in_workspace && !is_dir {
+            read_sync_state(&path)
+        } else {
+            None
+        };
         out.push(Entry {
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
             is_dir,
             size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-            modified: meta.as_ref().and_then(|m| m.modified().ok()).map(DateTime::from),
+            modified: meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .map(DateTime::from),
             mime,
             sync_state,
         });
@@ -259,7 +286,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
 
 pub fn format_path(path: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {
-        if path == home { return "~".to_string(); }
+        if path == home {
+            return "~".to_string();
+        }
         if let Ok(rel) = path.strip_prefix(home) {
             return format!("~/{}", rel.display());
         }
@@ -306,8 +335,14 @@ mod sync_state_tests {
     #[test]
     fn from_xattr_parses_the_three_states_and_rejects_junk() {
         assert_eq!(SyncState::from_xattr(b"local"), Some(SyncState::Local));
-        assert_eq!(SyncState::from_xattr(b"projected"), Some(SyncState::Projected));
-        assert_eq!(SyncState::from_xattr(b"downloading"), Some(SyncState::Downloading));
+        assert_eq!(
+            SyncState::from_xattr(b"projected"),
+            Some(SyncState::Projected)
+        );
+        assert_eq!(
+            SyncState::from_xattr(b"downloading"),
+            Some(SyncState::Downloading)
+        );
         // Trailing whitespace/newline (some xattr tools append one) is tolerated.
         assert_eq!(SyncState::from_xattr(b"local\n"), Some(SyncState::Local));
         assert_eq!(SyncState::from_xattr(b"bogus"), None);
@@ -342,7 +377,11 @@ mod sync_state_tests {
         assert_eq!(read_thumb_xattr(&f), None, "absent preview reads as None");
         let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
         xattr::set(&f, THUMB_XATTR, &png).unwrap();
-        assert_eq!(read_thumb_xattr(&f), Some(png), "the host preview bytes come back verbatim");
+        assert_eq!(
+            read_thumb_xattr(&f),
+            Some(png),
+            "the host preview bytes come back verbatim"
+        );
     }
 
     #[test]
@@ -373,7 +412,11 @@ mod sync_state_tests {
         let by = |name: &str| entries.iter().find(|e| e.name == name).unwrap().sync_state;
         assert_eq!(by("a-downloading.bin"), Some(SyncState::Downloading));
         assert_eq!(by("b-projected.bin"), Some(SyncState::Projected));
-        assert_eq!(by("c-plain.bin"), None, "an untagged workspace file has no state");
+        assert_eq!(
+            by("c-plain.bin"),
+            None,
+            "an untagged workspace file has no state"
+        );
     }
 
     #[test]
@@ -384,14 +427,33 @@ mod sync_state_tests {
         // through the pure helpers so no global env is touched.
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        let spec = format!("{}:/does/not/exist:{}", a.path().display(), b.path().display());
+        let spec = format!(
+            "{}:/does/not/exist:{}",
+            a.path().display(),
+            b.path().display()
+        );
         let roots = parse_workspace_roots(&spec);
-        assert!(roots.contains(&a.path().to_path_buf()), "existing root A kept: {roots:?}");
-        assert!(roots.contains(&b.path().to_path_buf()), "existing root B kept");
+        assert!(
+            roots.contains(&a.path().to_path_buf()),
+            "existing root A kept: {roots:?}"
+        );
+        assert!(
+            roots.contains(&b.path().to_path_buf()),
+            "existing root B kept"
+        );
         assert_eq!(roots.len(), 2, "the non-existent root is filtered out");
 
-        assert!(path_under_any(a.path(), &roots), "the root itself is a workspace path");
-        assert!(path_under_any(&a.path().join("deep/file.txt"), &roots), "nested path matches");
-        assert!(!path_under_any(Path::new("/etc/passwd"), &roots), "unrelated path does not match");
+        assert!(
+            path_under_any(a.path(), &roots),
+            "the root itself is a workspace path"
+        );
+        assert!(
+            path_under_any(&a.path().join("deep/file.txt"), &roots),
+            "nested path matches"
+        );
+        assert!(
+            !path_under_any(Path::new("/etc/passwd"), &roots),
+            "unrelated path does not match"
+        );
     }
 }

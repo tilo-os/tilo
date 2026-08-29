@@ -11,8 +11,8 @@
 
 use std::collections::HashMap;
 
-use settings::categories::Category;
 use settings::SettingsApp;
+use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;

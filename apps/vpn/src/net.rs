@@ -153,7 +153,10 @@ pub fn probe_interface_up(iface: &str) -> Option<bool> {
     if !is_valid_iface(iface) {
         return Some(false);
     }
-    let out = Command::new("ip").args(["link", "show", iface]).output().ok()?;
+    let out = Command::new("ip")
+        .args(["link", "show", iface])
+        .output()
+        .ok()?;
     if !out.status.success() {
         // `ip` ran but the interface does not exist → it is not up.
         return Some(false);
@@ -337,10 +340,11 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // byte-counter probes read the real kernel state — no fabrication. On
         // a box without those privileges this branch is honestly skipped; the
         // gated-refusal assertion below still proves the safety boundary.
-        if config::exec_allowed()
-            && ip(&["link", "add", "qtest0", "type", "dummy"])
-        {
-            assert!(ip(&["link", "set", "qtest0", "up"]), "bring the dummy iface up");
+        if config::exec_allowed() && ip(&["link", "add", "qtest0", "type", "dummy"]) {
+            assert!(
+                ip(&["link", "set", "qtest0", "up"]),
+                "bring the dummy iface up"
+            );
             // The status probe now sees a real, UP interface via netlink — this
             // is the true "status reflects the interface state" path, exercised
             // end-to-end against a live kernel device. (Real byte-counter reads

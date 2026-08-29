@@ -187,8 +187,8 @@ fn role_ceiling(role: Role) -> Option<Verb> {
 /// `Owner(Admin) ≥ Editor(Write) ≥ Commenter(Comment) ≥ Viewer(Read) ≥ Denied(∅)`?
 fn role_le(child: Role, parent: Role) -> bool {
     match (role_ceiling(child), role_ceiling(parent)) {
-        (None, _) => true,               // Denied grants nothing — always ≤.
-        (Some(_), None) => false,        // parent grants nothing; child grants more.
+        (None, _) => true,        // Denied grants nothing — always ≤.
+        (Some(_), None) => false, // parent grants nothing; child grants more.
         (Some(c), Some(p)) => p.implies(c),
     }
 }
@@ -197,8 +197,8 @@ fn role_le(child: Role, parent: Role) -> bool {
 /// "never", so a child may only tighten.)
 fn expiry_le(child: Option<SystemTime>, parent: Option<SystemTime>) -> bool {
     match (child, parent) {
-        (_, None) => true,               // parent never expires — any child ok.
-        (None, Some(_)) => false,        // parent expires; child claims never.
+        (_, None) => true,        // parent never expires — any child ok.
+        (None, Some(_)) => false, // parent expires; child claims never.
         (Some(c), Some(p)) => c <= p,
     }
 }
@@ -208,9 +208,9 @@ fn expiry_le(child: Option<SystemTime>, parent: Option<SystemTime>) -> bool {
 /// keep the same pin.
 fn subresource_narrows(child: Option<ArtifactId>, parent: Option<ArtifactId>) -> bool {
     match (parent, child) {
-        (None, _) => true,               // parent whole-workspace — child may pin.
-        (Some(p), Some(c)) => p == c,    // parent pinned — child must match.
-        (Some(_), None) => false,        // parent pinned — child may not unpin.
+        (None, _) => true,            // parent whole-workspace — child may pin.
+        (Some(p), Some(c)) => p == c, // parent pinned — child must match.
+        (Some(_), None) => false,     // parent pinned — child may not unpin.
     }
 }
 

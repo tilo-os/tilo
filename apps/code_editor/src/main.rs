@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -92,8 +92,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.code-editor");
-    let mut app = ui::App::new(state, code_editor::app_root_at(open_path.as_deref()))
-        .with_autosave(autosave);
+    let mut app =
+        ui::App::new(state, code_editor::app_root_at(open_path.as_deref())).with_autosave(autosave);
     // Register Code's action so the shell's Ctrl+K palette can decode + replay the
     // same buffer-creation the on-screen "New file" command dispatches.
     code_editor::actions::register(app.action_registry_mut());

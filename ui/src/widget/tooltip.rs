@@ -198,11 +198,17 @@ impl Tooltip {
         self.anchor = anchor;
     }
 
-    pub fn label(&self) -> &str { &self.label }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 
-    pub fn delay(&self) -> Duration { self.delay }
+    pub fn delay(&self) -> Duration {
+        self.delay
+    }
 
-    pub fn is_visible(&self) -> bool { self.is_visible }
+    pub fn is_visible(&self) -> bool {
+        self.is_visible
+    }
 
     /// `initial` seeds the accumulator so a pointer already hovering can be
     /// resumed without losing that elapsed duration (tests pass `Duration::ZERO`).
@@ -217,7 +223,9 @@ impl Tooltip {
     }
 
     pub fn tick(&mut self, dt: Duration) {
-        let Some(e) = self.elapsed.as_mut() else { return };
+        let Some(e) = self.elapsed.as_mut() else {
+            return;
+        };
         *e = e.saturating_add(dt);
         if *e >= self.delay {
             self.is_visible = true;
@@ -274,11 +282,14 @@ impl Widget for Tooltip {
         presence: &PresenceCtx,
     ) {
         if let Some(since) = self.hover_since
-            && !self.is_visible && since.elapsed() >= self.delay
+            && !self.is_visible
+            && since.elapsed() >= self.delay
         {
             self.is_visible = true;
         }
-        if !self.is_visible { return; }
+        if !self.is_visible {
+            return;
+        }
 
         let text_size = theme.tokens.typography.scale.sm;
         let size = chip_size(&self.label, text_renderer, text_size);
@@ -291,7 +302,14 @@ impl Widget for Tooltip {
         if self.anchor != Rect::ZERO {
             self.rect = chip_rect(self.anchor, size, viewport);
         }
-        draw_chip(scene, transform, text_renderer, theme, self.rect, &self.label);
+        draw_chip(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            &self.label,
+        );
     }
 
     fn handle_event(
@@ -341,9 +359,13 @@ impl Widget for Tooltip {
         self.hover_since.is_some() && !self.is_visible
     }
 
-    fn name(&self) -> &str { "Tooltip" }
+    fn name(&self) -> &str {
+        "Tooltip"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -432,7 +454,11 @@ impl TooltipHost {
                     self.recompute_visible(now);
                     self.visible != was
                 } else {
-                    self.target = Some(HoverTarget { label, anchor, since: now });
+                    self.target = Some(HoverTarget {
+                        label,
+                        anchor,
+                        since: now,
+                    });
                     let was = self.visible;
                     self.visible = false;
                     self.recompute_visible(now);
@@ -555,8 +581,10 @@ mod host_tests {
         // as it jitters — the accumulated dwell must not reset.
         h.on_pointer(tip("Search"), t0 + Duration::from_millis(200));
         h.on_pointer(tip("Search"), t0 + Duration::from_millis(400));
-        assert!(h.on_pointer(tip("Search"), t0 + Duration::from_millis(550)),
-            "crossing the threshold on a jitter move flips to visible");
+        assert!(
+            h.on_pointer(tip("Search"), t0 + Duration::from_millis(550)),
+            "crossing the threshold on a jitter move flips to visible"
+        );
         assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
     }
 
@@ -569,24 +597,36 @@ mod host_tests {
         // Anchor near the bottom edge → the chip flips above the anchor.
         let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
         let r = chip_rect(bottom_anchor, size, vp);
-        assert!(r.y1 <= bottom_anchor.y0, "flips above when it would overflow the bottom");
+        assert!(
+            r.y1 <= bottom_anchor.y0,
+            "flips above when it would overflow the bottom"
+        );
 
         // Anchor at the far right → the chip is clamped inside the viewport.
         let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
         let r = chip_rect(right_anchor, size, vp);
-        assert!(r.x1 <= vp.x1 - CHIP_MARGIN + 0.01, "clamped to the right edge");
+        assert!(
+            r.x1 <= vp.x1 - CHIP_MARGIN + 0.01,
+            "clamped to the right edge"
+        );
         assert!(r.x0 >= vp.x0, "never off the left edge");
 
         // Anchor at the far left → clamped to the left margin.
         let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
         let r = chip_rect(left_anchor, size, vp);
-        assert!(r.x0 >= vp.x0 + CHIP_MARGIN - 0.01, "clamped to the left margin");
+        assert!(
+            r.x0 >= vp.x0 + CHIP_MARGIN - 0.01,
+            "clamped to the left margin"
+        );
 
         // A roomy central anchor keeps the chip below and centred.
         let center = Rect::new(390.0, 100.0, 410.0, 120.0);
         let r = chip_rect(center, size, vp);
         assert!(r.y0 >= center.y1, "placed below when there is room");
-        assert!((r.center().x - center.center().x).abs() < 0.5, "centred under the anchor");
+        assert!(
+            (r.center().x - center.center().x).abs() < 0.5,
+            "centred under the anchor"
+        );
     }
 }
 
@@ -605,7 +645,17 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: (p.x, p.y).into(),
         };
-        t.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        t.handle_event(
+            &ev,
+            1.0,
+            &Default::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
     }
 
     #[test]
@@ -647,7 +697,10 @@ mod tests {
         t.on_hover_enter(Duration::ZERO);
         assert!(t.is_visible());
         let node = Widget::accessibility(&t).unwrap();
-        assert!(!node.state.hidden, "a revealed tooltip is visible to the AT");
+        assert!(
+            !node.state.hidden,
+            "a revealed tooltip is visible to the AT"
+        );
     }
 
     #[test]

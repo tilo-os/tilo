@@ -38,9 +38,9 @@ pub mod pdf;
 pub mod video;
 
 pub use cache::{ThumbCache, ThumbKey};
-pub use category::{category_for_ext, category_for_path, FileCategory};
+pub use category::{FileCategory, category_for_ext, category_for_path};
 pub use generate::{
-    decode_png, encode_png, generate, image_thumb, epub_cover_thumb, RgbaThumb, Source,
-    DEFAULT_EDGE,
+    DEFAULT_EDGE, RgbaThumb, Source, decode_png, encode_png, epub_cover_thumb, generate,
+    image_thumb,
 };
 pub use service::{ThumbState, ThumbnailService};

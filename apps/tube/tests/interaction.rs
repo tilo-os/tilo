@@ -9,8 +9,8 @@
 mod harness;
 
 use harness::Harness;
-use tube::model::Route;
 use tube::TubeApp;
+use tube::model::Route;
 
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
@@ -77,7 +77,10 @@ fn palette_result_click_navigates_to_video() {
         matches!(h.app.route_for_test(), Route::Watch(_)),
         "clicking a video result opens its watch page"
     );
-    assert!(!h.app.palette_open_for_test(), "activating a result closes the palette");
+    assert!(
+        !h.app.palette_open_for_test(),
+        "activating a result closes the palette"
+    );
 }
 
 #[test]
@@ -119,7 +122,10 @@ fn clicking_scrim_closes_palette() {
     // Click near the top-left corner — inside the scrim, outside the centred
     // card — which must dismiss the palette.
     h.click_at(vello::kurbo::Point::new(20.0, 20.0));
-    assert!(!h.app.palette_open_for_test(), "scrim click closes the palette");
+    assert!(
+        !h.app.palette_open_for_test(),
+        "scrim click closes the palette"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +179,10 @@ fn share_button_copies_a_link_and_is_not_wired_to_like() {
     // confirmation of the real clipboard write) and must NOT like the video —
     // proving the two are distinct.
     let mut h = Harness::new(watch_app(), VIEWPORT);
-    assert!(!h.app.model_for_test().is_liked(WATCH_ID), "not liked to start");
+    assert!(
+        !h.app.model_for_test().is_liked(WATCH_ID),
+        "not liked to start"
+    );
 
     h.click_id("share_btn");
 
@@ -190,7 +199,10 @@ fn share_button_copies_a_link_and_is_not_wired_to_like() {
         "Share records a 'link copied' notice for this video"
     );
     // And the confirmation toast is actually rendered.
-    assert!(h.has_id("notices"), "the share confirmation shows in the toast strip");
+    assert!(
+        h.has_id("notices"),
+        "the share confirmation shows in the toast strip"
+    );
 }
 
 #[test]
@@ -286,7 +298,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
     // Use several sample video ids so the results list is long enough to scroll.
     let sample = tube::sample::model();
     let ids: Vec<String> = sample.videos.iter().map(|v| v.id.clone()).collect();
-    assert!(ids.len() >= 3, "need a few sample videos to build a results list");
+    assert!(
+        ids.len() >= 3,
+        "need a few sample videos to build a results list"
+    );
     let first = ids[0].clone();
 
     let app = tube::TubeApp::new()
@@ -295,7 +310,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
         .with_search_for_test(query, ids);
     let mut h = Harness::new(app, VIEWPORT);
     assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
-    assert!(h.app.can_go_back_for_test(), "arriving via search leaves Home to go back to");
+    assert!(
+        h.app.can_go_back_for_test(),
+        "arriving via search leaves Home to go back to"
+    );
 
     // Scroll the results down, then record where the grid sits.
     h.wheel_at(vello::kurbo::Point::new(640.0, 500.0), -6.0);
@@ -312,7 +330,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
     );
 
     // Press Back (a real click on the top-bar Back button).
-    assert!(h.has_id("back_btn"), "the Back affordance is present on the watch page");
+    assert!(
+        h.has_id("back_btn"),
+        "the Back affordance is present on the watch page"
+    );
     h.click_id("back_btn");
     assert_eq!(
         h.app.route_for_test(),
@@ -322,7 +343,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
     assert!(h.has_id("video_grid"), "the results list is rendered again");
 
     // Scroll position preserved: the grid resumes where it was, not reset to top.
-    let grid_after_back = h.rect_by_id("video_grid").expect("results grid re-laid out").y0;
+    let grid_after_back = h
+        .rect_by_id("video_grid")
+        .expect("results grid re-laid out")
+        .y0;
     assert!(
         (grid_after_back - grid_after_scroll).abs() < 2.0,
         "scroll preserved on Back: grid y0 {grid_after_back} vs pre-nav {grid_after_scroll}",
@@ -485,14 +509,24 @@ fn home_grid_fills_the_row_with_no_right_gutter_across_widths() {
             .rect_by_id("video_grid")
             .unwrap_or_else(|| panic!("home grid laid out at width {w}"));
         let cards = h.child_rects("video_grid");
-        assert!(cards.len() >= 4, "grid has cards at width {w} (got {})", cards.len());
+        assert!(
+            cards.len() >= 4,
+            "grid has cards at width {w} (got {})",
+            cards.len()
+        );
 
         // The top row: cards sharing the smallest y0.
         let top_y = cards.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min);
-        let mut top: Vec<&vello::kurbo::Rect> =
-            cards.iter().filter(|r| (r.y0 - top_y).abs() < 1.0).collect();
+        let mut top: Vec<&vello::kurbo::Rect> = cards
+            .iter()
+            .filter(|r| (r.y0 - top_y).abs() < 1.0)
+            .collect();
         top.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
-        assert!(top.len() >= 2, "the grid has >= 2 columns at width {w} (got {})", top.len());
+        assert!(
+            top.len() >= 2,
+            "the grid has >= 2 columns at width {w} (got {})",
+            top.len()
+        );
         columns_per_width.push(top.len());
 
         // Equal-width flex tracks.
@@ -732,7 +766,9 @@ fn laid_out_home_does_not_demand_relayout_a_scroll_perf_guard() {
         i += 1;
     }
 
-    let app = TubeApp::new().with_viewport(1280.0, 900.0).with_model_for_test(model);
+    let app = TubeApp::new()
+        .with_viewport(1280.0, 900.0)
+        .with_model_for_test(model);
     let mut h = Harness::new(app, (1280.0, 900.0));
     // One real drawn frame (visible widgets warm their caches, off-screen ones
     // are culled — exactly the state a scroll leaves the tree in).

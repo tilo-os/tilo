@@ -224,11 +224,7 @@ mod tests {
     }
 
     /// Even spans, 100 wide each, for a strip of `ids`.
-    fn viewport(
-        strip: StripId,
-        ids: &[GroupId],
-        visible: (f64, f64),
-    ) -> StripViewport {
+    fn viewport(strip: StripId, ids: &[GroupId], visible: (f64, f64)) -> StripViewport {
         StripViewport {
             strip,
             groups: ids
@@ -365,11 +361,7 @@ mod tests {
         viewport: Option<&StripViewport>,
     ) -> (Vec<GroupId>, GroupId) {
         note_placement_for_launch(package_id, tree, viewport);
-        crate::compositor::tab_binding::adopt_toplevel(
-            tree,
-            surface_id,
-            Some(app_id.to_string()),
-        );
+        crate::compositor::tab_binding::adopt_toplevel(tree, surface_id, Some(app_id.to_string()));
         let landed = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
@@ -501,10 +493,7 @@ mod tests {
         );
 
         assert_eq!(landed, ids[1], "the window joined the selected group");
-        assert_eq!(
-            order, ids,
-            "and the strip did not grow a column to hold it"
-        );
+        assert_eq!(order, ids, "and the strip did not grow a column to hold it");
         crate::shell::launcher::clear_pending_placements();
     }
 

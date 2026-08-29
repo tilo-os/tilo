@@ -156,7 +156,11 @@ impl Flex {
             min_w: None,
             min_h: None,
             max_w: None,
-            align: if axis == Axis::Row { Align::Center } else { Align::Start },
+            align: if axis == Axis::Row {
+                Align::Center
+            } else {
+                Align::Start
+            },
             justify: Justify::Start,
             wrap: false,
             grid_min_col: None,
@@ -507,7 +511,13 @@ impl Widget for Flex {
         }
 
         if self.clip {
-            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.rect,
+            );
         }
         // In-flow children first, then floating children on top (z-order).
         for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
@@ -542,13 +552,33 @@ impl Widget for Flex {
             self.paint_surface(scene, transform, s);
         }
         if self.clip {
-            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.rect,
+            );
         }
         for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            c.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
         for c in self.children.iter_mut().filter(|c| c.is_floating()) {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            c.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
         if self.clip {
             scene.pop_layer();
@@ -572,7 +602,15 @@ impl Widget for Flex {
             if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
                 let cn = child_nodes[idx];
                 self.children[idx].handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 return;
             }
@@ -584,7 +622,15 @@ impl Widget for Flex {
                     continue;
                 }
                 cw.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 if *handled {
                     break;
@@ -596,7 +642,15 @@ impl Widget for Flex {
                         continue;
                     }
                     cw.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cn,
+                        taffy,
                     );
                     if *handled {
                         break;

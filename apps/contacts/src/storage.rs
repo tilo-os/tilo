@@ -34,7 +34,11 @@ pub fn default_path() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    Some(data_dir()?.join("qos-contacts").join("addressbook.automerge"))
+    Some(
+        data_dir()?
+            .join("qos-contacts")
+            .join("addressbook.automerge"),
+    )
 }
 
 /// Best-effort XDG data dir without pulling the `dirs` crate.

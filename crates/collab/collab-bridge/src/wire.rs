@@ -126,14 +126,27 @@ pub enum PathSegment {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PresenceKey {
-    Widget { path: Vec<PathSegment> },
-    Tab { id: String },
-    Workspace { id: String },
-    App { app: AppKind, sub: String },
+    Widget {
+        path: Vec<PathSegment>,
+    },
+    Tab {
+        id: String,
+    },
+    Workspace {
+        id: String,
+    },
+    App {
+        app: AppKind,
+        sub: String,
+    },
     /// A participant's broadcast view subset, as its postcard encoding — opaque here, the bridge only routes it.
-    View { data: Vec<u8> },
+    View {
+        data: Vec<u8>,
+    },
     /// A pointer position together with the space it was measured in.
-    Pointer { space: PointerSpace },
+    Pointer {
+        space: PointerSpace,
+    },
 }
 
 /// Postcard mirror of `ui::presence::PointerSpace`; variant order must match upstream byte-for-byte (same rule as [`AppKind`]).

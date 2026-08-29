@@ -184,7 +184,9 @@ mod tests {
             events[0],
             WebViewEvent::UriChanged("https://example.org".into())
         );
-        assert!(matches!(events[1], WebViewEvent::TitleChanged(ref t) if t.contains("example.org")));
+        assert!(
+            matches!(events[1], WebViewEvent::TitleChanged(ref t) if t.contains("example.org"))
+        );
         assert!(events.contains(&WebViewEvent::LoadFinished));
         assert!(events.contains(&WebViewEvent::HistoryChanged {
             can_go_back: false,
@@ -193,7 +195,12 @@ mod tests {
         // Draining twice yields nothing new.
         assert!(engine.drain_events().is_empty());
 
-        let frame = engine.frames().lock().unwrap().clone().expect("frame rendered");
+        let frame = engine
+            .frames()
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("frame rendered");
         assert_eq!((frame.width, frame.height), (800, 600));
         let [r, g, b] = TestEngine::page_color("https://example.org");
         // First pixel is in the header band; below it is the page colour.

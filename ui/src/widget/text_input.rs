@@ -7,24 +7,24 @@
 
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable, ObjType};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Rect, Point, Stroke};
-use vello::peniko::BlendMode;
-use winit::event::{WindowEvent, MouseButton, ElementState, KeyEvent, Modifiers};
-use winit::keyboard::{Key, NamedKey};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
-use crate::widget::Widget;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{FontChoice, TextRenderer, TextWeight};
 use crate::text_selection::{
     clipboard_copy, clipboard_paste, extend_span_drag, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary, word_boundaries,
 };
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
+use crate::widget::Widget;
+use crate::widget::code_editor::{Highlighter, Span, token_color};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::code_editor::{token_color, Highlighter, Span};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::BlendMode;
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
@@ -235,9 +235,9 @@ impl TextInput {
         if self.crdt_bound
             && let Ok(Some((Value::Object(ObjType::Text), id))) =
                 state.get(root, self.on_change_path.as_str())
-            {
-                return Some(id);
-            }
+        {
+            return Some(id);
+        }
         None
     }
 
@@ -314,7 +314,9 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, s: &str) {
-        if self.text == s { return; }
+        if self.text == s {
+            return;
+        }
         self.text = s.to_string();
         self.selection_anchor = None;
         self.clamp_to_text();
@@ -621,7 +623,17 @@ impl TextInput {
         loop {
             let rel_nl = self.text[para_start..].find('\n');
             let para_end = rel_nl.map(|i| para_start + i).unwrap_or(self.text.len());
-            self.wrap_paragraph(tr, size, para_start, para_end, rel_nl.is_some(), wrap_w, lh, &mut y, &mut lines);
+            self.wrap_paragraph(
+                tr,
+                size,
+                para_start,
+                para_end,
+                rel_nl.is_some(),
+                wrap_w,
+                lh,
+                &mut y,
+                &mut lines,
+            );
             match rel_nl {
                 Some(i) => para_start = para_start + i + 1,
                 None => break,
@@ -649,26 +661,34 @@ impl TextInput {
         boundaries.push(para.len()); // end sentinel
         let cum: Vec<f64> = boundaries
             .iter()
-            .map(|&b| self.measure_str(tr, &self.display_slice(start, start + b), size).0 as f64)
+            .map(|&b| {
+                self.measure_str(tr, &self.display_slice(start, start + b), size)
+                    .0 as f64
+            })
             .collect();
         let nchars = boundaries.len() - 1;
         if nchars == 0 {
-            out.push(VisualLine { start, end, hard_break, char_x: vec![0.0], y: *y });
+            out.push(VisualLine {
+                start,
+                end,
+                hard_break,
+                char_x: vec![0.0],
+                y: *y,
+            });
             *y += lh;
             return;
         }
-        let push_row =
-            |out: &mut Vec<VisualLine>, y: &mut f64, a: usize, b: usize, hard: bool| {
-                let char_x: Vec<f64> = (a..=b).map(|j| cum[j] - cum[a]).collect();
-                out.push(VisualLine {
-                    start: start + boundaries[a],
-                    end: start + boundaries[b],
-                    hard_break: hard,
-                    char_x,
-                    y: *y,
-                });
-                *y += lh;
-            };
+        let push_row = |out: &mut Vec<VisualLine>, y: &mut f64, a: usize, b: usize, hard: bool| {
+            let char_x: Vec<f64> = (a..=b).map(|j| cum[j] - cum[a]).collect();
+            out.push(VisualLine {
+                start: start + boundaries[a],
+                end: start + boundaries[b],
+                hard_break: hard,
+                char_x,
+                y: *y,
+            });
+            *y += lh;
+        };
         let mut row_start_k = 0usize;
         let mut last_space_k: Option<usize> = None;
         let mut k = 0usize;
@@ -704,9 +724,29 @@ impl TextInput {
         origin: Affine,
     ) {
         if let Some(fam) = &self.family {
-            tr.draw_text_font(scene, text, size, color, origin, None, TextWeight::Regular, false, fam);
+            tr.draw_text_font(
+                scene,
+                text,
+                size,
+                color,
+                origin,
+                None,
+                TextWeight::Regular,
+                false,
+                fam,
+            );
         } else {
-            tr.draw_text_styled(scene, text, size, color, origin, None, TextWeight::Regular, false, self.mono);
+            tr.draw_text_styled(
+                scene,
+                text,
+                size,
+                color,
+                origin,
+                None,
+                TextWeight::Regular,
+                false,
+                self.mono,
+            );
         }
     }
 
@@ -747,7 +787,13 @@ impl TextInput {
         let max_scroll = (content_h - view_h).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
 
-        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            shape,
+        );
 
         // A row starts a new logical line iff the previous row ended at a hard `\n`.
         let mut line_of_row: Vec<usize> = Vec::with_capacity(self.lines.len());
@@ -764,7 +810,12 @@ impl TextInput {
             .count();
 
         if gutter_w > 0.0 {
-            let gr = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + gutter_w, self.rect.y1);
+            let gr = Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + gutter_w,
+                self.rect.y1,
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -794,7 +845,13 @@ impl TextInput {
                 }
                 let y0 = self.rect.y0 + ML_PAD_Y + top;
                 let band = Rect::new(self.rect.x0 + gutter_w, y0, self.rect.x1, y0 + lh);
-                scene.fill(vello::peniko::Fill::NonZero, transform, band_color, None, &band);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    band_color,
+                    None,
+                    &band,
+                );
             }
         }
 
@@ -811,7 +868,11 @@ impl TextInput {
             tr.draw_text(scene, &self.placeholder, size, theme.text_dim, origin, None);
         }
 
-        let text_color = if self.disabled { theme.text_dim } else { theme.text_primary };
+        let text_color = if self.disabled {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
         // Collected as owned data so all `self` borrows end before the draw calls.
         type Seg = (String, f64, vello::peniko::Color);
         let mut row_draws: Vec<(f64, Vec<Seg>)> = Vec::new();
@@ -837,7 +898,11 @@ impl TextInput {
                 let x = self.rect.x0 + gutter_w - GUTTER_PAD_R - w;
                 let origin = transform
                     * Affine::translate((x, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
-                let col = if *current { theme.text_primary } else { theme.text_dim };
+                let col = if *current {
+                    theme.text_primary
+                } else {
+                    theme.text_dim
+                };
                 self.draw_text_run(scene, tr, num, size, col, origin);
             }
         }
@@ -858,7 +923,13 @@ impl TextInput {
 
         if self.is_focused && !self.disabled {
             let caret = self.caret_rect_ml(self.cursor_pos);
-            scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &caret);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.accent_primary,
+                None,
+                &caret,
+            );
         }
 
         scene.pop_layer();
@@ -892,13 +963,25 @@ impl TextInput {
                     continue;
                 }
                 if a > cur {
-                    out.push((self.text[cur..a].to_string(), self.x_in_row(r, cur), default));
+                    out.push((
+                        self.text[cur..a].to_string(),
+                        self.x_in_row(r, cur),
+                        default,
+                    ));
                 }
-                out.push((self.text[a..b].to_string(), self.x_in_row(r, a), token_color(sp.kind, theme)));
+                out.push((
+                    self.text[a..b].to_string(),
+                    self.x_in_row(r, a),
+                    token_color(sp.kind, theme),
+                ));
                 cur = b;
             }
             if cur < re {
-                out.push((self.text[cur..re].to_string(), self.x_in_row(r, cur), default));
+                out.push((
+                    self.text[cur..re].to_string(),
+                    self.x_in_row(r, cur),
+                    default,
+                ));
             }
         } else {
             let text = self.display_slice(rs, re);
@@ -912,11 +995,12 @@ impl TextInput {
     /// Test-only: the [`draw_multiline_body`] colour path, for `CodeEditor`
     /// tests to assert highlighter spans reach the renderer. Requires a prior `draw`.
     #[cfg(test)]
-    pub(crate) fn code_row_colors(
-        &self,
-        theme: &Theme,
-    ) -> Vec<(String, vello::peniko::Color)> {
-        let text_color = if self.disabled { theme.text_dim } else { theme.text_primary };
+    pub(crate) fn code_row_colors(&self, theme: &Theme) -> Vec<(String, vello::peniko::Color)> {
+        let text_color = if self.disabled {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
         let mut cur_line = 0usize;
         let mut out = Vec::new();
         for i in 0..self.lines.len() {
@@ -1177,7 +1261,9 @@ impl TextInput {
 
     fn selection_range(&self) -> Option<(usize, usize)> {
         let anchor = self.selection_anchor?;
-        if anchor == self.cursor_pos { return None; }
+        if anchor == self.cursor_pos {
+            return None;
+        }
         Some((anchor.min(self.cursor_pos), anchor.max(self.cursor_pos)))
     }
 
@@ -1206,7 +1292,9 @@ impl TextInput {
 
     /// No-op if there's no selection.
     fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        let Some((start, end)) = self.selection_range() else { return; };
+        let Some((start, end)) = self.selection_range() else {
+            return;
+        };
         let char_start = self.text[..start].chars().count();
         let char_count = self.text[start..end].chars().count();
         self.text.replace_range(start..end, "");
@@ -1473,7 +1561,9 @@ impl TextInput {
         }
         if let Some(a) = self.selection_anchor {
             let mut a = a.min(self.text.len());
-            while a > 0 && !self.text.is_char_boundary(a) { a -= 1; }
+            while a > 0 && !self.text.is_char_boundary(a) {
+                a -= 1;
+            }
             self.selection_anchor = Some(a);
         }
     }
@@ -1489,7 +1579,9 @@ impl Widget for TextInput {
             self.clamp_to_text();
             return;
         }
-        if !self.crdt_bound { return; }
+        if !self.crdt_bound {
+            return;
+        }
         if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
             match val {
                 Value::Scalar(s) => {
@@ -1508,20 +1600,27 @@ impl Widget for TextInput {
         self.clamp_to_text();
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         // Multiline is measured (grows with content, see `measure`); single-line is a fixed 40px row.
         let height = if self.multiline {
             Dimension::auto()
         } else {
             Dimension::length(40.0)
         };
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height,
-            },
-            ..Default::default()
-        }).unwrap();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height,
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -1553,10 +1652,20 @@ impl Widget for TextInput {
         });
         let avail_w = (width as f64 - self.ml_left() - ML_PAD_X).max(1.0);
         self.build_lines(text_renderer, avail_w);
-        taffy::Size { width, height: self.content_height() as f32 }
+        taffy::Size {
+            width,
+            height: self.content_height() as f32,
+        }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         if !self.plain {
             let bg_color = if self.disabled {
@@ -1567,7 +1676,13 @@ impl Widget for TextInput {
             } else {
                 theme.tokens.colors.surfaces.raised
             };
-            scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                bg_color,
+                None,
+                &shape,
+            );
             let border_color = if self.disabled {
                 theme.tokens.colors.border_standard
             } else if self.is_focused {
@@ -1576,7 +1691,11 @@ impl Widget for TextInput {
                 theme.tokens.colors.border_standard
             };
             scene.stroke(
-                &Stroke::new(if self.is_focused && !self.disabled { 2.0 } else { 1.0 }),
+                &Stroke::new(if self.is_focused && !self.disabled {
+                    2.0
+                } else {
+                    1.0
+                }),
                 transform,
                 border_color,
                 None,
@@ -1630,14 +1749,26 @@ impl Widget for TextInput {
             self.scroll_x = 0.0;
         }
 
-        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &shape,
+        );
 
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
 
         if let Some((sel_start, sel_end)) = self.selection_range() {
             let sel_rect = self.selection_rect(theme, sel_start, sel_end);
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
-            scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &sel_rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                sel_color,
+                None,
+                &sel_rect,
+            );
         }
 
         let text_color = if self.disabled {
@@ -1685,13 +1816,30 @@ impl Widget for TextInput {
 
         if self.is_focused && !self.disabled {
             let cursor_rect = self.caret_rect(theme, cursor_pos);
-            scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &cursor_rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.accent_primary,
+                None,
+                &cursor_rect,
+            );
         }
 
         scene.pop_layer();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Single guard that makes both pointer and keyboard input no-ops when disabled.
         if self.disabled {
             return;
@@ -1704,7 +1852,9 @@ impl Widget for TextInput {
                 if self.multiline && self.is_hovered && !self.disabled =>
             {
                 let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * self.line_height(),
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        -(*y as f64) * self.line_height()
+                    }
                     winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
                 let before = self.scroll_y;
@@ -1727,16 +1877,12 @@ impl Widget for TextInput {
                     let (anchor_lo, anchor_hi) = self.drag_anchor_span;
                     // Selection always *contains* the original span clicked.
                     let (new_anchor, new_cursor) = match self.drag_unit {
-                        DragUnit::Char => {
-                            (anchor_lo, raw)
-                        }
+                        DragUnit::Char => (anchor_lo, raw),
                         DragUnit::Word => {
                             let (w_start, w_end) = word_boundaries(&self.text, raw);
                             extend_span_drag(anchor_lo, anchor_hi, raw, w_start, w_end)
                         }
-                        DragUnit::All => {
-                            (anchor_lo, anchor_hi)
-                        }
+                        DragUnit::All => (anchor_lo, anchor_hi),
                     };
                     if new_anchor != self.cursor_pos
                         || self.selection_anchor != Some(new_anchor)
@@ -1760,7 +1906,11 @@ impl Widget for TextInput {
                 self.open_context_menu(pos);
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // A left press while the menu is open is routed to it, never to caret placement.
                 if self.context_menu.is_open() {
                     if *element_state == ElementState::Pressed {
@@ -1783,10 +1933,11 @@ impl Widget for TextInput {
 
                         // Multi-click ladder: single → double (word) → triple (all).
                         let now = Instant::now();
-                        let within_time = self.last_click_time
+                        let within_time = self
+                            .last_click_time
                             .is_some_and(|t| now.duration_since(t) <= MULTI_CLICK_INTERVAL);
-                        let within_radius =
-                            (self.last_click_pos - self.last_mouse_pos).hypot() <= MULTI_CLICK_RADIUS;
+                        let within_radius = (self.last_click_pos - self.last_mouse_pos).hypot()
+                            <= MULTI_CLICK_RADIUS;
                         self.click_count = if within_time && within_radius {
                             self.click_count + 1
                         } else {
@@ -1799,9 +1950,7 @@ impl Widget for TextInput {
                         match self.click_count {
                             1 => {
                                 if modifiers.state().shift_key() {
-                                    let anchor = self
-                                        .selection_anchor
-                                        .unwrap_or(self.cursor_pos);
+                                    let anchor = self.selection_anchor.unwrap_or(self.cursor_pos);
                                     self.selection_anchor = Some(anchor);
                                     self.cursor_pos = pos;
                                     self.drag_unit = DragUnit::Char;
@@ -1834,16 +1983,23 @@ impl Widget for TextInput {
                         }
                         *handled = true;
                     }
-                    ElementState::Released
-                        if self.is_dragging =>
-                    {
+                    ElementState::Released if self.is_dragging => {
                         self.is_dragging = false;
                         *handled = true;
                     }
                     _ => {}
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        text,
+                        state: element_state,
+                        ..
+                    },
+                ..
+            } => {
                 if *element_state != ElementState::Pressed {
                     return;
                 }
@@ -1871,7 +2027,8 @@ impl Widget for TextInput {
                         };
                         // A plain arrow with a selection collapses to the selection edge
                         // rather than moving one char past it (native editor behaviour).
-                        if !shift && !ctrl
+                        if !shift
+                            && !ctrl
                             && let Some((s, _)) = self.selection_range()
                         {
                             self.cursor_pos = s;
@@ -1888,7 +2045,8 @@ impl Widget for TextInput {
                         } else {
                             next_char_boundary(&self.text, self.cursor_pos)
                         };
-                        if !shift && !ctrl
+                        if !shift
+                            && !ctrl
                             && let Some((_, e)) = self.selection_range()
                         {
                             self.cursor_pos = e;
@@ -1965,7 +2123,8 @@ impl Widget for TextInput {
                             self.cursor_pos = start;
                             self.last_edit_time = Some(Instant::now());
                             if let Some(obj_id) = obj_id_opt.as_ref() {
-                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                                let _ =
+                                    state.splice_text(obj_id, char_start, char_count as isize, "");
                             }
                             self.dirty = true;
                         }
@@ -1986,7 +2145,8 @@ impl Widget for TextInput {
                             self.text.replace_range(start..end, "");
                             self.last_edit_time = Some(Instant::now());
                             if let Some(obj_id) = obj_id_opt.as_ref() {
-                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                                let _ =
+                                    state.splice_text(obj_id, char_start, char_count as isize, "");
                             }
                             self.dirty = true;
                         }
@@ -2042,7 +2202,9 @@ impl Widget for TextInput {
         }
     }
 
-    fn name(&self) -> &str { "TextInput" }
+    fn name(&self) -> &str {
+        "TextInput"
+    }
 
     fn test_id(&self) -> Option<&str> {
         if self._id.is_empty() {
@@ -2072,9 +2234,15 @@ impl Widget for TextInput {
         }
     }
 
-    fn is_focusable(&self) -> bool { !self.disabled }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focusable(&self) -> bool {
+        !self.disabled
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -2135,7 +2303,9 @@ impl Widget for TextInput {
         if self.path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.path.clone(),
+            })
         }
     }
 
@@ -2148,7 +2318,9 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(key) = self.presence_key() {
@@ -2218,7 +2390,14 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         if self.context_menu.is_open() {
-            Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
+            Widget::draw(
+                &mut self.context_menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
     }
 }
@@ -2282,7 +2461,14 @@ mod tests {
         let presence = crate::presence::PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        Widget::draw(
+            &mut ti,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
 
         let r0 = ti.caret_rect(&theme, 0);
         let r5 = ti.caret_rect(&theme, 5);
@@ -2293,8 +2479,14 @@ mod tests {
             (r0.height() - line_height).abs() < 0.01,
             "caret spans the full line band, not a fixed 16px"
         );
-        assert!(line_height > 16.0, "body line height is >16 (so the old fixed 16px was wrong)");
-        assert!(r5.x0 > r0.x0, "caret advances with byte position via real glyph metrics");
+        assert!(
+            line_height > 16.0,
+            "body line height is >16 (so the old fixed 16px was wrong)"
+        );
+        assert!(
+            r5.x0 > r0.x0,
+            "caret advances with byte position via real glyph metrics"
+        );
     }
 
     /// Otherwise caret-following scroll hides the first characters.
@@ -2308,12 +2500,33 @@ mod tests {
         let presence = crate::presence::PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert_eq!(ti.scroll_x(), 0.0, "unfocused input must not scroll the start off-screen");
+        Widget::draw(
+            &mut ti,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
+        assert_eq!(
+            ti.scroll_x(),
+            0.0,
+            "unfocused input must not scroll the start off-screen"
+        );
 
         ti.set_focus(true);
-        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert!(ti.scroll_x() > 0.0, "focused input follows the caret on a long line");
+        Widget::draw(
+            &mut ti,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
+        assert!(
+            ti.scroll_x() > 0.0,
+            "focused input follows the caret on a long line"
+        );
     }
 
     #[test]
@@ -2322,7 +2535,10 @@ mod tests {
         assert!(Widget::is_focusable(&enabled), "default input is focusable");
 
         let off = TextInput::new(Vec::new()).disabled(true);
-        assert!(!Widget::is_focusable(&off), "disabled input must not be focusable");
+        assert!(
+            !Widget::is_focusable(&off),
+            "disabled input must not be focusable"
+        );
 
         // The setter path agrees with the builder.
         let mut later = TextInput::new(Vec::new());
@@ -2336,8 +2552,9 @@ mod tests {
     fn char_key_event(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -2413,16 +2630,39 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(20.0, 20.0),
         };
-        ti.handle_event(&moved, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &moved,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         let press = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        ti.handle_event(&press, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &press,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
 
         assert!(!handled, "disabled input must not consume the click");
-        assert!(focus_target.is_none(), "disabled input must not request focus");
+        assert!(
+            focus_target.is_none(),
+            "disabled input must not request focus"
+        );
     }
 
     #[test]
@@ -2443,13 +2683,33 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(x, y),
         };
-        ti.handle_event(&moved, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &moved,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         let press = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Right,
         };
-        ti.handle_event(&press, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &press,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -2461,7 +2721,10 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         assert!(ti.selection_range().is_none(), "precondition: no selection");
-        assert!(right_click(&mut ti, &mut doc, 20.0, 20.0), "right-click is consumed");
+        assert!(
+            right_click(&mut ti, &mut doc, 20.0, 20.0),
+            "right-click is consumed"
+        );
 
         // No char_x_positions yet → cursor_from_x resolves to byte 0, selecting "hello".
         assert_eq!(ti.selected_str(), Some("hello"), "clicked word is selected");
@@ -2485,7 +2748,10 @@ mod tests {
 
         ti.open_context_menu([50.0, 18.0]);
         let labels = ti.context_menu_labels();
-        let copy_idx = labels.iter().position(|l| l == "Copy").expect("Copy row present");
+        let copy_idx = labels
+            .iter()
+            .position(|l| l == "Copy")
+            .expect("Copy row present");
         // Labels skip separators, but Cut/Copy precede any separator so indices align here.
         let item_idx = ti
             .context_menu
@@ -2499,7 +2765,10 @@ mod tests {
             "Copy row maps to the Copy action (label idx {copy_idx})"
         );
 
-        assert!(ti.dispatch_context_action(item_idx, &mut doc, None), "dispatch ran");
+        assert!(
+            ti.dispatch_context_action(item_idx, &mut doc, None),
+            "dispatch ran"
+        );
         assert!(!ti.context_menu.is_open(), "menu closed after dispatch");
         // Copy preserves the selection (it's a read-only action).
         assert_eq!(ti.selected_str(), Some("world"));
@@ -2542,22 +2811,48 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(280.0, 38.0),
         };
-        ti.handle_event(&moved, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &moved,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         let press = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        ti.handle_event(&press, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        ti.handle_event(
+            &press,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         assert!(handled, "click consumed while menu open");
-        assert!(!ti.context_menu.is_open(), "menu dismissed by outside click");
+        assert!(
+            !ti.context_menu.is_open(),
+            "menu dismissed by outside click"
+        );
     }
 
     #[test]
     fn placeholder_visible_only_when_empty_and_unfocused() {
         let mut ti = TextInput::local().with_placeholder("Search…");
         assert_eq!(ti.placeholder(), "Search…");
-        assert!(ti.shows_placeholder(), "empty unfocused input shows placeholder");
+        assert!(
+            ti.shows_placeholder(),
+            "empty unfocused input shows placeholder"
+        );
 
         ti.set_focus(true);
         assert!(!ti.shows_placeholder(), "focused input hides placeholder");
@@ -2570,7 +2865,10 @@ mod tests {
         assert!(ti.shows_placeholder());
 
         let plain = TextInput::local();
-        assert!(!plain.shows_placeholder(), "no placeholder set → never shows");
+        assert!(
+            !plain.shows_placeholder(),
+            "no placeholder set → never shows"
+        );
     }
 
     /// Proves the dim hint actually paints, not just that the flag is set.
@@ -2583,7 +2881,14 @@ mod tests {
         let mut shown = TextInput::local().with_placeholder("Type here");
         shown.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
         let mut scene = Scene::new();
-        Widget::draw(&mut shown, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        Widget::draw(
+            &mut shown,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),
             "placeholder must paint a glyph run when shown",
@@ -2593,7 +2898,14 @@ mod tests {
         hidden.set_focus(true);
         hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
         let mut scene2 = Scene::new();
-        Widget::draw(&mut hidden, &mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+        Widget::draw(
+            &mut hidden,
+            &mut scene2,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
         assert!(
             scene2.encoding().resources.glyph_runs.is_empty(),
             "focused input must not paint the placeholder",
@@ -2627,10 +2939,10 @@ mod tests {
     #[test]
     fn word_boundaries_snaps_to_word_bounds() {
         let s = "hello world";
-        assert_eq!(word_boundaries(s, 2), (0, 5));   // mid-word
-        assert_eq!(word_boundaries(s, 0), (0, 5));   // word start
-        assert_eq!(word_boundaries(s, 5), (0, 5));   // space → snap left
-        assert_eq!(word_boundaries(s, 6), (6, 11));  // start of next word
+        assert_eq!(word_boundaries(s, 2), (0, 5)); // mid-word
+        assert_eq!(word_boundaries(s, 0), (0, 5)); // word start
+        assert_eq!(word_boundaries(s, 5), (0, 5)); // space → snap left
+        assert_eq!(word_boundaries(s, 6), (6, 11)); // start of next word
         assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
     }
 
@@ -2657,8 +2969,16 @@ mod tests {
         ti.set_cursor_pos(2); // just after "hi"
         ti.insert_at_cursor(" there");
         assert_eq!(ti.value(), "hi there world");
-        assert_eq!(ti.cursor_pos(), "hi there".len(), "caret advances past the insert");
-        assert_eq!(ti.take_dirty().as_deref(), Some("hi there world"), "the edit is observable");
+        assert_eq!(
+            ti.cursor_pos(),
+            "hi there".len(),
+            "caret advances past the insert"
+        );
+        assert_eq!(
+            ti.take_dirty().as_deref(),
+            Some("hi there world"),
+            "the edit is observable"
+        );
     }
 
     /// The path Ctrl+V uses when pasting over selected text.
@@ -2723,7 +3043,10 @@ mod tests {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
         ti.text = "hunter2".to_string();
         let node = Widget::accessibility(&ti).unwrap();
-        assert_eq!(node.value, None, "a secret value must not leak into the a11y tree");
+        assert_eq!(
+            node.value, None,
+            "a secret value must not leak into the a11y tree"
+        );
         assert!(node.state.protected, "secret input is marked protected");
     }
 
@@ -2732,7 +3055,10 @@ mod tests {
         let ti = TextInput::new(Vec::new()).disabled(true);
         let node = Widget::accessibility(&ti).unwrap();
         assert!(node.state.disabled);
-        assert!(!node.state.focusable, "disabled input is dropped from focus order");
+        assert!(
+            !node.state.focusable,
+            "disabled input is dropped from focus order"
+        );
     }
 
     /// Pins the text top against `line_height`, *not* `FONT_SIZE` itself —
@@ -2745,9 +3071,7 @@ mod tests {
         let text_y_correct = (rect_h - line_height) / 2.0;
         let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
         assert!(text_y_naive > text_y_correct);
-        assert!(
-            (text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01
-        );
+        assert!((text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01);
     }
 
     // Driven through `handle_event`, never by poking private fields, so a
@@ -2767,8 +3091,9 @@ mod tests {
     fn named_key_event(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -2808,7 +3133,15 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         ti.handle_event(
-            ev, 1.0, m, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+            ev,
+            1.0,
+            m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -2834,12 +3167,35 @@ mod tests {
         ti.set_cursor_pos(3);
         let mut doc = AutoCommit::new();
 
-        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, true)));
-        assert_eq!(ti.selection_range(), Some((3, 4)), "shift+Right extends by one char");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, true));
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(false, true)
+        ));
+        assert_eq!(
+            ti.selection_range(),
+            Some((3, 4)),
+            "shift+Right extends by one char"
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(false, true),
+        );
         assert_eq!(ti.selection_range(), Some((3, 5)));
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowLeft), &mods(false, true));
-        assert_eq!(ti.selection_range(), Some((3, 4)), "shift+Left shrinks it back");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            &mods(false, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((3, 4)),
+            "shift+Left shrinks it back"
+        );
     }
 
     #[test]
@@ -2849,12 +3205,31 @@ mod tests {
         ti.set_cursor_pos(0);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, false));
-        assert_eq!(ti.cursor_pos(), 6, "ctrl+Right jumps to start of the next word");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(true, false),
+        );
+        assert_eq!(
+            ti.cursor_pos(),
+            6,
+            "ctrl+Right jumps to start of the next word"
+        );
         assert_eq!(ti.selection_range(), None, "no shift → no selection");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(true, false),
+        );
         assert_eq!(ti.cursor_pos(), 12, "ctrl+Right again → start of 'foo'");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowLeft), &mods(true, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            &mods(true, false),
+        );
         assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
     }
 
@@ -2865,10 +3240,28 @@ mod tests {
         ti.set_cursor_pos(0);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, true));
-        assert_eq!(ti.selection_range(), Some((0, 6)), "shift+ctrl+Right selects the first word span");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, true));
-        assert_eq!(ti.selection_range(), Some((0, 12)), "extends by another word");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(true, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 6)),
+            "shift+ctrl+Right selects the first word span"
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(true, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 12)),
+            "extends by another word"
+        );
     }
 
     #[test]
@@ -2878,17 +3271,45 @@ mod tests {
         ti.set_cursor_pos(5);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::End),
+            &mods(false, false),
+        );
         assert_eq!(ti.cursor_pos(), 11, "End → end of field");
         assert_eq!(ti.selection_range(), None);
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            &mods(false, false),
+        );
         assert_eq!(ti.cursor_pos(), 0, "Home → start of field");
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, true));
-        assert_eq!(ti.selection_range(), Some((0, 11)), "shift+End selects to line end");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::End),
+            &mods(false, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 11)),
+            "shift+End selects to line end"
+        );
         ti.set_cursor_pos(11);
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, true));
-        assert_eq!(ti.selection_range(), Some((0, 11)), "shift+Home selects to line start");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            &mods(false, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 11)),
+            "shift+Home selects to line start"
+        );
     }
 
     #[test]
@@ -2898,7 +3319,11 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         drive(&mut ti, &mut doc, &char_key_event("a"), &mods(true, false));
-        assert_eq!(ti.selection_range(), Some((0, 11)), "ctrl+A selects everything");
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 11)),
+            "ctrl+A selects everything"
+        );
 
         drive(&mut ti, &mut doc, &char_key_event("x"), &mods(true, false));
         assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
@@ -2923,13 +3348,22 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8); // inside "world" (bytes 6..11)
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(bx, 20.0),
+            &mods(false, false),
+        );
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         drive(&mut ti, &mut doc, &left_release(), &mods(false, false));
         // Within the multi-click interval → double click.
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
 
-        assert_eq!(ti.selection_range(), Some((6, 11)), "double-click selected the word");
+        assert_eq!(
+            ti.selection_range(),
+            Some((6, 11)),
+            "double-click selected the word"
+        );
         assert_eq!(ti.selected_str(), Some("world"));
     }
 
@@ -2942,11 +3376,25 @@ mod tests {
 
         let x_start = x_for_byte(&ti, 2);
         let x_end = x_for_byte(&ti, 9);
-        drive(&mut ti, &mut doc, &mouse_move(x_start, 20.0), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(x_start, 20.0),
+            &mods(false, false),
+        );
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         assert!(ti.is_dragging(), "press starts a drag");
-        drive(&mut ti, &mut doc, &mouse_move(x_end, 20.0), &mods(false, false));
-        assert_eq!(ti.selection_range(), Some((2, 9)), "drag selected the swept range");
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(x_end, 20.0),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((2, 9)),
+            "drag selected the swept range"
+        );
         drive(&mut ti, &mut doc, &left_release(), &mods(false, false));
         assert!(!ti.is_dragging(), "release ends the drag");
     }
@@ -2959,11 +3407,20 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(bx, 20.0),
+            &mods(false, false),
+        );
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
-        assert_eq!(ti.selection_range(), Some((0, 11)), "triple-click selects the whole field");
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 11)),
+            "triple-click selects the whole field"
+        );
     }
 
     /// Re-shaping the SAME family after the input draws is a cache hit; a
@@ -2983,19 +3440,40 @@ mod tests {
         let theme = Theme::dark();
         let presence = crate::presence::PresenceCtx::empty();
         let mut scene = Scene::new();
-        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        Widget::draw(
+            &mut ti,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
 
         let _ = tr.take_shape_stats();
         tr.draw_text_font(
-            &mut scene, "Reading", FONT_SIZE, theme.text_primary,
-            Affine::IDENTITY, None, TextWeight::Regular, false, &FontChoice::Named(fam),
+            &mut scene,
+            "Reading",
+            FONT_SIZE,
+            theme.text_primary,
+            Affine::IDENTITY,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::Named(fam),
         );
         let (hits, _m, _ns) = tr.take_shape_stats();
         assert_eq!(hits, 1, "the input shaped its value in the named family");
 
         tr.draw_text_font(
-            &mut scene, "Reading", FONT_SIZE, theme.text_primary,
-            Affine::IDENTITY, None, TextWeight::Regular, false, &FontChoice::SansSerif,
+            &mut scene,
+            "Reading",
+            FONT_SIZE,
+            theme.text_primary,
+            Affine::IDENTITY,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
         );
         let (_h, misses, _ns) = tr.take_shape_stats();
         assert_eq!(misses, 1, "sans is a separate shape from the named family");
@@ -3014,18 +3492,38 @@ mod tests {
         let mut ti = ml_input("ab", 300.0, 120.0);
         ti.set_cursor_pos(1); // between 'a' and 'b'
         let mut doc = AutoCommit::new();
-        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, false)));
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            &mods(false, false)
+        ));
         assert_eq!(ti.value(), "a\nb", "Enter inserted a newline at the caret");
-        assert_eq!(ti.cursor_pos(), 2, "caret sits just after the inserted newline");
+        assert_eq!(
+            ti.cursor_pos(),
+            2,
+            "caret sits just after the inserted newline"
+        );
     }
 
     #[test]
     fn enter_submits_signals_without_inserting_and_shift_enter_still_splits() {
-        let mut ti = TextInput::local().with_enter_submits(true).with_initial_value("hi");
+        let mut ti = TextInput::local()
+            .with_enter_submits(true)
+            .with_initial_value("hi");
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
-        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, false)));
-        assert_eq!(ti.value(), "hi", "Enter must not insert a newline in submit mode");
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            &mods(false, false)
+        ));
+        assert_eq!(
+            ti.value(),
+            "hi",
+            "Enter must not insert a newline in submit mode"
+        );
         assert!(ti.take_submit(), "Enter fired the submit signal");
         assert!(!ti.take_submit(), "submit is one-shot — cleared on read");
 
@@ -3035,8 +3533,17 @@ mod tests {
             .with_initial_value("hi");
         ml.set_focus(true);
         ml.set_cursor_pos(2);
-        drive(&mut ml, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, true)); // Shift+Enter
-        assert_eq!(ml.value(), "hi\n", "Shift+Enter inserts a newline in multiline submit mode");
+        drive(
+            &mut ml,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            &mods(false, true),
+        ); // Shift+Enter
+        assert_eq!(
+            ml.value(),
+            "hi\n",
+            "Shift+Enter inserts a newline in multiline submit mode"
+        );
         assert!(!ml.take_submit(), "Shift+Enter must not submit");
     }
 
@@ -3045,15 +3552,42 @@ mod tests {
         let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(8); // inside "world" (row 1)
-        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "precondition: caret on row 1");
+        assert_eq!(
+            ti.locate_ml(ti.cursor_pos()).0,
+            1,
+            "precondition: caret on row 1"
+        );
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowUp), &mods(false, false));
-        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 0, "Up moved to the first visual line");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowUp),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.locate_ml(ti.cursor_pos()).0,
+            0,
+            "Up moved to the first visual line"
+        );
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
         assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down returned to row 1");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
-        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 2, "Down reached the last visual line");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.locate_ml(ti.cursor_pos()).0,
+            2,
+            "Down reached the last visual line"
+        );
     }
 
     #[test]
@@ -3062,10 +3596,24 @@ mod tests {
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(8); // end of the first "abcdefgh" (row 0, high column)
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
-        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down landed on the short middle row");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.locate_ml(ti.cursor_pos()).0,
+            1,
+            "Down landed on the short middle row"
+        );
 
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
         let (row, _) = ti.locate_ml(ti.cursor_pos());
         assert_eq!(row, 2, "Down reached the third row");
         assert!(
@@ -3080,18 +3628,35 @@ mod tests {
         let mut ti = ml_input("hello\nworld", 400.0, 200.0);
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(3); // inside "hello"
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, true)); // Shift+Down
-        let (s, e) = ti.selection_range_public().expect("a cross-line selection is active");
-        assert!(s <= 5 && e > 6, "selection crosses the newline at byte 5, got ({s},{e})");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, true),
+        ); // Shift+Down
+        let (s, e) = ti
+            .selection_range_public()
+            .expect("a cross-line selection is active");
+        assert!(
+            s <= 5 && e > 6,
+            "selection crosses the newline at byte 5, got ({s},{e})"
+        );
         let selected = ti.selected_str().expect("selected slice");
-        assert!(selected.contains('\n'), "copy would emit the newline: {selected:?}");
+        assert!(
+            selected.contains('\n'),
+            "copy would emit the newline: {selected:?}"
+        );
     }
 
     #[test]
     fn multiline_soft_wraps_at_word_boundaries() {
         let text = "the quick brown fox jumps over the lazy dog again and again";
         let mut ti = ml_input(text, 170.0, 220.0); // narrow → must wrap
-        assert!(ti.lines.len() > 1, "long paragraph wrapped into {} rows", ti.lines.len());
+        assert!(
+            ti.lines.len() > 1,
+            "long paragraph wrapped into {} rows",
+            ti.lines.len()
+        );
         let first_end = ti.lines[0].end;
         assert!(
             ti.value()[..first_end].ends_with(' '),
@@ -3101,9 +3666,21 @@ mod tests {
 
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(0);
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
-        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down entered the wrapped continuation");
-        assert!(ti.cursor_pos() > 0, "caret advanced into the second visual row");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.locate_ml(ti.cursor_pos()).0,
+            1,
+            "Down entered the wrapped continuation"
+        );
+        assert!(
+            ti.cursor_pos() > 0,
+            "caret advanced into the second visual row"
+        );
     }
 
     #[test]
@@ -3111,16 +3688,37 @@ mod tests {
         let mut ti = ml_input("hello\nworld", 400.0, 200.0);
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(8); // "wo|rld" on row 1
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, false));
-        assert_eq!(ti.cursor_pos(), 6, "Home went to the start of the second line, not the field");
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, false));
-        assert_eq!(ti.cursor_pos(), 11, "End went to the end of the second line");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.cursor_pos(),
+            6,
+            "Home went to the start of the second line, not the field"
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::End),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.cursor_pos(),
+            11,
+            "End went to the end of the second line"
+        );
     }
 
     #[test]
     fn multiline_sets_accessibility_flag() {
         let ml = TextInput::local().multiline(true);
-        assert!(Widget::accessibility(&ml).unwrap().state.multiline, "multiline flagged in a11y");
+        assert!(
+            Widget::accessibility(&ml).unwrap().state.multiline,
+            "multiline flagged in a11y"
+        );
         let single = TextInput::local();
         assert!(!Widget::accessibility(&single).unwrap().state.multiline);
     }
@@ -3131,8 +3729,17 @@ mod tests {
         let mut ti = ml_input("hello\nworld", 400.0, 200.0);
         let mut doc = AutoCommit::new();
         ti.set_cursor_pos(6); // start of "world", just after the newline
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Backspace), &mods(false, false));
-        assert_eq!(ti.value(), "helloworld", "Backspace removed the newline, merging the lines");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Backspace),
+            &mods(false, false),
+        );
+        assert_eq!(
+            ti.value(),
+            "helloworld",
+            "Backspace removed the newline, merging the lines"
+        );
         assert_eq!(ti.cursor_pos(), 5);
     }
 
@@ -3144,10 +3751,20 @@ mod tests {
 
         ti.toggle_reveal();
         assert!(ti.is_revealed());
-        assert_eq!(ti.display_text(), "hunter2", "revealed shows the real glyphs");
+        assert_eq!(
+            ti.display_text(),
+            "hunter2",
+            "revealed shows the real glyphs"
+        );
         let node = Widget::accessibility(&ti).unwrap();
-        assert_eq!(node.value, None, "revealed value still must not reach the a11y tree");
-        assert!(node.state.protected, "still marked protected while revealed");
+        assert_eq!(
+            node.value, None,
+            "revealed value still must not reach the a11y tree"
+        );
+        assert!(
+            node.state.protected,
+            "still marked protected while revealed"
+        );
 
         ti.toggle_reveal();
         assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
@@ -3155,16 +3772,27 @@ mod tests {
 
     #[test]
     fn secret_masks_render_but_clipboard_and_caret_use_the_real_value() {
-        let mut ti = TextInput::local().with_secret(true).with_initial_value("s3cr3t");
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("s3cr3t");
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
         ti.set_cursor_pos(0);
-        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            &mods(false, false),
+        );
         assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
 
         drive(&mut ti, &mut doc, &char_key_event("a"), &mods(true, false));
-        assert_eq!(ti.selected_str(), Some("s3cr3t"), "copy sends the real value, never the mask");
+        assert_eq!(
+            ti.selected_str(),
+            Some("s3cr3t"),
+            "copy sends the real value, never the mask"
+        );
 
         drive(&mut ti, &mut doc, &char_key_event("x"), &mods(true, false));
         assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");

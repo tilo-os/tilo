@@ -25,20 +25,20 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, NextcloudStore,
 };
 use crate::widgets::{
-    card, card_with_action, caption, hgap, icon_button, rows, setting_row, status_pill, El,
+    El, caption, card, card_with_action, hgap, icon_button, rows, setting_row, status_pill,
 };
 
 /// Key the "Add" button on the Email card writes to open the form.
@@ -166,7 +166,11 @@ impl AccountsPane {
     }
 
     fn mail_card(&self) -> El {
-        let title = format!("{}  {}", AccountKind::Mail.glyph(), AccountKind::Mail.label());
+        let title = format!(
+            "{}  {}",
+            AccountKind::Mail.glyph(),
+            AccountKind::Mail.label()
+        );
         let add_btn: El = Box::new(Button::new(
             "settings.accounts.add.mail",
             "\u{f0415}  Add",
@@ -339,7 +343,10 @@ impl AccountsPane {
         // now persists, encrypted, instead of being dropped on the floor.
         if !password.trim().is_empty() {
             let mut vault = accounts::SecretVault::open();
-            vault.put(&id, &accounts::Secret::password(password.trim().to_string()));
+            vault.put(
+                &id,
+                &accounts::Secret::password(password.trim().to_string()),
+            );
             vault.save();
         }
         true
@@ -403,7 +410,11 @@ impl Widget for AccountsPane {
         }
         // Cancel the form.
         if read_bool(state, root, FORM_CANCEL_KEY) {
-            let _ = state.put(root, FORM_CANCEL_KEY, automerge::ScalarValue::Boolean(false));
+            let _ = state.put(
+                root,
+                FORM_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
             if self.form_open {
                 self.form_open = false;
                 clear_form(state, root);
@@ -598,8 +609,12 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 }
 
 /// The form's four editable text keys, in field order.
-const FORM_FIELD_KEYS: [&str; 4] =
-    [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY, FORM_PASSWORD_KEY];
+const FORM_FIELD_KEYS: [&str; 4] = [
+    FORM_NAME_KEY,
+    FORM_EMAIL_KEY,
+    FORM_USER_KEY,
+    FORM_PASSWORD_KEY,
+];
 
 /// Seed the form's bound `Text` objects so the fields can actually be typed
 /// into (a `TextInput` persists edits only through an existing Text object).
@@ -673,7 +688,10 @@ mod tests {
         let _ = doc.put(&root, ADD_MAIL_KEY, true);
         pane.sync(&mut doc, &root);
         assert!(pane.form_open(), "Add opens the form");
-        assert!(pane.take_structure_dirty(), "opening the form requests a rebuild");
+        assert!(
+            pane.take_structure_dirty(),
+            "opening the form requests a rebuild"
+        );
         // Cancel closes it.
         let _ = doc.put(&root, FORM_CANCEL_KEY, true);
         pane.sync(&mut doc, &root);
@@ -694,8 +712,16 @@ mod tests {
             "an empty store renders empty — no fabricated ada@example.com rows"
         );
         // And no account of any kind leaked in from the sample.
-        for kind in [AccountKind::Mail, AccountKind::CalDav, AccountKind::WebDav, AccountKind::Nextcloud] {
-            assert!(pane.directory().views_of(kind).is_empty(), "{kind:?} must be empty");
+        for kind in [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
+        ] {
+            assert!(
+                pane.directory().views_of(kind).is_empty(),
+                "{kind:?} must be empty"
+            );
         }
     }
 

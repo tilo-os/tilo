@@ -16,8 +16,8 @@
 //! view's top-left corner** — the widget does the logical→physical
 //! translation so engines never see toolkit layout space.
 
-pub mod test_engine;
 pub mod profile;
+pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
@@ -227,15 +227,12 @@ pub fn normalise_url(input: &str) -> String {
     {
         return trimmed.to_string();
     }
-    let looks_like_host = !trimmed.contains(' ')
-        && (trimmed.contains('.') || trimmed.starts_with("localhost"));
+    let looks_like_host =
+        !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.starts_with("localhost"));
     if looks_like_host {
         format!("https://{trimmed}")
     } else {
-        format!(
-            "https://duckduckgo.com/?q={}",
-            urlencode(trimmed)
-        )
+        format!("https://duckduckgo.com/?q={}", urlencode(trimmed))
     }
 }
 
@@ -261,7 +258,10 @@ mod tests {
 
     #[test]
     fn normalise_passes_through_schemes() {
-        assert_eq!(normalise_url("https://example.org/a"), "https://example.org/a");
+        assert_eq!(
+            normalise_url("https://example.org/a"),
+            "https://example.org/a"
+        );
         assert_eq!(normalise_url("http://example.org"), "http://example.org");
         assert_eq!(normalise_url("about:blank"), "about:blank");
     }

@@ -215,13 +215,18 @@ mod tests {
         }
         assert_eq!(got.len(), 1, "the reading never arrived");
         match &got[0] {
-            QsReading::Fast { brightness, wifi, .. } => {
+            QsReading::Fast {
+                brightness, wifi, ..
+            } => {
                 assert_eq!(*brightness, Some(0.42));
                 assert_eq!(*wifi, Some(true));
             }
             other => panic!("wrong tier: {other:?}"),
         }
-        assert!(!r.is_in_flight(), "the tier should be clear once its reading lands");
+        assert!(
+            !r.is_in_flight(),
+            "the tier should be clear once its reading lands"
+        );
     }
 
     #[test]
@@ -242,7 +247,10 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(120));
         total += r.drain().len();
-        assert_eq!(total, 1, "expected one reading for one outstanding tier, got {total}");
+        assert_eq!(
+            total, 1,
+            "expected one reading for one outstanding tier, got {total}"
+        );
     }
 
     #[test]
@@ -262,6 +270,9 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(saw_fast, "the fast tier never reported while Wi-Fi was outstanding");
+        assert!(
+            saw_fast,
+            "the fast tier never reported while Wi-Fi was outstanding"
+        );
     }
 }

@@ -10,7 +10,11 @@
 use crate::model::{AppEntry, Category, Compat, Permission, Review, Shot, Source};
 
 fn shot(tone_a: usize, tone_b: usize, caption: &str) -> Shot {
-    Shot { tone_a, tone_b, caption: caption.into() }
+    Shot {
+        tone_a,
+        tone_b,
+        caption: caption.into(),
+    }
 }
 
 /// Build one catalog entry with sensible defaults; callers override the
@@ -55,7 +59,11 @@ fn app(
         reviews: Vec::new(),
         compat: Vec::new(),
         download_count: None,
-        remote: if source == Source::Oci { "podman".into() } else { "flathub".into() },
+        remote: if source == Source::Oci {
+            "podman".into()
+        } else {
+            "flathub".into()
+        },
     }
 }
 
@@ -226,7 +234,11 @@ pub fn sample_catalog() -> Vec<AppEntry> {
                 Permission::normal("Read and write your Documents folder"),
                 Permission::normal("Printing"),
             ],
-            vec![shot(7, 2, "Writer"), shot(5, 3, "Calc"), shot(8, 1, "Impress")],
+            vec![
+                shot(7, 2, "Writer"),
+                shot(5, 3, "Calc"),
+                shot(8, 1, "Impress"),
+            ],
         ),
         app(
             "md.obsidian.Obsidian",
@@ -308,7 +320,9 @@ pub fn sample_catalog() -> Vec<AppEntry> {
             ),
             vec![
                 Compat::warn("Requests host command execution — runs outside the cluster sandbox"),
-                Compat::info("Proprietary build; an open-source 'Code - OSS' variant is also available"),
+                Compat::info(
+                    "Proprietary build; an open-source 'Code - OSS' variant is also available",
+                ),
             ],
         ),
         app(
@@ -352,7 +366,10 @@ pub fn sample_catalog() -> Vec<AppEntry> {
             false,
             7,
             "qB",
-            vec![Permission::sensitive("Network access"), Permission::normal("Read and write your Downloads folder")],
+            vec![
+                Permission::sensitive("Network access"),
+                Permission::normal("Read and write your Downloads folder"),
+            ],
             vec![shot(7, 2, "Transfers")],
         ),
         // ---- Internet ----
@@ -454,7 +471,11 @@ pub fn sample_catalog() -> Vec<AppEntry> {
                 Permission::normal("Game controllers"),
                 Permission::normal("GPU acceleration"),
             ],
-            vec![shot(8, 2, "Library"), shot(6, 1, "Store"), shot(5, 3, "Big Picture")],
+            vec![
+                shot(8, 2, "Library"),
+                shot(6, 1, "Store"),
+                shot(5, 3, "Big Picture"),
+            ],
         ),
         app(
             "net.pcsx2.PCSX2",
@@ -558,7 +579,9 @@ pub fn sample_catalog() -> Vec<AppEntry> {
                 vec![Permission::normal("Capture the screen within this cluster")],
                 vec![shot(8, 2, "Annotate")],
             ),
-            vec![Compat::info("qOS app — cached, sandboxed, no permanent install")],
+            vec![Compat::info(
+                "qOS app — cached, sandboxed, no permanent install",
+            )],
         ),
     ]
 }

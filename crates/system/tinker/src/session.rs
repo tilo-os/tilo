@@ -139,7 +139,11 @@ impl SessionSpec {
         }
 
         for share in &self.shares {
-            a.push(OsString::from(if share.writable { "--bind" } else { "--ro-bind" }));
+            a.push(OsString::from(if share.writable {
+                "--bind"
+            } else {
+                "--ro-bind"
+            }));
             a.push(share.host.clone().into());
             a.push(share.guest.clone().into());
         }
@@ -202,16 +206,27 @@ mod tests {
     use super::*;
 
     fn spec() -> SessionSpec {
-        SessionSpec::new("/s/bases/debian", "/s/layers/a/upper", "/s/layers/a/work", "/s/layers/a/home", "a")
+        SessionSpec::new(
+            "/s/bases/debian",
+            "/s/layers/a/upper",
+            "/s/layers/a/work",
+            "/s/layers/a/home",
+            "a",
+        )
     }
 
     fn strs(spec: &SessionSpec) -> Vec<String> {
-        spec.to_bwrap_args().iter().map(|s| s.to_string_lossy().into_owned()).collect()
+        spec.to_bwrap_args()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
     }
 
     /// Index of the first occurrence of `needle`.
     fn pos(v: &[String], needle: &str) -> usize {
-        v.iter().position(|s| s == needle).unwrap_or_else(|| panic!("missing {needle} in {v:?}"))
+        v.iter()
+            .position(|s| s == needle)
+            .unwrap_or_else(|| panic!("missing {needle} in {v:?}"))
     }
 
     #[test]
@@ -245,7 +260,10 @@ mod tests {
     #[test]
     fn overlay_sources_run_base_first_topmost_last() {
         let mut s = spec();
-        s.lower_layers = vec![PathBuf::from("/s/layers/bottom/upper"), PathBuf::from("/s/layers/mid/upper")];
+        s.lower_layers = vec![
+            PathBuf::from("/s/layers/bottom/upper"),
+            PathBuf::from("/s/layers/mid/upper"),
+        ];
         let v = strs(&s);
         let base = pos(&v, "/s/bases/debian");
         let bottom = pos(&v, "/s/layers/bottom/upper");
@@ -272,7 +290,11 @@ mod tests {
         // The id mapping is established before bwrap; asking bwrap for another
         // user namespace would collapse the map back to a single uid.
         let v = strs(&spec());
-        assert!(!v.iter().any(|s| s == "--unshare-user" || s == "--unshare-all"), "{v:?}");
+        assert!(
+            !v.iter()
+                .any(|s| s == "--unshare-user" || s == "--unshare-all"),
+            "{v:?}"
+        );
         assert!(v.iter().any(|s| s == "--unshare-pid"));
         assert!(v.iter().any(|s| s == "--die-with-parent"));
     }
@@ -290,8 +312,16 @@ mod tests {
     fn shares_are_read_only_unless_asked_otherwise() {
         let mut s = spec();
         s.shares = vec![
-            Share { host: "/data/in".into(), guest: "/mnt/in".into(), writable: false },
-            Share { host: "/data/out".into(), guest: "/mnt/out".into(), writable: true },
+            Share {
+                host: "/data/in".into(),
+                guest: "/mnt/in".into(),
+                writable: false,
+            },
+            Share {
+                host: "/data/out".into(),
+                guest: "/mnt/out".into(),
+                writable: true,
+            },
         ];
         let v = strs(&s);
         let i = pos(&v, "/data/in");
@@ -312,7 +342,12 @@ mod tests {
     #[test]
     fn an_explicit_command_lands_after_the_separator() {
         let mut s = spec();
-        s.command = vec!["apt-get".into(), "install".into(), "-y".into(), "cowsay".into()];
+        s.command = vec![
+            "apt-get".into(),
+            "install".into(),
+            "-y".into(),
+            "cowsay".into(),
+        ];
         let v = strs(&s);
         let sep = pos(&v, "--");
         assert_eq!(&v[sep + 1..], &["apt-get", "install", "-y", "cowsay"]);
@@ -322,7 +357,10 @@ mod tests {
     fn explain_starts_with_bwrap_and_mentions_the_overlay() {
         let text = spec().explain();
         assert!(text.starts_with("bwrap "), "{text}");
-        assert!(text.contains("--overlay /s/layers/a/upper /s/layers/a/work /"), "{text}");
+        assert!(
+            text.contains("--overlay /s/layers/a/upper /s/layers/a/work /"),
+            "{text}"
+        );
     }
 
     #[test]

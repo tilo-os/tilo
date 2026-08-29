@@ -16,8 +16,8 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::backend::{
-    preferred_backend, AlbumPage, ArtistPage, HomeContent, PlaylistPage, ResolvedStream,
-    SearchBundle, SearchKind,
+    AlbumPage, ArtistPage, HomeContent, PlaylistPage, ResolvedStream, SearchBundle, SearchKind,
+    preferred_backend,
 };
 
 /// A unit of work for the background thread.
@@ -48,11 +48,21 @@ pub enum StreamUpdate {
     /// One-time announcement of which backend the worker bound to.
     Backend { name: String, live: bool },
     /// Real multi-type search results for a query (the mixed "All" bundle).
-    SearchResults { query: String, bundle: Box<SearchBundle> },
+    SearchResults {
+        query: String,
+        bundle: Box<SearchBundle>,
+    },
     /// A deep per-type "see all" result for a filter tab.
-    SearchMore { query: String, kind: SearchKind, bundle: Box<SearchBundle> },
+    SearchMore {
+        query: String,
+        kind: SearchKind,
+        bundle: Box<SearchBundle>,
+    },
     /// A track's audio stream resolved to a playable URL.
-    Resolved { track_id: String, stream: Box<ResolvedStream> },
+    Resolved {
+        track_id: String,
+        stream: Box<ResolvedStream>,
+    },
     /// A resolve attempt failed (offline, geo-blocked, PoToken-gated, …).
     ResolveFailed { track_id: String, error: String },
     /// The real Home page landed.
@@ -147,8 +157,9 @@ impl StreamWorker {
                         }
                         StreamRequest::Home => match backend.home() {
                             Ok(content) => {
-                                let _ = up_tx
-                                    .send(StreamUpdate::Home { content: Box::new(content) });
+                                let _ = up_tx.send(StreamUpdate::Home {
+                                    content: Box::new(content),
+                                });
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
@@ -157,7 +168,9 @@ impl StreamWorker {
                         },
                         StreamRequest::Artist(id) => match backend.artist(&id) {
                             Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Artist { page: Box::new(page) });
+                                let _ = up_tx.send(StreamUpdate::Artist {
+                                    page: Box::new(page),
+                                });
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("artist: {e}")));
@@ -166,7 +179,9 @@ impl StreamWorker {
                         },
                         StreamRequest::Album(id) => match backend.album(&id) {
                             Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Album { page: Box::new(page) });
+                                let _ = up_tx.send(StreamUpdate::Album {
+                                    page: Box::new(page),
+                                });
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
@@ -175,7 +190,9 @@ impl StreamWorker {
                         },
                         StreamRequest::Playlist(id) => match backend.playlist(&id) {
                             Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Playlist { page: Box::new(page) });
+                                let _ = up_tx.send(StreamUpdate::Playlist {
+                                    page: Box::new(page),
+                                });
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("playlist: {e}")));
@@ -187,7 +204,10 @@ impl StreamWorker {
             })
             .expect("spawn music-stream worker");
 
-        Self { tx: req_tx, rx: up_rx }
+        Self {
+            tx: req_tx,
+            rx: up_rx,
+        }
     }
 
     /// Queue a request. Fire-and-forget; a dead worker is silently ignored.
@@ -241,6 +261,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(announced, "worker announced its backend");
-        assert!(failed_or_resolved, "resolve produced a terminal update, no hang");
+        assert!(
+            failed_or_resolved,
+            "resolve produced a terminal update, no hang"
+        );
     }
 }

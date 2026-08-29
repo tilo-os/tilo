@@ -14,7 +14,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
+};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -51,9 +53,14 @@ const MIN_SCRUB_WIDTH: f64 = 48.0;
 /// reports interactions back via [`VideoPlayer::take_setting_events`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerSettingControl {
-    Toggle { on: bool },
+    Toggle {
+        on: bool,
+    },
     /// Activating opens a themed option list; picking one selects it.
-    Choice { options: Vec<String>, selected: usize },
+    Choice {
+        options: Vec<String>,
+        selected: usize,
+    },
     Button,
 }
 
@@ -72,8 +79,20 @@ pub struct PlayerSetting {
 }
 
 impl PlayerSetting {
-    pub fn toggle(id: impl Into<String>, icon: Icon, name: impl Into<String>, priority: i32, on: bool) -> Self {
-        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Toggle { on } }
+    pub fn toggle(
+        id: impl Into<String>,
+        icon: Icon,
+        name: impl Into<String>,
+        priority: i32,
+        on: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            name: name.into(),
+            priority,
+            control: PlayerSettingControl::Toggle { on },
+        }
     }
 
     pub fn choice(
@@ -85,11 +104,28 @@ impl PlayerSetting {
         selected: usize,
     ) -> Self {
         let selected = selected.min(options.len().saturating_sub(1));
-        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Choice { options, selected } }
+        Self {
+            id: id.into(),
+            icon,
+            name: name.into(),
+            priority,
+            control: PlayerSettingControl::Choice { options, selected },
+        }
     }
 
-    pub fn button(id: impl Into<String>, icon: Icon, name: impl Into<String>, priority: i32) -> Self {
-        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Button }
+    pub fn button(
+        id: impl Into<String>,
+        icon: Icon,
+        name: impl Into<String>,
+        priority: i32,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            name: name.into(),
+            priority,
+            control: PlayerSettingControl::Button,
+        }
     }
 }
 
@@ -234,7 +270,10 @@ impl VideoPlayer {
     /// every rebuild.
     pub fn set_sponsor_marks(&mut self, marks: Vec<(f32, f32, Color)>) {
         if marks.len() != self.scrub_marks.len()
-            || marks.iter().zip(&self.scrub_marks).any(|(a, b)| a.0 != b.0 || a.1 != b.1)
+            || marks
+                .iter()
+                .zip(&self.scrub_marks)
+                .any(|(a, b)| a.0 != b.0 || a.1 != b.1)
         {
             self.scrub_marks = marks;
             self.dirty = true;
@@ -663,7 +702,8 @@ impl VideoPlayer {
             self.dirty = true;
         }
         if let Some(d) = dur
-            && d > 0 && self.duration_ms != d
+            && d > 0
+            && self.duration_ms != d
         {
             self.duration_ms = d;
             self.dirty = true;
@@ -672,7 +712,11 @@ impl VideoPlayer {
             self.buffering = buffering;
             self.dirty = true;
         }
-        let new_state = if playing { PlaybackState::Playing } else { PlaybackState::Paused };
+        let new_state = if playing {
+            PlaybackState::Playing
+        } else {
+            PlaybackState::Paused
+        };
         if self.state != new_state {
             self.state = new_state;
             self.dirty = true;
@@ -721,7 +765,13 @@ impl VideoPlayer {
                     Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
                 let image_brush = vello::peniko::ImageBrush::new(img);
-                scene.fill(Fill::NonZero, transform, &image_brush, Some(brush_transform), &dest);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    &image_brush,
+                    Some(brush_transform),
+                    &dest,
+                );
             }
         } else {
             self.paint_empty_placeholder(scene, transform, theme);
@@ -757,13 +807,24 @@ impl VideoPlayer {
         let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
         // Scrim so controls read over bright frames.
-        scene.fill(Fill::NonZero, transform, Color::from_rgba8(0, 0, 0, 170), None, &bar);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, 170),
+            None,
+            &bar,
+        );
 
         let pad = theme.tokens.spacing.s2 as f64;
         let mid_y = bar.y0 + bar.height() * 0.5;
 
         let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0).max(0.0);
-        let play_btn = Rect::new(bar.x0 + pad, mid_y - icon * 0.5, bar.x0 + pad + icon, mid_y + icon * 0.5);
+        let play_btn = Rect::new(
+            bar.x0 + pad,
+            mid_y - icon * 0.5,
+            bar.x0 + pad + icon,
+            mid_y + icon * 0.5,
+        );
         self.play_button_rect = play_btn;
         self.draw_play_glyph(scene, transform, play_btn, colors.text_primary);
 
@@ -785,13 +846,18 @@ impl VideoPlayer {
         let time_size = 12.0f32;
         let (tw, _th) = text_renderer.measure(&time_text, time_size, None);
 
-        let mut prio: Vec<usize> =
-            (0..self.settings.len()).filter(|&i| self.settings[i].priority >= 1).collect();
+        let mut prio: Vec<usize> = (0..self.settings.len())
+            .filter(|&i| self.settings[i].priority >= 1)
+            .collect();
         prio.sort_by(|&a, &b| {
-            self.settings[b].priority.cmp(&self.settings[a].priority).then(a.cmp(&b))
+            self.settings[b]
+                .priority
+                .cmp(&self.settings[a].priority)
+                .then(a.cmp(&b))
         });
-        let zero: Vec<usize> =
-            (0..self.settings.len()).filter(|&i| self.settings[i].priority == 0).collect();
+        let zero: Vec<usize> = (0..self.settings.len())
+            .filter(|&i| self.settings[i].priority == 0)
+            .collect();
 
         let fs_btn = Rect::new(
             bar.x1 - pad - fs_size,
@@ -804,7 +870,11 @@ impl VideoPlayer {
             play_btn.x1 + pad + MIN_SCRUB_WIDTH + pad + tw as f64 + pad + VOLUME_WIDTH + pad;
         let slot = btn + gap;
         let avail = (fs_btn.x0 - gap - left_reserve).max(0.0);
-        let max_fit = if slot > 0.0 { (avail / slot).floor() as usize } else { 0 };
+        let max_fit = if slot > 0.0 {
+            (avail / slot).floor() as usize
+        } else {
+            0
+        };
         let (gear_needed, shown) = if zero.is_empty() && prio.len() <= max_fit {
             (false, prio.len())
         } else {
@@ -812,13 +882,23 @@ impl VideoPlayer {
         };
 
         self.fullscreen_button_rect = fs_btn;
-        draw_fullscreen_glyph(scene, transform, fs_btn, colors.text_primary, self.fullscreen);
+        draw_fullscreen_glyph(
+            scene,
+            transform,
+            fs_btn,
+            colors.text_primary,
+            self.fullscreen,
+        );
 
         let mut cx = fs_btn.x0 - gap;
         let gear_btn = if gear_needed {
             let r = Rect::new(cx - btn, mid_y - btn * 0.5, cx, mid_y + btn * 0.5);
             cx = r.x0 - gap;
-            let tint = if self.open_menu == Some(OpenMenu::Gear) { accent } else { colors.text_primary };
+            let tint = if self.open_menu == Some(OpenMenu::Gear) {
+                accent
+            } else {
+                colors.text_primary
+            };
             Icon::Settings2.draw(scene, transform, inset_rect(r, 4.0), tint);
             r
         } else {
@@ -833,7 +913,11 @@ impl VideoPlayer {
             let s = &self.settings[idx];
             let on = matches!(s.control, PlayerSettingControl::Toggle { on: true });
             let menu_open = self.open_menu == Some(OpenMenu::Choice(idx));
-            let tint = if on || menu_open { accent } else { colors.text_primary };
+            let tint = if on || menu_open {
+                accent
+            } else {
+                colors.text_primary
+            };
             s.icon.draw(scene, transform, inset_rect(r, 4.0), tint);
             self.setting_icon_rects.push((idx, r));
         }
@@ -851,7 +935,12 @@ impl VideoPlayer {
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
-        let speaker = Rect::new(vol_x0, mid_y - icon * 0.4, vol_x0 + icon * 0.8, mid_y + icon * 0.4);
+        let speaker = Rect::new(
+            vol_x0,
+            mid_y - icon * 0.4,
+            vol_x0 + icon * 0.8,
+            mid_y + icon * 0.4,
+        );
         draw_speaker_glyph(scene, transform, speaker, colors.text_primary, self.muted);
         let vtrack_x0 = speaker.x1 + pad * 0.5;
         let vtrack = Rect::new(
@@ -863,7 +952,13 @@ impl VideoPlayer {
         if vtrack.width() > 0.0 {
             self.volume_track_rect = vtrack;
             let shape = RoundedRect::from_rect(vtrack, SCRUB_TRACK_HEIGHT * 0.5);
-            scene.fill(Fill::NonZero, transform, colors.border_standard, None, &shape);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.border_standard,
+                None,
+                &shape,
+            );
             let filled = Rect::new(
                 vtrack.x0,
                 vtrack.y0,
@@ -911,7 +1006,12 @@ impl VideoPlayer {
             );
             let buf_frac = (self.buffering as f64 / 100.0).clamp(0.0, 1.0);
             if buf_frac > 0.0 {
-                let buffered = Rect::new(track.x0, track.y0, track.x0 + track.width() * buf_frac, track.y1);
+                let buffered = Rect::new(
+                    track.x0,
+                    track.y0,
+                    track.x0 + track.width() * buf_frac,
+                    track.y1,
+                );
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -921,7 +1021,12 @@ impl VideoPlayer {
                 );
             }
             let frac = self.playhead_fraction();
-            let played = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+            let played = Rect::new(
+                track.x0,
+                track.y0,
+                track.x0 + track.width() * frac,
+                track.y1,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -962,7 +1067,13 @@ impl VideoPlayer {
             self.scrub_track_rect = Rect::ZERO;
         }
 
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bar);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &bar,
+        );
 
         self.paint_menu(scene, transform, text_renderer, theme);
     }
@@ -992,7 +1103,8 @@ impl VideoPlayer {
                     // Options appear indented only while this is the expanded
                     // entry, so the gear reads as a tidy list until drilled in.
                     if self.gear_expanded == Some(idx)
-                        && let PlayerSettingControl::Choice { options, .. } = &self.settings[idx].control
+                        && let PlayerSettingControl::Choice { options, .. } =
+                            &self.settings[idx].control
                     {
                         for oi in 0..options.len() {
                             rows.push(Row::Option(idx, oi));
@@ -1038,7 +1150,13 @@ impl VideoPlayer {
 
         let bg = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &bg);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bg);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &bg,
+        );
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &title {
@@ -1058,7 +1176,12 @@ impl VideoPlayer {
             match row {
                 Row::Setting(idx) => {
                     let s = &self.settings[*idx];
-                    let icon_r = Rect::new(row_rect.x0 + 4.0, y + 5.0, row_rect.x0 + 22.0, y + row_h - 7.0);
+                    let icon_r = Rect::new(
+                        row_rect.x0 + 4.0,
+                        y + 5.0,
+                        row_rect.x0 + 22.0,
+                        y + row_h - 7.0,
+                    );
                     s.icon.draw(scene, transform, icon_r, colors.text_primary);
                     text_renderer.draw_text(
                         scene,
@@ -1070,7 +1193,11 @@ impl VideoPlayer {
                     );
                     let value: String = match &s.control {
                         PlayerSettingControl::Toggle { on } => {
-                            if *on { "On".into() } else { "Off".into() }
+                            if *on {
+                                "On".into()
+                            } else {
+                                "Off".into()
+                            }
                         }
                         PlayerSettingControl::Choice { options, selected } => {
                             options.get(*selected).cloned().unwrap_or_default()
@@ -1087,26 +1214,48 @@ impl VideoPlayer {
                             &value,
                             12.0,
                             tint,
-                            transform * Affine::translate((x1 - pad - vw as f64, y + row_h * 0.5 - 7.0)),
+                            transform
+                                * Affine::translate((x1 - pad - vw as f64, y + row_h * 0.5 - 7.0)),
                             None,
                         );
                     }
                     self.menu_hit_rects.push((MenuHit::Setting(*idx), row_rect));
                 }
                 Row::Option(idx, oi) => {
-                    if let PlayerSettingControl::Choice { options, selected } = &self.settings[*idx].control {
+                    if let PlayerSettingControl::Choice { options, selected } =
+                        &self.settings[*idx].control
+                    {
                         let selected = *selected == *oi;
                         // The standalone popover has no header, so no indent.
-                        let indent = if matches!(menu, OpenMenu::Gear) { 26.0 } else { 10.0 };
+                        let indent = if matches!(menu, OpenMenu::Gear) {
+                            26.0
+                        } else {
+                            10.0
+                        };
                         if selected {
                             let hl = RoundedRect::from_rect(
-                                Rect::new(row_rect.x0 + 2.0, y + 1.0, row_rect.x1 - 2.0, y + row_h - 3.0),
+                                Rect::new(
+                                    row_rect.x0 + 2.0,
+                                    y + 1.0,
+                                    row_rect.x1 - 2.0,
+                                    y + row_h - 3.0,
+                                ),
                                 6.0,
                             );
-                            scene.fill(Fill::NonZero, transform, accent.multiply_alpha(0.22), None, &hl);
+                            scene.fill(
+                                Fill::NonZero,
+                                transform,
+                                accent.multiply_alpha(0.22),
+                                None,
+                                &hl,
+                            );
                         }
                         let label = options.get(*oi).cloned().unwrap_or_default();
-                        let tint = if selected { accent } else { colors.text_primary };
+                        let tint = if selected {
+                            accent
+                        } else {
+                            colors.text_primary
+                        };
                         text_renderer.draw_text(
                             scene,
                             &label,
@@ -1122,11 +1271,16 @@ impl VideoPlayer {
                                 "✓",
                                 13.0,
                                 accent,
-                                transform * Affine::translate((x1 - pad - cw as f64, y + row_h * 0.5 - 8.0)),
+                                transform
+                                    * Affine::translate((
+                                        x1 - pad - cw as f64,
+                                        y + row_h * 0.5 - 8.0,
+                                    )),
                                 None,
                             );
                         }
-                        self.menu_hit_rects.push((MenuHit::Option(*idx, *oi), row_rect));
+                        self.menu_hit_rects
+                            .push((MenuHit::Option(*idx, *oi), row_rect));
                     }
                 }
             }
@@ -1144,7 +1298,13 @@ impl VideoPlayer {
         if r <= 0.0 {
             return;
         }
-        scene.stroke(&Stroke::new(2.0), transform, dim, None, &Circle::new((cx, cy), r));
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            dim,
+            None,
+            &Circle::new((cx, cy), r),
+        );
         // Nudged right so the triangle reads centred.
         let s = r * 0.62;
         let mut p = BezPath::new();
@@ -1208,17 +1368,47 @@ fn draw_speaker_glyph(scene: &mut Scene, transform: Affine, r: Rect, color: Colo
     if muted {
         let x1 = x0 + s * 0.62;
         let x2 = x0 + s * 0.9;
-        scene.stroke(&Stroke::new(1.6), transform, color, None, &Line::new((x1, cy - s * 0.2), (x2, cy + s * 0.2)));
-        scene.stroke(&Stroke::new(1.6), transform, color, None, &Line::new((x1, cy + s * 0.2), (x2, cy - s * 0.2)));
+        scene.stroke(
+            &Stroke::new(1.6),
+            transform,
+            color,
+            None,
+            &Line::new((x1, cy - s * 0.2), (x2, cy + s * 0.2)),
+        );
+        scene.stroke(
+            &Stroke::new(1.6),
+            transform,
+            color,
+            None,
+            &Line::new((x1, cy + s * 0.2), (x2, cy - s * 0.2)),
+        );
     } else {
         let wx = x0 + s * 0.6;
-        scene.stroke(&Stroke::new(1.6), transform, color, None, &Line::new((wx, cy - s * 0.22), (wx + s * 0.12, cy)));
-        scene.stroke(&Stroke::new(1.6), transform, color, None, &Line::new((wx + s * 0.12, cy), (wx, cy + s * 0.22)));
+        scene.stroke(
+            &Stroke::new(1.6),
+            transform,
+            color,
+            None,
+            &Line::new((wx, cy - s * 0.22), (wx + s * 0.12, cy)),
+        );
+        scene.stroke(
+            &Stroke::new(1.6),
+            transform,
+            color,
+            None,
+            &Line::new((wx + s * 0.12, cy), (wx, cy + s * 0.22)),
+        );
     }
 }
 
 /// Kept vector so it never depends on a glyph being in the font.
-fn draw_fullscreen_glyph(scene: &mut Scene, transform: Affine, r: Rect, color: Color, active: bool) {
+fn draw_fullscreen_glyph(
+    scene: &mut Scene,
+    transform: Affine,
+    r: Rect,
+    color: Color,
+    active: bool,
+) {
     let stroke = Stroke::new(1.8);
     let m = r.height() * 0.28;
     let corners = [
@@ -1228,7 +1418,11 @@ fn draw_fullscreen_glyph(scene: &mut Scene, transform: Affine, r: Rect, color: C
         (r.x1, r.y1, -1.0, -1.0),
     ];
     for (x, y, sx, sy) in corners {
-        let (ax, ay) = if active { (x + sx * m, y + sy * m) } else { (x, y) };
+        let (ax, ay) = if active {
+            (x + sx * m, y + sy * m)
+        } else {
+            (x, y)
+        };
         let dir = if active { -1.0 } else { 1.0 };
         scene.stroke(
             &stroke,
@@ -1278,7 +1472,10 @@ impl Widget for VideoPlayer {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::auto(), height: Dimension::auto() },
+                size: Size {
+                    width: Dimension::auto(),
+                    height: Dimension::auto(),
+                },
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 ..Default::default()
@@ -1335,7 +1532,11 @@ impl Widget for VideoPlayer {
                     self.dirty = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if !self.rect.contains(self.last_cursor) {
                     return;
                 }
@@ -1347,15 +1548,19 @@ impl Widget for VideoPlayer {
                 }
                 self.show_controls();
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.scrubbing {
                     self.scrubbing = false;
                     *handled = true;
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if self.focused && key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if self.focused && key_event.state == ElementState::Pressed => {
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Space) => {
                         self.toggle_play();
@@ -1400,14 +1605,18 @@ impl Widget for VideoPlayer {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let on_menu_row = self.menu_hit_rects.iter().any(|(_, r)| r.contains(point));
-        let on_setting_icon = self.setting_icon_rects.iter().any(|(_, r)| r.contains(point));
+        let on_setting_icon = self
+            .setting_icon_rects
+            .iter()
+            .any(|(_, r)| r.contains(point));
         if on_menu_row
             || ((self.controls_visible_now() || self.open_menu.is_some())
                 && (self.play_button_rect.contains(point)
                     || self.fullscreen_button_rect.contains(point)
                     || self.scrub_track_rect.contains(point)
                     || self.volume_track_rect.contains(point)
-                    || (self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(point))
+                    || (self.gear_button_rect.width() > 0.0
+                        && self.gear_button_rect.contains(point))
                     || on_setting_icon))
         {
             Some(winit::window::CursorIcon::Pointer)
@@ -1495,8 +1704,11 @@ impl VideoPlayer {
         // An open menu owns the click: a row wins, a click off the menu (and
         // off the buttons that could re-open it) dismisses it.
         if self.open_menu.is_some() {
-            if let Some(hit) =
-                self.menu_hit_rects.iter().find(|(_, r)| r.contains(p)).map(|(h, _)| *h)
+            if let Some(hit) = self
+                .menu_hit_rects
+                .iter()
+                .find(|(_, r)| r.contains(p))
+                .map(|(h, _)| *h)
             {
                 self.activate_menu_hit(hit);
                 return true;
@@ -1512,13 +1724,22 @@ impl VideoPlayer {
         }
 
         if self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(p) {
-            self.open_menu = if self.open_menu == Some(OpenMenu::Gear) { None } else { Some(OpenMenu::Gear) };
+            self.open_menu = if self.open_menu == Some(OpenMenu::Gear) {
+                None
+            } else {
+                Some(OpenMenu::Gear)
+            };
             self.gear_expanded = None;
             self.dirty = true;
             return true;
         }
 
-        if let Some((idx, _)) = self.setting_icon_rects.iter().find(|(_, r)| r.contains(p)).copied() {
+        if let Some((idx, _)) = self
+            .setting_icon_rects
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .copied()
+        {
             self.activate_setting_icon(idx);
             return true;
         }
@@ -1532,7 +1753,8 @@ impl VideoPlayer {
             return true;
         }
         if self.volume_track_rect.width() > 0.0 && self.volume_track_rect.contains(p) {
-            let frac = ((p.x - self.volume_track_rect.x0) / self.volume_track_rect.width()).clamp(0.0, 1.0);
+            let frac = ((p.x - self.volume_track_rect.x0) / self.volume_track_rect.width())
+                .clamp(0.0, 1.0);
             self.set_volume(frac as f32);
             return true;
         }
@@ -1553,13 +1775,17 @@ impl VideoPlayer {
                 PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
                 PlayerSettingControl::Button => {
                     let id = self.settings[idx].id.clone();
-                    self.setting_events.push(PlayerSettingEvent::Activated { id });
+                    self.setting_events
+                        .push(PlayerSettingEvent::Activated { id });
                     self.open_menu = None;
                     self.dirty = true;
                 }
                 PlayerSettingControl::Choice { .. } => {
-                    self.gear_expanded =
-                        if self.gear_expanded == Some(idx) { None } else { Some(idx) };
+                    self.gear_expanded = if self.gear_expanded == Some(idx) {
+                        None
+                    } else {
+                        Some(idx)
+                    };
                     self.dirty = true;
                 }
             },
@@ -1572,12 +1798,16 @@ impl VideoPlayer {
             PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
             PlayerSettingControl::Button => {
                 let id = self.settings[idx].id.clone();
-                self.setting_events.push(PlayerSettingEvent::Activated { id });
+                self.setting_events
+                    .push(PlayerSettingEvent::Activated { id });
                 self.dirty = true;
             }
             PlayerSettingControl::Choice { .. } => {
-                self.open_menu =
-                    if self.open_menu == Some(OpenMenu::Choice(idx)) { None } else { Some(OpenMenu::Choice(idx)) };
+                self.open_menu = if self.open_menu == Some(OpenMenu::Choice(idx)) {
+                    None
+                } else {
+                    Some(OpenMenu::Choice(idx))
+                };
                 self.dirty = true;
             }
         }
@@ -1591,12 +1821,14 @@ impl VideoPlayer {
             return;
         };
         let id = self.settings[idx].id.clone();
-        self.setting_events.push(PlayerSettingEvent::Toggled { id, on: new_on });
+        self.setting_events
+            .push(PlayerSettingEvent::Toggled { id, on: new_on });
         self.dirty = true;
     }
 
     fn choose_option(&mut self, idx: usize, oi: usize) {
-        if let PlayerSettingControl::Choice { options, selected } = &mut self.settings[idx].control {
+        if let PlayerSettingControl::Choice { options, selected } = &mut self.settings[idx].control
+        {
             if oi >= options.len() {
                 return;
             }
@@ -1605,7 +1837,8 @@ impl VideoPlayer {
             return;
         }
         let id = self.settings[idx].id.clone();
-        self.setting_events.push(PlayerSettingEvent::Chose { id, index: oi });
+        self.setting_events
+            .push(PlayerSettingEvent::Chose { id, index: oi });
         self.open_menu = None;
         self.gear_expanded = None;
         self.dirty = true;
@@ -1673,7 +1906,17 @@ mod tests {
         let mut focus_target = None;
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
-        vp.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus_target, node, &taffy);
+        vp.handle_event(
+            ev,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -1687,19 +1930,26 @@ mod tests {
     #[test]
     fn engine_mode_sync_pulls_a_frame_and_metadata() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         vp.sync(&mut doc, &root);
-        assert!(vp.latest_frame().is_some(), "engine frame pulled into the surface");
+        assert!(
+            vp.latest_frame().is_some(),
+            "engine frame pulled into the surface"
+        );
         assert!(vp.duration_ms() > 0, "duration mirrored from the engine");
     }
 
     #[test]
     fn space_toggles_play_on_focused_engine_player() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.set_focus(true);
         assert!(!vp.is_playing());
@@ -1712,7 +1962,9 @@ mod tests {
     #[test]
     fn arrow_keys_seek_the_engine_playhead() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.set_focus(true);
         vp.seek_to_ms(20_000);
@@ -1727,7 +1979,9 @@ mod tests {
     #[test]
     fn scrub_click_seeks_to_the_track_fraction() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
@@ -1750,7 +2004,9 @@ mod tests {
     #[test]
     fn clicking_the_video_surface_toggles_play_pause() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.show_controls();
@@ -1801,7 +2057,9 @@ mod tests {
     #[test]
     fn dragging_the_scrub_track_seeks_continuously() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
@@ -1815,13 +2073,19 @@ mod tests {
         assert!(track.width() > 0.0);
         let y = track.center().y;
         dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.1, y));
-        assert!(dispatch(&mut vp, &mouse_press()), "press on track begins a scrub");
+        assert!(
+            dispatch(&mut vp, &mouse_press()),
+            "press on track begins a scrub"
+        );
         assert!(vp.scrubbing, "press started a drag");
         assert!(vp.wants_pointer_capture(), "a scrub owns the pointer");
         let near = vp.position_ms();
         dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.9, y));
         let far = vp.position_ms();
-        assert!(far > near, "dragging right advanced the playhead ({near} → {far})");
+        assert!(
+            far > near,
+            "dragging right advanced the playhead ({near} → {far})"
+        );
         assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
     }
 
@@ -1829,7 +2093,11 @@ mod tests {
     fn f_key_toggles_fullscreen_intent() {
         let mut vp = VideoPlayer::new();
         vp.set_focus(true);
-        assert_eq!(Widget::fullscreen_intent(&vp), None, "no opinion until asked");
+        assert_eq!(
+            Widget::fullscreen_intent(&vp),
+            None,
+            "no opinion until asked"
+        );
         assert!(dispatch(&mut vp, &press(Key::Character("f".into()))));
         assert_eq!(Widget::fullscreen_intent(&vp), Some(true));
         assert!(dispatch(&mut vp, &press(Key::Character("F".into()))));
@@ -1841,14 +2109,32 @@ mod tests {
         use crate::fullscreen::{FullscreenTarget, FullscreenView};
         let mut vp = VideoPlayer::new();
         assert_eq!(Widget::fullscreen_intent(&vp), None);
-        assert_eq!(Widget::fullscreen_params(&vp).target, FullscreenTarget::Largest);
+        assert_eq!(
+            Widget::fullscreen_params(&vp).target,
+            FullscreenTarget::Largest
+        );
         vp.toggle_fullscreen();
-        assert_eq!(Widget::fullscreen_intent(&vp), Some(true), "toggle asks the App to fullscreen");
+        assert_eq!(
+            Widget::fullscreen_intent(&vp),
+            Some(true),
+            "toggle asks the App to fullscreen"
+        );
         let params = Widget::fullscreen_params(&vp);
-        assert_eq!(params.target, FullscreenTarget::Largest, "immersive video targets the big screen");
-        assert_eq!(params.view, FullscreenView::Mirror, "video mirrors the window, not a distinct view");
+        assert_eq!(
+            params.target,
+            FullscreenTarget::Largest,
+            "immersive video targets the big screen"
+        );
+        assert_eq!(
+            params.view,
+            FullscreenView::Mirror,
+            "video mirrors the window, not a distinct view"
+        );
         vp.set_fullscreen_target(FullscreenTarget::Primary);
-        assert_eq!(Widget::fullscreen_params(&vp).target, FullscreenTarget::Primary);
+        assert_eq!(
+            Widget::fullscreen_params(&vp).target,
+            FullscreenTarget::Primary
+        );
     }
 
     #[test]
@@ -1863,18 +2149,27 @@ mod tests {
         });
         vp.play();
         let snap = vp.mpris_snapshot();
-        assert_eq!(snap.status, crate::mpris::PlaybackStatus::Playing, "play → Playing on the bus");
+        assert_eq!(
+            snap.status,
+            crate::mpris::PlaybackStatus::Playing,
+            "play → Playing on the bus"
+        );
         assert_eq!(snap.title, "Runaway");
         assert_eq!(snap.artist, "Aurora");
         assert_eq!(snap.art_url, "https://img/a.jpg");
         assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
-        assert!(snap.can_play && snap.can_pause && snap.can_seek, "transport controls advertised");
+        assert!(
+            snap.can_play && snap.can_pause && snap.can_seek,
+            "transport controls advertised"
+        );
     }
 
     #[test]
     fn external_media_command_pause_reaches_the_player() {
         let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.play();
         assert!(vp.is_playing());
@@ -1898,7 +2193,13 @@ mod tests {
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.show_controls();
         // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
-        vp.set_setting(PlayerSetting::toggle("captions", Icon::FileText, "Captions", 2, false));
+        vp.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            false,
+        ));
         vp.set_setting(PlayerSetting::choice(
             "resolution",
             Icon::Monitor,
@@ -1916,7 +2217,10 @@ mod tests {
             vp.setting_in_gear("resolution"),
             "priority-0 setting lives under the settings gear"
         );
-        assert!(!vp.setting_in_gear("captions"), "the promoted icon is not also in the gear");
+        assert!(
+            !vp.setting_in_gear("captions"),
+            "the promoted icon is not also in the gear"
+        );
     }
 
     #[test]
@@ -1945,7 +2249,10 @@ mod tests {
             .map(|&i| vp.settings[i].priority)
             .collect();
         assert!(!icon_prios.is_empty(), "some settings fit as icons");
-        assert!(!overflow_prios.is_empty(), "the rest overflow into the gear at this width");
+        assert!(
+            !overflow_prios.is_empty(),
+            "the rest overflow into the gear at this width"
+        );
         let min_icon = *icon_prios.iter().min().unwrap();
         let max_overflow = *overflow_prios.iter().max().unwrap();
         assert!(
@@ -1968,10 +2275,15 @@ mod tests {
             0,
         ));
         draw_once(&mut vp);
-        let icon = vp.setting_icon_rect("resolution").expect("resolution has a bar icon");
+        let icon = vp
+            .setting_icon_rect("resolution")
+            .expect("resolution has a bar icon");
         dispatch(&mut vp, &cursor_moved(icon.center().x, icon.center().y));
         assert!(dispatch(&mut vp, &mouse_press()), "icon click handled");
-        assert!(vp.menu_open(), "clicking the resolution icon opened its option list");
+        assert!(
+            vp.menu_open(),
+            "clicking the resolution icon opened its option list"
+        );
         draw_once(&mut vp);
         let row = vp
             .menu_hit_rects
@@ -1984,7 +2296,10 @@ mod tests {
         let events = vp.take_setting_events();
         assert_eq!(
             events,
-            vec![PlayerSettingEvent::Chose { id: "resolution".into(), index: 1 }],
+            vec![PlayerSettingEvent::Chose {
+                id: "resolution".into(),
+                index: 1
+            }],
             "picking 720p emits a Chose event the host drains"
         );
         match &vp.setting("resolution").unwrap().control {
@@ -2000,7 +2315,13 @@ mod tests {
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.show_controls();
         // Priority 0 ⇒ under the gear.
-        vp.set_setting(PlayerSetting::toggle("autoplay", Icon::Play, "Autoplay", 0, false));
+        vp.set_setting(PlayerSetting::toggle(
+            "autoplay",
+            Icon::Play,
+            "Autoplay",
+            0,
+            false,
+        ));
         draw_once(&mut vp);
         let gear = vp.gear_button_rect;
         assert!(gear.width() > 0.0, "gear present for the tucked setting");
@@ -2019,7 +2340,10 @@ mod tests {
         let events = vp.take_setting_events();
         assert_eq!(
             events,
-            vec![PlayerSettingEvent::Toggled { id: "autoplay".into(), on: true }],
+            vec![PlayerSettingEvent::Toggled {
+                id: "autoplay".into(),
+                on: true
+            }],
             "toggling the gear row flips it on and emits"
         );
     }
@@ -2094,7 +2418,10 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::IMAGE)
             .count();
-        assert_eq!(image_count, 0, "no frame → no image draw in the empty state");
+        assert_eq!(
+            image_count, 0,
+            "no frame → no image draw in the empty state"
+        );
         // The letterbox fill + the ring + the play triangle are all painted.
         assert!(
             scene.encoding().draw_tags.len() >= 2,
@@ -2119,6 +2446,9 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::IMAGE)
             .count();
-        assert!(image_count >= 1, "expected an IMAGE draw, got {image_count}");
+        assert!(
+            image_count >= 1,
+            "expected an IMAGE draw, got {image_count}"
+        );
     }
 }

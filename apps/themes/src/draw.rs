@@ -16,7 +16,14 @@ pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &shape);
 }
 
-pub fn stroke_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color, width: f64) {
+pub fn stroke_rrect(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    color: Color,
+    width: f64,
+) {
     let shape = RoundedRect::from_rect(rect, radius.max(0.0));
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
@@ -25,7 +32,14 @@ pub fn circle(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color)
     scene.fill(Fill::NonZero, t, color, None, &Circle::new(center, r));
 }
 
-pub fn stroke_circle(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, width: f64) {
+pub fn stroke_circle(
+    scene: &mut Scene,
+    t: Affine,
+    center: Point,
+    r: f64,
+    color: Color,
+    width: f64,
+) {
     scene.stroke(&Stroke::new(width), t, color, None, &Circle::new(center, r));
 }
 
@@ -61,7 +75,15 @@ pub fn text_w(
     y: f64,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// Left-aligned text shaped in an explicit [`FontChoice`] family, so the
@@ -80,7 +102,17 @@ pub fn text_font(
     weight: TextWeight,
     family: &FontChoice,
 ) {
-    tr.draw_text_font(scene, s, size, color, t * Affine::translate((x, y)), None, weight, false, family);
+    tr.draw_text_font(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+        false,
+        family,
+    );
 }
 
 /// Text vertically centred in `[y0, y1]` at left edge `x`.

@@ -20,7 +20,7 @@
 //! the key is cheap to build/parse and stable across column renames.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
 use crate::settings::DocSettings;
@@ -244,14 +244,12 @@ impl SheetsDoc {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let name = match doc.get(&sheets, i) {
-                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
-                    match doc.get(&sheet, "name") {
-                        Ok(Some((Value::Scalar(v), _))) => {
-                            v.to_str().map(|s| s.to_string()).unwrap_or_default()
-                        }
-                        _ => String::new(),
+                Ok(Some((Value::Object(ObjType::Map), sheet))) => match doc.get(&sheet, "name") {
+                    Ok(Some((Value::Scalar(v), _))) => {
+                        v.to_str().map(|s| s.to_string()).unwrap_or_default()
                     }
-                }
+                    _ => String::new(),
+                },
                 _ => String::new(),
             };
             out.push(if name.is_empty() {
@@ -272,9 +270,7 @@ impl SheetsDoc {
         let key = Self::cell_key(addr);
         if raw.is_empty() {
             // Keep any format but clear the value; if both gone, delete.
-            if let Ok(Some((Value::Object(ObjType::Map), cell))) =
-                doc.get(&cells, key.as_str())
-            {
+            if let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) {
                 let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)));
                 if has_fmt {
                     let _ = doc.put(&cell, "raw", "");
@@ -410,8 +406,7 @@ impl SheetsDoc {
             let Some(addr) = Self::parse_cell_key(&key) else {
                 continue;
             };
-            let Ok(Some((Value::Object(ObjType::Map), cell))) =
-                doc.get(&cells, key.as_str())
+            let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str())
             else {
                 continue;
             };
@@ -545,8 +540,13 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
         // The last remaining sheet cannot be deleted away.
         SheetsDoc::delete_sheet(&mut doc, 0);
-        assert!(SheetsDoc::delete_sheet(&mut doc, 0) == false || SheetsDoc::sheet_count(&mut doc) >= 1);
-        assert!(SheetsDoc::sheet_count(&mut doc) >= 1, "a workbook keeps one sheet");
+        assert!(
+            SheetsDoc::delete_sheet(&mut doc, 0) == false || SheetsDoc::sheet_count(&mut doc) >= 1
+        );
+        assert!(
+            SheetsDoc::sheet_count(&mut doc) >= 1,
+            "a workbook keeps one sheet"
+        );
     }
 
     #[test]

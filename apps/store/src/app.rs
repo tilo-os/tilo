@@ -35,12 +35,12 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{Column, Container, Row, Spacer, Text, TextInput, ToggleGroup, Widget};
-use ui::{Theme, presence::PresenceCtx, permissions::PermissionContext, text_render::TextRenderer};
+use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -242,11 +242,11 @@ impl StoreApp {
         // regardless of install state.
         if self.query.trim().is_empty() {
             hits.sort_by(|a, b| {
-                b.install_rank()
-                    .cmp(&a.install_rank())
-                    .then_with(|| {
-                        a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase())
-                    })
+                b.install_rank().cmp(&a.install_rank()).then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                })
             });
         } else {
             let q = self.query.clone();
@@ -281,11 +281,7 @@ impl StoreApp {
             .push(filter_row)
             .push(category_row)
             .push(list);
-        Box::new(
-            Container::new()
-                .filling()
-                .with_child(Box::new(column)),
-        )
+        Box::new(Container::new().filling().with_child(Box::new(column)))
     }
 
     fn build_header(&self) -> Box<dyn Widget> {
@@ -299,18 +295,13 @@ impl StoreApp {
             .with_placeholder("Search apps…");
         // Refresh button writes REFRESH_KEY; the outer host drives
         // the real refetch when it sees the bit go high.
-        let refresh_btn =
-            ui::widget::Button::new("store.refresh", "Refresh", Some(REFRESH_KEY));
+        let refresh_btn = ui::widget::Button::new("store.refresh", "Refresh", Some(REFRESH_KEY));
         let row = Row::new()
             .no_wrap()
             .push(Box::new(search))
             .push(Box::new(Spacer::new()))
             .push(Box::new(refresh_btn));
-        Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(row)),
-        )
+        Box::new(Container::new().with_background().with_child(Box::new(row)))
     }
 
     fn build_filter_row(&self) -> Box<dyn Widget> {
@@ -349,11 +340,7 @@ impl StoreApp {
             let btn = ui::widget::Button::new(&format!("store.cat.{label}"), &label, Some(&key));
             row = row.push(Box::new(btn));
         }
-        Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(row)),
-        )
+        Box::new(Container::new().with_background().with_child(Box::new(row)))
     }
 
     fn build_list(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -364,15 +351,9 @@ impl StoreApp {
             } else {
                 "No apps match this filter."
             };
-            return Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(
-                        Text::new(text)
-                            .with_size(13.0)
-                            .with_color(theme.text_dim),
-                    )),
-            );
+            return Box::new(Container::new().with_background().with_child(Box::new(
+                Text::new(text).with_size(13.0).with_color(theme.text_dim),
+            )));
         }
         // The card list is a plain column of cards. A `Scrollable`
         // wrapper is deliberately omitted because the retained
@@ -398,11 +379,7 @@ impl StoreApp {
                 theme,
             ));
         }
-        Box::new(
-            Container::new()
-                .filling()
-                .with_child(Box::new(column)),
-        )
+        Box::new(Container::new().filling().with_child(Box::new(column)))
     }
 
     /// The label for the floating status bubble: a running action
@@ -491,7 +468,11 @@ impl StoreApp {
         for label in self.category_labels() {
             let key = format!("{}.{}", CATEGORY_SELECT_KEY, label);
             if take_bool_edge(state, path, &key) {
-                self.active_category = if label == "All" { None } else { Some(label.clone()) };
+                self.active_category = if label == "All" {
+                    None
+                } else {
+                    Some(label.clone())
+                };
                 self.structure_dirty = true;
                 any = true;
             }
@@ -657,11 +638,7 @@ impl Widget for StoreApp {
         );
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node)) {
             if let Some(&child_node) = children.first() {
-                root.apply_layout(
-                    taffy,
-                    child_node,
-                    Point::new(self.rect.x0, self.rect.y0),
-                );
+                root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
             }
         }
     }
@@ -689,7 +666,14 @@ impl Widget for StoreApp {
         permissions: &PermissionContext,
     ) {
         if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            root.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -818,13 +802,17 @@ mod tests {
         app.set_items(vec![
             item(
                 "Notes",
-                StoreSource::Qos { registry_name: "qOS".into() },
+                StoreSource::Qos {
+                    registry_name: "qOS".into(),
+                },
                 "Productivity",
                 InstalledState::Not,
             ),
             item(
                 "Terminal",
-                StoreSource::Qos { registry_name: "qOS".into() },
+                StoreSource::Qos {
+                    registry_name: "qOS".into(),
+                },
                 "System",
                 InstalledState::Installed {
                     version: "1".into(),
@@ -832,12 +820,7 @@ mod tests {
                     pinned: false,
                 },
             ),
-            item(
-                "Chess",
-                StoreSource::Flathub,
-                "Games",
-                InstalledState::Not,
-            ),
+            item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
         ]);
         app
     }
@@ -852,7 +835,11 @@ mod tests {
     fn filter_qos_hides_flatpak() {
         let mut app = seeded_app();
         app.set_active_filter(SourceFilter::Qos);
-        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
         assert!(names.contains(&"Notes"));
         assert!(names.contains(&"Terminal"));
         assert!(!names.contains(&"Chess"));
@@ -862,7 +849,11 @@ mod tests {
     fn filter_installed_shows_only_installed() {
         let mut app = seeded_app();
         app.set_active_filter(SourceFilter::Installed);
-        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
         assert_eq!(names, vec!["Terminal"]);
     }
 
@@ -870,7 +861,11 @@ mod tests {
     fn category_filter_gates_the_list() {
         let mut app = seeded_app();
         app.set_active_category(Some("Games".into()));
-        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
         assert_eq!(names, vec!["Chess"]);
     }
 
@@ -934,7 +929,11 @@ mod tests {
         doc.splice_text(&obj, 0, 0, "Term").unwrap();
         app.sync(&mut doc, &root);
         assert_eq!(app.query(), "Term");
-        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
         assert_eq!(names, vec!["Terminal"]);
     }
 
@@ -949,7 +948,11 @@ mod tests {
         app.filter_click.set(Some(1)); // segment 1 == SourceFilter::Qos
         app.sync(&mut doc, &root);
         assert_eq!(app.active_filter(), SourceFilter::Qos);
-        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
         assert!(names.contains(&"Notes"));
         assert!(!names.contains(&"Chess"), "qOS filter hides Flatpak items");
     }

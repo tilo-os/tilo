@@ -622,14 +622,8 @@ mod tests {
         let nalus = enc.encode(&rgba).expect("encode");
         let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
 
-        let mut unknown = PeerView::new_for_stream(
-            42,
-            7,
-            "av1",
-            PeerSurfaceMetrics::default(),
-            &caps,
-            None,
-        );
+        let mut unknown =
+            PeerView::new_for_stream(42, 7, "av1", PeerSurfaceMetrics::default(), &caps, None);
         assert!(
             matches!(unknown.decoder, VideoDecoder::H264(_)),
             "an unknown codec label must degrade to the SDR decoder"

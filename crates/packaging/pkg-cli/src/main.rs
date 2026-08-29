@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 
 use pkg::blobs::{BlobHash, BlobStore, Collection};
 use pkg::signed::SignedRoot;
-use pkg::{Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify};
+use pkg::{
+    Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify,
+};
 
 /// The header entry inside a .qpkg tar. Tiny and minimal so it can be
 /// deserialised without pulling in the rest of the crate.
@@ -89,9 +91,7 @@ enum Command {
         file: PathBuf,
     },
     /// Print the manifest + payload tree of a .qpkg.
-    Inspect {
-        file: PathBuf,
-    },
+    Inspect { file: PathBuf },
     /// Extract the payload + a copy of the manifest into `dest`.
     Unpack {
         #[arg(long)]
@@ -203,8 +203,7 @@ fn cmd_pack(
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {manifest_path:?}"))?;
-    let mut manifest =
-        Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,
@@ -325,7 +324,11 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     );
     println!(
         "signed: {}",
-        if signed.signature.is_some() { "yes" } else { "NO" }
+        if signed.signature.is_some() {
+            "yes"
+        } else {
+            "NO"
+        }
     );
     let manifest_bytes = store
         .get(&signed.manifest_hash)
@@ -341,12 +344,7 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     let collection = Collection::decode(&collection_bytes)?;
     println!("--- payload ({} files) ---", collection.entries.len());
     for (p, h) in &collection.entries {
-        let size = store
-            .get(h)
-            .ok()
-            .flatten()
-            .map(|b| b.len())
-            .unwrap_or(0);
+        let size = store.get(h).ok().flatten().map(|b| b.len()).unwrap_or(0);
         println!("  {p}  (blake3:{}, {size} bytes)", h);
     }
     Ok(())
@@ -404,8 +402,9 @@ fn cmd_publish(
         return Ok(());
     }
 
-    let identity_path =
-        identity.ok_or_else(|| anyhow!("--identity is required to publish (only --dry-run may run keyless)"))?;
+    let identity_path = identity.ok_or_else(|| {
+        anyhow!("--identity is required to publish (only --dry-run may run keyless)")
+    })?;
     let publisher = load_identity(identity_path)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -416,9 +415,8 @@ fn cmd_publish(
     // HTTPS target: emit the signed entry to the registry endpoint, which
     // ingests the blob out of band via the entry's ticket.
     if registry.starts_with("http://") || registry.starts_with("https://") {
-        let (entry, _package_id) =
-            app_registry::build_entry(&qpkg_bytes, &publisher, arch, None)
-                .map_err(|e| anyhow!("build entry: {e}"))?;
+        let (entry, _package_id) = app_registry::build_entry(&qpkg_bytes, &publisher, arch, None)
+            .map_err(|e| anyhow!("build entry: {e}"))?;
         rt.block_on(app_registry::publish::emit_entry_https(registry, &entry))
             .map_err(|e| anyhow!("emit to registry: {e}"))?;
         eprintln!(
@@ -523,10 +521,7 @@ fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore)> {
     let mut store = MemoryBlobStore::new();
     for entry in ar.entries().context("read tar entries")? {
         let mut entry = entry?;
-        let entry_path = entry
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
         let name = entry_path.to_string_lossy().to_string();
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf).context("read tar entry")?;
@@ -620,8 +615,11 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    std::fs::write(out, serde_json::to_vec_pretty(&file).context("encode identity")?)
-        .with_context(|| format!("write {out:?}"))?;
+    std::fs::write(
+        out,
+        serde_json::to_vec_pretty(&file).context("encode identity")?,
+    )
+    .with_context(|| format!("write {out:?}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

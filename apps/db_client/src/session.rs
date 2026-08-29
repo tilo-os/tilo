@@ -441,7 +441,10 @@ mod tests {
         pg.user = "nobody".into();
         s.add_connection_blocking(pg);
 
-        assert!(!s.connected, "no live engine when the server is unreachable");
+        assert!(
+            !s.connected,
+            "no live engine when the server is unreachable"
+        );
         assert_eq!(s.schema.table_count(), 0, "no fabricated schema on failure");
         assert!(
             !s.connections[s.active].connected,
@@ -458,7 +461,10 @@ mod tests {
         // A fresh live session fabricates nothing: no sample database, no
         // connection profiles, no live engine.
         let s = Session::new();
-        assert!(s.connections.is_empty(), "no fabricated connection profiles");
+        assert!(
+            s.connections.is_empty(),
+            "no fabricated connection profiles"
+        );
         assert!(!s.connected, "no live engine on a fresh machine");
         assert!(s.active_connection().is_none(), "nothing active when empty");
         assert!(s.query_result.is_none(), "no canned query result");

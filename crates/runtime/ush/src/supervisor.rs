@@ -132,7 +132,11 @@ impl Session {
 
     /// Build the plan for this session: everything the guest will be is decided
     /// here, from the store and the policy — never from anything the guest said.
-    pub fn plan(&self, broker_socket: PathBuf, seccomp_blob: PathBuf) -> std::io::Result<GuestPlan> {
+    pub fn plan(
+        &self,
+        broker_socket: PathBuf,
+        seccomp_blob: PathBuf,
+    ) -> std::io::Result<GuestPlan> {
         let policy = Policy::load(&self.store.policy_path());
         let now = Some(crate::audit::now_unix());
         // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
@@ -356,8 +360,13 @@ fn default_rows() -> u16 {
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum ServeResponse {
     /// The pty master follows as an `SCM_RIGHTS` descriptor on this message.
-    Session { session: String, profile: String },
-    Denied { reason: String },
+    Session {
+        session: String,
+        profile: String,
+    },
+    Denied {
+        reason: String,
+    },
 }
 
 /// Decide one request. Pure, so the gate on `dsh` can be tested without a pty.
@@ -413,9 +422,15 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
 
     let req: ServeRequest = match serde_json::from_str(&line) {
         Ok(r) => r,
-        Err(e) => return reply(&mut writer, &ServeResponse::Denied {
-            reason: format!("malformed request: {e}"),
-        }, None),
+        Err(e) => {
+            return reply(
+                &mut writer,
+                &ServeResponse::Denied {
+                    reason: format!("malformed request: {e}"),
+                },
+                None,
+            );
+        }
     };
     let profile = match decide_serve(&req) {
         Ok(p) => p,
@@ -428,7 +443,9 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
         }
     };
 
-    let ServeRequest::OpenSession { cols, rows, term, .. } = req;
+    let ServeRequest::OpenSession {
+        cols, rows, term, ..
+    } = req;
     let (master, slave) = open_pty(cols, rows)?;
 
     let mut opts = SessionOptions {
@@ -441,9 +458,12 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
 
     let session = Session::new(store.clone(), opts);
     let id = session.session_id.clone();
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, profile.as_str(), "open-session", true),
-    );
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        profile.as_str(),
+        "open-session",
+        true,
+    ));
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
@@ -481,10 +501,7 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
 
 /// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
-fn spawn_attached(
-    session: &Session,
-    slave: std::fs::File,
-) -> std::io::Result<std::process::Child> {
+fn spawn_attached(session: &Session, slave: std::fs::File) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -591,11 +608,7 @@ fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
         (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
-        std::ptr::copy_nonoverlapping(
-            &fd as *const RawFd,
-            libc::CMSG_DATA(cmsg) as *mut RawFd,
-            1,
-        );
+        std::ptr::copy_nonoverlapping(&fd as *const RawFd, libc::CMSG_DATA(cmsg) as *mut RawFd, 1);
 
         if libc::sendmsg(sock, &msg, 0) < 0 {
             return Err(std::io::Error::last_os_error());
@@ -789,7 +802,12 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let (master, mut slave) = open_pty(80, 24).unwrap();
 
-        send_with_fd(a.as_raw_fd(), b"{\"result\":\"session\"}\n", master.as_raw_fd()).unwrap();
+        send_with_fd(
+            a.as_raw_fd(),
+            b"{\"result\":\"session\"}\n",
+            master.as_raw_fd(),
+        )
+        .unwrap();
         let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
         assert!(String::from_utf8_lossy(&payload).contains("session"));
         let fd = fd.expect("no descriptor arrived");

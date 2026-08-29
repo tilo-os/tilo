@@ -22,11 +22,11 @@
 //! ```
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    sample_recent_sources, sample_releases, sample_source, sample_targets, Action, InstallProfile,
-    Progress, QosRelease, Source, Step, TargetDrive,
+    Action, InstallProfile, Progress, QosRelease, Source, Step, TargetDrive, sample_recent_sources,
+    sample_releases, sample_source, sample_targets,
 };
 
 pub struct ImagerDoc;
@@ -151,11 +151,7 @@ impl ImagerDoc {
         match doc.get(&ROOT, "selected") {
             Ok(Some((Value::Scalar(v), _))) => {
                 let i = v.to_i64().unwrap_or(-1);
-                if i < 0 {
-                    None
-                } else {
-                    Some(i as usize)
-                }
+                if i < 0 { None } else { Some(i as usize) }
             }
             _ => None,
         }
@@ -244,9 +240,16 @@ mod tests {
         // there is no fabricated image or recent history.
         let doc = seeded();
         assert!(!ImagerDoc::is_empty(&doc));
-        assert_eq!(ImagerDoc::targets(&doc).len(), 2, "the caller's drives, verbatim");
+        assert_eq!(
+            ImagerDoc::targets(&doc).len(),
+            2,
+            "the caller's drives, verbatim"
+        );
         assert!(ImagerDoc::source(&doc).is_none(), "no fabricated image");
-        assert!(ImagerDoc::recent(&doc).is_empty(), "no fabricated recent history");
+        assert!(
+            ImagerDoc::recent(&doc).is_empty(),
+            "no fabricated recent history"
+        );
         assert_eq!(ImagerDoc::action(&doc), Action::Flash);
         // A fresh document starts with no drive chosen — the Drive step gates on
         // a deliberate selection.
@@ -273,7 +276,10 @@ mod tests {
         let doc = AutoCommit::new();
         assert!(ImagerDoc::is_empty(&doc));
         assert!(ImagerDoc::targets(&doc).is_empty(), "no fabricated drives");
-        assert!(ImagerDoc::releases(&doc).is_empty(), "no fabricated releases");
+        assert!(
+            ImagerDoc::releases(&doc).is_empty(),
+            "no fabricated releases"
+        );
     }
 
     #[test]

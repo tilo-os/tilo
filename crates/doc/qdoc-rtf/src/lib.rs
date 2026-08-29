@@ -101,7 +101,10 @@ struct ColorTable {
 
 impl ColorTable {
     fn new() -> Self {
-        Self { colors: Vec::new(), seen: BTreeMap::new() }
+        Self {
+            colors: Vec::new(),
+            seen: BTreeMap::new(),
+        }
     }
 
     /// Register a color and return its 1-based RTF color index (`\cfN`).
@@ -254,7 +257,11 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
     if ordered {
         // Numbered: the marker is literal text (RTF list tables are out of
         // scope); `index`/`start` choose the displayed number, default 1.
-        let n = match block.attrs.get("index").or_else(|| block.attrs.get("start")) {
+        let n = match block
+            .attrs
+            .get("index")
+            .or_else(|| block.attrs.get("start"))
+        {
             Some(AttrVal::Int(n)) => *n,
             _ => 1,
         };
@@ -294,13 +301,21 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     // the flat shape (cells directly under the table with a `cols`
     // attr), matching qdoc-html's handling.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
@@ -345,7 +360,10 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
 /// Remove `\pard …\par` wrappers from a rendered block buffer, leaving
 /// the inline run — used to inline a cell's content into a table cell.
 fn strip_pars(s: &str) -> String {
-    s.replace("\\pard", "").replace("\\par}", "").replace('}', "").replace('{', "")
+    s.replace("\\pard", "")
+        .replace("\\par}", "")
+        .replace('}', "")
+        .replace('{', "")
 }
 
 // ---- block-level formatting helpers -----------------------------------------

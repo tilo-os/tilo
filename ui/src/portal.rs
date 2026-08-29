@@ -88,7 +88,10 @@ pub struct FileFilter {
 impl FileFilter {
     /// A filter labelled `name` in the chooser's type dropdown.
     pub fn new(name: &str) -> Self {
-        Self { name: name.to_string(), ..Default::default() }
+        Self {
+            name: name.to_string(),
+            ..Default::default()
+        }
     }
 
     /// Match files by shell glob, e.g. `*.png`.
@@ -130,7 +133,8 @@ enum PickKind {
 #[derive(Debug, Clone)]
 pub struct PickRequest {
     title: String,
-    #[cfg_attr(not(feature = "portal"), allow(dead_code))] // read by the ashpd request in `run`, gated behind the `portal` feature
+    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    // read by the ashpd request in `run`, gated behind the `portal` feature
     accept_label: String,
     thread_name: String,
     filters: Vec<FileFilter>,
@@ -154,7 +158,9 @@ impl PickRequest {
         Self::new(
             title,
             accept_label,
-            PickKind::Save { suggested_name: suggested_name.to_string() },
+            PickKind::Save {
+                suggested_name: suggested_name.to_string(),
+            },
         )
     }
 
@@ -278,10 +284,7 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
 
     // One URI segment must yield exactly one path component. An escaped
     // separator would make the decoded path longer than the URI it came from.
-    let segments = uri
-        .path_segments()?
-        .filter(|s| !s.is_empty())
-        .count();
+    let segments = uri.path_segments()?.filter(|s| !s.is_empty()).count();
     let components = path
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
@@ -474,8 +477,7 @@ fn multiple(_req: PickRequest) -> MultiOutcome {
 }
 
 #[cfg(not(feature = "portal"))]
-const NO_PORTAL: &str =
-    "the file picker needs the real-desktop build (`--features portal`)";
+const NO_PORTAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
 
 #[cfg(test)]
 mod tests {
@@ -491,9 +493,16 @@ mod tests {
     fn rejects_a_uri_that_names_a_remote_host() {
         let uri = u("file://evil-host.example.com/etc/passwd");
 
-        assert_eq!(to_local_path(&uri), None, "a foreign host is not a local path");
+        assert_eq!(
+            to_local_path(&uri),
+            None,
+            "a foreign host is not a local path"
+        );
         assert!(
-            matches!(map_uri(std::slice::from_ref(&uri)), PortalOutcome::Failed(_)),
+            matches!(
+                map_uri(std::slice::from_ref(&uri)),
+                PortalOutcome::Failed(_)
+            ),
             "a foreign-host URI must not become an openable path"
         );
         assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
@@ -599,9 +608,18 @@ mod tests {
         // The hardening must not reject the everyday case it sits next to.
         for (uri, want) in [
             ("file:///a.txt", "/a.txt"),
-            ("file:///home/alice/Documents/report.pdf", "/home/alice/Documents/report.pdf"),
-            ("file:///var/workspace/deep/er/still/x.odp", "/var/workspace/deep/er/still/x.odp"),
-            ("file:///home/alice/dot.name.with.dots.tar.gz", "/home/alice/dot.name.with.dots.tar.gz"),
+            (
+                "file:///home/alice/Documents/report.pdf",
+                "/home/alice/Documents/report.pdf",
+            ),
+            (
+                "file:///var/workspace/deep/er/still/x.odp",
+                "/var/workspace/deep/er/still/x.odp",
+            ),
+            (
+                "file:///home/alice/dot.name.with.dots.tar.gz",
+                "/home/alice/dot.name.with.dots.tar.gz",
+            ),
         ] {
             assert_eq!(
                 to_local_path(&u(uri)),
@@ -621,7 +639,10 @@ mod tests {
 
     #[test]
     fn single_takes_the_first_local_file() {
-        let uris = [u("file:///home/alice/photo.png"), u("file:///home/alice/other.png")];
+        let uris = [
+            u("file:///home/alice/photo.png"),
+            u("file:///home/alice/other.png"),
+        ];
         assert_eq!(
             map_uri(&uris),
             PortalOutcome::Opened(PathBuf::from("/home/alice/photo.png"))
@@ -630,7 +651,10 @@ mod tests {
 
     #[test]
     fn multi_collects_every_local_file() {
-        let uris = [u("file:///home/alice/work.vcf"), u("file:///home/alice/family.vcard")];
+        let uris = [
+            u("file:///home/alice/work.vcf"),
+            u("file:///home/alice/family.vcard"),
+        ];
         assert_eq!(
             map_uris(&uris),
             MultiOutcome::Selected(vec![
@@ -642,7 +666,10 @@ mod tests {
 
     #[test]
     fn multi_skips_remote_but_keeps_local() {
-        let uris = [u("https://example.com/remote.vcf"), u("file:///home/alice/local.vcf")];
+        let uris = [
+            u("https://example.com/remote.vcf"),
+            u("file:///home/alice/local.vcf"),
+        ];
         assert_eq!(
             map_uris(&uris),
             MultiOutcome::Selected(vec![PathBuf::from("/home/alice/local.vcf")]),
@@ -653,7 +680,10 @@ mod tests {
     #[test]
     fn multi_all_remote_is_failure() {
         assert!(matches!(
-            map_uris(&[u("https://example.com/a.vcf"), u("https://example.com/b.vcf")]),
+            map_uris(&[
+                u("https://example.com/a.vcf"),
+                u("https://example.com/b.vcf")
+            ]),
             MultiOutcome::Failed(_)
         ));
     }
@@ -691,7 +721,11 @@ mod tests {
     fn builder_records_the_per_app_delta() {
         let r = PickRequest::open("Insert image", "Insert")
             .thread_name("wp-portal-open")
-            .filter(FileFilter::new("Images").glob("*.png").mimetype("image/png"))
+            .filter(
+                FileFilter::new("Images")
+                    .glob("*.png")
+                    .mimetype("image/png"),
+            )
             .all_files();
         assert_eq!(r.title(), "Insert image");
         assert!(!r.is_multiple());
@@ -699,13 +733,22 @@ mod tests {
         assert_eq!(r.filters[0].name(), "Images");
         assert_eq!(r.filters[0].globs, ["*.png"]);
         assert_eq!(r.filters[0].mimetypes, ["image/png"]);
-        assert_eq!(r.filters[1], FileFilter::all_files(), "escape hatch is last");
+        assert_eq!(
+            r.filters[1],
+            FileFilter::all_files(),
+            "escape hatch is last"
+        );
         assert_eq!(r.thread_name, "wp-portal-open");
 
         assert!(PickRequest::open_multiple("Import contacts", "Import").is_multiple());
         let s = PickRequest::save("Export contacts", "Export", "contacts.vcf");
         assert!(!s.is_multiple());
-        assert_eq!(s.kind, PickKind::Save { suggested_name: "contacts.vcf".into() });
+        assert_eq!(
+            s.kind,
+            PickKind::Save {
+                suggested_name: "contacts.vcf".into()
+            }
+        );
     }
 
     #[cfg(not(feature = "portal"))]

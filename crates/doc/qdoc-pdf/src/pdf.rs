@@ -26,7 +26,9 @@ pub struct ObjId(pub usize);
 
 impl PdfWriter {
     pub fn new() -> Self {
-        Self { objects: Vec::new() }
+        Self {
+            objects: Vec::new(),
+        }
     }
 
     /// Reserve an object slot, returning its id. Body is filled later via

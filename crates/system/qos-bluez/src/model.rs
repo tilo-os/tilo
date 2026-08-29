@@ -249,7 +249,11 @@ pub fn address_from_path(path: &str) -> Option<String> {
     let last = path.rsplit('/').next()?;
     let hex = last.strip_prefix("dev_")?;
     let parts: Vec<&str> = hex.split('_').collect();
-    if parts.len() != 6 || !parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit())) {
+    if parts.len() != 6
+        || !parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+    {
         return None;
     }
     Some(parts.join(":"))
@@ -267,8 +271,14 @@ mod tests {
     #[test]
     fn address_round_trips_through_the_object_path() {
         let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-        assert_eq!(address_from_path(path).as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(path_for_address("/org/bluez/hci0", "AA:BB:CC:DD:EE:FF"), path);
+        assert_eq!(
+            address_from_path(path).as_deref(),
+            Some("AA:BB:CC:DD:EE:FF")
+        );
+        assert_eq!(
+            path_for_address("/org/bluez/hci0", "AA:BB:CC:DD:EE:FF"),
+            path
+        );
     }
 
     #[test]
@@ -281,14 +291,20 @@ mod tests {
             None
         );
         // Non-hex where hex is required.
-        assert_eq!(address_from_path("/org/bluez/hci0/dev_ZZ_BB_CC_DD_EE_FF"), None);
+        assert_eq!(
+            address_from_path("/org/bluez/hci0/dev_ZZ_BB_CC_DD_EE_FF"),
+            None
+        );
     }
 
     #[test]
     fn passkeys_render_zero_padded_to_six_digits() {
         let p = PairingPrompt::ConfirmPasskey { passkey: 12345 };
         assert_eq!(p.passkey_text().as_deref(), Some("012345"));
-        let p = PairingPrompt::DisplayPasskey { passkey: 0, entered: 0 };
+        let p = PairingPrompt::DisplayPasskey {
+            passkey: 0,
+            entered: 0,
+        };
         assert_eq!(p.passkey_text().as_deref(), Some("000000"));
         let p = PairingPrompt::ConfirmPasskey { passkey: 999_999 };
         assert_eq!(p.passkey_text().as_deref(), Some("999999"));
@@ -296,7 +312,13 @@ mod tests {
 
     #[test]
     fn display_prompts_take_no_answer() {
-        assert!(!PairingPrompt::DisplayPasskey { passkey: 1, entered: 0 }.expects_answer());
+        assert!(
+            !PairingPrompt::DisplayPasskey {
+                passkey: 1,
+                entered: 0
+            }
+            .expects_answer()
+        );
         assert!(!PairingPrompt::DisplayPinCode { pin: "0000".into() }.expects_answer());
         assert!(PairingPrompt::ConfirmPasskey { passkey: 1 }.expects_answer());
         assert!(PairingPrompt::ConfirmPairing.expects_answer());
@@ -314,9 +336,18 @@ mod tests {
     #[test]
     fn a_reply_must_answer_the_question_asked() {
         // A yes/no answer to "type the passkey" is not an answer.
-        assert!(!reply_answers(&PairingPrompt::RequestPasskey, &PairingReply::Accept));
-        assert!(reply_answers(&PairingPrompt::RequestPasskey, &PairingReply::Passkey(42)));
-        assert!(reply_answers(&PairingPrompt::RequestPasskey, &PairingReply::Reject));
+        assert!(!reply_answers(
+            &PairingPrompt::RequestPasskey,
+            &PairingReply::Accept
+        ));
+        assert!(reply_answers(
+            &PairingPrompt::RequestPasskey,
+            &PairingReply::Passkey(42)
+        ));
+        assert!(reply_answers(
+            &PairingPrompt::RequestPasskey,
+            &PairingReply::Reject
+        ));
         // And a typed passkey is not an answer to "do these match?".
         assert!(!reply_answers(
             &PairingPrompt::ConfirmPasskey { passkey: 1 },
@@ -326,17 +357,40 @@ mod tests {
             &PairingPrompt::ConfirmPasskey { passkey: 1 },
             &PairingReply::Accept
         ));
-        assert!(reply_answers(&PairingPrompt::RequestPinCode, &PairingReply::PinCode("0000".into())));
-        assert!(!reply_answers(&PairingPrompt::RequestPinCode, &PairingReply::Passkey(0)));
+        assert!(reply_answers(
+            &PairingPrompt::RequestPinCode,
+            &PairingReply::PinCode("0000".into())
+        ));
+        assert!(!reply_answers(
+            &PairingPrompt::RequestPinCode,
+            &PairingReply::Passkey(0)
+        ));
     }
 
     #[test]
     fn devices_sort_connected_then_paired_then_by_signal() {
         let mut v = vec![
-            DeviceInfo { name: "far".into(), rssi: Some(-90), ..Default::default() },
-            DeviceInfo { name: "paired".into(), paired: true, ..Default::default() },
-            DeviceInfo { name: "near".into(), rssi: Some(-40), ..Default::default() },
-            DeviceInfo { name: "live".into(), connected: true, paired: true, ..Default::default() },
+            DeviceInfo {
+                name: "far".into(),
+                rssi: Some(-90),
+                ..Default::default()
+            },
+            DeviceInfo {
+                name: "paired".into(),
+                paired: true,
+                ..Default::default()
+            },
+            DeviceInfo {
+                name: "near".into(),
+                rssi: Some(-40),
+                ..Default::default()
+            },
+            DeviceInfo {
+                name: "live".into(),
+                connected: true,
+                paired: true,
+                ..Default::default()
+            },
         ];
         sort_devices(&mut v);
         let order: Vec<&str> = v.iter().map(|d| d.name.as_str()).collect();
@@ -346,8 +400,16 @@ mod tests {
     #[test]
     fn unknown_signal_sorts_after_every_known_one() {
         let mut v = vec![
-            DeviceInfo { name: "silent".into(), rssi: None, ..Default::default() },
-            DeviceInfo { name: "weak".into(), rssi: Some(-99), ..Default::default() },
+            DeviceInfo {
+                name: "silent".into(),
+                rssi: None,
+                ..Default::default()
+            },
+            DeviceInfo {
+                name: "weak".into(),
+                rssi: Some(-99),
+                ..Default::default()
+            },
         ];
         sort_devices(&mut v);
         assert_eq!(v[0].name, "weak");

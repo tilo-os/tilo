@@ -123,8 +123,14 @@ mod tests {
             assert_eq!(PowerAction::from_label(a.label()), Some(a));
         }
         // Case-insensitive and tolerant of synonyms for "ignore".
-        assert_eq!(PowerAction::from_label("SUSPEND"), Some(PowerAction::Suspend));
-        assert_eq!(PowerAction::from_label("nothing"), Some(PowerAction::Ignore));
+        assert_eq!(
+            PowerAction::from_label("SUSPEND"),
+            Some(PowerAction::Suspend)
+        );
+        assert_eq!(
+            PowerAction::from_label("nothing"),
+            Some(PowerAction::Ignore)
+        );
         assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
         assert_eq!(PowerAction::from_label("garbage"), None);
     }

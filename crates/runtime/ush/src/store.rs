@@ -114,10 +114,7 @@ impl Store {
 
     /// An ephemeral layer for one session.
     pub fn ephemeral_layer(&self, session_id: &str) -> Layer {
-        Layer::new(
-            self.ephemeral_dir().join(session_id),
-            LayerKind::Ephemeral,
-        )
+        Layer::new(self.ephemeral_dir().join(session_id), LayerKind::Ephemeral)
     }
 
     /// Every ephemeral layer currently on disk, newest name last.
@@ -175,7 +172,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("ush"));
         store.ensure().unwrap();
-        let mode = std::fs::metadata(store.root()).unwrap().permissions().mode();
+        let mode = std::fs::metadata(store.root())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(
             mode & 0o077,
             0,

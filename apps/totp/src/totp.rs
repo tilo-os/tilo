@@ -119,7 +119,11 @@ pub fn group_code(code: &str) -> String {
     if b.is_empty() {
         a.iter().collect()
     } else {
-        format!("{}\u{2009}{}", a.iter().collect::<String>(), b.iter().collect::<String>())
+        format!(
+            "{}\u{2009}{}",
+            a.iter().collect::<String>(),
+            b.iter().collect::<String>()
+        )
     }
 }
 
@@ -197,7 +201,13 @@ mod tests {
 
     #[test]
     fn group_code_inserts_a_thin_space() {
-        assert_eq!(group_code("123456").chars().filter(|c| c.is_ascii_digit()).count(), 6);
+        assert_eq!(
+            group_code("123456")
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .count(),
+            6
+        );
         assert!(group_code("123456").contains('\u{2009}'));
         assert!(group_code("12345678").contains('\u{2009}'));
     }

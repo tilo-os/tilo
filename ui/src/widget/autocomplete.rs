@@ -24,13 +24,13 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -56,12 +56,22 @@ impl Suggestion {
     /// A suggestion whose visible label is its inserted value.
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
-        Self { label: value.clone(), value, detail: None, icon: None }
+        Self {
+            label: value.clone(),
+            value,
+            detail: None,
+            icon: None,
+        }
     }
 
     /// A suggestion whose visible label differs from the inserted value.
     pub fn labelled(value: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { value: value.into(), label: label.into(), detail: None, icon: None }
+        Self {
+            value: value.into(),
+            label: label.into(),
+            detail: None,
+            icon: None,
+        }
     }
 
     pub fn with_icon(mut self, icon: Icon) -> Self {
@@ -305,7 +315,11 @@ impl Autocomplete {
 
     /// Keeps the edit open so the user can drill further.
     fn complete_to_highlight(&mut self) {
-        let idx = self.highlight.or(if self.suggestions.is_empty() { None } else { Some(0) });
+        let idx = self.highlight.or(if self.suggestions.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
         if let Some(i) = idx
             && let Some(s) = self.suggestions.get(i)
         {
@@ -369,7 +383,8 @@ impl Autocomplete {
         if !panel.contains(pt) {
             return None;
         }
-        (0..self.suggestions.len().min(self.max_visible)).find(|&i| self.row_rect(panel, i).contains(pt))
+        (0..self.suggestions.len().min(self.max_visible))
+            .find(|&i| self.row_rect(panel, i).contains(pt))
     }
 }
 
@@ -390,7 +405,10 @@ impl Widget for Autocomplete {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::length(34.0) },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(34.0),
+                },
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 ..Default::default()
@@ -421,7 +439,8 @@ impl Widget for Autocomplete {
     ) {
         // The field itself; the suggestion list floats in `draw_overlay`.
         self.input.apply_layout_external(self.rect);
-        self.input.draw(scene, transform, text_renderer, theme, presence);
+        self.input
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(
@@ -432,13 +451,27 @@ impl Widget for Autocomplete {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let Some(panel) = self.dropdown_rect() else { return };
+        let Some(panel) = self.dropdown_rect() else {
+            return;
+        };
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, tokens.radii.md as f64);
         // Raised panel + hairline border, matching the toolkit's other popovers.
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &shape,
+        );
 
         let text_size = tokens.typography.scale.base;
         let detail_size = tokens.typography.scale.sm;
@@ -480,8 +513,14 @@ impl Widget for Autocomplete {
                     &RoundedRect::from_rect(row, tokens.radii.sm as f64),
                 );
             }
-            let on_accent = tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
-            let text_color = if armed { on_accent } else { tokens.colors.text_primary };
+            let on_accent = tokens
+                .colors
+                .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+            let text_color = if armed {
+                on_accent
+            } else {
+                tokens.colors.text_primary
+            };
             // 80% white alpha on a bright accent drops an already-marginal
             // label below legible, so soften toward the fill instead, held
             // to the contrast floor.
@@ -502,7 +541,11 @@ impl Widget for Autocomplete {
                     transform,
                     Rect::new(x, iy, x + ICON_PX, iy + ICON_PX),
                     icon,
-                    if armed { on_accent } else { tokens.colors.text_dim },
+                    if armed {
+                        on_accent
+                    } else {
+                        tokens.colors.text_dim
+                    },
                     LUCIDE_DEFAULT_STROKE_PX,
                 );
                 x += ICON_PX + 10.0;
@@ -518,7 +561,8 @@ impl Widget for Autocomplete {
                     detail,
                     detail_size,
                     dim_color,
-                    transform * Affine::translate((dx, row.y0 + (ROW_H - detail_size as f64) / 2.0)),
+                    transform
+                        * Affine::translate((dx, row.y0 + (ROW_H - detail_size as f64) / 2.0)),
                     None,
                 );
                 label_x1 = dx - 8.0;
@@ -557,7 +601,12 @@ impl Widget for Autocomplete {
             // Navigation / accept / cancel keys the field itself never consumes,
             // so the wrapper owns them. Intercept before forwarding.
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => match logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
@@ -587,8 +636,15 @@ impl Widget for Autocomplete {
                 _ => {
                     // Forward to the field, then recompute if the text changed.
                     self.input.handle_event(
-                        event, scale_factor, modifiers, state, root, handled, focus_target,
-                        node_id, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        root,
+                        handled,
+                        focus_target,
+                        node_id,
+                        taffy,
                     );
                     if self.input.take_dirty().is_some() {
                         self.recompute();
@@ -616,13 +672,23 @@ impl Widget for Autocomplete {
                 button: MouseButton::Left,
                 ..
             } if !self.rect.contains(self.last_pointer)
-                && self.dropdown_rect().map(|r| !r.contains(self.last_pointer)).unwrap_or(true) =>
+                && self
+                    .dropdown_rect()
+                    .map(|r| !r.contains(self.last_pointer))
+                    .unwrap_or(true) =>
             {
                 self.cancel();
             }
             _ => {
                 self.input.handle_event(
-                    event, scale_factor, modifiers, state, root, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
                 if self.input.take_dirty().is_some() {
@@ -701,8 +767,9 @@ mod tests {
     fn char_key(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -717,8 +784,9 @@ mod tests {
     fn named(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -752,8 +820,15 @@ mod tests {
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut doc = AutoCommit::new();
         ac.handle_event(
-            ev, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled,
-            &mut focus_target, node, &taffy,
+            ev,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -764,7 +839,11 @@ mod tests {
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
         drive(&mut ac, &char_key("a"));
-        assert_eq!(ac.input.selection_range_public(), None, "no selection after first char");
+        assert_eq!(
+            ac.input.selection_range_public(),
+            None,
+            "no selection after first char"
+        );
         drive(&mut ac, &char_key("b"));
         drive(&mut ac, &char_key("c"));
         assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
@@ -775,7 +854,11 @@ mod tests {
         let mut ac = Autocomplete::new();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
-        assert_eq!(ac.input.selection_range_public(), None, "empty focus = no selection");
+        assert_eq!(
+            ac.input.selection_range_public(),
+            None,
+            "empty focus = no selection"
+        );
     }
 
     #[test]
@@ -786,9 +869,17 @@ mod tests {
         drive(&mut ac, &char_key("a")); // field now holds "a"
         assert_eq!(ac.text(), "a");
         ac.begin_edit();
-        assert_eq!(ac.input.selection_range_public(), None, "typed text is not re-selected");
+        assert_eq!(
+            ac.input.selection_range_public(),
+            None,
+            "typed text is not re-selected"
+        );
         drive(&mut ac, &char_key("l"));
-        assert_eq!(ac.text(), "al", "second char appends — the first letter survives");
+        assert_eq!(
+            ac.text(),
+            "al",
+            "second char appends — the first letter survives"
+        );
     }
 
     #[test]
@@ -805,7 +896,11 @@ mod tests {
             "fresh entry into a pre-seeded field selects the whole value",
         );
         drive(&mut ac, &char_key("x"));
-        assert_eq!(ac.text(), "x", "the first keystroke replaces the selected seed");
+        assert_eq!(
+            ac.text(),
+            "x",
+            "the first keystroke replaces the selected seed"
+        );
     }
 
     #[test]
@@ -838,7 +933,10 @@ mod tests {
         assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
         assert_eq!(ac.highlighted().unwrap().value, "album");
         assert!(drive(&mut ac, &named(NamedKey::Enter)));
-        assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("album".into()));
+        assert_eq!(
+            ac.take_outcome(),
+            AutocompleteOutcome::Accepted("album".into())
+        );
         assert_eq!(ac.text(), "album", "accepted value loaded into the field");
         assert!(!ac.is_open(), "accept closes the dropdown");
     }
@@ -876,7 +974,10 @@ mod tests {
         let c = row.center();
         drive(&mut ac, &mouse_move(c.x, c.y));
         assert!(drive(&mut ac, &left_press()));
-        assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("album".into()));
+        assert_eq!(
+            ac.take_outcome(),
+            AutocompleteOutcome::Accepted("album".into())
+        );
     }
 
     #[test]
@@ -888,7 +989,11 @@ mod tests {
         // Tab fills the field with the first suggestion but does not commit.
         assert!(drive(&mut ac, &named(NamedKey::Tab)));
         assert_eq!(ac.text(), "alpha");
-        assert_eq!(ac.take_outcome(), AutocompleteOutcome::None, "Tab is not an accept");
+        assert_eq!(
+            ac.take_outcome(),
+            AutocompleteOutcome::None,
+            "Tab is not an accept"
+        );
     }
 
     #[test]
@@ -927,7 +1032,10 @@ mod tests {
         let panel = ac.dropdown_rect().expect("status keeps the dropdown open");
         assert!(panel.height() > 0.0);
         assert!(ac.highlighted().is_none());
-        assert!(ac.row_at(panel.center()).is_none(), "the status line is not a row");
+        assert!(
+            ac.row_at(panel.center()).is_none(),
+            "the status line is not a row"
+        );
     }
 
     #[test]

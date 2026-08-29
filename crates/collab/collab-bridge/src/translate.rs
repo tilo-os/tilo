@@ -45,10 +45,7 @@ pub fn decode_key(bytes: &[u8]) -> Option<PresenceKey> {
 /// Builds a `Presence` request from a keyBytes + payload pair, decoding
 /// the postcard key into a typed variant; `None` if the key fails to
 /// decode, so the caller logs and drops the frame.
-pub fn presence_request(
-    key_bytes: &[u8],
-    payload: PresencePayload,
-) -> Option<CollabRequest> {
+pub fn presence_request(key_bytes: &[u8], payload: PresencePayload) -> Option<CollabRequest> {
     let key = decode_key(key_bytes)?;
     Some(CollabRequest::Presence { key, payload })
 }
@@ -75,7 +72,9 @@ mod tests {
     fn hello_pairs_channel_id_and_identity() {
         let req = hello_from_join("chan-42", b"i");
         match req {
-            CollabRequest::Hello { app_id, cluster_id, .. } => {
+            CollabRequest::Hello {
+                app_id, cluster_id, ..
+            } => {
                 assert_eq!(app_id, "chan-42");
                 assert_eq!(cluster_id, cluster_id_from_identity(b"i"));
             }

@@ -81,8 +81,12 @@ fn main() -> anyhow::Result<()> {
         PermissionContext::from_capabilities(
             Actor::agent(&cli.name),
             vec![
-                CapOverride::grant(Subject::agent(&cli.name), Scope::App(cli.app.clone()), Verb::Write)
-                    .with_id("invited"),
+                CapOverride::grant(
+                    Subject::agent(&cli.name),
+                    Scope::App(cli.app.clone()),
+                    Verb::Write,
+                )
+                .with_id("invited"),
             ],
         )
     };

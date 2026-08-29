@@ -80,7 +80,13 @@ fn draw_chip(
         None,
         &RoundedRect::new(x + 1.0, y + 2.0, x + w + 1.0, y + CHIP_H + 3.0, 8.0),
     );
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_primary, None, &rect);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.bg_primary,
+        None,
+        &rect,
+    );
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         Affine::IDENTITY,
@@ -114,7 +120,13 @@ fn draw_cursor(scene: &mut Scene, at: Point, theme: &Theme) {
     p.line_to((at.x + h * 0.43, at.y + h * 0.66));
     p.line_to((at.x + h * 0.72, at.y + h * 0.64));
     p.close_path();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.text_primary, None, &p);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.text_primary,
+        None,
+        &p,
+    );
     scene.stroke(
         &vello::kurbo::Stroke::new(1.2),
         Affine::IDENTITY,
@@ -253,14 +265,21 @@ mod tests {
             name_from_uri_list(b"# comment\r\nfile:///a.png\r\nfile:///b.png\r\n").as_deref(),
             Some("2 items")
         );
-        assert_eq!(name_from_uri_list(b""), None, "nothing usable leaves the chip alone");
+        assert_eq!(
+            name_from_uri_list(b""),
+            None,
+            "nothing usable leaves the chip alone"
+        );
         assert_eq!(name_from_uri_list(b"# only a comment\r\n"), None);
     }
 
     /// A drag the compositor owns knows the real name, and should use it.
     #[test]
     fn paths_are_named_by_their_file_name() {
-        assert_eq!(label_for_paths(&[PathBuf::from("/w/Demo/photo.png")]), "photo.png");
+        assert_eq!(
+            label_for_paths(&[PathBuf::from("/w/Demo/photo.png")]),
+            "photo.png"
+        );
         assert_eq!(
             label_for_paths(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
             "2 items"

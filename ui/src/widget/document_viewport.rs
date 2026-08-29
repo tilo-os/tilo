@@ -27,8 +27,8 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Element, Widget};
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::{Element, Widget};
 
 /// Default lower zoom bound (25 %).
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
@@ -168,7 +168,11 @@ impl ViewportState {
 
     /// Override how content is aligned along each axis when it is smaller
     /// than the viewport on that axis.
-    pub fn with_alignment(mut self, align_x: SmallContentAlign, align_y: SmallContentAlign) -> Self {
+    pub fn with_alignment(
+        mut self,
+        align_x: SmallContentAlign,
+        align_y: SmallContentAlign,
+    ) -> Self {
         self.align_x = align_x;
         self.align_y = align_y;
         self
@@ -322,7 +326,12 @@ impl ViewportState {
     /// document or empty viewport margin.
     pub fn content_contains_screen(&self, p: Point) -> bool {
         let o = self.content_origin();
-        let r = Rect::new(o.x, o.y, o.x + self.content_w * self.zoom, o.y + self.content_h * self.zoom);
+        let r = Rect::new(
+            o.x,
+            o.y,
+            o.x + self.content_w * self.zoom,
+            o.y + self.content_h * self.zoom,
+        );
         r.contains(p)
     }
 
@@ -616,10 +625,18 @@ impl ViewportState {
     }
 
     fn h_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.scaled_content_width(), self.rect.width(), self.scroll_x)
+        ScrollMetrics::new(
+            self.scaled_content_width(),
+            self.rect.width(),
+            self.scroll_x,
+        )
     }
     fn v_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.scaled_content_height(), self.rect.height(), self.scroll_y)
+        ScrollMetrics::new(
+            self.scaled_content_height(),
+            self.rect.height(),
+            self.scroll_y,
+        )
     }
 
     /// The horizontal scrollbar thumb rect (screen space), or `None` when
@@ -739,11 +756,23 @@ impl ViewportState {
         let active = theme.tokens.colors.text_dim.with_alpha_factor(0.85);
         if let Some(r) = self.h_scrollbar_thumb() {
             let c = if self.hbar.is_active() { active } else { idle };
-            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c,
+                None,
+                &RoundedRect::from_rect(r, radius),
+            );
         }
         if let Some(r) = self.v_scrollbar_thumb() {
             let c = if self.vbar.is_active() { active } else { idle };
-            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c,
+                None,
+                &RoundedRect::from_rect(r, radius),
+            );
         }
     }
 }
@@ -827,7 +856,11 @@ impl DocumentViewport {
     }
 
     /// Override small-content alignment (forwards to the kernel builder).
-    pub fn with_alignment(mut self, align_x: SmallContentAlign, align_y: SmallContentAlign) -> Self {
+    pub fn with_alignment(
+        mut self,
+        align_x: SmallContentAlign,
+        align_y: SmallContentAlign,
+    ) -> Self {
         self.state = self.state.with_alignment(align_x, align_y);
         self
     }
@@ -987,7 +1020,15 @@ impl Widget for DocumentViewport {
                     // Let the wrapped child take the press next (e.g. a
                     // button on the canvas); only start a pan if it didn't.
                     if let Content::Widget(_) = &self.content {
-                        self.route_to_child(event, scale_factor, modifiers, state, path, handled, focus_target);
+                        self.route_to_child(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            handled,
+                            focus_target,
+                        );
                         if *handled {
                             return;
                         }
@@ -1024,10 +1065,13 @@ impl Widget for DocumentViewport {
                     return;
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed
-                    && self.state.on_key(&key_event.logical_key, &modifiers.state()) =>
-                {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed
+                && self
+                    .state
+                    .on_key(&key_event.logical_key, &modifiers.state()) =>
+            {
                 self.dirty = true;
                 *handled = true;
                 return;
@@ -1035,7 +1079,15 @@ impl Widget for DocumentViewport {
             _ => {}
         }
         if !*handled {
-            self.route_to_child(event, scale_factor, modifiers, state, path, handled, focus_target);
+            self.route_to_child(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+            );
         }
     }
 
@@ -1087,9 +1139,11 @@ impl DocumentViewport {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) {
-        let (Content::Widget(c), Some(taffy), Some(node)) =
-            (&mut self.content, self.inner_taffy.as_ref(), self.content_node)
-        else {
+        let (Content::Widget(c), Some(taffy), Some(node)) = (
+            &mut self.content,
+            self.inner_taffy.as_ref(),
+            self.content_node,
+        ) else {
             return;
         };
         c.handle_event(
@@ -1131,8 +1185,18 @@ mod tests {
         ] {
             let screen = v.content_point_to_screen(p);
             let back = v.screen_to_content(screen);
-            assert!((back.x - p.x).abs() < 1e-6, "x round-trip: {} vs {}", back.x, p.x);
-            assert!((back.y - p.y).abs() < 1e-6, "y round-trip: {} vs {}", back.y, p.y);
+            assert!(
+                (back.x - p.x).abs() < 1e-6,
+                "x round-trip: {} vs {}",
+                back.x,
+                p.x
+            );
+            assert!(
+                (back.y - p.y).abs() < 1e-6,
+                "y round-trip: {} vs {}",
+                back.y,
+                p.y
+            );
         }
     }
 
@@ -1267,7 +1331,9 @@ mod tests {
         v.reset_to_fit();
         // At fit zoom the content fits inside the viewport on both axes.
         assert!(!v.overflows_x() || v.zoom() == v.zoom_bounds().0);
-        assert!(v.scaled_content_height() <= v.rect().height() + 1.0 || v.zoom() == v.zoom_bounds().0);
+        assert!(
+            v.scaled_content_height() <= v.rect().height() + 1.0 || v.zoom() == v.zoom_bounds().0
+        );
         assert_eq!(v.scroll_x(), 0.0);
         assert_eq!(v.scroll_y(), 0.0);
     }
@@ -1307,7 +1373,10 @@ mod tests {
         // Bottom: thumb sits at the track end.
         v.set_scroll(0.0, v.max_scroll_y());
         let bottom = v.v_scrollbar_thumb().unwrap();
-        assert!(bottom.y0 > top.y0, "v-thumb moves down as content scrolls down");
+        assert!(
+            bottom.y0 > top.y0,
+            "v-thumb moves down as content scrolls down"
+        );
     }
 
     #[test]
@@ -1329,7 +1398,10 @@ mod tests {
         assert!(v.scroll_y() <= v.max_scroll_y(), "stays clamped");
         // A huge drag clamps at the bottom.
         v.drag_scrollbar(Point::new(mid.x, mid.y + 100_000.0));
-        assert!((v.scroll_y() - v.max_scroll_y()).abs() < 1.0, "clamped to bottom");
+        assert!(
+            (v.scroll_y() - v.max_scroll_y()).abs() < 1.0,
+            "clamped to bottom"
+        );
         assert!(v.release_scrollbar(), "release ends the drag");
         assert!(!v.scrollbar_dragging());
     }
@@ -1343,7 +1415,11 @@ mod tests {
         let below = Point::new((thumb.x0 + thumb.x1) / 2.0, thumb.y1 + 5.0);
         assert!(v.press_scrollbar(below), "track click consumed");
         assert!(!v.scrollbar_dragging(), "track click is not a drag");
-        assert!(v.scroll_y() > 0.0, "paged down toward the click: {}", v.scroll_y());
+        assert!(
+            v.scroll_y() > 0.0,
+            "paged down toward the click: {}",
+            v.scroll_y()
+        );
     }
 
     #[test]
@@ -1351,7 +1427,10 @@ mod tests {
         let mut v = kernel();
         v.set_zoom(3.0);
         // Middle of the viewport, far from either edge bar → pan is free.
-        assert!(!v.press_scrollbar(Point::new(400.0, 300.0)), "content press leaves pan free");
+        assert!(
+            !v.press_scrollbar(Point::new(400.0, 300.0)),
+            "content press leaves pan free"
+        );
         assert!(!v.scrollbar_dragging());
     }
 
@@ -1364,7 +1443,11 @@ mod tests {
         let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
         assert!(v.press_scrollbar(mid), "press on the h-thumb is consumed");
         v.drag_scrollbar(Point::new(mid.x + 80.0, mid.y));
-        assert!(v.scroll_x() > 0.0, "h-thumb drag scrolls x: {}", v.scroll_x());
+        assert!(
+            v.scroll_x() > 0.0,
+            "h-thumb drag scrolls x: {}",
+            v.scroll_x()
+        );
         assert!(v.release_scrollbar());
     }
 
@@ -1378,8 +1461,14 @@ mod tests {
         v.update_pan(Point::new(401.0, 300.0));
         // Big move: content tracks the cursor (scroll decreases by drag delta).
         v.update_pan(Point::new(450.0, 360.0));
-        assert!((v.scroll_x() - (100.0 - 50.0)).abs() < 1e-6, "x tracks drag");
-        assert!((v.scroll_y() - (100.0 - 60.0)).abs() < 1e-6, "y tracks drag");
+        assert!(
+            (v.scroll_x() - (100.0 - 50.0)).abs() < 1e-6,
+            "x tracks drag"
+        );
+        assert!(
+            (v.scroll_y() - (100.0 - 60.0)).abs() < 1e-6,
+            "y tracks drag"
+        );
         assert!(v.end_pan(), "a real drag reports movement");
     }
 
@@ -1420,7 +1509,10 @@ mod tests {
         let origin = v.content_origin();
         let c = v.screen_to_content(origin);
         assert!(c.x.abs() < 1e-6 && c.y.abs() < 1e-6);
-        assert!(v.content_contains_screen(origin), "origin is inside content");
+        assert!(
+            v.content_contains_screen(origin),
+            "origin is inside content"
+        );
         // Far above the content is outside.
         assert!(!v.content_contains_screen(Point::new(origin.x, origin.y - 50.0)));
     }

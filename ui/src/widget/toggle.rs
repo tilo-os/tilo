@@ -1,13 +1,13 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Circle, Rect, Point, Stroke};
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub struct Toggle {
     _id: String,
@@ -96,7 +96,12 @@ pub fn toggle_face_colors(
     theme: &Theme,
     on: bool,
     interact: ToggleInteract,
-) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
+) -> (
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    f64,
+) {
     let track = if on {
         theme.accent_primary
     } else {
@@ -115,7 +120,10 @@ pub fn toggle_face_colors(
     );
     let knob = if interact.hovered {
         let reached = crate::a11y::contrast_ratio(knob, track);
-        theme.tokens.colors.ink_on_any(&[track], knob, reached * HOVER_KNOB_GAIN)
+        theme
+            .tokens
+            .colors
+            .ink_on_any(&[track], knob, reached * HOVER_KNOB_GAIN)
     } else {
         knob
     };
@@ -135,12 +143,33 @@ pub struct ToggleFace {
 
 impl ToggleFace {
     pub fn new(rect: Rect, on: bool) -> Self {
-        Self { rect, on, interact: ToggleInteract::default() }
+        Self {
+            rect,
+            on,
+            interact: ToggleInteract::default(),
+        }
     }
-    pub fn hovered(mut self, v: bool) -> Self { self.interact.hovered = v; self }
-    pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
-    pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
-    pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.interact.hovered = v;
+        self
+    }
+    pub fn focused(mut self, v: bool) -> Self {
+        self.interact.focused = v;
+        self
+    }
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.interact.disabled = v;
+        self
+    }
+    pub fn colors(
+        &self,
+        theme: &Theme,
+    ) -> (
+        vello::peniko::Color,
+        vello::peniko::Color,
+        vello::peniko::Color,
+        f64,
+    ) {
         toggle_face_colors(theme, self.on, self.interact)
     }
 }
@@ -149,12 +178,7 @@ impl Toggle {
     /// Paints a themed switch inside `face.rect`, matching the retained
     /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
     /// palette ([`toggle_face_colors`]) is shared.
-    pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        face: &ToggleFace,
-    ) {
+    pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &ToggleFace) {
         let (track, knob, border, border_w) = toggle_face_colors(theme, face.on, face.interact);
         let radius = face.rect.height() / 2.0;
         let track_shape = RoundedRect::from_rect(face.rect, radius);
@@ -168,8 +192,20 @@ impl Toggle {
                 &track_shape,
             );
         }
-        scene.fill(vello::peniko::Fill::NonZero, transform, track, None, &track_shape);
-        scene.stroke(&Stroke::new(border_w), transform, border, None, &track_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            track,
+            None,
+            &track_shape,
+        );
+        scene.stroke(
+            &Stroke::new(border_w),
+            transform,
+            border,
+            None,
+            &track_shape,
+        );
         // 2-px edge gap; matches the retained widget's 44×24 default (r = 10).
         let kr = (radius - 2.0).max(1.0);
         let cy = face.rect.y0 + face.rect.height() / 2.0;
@@ -201,14 +237,21 @@ impl Widget for Toggle {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::length(44.0),
-                height: Dimension::length(24.0),
-            },
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(44.0),
+                    height: Dimension::length(24.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -223,11 +266,24 @@ impl Widget for Toggle {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         let disabled = !self.enabled;
         if disabled {
             let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
-            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &clip,
+            );
         }
         let interact = ToggleInteract {
             hovered: self.is_hovered,
@@ -238,9 +294,21 @@ impl Widget for Toggle {
             toggle_face_colors(theme, self.is_checked, interact);
 
         let track_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
-        scene.fill(vello::peniko::Fill::NonZero, transform, track_color, None, &track_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            track_color,
+            None,
+            &track_shape,
+        );
 
-        scene.stroke(&Stroke::new(stroke_w), transform, stroke_color, None, &track_shape);
+        scene.stroke(
+            &Stroke::new(stroke_w),
+            transform,
+            stroke_color,
+            None,
+            &track_shape,
+        );
 
         let knob_radius = 10.0;
         let knob_x = if self.is_checked {
@@ -251,15 +319,34 @@ impl Widget for Toggle {
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
 
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            knob_color,
+            None,
+            &knob_shape,
+        );
 
         if disabled {
             scene.pop_layer();
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
-        if !self.enabled { return; }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -269,13 +356,19 @@ impl Widget for Toggle {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. }
-                if self.is_hovered && *element_state == ElementState::Pressed =>
-            {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *handled = true;
                 *focus_target = Some(node_id);
                 let new_val = !self.is_checked;
-                let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
+                let _ = state.put(
+                    root,
+                    self.on_toggle_path.as_str(),
+                    automerge::ScalarValue::Boolean(new_val),
+                );
                 // Set now, not on next sync: focus narration triggered by
                 // this same click must not speak the pre-click state.
                 self.is_checked = new_val;
@@ -284,7 +377,9 @@ impl Widget for Toggle {
         }
     }
 
-    fn name(&self) -> &str { "Toggle" }
+    fn name(&self) -> &str {
+        "Toggle"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("toggle"))
@@ -294,10 +389,18 @@ impl Widget for Toggle {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     /// AT/keyboard activation (Enter/Space route to `Activate`/`ToggleCheck`
     /// upstream) — same mutation as the mouse path.
@@ -350,7 +453,9 @@ impl Widget for Toggle {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -367,14 +472,22 @@ impl Widget for Toggle {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -407,7 +520,10 @@ mod tests {
     fn with_enabled_false_is_reported_by_is_enabled() {
         let t = Toggle::new("any", "path").with_enabled(false);
         assert!(!Widget::is_enabled(&t));
-        assert!(Widget::is_enabled(&Toggle::new("any", "path")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Toggle::new("any", "path")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -441,7 +557,10 @@ mod tests {
         let off = toggle_face_colors(&theme, false, ToggleInteract::default());
         let on = toggle_face_colors(&theme, true, ToggleInteract::default());
         assert_eq!(on.0, theme.accent_primary, "on-track is the accent fill");
-        assert_eq!(off.0, theme.tokens.colors.neutral[3], "off-track is neutral");
+        assert_eq!(
+            off.0, theme.tokens.colors.neutral[3],
+            "off-track is neutral"
+        );
         assert_ne!(on.0, off.0, "on and off tracks must differ");
     }
 
@@ -452,9 +571,15 @@ mod tests {
         let focused = toggle_face_colors(
             &theme,
             true,
-            ToggleInteract { focused: true, ..Default::default() },
+            ToggleInteract {
+                focused: true,
+                ..Default::default()
+            },
         );
-        assert_eq!(focused.2, theme.border_focus, "focused border is the focus ring colour");
+        assert_eq!(
+            focused.2, theme.border_focus,
+            "focused border is the focus ring colour"
+        );
         assert_eq!(focused.3, 2.0, "focused border is 2px");
         assert_eq!(rest.2, theme.tokens.colors.border_standard);
         assert_eq!(rest.3, 1.0);
@@ -466,7 +591,14 @@ mod tests {
         let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).hovered(true);
         assert_eq!(
             face.colors(&theme),
-            toggle_face_colors(&theme, true, ToggleInteract { hovered: true, ..Default::default() }),
+            toggle_face_colors(
+                &theme,
+                true,
+                ToggleInteract {
+                    hovered: true,
+                    ..Default::default()
+                }
+            ),
         );
     }
 
@@ -498,12 +630,33 @@ mod tests {
         let mut handled = false;
 
         t.handle_event(
-            &WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
         t.handle_event(
-            &WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
 
         assert!(focus.is_none(), "disabled toggle must not request focus");

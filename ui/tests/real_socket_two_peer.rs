@@ -23,9 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use ui::collaboration::{
-    CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
-};
+use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::presence::PresenceKey;
 
 /// Returns `None` on EOF / broken pipe — the broker treats that as the peer closing.
@@ -49,13 +47,12 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 #[serial_test::serial(quick_collab_sock)]
 fn real_socket_fans_out_incremental_and_presence() {
     // Per-pid temp socket path so parallel test runs don't collide.
-    let socket_path = std::env::temp_dir()
-        .join(format!("quick-collab-{}.sock", std::process::id()));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-{}.sock", std::process::id()));
     // Best-effort cleanup in case a prior run left a stale inode.
     let _ = std::fs::remove_file(&socket_path);
 
-    let listener = UnixListener::bind(&socket_path)
-        .expect("bind UnixListener for broker");
+    let listener = UnixListener::bind(&socket_path).expect("bind UnixListener for broker");
 
     // The broker accepts 2 connections, spawns a reader per connection, and
     // fans requests to the opposite peer.
@@ -89,27 +86,20 @@ fn real_socket_fans_out_incremental_and_presence() {
         drop(fwd_tx);
 
         while let Ok((src_idx, frame)) = fwd_rx.recv() {
-            let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame)
-            else {
+            let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
                 continue; // bad frame — skip
             };
 
             // Map request → event. `Hello` is swallowed (no fan-out).
             let event = match req {
                 CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => {
-                    CollabEvent::CRDTIncremental { data }
-                }
-                CollabRequest::SyncCRDT { data } => {
-                    CollabEvent::CRDTUpdate { data }
-                }
-                CollabRequest::Presence { key, payload } => {
-                    CollabEvent::RemotePresenceUpdate {
-                        user_id: format!("peer-{src_idx}"),
-                        key,
-                        payload,
-                    }
-                }
+                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
+                CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
+                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
+                    user_id: format!("peer-{src_idx}"),
+                    key,
+                    payload,
+                },
                 // Not part of this two-peer plaintext scenario — swallow like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. } => continue,
@@ -186,14 +176,16 @@ fn real_socket_fans_out_incremental_and_presence() {
     thread::sleep(Duration::from_millis(100));
 
     let events_b = peer_b.poll();
-    let presence_match = events_b.iter().any(|e| matches!(
-        e,
-        CollabEvent::RemotePresenceUpdate {
-            user_id,
-            key: PresenceKey::Workspace { id },
-            payload: PresencePayload::Arrived,
-        } if user_id == "peer-0" && id == "77"
-    ));
+    let presence_match = events_b.iter().any(|e| {
+        matches!(
+            e,
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key: PresenceKey::Workspace { id },
+                payload: PresencePayload::Arrived,
+            } if user_id == "peer-0" && id == "77"
+        )
+    });
     assert!(
         presence_match,
         "peer B should see RemotePresenceUpdate tagged peer-0 for Workspace 77, got events={events_b:?}"
@@ -204,9 +196,7 @@ fn real_socket_fans_out_incremental_and_presence() {
     drop(peer_a);
     drop(peer_b);
 
-    broker
-        .join()
-        .expect("broker thread panicked");
+    broker.join().expect("broker thread panicked");
 
     // Best-effort again in case the broker never reached its own cleanup.
     let _ = std::fs::remove_file(&socket_path);

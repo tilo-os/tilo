@@ -15,13 +15,15 @@
 //! I wired up correctly" smoke check.
 
 use crate::support::offscreen::OffscreenRenderer;
+use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 #[test]
@@ -102,7 +104,11 @@ fn headless_renderer_writes_a_png_file() {
 
     // Cheapest possible signature check — PNGs start with 0x89 P N G.
     let bytes = std::fs::read(&out).expect("read PNG");
-    assert_eq!(&bytes[..4], b"\x89PNG", "file must start with PNG signature");
+    assert_eq!(
+        &bytes[..4],
+        b"\x89PNG",
+        "file must start with PNG signature"
+    );
 
     let _ = std::fs::remove_file(&out);
 }
@@ -112,12 +118,12 @@ fn headless_renderer_captures_a_widget_tree() {
     // Drives a real widget through `build_layout` → taffy compute →
     // `apply_layout` → `draw`, proving the offscreen harness can be pointed
     // at the actual widget pipeline.
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use ui::widget::{Container, Widget};
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
     let (w, h) = (160, 80);
     let mut renderer = match try_new_renderer(w, h) {
@@ -187,12 +193,12 @@ fn headless_renderer_captures_a_widget_tree() {
 /// extends there, though the per-pill drop shadow may darken the base.
 #[test]
 fn tab_bar_renders_pills_inside_six_px_insets() {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use ui::widget::{TabBar, TabDescriptor, Widget};
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
     // 240 wide gives us room for the first 96 px min-width pill + gap;
     // 40 tall matches TAB_BAR_HEIGHT exactly.
@@ -205,10 +211,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         }
     };
 
-    let tabs = vec![
-        TabDescriptor::new(1, "a"),
-        TabDescriptor::new(2, "b"),
-    ];
+    let tabs = vec![TabDescriptor::new(1, "a"), TabDescriptor::new(2, "b")];
     let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
 
     let theme = Theme::dark();
@@ -264,14 +267,26 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     // Top inset (y < 6): pill body does not extend here; a drop shadow may
     // darken the base but cannot introduce green or break r==b.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 2);
-    assert_eq!(g, 0x00, "no pill body fill in top inset (got r={r}, g={g}, b={b})");
-    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in top inset");
+    assert_eq!(
+        g, 0x00,
+        "no pill body fill in top inset (got r={r}, g={g}, b={b})"
+    );
+    assert_eq!(
+        r, b,
+        "drop shadow preserves magenta r==b ratio in top inset"
+    );
 
     // Bottom inset (y > 34): same rationale; the shadow's +6px y-offset
     // means more bleed here, but the r==b / g==0 invariant still holds.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 37);
-    assert_eq!(g, 0x00, "no pill body fill in bottom inset (got r={r}, g={g}, b={b})");
-    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in bottom inset");
+    assert_eq!(
+        g, 0x00,
+        "no pill body fill in bottom inset (got r={r}, g={g}, b={b})"
+    );
+    assert_eq!(
+        r, b,
+        "drop shadow preserves magenta r==b ratio in bottom inset"
+    );
 
     // Pill interior (first pill center ~= (48, 20)): translucent-white fill
     // drops the G channel below 0xff when composited over magenta.

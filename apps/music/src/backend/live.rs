@@ -71,7 +71,11 @@ impl RustyPipeBackend {
             .build()
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
 
-        Ok(Self { rp, rt, potoken_desc })
+        Ok(Self {
+            rp,
+            rt,
+            potoken_desc,
+        })
     }
 
     fn block<F, T>(&self, fut: F) -> T
@@ -483,23 +487,47 @@ impl MusicBackend for RustyPipeBackend {
 
         let mut sections = Vec::new();
         let take_tracks = |v: Vec<TrackItem>, n: usize| {
-            v.into_iter().take(n).map(track_home_item).collect::<Vec<_>>()
+            v.into_iter()
+                .take(n)
+                .map(track_home_item)
+                .collect::<Vec<_>>()
         };
         let top = take_tracks(charts.top_tracks, 12);
         if !top.is_empty() {
-            sections.push(HomeSection { title: "Top songs today".into(), items: top });
+            sections.push(HomeSection {
+                title: "Top songs today".into(),
+                items: top,
+            });
         }
-        let new_items: Vec<HomeItem> = new_albums.into_iter().take(12).map(album_home_item).collect();
+        let new_items: Vec<HomeItem> = new_albums
+            .into_iter()
+            .take(12)
+            .map(album_home_item)
+            .collect();
         if !new_items.is_empty() {
-            sections.push(HomeSection { title: "New releases".into(), items: new_items });
+            sections.push(HomeSection {
+                title: "New releases".into(),
+                items: new_items,
+            });
         }
         let trending = take_tracks(charts.trending_tracks, 12);
         if !trending.is_empty() {
-            sections.push(HomeSection { title: "Trending".into(), items: trending });
+            sections.push(HomeSection {
+                title: "Trending".into(),
+                items: trending,
+            });
         }
-        let artists: Vec<HomeItem> = charts.artists.into_iter().take(12).map(artist_home_item).collect();
+        let artists: Vec<HomeItem> = charts
+            .artists
+            .into_iter()
+            .take(12)
+            .map(artist_home_item)
+            .collect();
         if !artists.is_empty() {
-            sections.push(HomeSection { title: "Top artists".into(), items: artists });
+            sections.push(HomeSection {
+                title: "Top artists".into(),
+                items: artists,
+            });
         }
 
         if sections.is_empty() {
@@ -567,10 +595,20 @@ impl MusicBackend for RustyPipeBackend {
             .channel
             .as_ref()
             .map(|c| c.name.clone())
-            .unwrap_or_else(|| if pl.from_ytm { "YouTube Music".into() } else { "Playlist".into() });
+            .unwrap_or_else(|| {
+                if pl.from_ytm {
+                    "YouTube Music".into()
+                } else {
+                    "Playlist".into()
+                }
+            });
         let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
         let subtitle = format!("{owner} \u{00b7} {count} songs");
-        let description = pl.description.as_ref().map(|d| d.to_plaintext()).unwrap_or_default();
+        let description = pl
+            .description
+            .as_ref()
+            .map(|d| d.to_plaintext())
+            .unwrap_or_default();
         let cover = cover_url(&pl.thumbnail, 400);
         let tracks = pl.tracks.items.into_iter().map(map_track_item).collect();
         Ok(PlaylistPage {

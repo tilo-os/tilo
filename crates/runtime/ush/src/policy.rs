@@ -252,7 +252,11 @@ mod tests {
         );
         assert!(policy.permits(Path::new("/var/home/you/src"), Verb::Write, Some(1_000)));
         assert!(
-            policy.permits(Path::new("/var/home/you/src/deep/file.rs"), Verb::Write, Some(1_000)),
+            policy.permits(
+                Path::new("/var/home/you/src/deep/file.rs"),
+                Verb::Write,
+                Some(1_000)
+            ),
             "a filesystem grant is recursive; that is what `path_covers` means"
         );
         assert!(
@@ -260,7 +264,11 @@ mod tests {
             "a sibling directory must not come along with the grant"
         );
         assert!(
-            !policy.permits(Path::new("/var/home/you/srcextra"), Verb::Write, Some(1_000)),
+            !policy.permits(
+                Path::new("/var/home/you/srcextra"),
+                Verb::Write,
+                Some(1_000)
+            ),
             "a component-boundary check must not be a prefix check"
         );
     }
@@ -327,14 +335,25 @@ mod tests {
     /// layer and quietly undo the read-only base.
     #[test]
     fn the_runtime_refuses_to_trust_the_paths_the_overlay_owns() {
-        for bad in ["/", "/usr", "/usr/bin", "/etc", "/etc/ssh", "relative/path", ""] {
+        for bad in [
+            "/",
+            "/usr",
+            "/usr/bin",
+            "/etc",
+            "/etc/ssh",
+            "relative/path",
+            "",
+        ] {
             assert!(
                 !is_trustable(Path::new(bad)),
                 "{bad:?} must not be trustable"
             );
         }
         for good in ["/var/home/you/src", "/var/workspace/notes", "/opt/thing"] {
-            assert!(is_trustable(Path::new(good)), "{good:?} should be trustable");
+            assert!(
+                is_trustable(Path::new(good)),
+                "{good:?} should be trustable"
+            );
         }
 
         let mut policy = Policy::default();
@@ -350,7 +369,11 @@ mod tests {
     #[test]
     fn a_missing_or_malformed_policy_grants_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(Policy::load(&dir.path().join("absent.json")).capabilities.is_empty());
+        assert!(
+            Policy::load(&dir.path().join("absent.json"))
+                .capabilities
+                .is_empty()
+        );
 
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, b"{ not json ").unwrap();
@@ -368,7 +391,9 @@ mod tests {
 
         let mut policy = Policy::default();
         policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        let session_id = policy.trust_dir(Path::new("/var/home/you/scratch")).unwrap();
+        let session_id = policy
+            .trust_dir(Path::new("/var/home/you/scratch"))
+            .unwrap();
         let idx = policy
             .capabilities
             .iter()

@@ -315,7 +315,10 @@ fn main() {
         0.0
     };
     // Machine-readable so the harness can parse it out of stdout.
-    println!("LOADCLIENT frames={} seconds={elapsed:.3} fps={fps:.2}", app.frames);
+    println!(
+        "LOADCLIENT frames={} seconds={elapsed:.3} fps={fps:.2}",
+        app.frames
+    );
 }
 
 #[cfg(test)]

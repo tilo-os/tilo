@@ -18,7 +18,7 @@
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ObjType, ReadDoc, ROOT, Value};
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, Value};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::presence::PresenceKey;
@@ -170,8 +170,14 @@ async fn two_managers_coedit_and_attribute_presence_through_host() {
     let mut mgr_a = CollaborationManager::from_relay_session(a_session, handle.clone());
     let mut mgr_b = CollaborationManager::from_relay_session(b_session, handle);
 
-    assert!(mgr_a.is_connected(), "relay-backed manager reports connected");
-    assert!(mgr_b.is_connected(), "relay-backed manager reports connected");
+    assert!(
+        mgr_a.is_connected(),
+        "relay-backed manager reports connected"
+    );
+    assert!(
+        mgr_b.is_connected(),
+        "relay-backed manager reports connected"
+    );
 
     // Let both subscriptions register at the host before A publishes,
     // so live presence fan-out (which, unlike deltas, is never queued)
@@ -206,7 +212,9 @@ async fn two_managers_coedit_and_attribute_presence_through_host() {
         for evt in mgr_b.poll() {
             match evt {
                 CollabEvent::CRDTIncremental { data } => {
-                    doc_b.load_incremental(&data).expect("B applies co-edit delta");
+                    doc_b
+                        .load_incremental(&data)
+                        .expect("B applies co-edit delta");
                     converged = true;
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {

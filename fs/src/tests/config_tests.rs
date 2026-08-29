@@ -12,13 +12,14 @@ mod tests {
 
         let mut config = Config::default();
         config.mount_options = options;
-        
-        // If AutoUnmount is present, ACL must not be Owner.
-        config.acl = SessionACL::All; 
 
-        let has_auto_unmount = config.mount_options.iter().any(|opt| {
-            matches!(opt, MountOption::AutoUnmount)
-        });
+        // If AutoUnmount is present, ACL must not be Owner.
+        config.acl = SessionACL::All;
+
+        let has_auto_unmount = config
+            .mount_options
+            .iter()
+            .any(|opt| matches!(opt, MountOption::AutoUnmount));
 
         if has_auto_unmount {
             assert!(

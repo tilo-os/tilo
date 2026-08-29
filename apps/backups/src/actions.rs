@@ -76,7 +76,8 @@ pub fn register(registry: &mut ActionRegistry) {
 /// The single point that turns a [`BackupsAction`] into the wire envelope both
 /// the palette and the on-screen affordances dispatch.
 pub fn encode(action: &BackupsAction) -> EncodedAction {
-    EncodedAction::encode(BACKUPS_ACTION_TYPE, action).expect("BackupsAction is always serializable")
+    EncodedAction::encode(BACKUPS_ACTION_TYPE, action)
+        .expect("BackupsAction is always serializable")
 }
 
 // ===========================================================================
@@ -86,7 +87,10 @@ pub fn encode(action: &BackupsAction) -> EncodedAction {
 
 /// Set a retention field to an absolute `count` (clamped to `[0, 999]`).
 pub fn set_retention_action(field: PolicyField, count: u32) -> BackupsAction {
-    BackupsAction::SetRetention { field, count: count.min(999) }
+    BackupsAction::SetRetention {
+        field,
+        count: count.min(999),
+    }
 }
 
 /// The single place both the on-screen +/- affordances and the palette's
@@ -266,12 +270,18 @@ mod tests {
 
         let weekly = field_resource(root, PolicyField::Weekly);
         let w_actions: Vec<&str> = weekly.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(!w_actions.contains(&"decrement"), "a 0-count field can't decrement: {w_actions:?}");
+        assert!(
+            !w_actions.contains(&"decrement"),
+            "a 0-count field can't decrement: {w_actions:?}"
+        );
         assert!(w_actions.contains(&"increment"), "{w_actions:?}");
 
         let monthly = field_resource(root, PolicyField::Monthly);
         let m_actions: Vec<&str> = monthly.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(!m_actions.contains(&"increment"), "a 999-count field can't increment: {m_actions:?}");
+        assert!(
+            !m_actions.contains(&"increment"),
+            "a 999-count field can't increment: {m_actions:?}"
+        );
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
     }
 
@@ -297,7 +307,10 @@ mod tests {
             target,
             "the action set the daily retention"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
@@ -315,7 +328,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let was = BackupsDoc::retention(&a, &ROOT, PolicyField::Monthly);
         let action = set_retention_action(PolicyField::Monthly, was + 6);
@@ -324,7 +341,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(
             BackupsDoc::retention(&a, &ROOT, PolicyField::Monthly),
             was + 6,
@@ -365,17 +386,26 @@ mod tests {
         let from_spec = immediate_encode(inc_spec);
         let from_builder = encode(&bump_retention_action(PolicyField::Daily, cur, 1));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for increment");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for increment"
+        );
 
         let dec_spec = daily.actions.iter().find(|a| a.id == "decrement").unwrap();
         let from_spec = immediate_encode(dec_spec);
         let from_builder = encode(&bump_retention_action(PolicyField::Daily, cur, -1));
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for decrement");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for decrement"
+        );
 
         let set_spec = daily.actions.iter().find(|a| a.id == "set").unwrap();
         let from_spec = prompted_encode(set_spec, "42");
         let from_builder = encode(&set_retention_action(PolicyField::Daily, 42));
-        assert_eq!(from_spec.payload, from_builder.payload, "set is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "set is one source of truth"
+        );
     }
 
     /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
@@ -389,19 +419,27 @@ mod tests {
             let resources = Widget::resources(&app, &doc);
             let daily = field_resource(&resources[0], PolicyField::Daily);
             let spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
-            (BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), immediate_encode(spec))
+            (
+                BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily),
+                immediate_encode(spec),
+            )
         };
 
         // Drive the real on-screen affordance.
         app.bump_retention(&mut doc, &ROOT, PolicyField::Daily, 1);
 
-        let dispatched = app.last_dispatched().expect("the real +/- control dispatched an action");
+        let dispatched = app
+            .last_dispatched()
+            .expect("the real +/- control dispatched an action");
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(
             dispatched.payload, spec_encoded.payload,
             "the +/- control and the palette are one action"
         );
         // And it actually moved the stored policy.
-        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), cur + 1);
+        assert_eq!(
+            BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily),
+            cur + 1
+        );
     }
 }

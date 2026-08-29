@@ -382,8 +382,18 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     // A secured network not yet joined and one already connected take
     // different click branches.
     let scanned = vec![
-        WifiNetwork { ssid: "hallway-2g".into(), signal: 71, secure: true, connected: false },
-        WifiNetwork { ssid: "studio-5g".into(), signal: 92, secure: true, connected: true },
+        WifiNetwork {
+            ssid: "hallway-2g".into(),
+            signal: 71,
+            secure: true,
+            connected: false,
+        },
+        WifiNetwork {
+            ssid: "studio-5g".into(),
+            signal: 92,
+            secure: true,
+            connected: true,
+        },
     ];
     {
         let mut st = chrome.borrow_mut();
@@ -507,9 +517,11 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
     let mut tree = minimal_tree();
     let ws_id = tree.workspaces[0].id;
     for n in 0..2u64 {
-        tree.workspaces[0]
-            .strips
-            .push(Strip { id: StripId(700 + n), name: format!("S{n}"), window_groups: vec![] });
+        tree.workspaces[0].strips.push(Strip {
+            id: StripId(700 + n),
+            name: format!("S{n}"),
+            window_groups: vec![],
+        });
     }
     let first = tree.workspaces[0].strips[0].id;
     tree.active_strip.insert(ws_id, first);

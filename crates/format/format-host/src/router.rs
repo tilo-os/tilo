@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use format_provider_wit::CodecError;
+use parking_lot::RwLock;
 use wasmtime::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
@@ -61,9 +61,8 @@ impl Router {
                     continue;
                 }
             }
-            let comp = LoadedComponent::from_path(&self.engine, &entry.wasm).map_err(|e| {
-                anyhow::anyhow!("loading provider {}: {e:#}", entry.package)
-            })?;
+            let comp = LoadedComponent::from_path(&self.engine, &entry.wasm)
+                .map_err(|e| anyhow::anyhow!("loading provider {}: {e:#}", entry.package))?;
             next.insert(
                 entry.package.clone(),
                 ActiveProvider {
@@ -149,7 +148,10 @@ impl Router {
             Some((d, id, _)) => (d, id),
             None => (
                 format_provider_wit::Detected {
-                    confidence: format_provider_wit::Confidence { tier: 0, score: 0.0 },
+                    confidence: format_provider_wit::Confidence {
+                        tier: 0,
+                        score: 0.0,
+                    },
                     mime: None,
                 },
                 String::new(),

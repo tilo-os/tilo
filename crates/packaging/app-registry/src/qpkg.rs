@@ -54,7 +54,9 @@ pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let mut buf = Vec::new();
-        entry.read_to_end(&mut buf).context("read qpkg tar entry body")?;
+        entry
+            .read_to_end(&mut buf)
+            .context("read qpkg tar entry body")?;
         match name.as_str() {
             "qpkg.toml" => {
                 let s = String::from_utf8(buf).context("qpkg.toml not UTF-8")?;
@@ -276,11 +278,7 @@ mod tests {
         // the header, so verify reaches — and fails — the signature
         // check.
         let meta = load(&bytes).unwrap();
-        let signed_bytes = meta
-            .store
-            .get(&BlobHash(*id.as_bytes()))
-            .unwrap()
-            .unwrap();
+        let signed_bytes = meta.store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
         let mut signed = SignedRoot::decode(&signed_bytes).unwrap();
         let mut sig = signed.signature.unwrap();
         sig[0] ^= 0xff;

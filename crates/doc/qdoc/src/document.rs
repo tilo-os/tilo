@@ -101,14 +101,24 @@ impl Document {
         let c = crate::model::init(&mut doc, &ROOT);
         let ids = IdGen::new(doc.get_actor().to_hex_string());
         doc.commit();
-        Self { doc, root: ROOT, c, ids }
+        Self {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        }
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
         let ids = crate::model::seeded_id_gen(&doc, &c);
-        Ok(Self { doc, root: ROOT, c, ids })
+        Ok(Self {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -121,14 +131,20 @@ impl Document {
 
     /// Borrowed mutable view (for codecs / shared editing paths).
     pub fn as_mut(&mut self) -> DocMut<'_> {
-        DocMut { doc: &mut self.doc, c: &self.c, ids: &mut self.ids }
+        DocMut {
+            doc: &mut self.doc,
+            c: &self.c,
+            ids: &mut self.ids,
+        }
     }
 
     /// Borrowed read-only view (for codec export).
     pub fn as_ref(&self) -> DocRef<'_> {
-        DocRef { doc: &self.doc, c: &self.c }
+        DocRef {
+            doc: &self.doc,
+            c: &self.c,
+        }
     }
-
 
     // The owned `Document` commits per op so its change history (timeline) stays fine-grained (borrowed `DocMut` does not — see model.rs).
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
@@ -152,7 +168,14 @@ impl Document {
         self.doc.commit();
     }
 
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
+    pub fn add_mark(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<automerge::ScalarValue>,
+    ) {
         self.as_mut().add_mark(block_id, start, end, name, value);
         self.doc.commit();
     }
@@ -242,7 +265,6 @@ impl Document {
         crate::model::materialize(&self.doc, &self.c)
     }
 
-
     pub fn header_blocks_in_order(&self) -> Vec<String> {
         crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Header)
     }
@@ -260,37 +282,44 @@ impl Document {
     }
 
     pub fn insert_header_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let id = self.as_mut().insert_block_in(crate::model::Region::Header, after, kind);
+        let id = self
+            .as_mut()
+            .insert_block_in(crate::model::Region::Header, after, kind);
         self.doc.commit();
         id
     }
 
     pub fn insert_footer_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let id = self.as_mut().insert_block_in(crate::model::Region::Footer, after, kind);
+        let id = self
+            .as_mut()
+            .insert_block_in(crate::model::Region::Footer, after, kind);
         self.doc.commit();
         id
     }
 
     pub fn splice_header_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
+        self.as_mut()
+            .splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
     pub fn splice_footer_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
+        self.as_mut()
+            .splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
     pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut().insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
+        self.as_mut()
+            .insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
         self.doc.commit();
     }
 
     pub fn insert_footer_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut().insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
+        self.as_mut()
+            .insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
         self.doc.commit();
     }
-
 
     /// The note ids present in the document (sorted, canonical order).
     pub fn note_ids(&self) -> Vec<String> {
@@ -328,22 +357,43 @@ impl Document {
         id
     }
 
-    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_note_block(
+        &mut self,
+        note_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let id = self.as_mut().insert_note_block(note_id, after, kind);
         self.doc.commit();
         id
     }
 
-    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_note_text(note_id, block_id, char_idx, del, ins);
+    pub fn splice_note_text(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        char_idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        self.as_mut()
+            .splice_note_text(note_id, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
-    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
-        self.as_mut().add_note_mark(note_id, block_id, start, end, name, value);
+    pub fn add_note_mark(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<automerge::ScalarValue>,
+    ) {
+        self.as_mut()
+            .add_note_mark(note_id, block_id, start, end, name, value);
         self.doc.commit();
     }
-
 
     /// The comment ids present in the document (sorted, canonical order).
     pub fn comment_ids(&self) -> Vec<String> {
@@ -374,8 +424,17 @@ impl Document {
         crate::model::materialize_comments(&self.doc, &self.c)
     }
 
-    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
-        let id = self.as_mut().add_comment(block_id, start, end, author, text);
+    pub fn add_comment(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        text: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .add_comment(block_id, start, end, author, text);
         self.doc.commit();
         id
     }
@@ -389,21 +448,34 @@ impl Document {
     }
 
     pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
-        self.as_mut().add_comment_mark(block_id, start, end, comment_id);
+        self.as_mut()
+            .add_comment_mark(block_id, start, end, comment_id);
         self.doc.commit();
     }
 
-    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_comment_block(
+        &mut self,
+        comment_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let id = self.as_mut().insert_comment_block(comment_id, after, kind);
         self.doc.commit();
         id
     }
 
-    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_comment_text(comment_id, block_id, char_idx, del, ins);
+    pub fn splice_comment_text(
+        &mut self,
+        comment_id: &str,
+        block_id: &str,
+        char_idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        self.as_mut()
+            .splice_comment_text(comment_id, block_id, char_idx, del, ins);
         self.doc.commit();
     }
-
 
     /// The tracked-change ids present in the document (sorted, canonical order).
     pub fn change_ids(&self) -> Vec<String> {
@@ -430,14 +502,32 @@ impl Document {
         crate::model::materialize_changes(&self.doc, &self.c)
     }
 
-    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
-        let id = self.as_mut().track_insert(block_id, char_idx, text, author, date);
+    pub fn track_insert(
+        &mut self,
+        block_id: &str,
+        char_idx: usize,
+        text: &str,
+        author: &str,
+        date: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .track_insert(block_id, char_idx, text, author, date);
         self.doc.commit();
         id
     }
 
-    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
-        let id = self.as_mut().track_delete(block_id, start, end, author, date);
+    pub fn track_delete(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        date: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .track_delete(block_id, start, end, author, date);
         self.doc.commit();
         id
     }
@@ -453,7 +543,6 @@ impl Document {
         self.as_mut().reject_change(change_id);
         self.doc.commit();
     }
-
 
     pub fn bookmarks(&self) -> Vec<crate::snapshot::BookmarkView> {
         crate::model::bookmarks(&self.doc, &self.c)
@@ -478,13 +567,20 @@ impl Document {
     }
 
     /// Reconstruct the document as of `version` (time-travel).
-    pub fn materialize_at(&mut self, version: usize) -> Result<crate::snapshot::DocSnapshot, DocError> {
+    pub fn materialize_at(
+        &mut self,
+        version: usize,
+    ) -> Result<crate::snapshot::DocSnapshot, DocError> {
         crate::history::materialize_at(&mut self.doc, version)
     }
 
     /// Structural diff between two points on this document's own timeline (`from` → `to`, indices
     /// into [`Self::versions`]); block ids are stable across history, so the diff aligns by identity.
-    pub fn diff_versions(&mut self, from: usize, to: usize) -> Result<crate::diff::DocDiff, DocError> {
+    pub fn diff_versions(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Result<crate::diff::DocDiff, DocError> {
         let a = self.materialize_at(from)?;
         let b = self.materialize_at(to)?;
         Ok(crate::diff::diff_snapshots(&a, &b))
@@ -502,7 +598,12 @@ impl Document {
         doc.set_actor(automerge::ActorId::random());
         let c = crate::model::open(&doc, &ROOT).expect("fork open");
         let ids = IdGen::new(doc.get_actor().to_hex_string());
-        Document { doc, root: ROOT, c, ids }
+        Document {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        }
     }
 
     /// Merge another replica's changes into this one. Done via the low-level `Automerge` (no patch
@@ -542,7 +643,10 @@ mod tests {
         assert_eq!(vv.to_i64(), Some(SCHEMA_VERSION));
         for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS] {
             let got = d.doc.get(&ROOT, k).unwrap();
-            assert!(matches!(got, Some((Value::Object(ObjType::Map), _))), "missing map {k}");
+            assert!(
+                matches!(got, Some((Value::Object(ObjType::Map), _))),
+                "missing map {k}"
+            );
         }
     }
 
@@ -558,7 +662,11 @@ mod tests {
     #[test]
     fn columns_default_set_clear_and_persist() {
         let mut d = Document::new();
-        assert_eq!(d.columns(), (1, None), "default is a single column with no gap");
+        assert_eq!(
+            d.columns(),
+            (1, None),
+            "default is a single column with no gap"
+        );
         assert_eq!(d.materialize().columns, 1);
         assert_eq!(d.materialize().column_gap, None);
 
@@ -605,7 +713,11 @@ mod tests {
 
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
-        assert_eq!(d2.language().as_deref(), Some("de-DE"), "language survives save/load");
+        assert_eq!(
+            d2.language().as_deref(),
+            Some("de-DE"),
+            "language survives save/load"
+        );
 
         // An empty code clears the setting.
         let mut d3 = Document::load(&bytes).unwrap();
@@ -673,7 +785,8 @@ mod tests {
         d.add_mark(&p, 0, 5, "strong", true);
         let m = d.marks(&p);
         assert!(
-            m.iter().any(|s| s.name == "strong" && s.start == 0 && s.end == 5),
+            m.iter()
+                .any(|s| s.name == "strong" && s.start == 0 && s.end == 5),
             "expected strong[0,5], got {m:?}"
         );
     }
@@ -687,7 +800,8 @@ mod tests {
         d.splice_text(&p, 0, 0, "say "); // shift right by 4
         let m = d.marks(&p);
         assert!(
-            m.iter().any(|s| s.name == "em" && s.start == 10 && s.end == 15),
+            m.iter()
+                .any(|s| s.name == "em" && s.start == 10 && s.end == 15),
             "mark must track text shift, got {m:?}"
         );
     }
@@ -720,13 +834,21 @@ mod tests {
         let c = d.c.clone();
         let mut ids = crate::model::seeded_id_gen(&d.doc, &c);
         {
-            let mut dm = DocMut { doc: &mut d.doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut d.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let b = dm.insert_block(Some(&a), "paragraph");
             assert_ne!(a, b, "minted id must differ from the existing block");
             dm.splice_text(&b, 0, 0, "second");
         }
         let snap = d.materialize();
-        assert_eq!(snap.blocks.len(), 2, "must not overwrite the existing block");
+        assert_eq!(
+            snap.blocks.len(),
+            2,
+            "must not overwrite the existing block"
+        );
         assert_eq!(snap.blocks[0].text, "first");
         assert_eq!(snap.blocks[1].text, "second");
     }
@@ -749,7 +871,12 @@ mod tests {
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         assert_eq!(d2.note_blocks(&nid)[0].text, "footnote body");
-        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_NOTE_REF));
+        assert!(
+            d2.materialize().blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_NOTE_REF)
+        );
     }
 
     #[test]
@@ -767,8 +894,16 @@ mod tests {
         b.splice_note_text(&nb, &nbb, 0, 0, "from B");
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with notes");
-        assert_eq!(a.materialize().notes.len(), 2, "both notes present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with notes"
+        );
+        assert_eq!(
+            a.materialize().notes.len(),
+            2,
+            "both notes present after merge"
+        );
     }
 
     #[test]
@@ -789,7 +924,12 @@ mod tests {
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         assert_eq!(d2.comment_blocks(&cid)[0].text, "note: fix");
-        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_COMMENT));
+        assert!(
+            d2.materialize().blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_COMMENT)
+        );
     }
 
     #[test]
@@ -803,8 +943,16 @@ mod tests {
         b.add_comment(&p, 5, 9, "B", "from B"); // over "text"
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with comments");
-        assert_eq!(a.materialize().comments.len(), 2, "both comments present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with comments"
+        );
+        assert_eq!(
+            a.materialize().comments.len(),
+            2,
+            "both comments present after merge"
+        );
     }
 
     #[test]
@@ -828,8 +976,18 @@ mod tests {
         let d2 = Document::load(&bytes).unwrap();
         let snap = d2.materialize();
         assert_eq!(snap.changes.len(), 2, "changes survive save/load");
-        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_INS));
-        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_DEL));
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_INS)
+        );
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_DEL)
+        );
     }
 
     #[test]
@@ -843,8 +1001,16 @@ mod tests {
         b.track_insert(&p, 16, "!", "B", "");
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with tracked changes");
-        assert_eq!(a.materialize().changes.len(), 2, "both changes present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with tracked changes"
+        );
+        assert_eq!(
+            a.materialize().changes.len(),
+            2,
+            "both changes present after merge"
+        );
     }
 
     #[test]

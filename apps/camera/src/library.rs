@@ -36,13 +36,17 @@ pub fn resolve_dir() -> PathBuf {
         }
     }
     let pics = dirs::picture_dir().unwrap_or_else(|| {
-        dirs::home_dir().map(|h| h.join("Pictures")).unwrap_or_else(|| PathBuf::from("."))
+        dirs::home_dir()
+            .map(|h| h.join("Pictures"))
+            .unwrap_or_else(|| PathBuf::from("."))
     });
     pics.join("Camera")
 }
 
 fn ext_lower(path: &Path) -> Option<String> {
-    path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
 }
 
 fn kind_for(ext: &str) -> Option<CaptureKind> {
@@ -68,14 +72,18 @@ fn mtime_secs(path: &Path) -> i64 {
 /// (a fresh install simply has an empty library until the first capture).
 /// `favorites` marks which file names are starred.
 pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-        let Some(ext) = ext_lower(&path) else { continue };
+        let Some(ext) = ext_lower(&path) else {
+            continue;
+        };
         let Some(kind) = kind_for(&ext) else { continue };
         let id = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
@@ -217,7 +225,9 @@ pub fn delete(dir: &Path, id: &str) -> std::io::Result<()> {
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
 /// photo and video writers so capture file names are consistent.
 pub fn timestamp_name() -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs();
     let millis = now.subsec_millis();
     // Civil-date conversion (proleptic Gregorian) — avoids pulling in chrono.
@@ -250,8 +260,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::temp_dir()
-            .join(format!("camera-lib-test-{}-{n}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("camera-lib-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         base
     }
@@ -305,7 +314,8 @@ mod tests {
     #[test]
     fn delete_removes_file_and_is_idempotent() {
         let dir = tmp();
-        let name = write_photo(&dir, &crate::frame::viewfinder(0, 16, 16), PhotoFormat::Png).unwrap();
+        let name =
+            write_photo(&dir, &crate::frame::viewfinder(0, 16, 16), PhotoFormat::Png).unwrap();
         assert!(dir.join(&name).exists());
         delete(&dir, &name).unwrap();
         assert!(!dir.join(&name).exists());

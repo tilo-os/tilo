@@ -249,7 +249,8 @@ impl Relay {
             existing.lock().await.membership.set(members);
             return Ok(());
         }
-        let mut rt = WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
+        let mut rt =
+            WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
         rt.membership.set(members);
         map.insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
         Ok(())
@@ -310,22 +311,28 @@ async fn handle_conn(
         .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
     let now_ns = crate::peer::now_ns();
     let revs = ctx.revocations.read().unwrap().clone();
-    let client_peer = match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.metrics.inc_auth_rejected();
-            return Err(RelayError::Iroh(format!("auth reject: {e}")));
-        }
-    };
+    let client_peer =
+        match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
+            Ok(p) => p,
+            Err(e) => {
+                ctx.metrics.inc_auth_rejected();
+                return Err(RelayError::Iroh(format!("auth reject: {e}")));
+            }
+        };
     // 2. Reply with HelloAck.
     let mut server_nonce = [0u8; 32];
     {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut server_nonce);
     }
-    let ack = auth::build_hello_ack(ctx.own_cert.clone(), &ctx.own_sk, server_nonce, &hello.client_nonce);
-    let ack_bytes = postcard::to_allocvec(&ack)
-        .map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
+    let ack = auth::build_hello_ack(
+        ctx.own_cert.clone(),
+        &ctx.own_sk,
+        server_nonce,
+        &hello.client_nonce,
+    );
+    let ack_bytes =
+        postcard::to_allocvec(&ack).map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
     write_frame(&mut send, &ack_bytes)
         .await
         .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
@@ -353,12 +360,11 @@ async fn handle_conn(
 }
 
 /// Read a 4-byte-LE-prefix framed message from `recv`.
-pub async fn read_frame(
-    recv: &mut RecvStream,
-    max: usize,
-) -> Result<Vec<u8>, std::io::Error> {
+pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, std::io::Error> {
     let mut prefix = [0u8; 4];
-    recv.read_exact(&mut prefix).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut prefix)
+        .await
+        .map_err(std::io::Error::other)?;
     let n = u32::from_le_bytes(prefix) as usize;
     if n == 0 || n > max {
         return Err(std::io::Error::new(
@@ -367,7 +373,9 @@ pub async fn read_frame(
         ));
     }
     let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(std::io::Error::other)?;
     Ok(buf)
 }
 
@@ -406,8 +414,16 @@ fn spawn_peer_relay_dial(
         };
         let addr = EndpointAddr::new(node_id);
         peer_relay_dial_loop(
-            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
-            revocations, workspaces, metrics,
+            addr,
+            label,
+            priority,
+            endpoint,
+            own_user_pk,
+            own_cert,
+            own_sk,
+            revocations,
+            workspaces,
+            metrics,
         )
         .await;
     })
@@ -436,8 +452,16 @@ fn spawn_peer_relay_dial_at(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         peer_relay_dial_loop(
-            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
-            revocations, workspaces, metrics,
+            addr,
+            label,
+            priority,
+            endpoint,
+            own_user_pk,
+            own_cert,
+            own_sk,
+            revocations,
+            workspaces,
+            metrics,
         )
         .await;
     })
@@ -661,11 +685,7 @@ async fn run_peer_relay_session(
 /// Advertise our local materialized heads for `ws_id` to the upstream
 /// peer relay via a [`Envelope::SyncRequest`]. Best-effort: a workspace
 /// we don't host, or a closed outbound, is silently skipped.
-async fn send_sync_request_for(
-    client: &RelayClient,
-    workspaces: &WorkspaceRegistry,
-    ws_id: u64,
-) {
+async fn send_sync_request_for(client: &RelayClient, workspaces: &WorkspaceRegistry, ws_id: u64) {
     let have_heads = {
         let map = workspaces.lock().await;
         match map.get(&ws_id) {

@@ -34,7 +34,11 @@ pub fn import_dmabuf(device: &wgpu::Device, frame: &DmabufFrame) -> Option<wgpu:
 
     // AR24 = DRM_FORMAT_ARGB8888 = bytes B,G,R,A in memory = VK B8G8R8A8.
     let vk_format = vk::Format::B8G8R8A8_UNORM;
-    let extent = vk::Extent3D { width: frame.width, height: frame.height, depth: 1 };
+    let extent = vk::Extent3D {
+        width: frame.width,
+        height: frame.height,
+        depth: 1,
+    };
 
     let hal_texture = unsafe {
         let guard = device.as_hal::<vulkan::Api>()?;
@@ -120,7 +124,8 @@ pub fn import_dmabuf(device: &wgpu::Device, frame: &DmabufFrame) -> Option<wgpu:
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: vello::wgpu::wgt::TextureUses::RESOURCE | vello::wgpu::wgt::TextureUses::COPY_SRC,
+            usage: vello::wgpu::wgt::TextureUses::RESOURCE
+                | vello::wgpu::wgt::TextureUses::COPY_SRC,
             memory_flags: vello::wgpu::hal::MemoryFlags::empty(),
             view_formats: vec![],
         };
@@ -151,7 +156,11 @@ pub fn import_dmabuf(device: &wgpu::Device, frame: &DmabufFrame) -> Option<wgpu:
 
 /// First memory type allowed by `type_bits` (imported dmabuf memory has no
 /// host-visibility requirement, so any compatible type works).
-fn find_memory_type(instance: &ash::Instance, phys: vk::PhysicalDevice, type_bits: u32) -> Option<u32> {
+fn find_memory_type(
+    instance: &ash::Instance,
+    phys: vk::PhysicalDevice,
+    type_bits: u32,
+) -> Option<u32> {
     let props = unsafe { instance.get_physical_device_memory_properties(phys) };
     (0..props.memory_type_count).find(|&i| type_bits & (1 << i) != 0)
 }

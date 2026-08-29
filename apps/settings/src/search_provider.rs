@@ -76,8 +76,9 @@ mod tests {
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
         assert!(
-            hits.iter().any(|r| SettingsSearchProvider::parse_action_id(&r.action_id)
-                == Some(Category::Displays)),
+            hits.iter()
+                .any(|r| SettingsSearchProvider::parse_action_id(&r.action_id)
+                    == Some(Category::Displays)),
             "a keyword synonym surfaces its pane, got {:?}",
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
@@ -97,9 +98,14 @@ mod tests {
         let hit = registry
             .query("appearance")
             .into_iter()
-            .find(|r| SettingsSearchProvider::parse_action_id(&r.action_id) == Some(Category::Appearance))
+            .find(|r| {
+                SettingsSearchProvider::parse_action_id(&r.action_id) == Some(Category::Appearance)
+            })
             .expect("Appearance is findable");
-        assert_eq!(SettingsSearchProvider::parse_action_id(&hit.action_id), Some(Category::Appearance));
+        assert_eq!(
+            SettingsSearchProvider::parse_action_id(&hit.action_id),
+            Some(Category::Appearance)
+        );
     }
 
     #[test]
@@ -114,18 +120,31 @@ mod tests {
         use ui::widget::Widget;
 
         let mut app = crate::settings_app::SettingsApp::new();
-        assert_ne!(app.selected(), Category::Displays, "not already on Displays");
+        assert_ne!(
+            app.selected(),
+            Category::Displays,
+            "not already on Displays"
+        );
 
         let providers = app.search_providers();
-        assert!(!providers.is_empty(), "settings publishes a search provider");
+        assert!(
+            !providers.is_empty(),
+            "settings publishes a search provider"
+        );
         let hit = providers[0]
             .search("night light")
             .into_iter()
-            .find(|r| SettingsSearchProvider::parse_action_id(&r.action_id) == Some(Category::Displays))
+            .find(|r| {
+                SettingsSearchProvider::parse_action_id(&r.action_id) == Some(Category::Displays)
+            })
             .expect("the Displays pane is findable through the real hook");
 
         let mut doc = AutoCommit::new();
         app.activate_search_result(&hit.action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected(), Category::Displays, "activation navigated to the pane");
+        assert_eq!(
+            app.selected(),
+            Category::Displays,
+            "activation navigated to the pane"
+        );
     }
 }

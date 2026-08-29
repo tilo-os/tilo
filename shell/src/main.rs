@@ -219,7 +219,10 @@ fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
         );
         std::process::exit(1);
     };
-    tracing::info!("running first-login identity onboarding into {}", dir.display());
+    tracing::info!(
+        "running first-login identity onboarding into {}",
+        dir.display()
+    );
     let state = ui::State::new();
     let view = shell::onboarding_view::OnboardingView::new(dir);
     let app = ui::App::new(state, Box::new(view));

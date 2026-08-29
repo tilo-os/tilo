@@ -72,10 +72,13 @@ mod bench {
     /// the `WebView` widget itself uses — a changed pointer is a new
     /// engine publish.
     fn frame_key(slot: &FrameSlot) -> Option<(usize, u32, u32)> {
-        slot.lock()
-            .unwrap()
-            .as_ref()
-            .map(|f| (Arc::as_ptr(&f.rgba) as *const u8 as usize, f.width, f.height))
+        slot.lock().unwrap().as_ref().map(|f| {
+            (
+                Arc::as_ptr(&f.rgba) as *const u8 as usize,
+                f.width,
+                f.height,
+            )
+        })
     }
 
     /// True once the slot holds a frame with any non-transparent pixel —
@@ -113,7 +116,9 @@ mod bench {
         // anyway. Must be set before the engine boots.
         unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 
-        let url = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_URL.into());
+        let url = std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| DEFAULT_URL.into());
 
         let boot_start = Instant::now();
         let engine = match WpeEngine::new() {
@@ -261,7 +266,10 @@ mod bench {
         println!("engine boot:        {:.2} s", boot_time.as_secs_f64());
         println!("load+first paint:   {:.2} s", load_time.as_secs_f64());
         println!("frame dims seen:    {dims}");
-        println!("-- throughput: {:.1} s continuous scroll @ ~60 Hz input --", window_secs);
+        println!(
+            "-- throughput: {:.1} s continuous scroll @ ~60 Hz input --",
+            window_secs
+        );
         println!("frames observed:    {frames}");
         println!("throughput:         {fps:.1} fps");
         println!(

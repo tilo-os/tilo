@@ -19,31 +19,31 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::icons::{draw_icon, Icon};
+use ui::ColorCompat;
+use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
-    clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
-    word_boundaries_chars, Selection,
+    Selection, clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
+    word_boundaries_chars,
 };
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    ColorPicker, FlapState, NumberInput, PageSidebar, PageSidebarEvent, SplitLayout, TextInput,
-    Widget, DEFAULT_BREAKPOINT,
+    ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput, PageSidebar, PageSidebarEvent,
+    SplitLayout, TextInput, Widget,
 };
-use ui::ColorCompat;
 
 use crate::actions;
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
-use crate::portal;
 use crate::model::{
-    new_id, seed_deck, starter_deck, Background, Deck, Element, ElementKind, Id, Layout, Palette,
-    PaletteKind, Slide, TextAlign, FILL_ROLES, SLIDE_H, SLIDE_W, STROKE_ROLES,
+    Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
+    SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
+use crate::portal;
 use crate::render;
 
 /// Logical pixels scrolled per mouse-wheel line notch.
@@ -165,7 +165,10 @@ enum Drag {
         orig: (f64, f64, f64, f64),
     },
     /// Dragging the overview grid scrollbar thumb.
-    ScrollOverview { start_y: f64, orig_scroll: f64 },
+    ScrollOverview {
+        start_y: f64,
+        orig_scroll: f64,
+    },
 }
 
 impl Drag {
@@ -546,7 +549,12 @@ struct PresentCache {
 }
 
 impl PresentCache {
-    fn key(dest: Rect, slide: usize, rev: u64, palette: PaletteKind) -> (usize, u64, PaletteKind, (i64, i64, i64, i64)) {
+    fn key(
+        dest: Rect,
+        slide: usize,
+        rev: u64,
+        palette: PaletteKind,
+    ) -> (usize, u64, PaletteKind, (i64, i64, i64, i64)) {
         (
             slide,
             rev,
@@ -766,10 +774,12 @@ impl SlidesApp {
                         Element::text("Site photo", 96.0, 70.0, 1088.0, 90.0, 56.0)
                             .with(|e| e.bold = true),
                     );
-                    s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-                        e.fill = "accent".into();
-                        e.radius = 4.0;
-                    }));
+                    s.add(
+                        Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+                            e.fill = "accent".into();
+                            e.radius = 4.0;
+                        }),
+                    );
                     s.add(Element::image(&src, 96.0, 200.0, 1088.0, 420.0));
                     self.deck.slides.push(s);
                     self.cur_slide = self.deck.slides.len() - 1;
@@ -821,10 +831,16 @@ impl SlidesApp {
             "edit_text" => {
                 self.cur_slide = 1;
                 self.sel = self.deck.slides.get(1).and_then(|s| {
-                    s.elements.iter().find(|e| e.kind == ElementKind::Text).map(|e| e.id.clone())
+                    s.elements
+                        .iter()
+                        .find(|e| e.kind == ElementKind::Text)
+                        .map(|e| e.id.clone())
                 });
                 self.editing_text = true;
-                let text = self.selected_element().map(|e| e.text.clone()).unwrap_or_default();
+                let text = self
+                    .selected_element()
+                    .map(|e| e.text.clone())
+                    .unwrap_or_default();
                 let (a, b) = word_boundaries_chars(&text, 0);
                 self.sel_anchor = a;
                 self.caret = b;
@@ -843,11 +859,12 @@ impl SlidesApp {
             // the fill ColorPicker popover open — the two adopted primitives.
             "inspector_widgets" => {
                 self.cur_slide = 1;
-                self.sel = self
-                    .deck
-                    .slides
-                    .get(1)
-                    .and_then(|s| s.elements.iter().find(|e| e.kind == ElementKind::Text).map(|e| e.id.clone()));
+                self.sel = self.deck.slides.get(1).and_then(|s| {
+                    s.elements
+                        .iter()
+                        .find(|e| e.kind == ElementKind::Text)
+                        .map(|e| e.id.clone())
+                });
                 self.fill_picker_open = true;
                 self.fill_picker_needs_init = true;
                 self.bootstrapped = true;
@@ -995,7 +1012,8 @@ impl SlidesApp {
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::SlidesAction) {
-        self.actions.dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, &action);
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -1081,7 +1099,9 @@ impl SlidesApp {
     /// zone's armed highlight).
     fn over_delete_zone(&self) -> bool {
         self.page_sidebar.is_dragging()
-            && self.slide_delete_zone(self.rail_rect()).contains(self.last_mouse)
+            && self
+                .slide_delete_zone(self.rail_rect())
+                .contains(self.last_mouse)
     }
 
     /// Sync the shared page rail to this frame's geometry + scroll before it is
@@ -1223,7 +1243,12 @@ impl SlidesApp {
         let rail_collapsible = layout == SplitLayout::Overlay || reveal < 0.999;
         let title_x = if rail_collapsible {
             let hy = toolbar.y0 + (TOOLBAR_H - HAMBURGER) / 2.0;
-            let hb = Rect::new(toolbar.x0 + 14.0, hy, toolbar.x0 + 14.0 + HAMBURGER, hy + HAMBURGER);
+            let hb = Rect::new(
+                toolbar.x0 + 14.0,
+                hy,
+                toolbar.x0 + 14.0 + HAMBURGER,
+                hy + HAMBURGER,
+            );
             buttons.push(UiButton {
                 rect: hb,
                 kind: ButtonKind::Hamburger,
@@ -1239,7 +1264,12 @@ impl SlidesApp {
         // Right-anchored group first (Present · palette · overview grid) so we
         // know the boundary the centre tool group and title must not cross.
         let present_w = 18.0 + 6.0 + chrome::est_width("Present", 13.0) + 22.0;
-        let present_rect = Rect::new(toolbar.x1 - 18.0 - present_w, by, toolbar.x1 - 18.0, by + bh);
+        let present_rect = Rect::new(
+            toolbar.x1 - 18.0 - present_w,
+            by,
+            toolbar.x1 - 18.0,
+            by + bh,
+        );
         // On a narrow toolbar the palette pill collapses to just its colour dot
         // (the swatch button already hides its label below 40px wide).
         let pal_w = if toolbar.width() > 640.0 {
@@ -1247,21 +1277,36 @@ impl SlidesApp {
         } else {
             34.0
         };
-        let pal_rect = Rect::new(present_rect.x0 - 10.0 - pal_w, by, present_rect.x0 - 10.0, by + bh);
+        let pal_rect = Rect::new(
+            present_rect.x0 - 10.0 - pal_w,
+            by,
+            present_rect.x0 - 10.0,
+            by + bh,
+        );
         let grid_rect = Rect::new(pal_rect.x0 - 10.0 - bh, by, pal_rect.x0 - 10.0, by + bh);
         buttons.push(UiButton {
             rect: present_rect,
-            kind: ButtonKind::IconText { icon: Icon::Monitor, label: "Present".into(), accent: true },
+            kind: ButtonKind::IconText {
+                icon: Icon::Monitor,
+                label: "Present".into(),
+                accent: true,
+            },
             hit: Hit::Present,
         });
         buttons.push(UiButton {
             rect: pal_rect,
-            kind: ButtonKind::Palette { kind: self.deck.palette, selected: false },
+            kind: ButtonKind::Palette {
+                kind: self.deck.palette,
+                selected: false,
+            },
             hit: Hit::CyclePalette,
         });
         buttons.push(UiButton {
             rect: grid_rect,
-            kind: ButtonKind::IconOnly { icon: Icon::LayoutGrid, active: self.mode == Mode::Overview },
+            kind: ButtonKind::IconOnly {
+                icon: Icon::LayoutGrid,
+                active: self.mode == Mode::Overview,
+            },
             hit: Hit::Overview,
         });
         // Inspector toggle — offered whenever the inspector can collapse (it's
@@ -1272,7 +1317,10 @@ impl SlidesApp {
             let ib = Rect::new(grid_rect.x0 - 10.0 - bh, by, grid_rect.x0 - 10.0, by + bh);
             buttons.push(UiButton {
                 rect: ib,
-                kind: ButtonKind::IconOnly { icon: Icon::Settings2, active: self.inspector_open() },
+                kind: ButtonKind::IconOnly {
+                    icon: Icon::Settings2,
+                    active: self.inspector_open(),
+                },
                 hit: Hit::ToggleInspector,
             });
             ib.x0
@@ -1300,7 +1348,12 @@ impl SlidesApp {
             weight: TextWeight::Bold,
         });
         // The whole two-line title block is the click target for renaming.
-        let title_rect = Rect::new(title_x - 4.0, toolbar.y0 + 6.0, title_x + title_max, toolbar.y0 + 46.0);
+        let title_rect = Rect::new(
+            title_x - 4.0,
+            toolbar.y0 + 6.0,
+            title_x + title_max,
+            toolbar.y0 + 46.0,
+        );
         labels.push(Label {
             pos: Point::new(title_x, toolbar.y0 + 33.0),
             text: elide(
@@ -1371,9 +1424,13 @@ impl SlidesApp {
         let fill_picker_rect = if self.fill_picker_open {
             // Leave ~64px of slack on the right: the picker's hex field extends
             // past its preview swatch, so a flush-right anchor would clip it.
-            let x = (inspector.x0 + 12.0).min(r.x1 - FILL_PICKER_W - 64.0).max(r.x0 + 8.0);
+            let x = (inspector.x0 + 12.0)
+                .min(r.x1 - FILL_PICKER_W - 64.0)
+                .max(r.x0 + 8.0);
             // Sit below the top property controls, above the notes box.
-            let y = (inspector.y0 + 300.0).min(r.y1 - FILL_PICKER_H - 8.0).max(body_top + 8.0);
+            let y = (inspector.y0 + 300.0)
+                .min(r.y1 - FILL_PICKER_H - 8.0)
+                .max(body_top + 8.0);
             Some(Rect::new(x, y, x + FILL_PICKER_W, y + FILL_PICKER_H))
         } else {
             None
@@ -1428,12 +1485,42 @@ impl SlidesApp {
         // Highest priority first, so the tools most reached for stay on the bar
         // and the rarer shape tools are the first to fall into the menu.
         let tools = [
-            Tool { bar: "Slide", menu: "New slide", icon: Some(Icon::Plus), hit: Hit::NewSlide },
-            Tool { bar: "Text", menu: "Text box", icon: Some(Icon::FileText), hit: Hit::Insert(ElementKind::Text) },
-            Tool { bar: "Rect", menu: "Rectangle", icon: None, hit: Hit::Insert(ElementKind::Rect) },
-            Tool { bar: "Ellipse", menu: "Ellipse", icon: None, hit: Hit::Insert(ElementKind::Ellipse) },
-            Tool { bar: "Line", menu: "Line", icon: None, hit: Hit::Insert(ElementKind::Line) },
-            Tool { bar: "Image", menu: "Image", icon: None, hit: Hit::Insert(ElementKind::Image) },
+            Tool {
+                bar: "Slide",
+                menu: "New slide",
+                icon: Some(Icon::Plus),
+                hit: Hit::NewSlide,
+            },
+            Tool {
+                bar: "Text",
+                menu: "Text box",
+                icon: Some(Icon::FileText),
+                hit: Hit::Insert(ElementKind::Text),
+            },
+            Tool {
+                bar: "Rect",
+                menu: "Rectangle",
+                icon: None,
+                hit: Hit::Insert(ElementKind::Rect),
+            },
+            Tool {
+                bar: "Ellipse",
+                menu: "Ellipse",
+                icon: None,
+                hit: Hit::Insert(ElementKind::Ellipse),
+            },
+            Tool {
+                bar: "Line",
+                menu: "Line",
+                icon: None,
+                hit: Hit::Insert(ElementKind::Line),
+            },
+            Tool {
+                bar: "Image",
+                menu: "Image",
+                icon: None,
+                hit: Hit::Insert(ElementKind::Image),
+            },
         ];
         let gap = 8.0;
         let bar_w = |t: &Tool| -> f64 {
@@ -1449,7 +1536,11 @@ impl SlidesApp {
         // When something must overflow, reserve room for the ⋯ button on the
         // right so it (and thus the hidden tools) is always reachable.
         let ovf_w = 40.0;
-        let limit = if fits_all { tools_right } else { tools_right - ovf_w - gap };
+        let limit = if fits_all {
+            tools_right
+        } else {
+            tools_right - ovf_w - gap
+        };
 
         let mut bx = tools_x;
         let mut hidden: Vec<usize> = Vec::new();
@@ -1460,10 +1551,22 @@ impl SlidesApp {
             if hidden.is_empty() && bx + w <= limit + 0.5 {
                 let rect = Rect::new(bx, by, bx + w, by + bh);
                 let kind = match t.icon {
-                    Some(icon) => ButtonKind::IconText { icon, label: t.bar.to_string(), accent: false },
-                    None => ButtonKind::Text { label: t.bar.to_string(), active: false, danger: false },
+                    Some(icon) => ButtonKind::IconText {
+                        icon,
+                        label: t.bar.to_string(),
+                        accent: false,
+                    },
+                    None => ButtonKind::Text {
+                        label: t.bar.to_string(),
+                        active: false,
+                        danger: false,
+                    },
                 };
-                buttons.push(UiButton { rect, kind, hit: t.hit.clone() });
+                buttons.push(UiButton {
+                    rect,
+                    kind,
+                    hit: t.hit.clone(),
+                });
                 bx += w + gap;
             } else {
                 hidden.push(i);
@@ -1477,7 +1580,10 @@ impl SlidesApp {
         let ovf = Rect::new(ovf_x, by, ovf_x + ovf_w, by + bh);
         buttons.push(UiButton {
             rect: ovf,
-            kind: ButtonKind::IconOnly { icon: Icon::MoreHorizontal, active: self.toolbar_menu_open },
+            kind: ButtonKind::IconOnly {
+                icon: Icon::MoreHorizontal,
+                active: self.toolbar_menu_open,
+            },
             hit: Hit::ToggleToolbarMenu,
         });
         if !self.toolbar_menu_open {
@@ -1502,7 +1608,11 @@ impl SlidesApp {
             let ry = my0 + pad + r as f64 * row_h;
             rows.push(UiButton {
                 rect: Rect::new(mx0 + pad, ry, mx1 - pad, ry + row_h - 4.0),
-                kind: ButtonKind::Text { label: tools[i].menu.to_string(), active: false, danger: false },
+                kind: ButtonKind::Text {
+                    label: tools[i].menu.to_string(),
+                    active: false,
+                    danger: false,
+                },
                 hit: tools[i].hit.clone(),
             });
         }
@@ -1580,13 +1690,21 @@ impl SlidesApp {
                 let bold = Rect::new(x1 - 36.0, y, x1, y + bh);
                 buttons.push(UiButton {
                     rect: bold,
-                    kind: ButtonKind::Text { label: "B".into(), active: el.bold, danger: false },
+                    kind: ButtonKind::Text {
+                        label: "B".into(),
+                        active: el.bold,
+                        danger: false,
+                    },
                     hit: Hit::ToggleBold,
                 });
                 let italic = Rect::new(x1 - 36.0 - 6.0 - 36.0, y, x1 - 36.0 - 6.0, y + bh);
                 buttons.push(UiButton {
                     rect: italic,
-                    kind: ButtonKind::Text { label: "I".into(), active: el.italic, danger: false },
+                    kind: ButtonKind::Text {
+                        label: "I".into(),
+                        active: el.italic,
+                        danger: false,
+                    },
                     hit: Hit::ToggleItalic,
                 });
                 y += bh + 10.0;
@@ -1598,7 +1716,11 @@ impl SlidesApp {
                 let seg_w = inner_w / n as f64;
                 for (i, a) in TextAlign::ALL.iter().enumerate() {
                     let sx = x0 + i as f64 * seg_w;
-                    let ex = if i + 1 == n { x1 } else { x0 + (i as f64 + 1.0) * seg_w };
+                    let ex = if i + 1 == n {
+                        x1
+                    } else {
+                        x0 + (i as f64 + 1.0) * seg_w
+                    };
                     let pos = if i == 0 {
                         SegPos::First
                     } else if i + 1 == n {
@@ -1626,12 +1748,20 @@ impl SlidesApp {
             let back = Rect::new(x0 + half + 8.0, y, x1, y + bh);
             buttons.push(UiButton {
                 rect: front,
-                kind: ButtonKind::Text { label: "Bring front".into(), active: false, danger: false },
+                kind: ButtonKind::Text {
+                    label: "Bring front".into(),
+                    active: false,
+                    danger: false,
+                },
                 hit: Hit::BringFront,
             });
             buttons.push(UiButton {
                 rect: back,
-                kind: ButtonKind::Text { label: "Send back".into(), active: false, danger: false },
+                kind: ButtonKind::Text {
+                    label: "Send back".into(),
+                    active: false,
+                    danger: false,
+                },
                 hit: Hit::SendBack,
             });
             y += bh + 8.0;
@@ -1639,12 +1769,20 @@ impl SlidesApp {
             let del = Rect::new(x0 + half + 8.0, y, x1, y + bh);
             buttons.push(UiButton {
                 rect: dup,
-                kind: ButtonKind::Text { label: "Duplicate".into(), active: false, danger: false },
+                kind: ButtonKind::Text {
+                    label: "Duplicate".into(),
+                    active: false,
+                    danger: false,
+                },
                 hit: Hit::DuplicateElement,
             });
             buttons.push(UiButton {
                 rect: del,
-                kind: ButtonKind::Text { label: "Delete".into(), active: false, danger: true },
+                kind: ButtonKind::Text {
+                    label: "Delete".into(),
+                    active: false,
+                    danger: true,
+                },
                 hit: Hit::DeleteElement,
             });
             y += bh + 6.0;
@@ -1659,28 +1797,34 @@ impl SlidesApp {
             y += 30.0;
 
             header(labels, &mut y, "LAYOUT");
-            let cur_layout = self.slide().map(|s| s.layout).unwrap_or(Layout::TitleContent);
+            let cur_layout = self
+                .slide()
+                .map(|s| s.layout)
+                .unwrap_or(Layout::TitleContent);
             y = self.wrap_pills(
                 buttons,
                 x0,
                 x1,
                 y,
-                Layout::ALL.iter().map(|l| {
-                    (l.label().to_string(), *l == cur_layout, Hit::SetLayout(*l))
-                }),
+                Layout::ALL
+                    .iter()
+                    .map(|l| (l.label().to_string(), *l == cur_layout, Hit::SetLayout(*l))),
             );
             y += 10.0;
 
             header(labels, &mut y, "BACKGROUND");
-            let cur_bg = self.slide().map(|s| s.background).unwrap_or(Background::Surface);
+            let cur_bg = self
+                .slide()
+                .map(|s| s.background)
+                .unwrap_or(Background::Surface);
             y = self.wrap_pills(
                 buttons,
                 x0,
                 x1,
                 y,
-                Background::ALL.iter().map(|b| {
-                    (b.label().to_string(), *b == cur_bg, Hit::SetBackground(*b))
-                }),
+                Background::ALL
+                    .iter()
+                    .map(|b| (b.label().to_string(), *b == cur_bg, Hit::SetBackground(*b))),
             );
             y += 10.0;
 
@@ -1693,8 +1837,12 @@ impl SlidesApp {
         let notes_top = (y + 6.0).max(inspector.y1 - 188.0);
         labels.push(Label {
             pos: Point::new(x0, notes_top),
-            text: if self.editing_notes { "SPEAKER NOTES  (editing — Esc)" } else { "SPEAKER NOTES" }
-                .to_string(),
+            text: if self.editing_notes {
+                "SPEAKER NOTES  (editing — Esc)"
+            } else {
+                "SPEAKER NOTES"
+            }
+            .to_string(),
             font: 11.0,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
@@ -1702,10 +1850,17 @@ impl SlidesApp {
         let nb = Rect::new(x0, notes_top + 20.0, x1, inspector.y1 - pad);
         buttons.push(UiButton {
             rect: nb,
-            kind: ButtonKind::Text { label: String::new(), active: false, danger: false },
+            kind: ButtonKind::Text {
+                label: String::new(),
+                active: false,
+                danger: false,
+            },
             hit: Hit::EditNotes,
         });
-        InspectorRects { notes: Some(nb), font_input: font_input_rect }
+        InspectorRects {
+            notes: Some(nb),
+            font_input: font_input_rect,
+        }
     }
 
     fn swatch_grid(
@@ -1770,7 +1925,10 @@ impl SlidesApp {
             }
             buttons.push(UiButton {
                 rect: Rect::new(x, y, x + w, y + bh),
-                kind: ButtonKind::Palette { kind: *p, selected: *p == self.deck.palette },
+                kind: ButtonKind::Palette {
+                    kind: *p,
+                    selected: *p == self.deck.palette,
+                },
                 hit: Hit::SetPalette(*p),
             });
             x += w + gap;
@@ -1797,7 +1955,11 @@ impl SlidesApp {
             }
             buttons.push(UiButton {
                 rect: Rect::new(x, y, x + w, y + bh),
-                kind: ButtonKind::Text { label, active, danger: false },
+                kind: ButtonKind::Text {
+                    label,
+                    active,
+                    danger: false,
+                },
                 hit,
             });
             x += w + gap;
@@ -1860,7 +2022,11 @@ impl SlidesApp {
             Hit::DeleteSlide => self.delete_slide(doc),
             Hit::Present => self.enter_present(),
             Hit::Overview => {
-                self.mode = if self.mode == Mode::Overview { Mode::Edit } else { Mode::Overview };
+                self.mode = if self.mode == Mode::Overview {
+                    Mode::Edit
+                } else {
+                    Mode::Overview
+                };
                 self.editing_text = false;
                 self.editing_notes = false;
             }
@@ -1870,7 +2036,10 @@ impl SlidesApp {
                 self.mode = Mode::Edit;
             }
             Hit::CyclePalette => {
-                self.perform_action(doc, actions::set_deck_palette_action(self.deck.palette.next()));
+                self.perform_action(
+                    doc,
+                    actions::set_deck_palette_action(self.deck.palette.next()),
+                );
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
@@ -1952,7 +2121,10 @@ impl SlidesApp {
     }
     fn set_sel_bool(&mut self, doc: &mut AutoCommit, key: &str, v: bool) {
         if let Some(id) = self.sel.clone() {
-            self.perform_action(doc, actions::restyle_bool_action(self.cur_slide, id, key, v));
+            self.perform_action(
+                doc,
+                actions::restyle_bool_action(self.cur_slide, id, key, v),
+            );
         }
     }
 
@@ -1977,7 +2149,9 @@ impl SlidesApp {
     }
 
     fn duplicate_slide(&mut self, doc: &mut AutoCommit) {
-        let Some(slide) = self.deck.slides.get(self.cur_slide).cloned() else { return };
+        let Some(slide) = self.deck.slides.get(self.cur_slide).cloned() else {
+            return;
+        };
         let mut copy = slide;
         copy.id = new_id();
         for e in &mut copy.elements {
@@ -2049,7 +2223,9 @@ impl SlidesApp {
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
     /// Called once per frame from [`Widget::sync`].
     fn drain_doc_portal(&mut self, doc: &mut AutoCommit) {
-        let Some(rx) = self.doc_portal_rx.as_ref() else { return };
+        let Some(rx) = self.doc_portal_rx.as_ref() else {
+            return;
+        };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.doc_portal_rx = None;
@@ -2073,8 +2249,12 @@ impl SlidesApp {
     /// Load a `.odp` from disk, replacing the deck in the shared document so
     /// undo/redo and collaboration see the whole swap as one change.
     fn load_odp(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
-        let Ok(bytes) = std::fs::read(path) else { return false };
-        let Ok(deck) = crate::odp::read_odp(&bytes) else { return false };
+        let Ok(bytes) = std::fs::read(path) else {
+            return false;
+        };
+        let Ok(deck) = crate::odp::read_odp(&bytes) else {
+            return false;
+        };
         SlidesDoc::seed(doc, &deck);
         self.deck = deck;
         self.deck_rev = self.deck_rev.wrapping_add(1);
@@ -2103,7 +2283,9 @@ impl SlidesApp {
     /// channel. Never blocks — a still-pending picker simply leaves the channel
     /// installed for the next frame.
     fn drain_portal(&mut self, doc: &mut AutoCommit) {
-        let Some(rx) = self.portal_rx.as_ref() else { return };
+        let Some(rx) = self.portal_rx.as_ref() else {
+            return;
+        };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
@@ -2142,7 +2324,9 @@ impl SlidesApp {
     }
 
     fn duplicate_element(&mut self, doc: &mut AutoCommit) {
-        let Some(el) = self.selected_element().cloned() else { return };
+        let Some(el) = self.selected_element().cloned() else {
+            return;
+        };
         let mut copy = el;
         copy.id = new_id();
         copy.x += 24.0;
@@ -2164,7 +2348,10 @@ impl SlidesApp {
         if let Some(el) = self.selected_element().cloned() {
             let nx = (el.x + dx).clamp(-el.w + 20.0, SLIDE_W - 20.0);
             let ny = (el.y + dy).clamp(-el.h + 20.0, SLIDE_H - 20.0);
-            self.perform_action(doc, actions::move_element_action(self.cur_slide, el.id, nx, ny));
+            self.perform_action(
+                doc,
+                actions::move_element_action(self.cur_slide, el.id, nx, ny),
+            );
         }
     }
 
@@ -2443,7 +2630,9 @@ impl SlidesApp {
         } else if self.editing_notes {
             self.slide().map(|s| s.notes.chars().count()).unwrap_or(0)
         } else {
-            self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0)
+            self.selected_element()
+                .map(|e| e.text.chars().count())
+                .unwrap_or(0)
         }
     }
 
@@ -2455,7 +2644,9 @@ impl SlidesApp {
         } else if self.editing_notes {
             self.slide().map(|s| s.notes.clone()).unwrap_or_default()
         } else {
-            self.selected_element().map(|e| e.text.clone()).unwrap_or_default()
+            self.selected_element()
+                .map(|e| e.text.clone())
+                .unwrap_or_default()
         }
     }
 
@@ -2522,9 +2713,18 @@ impl SlidesApp {
                 self.last_mouse = Point::new(position.x / sf, position.y / sf);
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
-            } if matches!(logical_key, Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape)) => {
+            } if matches!(
+                logical_key,
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape)
+            ) =>
+            {
                 self.commit_title_edit(state);
                 return true;
             }
@@ -2540,8 +2740,17 @@ impl SlidesApp {
             _ => {}
         }
         let mut h = false;
-        self.title_input
-            .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+        self.title_input.handle_event(
+            event,
+            sf,
+            mods,
+            state,
+            path,
+            &mut h,
+            focus_target,
+            node_id,
+            taffy,
+        );
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
         if let Some(t) = self.title_input.take_dirty() {
@@ -2576,7 +2785,10 @@ impl SlidesApp {
     /// clamped to the current text length. Collapsed when nothing is selected.
     fn selection(&self) -> Selection {
         let len = self.cur_text_len();
-        Selection { anchor: self.sel_anchor.min(len), cursor: self.active_caret().min(len) }
+        Selection {
+            anchor: self.sel_anchor.min(len),
+            cursor: self.active_caret().min(len),
+        }
     }
 
     /// Whether the active editor has a non-empty text selection.
@@ -2628,7 +2840,11 @@ impl SlidesApp {
         if sel.is_collapsed() {
             return String::new();
         }
-        self.cur_edit_text().chars().skip(sel.min()).take(sel.max() - sel.min()).collect()
+        self.cur_edit_text()
+            .chars()
+            .skip(sel.min())
+            .take(sel.max() - sel.min())
+            .collect()
     }
 
     /// Select the whole of the active editor's text.
@@ -2650,7 +2866,11 @@ impl SlidesApp {
         }
         let len = self.cur_text_len();
         let cur = self.active_caret().min(len);
-        let next = if dir < 0 { cur.saturating_sub(1) } else { (cur + 1).min(len) };
+        let next = if dir < 0 {
+            cur.saturating_sub(1)
+        } else {
+            (cur + 1).min(len)
+        };
         self.place_caret(next, extend);
     }
 
@@ -2722,23 +2942,75 @@ impl SlidesApp {
         if !insp_overlay {
             chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
         }
-        chrome::fill_rect(scene, t, chrome.toolbar, mix_panel(c.surfaces.raised, c.surfaces.base));
+        chrome::fill_rect(
+            scene,
+            t,
+            chrome.toolbar,
+            mix_panel(c.surfaces.raised, c.surfaces.base),
+        );
         // Divider lines.
-        stroke_line(scene, t, chrome.toolbar.x0, chrome.toolbar.y1, chrome.toolbar.x1, chrome.toolbar.y1, div);
+        stroke_line(
+            scene,
+            t,
+            chrome.toolbar.x0,
+            chrome.toolbar.y1,
+            chrome.toolbar.x1,
+            chrome.toolbar.y1,
+            div,
+        );
         if !rail_overlay {
-            stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
+            stroke_line(
+                scene,
+                t,
+                chrome.rail.x1,
+                chrome.rail.y0,
+                chrome.rail.x1,
+                chrome.rail.y1,
+                div,
+            );
         }
         if !insp_overlay {
-            stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
+            stroke_line(
+                scene,
+                t,
+                chrome.inspector.x0,
+                chrome.inspector.y0,
+                chrome.inspector.x0,
+                chrome.inspector.y1,
+                div,
+            );
         }
 
         // Canvas slide.
         if let Some(slide) = self.slide() {
             // Soft drop shadow.
             let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-            chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 14.0, render::with_alpha(Color::BLACK, 70));
-            render::draw_slide(scene, t, tr, theme, &pal, slide, chrome.slide_dest, 14.0, &self.images);
-            chrome::stroke_rrect(scene, t, chrome.slide_dest, 14.0, render::with_alpha(c.text_primary, 28), 1.0);
+            chrome::fill_rrect(
+                scene,
+                t,
+                sh.inflate(2.0, 2.0),
+                14.0,
+                render::with_alpha(Color::BLACK, 70),
+            );
+            render::draw_slide(
+                scene,
+                t,
+                tr,
+                theme,
+                &pal,
+                slide,
+                chrome.slide_dest,
+                14.0,
+                &self.images,
+            );
+            chrome::stroke_rrect(
+                scene,
+                t,
+                chrome.slide_dest,
+                14.0,
+                render::with_alpha(c.text_primary, 28),
+                1.0,
+            );
 
             // Selection chrome.
             if let Some(el) = self.selected_element() {
@@ -2747,7 +3019,14 @@ impl SlidesApp {
                 // Ring is drawn at the handle outset so it passes through the
                 // handle centres — the whole selection frame sits *around* the
                 // content, never over the first glyph.
-                chrome::stroke_rrect(scene, t, er.inflate(HANDLE_OFFSET, HANDLE_OFFSET), 5.0, sel_col, 1.5);
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    er.inflate(HANDLE_OFFSET, HANDLE_OFFSET),
+                    5.0,
+                    sel_col,
+                    1.5,
+                );
                 if !self.editing_text {
                     for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
                         // The returned rect is the generous grab zone (±HANDLE);
@@ -2769,11 +3048,27 @@ impl SlidesApp {
                 match g {
                     Guide::Vertical(sx) => {
                         let x = chrome.slide_dest.x0 + sx * chrome.scale;
-                        stroke_line(scene, t, x, chrome.slide_dest.y0, x, chrome.slide_dest.y1, gc);
+                        stroke_line(
+                            scene,
+                            t,
+                            x,
+                            chrome.slide_dest.y0,
+                            x,
+                            chrome.slide_dest.y1,
+                            gc,
+                        );
                     }
                     Guide::Horizontal(sy) => {
                         let y = chrome.slide_dest.y0 + sy * chrome.scale;
-                        stroke_line(scene, t, chrome.slide_dest.x0, y, chrome.slide_dest.x1, y, gc);
+                        stroke_line(
+                            scene,
+                            t,
+                            chrome.slide_dest.x0,
+                            y,
+                            chrome.slide_dest.x1,
+                            y,
+                            gc,
+                        );
                     }
                 }
             }
@@ -2825,14 +3120,27 @@ impl SlidesApp {
         // the text, caret and selection.
         if self.editing_title {
             let underline_y = chrome.title_pos.y + 22.0;
-            stroke_line(scene, t, chrome.title_pos.x, underline_y, chrome.title_rect.x1, underline_y, pal.accent);
+            stroke_line(
+                scene,
+                t,
+                chrome.title_pos.x,
+                underline_y,
+                chrome.title_rect.x1,
+                underline_y,
+                pal.accent,
+            );
         }
 
         // Scrim behind an open overlay flap, dimming the editor body.
         if chrome.scrim.width() > 0.0 {
             let reveal = chrome.reveal.max(chrome.inspector_reveal);
             let alpha = (reveal * 0.5) as f32;
-            chrome::fill_rect(scene, t, chrome.scrim, render::with_alpha(Color::BLACK, (alpha * 255.0) as u8));
+            chrome::fill_rect(
+                scene,
+                t,
+                chrome.scrim,
+                render::with_alpha(Color::BLACK, (alpha * 255.0) as u8),
+            );
         }
 
         // Rail group on top: panel fill (overlay only), then the fixed header
@@ -2840,18 +3148,26 @@ impl SlidesApp {
         // viewport so it can never bleed over the pinned Add/Dup/Del row.
         if rail_overlay && chrome.reveal > 0.001 {
             chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
-            stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
+            stroke_line(
+                scene,
+                t,
+                chrome.rail.x1,
+                chrome.rail.y0,
+                chrome.rail.x1,
+                chrome.rail.y1,
+                div,
+            );
         }
         // Fixed rail chrome (SLIDES header + Add/Dup/Del) — never scrolls. While
         // a thumbnail is being dragged, the pinned action row is replaced by the
         // red "drop to delete" zone drawn below, so suppress the buttons it
         // covers (otherwise they bleed through the zone's translucent fill).
-        let drag_zone =
-            self.page_sidebar.is_dragging().then(|| self.slide_delete_zone(chrome.rail));
+        let drag_zone = self
+            .page_sidebar
+            .is_dragging()
+            .then(|| self.slide_delete_zone(chrome.rail));
         for b in &chrome.buttons {
-            if in_rail(b.rect.center())
-                && !drag_zone.is_some_and(|z| z.contains(b.rect.center()))
-            {
+            if in_rail(b.rect.center()) && !drag_zone.is_some_and(|z| z.contains(b.rect.center())) {
                 self.draw_button(scene, t, tr, theme, &pal, b);
             }
         }
@@ -2868,7 +3184,8 @@ impl SlidesApp {
         // header + Add/Dup/Del) around it. Move the rail out of `self` so the
         // closure can borrow the deck + image cache alongside it.
         if chrome.rail.width() > 1.0 {
-            let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
+            let mut sb =
+                std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
             let deck = &self.deck;
             let images = &self.images;
             sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
@@ -2924,7 +3241,15 @@ impl SlidesApp {
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
         if insp_overlay && chrome.inspector_reveal > 0.001 {
             chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
-            stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
+            stroke_line(
+                scene,
+                t,
+                chrome.inspector.x0,
+                chrome.inspector.y0,
+                chrome.inspector.x0,
+                chrome.inspector.y1,
+                div,
+            );
         }
         for b in &chrome.buttons {
             if in_inspector(b.rect.center()) {
@@ -2943,9 +3268,22 @@ impl SlidesApp {
         // Toolbar overflow menu — painted last so it floats above all chrome.
         if let Some(bg) = chrome.menu_bg {
             let shadow = bg + vello::kurbo::Vec2::new(0.0, 4.0);
-            chrome::fill_rrect(scene, t, shadow.inflate(2.0, 2.0), 12.0, render::with_alpha(Color::BLACK, 90));
+            chrome::fill_rrect(
+                scene,
+                t,
+                shadow.inflate(2.0, 2.0),
+                12.0,
+                render::with_alpha(Color::BLACK, 90),
+            );
             chrome::fill_rrect(scene, t, bg, 10.0, c.surfaces.raised);
-            chrome::stroke_rrect(scene, t, bg, 10.0, render::with_alpha(c.text_primary, 48), 1.0);
+            chrome::stroke_rrect(
+                scene,
+                t,
+                bg,
+                10.0,
+                render::with_alpha(c.text_primary, 48),
+                1.0,
+            );
             for b in &chrome.menu_buttons {
                 self.draw_button(scene, t, tr, theme, &pal, b);
             }
@@ -3000,9 +3338,22 @@ impl SlidesApp {
             let c = &theme.tokens.colors;
             let panel = rect.inflate(12.0, 16.0);
             let shadow = panel + vello::kurbo::Vec2::new(0.0, 5.0);
-            chrome::fill_rrect(scene, t, shadow.inflate(2.0, 2.0), 14.0, render::with_alpha(Color::BLACK, 100));
+            chrome::fill_rrect(
+                scene,
+                t,
+                shadow.inflate(2.0, 2.0),
+                14.0,
+                render::with_alpha(Color::BLACK, 100),
+            );
             chrome::fill_rrect(scene, t, panel, 12.0, c.surfaces.raised);
-            chrome::stroke_rrect(scene, t, panel, 12.0, render::with_alpha(c.text_primary, 48), 1.0);
+            chrome::stroke_rrect(
+                scene,
+                t,
+                panel,
+                12.0,
+                render::with_alpha(c.text_primary, 48),
+                1.0,
+            );
             tr.draw_text_weighted(
                 scene,
                 "FILL COLOUR",
@@ -3070,7 +3421,11 @@ impl SlidesApp {
     ) {
         let c = &theme.tokens.colors;
         match &b.kind {
-            ButtonKind::Text { label, active, danger } => {
+            ButtonKind::Text {
+                label,
+                active,
+                danger,
+            } => {
                 let (bg, fg) = if *danger {
                     (render::with_alpha(c.semantic.danger, 38), c.semantic.danger)
                 } else if *active {
@@ -3079,12 +3434,32 @@ impl SlidesApp {
                     (c.surfaces.base, c.text_primary)
                 };
                 chrome::fill_rrect(scene, t, b.rect, 8.0, bg);
-                chrome::stroke_rrect(scene, t, b.rect, 8.0, render::with_alpha(c.text_primary, 26), 1.0);
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    b.rect,
+                    8.0,
+                    render::with_alpha(c.text_primary, 26),
+                    1.0,
+                );
                 if !label.is_empty() {
-                    chrome::text_centered(scene, t, tr, label, b.rect, 13.0, fg, TextWeight::Semibold);
+                    chrome::text_centered(
+                        scene,
+                        t,
+                        tr,
+                        label,
+                        b.rect,
+                        13.0,
+                        fg,
+                        TextWeight::Semibold,
+                    );
                 }
             }
-            ButtonKind::IconText { icon, label, accent } => {
+            ButtonKind::IconText {
+                icon,
+                label,
+                accent,
+            } => {
                 let (bg, fg) = if *accent {
                     (pal.accent, Color::WHITE)
                 } else {
@@ -3092,16 +3467,45 @@ impl SlidesApp {
                 };
                 chrome::fill_rrect(scene, t, b.rect, 8.0, bg);
                 if !accent {
-                    chrome::stroke_rrect(scene, t, b.rect, 8.0, render::with_alpha(c.text_primary, 26), 1.0);
+                    chrome::stroke_rrect(
+                        scene,
+                        t,
+                        b.rect,
+                        8.0,
+                        render::with_alpha(c.text_primary, 26),
+                        1.0,
+                    );
                 }
-                let ir = Rect::new(b.rect.x0 + 11.0, b.rect.y0 + 8.0, b.rect.x0 + 29.0, b.rect.y1 - 8.0);
+                let ir = Rect::new(
+                    b.rect.x0 + 11.0,
+                    b.rect.y0 + 8.0,
+                    b.rect.x0 + 29.0,
+                    b.rect.y1 - 8.0,
+                );
                 draw_icon(scene, t, ir, *icon, fg, 1.8);
-                chrome::text_vcenter(scene, t, tr, label, b.rect, ir.x1 + 5.0, 13.0, fg, TextWeight::Semibold);
+                chrome::text_vcenter(
+                    scene,
+                    t,
+                    tr,
+                    label,
+                    b.rect,
+                    ir.x1 + 5.0,
+                    13.0,
+                    fg,
+                    TextWeight::Semibold,
+                );
             }
             ButtonKind::IconOnly { icon, active } => {
                 let bg = if *active { pal.accent } else { c.surfaces.base };
                 chrome::fill_rrect(scene, t, b.rect, 7.0, bg);
-                chrome::stroke_rrect(scene, t, b.rect, 7.0, render::with_alpha(c.text_primary, 30), 1.0);
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    b.rect,
+                    7.0,
+                    render::with_alpha(c.text_primary, 30),
+                    1.0,
+                );
                 let ir = b.rect.inflate(-6.0, -6.0);
                 draw_icon(scene, t, ir, *icon, c.text_primary, 1.8);
             }
@@ -3110,13 +3514,35 @@ impl SlidesApp {
                     Some(col) => {
                         chrome::fill_rrect(scene, t, b.rect, 6.0, col);
                         // contrast border for light swatches
-                        chrome::stroke_rrect(scene, t, b.rect, 6.0, render::with_alpha(Color::BLACK, 50), 1.0);
+                        chrome::stroke_rrect(
+                            scene,
+                            t,
+                            b.rect,
+                            6.0,
+                            render::with_alpha(Color::BLACK, 50),
+                            1.0,
+                        );
                     }
                     None => {
                         // "none" → hatched empty box
                         chrome::fill_rrect(scene, t, b.rect, 6.0, c.surfaces.base);
-                        chrome::stroke_rrect(scene, t, b.rect, 6.0, render::with_alpha(c.text_primary, 60), 1.0);
-                        stroke_line(scene, t, b.rect.x0 + 4.0, b.rect.y1 - 4.0, b.rect.x1 - 4.0, b.rect.y0 + 4.0, c.semantic.danger);
+                        chrome::stroke_rrect(
+                            scene,
+                            t,
+                            b.rect,
+                            6.0,
+                            render::with_alpha(c.text_primary, 60),
+                            1.0,
+                        );
+                        stroke_line(
+                            scene,
+                            t,
+                            b.rect.x0 + 4.0,
+                            b.rect.y1 - 4.0,
+                            b.rect.x1 - 4.0,
+                            b.rect.y0 + 4.0,
+                            c.semantic.danger,
+                        );
                     }
                 }
                 if *selected {
@@ -3131,10 +3557,19 @@ impl SlidesApp {
                     t,
                     b.rect,
                     8.0,
-                    if *selected { col } else { render::with_alpha(c.text_primary, 26) },
+                    if *selected {
+                        col
+                    } else {
+                        render::with_alpha(c.text_primary, 26)
+                    },
                     if *selected { 2.0 } else { 1.0 },
                 );
-                let dot = Rect::new(b.rect.x0 + 8.0, b.rect.center().y - 6.0, b.rect.x0 + 20.0, b.rect.center().y + 6.0);
+                let dot = Rect::new(
+                    b.rect.x0 + 8.0,
+                    b.rect.center().y - 6.0,
+                    b.rect.x0 + 20.0,
+                    b.rect.center().y + 6.0,
+                );
                 chrome::fill_rrect(scene, t, dot, 6.0, col);
                 if b.rect.width() > 40.0 {
                     // Clip the name to the pill so a slight text-metric
@@ -3142,7 +3577,17 @@ impl SlidesApp {
                     // sized (see `palette_pill_width`) so the full name fits,
                     // making this a belt-and-suspenders guard, not a truncation.
                     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &b.rect);
-                    chrome::text_vcenter(scene, t, tr, kind.label(), b.rect, dot.x1 + 6.0, 12.0, c.text_primary, TextWeight::Semibold);
+                    chrome::text_vcenter(
+                        scene,
+                        t,
+                        tr,
+                        kind.label(),
+                        b.rect,
+                        dot.x1 + 6.0,
+                        12.0,
+                        c.text_primary,
+                        TextWeight::Semibold,
+                    );
                     scene.pop_layer();
                 }
             }
@@ -3156,17 +3601,29 @@ impl SlidesApp {
                 let r = 8.0;
                 let shape = match pos {
                     SegPos::First => vello::kurbo::RoundedRect::new(
-                        b.rect.x0, b.rect.y0, b.rect.x1, b.rect.y1,
+                        b.rect.x0,
+                        b.rect.y0,
+                        b.rect.x1,
+                        b.rect.y1,
                         (r, 0.0, 0.0, r),
                     ),
                     SegPos::Last => vello::kurbo::RoundedRect::new(
-                        b.rect.x0, b.rect.y0, b.rect.x1, b.rect.y1,
+                        b.rect.x0,
+                        b.rect.y0,
+                        b.rect.x1,
+                        b.rect.y1,
                         (0.0, r, r, 0.0),
                     ),
                     SegPos::Mid => vello::kurbo::RoundedRect::from_rect(b.rect, 0.0),
                 };
                 scene.fill(Fill::NonZero, t, bg, None, &shape);
-                scene.stroke(&Stroke::new(1.0), t, render::with_alpha(c.text_primary, 26), None, &shape);
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    render::with_alpha(c.text_primary, 26),
+                    None,
+                    &shape,
+                );
                 chrome::text_centered(scene, t, tr, label, b.rect, 12.5, fg, TextWeight::Semibold);
             }
             ButtonKind::Hamburger => {
@@ -3174,7 +3631,14 @@ impl SlidesApp {
                 let bg = if active { pal.accent } else { c.surfaces.base };
                 let fg = if active { Color::WHITE } else { c.text_primary };
                 chrome::fill_rrect(scene, t, b.rect, 8.0, bg);
-                chrome::stroke_rrect(scene, t, b.rect, 8.0, render::with_alpha(c.text_primary, 30), 1.0);
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    b.rect,
+                    8.0,
+                    render::with_alpha(c.text_primary, 30),
+                    1.0,
+                );
                 // Three evenly-spaced horizontal lines.
                 let cx0 = b.rect.x0 + 9.0;
                 let cx1 = b.rect.x1 - 9.0;
@@ -3197,7 +3661,11 @@ impl SlidesApp {
         s: f64,
     ) {
         let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        let weight = if el.bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        };
         self.draw_caret_in_box(
             scene, t, tr, pal.accent, &el.text, self.caret, er, font_px, weight, el.italic,
             el.align, true,
@@ -3225,9 +3693,13 @@ impl SlidesApp {
         align: TextAlign,
         center_v: bool,
     ) {
-        let (top, line_h) =
-            self.caret_geometry(tr, text, caret, er, font_px, weight, italic, align, center_v);
-        let bar = Line::new(Point::new(top.x, top.y + 2.0), Point::new(top.x, top.y + line_h - 2.0));
+        let (top, line_h) = self.caret_geometry(
+            tr, text, caret, er, font_px, weight, italic, align, center_v,
+        );
+        let bar = Line::new(
+            Point::new(top.x, top.y + 2.0),
+            Point::new(top.x, top.y + line_h - 2.0),
+        );
         scene.stroke(&Stroke::new(2.0), t, accent, None, &bar);
     }
 
@@ -3261,7 +3733,11 @@ impl SlidesApp {
             }
         }
         let line_start = starts[li];
-        let line_end = if li + 1 < starts.len() { starts[li + 1] - 1 } else { chars.len() };
+        let line_end = if li + 1 < starts.len() {
+            starts[li + 1] - 1
+        } else {
+            chars.len()
+        };
         let cur_line: String = chars[line_start..line_end].iter().collect();
         let prefix: String = chars[line_start..caret].iter().collect();
 
@@ -3367,7 +3843,11 @@ impl SlidesApp {
         let starts = line_starts(&chars);
         let mut rects = Vec::new();
         for (li, &ls) in starts.iter().enumerate() {
-            let le = if li + 1 < starts.len() { starts[li + 1] - 1 } else { chars.len() };
+            let le = if li + 1 < starts.len() {
+                starts[li + 1] - 1
+            } else {
+                chars.len()
+            };
             // Portion of this explicit line covered by the selection.
             let a = min.max(ls);
             let b = max.min(le);
@@ -3418,7 +3898,11 @@ impl SlidesApp {
         }
         let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
         let font_px = (el.font_size * chrome.scale).max(1.0) as f32;
-        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        let weight = if el.bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        };
         if let Some(p) = self.select_word_click.take() {
             let idx = self.char_at_point_in_box(
                 tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
@@ -3450,10 +3934,23 @@ impl SlidesApp {
             return;
         }
         let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        let weight = if el.bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        };
         let col = render::with_alpha(pal.accent, 70);
         for r in self.selection_rects_in_box(
-            tr, &el.text, sel.min(), sel.max(), er, font_px, weight, el.italic, el.align, true,
+            tr,
+            &el.text,
+            sel.min(),
+            sel.max(),
+            er,
+            font_px,
+            weight,
+            el.italic,
+            el.align,
+            true,
         ) {
             chrome::fill_rrect(scene, t, r, 2.0, col);
         }
@@ -3480,7 +3977,11 @@ impl SlidesApp {
             t,
             nb,
             8.0,
-            if self.editing_notes { self.palette(theme).accent } else { render::with_alpha(c.text_primary, 26) },
+            if self.editing_notes {
+                self.palette(theme).accent
+            } else {
+                render::with_alpha(c.text_primary, 26)
+            },
             1.0,
         );
         let display = if notes.is_empty() {
@@ -3488,7 +3989,11 @@ impl SlidesApp {
         } else {
             notes.to_string()
         };
-        let col = if notes.is_empty() { c.text_dim } else { c.text_primary };
+        let col = if notes.is_empty() {
+            c.text_dim
+        } else {
+            c.text_primary
+        };
         tr.draw_text_weighted(
             scene,
             &display,
@@ -3503,15 +4008,28 @@ impl SlidesApp {
         // above (`er.width() + 4 == nb.width() - 20`), and notes are top-anchored
         // and left-aligned.
         if self.editing_notes {
-            let er = Rect::new(nb.x0 + 10.0, nb.y0 + 9.0, nb.x0 + 10.0 + (nb.width() - 24.0), nb.y1 - 9.0);
+            let er = Rect::new(
+                nb.x0 + 10.0,
+                nb.y0 + 9.0,
+                nb.x0 + 10.0 + (nb.width() - 24.0),
+                nb.y1 - 9.0,
+            );
             // Selection highlight (same shared caret / selection core as the
             // canvas text) behind the caret.
             let sel = self.selection();
             if !sel.is_collapsed() {
                 let hl = render::with_alpha(self.palette(theme).accent, 70);
                 for r in self.selection_rects_in_box(
-                    tr, notes, sel.min(), sel.max(), er, 12.5, TextWeight::Regular, false,
-                    TextAlign::Left, false,
+                    tr,
+                    notes,
+                    sel.min(),
+                    sel.max(),
+                    er,
+                    12.5,
+                    TextWeight::Regular,
+                    false,
+                    TextAlign::Left,
+                    false,
                 ) {
                     chrome::fill_rrect(scene, t, r, 2.0, hl);
                 }
@@ -3533,13 +4051,7 @@ impl SlidesApp {
         }
     }
 
-    fn draw_present(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Presenter dashboard takes over the whole window when toggled on.
         if self.presenter_view {
             self.draw_presenter(scene, t, tr, theme);
@@ -3631,9 +4143,19 @@ impl SlidesApp {
         let n = self.deck.slides.len().max(1);
         let frac = (self.cur_slide + 1) as f64 / n as f64;
         let bar_h = 4.0;
-        let track = Rect::new(self.rect.x0, self.rect.y1 - bar_h, self.rect.x1, self.rect.y1);
+        let track = Rect::new(
+            self.rect.x0,
+            self.rect.y1 - bar_h,
+            self.rect.x1,
+            self.rect.y1,
+        );
         chrome::fill_rect(scene, t, track, render::with_alpha(Color::WHITE, 30));
-        let fill = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+        let fill = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * frac,
+            track.y1,
+        );
         chrome::fill_rect(scene, t, fill, pal.accent);
 
         // Elapsed-time pill, top-right. A leading ⏸ glyph + dimmer fill marks
@@ -3645,9 +4167,29 @@ impl SlidesApp {
             self.present_clock()
         };
         let tw = chrome::est_width(&clock, 13.0) + 26.0;
-        let tr_rect = Rect::new(self.rect.x1 - 20.0 - tw, self.rect.y0 + 16.0, self.rect.x1 - 20.0, self.rect.y0 + 16.0 + 28.0);
-        chrome::fill_rrect(scene, t, tr_rect, 14.0, render::with_alpha(Color::WHITE, if paused { 14 } else { 24 }));
-        chrome::text_centered(scene, t, tr, &clock, tr_rect, 13.0, render::with_alpha(Color::WHITE, if paused { 150 } else { 255 }), TextWeight::Semibold);
+        let tr_rect = Rect::new(
+            self.rect.x1 - 20.0 - tw,
+            self.rect.y0 + 16.0,
+            self.rect.x1 - 20.0,
+            self.rect.y0 + 16.0 + 28.0,
+        );
+        chrome::fill_rrect(
+            scene,
+            t,
+            tr_rect,
+            14.0,
+            render::with_alpha(Color::WHITE, if paused { 14 } else { 24 }),
+        );
+        chrome::text_centered(
+            scene,
+            t,
+            tr,
+            &clock,
+            tr_rect,
+            13.0,
+            render::with_alpha(Color::WHITE, if paused { 150 } else { 255 }),
+            TextWeight::Semibold,
+        );
 
         // Slide counter pill + hint, in the gutter below the slide — only
         // when there's clear room (suppressed when the notes panel is up).
@@ -3656,7 +4198,16 @@ impl SlidesApp {
             let cw = chrome::est_width(&counter, 13.0) + 24.0;
             let cr = Rect::new(dest.x1 - cw, dest.y1 + 8.0, dest.x1, dest.y1 + 8.0 + 26.0);
             chrome::fill_rrect(scene, t, cr, 13.0, render::with_alpha(Color::WHITE, 26));
-            chrome::text_centered(scene, t, tr, &counter, cr, 13.0, Color::WHITE, TextWeight::Semibold);
+            chrome::text_centered(
+                scene,
+                t,
+                tr,
+                &counter,
+                cr,
+                13.0,
+                Color::WHITE,
+                TextWeight::Semibold,
+            );
             // The nav hint fills the gutter to the *left* of the counter pill,
             // capped so it can never paint under the pill (they overlapped on
             // narrow widths). Pick the richest variant that still fits the room;
@@ -3685,7 +4236,15 @@ impl SlidesApp {
         // Speaker-notes panel.
         if let Some(np) = notes_panel {
             chrome::fill_rect(scene, t, np, theme.tokens.colors.surfaces.raised);
-            stroke_line(scene, t, np.x0, np.y0, np.x1, np.y0, theme.tokens.colors.border_standard);
+            stroke_line(
+                scene,
+                t,
+                np.x0,
+                np.y0,
+                np.x1,
+                np.y0,
+                theme.tokens.colors.border_standard,
+            );
             let nx = np.x0 + 40.0;
             tr.draw_text_weighted(
                 scene,
@@ -3712,7 +4271,11 @@ impl SlidesApp {
                 TextWeight::Bold,
             );
             let notes = self.slide().map(|s| s.notes.clone()).unwrap_or_default();
-            let body = if notes.is_empty() { "—".to_string() } else { notes };
+            let body = if notes.is_empty() {
+                "—".to_string()
+            } else {
+                notes
+            };
             tr.draw_text_weighted(
                 scene,
                 &body,
@@ -3767,7 +4330,17 @@ impl SlidesApp {
             // the live transform is applied on append below.
             let mut frag = Scene::new();
             if let Some(slide) = self.deck.slides.get(slide_idx) {
-                render::draw_slide(&mut frag, Affine::IDENTITY, tr, theme, pal, slide, dest, 0.0, &self.images);
+                render::draw_slide(
+                    &mut frag,
+                    Affine::IDENTITY,
+                    tr,
+                    theme,
+                    pal,
+                    slide,
+                    dest,
+                    0.0,
+                    &self.images,
+                );
             }
             self.present_cache = Some(PresentCache {
                 slide: slide_idx,
@@ -3802,13 +4375,7 @@ impl SlidesApp {
     /// │ └──────────────────────────┘  └───────────────────────────────┘│
     /// └──── footer hint: ← → navigate · P slide · Space pause · …────────┘
     /// ```
-    fn draw_presenter(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_presenter(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let pal = self.palette(theme);
         let c = &theme.tokens.colors;
         // Deep neutral backdrop so it reads as "behind the scenes", distinct
@@ -3900,11 +4467,34 @@ impl SlidesApp {
         let cur_dest = fit_slide_top(cur_avail);
         // Drop shadow + slide.
         let sh = cur_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 12.0, render::with_alpha(Color::BLACK, 80));
+        chrome::fill_rrect(
+            scene,
+            t,
+            sh.inflate(2.0, 2.0),
+            12.0,
+            render::with_alpha(Color::BLACK, 80),
+        );
         if let Some(slide) = self.slide() {
-            render::draw_slide(scene, t, tr, theme, &pal, slide, cur_dest, 12.0, &self.images);
+            render::draw_slide(
+                scene,
+                t,
+                tr,
+                theme,
+                &pal,
+                slide,
+                cur_dest,
+                12.0,
+                &self.images,
+            );
         }
-        chrome::stroke_rrect(scene, t, cur_dest, 12.0, render::with_alpha(c.text_primary, 30), 1.0);
+        chrome::stroke_rrect(
+            scene,
+            t,
+            cur_dest,
+            12.0,
+            render::with_alpha(c.text_primary, 30),
+            1.0,
+        );
 
         // RIGHT column: NEXT preview (top), then speaker notes fill the rest.
         // NEXT preview sized to the column width.
@@ -3923,15 +4513,46 @@ impl SlidesApp {
         let next_rect = Rect::new(right.x0, next_top, right.x0 + next_w, next_top + next_h);
         match self.deck.slides.get(self.cur_slide + 1) {
             Some(next) => {
-                render::draw_slide(scene, t, tr, theme, &pal, next, next_rect, 8.0, &self.images);
-                chrome::stroke_rrect(scene, t, next_rect, 8.0, render::with_alpha(c.text_primary, 30), 1.0);
+                render::draw_slide(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &pal,
+                    next,
+                    next_rect,
+                    8.0,
+                    &self.images,
+                );
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    next_rect,
+                    8.0,
+                    render::with_alpha(c.text_primary, 30),
+                    1.0,
+                );
             }
             None => {
                 // End of deck — placeholder card.
                 chrome::fill_rrect(scene, t, next_rect, 8.0, c.surfaces.raised);
-                chrome::stroke_rrect(scene, t, next_rect, 8.0, render::with_alpha(c.text_primary, 24), 1.0);
+                chrome::stroke_rrect(
+                    scene,
+                    t,
+                    next_rect,
+                    8.0,
+                    render::with_alpha(c.text_primary, 24),
+                    1.0,
+                );
                 chrome::text_centered(
-                    scene, t, tr, "End of deck", next_rect, 14.0, c.text_dim, TextWeight::Semibold,
+                    scene,
+                    t,
+                    tr,
+                    "End of deck",
+                    next_rect,
+                    14.0,
+                    c.text_dim,
+                    TextWeight::Semibold,
                 );
             }
         }
@@ -3949,7 +4570,14 @@ impl SlidesApp {
         );
         let nb = Rect::new(right.x0, notes_top + 20.0, right.x1, body.y1);
         chrome::fill_rrect(scene, t, nb, 10.0, c.surfaces.raised);
-        chrome::stroke_rrect(scene, t, nb, 10.0, render::with_alpha(c.text_primary, 22), 1.0);
+        chrome::stroke_rrect(
+            scene,
+            t,
+            nb,
+            10.0,
+            render::with_alpha(c.text_primary, 22),
+            1.0,
+        );
         let notes = self.slide().map(|s| s.notes.clone()).unwrap_or_default();
         let (body_txt, col) = if notes.is_empty() {
             ("No notes for this slide.".to_string(), c.text_dim)
@@ -3982,7 +4610,12 @@ impl SlidesApp {
         let frac = (self.cur_slide + 1) as f64 / n as f64;
         let track = Rect::new(self.rect.x0, self.rect.y1 - 3.0, self.rect.x1, self.rect.y1);
         chrome::fill_rect(scene, t, track, render::with_alpha(c.text_primary, 26));
-        let fillr = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+        let fillr = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * frac,
+            track.y1,
+        );
         chrome::fill_rect(scene, t, fillr, pal.accent);
     }
 
@@ -3994,7 +4627,12 @@ impl SlidesApp {
     /// hit-test and the wheel/scrollbar handlers so they always agree.
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
         let header_h = 64.0;
-        let area = Rect::new(self.rect.x0, self.rect.y0 + header_h, self.rect.x1, self.rect.y1);
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + header_h,
+            self.rect.x1,
+            self.rect.y1,
+        );
         let pad = 36.0;
         let gap = 26.0;
         let avail_w = (area.width() - 2.0 * pad).max(200.0);
@@ -4027,13 +4665,7 @@ impl SlidesApp {
         (area, out, max_scroll)
     }
 
-    fn draw_overview(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let pal = self.palette(theme);
         let c = &theme.tokens.colors;
         chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
@@ -4050,14 +4682,25 @@ impl SlidesApp {
         );
         tr.draw_text_weighted(
             scene,
-            &format!("{} slides  ·  click to open  ·  Esc / G to return", self.deck.slides.len()),
+            &format!(
+                "{} slides  ·  click to open  ·  Esc / G to return",
+                self.deck.slides.len()
+            ),
             12.0,
             c.text_dim,
             t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 38.0)),
             None,
             TextWeight::Regular,
         );
-        stroke_line(scene, t, self.rect.x0, self.rect.y0 + 60.0, self.rect.x1, self.rect.y0 + 60.0, c.border_standard);
+        stroke_line(
+            scene,
+            t,
+            self.rect.x0,
+            self.rect.y0 + 60.0,
+            self.rect.x1,
+            self.rect.y0 + 60.0,
+            c.border_standard,
+        );
 
         let (area, thumbs, max_scroll) = self.compute_overview();
         // Clip the scrolling grid to the area below the header so cards never
@@ -4067,7 +4710,13 @@ impl SlidesApp {
             if let Some(slide) = self.deck.slides.get(i) {
                 // Drop shadow + card.
                 let sh = rect + vello::kurbo::Vec2::new(0.0, 4.0);
-                chrome::fill_rrect(scene, t, sh.inflate(1.0, 1.0), 8.0, render::with_alpha(Color::BLACK, 60));
+                chrome::fill_rrect(
+                    scene,
+                    t,
+                    sh.inflate(1.0, 1.0),
+                    8.0,
+                    render::with_alpha(Color::BLACK, 60),
+                );
                 render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0, &self.images);
                 let (ring, w) = if i == self.cur_slide {
                     (pal.accent, 2.5)
@@ -4080,7 +4729,11 @@ impl SlidesApp {
                 // slide's own title/content (an on-card badge overlapped it).
                 let cap_y = rect.y1 + 7.0;
                 let num = format!("{}", i + 1);
-                let num_col = if i == self.cur_slide { pal.accent } else { c.text_primary };
+                let num_col = if i == self.cur_slide {
+                    pal.accent
+                } else {
+                    c.text_primary
+                };
                 tr.draw_text_weighted(
                     scene,
                     &num,
@@ -4104,9 +4757,11 @@ impl SlidesApp {
         }
         scene.pop_layer();
         // Scrollbar when the grid overflows the viewport.
-        if let Some((track, thumb)) =
-            scrollbar_rects(area, self.overview_scroll.clamp(0.0, max_scroll), max_scroll)
-        {
+        if let Some((track, thumb)) = scrollbar_rects(
+            area,
+            self.overview_scroll.clamp(0.0, max_scroll),
+            max_scroll,
+        ) {
             chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
             chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
         }
@@ -4121,13 +4776,7 @@ impl SlidesApp {
         self.show_help
     }
 
-    fn draw_help(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_help(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let pal = self.palette(theme);
         // Scrim.
@@ -4139,7 +4788,14 @@ impl SlidesApp {
         let cy = self.rect.y0 + (self.rect.height() - ch) / 2.0;
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
         chrome::fill_rrect(scene, t, card, 16.0, c.surfaces.raised);
-        chrome::stroke_rrect(scene, t, card, 16.0, render::with_alpha(c.text_primary, 30), 1.0);
+        chrome::stroke_rrect(
+            scene,
+            t,
+            card,
+            16.0,
+            render::with_alpha(c.text_primary, 30),
+            1.0,
+        );
 
         let px = card.x0 + 32.0;
         tr.draw_text_weighted(
@@ -4230,10 +4886,20 @@ impl SlidesApp {
 fn sanitize_filename(title: &str) -> String {
     let s: String = title
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let s = s.trim_matches('_').to_string();
-    if s.is_empty() { "presentation".into() } else { s }
+    if s.is_empty() {
+        "presentation".into()
+    } else {
+        s
+    }
 }
 
 /// Ensure `path` ends in `.odp` (the host Save dialog may drop the extension).
@@ -4270,12 +4936,21 @@ fn scrollbar_rects(viewport: Rect, scroll: f64, max_scroll: f64) -> Option<(Rect
         return None;
     }
     let sw = 6.0;
-    let track = Rect::new(viewport.x1 - sw - 3.0, viewport.y0, viewport.x1 - 3.0, viewport.y1);
+    let track = Rect::new(
+        viewport.x1 - sw - 3.0,
+        viewport.y0,
+        viewport.x1 - 3.0,
+        viewport.y1,
+    );
     let content_h = viewport.height() + max_scroll;
     let visible_frac = (viewport.height() / content_h).clamp(0.06, 1.0);
     let thumb_h = (track.height() * visible_frac).max(28.0);
     let travel = track.height() - thumb_h;
-    let t = if max_scroll > 0.0 { (scroll / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
+    let t = if max_scroll > 0.0 {
+        (scroll / max_scroll).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let ty = track.y0 + travel * t;
     let thumb = Rect::new(track.x0, ty, track.x1, ty + thumb_h);
     Some((track, thumb))
@@ -4550,7 +5225,9 @@ impl Widget for SlidesApp {
                 DemoMenu::Element => {
                     let p = self
                         .selected_element()
-                        .map(|el| render::element_dest(chrome.slide_dest, chrome.scale, el).center())
+                        .map(|el| {
+                            render::element_dest(chrome.slide_dest, chrome.scale, el).center()
+                        })
                         .unwrap_or_else(|| chrome.slide_dest.center());
                     self.open_element_menu(p);
                 }
@@ -4600,9 +5277,23 @@ impl Widget for SlidesApp {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
                 self.draw_editor(scene, transform, text_renderer, theme, &chrome);
-                self.draw_inspector_widgets(scene, transform, text_renderer, theme, presence, &chrome);
+                self.draw_inspector_widgets(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    &chrome,
+                );
                 if self.editing_title {
-                    self.draw_title_input(scene, transform, text_renderer, theme, presence, &chrome);
+                    self.draw_title_input(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                        &chrome,
+                    );
                 }
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
@@ -4615,7 +5306,8 @@ impl Widget for SlidesApp {
             self.draw_help(scene, transform, text_renderer, theme);
         }
         // Right-click context menu floats above everything else.
-        self.ctx_menu.draw(scene, transform, text_renderer, theme, presence);
+        self.ctx_menu
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4706,14 +5398,28 @@ impl Widget for SlidesApp {
         }
         // While a context menu is open it is modal: every other event goes to it.
         if self.route_context_menu(
-            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            _path,
+            _focus_target,
+            _node_id,
+            _taffy,
         ) {
             *handled = true;
             return;
         }
         // The inline title editor owns input while renaming.
         if self.route_title_edit(
-            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            _path,
+            _focus_target,
+            _node_id,
+            _taffy,
         ) {
             *handled = true;
             return;
@@ -4721,7 +5427,14 @@ impl Widget for SlidesApp {
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
         if self.route_inspector_widgets(
-            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            _path,
+            _focus_target,
+            _node_id,
+            _taffy,
         ) {
             *handled = true;
             return;
@@ -4746,20 +5459,34 @@ impl Widget for SlidesApp {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: btn_state, button: MouseButton::Left, .. } => {
-                match btn_state {
-                    ElementState::Pressed => self.on_press(state, self.last_mouse, handled),
-                    ElementState::Released => self.on_release(state, handled),
-                }
-            }
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button: MouseButton::Left,
+                ..
+            } => match btn_state {
+                ElementState::Pressed => self.on_press(state, self.last_mouse, handled),
+                ElementState::Released => self.on_release(state, handled),
+            },
             WindowEvent::MouseWheel { delta, .. } => {
                 self.on_wheel(*delta, scale_factor, handled);
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        text,
+                        ..
+                    },
                 ..
             } => {
-                self.on_key(state, logical_key, text.as_ref().map(|s| s.as_str()), modifiers, handled);
+                self.on_key(
+                    state,
+                    logical_key,
+                    text.as_ref().map(|s| s.as_str()),
+                    modifiers,
+                    handled,
+                );
             }
             _ => {}
         }
@@ -4806,7 +5533,9 @@ impl Widget for SlidesApp {
     /// makes every slide findable there by its text-box content or speaker
     /// notes, alongside the actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SlideSearchProvider::new(&self.deck))]
+        vec![Box::new(crate::search_provider::SlideSearchProvider::new(
+            &self.deck,
+        ))]
     }
 
     /// Navigate to the slide a chosen palette row identifies. The row carries
@@ -4901,14 +5630,13 @@ impl SlidesApp {
         // Scrollbar-thumb drags don't need slide-space mapping — resolve them
         // first (they can be live in overview mode, where there is no canvas).
         match self.drag.clone() {
-            Drag::ScrollOverview { start_y, orig_scroll } => {
+            Drag::ScrollOverview {
+                start_y,
+                orig_scroll,
+            } => {
                 let (area, _, max_scroll) = self.compute_overview();
-                self.overview_scroll = scroll_from_thumb_drag(
-                    area,
-                    orig_scroll,
-                    max_scroll,
-                    p.y - start_y,
-                );
+                self.overview_scroll =
+                    scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
                 return;
             }
             _ => {}
@@ -4918,7 +5646,12 @@ impl SlidesApp {
         let s = chrome.scale;
         let sp = self.to_slide(dest, s, p);
         match self.drag.clone() {
-            Drag::Move { id, start, orig_x, orig_y } => {
+            Drag::Move {
+                id,
+                start,
+                orig_x,
+                orig_y,
+            } => {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
                 let (w, h) = self
@@ -4926,8 +5659,7 @@ impl SlidesApp {
                     .map(|e| (e.w, e.h))
                     .unwrap_or((0.0, 0.0));
                 let thr = SNAP_PX / s.max(0.0001);
-                let (nx, ny, guides) =
-                    self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
+                let (nx, ny, guides) = self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
                 self.active_guides = guides;
                 if let Some(slide) = self.deck.slides.get_mut(self.cur_slide) {
                     if let Some(el) = slide.element_mut(&id) {
@@ -4936,7 +5668,12 @@ impl SlidesApp {
                     }
                 }
             }
-            Drag::Resize { id, handle, start, orig } => {
+            Drag::Resize {
+                id,
+                handle,
+                start,
+                orig,
+            } => {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
                 let (mut x, mut y, mut w, mut h) = orig;
@@ -5009,9 +5746,11 @@ impl SlidesApp {
         if self.mode == Mode::Overview {
             let (area, thumbs, max_scroll) = self.compute_overview();
             // Scrollbar thumb → start a scroll drag.
-            if let Some((_, thumb)) =
-                scrollbar_rects(area, self.overview_scroll.clamp(0.0, max_scroll), max_scroll)
-            {
+            if let Some((_, thumb)) = scrollbar_rects(
+                area,
+                self.overview_scroll.clamp(0.0, max_scroll),
+                max_scroll,
+            ) {
                 if thumb.contains(p) {
                     self.drag = Drag::ScrollOverview {
                         start_y: p.y,
@@ -5143,7 +5882,13 @@ impl SlidesApp {
         }
     }
 
-    fn press_canvas(&mut self, doc: &mut AutoCommit, p: Point, chrome: &Chrome, handled: &mut bool) {
+    fn press_canvas(
+        &mut self,
+        doc: &mut AutoCommit,
+        p: Point,
+        chrome: &Chrome,
+        handled: &mut bool,
+    ) {
         let dest = chrome.slide_dest;
         let s = chrome.scale;
         // Resize handle of the current selection?
@@ -5189,9 +5934,7 @@ impl SlidesApp {
                     .last_click
                     .as_ref()
                     .map(|(cid, t, cp)| {
-                        cid == &id
-                            && t.elapsed().as_millis() < 400
-                            && cp.distance(p) < 6.0
+                        cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
                     })
                     .unwrap_or(false);
                 self.last_click = Some((id.clone(), std::time::Instant::now(), p));
@@ -5216,7 +5959,10 @@ impl SlidesApp {
                     // A deliberate double-click opens the text for editing and
                     // selects the word under the point.
                     self.editing_text = true;
-                    let len = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
+                    let len = self
+                        .selected_element()
+                        .map(|e| e.text.chars().count())
+                        .unwrap_or(0);
                     self.caret = len;
                     self.sel_anchor = len;
                     self.select_word_click = Some(p);
@@ -5254,7 +6000,10 @@ impl SlidesApp {
         let mut z: Vec<&Element> = slide.elements.iter().collect();
         z.sort_by_key(|e| -e.z);
         for el in z {
-            if render::element_dest(dest, s, el).inflate(2.0, 2.0).contains(p) {
+            if render::element_dest(dest, s, el)
+                .inflate(2.0, 2.0)
+                .contains(p)
+            {
                 return Some(el.id.clone());
             }
         }
@@ -5338,7 +6087,6 @@ impl SlidesApp {
         );
     }
 
-
     /// Forward an event to the open context menu and apply any chosen action.
     /// Returns `true` if a menu was open (and thus consumed the event).
     fn route_context_menu(
@@ -5360,7 +6108,14 @@ impl SlidesApp {
         }
         let mut menu_handled = false;
         self.ctx_menu.handle_event(
-            event, scale_factor, modifiers, state, path, &mut menu_handled, focus_target, node_id,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut menu_handled,
+            focus_target,
+            node_id,
             taffy,
         );
         if let Some(idx) = self.ctx_menu.take_selection() {
@@ -5420,8 +6175,17 @@ impl SlidesApp {
                 }
             }
             let mut h = false;
-            self.fill_picker
-                .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+            self.fill_picker.handle_event(
+                event,
+                sf,
+                mods,
+                state,
+                path,
+                &mut h,
+                focus_target,
+                node_id,
+                taffy,
+            );
             if let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -5446,8 +6210,17 @@ impl SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / sf, position.y / sf);
                 let mut h = false;
-                self.font_input
-                    .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                self.font_input.handle_event(
+                    event,
+                    sf,
+                    mods,
+                    state,
+                    path,
+                    &mut h,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64(state, "font_size", v);
                 }
@@ -5461,8 +6234,17 @@ impl SlidesApp {
             } => {
                 if self.font_input.get_rect().contains(self.last_mouse) {
                     let mut h = false;
-                    self.font_input
-                        .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                    self.font_input.handle_event(
+                        event,
+                        sf,
+                        mods,
+                        state,
+                        path,
+                        &mut h,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
                         self.set_sel_f64(state, "font_size", v);
@@ -5483,7 +6265,12 @@ impl SlidesApp {
             WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => {
                 // Esc blurs the field (commit); everything else edits it.
                 if let WindowEvent::KeyboardInput {
-                    event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                    event:
+                        KeyEvent {
+                            logical_key: Key::Named(NamedKey::Escape),
+                            state: ElementState::Pressed,
+                            ..
+                        },
                     ..
                 } = event
                 {
@@ -5494,8 +6281,17 @@ impl SlidesApp {
                     return true;
                 }
                 let mut h = false;
-                self.font_input
-                    .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                self.font_input.handle_event(
+                    event,
+                    sf,
+                    mods,
+                    state,
+                    path,
+                    &mut h,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64(state, "font_size", v);
                 }
@@ -5522,7 +6318,9 @@ impl SlidesApp {
             // Drop onto the red delete zone removes the dragged slide instead of
             // reordering it (guarded so the deck never drops to zero slides).
             if self.page_sidebar.is_dragging()
-                && self.slide_delete_zone(self.rail_rect()).contains(self.last_mouse)
+                && self
+                    .slide_delete_zone(self.rail_rect())
+                    .contains(self.last_mouse)
             {
                 if let Some(from) = self.page_sidebar.drag_from() {
                     self.page_sidebar.on_escape(); // cancel the reorder cleanly
@@ -5561,7 +6359,13 @@ impl SlidesApp {
             _ => None,
         };
         if let Some(id) = id {
-            if let Some(el) = self.deck.slides.get(self.cur_slide).and_then(|s| s.element(&id)).cloned() {
+            if let Some(el) = self
+                .deck
+                .slides
+                .get(self.cur_slide)
+                .and_then(|s| s.element(&id))
+                .cloned()
+            {
                 // The drag preview lived only in the in-memory deck; commit the
                 // element's FINAL rect once, on drop — never a write per frame.
                 self.perform_action(
@@ -5767,11 +6571,19 @@ impl SlidesApp {
                     *handled = true;
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("b") => {
-                    self.blank = if self.blank == Blank::Black { Blank::None } else { Blank::Black };
+                    self.blank = if self.blank == Blank::Black {
+                        Blank::None
+                    } else {
+                        Blank::Black
+                    };
                     *handled = true;
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("w") => {
-                    self.blank = if self.blank == Blank::White { Blank::None } else { Blank::White };
+                    self.blank = if self.blank == Blank::White {
+                        Blank::None
+                    } else {
+                        Blank::White
+                    };
                     *handled = true;
                 }
                 // Pause / resume the speaker timer.
@@ -5941,9 +6753,16 @@ impl SlidesApp {
                 }
             }
             Key::Named(NamedKey::Enter) => {
-                if self.selected_element().map(|e| e.kind == ElementKind::Text).unwrap_or(false) {
+                if self
+                    .selected_element()
+                    .map(|e| e.kind == ElementKind::Text)
+                    .unwrap_or(false)
+                {
                     self.editing_text = true;
-                    self.caret = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
+                    self.caret = self
+                        .selected_element()
+                        .map(|e| e.text.chars().count())
+                        .unwrap_or(0);
                     self.sel_anchor = self.caret;
                     *handled = true;
                 }
@@ -6077,7 +6896,11 @@ mod tests {
 
     fn app_with(slide: Slide) -> SlidesApp {
         let mut a = SlidesApp::new();
-        a.deck = Deck { title: "t".into(), palette: PaletteKind::Indigo, slides: vec![slide] };
+        a.deck = Deck {
+            title: "t".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![slide],
+        };
         a.cur_slide = 0;
         a.bootstrapped = true;
         a
@@ -6142,7 +6965,13 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mods = Modifiers::default();
         let mut handled = false;
-        app.on_key(&mut doc, &Key::Character(ch.into()), Some(ch), &mods, &mut handled);
+        app.on_key(
+            &mut doc,
+            &Key::Character(ch.into()),
+            Some(ch),
+            &mods,
+            &mut handled,
+        );
         handled
     }
 
@@ -6173,7 +7002,10 @@ mod tests {
             before + 1,
             "the inserted shape is persisted in the document"
         );
-        assert!(app.sel.is_some(), "the freshly inserted element is selected");
+        assert!(
+            app.sel.is_some(),
+            "the freshly inserted element is selected"
+        );
     }
 
     #[test]
@@ -6255,8 +7087,15 @@ mod tests {
         // A navigation key resumes the slide *without* advancing.
         let before = app.cur_slide;
         assert!(press_named(&mut app, NamedKey::ArrowRight));
-        assert_eq!(app.blank, Blank::None, "navigation resumes a blanked screen");
-        assert_eq!(app.cur_slide, before, "the resuming keypress does not also advance");
+        assert_eq!(
+            app.blank,
+            Blank::None,
+            "navigation resumes a blanked screen"
+        );
+        assert_eq!(
+            app.cur_slide, before,
+            "the resuming keypress does not also advance"
+        );
     }
 
     #[test]
@@ -6281,9 +7120,21 @@ mod tests {
         // player also uses: a distinct presentation view on the largest monitor
         // (the projector / big screen), which the App enumerates + selects.
         let params = Widget::fullscreen_params(&app);
-        assert_eq!(params.target, FullscreenTarget::Largest, "Present targets the big screen");
-        assert_eq!(params.view, FullscreenView::Distinct, "Present shows the slideshow, not the editor");
-        assert_eq!(Widget::fullscreen_intent(&app), Some(true), "and it drives the shared reconcile");
+        assert_eq!(
+            params.target,
+            FullscreenTarget::Largest,
+            "Present targets the big screen"
+        );
+        assert_eq!(
+            params.view,
+            FullscreenView::Distinct,
+            "Present shows the slideshow, not the editor"
+        );
+        assert_eq!(
+            Widget::fullscreen_intent(&app),
+            Some(true),
+            "and it drives the shared reconcile"
+        );
     }
 
     #[test]
@@ -6294,13 +7145,21 @@ mod tests {
         // keybind) must drop us out of present mode so the editor chrome
         // returns rather than painting a windowed borderless slideshow.
         Widget::on_fullscreen_changed(&mut app, false);
-        assert_eq!(app.mode, Mode::Edit, "losing fullscreen leaves present mode");
+        assert_eq!(
+            app.mode,
+            Mode::Edit,
+            "losing fullscreen leaves present mode"
+        );
         // Idempotent + safe when not presenting: a redundant notification is a
         // no-op, and gaining fullscreen never forces present mode on.
         Widget::on_fullscreen_changed(&mut app, false);
         assert_eq!(app.mode, Mode::Edit);
         Widget::on_fullscreen_changed(&mut app, true);
-        assert_eq!(app.mode, Mode::Edit, "a fullscreen grant alone doesn't start a talk");
+        assert_eq!(
+            app.mode,
+            Mode::Edit,
+            "a fullscreen grant alone doesn't start a talk"
+        );
     }
 
     #[test]
@@ -6325,7 +7184,11 @@ mod tests {
         // Elapsed is frozen while paused.
         let frozen = app.present_elapsed();
         std::thread::sleep(std::time::Duration::from_millis(15));
-        assert_eq!(app.present_elapsed(), frozen, "elapsed is frozen while paused");
+        assert_eq!(
+            app.present_elapsed(),
+            frozen,
+            "elapsed is frozen while paused"
+        );
         assert!(press_char(&mut app, "k"));
         assert!(!app.timer_paused(), "K resumes the timer");
         // 0 resets to zero.
@@ -6352,7 +7215,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         app.append_present_slide(&mut scene, Affine::IDENTITY, &mut tr, &theme, &pal, dest);
         let cold = t0.elapsed();
-        assert!(app.present_cache.is_some(), "first frame populates the cache");
+        assert!(
+            app.present_cache.is_some(),
+            "first frame populates the cache"
+        );
 
         // Warm frames: same slide/size ⇒ cache hit, a scene append with no
         // re-shaping.
@@ -6370,11 +7236,12 @@ mod tests {
         // Navigation invalidates the cache so edits/advances still re-render.
         app.cur_slide += 1;
         assert!(
-            !app
-                .present_cache
-                .as_ref()
-                .unwrap()
-                .matches(dest, app.cur_slide, app.deck_rev, app.deck.palette),
+            !app.present_cache.as_ref().unwrap().matches(
+                dest,
+                app.cur_slide,
+                app.deck_rev,
+                app.deck.palette
+            ),
             "advancing the slide invalidates the cached render"
         );
     }
@@ -6421,7 +7288,10 @@ mod tests {
         assert_eq!(chrome.layout, SplitLayout::Docked);
         // The rail occupies the full left column and the canvas starts past it.
         assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
-        assert!(chrome.rail.width() > RAIL_W - 1.0, "docked rail is full width");
+        assert!(
+            chrome.rail.width() > RAIL_W - 1.0,
+            "docked rail is full width"
+        );
         assert!(
             chrome.slide_dest.x0 > chrome.rail.x1 - 1.0,
             "canvas sits to the right of the docked rail"
@@ -6429,7 +7299,10 @@ mod tests {
         assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
         // No hamburger when the rail is docked + fully open.
         assert!(
-            !chrome.buttons.iter().any(|b| matches!(b.kind, ButtonKind::Hamburger)),
+            !chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
             "no hamburger needed when the rail is docked open"
         );
     }
@@ -6447,11 +7320,21 @@ mod tests {
             "narrow canvas reclaims the rail's column"
         );
         // The closed flap is fully off the left edge, and no scrim shows.
-        assert!(chrome.rail.x1 <= app.rect.x0 + 1.0, "closed flap is off-screen left");
-        assert_eq!(chrome.scrim.width(), 0.0, "no scrim while the flap is closed");
+        assert!(
+            chrome.rail.x1 <= app.rect.x0 + 1.0,
+            "closed flap is off-screen left"
+        );
+        assert_eq!(
+            chrome.scrim.width(),
+            0.0,
+            "no scrim while the flap is closed"
+        );
         // A hamburger is offered to summon it.
         assert!(
-            chrome.buttons.iter().any(|b| matches!(b.kind, ButtonKind::Hamburger)),
+            chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
             "narrow layout offers a hamburger to summon the rail"
         );
     }
@@ -6466,8 +7349,14 @@ mod tests {
         let chrome = app.compute_chrome();
         assert_eq!(chrome.layout, SplitLayout::Overlay);
         // Fully revealed: the flap is flush with the left edge over a scrim.
-        assert!((chrome.rail.x0 - app.rect.x0).abs() < 1.0, "open flap is flush left");
-        assert!(chrome.scrim.width() > 0.0, "an open overlay flap dims the body");
+        assert!(
+            (chrome.rail.x0 - app.rect.x0).abs() < 1.0,
+            "open flap is flush left"
+        );
+        assert!(
+            chrome.scrim.width() > 0.0,
+            "an open overlay flap dims the body"
+        );
     }
 
     #[test]
@@ -6491,7 +7380,10 @@ mod tests {
         assert_eq!(chrome.inspector_layout, SplitLayout::Docked);
         // Docked inspector is a full-width right column and the canvas ends at
         // its left edge.
-        assert!(chrome.inspector.width() > INSPECTOR_W - 1.0, "docked inspector is full width");
+        assert!(
+            chrome.inspector.width() > INSPECTOR_W - 1.0,
+            "docked inspector is full width"
+        );
         assert!(
             chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0,
             "canvas sits to the left of the docked inspector"
@@ -6504,12 +7396,21 @@ mod tests {
         // the canvas reclaims its column (spanning to the right edge).
         let app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
         assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
-        assert!(!app.inspector_open(), "overlay inspector is closed by default");
+        assert!(
+            !app.inspector_open(),
+            "overlay inspector is closed by default"
+        );
         let chrome = app.compute_chrome();
-        assert!(chrome.inspector.x0 >= app.rect.x1 - 1.0, "closed inspector is off-screen right");
+        assert!(
+            chrome.inspector.x0 >= app.rect.x1 - 1.0,
+            "closed inspector is off-screen right"
+        );
         // A toggle is offered to summon it.
         assert!(
-            chrome.buttons.iter().any(|b| matches!(b.hit, Hit::ToggleInspector)),
+            chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.hit, Hit::ToggleInspector)),
             "narrow layout offers an inspector toggle"
         );
     }
@@ -6521,7 +7422,10 @@ mod tests {
         assert!(!app.inspector_open());
         // Drive the real action dispatcher, not a private setter.
         app.apply_hit(&mut doc, Hit::ToggleInspector);
-        assert!(app.inspector_open(), "ToggleInspector opens the collapsed flap");
+        assert!(
+            app.inspector_open(),
+            "ToggleInspector opens the collapsed flap"
+        );
         app.apply_hit(&mut doc, Hit::ToggleInspector);
         assert!(!app.inspector_open(), "ToggleInspector closes it again");
     }
@@ -6541,7 +7445,10 @@ mod tests {
         assert!(app.rail_open(), "docked default is open");
         app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
         app.rail_flap.reconcile(app.rail_layout());
-        assert!(!app.rail_open(), "overlay default is closed after re-narrowing");
+        assert!(
+            !app.rail_open(),
+            "overlay default is closed after re-narrowing"
+        );
     }
 
     #[test]
@@ -6561,8 +7468,16 @@ mod tests {
         // the canvas must span the full width.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.sync_flaps(0.0);
-        assert_eq!(app.rail_layout(), SplitLayout::Overlay, "rail reflows to overlay");
-        assert_eq!(app.inspector_layout(), SplitLayout::Overlay, "inspector reflows to overlay");
+        assert_eq!(
+            app.rail_layout(),
+            SplitLayout::Overlay,
+            "rail reflows to overlay"
+        );
+        assert_eq!(
+            app.inspector_layout(),
+            SplitLayout::Overlay,
+            "inspector reflows to overlay"
+        );
         let narrow = app.compute_chrome();
         assert_eq!(narrow.layout, SplitLayout::Overlay);
         assert_eq!(narrow.inspector_layout, SplitLayout::Overlay);
@@ -6583,7 +7498,11 @@ mod tests {
             slides.push(s);
         }
         let mut a = SlidesApp::new();
-        a.deck = Deck { title: "t".into(), palette: PaletteKind::Indigo, slides };
+        a.deck = Deck {
+            title: "t".into(),
+            palette: PaletteKind::Indigo,
+            slides,
+        };
         a.cur_slide = 0;
         a.bootstrapped = true;
         a.rect = Rect::new(0.0, 0.0, 1280.0, h);
@@ -6613,14 +7532,20 @@ mod tests {
             let mut h = false;
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
-        assert!((app.rail_scroll - max_scroll).abs() < 1.0, "rail scroll clamps to max");
+        assert!(
+            (app.rail_scroll - max_scroll).abs() < 1.0,
+            "rail scroll clamps to max"
+        );
 
         // Pointer over the canvas → the rail does not move.
         app.rail_scroll = 0.0;
         app.last_mouse = Point::new(app.rect.x1 - 80.0, app.rect.center().y);
         let mut h2 = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut h2);
-        assert_eq!(app.rail_scroll, 0.0, "wheel over the canvas leaves the rail alone");
+        assert_eq!(
+            app.rail_scroll, 0.0,
+            "wheel over the canvas leaves the rail alone"
+        );
     }
 
     #[test]
@@ -6632,18 +7557,27 @@ mod tests {
         // 800x600 is exactly the size the prior review reported cutting off slide 5.
         app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         let (_, _, max_scroll) = app.compute_overview();
-        assert!(max_scroll > 0.0, "the 5-slide deck overflows the 800x600 overview");
+        assert!(
+            max_scroll > 0.0,
+            "the 5-slide deck overflows the 800x600 overview"
+        );
 
         let mut handled = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
-        assert!(handled && app.overview_scroll > 0.0, "wheel scrolls the overview");
+        assert!(
+            handled && app.overview_scroll > 0.0,
+            "wheel scrolls the overview"
+        );
 
         // Scroll to the very end and confirm the last slide's card is on-screen.
         for _ in 0..60 {
             let mut h = false;
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
-        assert!((app.overview_scroll - max_scroll).abs() < 1.0, "overview scroll clamps to max");
+        assert!(
+            (app.overview_scroll - max_scroll).abs() < 1.0,
+            "overview scroll clamps to max"
+        );
         let (area, thumbs, _) = app.compute_overview();
         let last = thumbs.last().expect("a slide").1;
         assert!(
@@ -6662,9 +7596,15 @@ mod tests {
         let (area, _, max_scroll) = app.compute_overview();
         let (_, thumb) = scrollbar_rects(area, 0.0, max_scroll).expect("overflow ⇒ scrollbar");
         // Start a thumb drag (the real on_press path constructs this), then move.
-        app.drag = Drag::ScrollOverview { start_y: thumb.center().y, orig_scroll: 0.0 };
+        app.drag = Drag::ScrollOverview {
+            start_y: thumb.center().y,
+            orig_scroll: 0.0,
+        };
         app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
-        assert!(app.overview_scroll > 0.0, "dragging the thumb down scrolls the grid");
+        assert!(
+            app.overview_scroll > 0.0,
+            "dragging the thumb down scrolls the grid"
+        );
     }
 
     // --- present mode rests -------------------------------------------------
@@ -6683,7 +7623,10 @@ mod tests {
         );
         // A navigation kicks off a bounded cross-fade → frames pump again.
         app.next_slide(1);
-        assert!(app.needs_animation_frame(), "a live cross-fade pumps frames");
+        assert!(
+            app.needs_animation_frame(),
+            "a live cross-fade pumps frames"
+        );
     }
 
     // --- toolbar overflow menu ---------------------------------------------
@@ -6729,12 +7672,18 @@ mod tests {
         let mut handled = false;
         app.last_mouse = ovf_rect.center();
         app.on_press(&mut doc, ovf_rect.center(), &mut handled);
-        assert!(handled && app.toolbar_menu_open, "clicking ⋯ opens the overflow menu");
+        assert!(
+            handled && app.toolbar_menu_open,
+            "clicking ⋯ opens the overflow menu"
+        );
 
         // With the menu open, bar + rows together cover every insert tool.
         let chrome = app.compute_chrome();
         assert!(chrome.menu_bg.is_some(), "the open menu has a panel");
-        assert!(insert_reachable(&chrome, |h| matches!(h, Hit::NewSlide)), "New slide reachable");
+        assert!(
+            insert_reachable(&chrome, |h| matches!(h, Hit::NewSlide)),
+            "New slide reachable"
+        );
         for k in [
             ElementKind::Text,
             ElementKind::Rect,
@@ -6749,7 +7698,11 @@ mod tests {
         }
         // Every menu row is inside the window (a real pointer target).
         for b in &chrome.menu_buttons {
-            assert!(app.rect.contains(b.rect.center()), "menu row is on-screen: {:?}", b.rect);
+            assert!(
+                app.rect.contains(b.rect.center()),
+                "menu row is on-screen: {:?}",
+                b.rect
+            );
         }
     }
 
@@ -6761,7 +7714,10 @@ mod tests {
         app.sel = None;
         let chrome = app.compute_chrome();
         assert!(
-            !chrome.buttons.iter().any(|b| matches!(b.hit, Hit::ToggleToolbarMenu)),
+            !chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu)),
             "no ⋯ button when every tool fits"
         );
         assert!(chrome.menu_bg.is_none(), "no menu when nothing overflows");
@@ -6773,7 +7729,10 @@ mod tests {
             ElementKind::Image,
         ] {
             assert!(
-                chrome.buttons.iter().any(|b| matches!(&b.hit, Hit::Insert(kk) if *kk == k)),
+                chrome
+                    .buttons
+                    .iter()
+                    .any(|b| matches!(&b.hit, Hit::Insert(kk) if *kk == k)),
                 "{k:?} sits directly on the wide toolbar"
             );
         }
@@ -6817,7 +7776,10 @@ mod tests {
         let mut handled = false;
         app.last_mouse = p;
         app.on_press(&mut doc, p, &mut handled);
-        assert!(handled && !app.toolbar_menu_open, "a click-away dismisses the overflow menu");
+        assert!(
+            handled && !app.toolbar_menu_open,
+            "a click-away dismisses the overflow menu"
+        );
     }
 
     // --- deck-theme palette pills ------------------------------------------
@@ -6835,9 +7797,16 @@ mod tests {
         let pills: Vec<&UiButton> = chrome
             .buttons
             .iter()
-            .filter(|b| matches!(b.kind, ButtonKind::Palette { .. }) && chrome.inspector.contains(b.rect.center()))
+            .filter(|b| {
+                matches!(b.kind, ButtonKind::Palette { .. })
+                    && chrome.inspector.contains(b.rect.center())
+            })
             .collect();
-        assert_eq!(pills.len(), PaletteKind::ALL.len(), "all five theme pills are present");
+        assert_eq!(
+            pills.len(),
+            PaletteKind::ALL.len(),
+            "all five theme pills are present"
+        );
         for b in &pills {
             if let ButtonKind::Palette { kind, .. } = &b.kind {
                 let label_right = b.rect.x0 + 26.0 + chrome::est_width(kind.label(), 12.0);
@@ -6871,7 +7840,14 @@ mod tests {
         // outside the content rect, so it can't cover the first glyph (the 'G'
         // of a left-aligned title was the reported bug).
         let mut s = Slide::new(Layout::Blank);
-        let id = s.add(Element::text("Goals for this phase", 100.0, 100.0, 600.0, 90.0, 40.0));
+        let id = s.add(Element::text(
+            "Goals for this phase",
+            100.0,
+            100.0,
+            600.0,
+            90.0,
+            40.0,
+        ));
         let mut app = app_with(s);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.sel = Some(id);
@@ -6912,7 +7888,11 @@ mod tests {
         store.load_blocking(&key);
         match store.get(&key) {
             ImageState::Ready(img) => {
-                assert_eq!((img.width, img.height), (8, 6), "decoded dimensions match the file");
+                assert_eq!(
+                    (img.width, img.height),
+                    (8, 6),
+                    "decoded dimensions match the file"
+                );
             }
             _ => panic!("a real PNG must decode to Ready"),
         }
@@ -6951,16 +7931,31 @@ mod tests {
             crate::portal::PortalOutcome::Opened(path.clone()),
         ));
         app.drain_portal(&mut doc);
-        assert!(app.portal_rx.is_none(), "a resolved portal request clears the channel");
+        assert!(
+            app.portal_rx.is_none(),
+            "a resolved portal request clears the channel"
+        );
 
         let reloaded = crate::doc::SlidesDoc::load(&doc).expect("deck round-trips");
         let el = reloaded.slides[app.cur_slide]
             .elements
             .last()
             .expect("an element was inserted");
-        assert_eq!(el.kind, ElementKind::Image, "the inserted element is an image");
-        assert_eq!(el.src, path.to_string_lossy(), "the chosen path is persisted as its src");
-        assert_eq!(app.sel.as_deref(), Some(el.id.as_str()), "the new image is selected");
+        assert_eq!(
+            el.kind,
+            ElementKind::Image,
+            "the inserted element is an image"
+        );
+        assert_eq!(
+            el.src,
+            path.to_string_lossy(),
+            "the chosen path is persisted as its src"
+        );
+        assert_eq!(
+            app.sel.as_deref(),
+            Some(el.id.as_str()),
+            "the new image is selected"
+        );
     }
 
     #[test]
@@ -6976,7 +7971,10 @@ mod tests {
             crate::portal::PortalOutcome::Cancelled,
         ));
         app.drain_portal(&mut doc);
-        assert!(app.portal_rx.is_none(), "a cancel clears the in-flight channel");
+        assert!(
+            app.portal_rx.is_none(),
+            "a cancel clears the in-flight channel"
+        );
         app.reload(&doc);
         assert_eq!(
             app.slide().unwrap().elements.len(),
@@ -7010,7 +8008,10 @@ mod tests {
         app.last_mouse = p;
         app.on_press(&mut doc, p, &mut handled);
         assert!(handled, "the press on the selected element is handled");
-        assert!(app.drag.active(), "a single grab of a selected element arms a move");
+        assert!(
+            app.drag.active(),
+            "a single grab of a selected element arms a move"
+        );
         assert!(!app.editing_text, "a single grab must NOT enter text edit");
 
         // Drag right and release — the element actually moves.
@@ -7041,7 +8042,10 @@ mod tests {
 
         // Second click at the same spot, immediately after → double-click → edit.
         app.on_press(&mut doc, p, &mut h);
-        assert!(app.editing_text, "double-click opens the text box for editing");
+        assert!(
+            app.editing_text,
+            "double-click opens the text box for editing"
+        );
         assert!(!app.drag.active(), "entering edit does not arm a drag");
     }
 
@@ -7076,21 +8080,44 @@ mod tests {
         app.last_mouse = start;
         let mut h = false;
         app.on_press(&mut doc, start, &mut h);
-        assert!(app.page_sidebar.is_pending_drag(), "pressing a thumbnail arms a reorder drag");
+        assert!(
+            app.page_sidebar.is_pending_drag(),
+            "pressing a thumbnail arms a reorder drag"
+        );
 
         // Move the cursor onto slide 4's row through the live event path.
         app_dispatch(&mut app, &mut doc, &cursor_ev(target));
-        assert!(app.page_sidebar.is_dragging(), "moving past the threshold promotes to a live reorder");
-        assert_eq!(app.page_sidebar.drag_insertion(), Some(3), "the gap tracks to the drop row");
+        assert!(
+            app.page_sidebar.is_dragging(),
+            "moving past the threshold promotes to a live reorder"
+        );
+        assert_eq!(
+            app.page_sidebar.drag_insertion(),
+            Some(3),
+            "the gap tracks to the drop row"
+        );
 
         let mut h2 = false;
         app.on_release(&mut doc, &mut h2);
-        assert!(h2 && !app.page_sidebar.is_pending_drag(), "release commits and clears the drag");
+        assert!(
+            h2 && !app.page_sidebar.is_pending_drag(),
+            "release commits and clears the drag"
+        );
 
         let after = loaded(&doc);
-        let new_pos = after.slides.iter().position(|s| s.id == first_id).expect("slide survived");
-        assert_eq!(new_pos, 3, "the dragged slide landed where the gap showed, persisted to the CRDT");
-        assert_eq!(app.cur_slide, 3, "the dragged slide stays current at its new index");
+        let new_pos = after
+            .slides
+            .iter()
+            .position(|s| s.id == first_id)
+            .expect("slide survived");
+        assert_eq!(
+            new_pos, 3,
+            "the dragged slide landed where the gap showed, persisted to the CRDT"
+        );
+        assert_eq!(
+            app.cur_slide, 3,
+            "the dragged slide stays current at its new index"
+        );
     }
 
     /// A press that never crosses the threshold is a plain click: it selects
@@ -7111,7 +8138,10 @@ mod tests {
 
         assert_eq!(app.cur_slide, idx, "a plain click selects that slide");
         let order1: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-        assert_eq!(order0, order1, "a plain click leaves the deck order unchanged");
+        assert_eq!(
+            order0, order1,
+            "a plain click leaves the deck order unchanged"
+        );
     }
 
     /// While a reorder drag is live the grabbed slide lifts out (its original
@@ -7130,8 +8160,15 @@ mod tests {
         app.on_press(&mut doc, start, &mut h);
         app_dispatch(&mut app, &mut doc, &cursor_ev(target));
 
-        assert!(app.page_sidebar.is_dragging(), "the drag is live once past the threshold");
-        assert_eq!(app.page_sidebar.drag_from(), Some(0), "the grabbed slide is the one lifted out");
+        assert!(
+            app.page_sidebar.is_dragging(),
+            "the drag is live once past the threshold"
+        );
+        assert_eq!(
+            app.page_sidebar.drag_from(),
+            Some(0),
+            "the grabbed slide is the one lifted out"
+        );
         assert_eq!(
             app.page_sidebar.drag_insertion(),
             Some(2),
@@ -7140,9 +8177,15 @@ mod tests {
         // Escape aborts without mutating the deck.
         let order0: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
         assert!(keyn(&mut app, &mut doc, NamedKey::Escape));
-        assert!(!app.page_sidebar.is_pending_drag(), "Escape cancels the in-flight drag");
+        assert!(
+            !app.page_sidebar.is_pending_drag(),
+            "Escape cancels the in-flight drag"
+        );
         let order1: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-        assert_eq!(order0, order1, "a cancelled drag never touched the deck order");
+        assert_eq!(
+            order0, order1,
+            "a cancelled drag never touched the deck order"
+        );
     }
 
     // === .odp open / save through the app =================================
@@ -7160,7 +8203,11 @@ mod tests {
         app2.reload(&doc2);
         assert!(app2.load_odp(&mut doc2, &path), "the saved .odp loads back");
         assert_eq!(app2.deck, app.deck, "open(save(deck)) is the same deck");
-        assert_eq!(loaded(&doc2).slides.len(), app.deck.slides.len(), "the load landed in the CRDT");
+        assert_eq!(
+            loaded(&doc2).slides.len(),
+            app.deck.slides.len(),
+            "the load landed in the CRDT"
+        );
     }
 
     #[test]
@@ -7178,18 +8225,29 @@ mod tests {
             crate::portal::DocOutcome::Open(path),
         ));
         app.drain_doc_portal(&mut doc);
-        assert!(app.doc_portal_rx.is_none(), "a resolved request clears the channel");
-        assert_eq!(app.deck.slides.len(), deck.slides.len(), "the opened deck replaced the starter");
+        assert!(
+            app.doc_portal_rx.is_none(),
+            "a resolved request clears the channel"
+        );
+        assert_eq!(
+            app.deck.slides.len(),
+            deck.slides.len(),
+            "the opened deck replaced the starter"
+        );
     }
 
     #[test]
     fn ensure_odp_ext_appends_when_missing() {
         assert_eq!(
-            super::ensure_odp_ext(std::path::Path::new("/x/talk")).to_str().unwrap(),
+            super::ensure_odp_ext(std::path::Path::new("/x/talk"))
+                .to_str()
+                .unwrap(),
             "/x/talk.odp"
         );
         assert_eq!(
-            super::ensure_odp_ext(std::path::Path::new("/x/talk.odp")).to_str().unwrap(),
+            super::ensure_odp_ext(std::path::Path::new("/x/talk.odp"))
+                .to_str()
+                .unwrap(),
             "/x/talk.odp"
         );
     }
@@ -7201,8 +8259,20 @@ mod tests {
     #[test]
     fn right_click_element_opens_menu_and_actions_apply() {
         let mut s = Slide::new(Layout::Blank);
-        let a = s.add(Element::shape(ElementKind::Rect, 100.0, 100.0, 300.0, 200.0));
-        let b = s.add(Element::shape(ElementKind::Ellipse, 500.0, 300.0, 200.0, 200.0));
+        let a = s.add(Element::shape(
+            ElementKind::Rect,
+            100.0,
+            100.0,
+            300.0,
+            200.0,
+        ));
+        let b = s.add(Element::shape(
+            ElementKind::Ellipse,
+            500.0,
+            300.0,
+            200.0,
+            200.0,
+        ));
         let (mut app, mut doc) = app_doc(s);
         sized(&mut app, 1280.0, 800.0);
 
@@ -7214,7 +8284,11 @@ mod tests {
         app.last_mouse = p;
         app.on_right_press(&mut doc, p, &mut h);
         assert!(app.ctx_menu.is_open(), "right-click opens the element menu");
-        assert_eq!(app.sel.as_deref(), Some(a.as_str()), "the clicked element is selected");
+        assert_eq!(
+            app.sel.as_deref(),
+            Some(a.as_str()),
+            "the clicked element is selected"
+        );
 
         // Row 0 = Bring to front. Choosing it raises `a` above `b`.
         app.ctx_menu.click_item(0);
@@ -7245,14 +8319,24 @@ mod tests {
         let mut h = false;
         app.last_mouse = p;
         app.on_right_press(&mut doc, p, &mut h);
-        assert!(app.page_sidebar.menu_open(), "right-click on a thumbnail opens the rail menu");
-        assert_eq!(app.cur_slide, idx, "the right-clicked slide becomes current");
+        assert!(
+            app.page_sidebar.menu_open(),
+            "right-click on a thumbnail opens the rail menu"
+        );
+        assert_eq!(
+            app.cur_slide, idx,
+            "the right-clicked slide becomes current"
+        );
 
         // The menu's Delete action (mapped from the widget's Delete row, unit
         // tested in `ui`) removes the slide via the production apply path.
         let before = loaded(&doc).slides.len();
         app.apply_rail_event(&mut doc, PageSidebarEvent::Delete(idx));
-        assert_eq!(loaded(&doc).slides.len(), before - 1, "Delete slide removed one");
+        assert_eq!(
+            loaded(&doc).slides.len(),
+            before - 1,
+            "Delete slide removed one"
+        );
     }
 
     // === embedded inspector widgets (NumberInput / ColorPicker) ===========
@@ -7263,7 +8347,17 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let root = automerge::ROOT;
-        app.handle_event(ev, 1.0, &Modifiers::default(), doc, &root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
     fn cursor_ev(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -7281,8 +8375,9 @@ mod tests {
     fn key_event(logical: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -7312,13 +8407,18 @@ mod tests {
 
         let chrome = app.compute_chrome();
         app.position_inspector_widgets(&chrome);
-        let fr = chrome.font_input_rect.expect("a text selection shows the font-size field");
+        let fr = chrome
+            .font_input_rect
+            .expect("a text selection shows the font-size field");
         let h = fr.height();
         let plus = Point::new(fr.x1 - h / 2.0, fr.center().y);
         app_dispatch(&mut app, &mut doc, &cursor_ev(plus));
         app_dispatch(&mut app, &mut doc, &left_press_ev());
         let fs = loaded(&doc).slides[0].element(&id).unwrap().font_size;
-        assert_eq!(fs, 42.0, "the + stepper raised the font size by the step (2)");
+        assert_eq!(
+            fs, 42.0,
+            "the + stepper raised the font size by the step (2)"
+        );
     }
 
     /// The embeddable ColorPicker writes a concrete hex fill through the real
@@ -7326,13 +8426,22 @@ mod tests {
     #[test]
     fn fill_color_picker_writes_a_hex_fill() {
         let mut s = Slide::new(Layout::Blank);
-        let id = s.add(Element::shape(ElementKind::Rect, 100.0, 100.0, 300.0, 200.0));
+        let id = s.add(Element::shape(
+            ElementKind::Rect,
+            100.0,
+            100.0,
+            300.0,
+            200.0,
+        ));
         let (mut app, mut doc) = app_doc(s);
         sized(&mut app, 1280.0, 800.0);
         app.sel = Some(id.clone());
 
         app.apply_hit(&mut doc, Hit::OpenFillPicker);
-        assert!(app.fill_picker_open, "the Custom colour button opens the picker");
+        assert!(
+            app.fill_picker_open,
+            "the Custom colour button opens the picker"
+        );
         let chrome = app.compute_chrome();
         app.position_inspector_widgets(&chrome);
         // Type a hex into the picker; one forwarded event flushes it through.
@@ -7371,7 +8480,13 @@ mod tests {
     }
     fn keyc(app: &mut SlidesApp, doc: &mut AutoCommit, ch: &str) -> bool {
         let mut h = false;
-        app.on_key(doc, &Key::Character(ch.into()), Some(ch), &Modifiers::default(), &mut h);
+        app.on_key(
+            doc,
+            &Key::Character(ch.into()),
+            Some(ch),
+            &Modifiers::default(),
+            &mut h,
+        );
         h
     }
     fn loaded(doc: &AutoCommit) -> Deck {
@@ -7391,22 +8506,35 @@ mod tests {
         let title0 = app.deck.title.clone();
         let chrome = app.compute_chrome();
         let p = chrome.title_rect.center();
-        assert!(app.rect.contains(p), "the title click target is inside the window");
+        assert!(
+            app.rect.contains(p),
+            "the title click target is inside the window"
+        );
 
         let mut handled = false;
         app.last_mouse = p;
         app.on_press(&mut doc, p, &mut handled);
-        assert!(handled && app.editing_title, "clicking the title enters inline rename");
+        assert!(
+            handled && app.editing_title,
+            "clicking the title enters inline rename"
+        );
 
         // Typing routes through the shared TextInput (the live handle_event
         // path) and splices into the CRDT title.
         app_dispatch(&mut app, &mut doc, &char_ev("!"));
         app_dispatch(&mut app, &mut doc, &char_ev("?"));
-        assert!(!app.show_help, "'?' while renaming types into the title, not the help overlay");
+        assert!(
+            !app.show_help,
+            "'?' while renaming types into the title, not the help overlay"
+        );
         // Enter commits the rename.
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
         assert!(!app.editing_title, "Enter commits the rename");
-        assert_eq!(loaded(&doc).title, format!("{title0}!?"), "the rename persisted to the CRDT");
+        assert_eq!(
+            loaded(&doc).title,
+            format!("{title0}!?"),
+            "the rename persisted to the CRDT"
+        );
     }
 
     /// The inline title editor is the shared TextInput, so it supports real
@@ -7419,11 +8547,18 @@ mod tests {
         // Select all + confirm the field reports a full-span selection.
         app.title_input.select_all();
         let sel = app.title_input.selection_range_public();
-        assert!(sel.is_some(), "Ctrl+A selects the whole title in the TextInput");
+        assert!(
+            sel.is_some(),
+            "Ctrl+A selects the whole title in the TextInput"
+        );
         // Typing over the selection replaces the entire title.
         app_dispatch(&mut app, &mut doc, &char_ev("X"));
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
-        assert_eq!(loaded(&doc).title, "X", "typing over the selection replaced the title");
+        assert_eq!(
+            loaded(&doc).title,
+            "X",
+            "typing over the selection replaced the title"
+        );
     }
 
     #[test]
@@ -7436,7 +8571,11 @@ mod tests {
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
         let mut expect: String = title0.clone();
         expect.pop();
-        assert_eq!(loaded(&doc).title, expect, "backspace spliced one char out of the title");
+        assert_eq!(
+            loaded(&doc).title,
+            expect,
+            "backspace spliced one char out of the title"
+        );
 
         // Add a char, then click away from the title → commits (leaves editing).
         app_dispatch(&mut app, &mut doc, &char_ev("Z"));
@@ -7446,7 +8585,11 @@ mod tests {
         app_dispatch(&mut app, &mut doc, &cursor_ev(away));
         app_dispatch(&mut app, &mut doc, &left_press_ev());
         assert!(!app.editing_title, "a click away commits the rename");
-        assert_eq!(loaded(&doc).title, format!("{expect}Z"), "the edit persisted");
+        assert_eq!(
+            loaded(&doc).title,
+            format!("{expect}Z"),
+            "the edit persisted"
+        );
     }
 
     // --- '?' help in Present mode (was a no-op that soft-locked nav) --------
@@ -7471,12 +8614,19 @@ mod tests {
         // While open it is modal (a nav key is swallowed, does not advance).
         let before = app.cur_slide;
         assert!(press_named(&mut app, NamedKey::ArrowRight));
-        assert_eq!(app.cur_slide, before, "help is modal: nav is captured, not applied");
+        assert_eq!(
+            app.cur_slide, before,
+            "help is modal: nav is captured, not applied"
+        );
         // Dismiss with '?', and navigation resumes — no soft-lock.
         assert!(press_char(&mut app, "?"));
         assert!(!app.help_overlay_visible(), "'?' dismisses the overlay");
         assert!(press_named(&mut app, NamedKey::ArrowRight));
-        assert_eq!(app.cur_slide, before + 1, "navigation resumes once help is closed");
+        assert_eq!(
+            app.cur_slide,
+            before + 1,
+            "navigation resumes once help is closed"
+        );
     }
 
     // --- text caret alignment (was hard-coded to the left edge) -------------
@@ -7489,17 +8639,41 @@ mod tests {
         let text = "Hello";
         let end = text.chars().count();
         let geo = |al: TextAlign, tr: &mut TextRenderer| {
-            app.caret_geometry(tr, text, end, er, 40.0, TextWeight::Regular, false, al, true).0
+            app.caret_geometry(
+                tr,
+                text,
+                end,
+                er,
+                40.0,
+                TextWeight::Regular,
+                false,
+                al,
+                true,
+            )
+            .0
         };
         let left = geo(TextAlign::Left, &mut tr);
         let center = geo(TextAlign::Center, &mut tr);
         let right = geo(TextAlign::Right, &mut tr);
         // Right-aligned caret at the line end sits at the box's right edge.
-        assert!((right.x - er.x1).abs() < 1.0, "right caret at line end hits the right edge (x={})", right.x);
+        assert!(
+            (right.x - er.x1).abs() < 1.0,
+            "right caret at line end hits the right edge (x={})",
+            right.x
+        );
         // The three alignments are genuinely distinct (the old stub returned the
         // same left-anchored x for every arm).
-        assert!(left.x < center.x && center.x < right.x, "l={} c={} r={}", left.x, center.x, right.x);
-        assert!((center.x - left.x).abs() > 1.0, "center caret differs from the left-anchored position");
+        assert!(
+            left.x < center.x && center.x < right.x,
+            "l={} c={} r={}",
+            left.x,
+            center.x,
+            right.x
+        );
+        assert!(
+            (center.x - left.x).abs() > 1.0,
+            "center caret differs from the left-anchored position"
+        );
     }
 
     // --- caret line navigation (ArrowUp/Down did nothing) -------------------
@@ -7508,13 +8682,33 @@ mod tests {
     fn caret_line_move_keeps_column_and_clamps_at_edges() {
         let t = "abc\ndef\nghij";
         // Down/up keep the column.
-        assert_eq!(caret_line_move(t, 2, 1), 6, "down from line0 col2 → line1 col2");
-        assert_eq!(caret_line_move(t, 6, -1), 2, "up from line1 col2 → line0 col2");
+        assert_eq!(
+            caret_line_move(t, 2, 1),
+            6,
+            "down from line0 col2 → line1 col2"
+        );
+        assert_eq!(
+            caret_line_move(t, 6, -1),
+            2,
+            "up from line1 col2 → line0 col2"
+        );
         // A longer column clamps to a shorter target line's length.
-        assert_eq!(caret_line_move(t, 12, -1), 7, "up from line2 col4 clamps to line1 col3");
+        assert_eq!(
+            caret_line_move(t, 12, -1),
+            7,
+            "up from line2 col4 clamps to line1 col3"
+        );
         // Edges are no-ops.
-        assert_eq!(caret_line_move(t, 2, -1), 2, "up on the first line is unchanged");
-        assert_eq!(caret_line_move(t, 10, 1), 10, "down on the last line is unchanged");
+        assert_eq!(
+            caret_line_move(t, 2, -1),
+            2,
+            "up on the first line is unchanged"
+        );
+        assert_eq!(
+            caret_line_move(t, 10, 1),
+            10,
+            "down on the last line is unchanged"
+        );
     }
 
     #[test]
@@ -7541,13 +8735,20 @@ mod tests {
 
         // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
         assert!(keyn(&mut app, &mut doc, NamedKey::ArrowUp));
-        assert_eq!(app.notes_caret, 6, "ArrowUp moved the notes caret up one line");
+        assert_eq!(
+            app.notes_caret, 6,
+            "ArrowUp moved the notes caret up one line"
+        );
         assert!(keyn(&mut app, &mut doc, NamedKey::ArrowDown));
         assert_eq!(app.notes_caret, len, "ArrowDown returns to the second line");
 
         // Typing splices into the CRDT notes at the caret.
         assert!(keyc(&mut app, &mut doc, "!"));
-        assert_eq!(loaded(&doc).slides[0].notes, "line one\nsecond!", "notes edit persisted to the CRDT");
+        assert_eq!(
+            loaded(&doc).slides[0].notes,
+            "line one\nsecond!",
+            "notes edit persisted to the CRDT"
+        );
     }
 
     // --- element text editing -----------------------------------------------
@@ -7560,9 +8761,17 @@ mod tests {
         assert!(app.editing_text);
         assert_eq!(app.caret, "Hi".chars().count());
         assert!(keyc(&mut app, &mut doc, "!"));
-        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi!", "typed char persisted");
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "Hi!",
+            "typed char persisted"
+        );
         assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
-        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi", "backspace persisted");
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "Hi",
+            "backspace persisted"
+        );
     }
 
     #[test]
@@ -7584,7 +8793,10 @@ mod tests {
         // Second click on the already-selected box enters edit.
         let mut h2 = false;
         app.on_press(&mut doc, p, &mut h2);
-        assert!(app.editing_text, "a second click on a selected text box edits it");
+        assert!(
+            app.editing_text,
+            "a second click on a selected text box edits it"
+        );
     }
 
     // --- canvas move / resize persistence -----------------------------------
@@ -7602,7 +8814,10 @@ mod tests {
         let mut h = false;
         app.last_mouse = start;
         app.on_press(&mut doc, start, &mut h);
-        assert!(matches!(app.drag, Drag::Move { .. }), "pressing an element starts a move drag");
+        assert!(
+            matches!(app.drag, Drag::Move { .. }),
+            "pressing an element starts a move drag"
+        );
         // Move a good distance so no guide snaps it back to the origin.
         app.drag_move(Point::new(start.x - 130.0, start.y + 70.0));
         let mut h2 = false;
@@ -7611,15 +8826,32 @@ mod tests {
 
         let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
         let mirror = app.slide().unwrap().element(&id).unwrap().clone();
-        assert!((persisted.x - mirror.x).abs() < 0.001, "the CRDT matches the mirror after release");
-        assert!((persisted.x - 300.0).abs() > 5.0, "the move actually changed x and persisted (x={})", persisted.x);
-        assert!((persisted.y - 300.0).abs() > 5.0, "the move actually changed y and persisted (y={})", persisted.y);
+        assert!(
+            (persisted.x - mirror.x).abs() < 0.001,
+            "the CRDT matches the mirror after release"
+        );
+        assert!(
+            (persisted.x - 300.0).abs() > 5.0,
+            "the move actually changed x and persisted (x={})",
+            persisted.x
+        );
+        assert!(
+            (persisted.y - 300.0).abs() > 5.0,
+            "the move actually changed y and persisted (y={})",
+            persisted.y
+        );
     }
 
     #[test]
     fn resizing_via_a_selection_handle_persists_to_the_crdt() {
         let mut s = Slide::new(Layout::Blank);
-        let id = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 200.0, 120.0));
+        let id = s.add(Element::shape(
+            ElementKind::Rect,
+            300.0,
+            300.0,
+            200.0,
+            120.0,
+        ));
         let (mut app, mut doc) = app_doc(s);
         sized(&mut app, 1280.0, 800.0);
         app.sel = Some(id.clone());
@@ -7635,16 +8867,32 @@ mod tests {
         let mut h = false;
         app.last_mouse = start;
         app.on_press(&mut doc, start, &mut h);
-        assert!(matches!(app.drag, Drag::Resize { .. }), "pressing a handle starts a resize");
+        assert!(
+            matches!(app.drag, Drag::Resize { .. }),
+            "pressing a handle starts a resize"
+        );
         app.drag_move(Point::new(start.x + 120.0, start.y + 90.0));
         let mut h2 = false;
         app.on_release(&mut doc, &mut h2);
 
         let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
         let mirror = app.slide().unwrap().element(&id).unwrap().clone();
-        assert!((persisted.w - mirror.w).abs() < 0.001 && (persisted.h - mirror.h).abs() < 0.001, "CRDT matches mirror");
-        assert!(persisted.w > el.w + 1.0, "Br drag grew width and persisted ({} → {})", el.w, persisted.w);
-        assert!(persisted.h > el.h + 1.0, "Br drag grew height and persisted ({} → {})", el.h, persisted.h);
+        assert!(
+            (persisted.w - mirror.w).abs() < 0.001 && (persisted.h - mirror.h).abs() < 0.001,
+            "CRDT matches mirror"
+        );
+        assert!(
+            persisted.w > el.w + 1.0,
+            "Br drag grew width and persisted ({} → {})",
+            el.w,
+            persisted.w
+        );
+        assert!(
+            persisted.h > el.h + 1.0,
+            "Br drag grew height and persisted ({} → {})",
+            el.h,
+            persisted.h
+        );
     }
 
     // --- inspector property edits (every writer, on the real hit path) ------
@@ -7660,12 +8908,18 @@ mod tests {
         app.apply_hit(&mut doc, Hit::SetStroke("text".into()));
         let after_stroke = loaded(&doc).slides[0].element(&id).unwrap().clone();
         assert_eq!(after_stroke.stroke, "text");
-        assert!(after_stroke.stroke_width >= 1.0, "a freshly stroked element gets a default width");
+        assert!(
+            after_stroke.stroke_width >= 1.0,
+            "a freshly stroked element gets a default width"
+        );
 
         // Font size now writes through the NumberInput's commit path
         // (`set_sel_f64`), exercised directly here.
         app.set_sel_f64(&mut doc, "font_size", el0.font_size + 6.0);
-        assert!((loaded(&doc).slides[0].element(&id).unwrap().font_size - (el0.font_size + 6.0)).abs() < 0.001);
+        assert!(
+            (loaded(&doc).slides[0].element(&id).unwrap().font_size - (el0.font_size + 6.0)).abs()
+                < 0.001
+        );
 
         app.apply_hit(&mut doc, Hit::ToggleBold);
         assert!(loaded(&doc).slides[0].element(&id).unwrap().bold);
@@ -7673,9 +8927,15 @@ mod tests {
         assert!(loaded(&doc).slides[0].element(&id).unwrap().italic);
 
         app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Center));
-        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().align, TextAlign::Center);
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().align,
+            TextAlign::Center
+        );
         app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Justify));
-        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().align, TextAlign::Justify);
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().align,
+            TextAlign::Justify
+        );
 
         app.apply_hit(&mut doc, Hit::BringFront);
         let zf = loaded(&doc).slides[0].element(&id).unwrap().z;
@@ -7692,9 +8952,17 @@ mod tests {
 
         let n = loaded(&doc).slides[0].elements.len();
         app.apply_hit(&mut doc, Hit::DuplicateElement);
-        assert_eq!(loaded(&doc).slides[0].elements.len(), n + 1, "duplicate adds an element");
+        assert_eq!(
+            loaded(&doc).slides[0].elements.len(),
+            n + 1,
+            "duplicate adds an element"
+        );
         app.apply_hit(&mut doc, Hit::DeleteElement);
-        assert_eq!(loaded(&doc).slides[0].elements.len(), n, "delete removes one");
+        assert_eq!(
+            loaded(&doc).slides[0].elements.len(),
+            n,
+            "delete removes one"
+        );
     }
 
     // --- slide ops via the app handlers -------------------------------------
@@ -7725,10 +8993,18 @@ mod tests {
         let moved_id = loaded(&doc).slides[3].id.clone();
         app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 3, to: 2 });
         assert_eq!(app.cur_slide, 2);
-        assert_eq!(loaded(&doc).slides[2].id, moved_id, "move up reordered the deck");
+        assert_eq!(
+            loaded(&doc).slides[2].id,
+            moved_id,
+            "move up reordered the deck"
+        );
         app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 2, to: 3 });
         assert_eq!(app.cur_slide, 3);
-        assert_eq!(loaded(&doc).slides[3].id, moved_id, "move down reordered it back");
+        assert_eq!(
+            loaded(&doc).slides[3].id,
+            moved_id,
+            "move down reordered it back"
+        );
 
         // Delete removes the current slide.
         app.apply_hit(&mut doc, Hit::DeleteSlide);
@@ -7740,7 +9016,11 @@ mod tests {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
         assert_eq!(loaded(&doc).slides.len(), 1);
         app.apply_hit(&mut doc, Hit::DeleteSlide);
-        assert_eq!(loaded(&doc).slides.len(), 1, "the last slide can't be deleted");
+        assert_eq!(
+            loaded(&doc).slides.len(),
+            1,
+            "the last slide can't be deleted"
+        );
     }
 
     // --- edit-mode keyboard: nudge, Tab cycle, Delete -----------------------
@@ -7748,8 +9028,20 @@ mod tests {
     #[test]
     fn arrow_nudge_tab_cycle_and_delete_key_edit_the_crdt() {
         let mut s = Slide::new(Layout::Blank);
-        let a = s.add(Element::shape(ElementKind::Rect, 200.0, 200.0, 100.0, 100.0));
-        let b = s.add(Element::shape(ElementKind::Ellipse, 500.0, 400.0, 100.0, 100.0));
+        let a = s.add(Element::shape(
+            ElementKind::Rect,
+            200.0,
+            200.0,
+            100.0,
+            100.0,
+        ));
+        let b = s.add(Element::shape(
+            ElementKind::Ellipse,
+            500.0,
+            400.0,
+            100.0,
+            100.0,
+        ));
         let (mut app, mut doc) = app_doc(s);
         app.sel = Some(a.clone());
 
@@ -7757,7 +9049,10 @@ mod tests {
         let x0 = loaded(&doc).slides[0].element(&a).unwrap().x;
         assert!(keyn(&mut app, &mut doc, NamedKey::ArrowRight));
         let x1 = loaded(&doc).slides[0].element(&a).unwrap().x;
-        assert!(x1 > x0 + 1.0, "ArrowRight nudged and persisted x ({x0} → {x1})");
+        assert!(
+            x1 > x0 + 1.0,
+            "ArrowRight nudged and persisted x ({x0} → {x1})"
+        );
 
         // Tab cycles selection to the next element (by z order).
         assert!(keyn(&mut app, &mut doc, NamedKey::Tab));
@@ -7766,7 +9061,11 @@ mod tests {
         // Delete removes the selected element from the CRDT.
         let n = loaded(&doc).slides[0].elements.len();
         assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
-        assert_eq!(loaded(&doc).slides[0].elements.len(), n - 1, "Delete removed the element");
+        assert_eq!(
+            loaded(&doc).slides[0].elements.len(),
+            n - 1,
+            "Delete removed the element"
+        );
         assert!(app.sel.is_none(), "selection clears after delete");
     }
 
@@ -7790,7 +9089,10 @@ mod tests {
         app.on_press(&mut doc, rect.center(), &mut handled);
         assert!(handled, "clicking an overview card is handled");
         assert_eq!(app.mode, Mode::Edit, "opening a card returns to the editor");
-        assert_eq!(app.cur_slide, idx, "the clicked card's slide is now current");
+        assert_eq!(
+            app.cur_slide, idx,
+            "the clicked card's slide is now current"
+        );
     }
 
     // === shared caret / selection core (HIG §3) ===========================
@@ -7827,9 +9129,22 @@ mod tests {
         app.editing_text = true;
         app.place_caret(app.cur_text_len(), false);
         assert!(!app.has_text_selection(), "starts with no selection");
-        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::SHIFT));
-        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::SHIFT));
-        assert!(app.has_text_selection(), "shift+arrow builds a live selection");
+        assert!(key_named_mods(
+            &mut app,
+            &mut doc,
+            NamedKey::ArrowLeft,
+            ModifiersState::SHIFT
+        ));
+        assert!(key_named_mods(
+            &mut app,
+            &mut doc,
+            NamedKey::ArrowLeft,
+            ModifiersState::SHIFT
+        ));
+        assert!(
+            app.has_text_selection(),
+            "shift+arrow builds a live selection"
+        );
         assert_eq!(app.selected_text(), "Hi", "the selection spans both chars");
     }
 
@@ -7838,14 +9153,33 @@ mod tests {
     fn ctrl_arrow_moves_word_wise() {
         use winit::keyboard::ModifiersState;
         let mut s = Slide::new(Layout::Blank);
-        let id = s.add(Element::text("Hello world", 100.0, 100.0, 600.0, 120.0, 40.0));
+        let id = s.add(Element::text(
+            "Hello world",
+            100.0,
+            100.0,
+            600.0,
+            120.0,
+            40.0,
+        ));
         let (mut app, mut doc) = app_doc(s);
         app.sel = Some(id);
         app.editing_text = true;
         app.place_caret(app.cur_text_len(), false);
-        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::CONTROL));
-        assert_eq!(app.active_caret(), 6, "ctrl+left jumps to the start of the last word");
-        assert!(!app.has_text_selection(), "a plain word move collapses the selection");
+        assert!(key_named_mods(
+            &mut app,
+            &mut doc,
+            NamedKey::ArrowLeft,
+            ModifiersState::CONTROL
+        ));
+        assert_eq!(
+            app.active_caret(),
+            6,
+            "ctrl+left jumps to the start of the last word"
+        );
+        assert!(
+            !app.has_text_selection(),
+            "a plain word move collapses the selection"
+        );
     }
 
     /// Ctrl+A then Backspace clears the whole element text in the CRDT.
@@ -7855,7 +9189,12 @@ mod tests {
         let (mut app, mut doc, id) = selected_text_app();
         app.editing_text = true;
         app.place_caret(0, false);
-        assert!(key_char_mods(&mut app, &mut doc, "a", ModifiersState::CONTROL));
+        assert!(key_char_mods(
+            &mut app,
+            &mut doc,
+            "a",
+            ModifiersState::CONTROL
+        ));
         assert_eq!(app.selected_text(), "Hi", "Ctrl+A selects the whole text");
         assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
         assert_eq!(
@@ -7901,7 +9240,12 @@ mod tests {
         app.editing_text = true;
         app.select_all_text();
         assert!(app.copy_selection(), "there is a selection to cut");
-        assert!(key_char_mods(&mut app, &mut doc, "x", ModifiersState::CONTROL));
+        assert!(key_char_mods(
+            &mut app,
+            &mut doc,
+            "x",
+            ModifiersState::CONTROL
+        ));
         assert_eq!(
             loaded(&doc).slides[0].element(&id).unwrap().text,
             "",
@@ -7920,7 +9264,12 @@ mod tests {
         app.editing_notes = true;
         app.notes_caret = 3;
         app.sel_anchor = 3;
-        assert!(key_char_mods(&mut app, &mut doc, "a", ModifiersState::CONTROL));
+        assert!(key_char_mods(
+            &mut app,
+            &mut doc,
+            "a",
+            ModifiersState::CONTROL
+        ));
         assert_eq!(app.selected_text(), "abc", "Ctrl+A selects the notes");
         assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
         assert_eq!(
@@ -7948,8 +9297,14 @@ mod tests {
         let mut h = false;
         app.on_press(&mut doc, p, &mut h);
         assert!(h, "the press is handled");
-        assert!(app.text_drag, "a press inside the editing box starts a selection drag");
-        assert!(app.caret_click.is_some(), "the click is queued to place the caret");
+        assert!(
+            app.text_drag,
+            "a press inside the editing box starts a selection drag"
+        );
+        assert!(
+            app.caret_click.is_some(),
+            "the click is queued to place the caret"
+        );
         assert!(!app.drag.active(), "the box is not being moved");
     }
 
@@ -7971,20 +9326,33 @@ mod tests {
         // Drag down into the delete zone pinned at the bottom of the rail.
         let drop = app.slide_delete_zone(app.rail_rect()).center();
         app_dispatch(&mut app, &mut doc, &cursor_ev(drop));
-        assert!(app.page_sidebar.is_dragging(), "the drag is live past the threshold");
-        assert!(app.over_delete_zone(), "the pointer is over the delete drop-zone");
+        assert!(
+            app.page_sidebar.is_dragging(),
+            "the drag is live past the threshold"
+        );
+        assert!(
+            app.over_delete_zone(),
+            "the pointer is over the delete drop-zone"
+        );
 
         let mut h2 = false;
         app.on_release(&mut doc, &mut h2);
         assert!(h2, "the drop is handled");
 
         let after = loaded(&doc);
-        assert_eq!(after.slides.len(), before - 1, "the dropped slide was deleted");
+        assert_eq!(
+            after.slides.len(),
+            before - 1,
+            "the dropped slide was deleted"
+        );
         assert!(
             !after.slides.iter().any(|s| s.id == victim_id),
             "the exact dragged slide is gone from the CRDT"
         );
-        assert!(!app.page_sidebar.is_pending_drag(), "the drag is cleared after the drop");
+        assert!(
+            !app.page_sidebar.is_pending_drag(),
+            "the drag is cleared after the drop"
+        );
     }
 
     /// The delete zone is only active while a slide is being dragged.
@@ -7993,6 +9361,9 @@ mod tests {
         let (mut app, _doc) = reorder_app();
         let zone = app.slide_delete_zone(app.rail_rect());
         app.last_mouse = zone.center();
-        assert!(!app.over_delete_zone(), "no drag in progress → the zone is inert");
+        assert!(
+            !app.over_delete_zone(),
+            "no drag in progress → the zone is inert"
+        );
     }
 }

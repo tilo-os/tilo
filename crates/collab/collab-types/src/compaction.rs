@@ -81,9 +81,7 @@ pub enum CompactionError {
 
 /// Encode a `CompactionCheckpoint` to canonical bytes — the format an
 /// op's payload field should carry when `op_class == Compaction`.
-pub fn encode_compaction_payload(
-    cp: &CompactionCheckpoint,
-) -> Result<Vec<u8>, CanonicalError> {
+pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(cp)
 }
 
@@ -91,14 +89,13 @@ pub fn encode_compaction_payload(
 /// `op.op_class == Compaction` so a caller gets a precise error rather
 /// than a silently-decoded random struct. The returned struct is owned,
 /// so callers can drop the original envelope.
-pub fn parse_compaction_payload(
-    op: &SignedOp,
-) -> Result<CompactionCheckpoint, CompactionError> {
+pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, CompactionError> {
     if op.op_class != OpClass::Compaction {
-        return Err(CompactionError::WrongOpClass { actual: op.op_class });
+        return Err(CompactionError::WrongOpClass {
+            actual: op.op_class,
+        });
     }
-    from_canonical_bytes::<CompactionCheckpoint>(&op.payload)
-        .map_err(CompactionError::Malformed)
+    from_canonical_bytes::<CompactionCheckpoint>(&op.payload).map_err(CompactionError::Malformed)
 }
 
 /// Compute the 32-byte digest of an op-log prefix: concatenates the

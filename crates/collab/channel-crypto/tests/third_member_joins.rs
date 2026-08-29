@@ -11,12 +11,7 @@ use collab_types::ChannelId;
 
 /// Build a fully-wired (alice, bob) two-member group + a fresh
 /// `carol` `MemberKey` ready to join.
-fn two_member_group_plus_carol() -> (
-    ChannelId,
-    ChannelGroup,
-    ChannelGroup,
-    MemberKey,
-) {
+fn two_member_group_plus_carol() -> (ChannelId, ChannelGroup, ChannelGroup, MemberKey) {
     let cid = ChannelId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();

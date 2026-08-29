@@ -32,7 +32,11 @@ pub struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { interval_ms: 1500, show_kernel_threads: false, confirm_kill: true }
+        Self {
+            interval_ms: 1500,
+            show_kernel_threads: false,
+            confirm_kill: true,
+        }
     }
 }
 
@@ -126,7 +130,10 @@ mod tests {
 
     #[test]
     fn interval_cycles() {
-        let mut p = Prefs { interval_ms: 1000, ..Prefs::default() };
+        let mut p = Prefs {
+            interval_ms: 1000,
+            ..Prefs::default()
+        };
         p.cycle_interval();
         assert_eq!(p.interval_ms, 1500);
         p.cycle_interval();

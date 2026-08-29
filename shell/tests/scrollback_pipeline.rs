@@ -13,12 +13,12 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+use collab_fixtures::{role_attestation, signed_op};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
-use collab_fixtures::{role_attestation, signed_op};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
@@ -63,11 +63,7 @@ fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent>
 /// still be answered from a half-written op log — reading `[3, 4, 5]`
 /// where it wanted `[8, 9, 10]` and blaming paging. Waiting on the count
 /// the scenario actually depends on removes the guess.
-fn drain_until_signed(
-    stream: &mut UnixStream,
-    want: usize,
-    timeout: Duration,
-) -> Vec<CollabEvent> {
+fn drain_until_signed(stream: &mut UnixStream, want: usize, timeout: Duration) -> Vec<CollabEvent> {
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let mut signed = 0usize;
@@ -246,8 +242,8 @@ fn peer_can_fetch_recent_scrollback() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, REPLY_BACKSTOP)
-        .expect("observer must receive ScrollbackBatch");
+    let event =
+        read_event(&mut observer, REPLY_BACKSTOP).expect("observer must receive ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch {
             artifact: art,
@@ -305,8 +301,8 @@ fn empty_scrollback_returns_exhausted_true() {
             max: 10,
         },
     );
-    let event = read_event(&mut peer, REPLY_BACKSTOP)
-        .expect("must receive an empty ScrollbackBatch");
+    let event =
+        read_event(&mut peer, REPLY_BACKSTOP).expect("must receive an empty ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(ops.is_empty());
@@ -640,8 +636,7 @@ fn cooperative_scrollback_round_trip() {
             max: 10,
         },
     );
-    let first = read_event(&mut app, REPLY_BACKSTOP)
-        .expect("first ScrollbackBatch (local empty)");
+    let first = read_event(&mut app, REPLY_BACKSTOP).expect("first ScrollbackBatch (local empty)");
     match first {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(ops.is_empty(), "local log holds nothing");

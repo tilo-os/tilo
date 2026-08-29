@@ -267,7 +267,10 @@ mod tests {
     fn edited_size_swaps_the_axes_on_an_odd_turn() {
         let img = OpenImage::from_path("/x/harbour.png", 800, 400);
         assert_eq!(img.edited_size(&Edits::default()), (800, 400));
-        assert_eq!(img.edited_size(&Edits::default().rotated_right()), (400, 800));
+        assert_eq!(
+            img.edited_size(&Edits::default().rotated_right()),
+            (400, 800)
+        );
     }
 
     #[test]

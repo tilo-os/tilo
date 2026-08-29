@@ -320,7 +320,10 @@ impl Widget for AddressSuggestions {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        let taffy_origin = Point::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64);
+        let taffy_origin = Point::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+        );
         self.relayout(taffy_origin);
     }
 
@@ -479,7 +482,11 @@ mod tests {
         let mut w = AddressSuggestions::new();
         w.set_suggestions(three());
         assert!(w.is_visible());
-        assert_eq!(w.selected().unwrap().url, "https://a.test", "starts on the best row");
+        assert_eq!(
+            w.selected().unwrap().url,
+            "https://a.test",
+            "starts on the best row"
+        );
 
         w.move_selection(1);
         assert_eq!(w.selected().unwrap().url, "https://b.test");
@@ -565,14 +572,30 @@ mod tests {
             };
             let mut handled = false;
             let mut focus = None;
-            w.handle_event(&event, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+            w.handle_event(
+                &event,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
             handled
         };
 
         assert!(send(&mut w, NamedKey::ArrowDown));
-        assert_eq!(w.selected().unwrap().url, "https://b.test", "Down advances the highlight");
+        assert_eq!(
+            w.selected().unwrap().url,
+            "https://b.test",
+            "Down advances the highlight"
+        );
         assert!(send(&mut w, NamedKey::Enter));
-        let chosen = w.take_chosen().expect("Enter commits the highlighted entry");
+        let chosen = w
+            .take_chosen()
+            .expect("Enter commits the highlighted entry");
         assert_eq!(chosen.url, "https://b.test");
         assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
     }
@@ -589,8 +612,9 @@ mod tests {
 
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -602,7 +626,17 @@ mod tests {
         };
         let mut handled = false;
         let mut focus = None;
-        w.handle_event(&event, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        w.handle_event(
+            &event,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
         assert!(handled);
         assert!(!w.is_visible(), "Escape clears the overlay");
     }
@@ -626,7 +660,17 @@ mod tests {
         let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
             let mut handled = false;
             let mut focus = None;
-            w.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+            w.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
             handled
         };
         dispatch(
@@ -645,7 +689,11 @@ mod tests {
             },
         );
         assert!(handled, "a click on a row is consumed");
-        assert_eq!(w.selected_index(), Some(1), "the clicked row becomes selected");
+        assert_eq!(
+            w.selected_index(),
+            Some(1),
+            "the clicked row becomes selected"
+        );
         assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
     }
 }

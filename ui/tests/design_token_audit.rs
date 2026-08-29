@@ -2,9 +2,12 @@
 //! any widget or shell source file. Every literal must flow through
 //! `theme.*` so the OS can enforce one design language.
 
-use std::collections::BTreeMap;
-use std::{fs, path::{Path, PathBuf}};
 use regex::Regex;
+use std::collections::BTreeMap;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// Files exempt from the audit:
 ///  - theme.rs (the single source of truth for literal color values)
@@ -24,7 +27,10 @@ fn walk(root: &Path, out: &mut Vec<PathBuf>) {
     if let Ok(read) = fs::read_dir(root) {
         for entry in read.flatten() {
             let p = entry.path();
-            if p.is_dir() { walk(&p, out); continue; }
+            if p.is_dir() {
+                walk(&p, out);
+                continue;
+            }
             if p.extension().and_then(|e| e.to_str()) == Some("rs") && !is_exempt(&p) {
                 out.push(p);
             }
@@ -38,17 +44,25 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
         // argument so variable-arg calls like `Color::rgb(c.color[0] as f64, …)`
         // that route real collaborator data through the constructor don't get
         // flagged — only *literal* palette values do.
-        (Regex::new(r"Color::rgb8?\s*\(\s*\d").unwrap(),
-         "hard-coded Color::rgb8/rgb — use theme.* tokens"),
+        (
+            Regex::new(r"Color::rgb8?\s*\(\s*\d").unwrap(),
+            "hard-coded Color::rgb8/rgb — use theme.* tokens",
+        ),
         // Hard-coded radius literals on rounded rects
-        (Regex::new(r"\.to_rounded_rect\(\s*\d+(\.\d+)?\s*\)").unwrap(),
-         "hard-coded rounded-rect radius — use theme.radius_standard"),
+        (
+            Regex::new(r"\.to_rounded_rect\(\s*\d+(\.\d+)?\s*\)").unwrap(),
+            "hard-coded rounded-rect radius — use theme.radius_standard",
+        ),
         // Hard-coded shadow blur literals
-        (Regex::new(r"blur\s*:\s*\d").unwrap(),
-         "hard-coded shadow blur — use theme.elevation.*"),
+        (
+            Regex::new(r"blur\s*:\s*\d").unwrap(),
+            "hard-coded shadow blur — use theme.elevation.*",
+        ),
         // Hard-coded spacing like Padding::all(12.0) (allow zero)
-        (Regex::new(r"Padding::all\(\s*[1-9]\d*(\.\d+)?\s*\)").unwrap(),
-         "hard-coded padding — use theme.padding_standard"),
+        (
+            Regex::new(r"Padding::all\(\s*[1-9]\d*(\.\d+)?\s*\)").unwrap(),
+            "hard-coded padding — use theme.padding_standard",
+        ),
     ]
 }
 
@@ -113,16 +127,23 @@ fn no_hardcoded_style_literals_in_tree() {
         let content = fs::read_to_string(f).unwrap();
         let skip = test_module_spans(&content);
         for (i, line) in content.lines().enumerate() {
-            if line.trim_start().starts_with("//") { continue; }
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
             // The audit polices *draw paths*; a `#[cfg(test)]` module is a
             // fixture living in the same file as the code it covers, and a
             // test that pins how a token is painted has to name its values.
-            if skip.iter().any(|(a, b)| i >= *a && i < *b) { continue; }
+            if skip.iter().any(|(a, b)| i >= *a && i < *b) {
+                continue;
+            }
             for (re, msg) in &patterns {
                 if re.is_match(line) {
                     violations.push(format!(
                         "{}:{}: {} — line: {}",
-                        f.display(), i + 1, msg, line.trim()
+                        f.display(),
+                        i + 1,
+                        msg,
+                        line.trim()
                     ));
                 }
             }
@@ -242,8 +263,10 @@ fn theme_escape_hatches_do_not_grow() {
 
     let found = ratcheted_counts(&files, root);
     let baseline = read_baseline(&root.join(BASELINE));
-    let messages: BTreeMap<&str, &str> =
-        ratcheted_patterns().into_iter().map(|(k, _, m)| (k, m)).collect();
+    let messages: BTreeMap<&str, &str> = ratcheted_patterns()
+        .into_iter()
+        .map(|(k, _, m)| (k, m))
+        .collect();
 
     let mut grew = Vec::new();
     let mut stale = Vec::new();

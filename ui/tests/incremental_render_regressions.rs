@@ -50,25 +50,31 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
         let row_idx = idx * ROWS_PER_PANEL + i;
         let label_key = leak(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
-            0 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Button::new(
-                        leak(&format!("dash_btn_{row_idx}")),
-                        leak(&format!("dash_btnlbl_{row_idx}")),
-                        None,
-                    ))),
-            )),
-            1 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Badge::count((i as u32) * 3))),
-            )),
-            _ => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
-            )),
+            0 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Button::new(
+                            leak(&format!("dash_btn_{row_idx}")),
+                            leak(&format!("dash_btnlbl_{row_idx}")),
+                            None,
+                        ))),
+                ))
+            }
+            1 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Badge::count((i as u32) * 3))),
+                ))
+            }
+            _ => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                ))
+            }
         }
     }
     Box::new(col)
@@ -81,7 +87,11 @@ fn build_dashboard_root() -> Box<Scrollable> {
     let header = Row::new()
         .push(Box::new(Text::new("dash_title").with_size(24.0)))
         .push(Box::new(ToggleGroup::new(
-            vec![Segment::new("Day"), Segment::new("Week"), Segment::new("Month")],
+            vec![
+                Segment::new("Day"),
+                Segment::new("Week"),
+                Segment::new("Month"),
+            ],
             1,
         )))
         .push(Box::new(ProgressBar::new(0.4)))
@@ -111,13 +121,15 @@ fn build_dashboard_root() -> Box<Scrollable> {
         .push(Box::new(Badge::count(7)))
         .push(Box::new(Badge::count(120)));
 
-    Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(header))
-            .push(Box::new(panels))
-            .push(Box::new(footer)),
-    )))
+    Box::new(
+        Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(header))
+                .push(Box::new(panels))
+                .push(Box::new(footer)),
+        )),
+    )
 }
 
 fn register_i18n() {
@@ -276,7 +288,8 @@ impl Harness {
         // `draw`, so without a real delay between frames the
         // animation rate doesn't accumulate.
         std::thread::sleep(Duration::from_millis(8));
-        self.renderer.render(&self.scene, self.theme.tokens.colors.surfaces.base)
+        self.renderer
+            .render(&self.scene, self.theme.tokens.colors.surfaces.base)
     }
 }
 
@@ -338,9 +351,8 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         I18nManager::add_resource("en-US", format!("{key} = Row {i}\n"));
         col = col.push(Box::new(Text::new(key)));
     }
-    let mut root: Box<Scrollable> = Box::new(
-        Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(col)),
-    );
+    let mut root: Box<Scrollable> =
+        Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(col)));
 
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -396,7 +408,10 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
     let warm_rgba = renderer.render(&scene, bg);
     let warm_pixels = count_non_bg(&warm_rgba, bg);
     renderer.render_png(&scene, bg, "/tmp/scroll_warmup.png");
-    assert!(warm_pixels > 1000, "warmup frame is blank ({warm_pixels}px) — test setup broken");
+    assert!(
+        warm_pixels > 1000,
+        "warmup frame is blank ({warm_pixels}px) — test setup broken"
+    );
 
     // Scroll to row ~150-ish (each row is ~20 px logical → ~3000 px).
     root.scroll_by(0.0, 3000.0);
@@ -452,7 +467,8 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
         if n < min_pixels {
             min_pixels = n;
             min_offset = off;
-            h.renderer.render_png(&h.scene, bg, "/tmp/dash_scroll_min.png");
+            h.renderer
+                .render_png(&h.scene, bg, "/tmp/dash_scroll_min.png");
         }
         if (off - last_offset).abs() < 0.5 && step > 5 {
             eprintln!("hit max scroll at step={step} offset_y={off}");

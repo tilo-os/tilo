@@ -185,7 +185,10 @@ mod tests {
         let c = [conn(1, 10, (1920, 1080))];
         let p = plan(&l, &c);
         assert_eq!(p.removed, vec![OutputId(1)]);
-        assert!(p.added.is_empty(), "the surviving panel must not be re-added");
+        assert!(
+            p.added.is_empty(),
+            "the surviving panel must not be re-added"
+        );
         assert!(p.remoded.is_empty());
     }
 

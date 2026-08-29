@@ -19,13 +19,13 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
     clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
     word_boundaries_chars,
 };
-use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{EmptyState, Widget};
 use vello::Scene;
@@ -37,7 +37,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::bottom_panel::Severity;
 use crate::doc::EditorDoc;
 use crate::highlight::{Highlighter, Span};
-use crate::lsp::{severity_from_lsp, CompletionItem, LspDiagnostic};
+use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
 
 /// A language-server request the editor wants the app to make on its behalf,
@@ -54,14 +54,14 @@ pub enum LspAsk {
 /// (LSP-numbered). Falls back to a neutral dot for kinds we don't specialise.
 fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
     match kind {
-        Some(2) | Some(3) => "\u{0192}", // Method / Function — ƒ
+        Some(2) | Some(3) => "\u{0192}",  // Method / Function — ƒ
         Some(5) | Some(10) => "\u{25C8}", // Field / Property — ◈
-        Some(6) => "\u{25CB}",           // Variable — ○
-        Some(7) | Some(8) => "\u{25A0}", // Class / Interface — ■
-        Some(9) => "\u{25A3}",           // Module — ▣
-        Some(14) => "\u{2726}",          // Keyword — ✦
-        Some(21) => "\u{25C6}",          // Constant — ◆
-        _ => "\u{2022}",                 // • default
+        Some(6) => "\u{25CB}",            // Variable — ○
+        Some(7) | Some(8) => "\u{25A0}",  // Class / Interface — ■
+        Some(9) => "\u{25A3}",            // Module — ▣
+        Some(14) => "\u{2726}",           // Keyword — ✦
+        Some(21) => "\u{25C6}",           // Constant — ◆
+        _ => "\u{2022}",                  // • default
     }
 }
 
@@ -102,17 +102,17 @@ pub struct Caret {
 
 impl Caret {
     fn at(line: usize, col: usize) -> Self {
-        Caret { line, col, anchor: None }
+        Caret {
+            line,
+            col,
+            anchor: None,
+        }
     }
     /// Ordered ((line,col) start, (line,col) end) of the selection, or None.
     fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
         let a = self.anchor?;
         let c = (self.line, self.col);
-        if a <= c {
-            Some((a, c))
-        } else {
-            Some((c, a))
-        }
+        if a <= c { Some((a, c)) } else { Some((c, a)) }
     }
 }
 
@@ -462,7 +462,11 @@ impl EditorView {
     fn select_line_at(&mut self, line: usize) -> (usize, usize) {
         self.carets.truncate(1);
         let len = self.lines[line].chars().count();
-        self.carets[0] = Caret { line, col: len, anchor: Some((line, 0)) };
+        self.carets[0] = Caret {
+            line,
+            col: len,
+            anchor: Some((line, 0)),
+        };
         self.dirty = true;
         (self.char_index(line, 0), self.char_index(line, len))
     }
@@ -476,7 +480,11 @@ impl EditorView {
         self.carets[0] = Caret {
             line: cl,
             col: cc,
-            anchor: if anchor == cursor { None } else { Some((al, ac)) },
+            anchor: if anchor == cursor {
+                None
+            } else {
+                Some((al, ac))
+            },
         };
         self.dirty = true;
     }
@@ -590,7 +598,11 @@ impl EditorView {
             if d.line != line {
                 return None;
             }
-            let end = if d.end_col == usize::MAX { usize::MAX } else { d.end_col };
+            let end = if d.end_col == usize::MAX {
+                usize::MAX
+            } else {
+                d.end_col
+            };
             if col >= d.start_col && col <= end {
                 Some(d.message.clone())
             } else {
@@ -671,7 +683,9 @@ impl EditorView {
     /// inserts apply the same text at each caret, processed bottom-up so
     /// earlier indices stay valid.
     fn insert(&mut self, doc: &mut AutoCommit, s: &str) {
-        let Some(text) = self.text_obj.clone() else { return };
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
         // Process carets bottom-to-top so a splice doesn't shift the indices
         // of carets we haven't handled yet.
         let mut order: Vec<usize> = (0..self.carets.len()).collect();
@@ -707,15 +721,16 @@ impl EditorView {
             self.carets[i] = Caret::at(start.0, start.1 + s.chars().count());
         } else {
             let last = s.rsplit('\n').next().unwrap_or("");
-            self.carets[i] =
-                Caret::at(start.0 + inserted_lines - 1, last.chars().count());
+            self.carets[i] = Caret::at(start.0 + inserted_lines - 1, last.chars().count());
         }
     }
 
     /// Backspace at every caret. With a selection, deletes it; otherwise
     /// removes the char before the caret (or joins with the previous line).
     fn backspace(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else { return };
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
         let mut order: Vec<usize> = (0..self.carets.len()).collect();
         order.sort_by(|&a, &b| {
             let ca = (self.carets[a].line, self.carets[a].col);
@@ -751,7 +766,9 @@ impl EditorView {
 
     /// Forward-delete at every caret.
     fn delete_forward(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else { return };
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
         let mut order: Vec<usize> = (0..self.carets.len()).collect();
         order.sort_by(|&a, &b| {
             let ca = (self.carets[a].line, self.carets[a].col);
@@ -813,8 +830,7 @@ impl EditorView {
             c.anchor = None;
         }
         if dy != 0 {
-            let new_line = (c.line as isize + dy)
-                .clamp(0, self.lines.len() as isize - 1) as usize;
+            let new_line = (c.line as isize + dy).clamp(0, self.lines.len() as isize - 1) as usize;
             c.line = new_line;
             let cols = self.lines[new_line].chars().count();
             c.col = c.col.min(cols);
@@ -850,7 +866,11 @@ impl EditorView {
         // Smart home: first non-whitespace, then column 0.
         let line = &self.lines[c.line];
         let first_non_ws = line.chars().take_while(|ch| ch.is_whitespace()).count();
-        c.col = if c.col == first_non_ws { 0 } else { first_non_ws };
+        c.col = if c.col == first_non_ws {
+            0
+        } else {
+            first_non_ws
+        };
         self.scroll_to_caret();
     }
 
@@ -884,7 +904,8 @@ impl EditorView {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied() {
             if last.line + 1 < self.lines.len() {
                 let cols = self.lines[last.line + 1].chars().count();
-                self.carets.push(Caret::at(last.line + 1, last.col.min(cols)));
+                self.carets
+                    .push(Caret::at(last.line + 1, last.col.min(cols)));
                 self.dirty = true;
             }
         }
@@ -1052,7 +1073,12 @@ impl EditorView {
         // Shallowest indent across the range, so added markers align.
         let indent = non_blank
             .iter()
-            .map(|&l| self.lines[l].chars().take_while(|c| *c == ' ' || *c == '\t').count())
+            .map(|&l| {
+                self.lines[l]
+                    .chars()
+                    .take_while(|c| *c == ' ' || *c == '\t')
+                    .count()
+            })
             .min()
             .unwrap_or(0);
         // Splice bottom-up so earlier line indices stay valid.
@@ -1062,7 +1088,11 @@ impl EditorView {
                 // Remove the token (and one following space, if present) at the
                 // first non-whitespace column.
                 let lead = line.chars().take_while(|c| c.is_whitespace()).count();
-                let after = &line[line.char_indices().nth(lead).map(|(i, _)| i).unwrap_or(line.len())..];
+                let after = &line[line
+                    .char_indices()
+                    .nth(lead)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line.len())..];
                 if let Some(rest) = after.strip_prefix(token) {
                     let mut remove = token.chars().count();
                     if rest.starts_with(' ') {
@@ -1114,7 +1144,10 @@ impl EditorView {
             let remove = if line.starts_with('\t') {
                 1
             } else {
-                line.chars().take_while(|c| *c == ' ').count().min(self.indent_width)
+                line.chars()
+                    .take_while(|c| *c == ' ')
+                    .count()
+                    .min(self.indent_width)
             };
             if remove > 0 {
                 let at = self.line_start_index(l);
@@ -1138,11 +1171,11 @@ impl EditorView {
     fn point_to_caret(&self, p: Point) -> (usize, usize) {
         let gutter = self.gutter_width();
         let rel_y = p.y - self.rect.y0 + self.scroll_y * LINE_HEIGHT;
-        let line = ((rel_y / LINE_HEIGHT).floor() as isize)
-            .clamp(0, self.lines.len() as isize - 1) as usize;
+        let line = ((rel_y / LINE_HEIGHT).floor() as isize).clamp(0, self.lines.len() as isize - 1)
+            as usize;
         let rel_x = p.x - self.rect.x0 - gutter - CODE_PAD_LEFT + self.scroll_x;
-        let col = ((rel_x / self.cell_w).round().max(0.0) as usize)
-            .min(self.lines[line].chars().count());
+        let col =
+            ((rel_x / self.cell_w).round().max(0.0) as usize).min(self.lines[line].chars().count());
         (line, col)
     }
 }
@@ -1222,7 +1255,13 @@ impl Widget for EditorView {
             self.rect.x0 + gutter_w,
             self.rect.y1,
         );
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &gutter_rect,
+        );
 
         if self.text_obj.is_none() {
             // A composed zero-state through the shared primitive: a hero icon,
@@ -1259,12 +1298,7 @@ impl Widget for EditorView {
 
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
-                let hl = Rect::new(
-                    self.rect.x0 + gutter_w,
-                    y,
-                    self.rect.x1,
-                    y + LINE_HEIGHT,
-                );
+                let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + LINE_HEIGHT);
                 scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
             }
 
@@ -1383,9 +1417,7 @@ impl Widget for EditorView {
                     let char_col = std::str::from_utf8(prefix)
                         .map(|s| s.chars().count())
                         .unwrap_or(0);
-                    let seg = line
-                        .get(span.start..span.end.min(line.len()))
-                        .unwrap_or("");
+                    let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
                     if seg.is_empty() {
                         continue;
                     }
@@ -1425,7 +1457,11 @@ impl Widget for EditorView {
             if y > self.rect.y1 {
                 continue;
             }
-            let line_len = self.lines.get(d.line).map(|l| l.chars().count()).unwrap_or(0);
+            let line_len = self
+                .lines
+                .get(d.line)
+                .map(|l| l.chars().count())
+                .unwrap_or(0);
             let start_col = d.start_col.min(line_len);
             let end_col = if d.end_col == usize::MAX {
                 line_len
@@ -1471,10 +1507,8 @@ impl Widget for EditorView {
                 if x < self.rect.x0 + gutter_w {
                     continue;
                 }
-                let caret_line = Line::new(
-                    Point::new(x, y + 2.0),
-                    Point::new(x, y + LINE_HEIGHT - 2.0),
-                );
+                let caret_line =
+                    Line::new(Point::new(x, y + 2.0), Point::new(x, y + LINE_HEIGHT - 2.0));
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -1490,7 +1524,13 @@ impl Widget for EditorView {
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x0, self.rect.y1),
         );
-        scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &border);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &border,
+        );
 
         // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, caret_col) = self.primary_caret();
@@ -1520,7 +1560,13 @@ impl Widget for EditorView {
             let popup = Rect::new(px, py, px + width, py + height);
             let shape = RoundedRect::from_rect(popup, 6.0);
             scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.border_standard,
+                None,
+                &shape,
+            );
 
             for row in 0..shown {
                 let idx = offset + row;
@@ -1530,7 +1576,13 @@ impl Widget for EditorView {
                 let ry = py + 4.0 + row as f64 * ROW_H;
                 if idx == self.completion_index {
                     let hl = Rect::new(px + 2.0, ry, px + width - 2.0, ry + ROW_H);
-                    scene.fill(Fill::NonZero, transform, c.accent[5].multiply_alpha(0.30), None, &hl);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.accent[5].multiply_alpha(0.30),
+                        None,
+                        &hl,
+                    );
                 }
                 // Kind glyph (compact hint at the identifier's type).
                 let glyph = completion_kind_glyph(item.kind);
@@ -1599,7 +1651,13 @@ impl Widget for EditorView {
             let box_rect = Rect::new(px, py, px + width, py + height);
             let shape = RoundedRect::from_rect(box_rect, 6.0);
             scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.border_standard,
+                None,
+                &shape,
+            );
             for (i, line) in first.lines().enumerate() {
                 text_renderer.draw_text(
                     scene,
@@ -1607,7 +1665,10 @@ impl Widget for EditorView {
                     FONT_SIZE,
                     c.text_primary,
                     transform
-                        * Affine::translate((px + 10.0, py + 6.0 + i as f64 * (FONT_SIZE as f64 + 4.0))),
+                        * Affine::translate((
+                            px + 10.0,
+                            py + 6.0 + i as f64 * (FONT_SIZE as f64 + 4.0),
+                        )),
                     Some((width - 20.0) as f32),
                 );
             }
@@ -1710,8 +1771,7 @@ impl Widget for EditorView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // While dragging, extend the selection to the pointer at the
                 // gesture's granularity — char follows the caret; word/line snap
                 // so the original span the press selected stays covered.
@@ -1920,39 +1980,37 @@ impl Widget for EditorView {
                         }
                         *handled = true;
                     }
-                    Key::Character(s) if ctrl => {
-                        match s.to_lowercase().as_str() {
-                            "a" => {
-                                self.select_all();
-                                *handled = true;
-                            }
-                            "c" => {
-                                self.copy_selection();
-                                *handled = true;
-                            }
-                            "x" => {
-                                self.cut_selection(state);
-                                *handled = true;
-                            }
-                            "v" => {
-                                self.paste_clipboard(state);
-                                *handled = true;
-                            }
-                            "d" => {
-                                self.add_caret_below();
-                                *handled = true;
-                            }
-                            "k" if shift => {
-                                self.delete_lines(state);
-                                *handled = true;
-                            }
-                            "/" => {
-                                self.toggle_line_comment(state);
-                                *handled = true;
-                            }
-                            _ => {}
+                    Key::Character(s) if ctrl => match s.to_lowercase().as_str() {
+                        "a" => {
+                            self.select_all();
+                            *handled = true;
                         }
-                    }
+                        "c" => {
+                            self.copy_selection();
+                            *handled = true;
+                        }
+                        "x" => {
+                            self.cut_selection(state);
+                            *handled = true;
+                        }
+                        "v" => {
+                            self.paste_clipboard(state);
+                            *handled = true;
+                        }
+                        "d" => {
+                            self.add_caret_below();
+                            *handled = true;
+                        }
+                        "k" if shift => {
+                            self.delete_lines(state);
+                            *handled = true;
+                        }
+                        "/" => {
+                            self.toggle_line_comment(state);
+                            *handled = true;
+                        }
+                        _ => {}
+                    },
                     _ => {
                         // Printable text insertion. `text` carries the
                         // resolved character(s) for the key (handles shift,
@@ -2195,7 +2253,17 @@ mod tests {
             device_id: fake_device_id(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        ev.handle_event(
+            &win_ev,
+            1.0,
+            &m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
@@ -2206,10 +2274,24 @@ mod tests {
         let node = NodeId::new(0);
         let win_ev = WindowEvent::MouseInput {
             device_id: fake_device_id(),
-            state: if pressed { ElementState::Pressed } else { ElementState::Released },
+            state: if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
             button: MouseButton::Left,
         };
-        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        ev.handle_event(
+            &win_ev,
+            1.0,
+            &m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
@@ -2230,7 +2312,17 @@ mod tests {
             event: ke,
             is_synthetic: false,
         };
-        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        ev.handle_event(
+            &win_ev,
+            1.0,
+            &m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     #[test]
@@ -2286,9 +2378,21 @@ mod tests {
     fn shift_arrow_extends_by_char() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 0);
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            false,
+            true,
+        );
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 1))));
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            false,
+            true,
+        );
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 2))));
     }
 
@@ -2297,12 +2401,34 @@ mod tests {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
         // Word-forward lands at the start of the next word.
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, false);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            false,
+        );
         assert_eq!(ev.primary_caret(), (0, 4));
-        assert_eq!(ev.selection_for_test(), None, "ctrl (no shift) does not select");
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, false);
+        assert_eq!(
+            ev.selection_for_test(),
+            None,
+            "ctrl (no shift) does not select"
+        );
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            false,
+        );
         assert_eq!(ev.primary_caret(), (0, 8));
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowLeft), true, false);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowLeft),
+            true,
+            false,
+        );
         assert_eq!(ev.primary_caret(), (0, 4));
     }
 
@@ -2310,7 +2436,13 @@ mod tests {
     fn ctrl_shift_arrow_extends_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, true);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            true,
+        );
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 4))));
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("foo "));
     }
@@ -2331,12 +2463,36 @@ mod tests {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 1);
         // Build a selection (0,1)..(0,4).
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            false,
+            true,
+        );
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            false,
+            true,
+        );
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            false,
+            true,
+        );
         assert_eq!(ev.selection_for_test(), Some(((0, 1), (0, 4))));
         // Plain Left collapses to the left edge, not one char before it.
-        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowLeft), false, false);
+        key(
+            &mut ev,
+            &mut doc,
+            Key::Named(NamedKey::ArrowLeft),
+            false,
+            false,
+        );
         assert_eq!(ev.selection_for_test(), None);
         assert_eq!(ev.primary_caret(), (0, 1));
     }
@@ -2349,7 +2505,13 @@ mod tests {
         ev.set_caret_for_test(0, 0);
         // Select "hello " (0,0)..(0,6) with word+char extends.
         for _ in 0..6 {
-            key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+            key(
+                &mut ev,
+                &mut doc,
+                Key::Named(NamedKey::ArrowRight),
+                false,
+                true,
+            );
         }
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello "));
         ev.cut_for_test(&mut doc);
@@ -2370,7 +2532,13 @@ mod tests {
         let (mut ev, mut doc) = geom_editor("hello world");
         ev.set_caret_for_test(0, 0);
         for _ in 0..5 {
-            key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+            key(
+                &mut ev,
+                &mut doc,
+                Key::Named(NamedKey::ArrowRight),
+                false,
+                true,
+            );
         }
         // Ctrl+C copies "hello".
         key(&mut ev, &mut doc, Key::Character("c".into()), true, false);

@@ -39,10 +39,7 @@ pub use storage::{ServerIdentity, Storage, StorageError};
 ///
 /// Returns `Ok(bound_addr)` — useful when the caller passed
 /// `0.0.0.0:0` for tests and needs to know the ephemeral port.
-pub async fn bind_and_run(
-    addr: SocketAddr,
-    state: AppState,
-) -> std::io::Result<SocketAddr> {
+pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
     info!("registry server listening on {bound}");

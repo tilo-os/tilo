@@ -165,7 +165,11 @@ async fn handle_request(
             )
         }
         Some("/healthz") => ("200 OK", "ok\n".to_string(), "text/plain; charset=utf-8"),
-        _ => ("404 Not Found", "not found\n".to_string(), "text/plain; charset=utf-8"),
+        _ => (
+            "404 Not Found",
+            "not found\n".to_string(),
+            "text/plain; charset=utf-8",
+        ),
     };
 
     let response = format!(
@@ -200,7 +204,10 @@ mod tests {
 
     #[test]
     fn parse_request_path_extracts_path() {
-        assert_eq!(parse_request_path("GET /metrics HTTP/1.1"), Some("/metrics"));
+        assert_eq!(
+            parse_request_path("GET /metrics HTTP/1.1"),
+            Some("/metrics")
+        );
         assert_eq!(parse_request_path("GET / HTTP/1.0"), Some("/"));
         assert_eq!(parse_request_path("POST /metrics HTTP/1.1"), None);
         assert_eq!(parse_request_path("garbage"), None);
@@ -231,12 +238,13 @@ mod tests {
     async fn metrics_endpoint_serves_text() {
         let metrics = Arc::new(RelayMetrics::new());
         metrics.connected_peers.set(7);
-        let (bound, _handle) =
-            spawn_server(([127u8, 0, 0, 1], 0).into(), metrics.clone())
-                .await
-                .expect("bind ok");
+        let (bound, _handle) = spawn_server(([127u8, 0, 0, 1], 0).into(), metrics.clone())
+            .await
+            .expect("bind ok");
         // Hand-roll the request to avoid a hyper-client dep.
-        let mut s = tokio::net::TcpStream::connect(bound).await.expect("connect");
+        let mut s = tokio::net::TcpStream::connect(bound)
+            .await
+            .expect("connect");
         s.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .await
             .unwrap();
@@ -244,6 +252,9 @@ mod tests {
         s.read_to_end(&mut buf).await.unwrap();
         let text = String::from_utf8_lossy(&buf);
         assert!(text.contains("200 OK"), "response: {text}");
-        assert!(text.contains("qos_relay_connected_peers"), "response: {text}");
+        assert!(
+            text.contains("qos_relay_connected_peers"),
+            "response: {text}"
+        );
     }
 }

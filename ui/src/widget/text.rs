@@ -1,14 +1,14 @@
+use crate::i18n::ArgValue;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::theme::Theme;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size};
-use crate::widget::Widget;
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
-use crate::i18n::ArgValue;
 
 pub struct Text {
     label: String,
@@ -66,7 +66,10 @@ impl Text {
     /// `counter = Count is { $count }` to `Count is 5`.
     pub fn with_args(key: &str, args: &[(&str, ArgValue)]) -> Self {
         let mut text = Self::new(key);
-        text.args = args.iter().map(|(n, v)| (n.to_string(), v.clone())).collect();
+        text.args = args
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.clone()))
+            .collect();
         text
     }
 
@@ -84,8 +87,11 @@ impl Text {
         if self.args.is_empty() {
             crate::i18n!(&self.label)
         } else {
-            let args: Vec<(&str, ArgValue)> =
-                self.args.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            let args: Vec<(&str, ArgValue)> = self
+                .args
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.clone()))
+                .collect();
             crate::i18n::I18nManager::format(&self.label, &args)
         }
     }
@@ -117,8 +123,8 @@ impl Text {
     /// the taffy tree. Mirrors
     /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
-        let size_changed = rect.width() != self.cache_rect.width()
-            || rect.height() != self.cache_rect.height();
+        let size_changed =
+            rect.width() != self.cache_rect.width() || rect.height() != self.cache_rect.height();
         self.rect = rect;
         if size_changed {
             self.dirty = true;
@@ -149,23 +155,35 @@ impl Text {
 impl Widget for Text {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: taffy::Dimension::auto(),
-                height: taffy::Dimension::auto(),
-            },
-            // flex_shrink 1.0 lets Taffy propose a smaller width than
-            // natural_w — critical for wrapping.
-            flex_shrink: 1.0,
-            flex_grow: 0.0,
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: taffy::Dimension::auto(),
+                    height: taffy::Dimension::auto(),
+                },
+                // flex_shrink 1.0 lets Taffy propose a smaller width than
+                // natural_w — critical for wrapping.
+                flex_shrink: 1.0,
+                flex_grow: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
 
-    fn measure(&mut self, known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
+    fn measure(
+        &mut self,
+        known_dimensions: taffy::Size<Option<f32>>,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
         let label = self.resolved_label();
 
         let max_w = if let Some(w) = known_dimensions.width {
@@ -188,7 +206,10 @@ impl Widget for Text {
 
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
         // text as "just a bit too big" and wrap it unnecessarily.
-        taffy::Size { width: w + 0.1, height: h }
+        taffy::Size {
+            width: w + 0.1,
+            height: h,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -208,7 +229,14 @@ impl Widget for Text {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
@@ -244,32 +272,58 @@ impl Widget for Text {
         scene.append(&self.cached, Some(transform * Affine::translate((dx, dy))));
     }
 
-    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
 
-    fn name(&self) -> &str { "Text" }
+    fn name(&self) -> &str {
+        "Text"
+    }
 
     /// Opt into incremental redraw: true while the cache is unwritten or
     /// invalidated by a rect change. The App's redraw gate uses this to
     /// skip frames where no Text widget changed.
-    fn needs_redraw(&self) -> bool { self.dirty }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
 
     /// Clears the cache-stale flag after the App consumes the scene.
-    fn mark_drawn(&mut self) { self.dirty = false; }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
 
     /// Text's intrinsic size is fixed at construction, so once
     /// `apply_layout` sets a non-zero `self.rect` this reports `false` —
     /// an unrelated sibling reflow shouldn't drag a re-shape along.
     /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
-    fn is_layout_dirty(&self) -> bool { self.rect == vello::kurbo::Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == vello::kurbo::Rect::ZERO
+    }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { false }
+    fn is_focusable(&self) -> bool {
+        false
+    }
     fn set_focus(&mut self, _focused: bool) {}
-    fn is_focused(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { false }
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        false
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -286,7 +340,9 @@ impl Widget for Text {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -303,14 +359,22 @@ impl Widget for Text {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -422,16 +486,30 @@ mod tests {
         // Same string, size (16 default), wrap width (401.0) and family → a hit.
         let _ = tr.take_shape_stats();
         tr.draw_text_font(
-            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
-            Some(401.0), TextWeight::Regular, false, &FontChoice::Named(fam),
+            &mut scene,
+            "Reading",
+            16.0,
+            theme.tokens.colors.text_primary,
+            Affine::IDENTITY,
+            Some(401.0),
+            TextWeight::Regular,
+            false,
+            &FontChoice::Named(fam),
         );
         let (hits, _m, _ns) = tr.take_shape_stats();
         assert_eq!(hits, 1, "the label shaped its text in the named family");
 
         // Sans of the same string is a separate shape entry.
         tr.draw_text_font(
-            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
-            Some(401.0), TextWeight::Regular, false, &FontChoice::SansSerif,
+            &mut scene,
+            "Reading",
+            16.0,
+            theme.tokens.colors.text_primary,
+            Affine::IDENTITY,
+            Some(401.0),
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
         );
         let (_h, misses, _ns) = tr.take_shape_stats();
         assert_eq!(misses, 1, "sans is a separate shape from the named family");

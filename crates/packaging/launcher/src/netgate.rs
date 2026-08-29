@@ -473,7 +473,10 @@ pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination
     stream.read_exact(&mut head)?;
     let (ver, cmd, atyp) = (head[0], head[1], head[3]);
     if ver != 0x05 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad SOCKS version"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad SOCKS version",
+        ));
     }
     if cmd != 0x01 {
         // BIND and UDP ASSOCIATE would each need their own policy story, and
@@ -759,7 +762,10 @@ fn read_http_head<S: Read>(stream: &mut S, seed: u8) -> io::Result<String> {
         }
     }
     String::from_utf8(buf).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "HTTP proxy request is not UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP proxy request is not UTF-8",
+        )
     })
 }
 
@@ -1234,7 +1240,10 @@ mod tests {
     #[test]
     fn connect_without_a_port_defaults_to_443() {
         let req = parse_http_proxy_head("CONNECT example.com HTTP/1.1\r\n\r\n").expect("parses");
-        assert_eq!(req.dest, Destination::Domain("example.com".to_string(), 443));
+        assert_eq!(
+            req.dest,
+            Destination::Domain("example.com".to_string(), 443)
+        );
     }
 
     #[test]
@@ -1263,8 +1272,8 @@ mod tests {
 
     #[test]
     fn an_ipv6_literal_authority_parses() {
-        let req = parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n")
-            .expect("parses");
+        let req =
+            parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n").expect("parses");
         assert_eq!(
             req.dest,
             Destination::Domain("2001:db8::1".to_string(), 8443)
@@ -1382,7 +1391,9 @@ mod tests {
         let mut stream = connect_upstream(&dest, &exact)
             .expect("an exact grant for a device-local host must reach it");
         let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).expect("read the service reply");
+        stream
+            .read_to_end(&mut buf)
+            .expect("read the service reply");
         assert_eq!(
             String::from_utf8_lossy(&buf),
             "LOCAL-SERVICE",

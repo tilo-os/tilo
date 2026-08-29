@@ -356,7 +356,15 @@ impl Action for ChatAction {
                 deafened,
                 audio_only,
             } => {
-                ChatDoc::voice_set_state(doc, channel, user, *talking, *muted, *deafened, *audio_only);
+                ChatDoc::voice_set_state(
+                    doc,
+                    channel,
+                    user,
+                    *talking,
+                    *muted,
+                    *deafened,
+                    *audio_only,
+                );
             }
             ChatAction::SetScreenShare {
                 channel,
@@ -512,7 +520,12 @@ pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
 /// Record an agent's progress on the message `msg` replies to. `say` is the
 /// agent's words, and is `None` until it has any — the ordinary case for
 /// every state before the last one.
-pub fn set_agent_work_action(channel: &str, msg: &str, work: crate::model::AgentWork, say: Option<&str>) -> ChatAction {
+pub fn set_agent_work_action(
+    channel: &str,
+    msg: &str,
+    work: crate::model::AgentWork,
+    say: Option<&str>,
+) -> ChatAction {
     ChatAction::SetAgentWork {
         channel: channel.to_string(),
         msg: msg.to_string(),
@@ -527,20 +540,43 @@ pub fn set_agent_work_action(channel: &str, msg: &str, work: crate::model::Agent
 /// "not muted", and deriving it in the one place both the control and the
 /// palette build through is what stops the two from disagreeing about what a
 /// muted peer looks like to everyone else.
-pub fn call_state_action(channel: &str, user: &str, muted: bool, deafened: bool, audio_only: bool) -> ChatAction {
-    ChatAction::SetCallState { channel: channel.to_string(), user: user.to_string(), talking: !muted, muted, deafened, audio_only }
+pub fn call_state_action(
+    channel: &str,
+    user: &str,
+    muted: bool,
+    deafened: bool,
+    audio_only: bool,
+) -> ChatAction {
+    ChatAction::SetCallState {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        talking: !muted,
+        muted,
+        deafened,
+        audio_only,
+    }
 }
 
 pub fn screen_share_action(channel: &str, user: &str, sharing: bool) -> ChatAction {
-    ChatAction::SetScreenShare { channel: channel.to_string(), user: user.to_string(), sharing }
+    ChatAction::SetScreenShare {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        sharing,
+    }
 }
 
 pub fn join_call_action(channel: &str, user: &str) -> ChatAction {
-    ChatAction::JoinCall { channel: channel.to_string(), user: user.to_string() }
+    ChatAction::JoinCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
 }
 
 pub fn leave_call_action(channel: &str, user: &str) -> ChatAction {
-    ChatAction::LeaveCall { channel: channel.to_string(), user: user.to_string() }
+    ChatAction::LeaveCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
 }
 
 // ===========================================================================
@@ -589,7 +625,11 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
 fn channel_label(ch: &ChannelResource) -> String {
-    let name = if ch.name.trim().is_empty() { "channel" } else { ch.name.trim() };
+    let name = if ch.name.trim().is_empty() {
+        "channel"
+    } else {
+        ch.name.trim()
+    };
     format!("{} {}", ch.kind.glyph(), name)
 }
 
@@ -625,7 +665,13 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 let name = name.trim();
                 let name = if name.is_empty() { "new-channel" } else { name };
                 let id = format!("c_{}", uuid::Uuid::new_v4().simple());
-                encode(&create_channel_action(&ws, "", &id, name, ChannelKind::Text))
+                encode(&create_channel_action(
+                    &ws,
+                    "",
+                    &id,
+                    name,
+                    ChannelKind::Text,
+                ))
             }
         },
     ));
@@ -652,7 +698,16 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 move |text: &str| {
                     let id = format!("m_{}", uuid::Uuid::new_v4().simple());
                     let mentions = crate::mention::resolve(text, &room);
-                    encode(&send_message_action(&cid, &id, &me, now_secs(), text, None, None, mentions))
+                    encode(&send_message_action(
+                        &cid,
+                        &id,
+                        &me,
+                        now_secs(),
+                        text,
+                        None,
+                        None,
+                        mentions,
+                    ))
                 }
             },
         ));
@@ -695,14 +750,20 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ));
 
         // Delete the whole channel.
-        channel =
-            channel.with_action(immediate_spec("delete", "Delete channel", &delete_channel_action(&ch.id)));
+        channel = channel.with_action(immediate_spec(
+            "delete",
+            "Delete channel",
+            &delete_channel_action(&ch.id),
+        ));
 
         // Only the open channel exposes its messages as sub-resources.
         if ch.id == ctx.active_channel {
             for m in &ctx.messages {
-                let mut message =
-                    Resource::new(format!("chat.message:{}", m.id), "chat.message", m.label.clone());
+                let mut message = Resource::new(
+                    format!("chat.message:{}", m.id),
+                    "chat.message",
+                    m.label.clone(),
+                );
 
                 // Edit — prompted; the edit timestamp is minted in the closure.
                 message = message.with_action(ActionSpec::prompted(
@@ -858,7 +919,11 @@ mod tests {
             messages,
             participants: ChatDoc::list_users(doc)
                 .into_iter()
-                .map(|u| crate::mention::Participant { id: u.id, name: u.name, is_agent: u.is_agent })
+                .map(|u| crate::mention::Participant {
+                    id: u.id,
+                    name: u.name,
+                    is_agent: u.is_agent,
+                })
                 .collect(),
         }
     }
@@ -886,14 +951,23 @@ mod tests {
         assert_eq!(crit.kind, "chat.channel");
         let c_actions: Vec<&str> = crit.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["post", "rename", "archive", "mark-read", "delete"] {
-            assert!(c_actions.contains(&want), "channel missing {want}: {c_actions:?}");
+            assert!(
+                c_actions.contains(&want),
+                "channel missing {want}: {c_actions:?}"
+            );
         }
-        assert!(!crit.children.is_empty(), "the open channel exposes its messages");
+        assert!(
+            !crit.children.is_empty(),
+            "the open channel exposes its messages"
+        );
         let msg = &crit.children[0];
         assert_eq!(msg.kind, "chat.message");
         let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["edit", "react", "pin", "delete"] {
-            assert!(m_actions.contains(&want), "message missing {want}: {m_actions:?}");
+            assert!(
+                m_actions.contains(&want),
+                "message missing {want}: {m_actions:?}"
+            );
         }
 
         // A non-open channel has no message children (only the open one is loaded).
@@ -902,7 +976,10 @@ mod tests {
             .iter()
             .find(|c| c.id.as_str() == "chat.channel:c_general")
             .expect("a second channel is present");
-        assert!(general.children.is_empty(), "only the open channel loads messages");
+        assert!(
+            general.children.is_empty(),
+            "only the open channel loads messages"
+        );
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
@@ -916,7 +993,12 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        assert!(palette.result_labels().iter().any(|l| l.contains("New channel")));
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|l| l.contains("New channel"))
+        );
     }
 
     /// Sending a message through the action appends a row carrying the payload's
@@ -927,7 +1009,16 @@ mod tests {
         let before = ChatDoc::list_messages(&doc, "c_general").len();
         dispatch(
             &mut doc,
-            &send_message_action("c_general", "m_test1", model::ME, TS, "hello", None, None, Vec::new()),
+            &send_message_action(
+                "c_general",
+                "m_test1",
+                model::ME,
+                TS,
+                "hello",
+                None,
+                None,
+                Vec::new(),
+            ),
         );
         let msgs = ChatDoc::list_messages(&doc, "c_general");
         assert_eq!(msgs.len(), before + 1);
@@ -946,27 +1037,65 @@ mod tests {
         let mut doc = seeded();
         dispatch(
             &mut doc,
-            &send_message_action("c_crit", "m_reply", "agent_claude", TS, "", Some("m_me1".into()), None, Vec::new()),
+            &send_message_action(
+                "c_crit",
+                "m_reply",
+                "agent_claude",
+                TS,
+                "",
+                Some("m_me1".into()),
+                None,
+                Vec::new(),
+            ),
         );
         let taken = AgentWork::new(AgentWorkState::Taken, TS);
-        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", taken.clone(), None));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", taken.clone(), None),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
         assert_eq!(m.work, Some(taken), "the taken record was not stored");
         assert_eq!(m.text, "", "no words yet — the body must stay empty");
 
-        let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5)
-            .because(AgentReasoning { route: AgentRoute::Floor, why: "matched the word processor".into() });
-        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
-        assert_eq!(m.work, Some(done.clone()), "the finished record was not stored");
+        let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5).because(
+            AgentReasoning {
+                route: AgentRoute::Floor,
+                why: "matched the word processor".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
+        assert_eq!(
+            m.work,
+            Some(done.clone()),
+            "the finished record was not stored"
+        );
         assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
 
         // A later state must not restate the body — it is authored once.
         let refused = AgentWork::new(AgentWorkState::Refused, TS + 9);
-        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
         assert_eq!(m.work, Some(refused), "the last state must still win");
-        assert_eq!(m.text, "Cropped it.", "an already-written body must never be overwritten");
+        assert_eq!(
+            m.text, "Cropped it.",
+            "an already-written body must never be overwritten"
+        );
     }
 
     /// Add then remove a reaction through the action path (both mutating), and
@@ -974,13 +1103,28 @@ mod tests {
     #[test]
     fn reaction_add_and_remove_actions_round_trip() {
         let mut doc = seeded();
-        dispatch(&mut doc, &add_reaction_action("c_crit", "m_me1", "🔥", model::ME));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        dispatch(
+            &mut doc,
+            &add_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
         assert_eq!(fire.count(), 1, "the add landed one reaction");
-        dispatch(&mut doc, &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
-        assert!(!m.reactions.iter().any(|r| r.emoji == "🔥"), "remove cleared it");
+        dispatch(
+            &mut doc,
+            &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
+        assert!(
+            !m.reactions.iter().any(|r| r.emoji == "🔥"),
+            "remove cleared it"
+        );
     }
 
     /// Idempotency is a doc-level guarantee: a duplicate add does not
@@ -990,7 +1134,10 @@ mod tests {
         let mut doc = seeded();
         ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
         ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
         assert_eq!(fire.count(), 1, "a repeated add does not double-count");
     }
@@ -1000,11 +1147,16 @@ mod tests {
     fn pin_and_delete_message_actions() {
         let mut doc = seeded();
         dispatch(&mut doc, &pin_message_action("c_crit", "m_me1", true));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         assert!(m.pinned, "the message is pinned");
         dispatch(&mut doc, &delete_message_action("c_crit", "m_me1"));
         assert!(
-            ChatDoc::list_messages(&doc, "c_crit").into_iter().all(|m| m.id != "m_me1"),
+            ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .all(|m| m.id != "m_me1"),
             "the message row was deleted"
         );
     }
@@ -1015,13 +1167,31 @@ mod tests {
         let mut doc = seeded();
         dispatch(
             &mut doc,
-            &create_channel_action("ws_acme", "cat_acme_main", "c_new", "design-ops", ChannelKind::Text),
+            &create_channel_action(
+                "ws_acme",
+                "cat_acme_main",
+                "c_new",
+                "design-ops",
+                ChannelKind::Text,
+            ),
         );
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.name == "design-ops"));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.name == "design-ops")
+        );
         dispatch(&mut doc, &rename_channel_action("c_new", "ops"));
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.name == "ops"));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.name == "ops")
+        );
         dispatch(&mut doc, &archive_channel_action("c_new", true));
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.archived));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.archived)
+        );
         dispatch(&mut doc, &delete_channel_action("c_new"));
         assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
     }
@@ -1051,8 +1221,15 @@ mod tests {
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads.clone(), None, None);
 
-        assert_eq!(ChatDoc::list_messages(&state.doc, "c_general").len(), before + 1, "the action posted a message");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert_eq!(
+            ChatDoc::list_messages(&state.doc, "c_general").len(),
+            before + 1,
+            "the action posted a message"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
@@ -1071,15 +1248,36 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = send_message_action("c_general", "m_conv", "u_aria", TS, "converge", None, None, Vec::new());
+        let action = send_message_action(
+            "c_general",
+            "m_conv",
+            "u_aria",
+            TS,
+            "converge",
+            None,
+            None,
+            Vec::new(),
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert!(ChatDoc::list_messages(&b, "c_general").iter().any(|m| m.id == "m_conv" && m.text == "converge"));
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert!(
+            ChatDoc::list_messages(&b, "c_general")
+                .iter()
+                .any(|m| m.id == "m_conv" && m.text == "converge")
+        );
     }
 
     /// A channel create replays byte-identically too — the order is derived from
@@ -1090,9 +1288,19 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = create_channel_action("ws_acme", "cat_acme_main", "c_sync", "sync", ChannelKind::Text);
+        let action = create_channel_action(
+            "ws_acme",
+            "cat_acme_main",
+            "c_sync",
+            "sync",
+            ChannelKind::Text,
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -1108,27 +1316,44 @@ mod tests {
         let doc = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
         let ws = &resources[0];
-        let crit = ws.children.iter().find(|c| c.id.as_str() == "chat.channel:c_crit").unwrap();
+        let crit = ws
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.channel:c_crit")
+            .unwrap();
 
         // Delete-channel spec == delete builder.
         let delete_spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_channel_action("c_crit"));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "delete channel is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete channel is one source of truth"
+        );
 
         // Rename-channel spec == rename builder for the same name.
         let rename_spec = crit.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "planning");
         let from_builder = encode(&rename_channel_action("c_crit", "planning"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename channel is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename channel is one source of truth"
+        );
 
         // Pin-message spec == pin builder.
         let msg = &crit.children[0];
-        let msg_id = msg.id.as_str().trim_start_matches("chat.message:").to_string();
+        let msg_id = msg
+            .id
+            .as_str()
+            .trim_start_matches("chat.message:")
+            .to_string();
         let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
         let from_spec = immediate_encode(pin_spec);
         let from_builder = encode(&pin_message_action("c_crit", &msg_id, true));
-        assert_eq!(from_spec.payload, from_builder.payload, "pin message is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "pin message is one source of truth"
+        );
     }
 }

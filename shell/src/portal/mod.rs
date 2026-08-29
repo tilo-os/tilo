@@ -560,26 +560,11 @@ pub async fn serve(
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
 
-    connection
-        .object_server()
-        .at(OBJECT_PATH, fc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, sc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, ac)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, rd)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, pr)
-        .await?;
+    connection.object_server().at(OBJECT_PATH, fc).await?;
+    connection.object_server().at(OBJECT_PATH, sc).await?;
+    connection.object_server().at(OBJECT_PATH, ac).await?;
+    connection.object_server().at(OBJECT_PATH, rd).await?;
+    connection.object_server().at(OBJECT_PATH, pr).await?;
 
     // `request_name` only makes sense on a real bus — p2p test connections
     // have no broker, so the result is *recorded* (`ServerHandle::owns_name`) rather than swallowed.

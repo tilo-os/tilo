@@ -48,7 +48,7 @@
 //! the widget — presentation the recipe says must never be an action.
 
 use automerge::transaction::Transactable;
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -123,7 +123,8 @@ impl Action for DbAction {
             DbAction::RenameConnection { id, name } => {
                 if let Some(list) = list_object(doc) {
                     if let Some(index) = row_index_for_id(doc, &list, id) {
-                        if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
+                        if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                        {
                             put_if_changed(doc, &row, "name", name.as_str());
                         }
                     }
@@ -220,7 +221,10 @@ pub fn rename_connection_action(id: Uuid, name: &str) -> DbAction {
 /// True when `engine` is one this build knows how to open (kept next to the
 /// action so the modal and the decoder agree).
 pub fn known_engine(engine: &str) -> bool {
-    matches!(Engine::from_key(engine), Engine::Sqlite | Engine::Postgres | Engine::MySql)
+    matches!(
+        Engine::from_key(engine),
+        Engine::Sqlite | Engine::Postgres | Engine::MySql
+    )
 }
 
 #[cfg(test)]
@@ -267,12 +271,18 @@ mod tests {
     fn password_never_enters_the_document() {
         let mut doc = AutoCommit::new();
         let p = profile();
-        assert_eq!(p.password, "s3cret", "precondition: the profile has a secret");
+        assert_eq!(
+            p.password, "s3cret",
+            "precondition: the profile has a secret"
+        );
         add_connection_action(&p).apply(&mut doc).unwrap();
 
         // Read-back password is empty.
         let conns = ConnectionsDoc::read(&doc);
-        assert!(conns[0].password.is_empty(), "read-back profile has no password");
+        assert!(
+            conns[0].password.is_empty(),
+            "read-back profile has no password"
+        );
 
         // And the raw serialized document contains the secret nowhere.
         let bytes = doc.save();

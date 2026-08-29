@@ -10,12 +10,12 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use tracing::{debug, warn};
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 use zbus::Connection;
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
 use crate::agent::DeviceNames;
 use crate::model::{
-    adapter_from_interfaces, device_from_interfaces, sort_devices, AdapterInfo, DeviceInfo,
+    AdapterInfo, DeviceInfo, adapter_from_interfaces, device_from_interfaces, sort_devices,
 };
 
 const DEST: &str = "org.bluez";
@@ -99,7 +99,12 @@ impl BluezClient {
 
     /// Only the devices that have completed pairing.
     pub async fn paired_devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
-        Ok(self.devices().await?.into_iter().filter(|d| d.paired).collect())
+        Ok(self
+            .devices()
+            .await?
+            .into_iter()
+            .filter(|d| d.paired)
+            .collect())
     }
 
     async fn adapter_prop<T>(&self, path: &str, name: &str) -> zbus::Result<T>
@@ -107,14 +112,18 @@ impl BluezClient {
         T: TryFrom<OwnedValue>,
         T::Error: Into<zbus::Error>,
     {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, path.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, path.to_string(), ADAPTER_IFACE).await?;
         proxy.get_property(name).await
     }
 
     async fn set_adapter_prop(&self, path: &str, name: &str, value: bool) -> zbus::Result<()> {
         let proxy = zbus::Proxy::new(&self.connection, DEST, path.to_string(), PROPS_IFACE).await?;
         proxy
-            .call_method("Set", &(ADAPTER_IFACE, name, zbus::zvariant::Value::from(value)))
+            .call_method(
+                "Set",
+                &(ADAPTER_IFACE, name, zbus::zvariant::Value::from(value)),
+            )
             .await?;
         Ok(())
     }
@@ -145,7 +154,8 @@ impl BluezClient {
         if !self.is_powered(adapter).await.unwrap_or(true) {
             self.set_powered(adapter, true).await?;
         }
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         match proxy.call_method("StartDiscovery", &()).await {
             Ok(_) => Ok(()),
             // Already scanning is success, not an error — two panes asking to scan should not fight.
@@ -159,7 +169,8 @@ impl BluezClient {
     }
 
     pub async fn stop_discovery(&self, adapter: &str) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         match proxy.call_method("StopDiscovery", &()).await {
             Ok(_) => Ok(()),
             // Not scanning, or someone else's session — nothing to undo.
@@ -232,11 +243,16 @@ impl BluezClient {
     /// devices) — a real grant, so it's set explicitly after a successful pairing rather than
     /// implied by it.
     pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
         proxy
             .call_method(
                 "Set",
-                &(DEVICE_IFACE, "Trusted", zbus::zvariant::Value::from(trusted)),
+                &(
+                    DEVICE_IFACE,
+                    "Trusted",
+                    zbus::zvariant::Value::from(trusted),
+                ),
             )
             .await?;
         Ok(())
@@ -244,7 +260,8 @@ impl BluezClient {
 
     /// Forget a device: drops the bond, the keys and the trust. The device must pair again from scratch.
     pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         let path = ObjectPath::try_from(device.to_string())?;
         match proxy.call_method("RemoveDevice", &(&path,)).await {
             Ok(_) => {
@@ -311,7 +328,9 @@ pub enum PairOutcome {
     PairedAndConnected,
     /// Paired successfully, but the link did not come up. Common and recoverable — the row
     /// shows a Connect button.
-    PairedNotConnected { reason: String },
+    PairedNotConnected {
+        reason: String,
+    },
 }
 
 /// Turn a BlueZ D-Bus error into something worth putting in front of a person. BlueZ's own
@@ -377,7 +396,10 @@ mod tests {
     #[test]
     fn unmapped_errors_keep_the_daemons_own_message() {
         assert_eq!(
-            bluez_error_text("org.bluez.Error.Failed", Some("br-connection-profile-unavailable")),
+            bluez_error_text(
+                "org.bluez.Error.Failed",
+                Some("br-connection-profile-unavailable")
+            ),
             "br-connection-profile-unavailable"
         );
     }

@@ -138,7 +138,9 @@ impl UserDirs {
             UserDir::Music,
             UserDir::Pictures,
             UserDir::Videos,
-        ].into_iter().find(|&kind| self.path(kind) == Some(path))
+        ]
+        .into_iter()
+        .find(|&kind| self.path(kind) == Some(path))
     }
 
     /// `(kind, localized label, path)`, falling back to `home/<English>` so the
@@ -183,7 +185,10 @@ mod tests {
         let dirs = german();
         let places = dirs.content_places(Path::new("/home/u"));
         let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
-        assert_eq!(labels, ["Dokumente", "Downloads", "Bilder", "Musik", "Videos"]);
+        assert_eq!(
+            labels,
+            ["Dokumente", "Downloads", "Bilder", "Musik", "Videos"]
+        );
         let (kind, _, path) = &places[0];
         assert_eq!(*kind, UserDir::Documents);
         assert_eq!(path, &PathBuf::from("/home/u/Dokumente"));
@@ -193,15 +198,24 @@ mod tests {
     fn content_places_fall_back_to_english_when_unresolved() {
         let places = UserDirs::default().content_places(Path::new("/home/u"));
         let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
-        assert_eq!(labels, ["Documents", "Downloads", "Pictures", "Music", "Videos"]);
+        assert_eq!(
+            labels,
+            ["Documents", "Downloads", "Pictures", "Music", "Videos"]
+        );
     }
 
     #[test]
     fn classify_matches_localized_paths_by_kind() {
         let dirs = german();
-        assert_eq!(dirs.classify(Path::new("/home/u/Bilder")), Some(UserDir::Pictures));
+        assert_eq!(
+            dirs.classify(Path::new("/home/u/Bilder")),
+            Some(UserDir::Pictures)
+        );
         assert_eq!(dirs.classify(Path::new("/home/u")), Some(UserDir::Home));
-        assert_eq!(dirs.classify(Path::new("/home/u/Musik")), Some(UserDir::Music));
+        assert_eq!(
+            dirs.classify(Path::new("/home/u/Musik")),
+            Some(UserDir::Music)
+        );
         assert_eq!(dirs.classify(Path::new("/data/projects")), None);
     }
 

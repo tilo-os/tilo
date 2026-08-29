@@ -90,7 +90,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
 
             // Does the parent already have a reserved lane? Reuse it so two
             // children of the same commit converge.
-            let existing = lanes.iter().position(|l| l.as_deref() == Some(parent.as_str()));
+            let existing = lanes
+                .iter()
+                .position(|l| l.as_deref() == Some(parent.as_str()));
             let to_lane = if let Some(l) = existing {
                 l
             } else if pi == 0 {
@@ -157,11 +159,7 @@ mod tests {
 
     #[test]
     fn linear_history_stays_in_one_lane() {
-        let mut commits = vec![
-            commit("c", &["b"]),
-            commit("b", &["a"]),
-            commit("a", &[]),
-        ];
+        let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
         assert!(layout.lane_of.iter().all(|&l| l == 0));
         assert_eq!(layout.lanes, 1);
@@ -187,11 +185,7 @@ mod tests {
 
     #[test]
     fn every_row_has_a_lane() {
-        let mut commits = vec![
-            commit("c", &["b"]),
-            commit("b", &["a"]),
-            commit("a", &[]),
-        ];
+        let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
         assert_eq!(layout.lane_of.len(), commits.len());
     }

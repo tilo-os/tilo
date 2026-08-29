@@ -20,7 +20,7 @@ use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use runtime_fs::raw::{file_handle, workspace_fs, EntryKind as WireKind, OpenMode};
+use runtime_fs::raw::{EntryKind as WireKind, OpenMode, file_handle, workspace_fs};
 use runtime_fs::{FsClient, WorkspaceFsClient};
 use runtime_portal::UnixCapnpClient;
 
@@ -278,7 +278,9 @@ async fn round_trip_write_read_list_stat() {
             let (server_side, client_side) = UnixStream::pair().unwrap();
 
             let store: Store = Rc::new(RefCell::new(BTreeMap::new()));
-            let backend = FakeFs { store: store.clone() };
+            let backend = FakeFs {
+                store: store.clone(),
+            };
             let backend_client: workspace_fs::Client = capnp_rpc::new_client(backend);
 
             let (server_read, server_write) = server_side.into_split();
@@ -294,8 +296,9 @@ async fn round_trip_write_read_list_stat() {
             });
 
             let client_fd = client_side.into_std().unwrap().into_raw_fd();
-            let unix = UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)
-                .expect("connect");
+            let unix =
+                UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)
+                    .expect("connect");
             let client: WorkspaceFsClient = unix.bootstrap();
             let fs = FsClient::from_raw(client);
 
@@ -304,7 +307,10 @@ async fn round_trip_write_read_list_stat() {
                 .open("docs/notes.md", runtime_fs::OpenMode::Write)
                 .await
                 .expect("open notes");
-            notes.write_at(0, b"hello world").await.expect("write notes");
+            notes
+                .write_at(0, b"hello world")
+                .await
+                .expect("write notes");
 
             let plan = fs
                 .open("docs/plan.md", runtime_fs::OpenMode::Write)

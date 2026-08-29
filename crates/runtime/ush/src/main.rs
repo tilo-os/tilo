@@ -198,7 +198,6 @@ fn init_tracing(verbose: bool) {
         .try_init();
 }
 
-
 mod guest {
     use super::*;
     use ush::pkg::{InstalledPackage, Manifest};
@@ -275,7 +274,10 @@ mod guest {
         let outcome = ush::guard::restrict_self(&rw, &ro);
         tracing::debug!("landlock: {}", outcome.describe());
 
-        Err(std::process::Command::new(&rest[0]).args(&rest[1..]).exec().into())
+        Err(std::process::Command::new(&rest[0])
+            .args(&rest[1..])
+            .exec()
+            .into())
     }
 
     pub fn pkg(args: &[String]) -> anyhow::Result<i32> {
@@ -545,7 +547,9 @@ mod guest {
         );
         println!(
             "  package    : {}",
-            r.owned_by.as_deref().unwrap_or("none — not installed by rpm")
+            r.owned_by
+                .as_deref()
+                .unwrap_or("none — not installed by rpm")
         );
         println!(
             "  unmodified : {}",

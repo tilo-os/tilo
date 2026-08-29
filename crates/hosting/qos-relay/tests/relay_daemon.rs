@@ -95,7 +95,11 @@ async fn two_peers_fan_out_through_relay() {
         .expect("delta timeout")
         .expect("delta channel closed");
     match received {
-        Envelope::Delta { workspace_id, delta, .. } => {
+        Envelope::Delta {
+            workspace_id,
+            delta,
+            ..
+        } => {
             assert_eq!(workspace_id, 42);
             assert_eq!(delta, payload);
         }

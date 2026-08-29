@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
-use ui::{App, State};
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::i18n::I18nManager;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -28,12 +28,11 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation as ToolbarOrientation;
 use ui::widget::tree_view::TreeNode;
 use ui::widget::{
-    Avatar, Badge, Breadcrumb, Column, ColorPicker, DatePicker,
-    ModalDialog, PopoverWidget, ProgressBar, Row, Scrollable,
-    ScrollAxis, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView,
-    Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
+    ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
+    TreeView, Widget,
 };
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use ui::{App, State};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{
@@ -50,7 +49,10 @@ struct LabelTile {
 }
 impl LabelTile {
     fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), rect: Rect::ZERO }
+        Self {
+            text: text.into(),
+            rect: Rect::ZERO,
+        }
     }
 }
 impl Widget for LabelTile {
@@ -80,7 +82,10 @@ impl Widget for LabelTile {
         tr: &mut TextRenderer,
     ) -> Size<f32> {
         let (w, h) = tr.measure(&self.text, 14.0, None);
-        Size { width: w + 16.0, height: h + 12.0 }
+        Size {
+            width: w + 16.0,
+            height: h + 12.0,
+        }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
@@ -128,8 +133,12 @@ impl Widget for LabelTile {
         _: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str { "LabelTile" }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &str {
+        "LabelTile"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 fn placeholder_image() -> PenikoImage {
@@ -139,9 +148,15 @@ fn placeholder_image() -> PenikoImage {
             let i = (y * 16 + x) * 4;
             let on = ((x / 4) + (y / 4)) % 2 == 0;
             if on {
-                buf[i] = 99; buf[i + 1] = 102; buf[i + 2] = 241; buf[i + 3] = 255;
+                buf[i] = 99;
+                buf[i + 1] = 102;
+                buf[i + 2] = 241;
+                buf[i + 3] = 255;
             } else {
-                buf[i] = 30; buf[i + 1] = 41; buf[i + 2] = 59; buf[i + 3] = 255;
+                buf[i] = 30;
+                buf[i + 1] = 41;
+                buf[i + 2] = 59;
+                buf[i + 3] = 255;
             }
         }
     }
@@ -244,15 +259,9 @@ fn main() {
             .push(caption("row_basics"))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(ui::widget::Button::new(
-                        "btn",
-                        "btn_save",
-                        None,
-                    )))
+                    .push(Box::new(ui::widget::Button::new("btn", "btn_save", None)))
                     .push(Box::new(ui::widget::Toggle::new("tog", "toggle_1")))
-                    .push(Box::new(ui::widget::Checkbox::new(
-                        "chk", "check_1",
-                    )))
+                    .push(Box::new(ui::widget::Checkbox::new("chk", "check_1")))
                     .push(Box::new(ui::widget::Slider::new("sld", "slider_1")))
                     .push(Box::new(
                         ui::widget::TextInput::new(vec![])
@@ -312,23 +321,23 @@ fn main() {
                     .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),
             ))
             .push(caption("row_picker"))
-            .push(Box::new(ColorPicker::new(Color::from_rgba8(99, 102, 241, 255))))
+            .push(Box::new(ColorPicker::new(Color::from_rgba8(
+                99, 102, 241, 255,
+            ))))
             .push(caption("row_struct"))
-            .push(Box::new(tree))
-            // ResizableSplit + ImageViewer + VideoPlayer + Popover + Modal
-            // need explicit dimensions / overlay-host context they don't
-            // get from a plain Column. They're exercised by the offscreen
-            // `widget_snapshot` example which places them at fixed rects;
-            // including them here would either collapse them to zero
-            // height (Image/Video) or overlap chrome at scene origin
-            // (Popover/Modal anchor in absolute coords).
+            .push(Box::new(tree)), // ResizableSplit + ImageViewer + VideoPlayer + Popover + Modal
+                                   // need explicit dimensions / overlay-host context they don't
+                                   // get from a plain Column. They're exercised by the offscreen
+                                   // `widget_snapshot` example which places them at fixed rects;
+                                   // including them here would either collapse them to zero
+                                   // height (Image/Video) or overlap chrome at scene origin
+                                   // (Popover/Modal anchor in absolute coords).
     );
     let _ = popover; // silence unused warnings — kept above for inline
-    let _ = modal;   // documentation of the construction shape.
+    let _ = modal; // documentation of the construction shape.
 
-    let root: Box<dyn Widget> = Box::new(
-        Scrollable::new(ScrollAxis::Vertical).with_child(column_inner),
-    );
+    let root: Box<dyn Widget> =
+        Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(column_inner));
 
     let app = App::new(state, root);
     app.run();

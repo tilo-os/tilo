@@ -207,7 +207,10 @@ fn a_grant_covers_the_named_path_and_nothing_beside_it() {
         !plan.allow_network,
         "a file grant must not carry network access"
     );
-    assert!(plan.devices.is_empty(), "a file grant must not carry devices");
+    assert!(
+        plan.devices.is_empty(),
+        "a file grant must not carry devices"
+    );
 }
 
 #[test]

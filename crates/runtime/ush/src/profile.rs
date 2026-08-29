@@ -81,9 +81,7 @@ impl Profile {
     /// One line for `guard status` and for the shell prompt.
     pub fn posture_summary(self) -> &'static str {
         match self {
-            Profile::Ush => {
-                "sandboxed: namespaces + seccomp + Landlock, host filesystem read-only"
-            }
+            Profile::Ush => "sandboxed: namespaces + seccomp + Landlock, host filesystem read-only",
             Profile::Dsh => {
                 "developer profile — NOT a sandbox: namespace syscalls allowed, \
                  /dev/fuse present, subordinate ids mapped"

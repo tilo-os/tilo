@@ -79,7 +79,10 @@ mod tests {
         // `+`, so an OAuth `state` really does mean a space here.
         assert_eq!(
             parse_form_query("code=abc+def&state=x+y"),
-            vec![("code".into(), "abc def".into()), ("state".into(), "x y".into())]
+            vec![
+                ("code".into(), "abc def".into()),
+                ("state".into(), "x y".into())
+            ]
         );
     }
 

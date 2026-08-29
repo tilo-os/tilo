@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
-use ui::search::{fuzzy_score, SearchRegistry, SearchResult};
+use ui::search::{SearchRegistry, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{SearchField, SearchResultsView, Widget};
@@ -62,7 +62,11 @@ fn registry() -> SearchRegistry {
         &[
             ("Alice Ng", Some("alice@example.com"), "contact:alice"),
             ("Alan Turing", Some("Computing"), "contact:alan"),
-            ("Priya Natarajan", Some("priya@example.com"), "contact:priya"),
+            (
+                "Priya Natarajan",
+                Some("priya@example.com"),
+                "contact:priya",
+            ),
         ],
     );
     provider(
@@ -157,7 +161,8 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
 
 fn main() {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
+    let dir =
+        std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 

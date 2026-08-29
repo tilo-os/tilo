@@ -104,21 +104,19 @@ fn handle_tag(
         .unwrap_or("");
     let closing = tag.starts_with('/');
 
-    let flush = |blocks: &mut Vec<ContentBlock>,
-                 buf: &mut String,
-                 kind: &mut BlockKind,
-                 pre: bool| {
-        let text = if pre {
-            buf.trim_matches('\n').to_string()
-        } else {
-            collapse_ws(buf)
+    let flush =
+        |blocks: &mut Vec<ContentBlock>, buf: &mut String, kind: &mut BlockKind, pre: bool| {
+            let text = if pre {
+                buf.trim_matches('\n').to_string()
+            } else {
+                collapse_ws(buf)
+            };
+            if !text.is_empty() {
+                blocks.push(ContentBlock::new(*kind, text));
+            }
+            buf.clear();
+            *kind = BlockKind::Paragraph;
         };
-        if !text.is_empty() {
-            blocks.push(ContentBlock::new(*kind, text));
-        }
-        buf.clear();
-        *kind = BlockKind::Paragraph;
-    };
 
     match name {
         "p" | "div" | "section" | "article" => {
@@ -133,9 +131,7 @@ fn handle_tag(
             set_block(blocks, buf, kind, closing, BlockKind::Heading3, *in_pre)
         }
         "li" => set_block(blocks, buf, kind, closing, BlockKind::Bullet, *in_pre),
-        "blockquote" => {
-            set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre)
-        }
+        "blockquote" => set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre),
         "pre" => {
             if closing {
                 flush(blocks, buf, kind, true);

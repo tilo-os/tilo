@@ -21,8 +21,7 @@ use thiserror::Error;
 const DEFAULT_TIMEOUT_SECS: u64 = 8;
 
 pub fn api_base() -> String {
-    std::env::var("FLATHUB_API_BASE")
-        .unwrap_or_else(|_| "https://flathub.org/api/v2".to_string())
+    std::env::var("FLATHUB_API_BASE").unwrap_or_else(|_| "https://flathub.org/api/v2".to_string())
 }
 
 fn http_timeout() -> Duration {
@@ -169,8 +168,7 @@ pub fn decode_popular(text: &str) -> Result<Vec<PopularEntry>, FlathubError> {
         StringIds(Vec<String>),
         HitStrings { hits: Vec<String> },
     }
-    let wire: Wire =
-        serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
+    let wire: Wire = serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
     let out = match wire {
         Wire::Bare(v) => v,
         Wire::Hits { hits } => hits,

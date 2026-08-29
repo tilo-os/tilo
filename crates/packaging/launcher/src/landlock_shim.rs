@@ -65,7 +65,9 @@ pub enum ShimParseError {
 impl std::fmt::Display for ShimParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShimParseError::DanglingValue(flag) => write!(f, "flag `{flag}` expects a path argument"),
+            ShimParseError::DanglingValue(flag) => {
+                write!(f, "flag `{flag}` expects a path argument")
+            }
             ShimParseError::MissingSeparator => write!(f, "missing `--` separator"),
             ShimParseError::EmptyCommand => write!(f, "no command after `--`"),
         }
@@ -108,9 +110,11 @@ impl ShimArgs {
                         // would leave the app pinned by Landlock to nothing, unable to reach
                         // the relay at all.
                         _ => {
-                            parsed.net_gate_port = Some(value.parse().map_err(|_| {
-                                ShimParseError::DanglingValue(arg.clone())
-                            })?)
+                            parsed.net_gate_port = Some(
+                                value
+                                    .parse()
+                                    .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?,
+                            )
                         }
                     }
                     i += 1;
@@ -363,7 +367,10 @@ mod tests {
     #[test]
     fn missing_separator_is_error() {
         let args = vec!["--ro".into(), "/usr".into()];
-        assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::MissingSeparator));
+        assert_eq!(
+            ShimArgs::parse(&args),
+            Err(ShimParseError::MissingSeparator)
+        );
     }
 
     #[test]

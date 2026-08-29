@@ -78,8 +78,14 @@ mod tests {
     fn registers_video_and_channel_searchable_types() {
         let types = searchable_types();
         let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
-        assert!(ids.contains(&VIDEO_TYPE_ID), "video type registered: {ids:?}");
-        assert!(ids.contains(&CHANNEL_TYPE_ID), "channel type registered: {ids:?}");
+        assert!(
+            ids.contains(&VIDEO_TYPE_ID),
+            "video type registered: {ids:?}"
+        );
+        assert!(
+            ids.contains(&CHANNEL_TYPE_ID),
+            "channel type registered: {ids:?}"
+        );
         // Both carry a thumbnail, so an OS palette reserves image space for them.
         assert!(types.iter().all(|t| t.has_thumbnail));
     }

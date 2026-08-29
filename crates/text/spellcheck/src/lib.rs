@@ -221,8 +221,10 @@ mod tests {
     fn spans_flag_the_same_words_check_does() {
         let dict = builtin();
         let text = "The recieve date is 2026 for NASA at https://example.com/x and teh rest.";
-        let full: Vec<(usize, usize)> =
-            check(&dict, text).iter().map(|m| (m.start, m.end)).collect();
+        let full: Vec<(usize, usize)> = check(&dict, text)
+            .iter()
+            .map(|m| (m.start, m.end))
+            .collect();
         assert_eq!(spans(&dict, text), full);
         assert!(!full.is_empty(), "the fixture has to contain a misspelling");
         // Guards against both paths agreeing on the same wrong answer.
@@ -238,9 +240,15 @@ mod tests {
         let word = "rehearsal";
         for n in 1..=word.len() {
             let partial = &word[..n];
-            let full: Vec<(usize, usize)> =
-                check(&dict, partial).iter().map(|m| (m.start, m.end)).collect();
-            assert_eq!(spans(&dict, partial), full, "the two paths disagree on {partial:?}");
+            let full: Vec<(usize, usize)> = check(&dict, partial)
+                .iter()
+                .map(|m| (m.start, m.end))
+                .collect();
+            assert_eq!(
+                spans(&dict, partial),
+                full,
+                "the two paths disagree on {partial:?}"
+            );
         }
     }
 

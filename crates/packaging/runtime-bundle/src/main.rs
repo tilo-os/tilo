@@ -224,10 +224,7 @@ fn main() -> ExitCode {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &out,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
+                    let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600));
                 }
                 println!("wrote identity to {}", out.display());
                 println!("public-key: ed25519:{}", identity.public_key_hex());

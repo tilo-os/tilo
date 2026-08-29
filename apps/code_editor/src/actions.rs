@@ -172,8 +172,11 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
         } else {
             f.name.clone()
         };
-        project =
-            project.with_child(Resource::new(format!("code_editor.file:{}", f.node), "code_editor.file", label));
+        project = project.with_child(Resource::new(
+            format!("code_editor.file:{}", f.node),
+            "code_editor.file",
+            label,
+        ));
     }
 
     vec![project]
@@ -245,8 +248,14 @@ mod tests {
             project_name: "demo".into(),
             next_id: 42,
             open_files: vec![
-                OpenFileRef { node: 3, name: "main.rs".into() },
-                OpenFileRef { node: 5, name: "lib.rs".into() },
+                OpenFileRef {
+                    node: 3,
+                    name: "main.rs".into(),
+                },
+                OpenFileRef {
+                    node: 5,
+                    name: "lib.rs".into(),
+                },
             ],
         };
         let doc = AutoCommit::new();
@@ -292,7 +301,10 @@ mod tests {
             Some("hello"),
             "the action created the buffer"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
         state.undo(None, None).expect("an undo entry to pop");
@@ -313,15 +325,26 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = create_buffer_action(2, "fn main() {}\n");
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert_eq!(EditorDoc::read_buffer(&b, 2).as_deref(), Some("fn main() {}\n"));
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert_eq!(
+            EditorDoc::read_buffer(&b, 2).as_deref(),
+            Some("fn main() {}\n")
+        );
     }
 
     /// Single source of truth: the palette's "New file" spec encodes
@@ -336,11 +359,18 @@ mod tests {
         };
         let doc = AutoCommit::new();
         let resources = provide_resources(&ctx, &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-file").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-file")
+            .unwrap();
 
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&create_buffer_action(12, ""));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "new-file is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "new-file is one source of truth"
+        );
     }
 }

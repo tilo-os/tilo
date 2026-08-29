@@ -231,10 +231,7 @@ fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
         Some(qdoc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
         _ => None,
     };
-    if let Some(b) = images
-        .iter()
-        .find(|b| view.target_blocks.contains(&b.id))
-    {
+    if let Some(b) = images.iter().find(|b| view.target_blocks.contains(&b.id)) {
         return blob_of(b).map(|hash| Product::Content { hash });
     }
     match images.as_slice() {
@@ -476,9 +473,14 @@ impl Offer {
     pub fn summary(&self) -> String {
         let mut s = format!(
             "{} — on {} ({})",
-            self.descriptor.action_label, self.descriptor.resource_label, self.descriptor.resource_kind
+            self.descriptor.action_label,
+            self.descriptor.resource_label,
+            self.descriptor.resource_kind
         );
-        if let qos_actions::InputSpec::Text { prompt, collects, .. } = &self.descriptor.input {
+        if let qos_actions::InputSpec::Text {
+            prompt, collects, ..
+        } = &self.descriptor.input
+        {
             match collects {
                 qos_actions::Collects::Words => s.push_str(&format!("; takes text: {prompt}")),
                 // Said differently on purpose: a reader offered this
@@ -612,10 +614,7 @@ fn openable(
     // opened onto, asked through the same `product` an ordinary hand-off
     // between two steps goes through — so an open is offered content on
     // exactly the terms every other operation is.
-    let onto = if held
-        .iter()
-        .any(|(c, doc)| (c.product)(view, doc).is_some())
-    {
+    let onto = if held.iter().any(|(c, doc)| (c.product)(view, doc).is_some()) {
         qos_actions::InputSpec::Text {
             prompt: "The content to open it onto".to_string(),
             placeholder: String::new(),
@@ -800,7 +799,10 @@ pub fn in_words(offers: &[Offer], most: usize) -> String {
         None => String::new(),
     };
     if rest > 0 {
-        s.push_str(&format!(", among {rest} other thing{}", if rest == 1 { "" } else { "s" }));
+        s.push_str(&format!(
+            ", among {rest} other thing{}",
+            if rest == 1 { "" } else { "s" }
+        ));
     }
     s
 }
@@ -889,7 +891,9 @@ fn score(offer: &Offer, words: &[String]) -> usize {
         .filter(|w| {
             // The verb has to land on the operation. Matching only the
             // thing being acted on says which file, never what to do to it.
-            action.contains(w.as_str()) || resource.contains(w.as_str()) || kind.contains(w.as_str())
+            action.contains(w.as_str())
+                || resource.contains(w.as_str())
+                || kind.contains(w.as_str())
         })
         .count()
 }
@@ -1042,7 +1046,11 @@ mod tests {
         assert!(
             inserts,
             "the document exports {:?}, none of which inserts into it",
-            tree[0].actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            tree[0]
+                .actions
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1127,8 +1135,9 @@ mod tests {
             ),
         ];
 
-        let (chosen, argument) = from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
-            .expect("a quoted region tells the two crops apart");
+        let (chosen, argument) =
+            from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
+                .expect("a quoted region tells the two crops apart");
         assert_eq!(
             chosen.address().action,
             "crop",
@@ -1147,8 +1156,20 @@ mod tests {
         // instruction that supplies nothing, and that is still a genuine
         // question rather than a guess.
         let both_bare = vec![
-            offer("photos", "photos.image:1", "rotate-left", "Rotate left", qos_actions::InputSpec::None),
-            offer("photos", "photos.image:1", "rotate-right", "Rotate right", qos_actions::InputSpec::None),
+            offer(
+                "photos",
+                "photos.image:1",
+                "rotate-left",
+                "Rotate left",
+                qos_actions::InputSpec::None,
+            ),
+            offer(
+                "photos",
+                "photos.image:1",
+                "rotate-right",
+                "Rotate right",
+                qos_actions::InputSpec::None,
+            ),
         ];
         match from_verbs("rotate the photograph", &both_bare) {
             Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),

@@ -137,8 +137,8 @@ pub async fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
     use automerge::ROOT;
+    use automerge::transaction::Transactable;
 
     #[test]
     fn heads_wire_round_trips_through_changehash() {

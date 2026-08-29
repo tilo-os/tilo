@@ -710,7 +710,10 @@ mod tests {
         };
         let mut revealed = Revealed::new();
         let out = applications(&word_processor_open, &mut revealed);
-        assert!(out.contains("the word processor (word-processor) — open"), "{out}");
+        assert!(
+            out.contains("the word processor (word-processor) — open"),
+            "{out}"
+        );
         assert!(out.contains("the conversation (chat) — not open"), "{out}");
         assert!(out.contains("chat.app#open"), "{out}");
 
@@ -718,7 +721,10 @@ mod tests {
         // still listed, with no route — the shape a denied open takes.
         let mut revealed = Revealed::new();
         let bare = applications(&Catalogue::default(), &mut revealed);
-        assert!(bare.contains("and there is no opening it from here"), "{bare}");
+        assert!(
+            bare.contains("and there is no opening it from here"),
+            "{bare}"
+        );
         assert!(!bare.contains(".app#open"), "{bare}");
     }
 
@@ -740,10 +746,16 @@ mod tests {
             "why": "", "then": null
         });
         let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
-        assert!(refused.contains("no listing in this conversation returned"), "{refused}");
+        assert!(
+            refused.contains("no listing in this conversation returned"),
+            "{refused}"
+        );
 
         let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
-        assert!(listed.contains("files.entry:/home/q/harbour.png#rename"), "{listed}");
+        assert!(
+            listed.contains("files.entry:/home/q/harbour.png#rename"),
+            "{listed}"
+        );
         let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
         assert_eq!(answer.arguments, vec![Some("a.png".to_string())]);
     }
@@ -753,7 +765,11 @@ mod tests {
     #[test]
     fn a_kind_is_asked_about_across_the_room_and_not_within_one_app() {
         let mut revealed = Revealed::new();
-        let out = operations(&json!({"kind": "word_processor.document"}), &room(), &mut revealed);
+        let out = operations(
+            &json!({"kind": "word_processor.document"}),
+            &room(),
+            &mut revealed,
+        );
         assert!(out.contains("insert-table"), "{out}");
         assert!(!out.contains("harbour.png#rename"), "{out}");
     }
@@ -776,7 +792,10 @@ mod tests {
     /// one — the one thing a caller must never invent.
     #[test]
     fn an_operation_that_collects_content_is_not_asked_for_a_value() {
-        let out = describe(&json!({"operation": "word-processor.document#place-image"}), &room());
+        let out = describe(
+            &json!({"operation": "word-processor.document#place-image"}),
+            &room(),
+        );
         assert!(out.contains("content, not words"), "{out}");
         assert!(out.contains("Leave it null"), "{out}");
     }
@@ -804,7 +823,13 @@ mod tests {
         );
         for reply in [&hidden, &absent] {
             let lower = reply.to_lowercase();
-            for leak in ["permission", "denied", "allowed", "not for you", "capabilit"] {
+            for leak in [
+                "permission",
+                "denied",
+                "allowed",
+                "not for you",
+                "capabilit",
+            ] {
                 assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
             }
         }
@@ -835,7 +860,10 @@ mod tests {
             &room,
             &mut revealed,
         );
-        assert!(narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)), "{narrowed}");
+        assert!(
+            narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)),
+            "{narrowed}"
+        );
     }
 
     #[test]
@@ -898,7 +926,13 @@ mod tests {
             "why": "", "then": null
         });
         let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");
-        assert!(err.contains("no listing in this conversation returned"), "{err}");
-        assert!(err.contains("files.entry:/home/q/harbour.png#rename"), "{err}");
+        assert!(
+            err.contains("no listing in this conversation returned"),
+            "{err}"
+        );
+        assert!(
+            err.contains("files.entry:/home/q/harbour.png#rename"),
+            "{err}"
+        );
     }
 }

@@ -1,7 +1,7 @@
+use crate::permissions::UserId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
-use crate::permissions::UserId;
 
 pub mod collab;
 pub use collab::{CollaborationState, RemoteCursor};
@@ -384,12 +384,8 @@ impl State {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
-        self.undo.commit_action_authored(
-            &mut self.doc,
-            focused_node_idx,
-            metadata,
-            author,
-        )
+        self.undo
+            .commit_action_authored(&mut self.doc, focused_node_idx, metadata, author)
     }
 
     /// Inspect the most recently pushed undo entry without popping it.
@@ -487,12 +483,8 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.undo.undo_for_author(
-            &mut self.doc,
-            author,
-            current_focused_idx,
-            current_metadata,
-        )
+        self.undo
+            .undo_for_author(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
     /// Undo on behalf of `author`.
@@ -579,10 +571,7 @@ impl State {
     /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
-    pub fn load_incremental(
-        &mut self,
-        data: &[u8],
-    ) -> Result<usize, automerge::AutomergeError> {
+    pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let n = self.doc.load_incremental(data)?;
         // Keep the undo baseline aligned with the new, merged document state
         // so the *next* local action brackets against a complete picture.
@@ -647,78 +636,78 @@ pub fn write_patches(
 ) {
     let entry_after = index_anchor;
     let entry_before = insert_anchor;
-        // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
-        // so nested child patches target the new object.
-        let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
-        for patch in patches {
-            let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
-            match patch.action {
-                PatchAction::PutMap { key, value, .. } => match value.0 {
+    // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
+    // so nested child patches target the new object.
+    let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
+    for patch in patches {
+        let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
+        match patch.action {
+            PatchAction::PutMap { key, value, .. } => match value.0 {
+                Value::Scalar(s) => {
+                    let _ = doc.put(&target, key, s.into_owned());
+                }
+                Value::Object(ot) => {
+                    if let Ok(new_id) = doc.put_object(&target, key, ot) {
+                        remap.insert(value.1, new_id);
+                    }
+                }
+            },
+            PatchAction::PutSeq { index, value, .. } => {
+                // The element still exists post-action; anchor at `after`.
+                let li = live_index_at(doc, &target, index, entry_after);
+                match value.0 {
                     Value::Scalar(s) => {
-                        let _ = doc.put(&target, key, s.into_owned());
+                        let _ = doc.put(&target, li, s.into_owned());
                     }
                     Value::Object(ot) => {
-                        if let Ok(new_id) = doc.put_object(&target, key, ot) {
+                        if let Ok(new_id) = doc.put_object(&target, li, ot) {
                             remap.insert(value.1, new_id);
                         }
                     }
-                },
-                PatchAction::PutSeq { index, value, .. } => {
-                    // The element still exists post-action; anchor at `after`.
-                    let li = live_index_at(doc, &target, index, entry_after);
-                    match value.0 {
+                }
+            }
+            PatchAction::Insert { index, values } => {
+                // Re-inserting elements the local action deleted; the
+                // boundary is expressed in `before` coordinates.
+                let start = live_insert_boundary(doc, &target, index, entry_before);
+                for (li, (val, old_id, _)) in (start..).zip(&values) {
+                    match val {
                         Value::Scalar(s) => {
-                            let _ = doc.put(&target, li, s.into_owned());
+                            let _ = doc.insert(&target, li, s.clone().into_owned());
                         }
                         Value::Object(ot) => {
-                            if let Ok(new_id) = doc.put_object(&target, li, ot) {
-                                remap.insert(value.1, new_id);
+                            if let Ok(new_id) = doc.insert_object(&target, li, *ot) {
+                                remap.insert(old_id.clone(), new_id);
                             }
                         }
                     }
                 }
-                PatchAction::Insert { index, values } => {
-                    // Re-inserting elements the local action deleted; the
-                    // boundary is expressed in `before` coordinates.
-                    let start = live_insert_boundary(doc, &target, index, entry_before);
-                    for (li, (val, old_id, _)) in (start..).zip(&values) {
-                        match val {
-                            Value::Scalar(s) => {
-                                let _ = doc.insert(&target, li, s.clone().into_owned());
-                            }
-                            Value::Object(ot) => {
-                                if let Ok(new_id) = doc.insert_object(&target, li, *ot) {
-                                    remap.insert(old_id.clone(), new_id);
-                                }
-                            }
-                        }
-                    }
-                }
-                PatchAction::SpliceText { index, value, .. } => {
-                    // Re-inserting text the local action deleted.
-                    let li = live_insert_boundary(doc, &target, index, entry_before);
-                    let _ = doc.splice_text(&target, li, 0, &value.make_string());
-                }
-                PatchAction::Increment { prop, value } => {
-                    let _ = doc.increment(&target, prop, value);
-                }
-                PatchAction::DeleteMap { key } => {
-                    let _ = doc.delete(&target, key);
-                }
-                PatchAction::DeleteSeq { index, length } => {
-                    // Removing elements the local action inserted; they exist
-                    // post-action, so each position is anchored at `after`.
-                    for _ in 0..length {
-                        let li = live_index_at(doc, &target, index, entry_after);
-                        let _ = doc.delete(&target, li);
-                    }
-                }
-                // A conflict marker carries no content to revert, and marks
-                // (text formatting spans) are not produced by the editor's
-                // undo-tracked actions; both are safely ignored.
-                PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
             }
+            PatchAction::SpliceText { index, value, .. } => {
+                // Re-inserting text the local action deleted.
+                let li = live_insert_boundary(doc, &target, index, entry_before);
+                let _ = doc.splice_text(&target, li, 0, &value.make_string());
+            }
+            PatchAction::Increment { prop, value } => {
+                let _ = doc.increment(&target, prop, value);
+            }
+            PatchAction::DeleteMap { key } => {
+                let _ = doc.delete(&target, key);
+            }
+            PatchAction::DeleteSeq { index, length } => {
+                // Removing elements the local action inserted; they exist
+                // post-action, so each position is anchored at `after`.
+                for _ in 0..length {
+                    let li = live_index_at(doc, &target, index, entry_after);
+                    let _ = doc.delete(&target, li);
+                }
+            }
+            // A conflict marker carries no content to revert, and marks
+            // (text formatting spans) are not produced by the editor's
+            // undo-tracked actions; both are safely ignored.
+            PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
         }
+    }
 }
 
 /// Translate a sequence index expressed as-of `anchor_heads` into its position
@@ -762,7 +751,7 @@ fn live_insert_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{transaction::Transactable, ReadDoc, ScalarValue};
+    use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
 
     /// A single commit_action → undo → redo round-trip must preserve the
     /// focus index and widget metadata captured on the stacks — that's
@@ -821,10 +810,7 @@ mod tests {
     #[test]
     fn undo_preserves_concurrent_remote_edit() {
         let mut state = State::new();
-        let text = state
-            .doc
-            .put_object(&ROOT, "body", ObjType::Text)
-            .unwrap();
+        let text = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         state.doc.splice_text(&text, 0, 0, "Hello").unwrap();
         state.commit_action(None, None);
 
@@ -843,7 +829,11 @@ mod tests {
         // Merge the remote delta into the live doc the way collab sync does.
         let delta = remote.save_after(&before_local);
         state.load_incremental(&delta).unwrap();
-        assert_eq!(text_body(&state, &text), "XHello World", "precondition merge");
+        assert_eq!(
+            text_body(&state, &text),
+            "XHello World",
+            "precondition merge"
+        );
 
         // UNDO the local action.
         state.undo(None, None).expect("undo pops the local action");
@@ -890,12 +880,27 @@ mod tests {
     #[test]
     fn single_user_undo_redo_roundtrip() {
         let mut state = State::new();
-        state.doc.put(&ROOT, "k", ScalarValue::Str("a".into())).unwrap();
+        state
+            .doc
+            .put(&ROOT, "k", ScalarValue::Str("a".into()))
+            .unwrap();
         state.commit_action(None, None);
-        state.doc.put(&ROOT, "k", ScalarValue::Str("b".into())).unwrap();
+        state
+            .doc
+            .put(&ROOT, "k", ScalarValue::Str("b".into()))
+            .unwrap();
         state.commit_action(None, None);
 
-        let val = |s: &State| s.doc.get(&ROOT, "k").unwrap().unwrap().0.to_str().unwrap().to_string();
+        let val = |s: &State| {
+            s.doc
+                .get(&ROOT, "k")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
         assert_eq!(val(&state), "b");
         state.undo(None, None).unwrap();
         assert_eq!(val(&state), "a", "undo reverts to pre-action value");
@@ -971,7 +976,11 @@ mod tests {
         let popped = state
             .undo_as(Some(&alice), None, None)
             .expect("alice has an action to undo");
-        assert_eq!(popped.author, Some(alice.clone()), "alice undid her own action");
+        assert_eq!(
+            popped.author,
+            Some(alice.clone()),
+            "alice undid her own action"
+        );
         assert!(
             state.doc.get(&ROOT, "a").unwrap().is_none(),
             "alice's own change is reverted"
@@ -992,7 +1001,9 @@ mod tests {
         state.doc.put(&ROOT, "b", 1).unwrap();
         state.commit_action(None, None);
 
-        state.undo_as(None, None, None).expect("undo pops the newest");
+        state
+            .undo_as(None, None, None)
+            .expect("undo pops the newest");
         assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
         assert!(state.doc.get(&ROOT, "a").unwrap().is_some());
     }
@@ -1026,7 +1037,9 @@ mod tests {
         );
 
         // Bob's own redo works.
-        state.redo_as(Some(&bob), None, None).expect("bob redoes his own");
+        state
+            .redo_as(Some(&bob), None, None)
+            .expect("bob redoes his own");
         assert!(state.doc.get(&ROOT, "b").unwrap().is_some());
     }
 

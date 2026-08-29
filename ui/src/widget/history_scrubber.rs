@@ -466,9 +466,7 @@ impl HistoryScrubber {
             "Preview",
         )];
         if !self.groups.is_empty() {
-            let named = self
-                .current_group()
-                .is_some_and(|g| g.label.is_some());
+            let named = self.current_group().is_some_and(|g| g.label.is_some());
             left.push((
                 ScrubButton::Name,
                 if narrow { 78.0 } else { 132.0 },
@@ -653,10 +651,7 @@ impl HistoryScrubber {
                 let Some(last) = self.entries.last() else {
                     return false;
                 };
-                let action = VersionAction::Open {
-                    at: last.id,
-                    label,
-                };
+                let action = VersionAction::Open { at: last.id, label };
                 if let Some(cb) = self.on_version.as_mut() {
                     cb(&action);
                 }
@@ -1061,12 +1056,7 @@ impl Widget for HistoryScrubber {
                 Some(head) => {
                     let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
                     let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
-                    let head = fit(
-                        text_renderer,
-                        &head,
-                        head_size,
-                        budget,
-                    );
+                    let head = fit(text_renderer, &head, head_size, budget);
                     let (hw, _) = text_renderer.measure(&head, head_size, None);
                     text_renderer.draw_text(
                         scene,
@@ -1080,12 +1070,7 @@ impl Widget for HistoryScrubber {
                             )),
                         None,
                     );
-                    let detail = fit(
-                        text_renderer,
-                        &detail,
-                        sub_size,
-                        budget,
-                    );
+                    let detail = fit(text_renderer, &detail, sub_size, budget);
                     let (dw, _) = text_renderer.measure(&detail, sub_size, None);
                     text_renderer.draw_text(
                         scene,
@@ -1102,8 +1087,7 @@ impl Widget for HistoryScrubber {
                 }
                 None => {
                     let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-                    let drawn =
-                        fit(text_renderer, &detail, size, budget);
+                    let drawn = fit(text_renderer, &detail, size, budget);
                     let (lw, lh) = text_renderer.measure(&drawn, size, None);
                     text_renderer.draw_text(
                         scene,
@@ -1124,9 +1108,7 @@ impl Widget for HistoryScrubber {
         // A name being typed replaces the row it belongs to, so the field is
         // where the button was.
         let layout = self.button_layout();
-        let redacted = self
-            .current_entry()
-            .is_some_and(|e| e.redaction.is_some());
+        let redacted = self.current_entry().is_some_and(|e| e.redaction.is_some());
         if let Some((_, field)) = self.naming.as_ref() {
             let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
             let box_rect = self.name_field_rect();
@@ -1410,12 +1392,12 @@ impl Widget for HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::history::HistoryAuthor;
+    use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
-    use collab_types::{ArtifactKind, OpClass};
     use winit::event::Modifiers;
-    use crate::widget::history::HistoryAuthor;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1513,7 +1495,12 @@ mod tests {
 
         let target_x = s.tick_x(5);
         dispatch(&mut s, &cursor_moved(target_x, handle_y));
-        assert_eq!(s.current_tick(), 5, "drag must advance tick (got {})", s.current_tick());
+        assert_eq!(
+            s.current_tick(),
+            5,
+            "drag must advance tick (got {})",
+            s.current_tick()
+        );
 
         dispatch(&mut s, &mouse_release());
         assert!(!s.is_dragging, "release must end drag");
@@ -1593,9 +1580,17 @@ mod tests {
         dispatch(&mut s, &cursor_moved(start_x, track.center().y));
         dispatch(&mut s, &mouse_press());
         dispatch(&mut s, &cursor_moved(10_000.0, track.center().y));
-        assert_eq!(s.current_tick(), 10, "drag past right must saturate at last tick");
+        assert_eq!(
+            s.current_tick(),
+            10,
+            "drag past right must saturate at last tick"
+        );
         dispatch(&mut s, &cursor_moved(-10_000.0, track.center().y));
-        assert_eq!(s.current_tick(), 0, "drag past left must saturate at tick 0");
+        assert_eq!(
+            s.current_tick(),
+            0,
+            "drag past left must saturate at tick 0"
+        );
     }
 }
 
@@ -1876,7 +1871,12 @@ mod version_tests {
         click(&mut s, btn.center());
         assert!(s.wants_keyboard());
         type_str(&mut s, "Second pass");
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+        );
 
         let reqs = captured.borrow();
         assert_eq!(reqs.len(), 1);
@@ -1907,7 +1907,12 @@ mod version_tests {
             "a rename starts from the current name"
         );
         type_str(&mut s, "!");
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+        );
         let reqs = captured.borrow();
         assert_eq!(reqs[0].label, "Intro rewrite!");
         assert_eq!(reqs[0].record_id.as_deref(), Some("qos:group:10"));
@@ -1925,7 +1930,12 @@ mod version_tests {
         click(&mut s, btn.center());
         assert!(s.wants_keyboard(), "it asks what you are about to do");
         type_str(&mut s, "Rework the intro");
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+        );
         {
             let acts = captured.borrow();
             assert_eq!(acts.len(), 1);
@@ -1978,12 +1988,22 @@ mod version_tests {
         s.set_current_tick(7); // an unnamed run: nothing to remove
         let at = s.name_button_rect().center();
         click(&mut s, at);
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+        );
         assert_eq!(*names.borrow(), 0, "nothing to write and nothing to remove");
 
         let at = s.version_button_rect().center();
         click(&mut s, at);
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+        );
         assert_eq!(*versions.borrow(), 0, "an unnamed version is not a version");
     }
 
@@ -2113,7 +2133,10 @@ mod version_tests {
     fn a_version_nobody_named_still_says_what_it_is() {
         let mut s = with_versions(900.0);
         let unnamed = segment_interior(&s, 1); // the 5..=9 run, which nobody named
-        assert!(unnamed.width() > 60.0, "the fixture's block has room: {unnamed:?}");
+        assert!(
+            unnamed.width() > 60.0,
+            "the fixture's block has room: {unnamed:?}"
+        );
         assert!(
             ink_in(&mut s, unnamed) > 0,
             "the unnamed block is blank grey"
@@ -2144,7 +2167,12 @@ mod version_tests {
         type_str(&mut s, "half typed");
         assert_eq!(s.naming_buffer(), Some("Intro rewritehalf typed"));
 
-        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)));
+        dispatch(
+            &mut s,
+            &key(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Escape,
+            )),
+        );
         assert!(!s.wants_keyboard(), "the field is gone");
         assert_eq!(*names.borrow(), 0, "and nothing was written");
         assert_eq!(
@@ -2178,7 +2206,10 @@ mod version_tests {
         ] {
             if btn.area() > 0.0 && field.contains(btn.center()) {
                 click(&mut s, btn.center());
-                assert!(s.wants_keyboard(), "the field was dismissed by a click inside it");
+                assert!(
+                    s.wants_keyboard(),
+                    "the field was dismissed by a click inside it"
+                );
                 assert_eq!(
                     s.naming_buffer(),
                     Some("Intro rewriteIntro"),
@@ -2221,11 +2252,11 @@ mod version_tests {
     fn the_live_state_dot_does_not_hide_under_the_band_or_the_popover() {
         let s = with_versions(900.0);
         let dot_y = s.live_state_dot_center().y;
-        assert!(dot_y > s.band_rect().y1, "the dot is inside the segment band");
         assert!(
-            dot_y > s.popover_rect().y1,
-            "the dot is behind the popover"
+            dot_y > s.band_rect().y1,
+            "the dot is inside the segment band"
         );
+        assert!(dot_y > s.popover_rect().y1, "the dot is behind the popover");
         assert!(
             dot_y < s.restore_button_rect().y0,
             "the dot collides with the button row"

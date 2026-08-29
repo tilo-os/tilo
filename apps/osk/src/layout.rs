@@ -249,10 +249,7 @@ impl KeyboardLayout {
     /// Enter. Suited to plain number entry where a sign and decimals are
     /// reasonable (quantities, ages, amounts).
     pub fn numeric() -> Self {
-        Self::digit_pad(
-            "numeric",
-            vec![Key::ch("-"), Key::ch("0"), Key::ch(".")],
-        )
+        Self::digit_pad("numeric", vec![Key::ch("-"), Key::ch("0"), Key::ch(".")])
     }
 
     /// Like [`numeric`](Self::numeric) but tuned for decimal entry: the bottom
@@ -287,7 +284,14 @@ impl KeyboardLayout {
     /// has no `.`, `-`, `*`, or `#` — a secret numeric code is just digits, and
     /// extra symbols would only invite mistakes.
     pub fn pin() -> Self {
-        Self::digit_pad("pin", vec![Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete), Key::ch("0"), Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft)])
+        Self::digit_pad(
+            "pin",
+            vec![
+                Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete),
+                Key::ch("0"),
+                Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft),
+            ],
+        )
     }
 
     /// Build a numeric pad: three rows of `1-9`, a custom bottom row, and a
@@ -582,9 +586,22 @@ mod tests {
         let func: Vec<_> = rects.iter().filter(|(id, _)| id.row == 3).collect();
         let space_id = KeyId::new(3, 2);
         let comma_id = KeyId::new(3, 1);
-        let space_w = func.iter().find(|(id, _)| *id == space_id).unwrap().1.width();
-        let comma_w = func.iter().find(|(id, _)| *id == comma_id).unwrap().1.width();
-        assert!((space_w / comma_w - 5.0).abs() < 1e-3, "space ≈ 5× a unit key");
+        let space_w = func
+            .iter()
+            .find(|(id, _)| *id == space_id)
+            .unwrap()
+            .1
+            .width();
+        let comma_w = func
+            .iter()
+            .find(|(id, _)| *id == comma_id)
+            .unwrap()
+            .1
+            .width();
+        assert!(
+            (space_w / comma_w - 5.0).abs() < 1e-3,
+            "space ≈ 5× a unit key"
+        );
     }
 
     #[test]
@@ -594,7 +611,10 @@ mod tests {
         let wide = key_rects(&l, Rect::new(0.0, 0.0, 720.0, 300.0), ShiftState::Off);
         let nk = narrow[0].1.width();
         let wk = wide[0].1.width();
-        assert!((wk / nk - 2.0).abs() < 1e-6, "2× width → 2× key width (phone→desktop)");
+        assert!(
+            (wk / nk - 2.0).abs() < 1e-6,
+            "2× width → 2× key width (phone→desktop)"
+        );
     }
 
     #[test]
@@ -604,14 +624,20 @@ mod tests {
         assert_eq!(k.display_label(ShiftState::Shift), "A");
         assert_eq!(k.display_label(ShiftState::CapsLock), "A");
         assert_eq!(k.emit_action(ShiftState::Off), KeyAction::Char("a".into()));
-        assert_eq!(k.emit_action(ShiftState::Shift), KeyAction::Char("A".into()));
+        assert_eq!(
+            k.emit_action(ShiftState::Shift),
+            KeyAction::Char("A".into())
+        );
     }
 
     #[test]
     fn shift_does_not_transform_non_letters() {
         let k = Key::ch(",");
         assert_eq!(k.display_label(ShiftState::Shift), ",");
-        assert_eq!(k.emit_action(ShiftState::Shift), KeyAction::Char(",".into()));
+        assert_eq!(
+            k.emit_action(ShiftState::Shift),
+            KeyAction::Char(",".into())
+        );
         let space = Key::action("space", KeyAction::Space, 5.0);
         assert_eq!(space.emit_action(ShiftState::Shift), KeyAction::Space);
     }

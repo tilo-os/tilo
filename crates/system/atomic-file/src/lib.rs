@@ -82,7 +82,11 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
     // Make the rename itself durable. Failure here isn't fatal (data is already fsync'd, entry
     // visible), and some filesystems refuse to open a directory for this, so it's best-effort.
     if let Some(dir) = path.parent() {
-        let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
         if let Ok(d) = File::open(dir) {
             let _ = d.sync_all();
         }
@@ -159,7 +163,8 @@ mod tests {
     fn two_processes_would_not_share_a_temp_path() {
         let a = temp_path(Path::new("/x/doc"));
         assert!(
-            a.to_string_lossy().contains(&std::process::id().to_string()),
+            a.to_string_lossy()
+                .contains(&std::process::id().to_string()),
             "temp path must be process-scoped: {a:?}"
         );
     }

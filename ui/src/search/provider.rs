@@ -179,7 +179,10 @@ mod tests {
         // scattered through "Critical Analysis Log".
         let prefix = fuzzy_score("cal", "Calculator").unwrap();
         let scattered = fuzzy_score("cal", "Critical Analysis Log").unwrap();
-        assert!(prefix > scattered, "prefix {prefix} should beat scattered {scattered}");
+        assert!(
+            prefix > scattered,
+            "prefix {prefix} should beat scattered {scattered}"
+        );
     }
 
     #[test]
@@ -187,14 +190,20 @@ mod tests {
         // Matching the start of the second word ("Ng") should score positively
         // — a common case for "last name" queries over "First Last".
         let boundary = fuzzy_score("ng", "Alice Ng").unwrap();
-        assert!(boundary > 0, "word-boundary match should be positive, got {boundary}");
+        assert!(
+            boundary > 0,
+            "word-boundary match should be positive, got {boundary}"
+        );
     }
 
     #[test]
     fn contiguous_beats_gappy() {
         let contiguous = fuzzy_score("abc", "abcdef").unwrap();
         let gappy = fuzzy_score("abc", "a_b_c_def").unwrap();
-        assert!(contiguous > gappy, "contiguous {contiguous} should beat gappy {gappy}");
+        assert!(
+            contiguous > gappy,
+            "contiguous {contiguous} should beat gappy {gappy}"
+        );
     }
 
     #[test]

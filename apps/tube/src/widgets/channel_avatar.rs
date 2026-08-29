@@ -28,11 +28,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
-use ui::ImageStore;
 
 pub struct ChannelAvatar {
     /// Background loader/cache; `None` on the hermetic offline / `--shots` path
@@ -72,7 +72,13 @@ impl ChannelAvatar {
         self
     }
 
-    fn paint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
@@ -91,13 +97,27 @@ impl ChannelAvatar {
             let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
             let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
             let brush = ImageBrush::new(img.clone());
-            scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &self.rect);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                &self.rect,
+            );
             scene.pop_layer();
         } else {
             // Deterministic initials chip — identical colour + glyphs to
             // `ui::Avatar`, so a photo dropping in is the only visible change.
             let color = Avatar::color_for_initials(&self.initials, theme);
-            Avatar::draw_at(scene, transform, self.rect, &self.initials, color, theme, text_renderer);
+            Avatar::draw_at(
+                scene,
+                transform,
+                self.rect,
+                &self.initials,
+                color,
+                theme,
+                text_renderer,
+            );
         }
     }
 }
@@ -253,7 +273,10 @@ mod tests {
         let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
         let tags = draw_tags(&mut av);
         assert!(!tags.contains(&DrawTag::IMAGE), "no image → initials only");
-        assert!(tags.contains(&DrawTag::COLOR), "initials chip fills a circle");
+        assert!(
+            tags.contains(&DrawTag::COLOR),
+            "initials chip fills a circle"
+        );
     }
 
     /// A culled (never-drawn) avatar with a real rect reports it is NOT layout
@@ -262,7 +285,10 @@ mod tests {
     #[test]
     fn laid_out_but_never_drawn_avatar_is_not_layout_dirty() {
         let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
-        assert!(av.is_layout_dirty(), "a fresh avatar (rect ZERO) is layout-dirty");
+        assert!(
+            av.is_layout_dirty(),
+            "a fresh avatar (rect ZERO) is layout-dirty"
+        );
         // Give it a real rect (as `apply_layout` would) but never draw it.
         av.rect = Rect::new(0.0, 5000.0, 40.0, 5040.0);
         assert!(

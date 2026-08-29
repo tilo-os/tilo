@@ -367,7 +367,10 @@ impl Session {
     /// dispatch, once its own contract recognises it.
     fn absorb_peer(&mut self, data: &[u8]) -> Result<bool> {
         let Some(contract) = crate::apply::attribute(data) else {
-            tracing::debug!(bytes = data.len(), "ignored a peer's state: no app here claims it");
+            tracing::debug!(
+                bytes = data.len(),
+                "ignored a peer's state: no app here claims it"
+            );
             return Ok(false);
         };
         if let Some(peer) = self.peers.get_mut(contract.namespace) {
@@ -451,7 +454,11 @@ impl Session {
         let namespace = surface::app_of(&address.resource).to_string();
         let view = self.view(None);
         let registry = surface::registry();
-        let held = if self.editor.as_ref().is_some_and(|e| e.contract().namespace == namespace) {
+        let held = if self
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.contract().namespace == namespace)
+        {
             self.editor.as_mut()
         } else {
             self.peers.get_mut(namespace.as_str())
@@ -461,7 +468,8 @@ impl Session {
         };
         match ed.invoke(&view, &address, argument, &registry) {
             Ok(Some(delta)) => {
-                self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
+                self.link
+                    .send(&CollabRequest::SyncIncremental { data: delta })?;
                 tracing::info!(%id, "performed a discovered operation");
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(()))
@@ -492,8 +500,14 @@ impl Session {
         if self.handled.contains(&ins_id) {
             return Ok(false);
         }
-        if !Self::settled(self.watching.get(&ins_id), &blocks[at].text, Instant::now(), self.cfg.settle) {
-            self.watching.insert(ins_id, (blocks[at].text.clone(), Instant::now()));
+        if !Self::settled(
+            self.watching.get(&ins_id),
+            &blocks[at].text,
+            Instant::now(),
+            self.cfg.settle,
+        ) {
+            self.watching
+                .insert(ins_id, (blocks[at].text.clone(), Instant::now()));
             return Ok(false);
         }
         self.watching.remove(&ins_id);
@@ -513,7 +527,12 @@ impl Session {
     /// clock as an argument. `watched` is `None` the first time this text
     /// is seen at all, which is never settled: there is nothing yet to
     /// compare it against.
-    fn settled(watched: Option<&(String, Instant)>, text: &str, now: Instant, settle: Duration) -> bool {
+    fn settled(
+        watched: Option<&(String, Instant)>,
+        text: &str,
+        now: Instant,
+        settle: Duration,
+    ) -> bool {
         if settle.is_zero() {
             return true;
         }
@@ -585,10 +604,14 @@ impl Session {
         let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
         if let Some(what) = plan.unanswered() {
             tracing::warn!(%what, steps = plan.len(), "refused a sequence whole; nothing was touched");
-            self.splice_reply(&blocks, ins_id, &format!(
-                "{}: I can't \"{what}\", so I haven't done any of it.",
-                self.cfg.name
-            ))?;
+            self.splice_reply(
+                &blocks,
+                ins_id,
+                &format!(
+                    "{}: I can't \"{what}\", so I haven't done any of it.",
+                    self.cfg.name
+                ),
+            )?;
             return Ok(true);
         }
         for step in &plan.steps {
@@ -621,8 +644,9 @@ impl Session {
                                 true
                             }
                             Err(why) => {
-                                let blocks =
-                                    plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
+                                let blocks = plan::blocks(
+                                    &self.editor.as_ref().context("no document")?.snapshot()?,
+                                );
                                 self.splice_reply(
                                     &blocks,
                                     ins_id,
@@ -634,7 +658,11 @@ impl Session {
                     }
                 }
                 Instruction::Unknown(what) => {
-                    self.splice_reply(&blocks, ins_id, &format!("{}: I can't \"{what}\".", self.cfg.name))?;
+                    self.splice_reply(
+                        &blocks,
+                        ins_id,
+                        &format!("{}: I can't \"{what}\".", self.cfg.name),
+                    )?;
                     false
                 }
             };
@@ -662,7 +690,10 @@ impl Session {
             .find(|b| b.id == ins_id)
             .map(|b| b.text.chars().count())
             .unwrap_or(0);
-        self.edit(ins_id, wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply))
+        self.edit(
+            ins_id,
+            wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply),
+        )
     }
 
     /// Bullets above the instruction become a table. Returns whether it did
@@ -671,7 +702,10 @@ impl Session {
     fn make_table(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
         let bullets = plan::bullets_above(blocks, at);
         if bullets.is_empty() {
-            let reply = format!("{}: I looked for bullets above this line and found none.", self.cfg.name);
+            let reply = format!(
+                "{}: I looked for bullets above this line and found none.",
+                self.cfg.name
+            );
             self.splice_reply(blocks, &blocks[at].id, &reply)?;
             return Ok(false);
         }
@@ -681,7 +715,10 @@ impl Session {
         let last_bullet = blocks[*bullets.last().expect("non-empty")].id.clone();
         let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
 
-        self.edit(&last_bullet, wp::insert_table_action(&last_bullet, rows.len(), cols))?;
+        self.edit(
+            &last_bullet,
+            wp::insert_table_action(&last_bullet, rows.len(), cols),
+        )?;
 
         // The table's cells were minted inside the action; read them back.
         let fresh = plan::blocks(&self.editor.as_ref().expect("editor").snapshot()?);
@@ -699,7 +736,10 @@ impl Session {
             if text.is_empty() {
                 continue;
             }
-            self.edit(&cell_id, wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text))?;
+            self.edit(
+                &cell_id,
+                wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
+            )?;
         }
         let gone: Vec<String> = bullets.iter().map(|&i| blocks[i].id.clone()).collect();
         self.edit(&last_bullet, wp::remove_blocks_action(gone))?;
@@ -711,7 +751,10 @@ impl Session {
     /// reply saying so was written in place of doing anything.
     fn caption_image(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
         let Some(img) = plan::first_image(blocks) else {
-            let reply = format!("{}: there is no image in this document to caption.", self.cfg.name);
+            let reply = format!(
+                "{}: there is no image in this document to caption.",
+                self.cfg.name
+            );
             self.splice_reply(blocks, &blocks[at].id, &reply)?;
             return Ok(false);
         };
@@ -742,10 +785,7 @@ impl Session {
                 wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
             )?;
         }
-        tracing::info!(
-            sections = found.sections.len(),
-            "made the draft a document"
-        );
+        tracing::info!(sections = found.sections.len(), "made the draft a document");
         Ok(())
     }
 
@@ -756,7 +796,12 @@ impl Session {
             .editor
             .as_ref()
             .and_then(|ed| ed.snapshot().ok())
-            .and_then(|s| s.blocks.iter().find(|b| b.id == focus).map(|b| b.text.len()))
+            .and_then(|s| {
+                s.blocks
+                    .iter()
+                    .find(|b| b.id == focus)
+                    .map(|b| b.text.len())
+            })
             .unwrap_or(0);
         self.link.send(&CollabRequest::Presence {
             key: block_key(focus),
@@ -780,8 +825,12 @@ impl Session {
 
 fn describe(action: &WordProcessorAction) -> String {
     match action {
-        WordProcessorAction::SpliceText { ins, del, .. } => format!("splice text (+{} -{del})", ins.chars().count()),
-        WordProcessorAction::InsertTable { rows, cols, .. } => format!("insert table {rows}x{cols}"),
+        WordProcessorAction::SpliceText { ins, del, .. } => {
+            format!("splice text (+{} -{del})", ins.chars().count())
+        }
+        WordProcessorAction::InsertTable { rows, cols, .. } => {
+            format!("insert table {rows}x{cols}")
+        }
         WordProcessorAction::InsertParagraph { .. } => "insert paragraph".to_string(),
         WordProcessorAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
         WordProcessorAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
@@ -808,14 +857,24 @@ mod tests {
     #[test]
     fn the_first_sight_of_a_line_is_never_settled() {
         let now = Instant::now();
-        assert!(!Session::settled(None, "Scribe: table", now, Duration::from_millis(500)));
+        assert!(!Session::settled(
+            None,
+            "Scribe: table",
+            now,
+            Duration::from_millis(500)
+        ));
     }
 
     #[test]
     fn a_line_that_changed_since_it_was_last_seen_is_not_settled() {
         let now = Instant::now();
         let watched = ("Scribe: tab".to_string(), now);
-        assert!(!Session::settled(Some(&watched), "Scribe: table", now, Duration::from_millis(500)));
+        assert!(!Session::settled(
+            Some(&watched),
+            "Scribe: table",
+            now,
+            Duration::from_millis(500)
+        ));
     }
 
     #[test]
@@ -824,7 +883,12 @@ mod tests {
         let seen = Instant::now();
         let watched = ("Scribe: table".to_string(), seen);
         assert!(
-            !Session::settled(Some(&watched), "Scribe: table", seen + Duration::from_millis(499), settle),
+            !Session::settled(
+                Some(&watched),
+                "Scribe: table",
+                seen + Duration::from_millis(499),
+                settle
+            ),
             "one millisecond short of the wait must not settle"
         );
         assert!(Session::settled(
