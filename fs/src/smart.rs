@@ -1,9 +1,7 @@
 //! Heuristic prefetching hooks.
 //!
-//! These are intentionally light stubs: the read path already hydrates on
-//! demand, and aggressive prefetch is a follow-up. They exist so the FUSE layer
-//! has a place to signal access patterns (open / readdir) that a future policy
-//! can turn into background `Hydrator` fetches.
+//! Intentionally light stubs: the read path already hydrates on demand, and
+//! aggressive prefetch is a follow-up. They give the FUSE layer a place to signal access patterns a future policy can act on.
 
 use std::sync::{Arc, Mutex};
 

@@ -1,9 +1,9 @@
-//! Real-path office round-trip, version-diff, security, and performance tests
-//! over **genuine** `.odt`/`.docx` fixtures (see `tests/fixtures/`, complete
-//! ODF/OOXML packages that LibreOffice/Word open normally). Nothing here is
-//! synthetic-minimal: the office bytes are parsed into the `qdoc` CRDT model,
-//! edited as CRDT operations, serialized back to the same format, and reopened —
-//! proving the model is the source of truth, not an opaque blob.
+//! Real-path office round-trip, version-diff, security, and performance
+//! tests over **genuine** `.odt`/`.docx` fixtures (complete ODF/OOXML
+//! packages LibreOffice/Word open normally). Office bytes are parsed
+//! into the `qdoc` CRDT model, edited as CRDT operations, serialized
+//! back, and reopened — proving the model is the source of truth, not
+//! an opaque blob.
 
 use qdoc::diff::{diff_snapshots, BlockOp, RunOp};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
@@ -22,8 +22,9 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     d
 }
 
-/// The characters a mark of `name` covers in a block (its rendered substring),
-/// so tests can assert *what* is bold/italic without pinning exact offsets.
+/// The characters a mark of `name` covers in a block (its rendered
+/// substring), so tests can assert *what* is bold/italic without
+/// pinning exact offsets.
 fn covered(block: &BlockView, name: &str) -> Vec<String> {
     let chars: Vec<char> = block.text.chars().collect();
     block
@@ -42,8 +43,9 @@ fn texts(blocks: &[&BlockView]) -> Vec<String> {
     blocks.iter().map(|b| b.text.clone()).collect()
 }
 
-/// The invariant structure both fixtures share: an H1, a paragraph with a bold
-/// and an italic run, two bullet items, a 2x2 table, and title/author metadata.
+/// The invariant structure both fixtures share: an H1, a paragraph with
+/// a bold and an italic run, two bullet items, a 2x2 table, and
+/// title/author metadata.
 fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
     let headings = kinds(snap, "heading");
     assert!(
@@ -86,11 +88,11 @@ fn docx_parses_real_file_into_crdt_model() {
 
 // ---- 2. edit as a CRDT op, serialize, and reopen ---------------------------
 
-/// Apply two edits as real CRDT operations (a text splice into the heading and a
-/// newly inserted paragraph), export to `format`, reopen, and prove both edits +
-/// the original structure survive. Also proves the edits are recorded as
-/// replayable CRDT change history (the timeline grows, and an intermediate
-/// version shows the first edit but not the second).
+/// Apply two edits as real CRDT operations (a text splice into the
+/// heading, a newly inserted paragraph), export to `format`, reopen,
+/// and prove both edits + the original structure survive as replayable
+/// CRDT change history (an intermediate version shows the first edit
+/// but not the second).
 fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let mut d = import(codec, bytes);
 
@@ -111,8 +113,8 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let versions_after = d.versions().len();
     assert!(versions_after > versions_before, "{format}: edits must extend the CRDT change history ({versions_before} -> {versions_after})");
 
-    // Time-travel: some earlier version has the heading edit but NOT the appended
-    // paragraph — the edits are independent, replayable changes, not a blob rewrite.
+    // Time-travel: some earlier version has the heading edit but NOT
+    // the appended paragraph — independent, replayable changes, not a blob rewrite.
     let saw_intermediate = (0..d.versions().len()).any(|v| {
         let s = d.materialize_at(v).unwrap();
         let has_draft = s.blocks.iter().any(|b| b.kind == "heading" && b.text.contains("(DRAFT)"));
@@ -196,9 +198,9 @@ fn version_diff_reports_structural_changes_on_real_docx() {
 
 #[test]
 fn zip_bomb_is_rejected_not_inflated() {
-    // The production codec path (codec -> container::read -> read_zip_parts) must
-    // reject a decompression bomb, fast, without OOMing. The fixture is ~300 KB on
-    // disk but declares a 300 MiB part — over the 256 MiB per-part cap.
+    // The production codec path must reject a decompression bomb, fast,
+    // without OOMing. The fixture is ~300 KB on disk but declares a
+    // 300 MiB part — over the 256 MiB per-part cap.
     let mut d = Document::new();
     let err = DocxCodec.import(ZIPBOMB_DOCX, &mut d.as_mut()).expect_err("zip bomb must be rejected");
     let msg = format!("{err}");
@@ -207,8 +209,8 @@ fn zip_bomb_is_rejected_not_inflated() {
 
 #[test]
 fn xxe_dtd_is_rejected_in_both_formats() {
-    // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected outright
-    // (defence in depth against XXE / entity-expansion), for both codecs.
+    // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected
+    // outright (defence in depth against XXE/entity-expansion), both codecs.
     let mut d = Document::new();
     let err = DocxCodec.import(XXE_DOCX, &mut d.as_mut()).expect_err("docx XXE must be rejected");
     assert!(format!("{err}").contains("DTD"), "docx: expected a DTD rejection, got: {err}");
@@ -228,34 +230,32 @@ fn garbage_input_is_rejected_cleanly() {
 
 // ---- 5. performance: large document parse + serialize ----------------------
 
-/// Build a large book-length document in the CRDT model, then export + reimport it
-/// for both formats.
+/// Build a large book-length document in the CRDT model, export +
+/// reimport for both formats.
 ///
-/// The two O(n^2) traps this guards against are the ones the block-order fix closed:
-/// a full container rescan per insert, and order keys that grow a byte per insert.
-/// Both are asserted **structurally and mode-independently** — a scan counter and the
-/// order-key lengths — so a regression fails in a plain debug `cargo test`, not only
-/// on wall-clock. The wall-clock bound is kept too, but release-gated: in a *debug*
-/// build the time is dominated by automerge-0.8's inherent O(n^2) incremental object
-/// creation (a block is >=2 automerge objects; raw automerge with no qdoc code builds
-/// 4000 sub-maps in ~100 s in debug), which no qdoc change can remove, so wall-clock is
-/// only meaningful in release. Timings print in both modes.
+/// Guards the two O(n^2) traps the block-order fix closed — a full
+/// container rescan per insert, and order keys that grow a byte per
+/// insert — asserted **structurally** (a scan counter, order-key
+/// lengths) so a regression fails in a plain debug `cargo test`, not
+/// only wall-clock. The wall-clock bound is kept too but release-gated:
+/// in debug the time is dominated by automerge-0.8's inherent O(n^2)
+/// incremental object creation (unrelated to qdoc), so wall-clock is
+/// only meaningful in release.
 #[test]
 fn large_document_parse_and_serialize_is_fast() {
     use std::time::Instant;
 
-    // The wall-clock guard runs the full book-length N; the structural guards are
-    // scale-independent (they catch a per-insert rescan or linear key growth at any
-    // N > a few hundred), so a *debug* build uses a smaller N to stay CI-fast —
-    // building N blocks is automerge-0.8's inherent O(n^2) (minutes at 4000 in debug,
-    // unrelated to qdoc), which would make a debug `cargo test` pathologically slow.
+    // The wall-clock guard runs the full book-length N; the structural
+    // guards are scale-independent, so a *debug* build uses a smaller N
+    // to stay CI-fast (building N blocks is automerge-0.8's inherent
+    // O(n^2), minutes at 4000 in debug).
     const N: usize = if cfg!(debug_assertions) { 400 } else { 4_000 };
     let mut d = Document::new();
     let mut prev: Option<String> = None;
 
-    // Guard #1 (mode-independent): the in-memory order index must keep the whole build
-    // to a *constant* number of full container scans (one, to seed it), not one per
-    // insert. A per-insert scan is exactly the O(n^2) this fix removed.
+    // Guard #1 (mode-independent): the in-memory order index must keep
+    // the whole build to a *constant* number of full container scans
+    // (one, to seed it) — a per-insert scan is the O(n^2) this fix removed.
     let scans_before = qdoc::ordered_keys_scan_count();
     for i in 0..N {
         let kind = if i % 25 == 0 { "heading" } else { "paragraph" };
@@ -278,9 +278,10 @@ fn large_document_parse_and_serialize_is_fast() {
     let built = d.materialize();
     assert_eq!(built.blocks.len(), N, "built N blocks");
 
-    // Guard #2 (mode-independent): the truncating fractional key keeps order keys bounded
-    // (~32 bytes for 4000 sequential appends) instead of growing a byte per insert, which
-    // makes every key comparison O(n) and building/sorting O(n^2).
+    // Guard #2 (mode-independent): the truncating fractional key keeps
+    // order keys bounded (~32 bytes for 4000 sequential appends) instead
+    // of growing a byte per insert, which makes comparison O(n) and
+    // building/sorting O(n^2).
     let max_key_len = d.block_order_key_lengths().into_iter().max().unwrap_or(0);
     assert!(
         max_key_len <= 64,
@@ -288,13 +289,11 @@ fn large_document_parse_and_serialize_is_fast() {
          it bounded; linear growth is O(n^2) (holds in debug and release)"
     );
 
-    // The timed export + reimport round-trip runs release-only. Each reimport rebuilds
-    // all N blocks, and in a debug build that is automerge-0.8's inherent O(n^2) object
-    // creation (~minutes at N=4000, unrelated to qdoc) — running it under a debug
-    // `cargo test` (CI) would be pathologically slow for no added signal, since the two
-    // structural guards above already prove the qdoc fix in debug. In release it is
-    // fast, so that is where the 4000/15s wall-clock and the ms report live. Round-trip
-    // *fidelity* is covered in every mode by the edit-and-reopen tests above.
+    // The timed export + reimport round-trip runs release-only: each
+    // reimport rebuilds all N blocks, and in debug that's automerge-0.8's
+    // inherent O(n^2) object creation (minutes at N=4000, unrelated to
+    // qdoc) — pathologically slow under CI for no added signal, since
+    // the structural guards above already prove the fix in debug.
     let mut report = String::new();
     if !cfg!(debug_assertions) {
         for (name, codec) in [("odt", &OdtCodec as &dyn FormatProvider), ("docx", &DocxCodec as &dyn FormatProvider)] {

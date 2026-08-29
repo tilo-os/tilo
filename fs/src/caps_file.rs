@@ -1,26 +1,22 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
 //! `--acl FILE` binds a JSON array of [`CapOverride`] records to a mount.
-//! `/var/workspace` is mounted once at boot and stays up for the session,
-//! so binding the list by value at mount time would make "a later grant
-//! needs a remount" mean "a later grant does not apply" — a wrong answer,
-//! not a slow update. [`CapabilityFile`] owns the file and an
-//! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads when the file has
-//! changed and swaps the result in underneath the live mount.
+//! `/var/workspace` stays mounted for the whole session, so binding the list
+//! by value at mount time would make "a later grant needs a remount" mean "a
+//! later grant does not apply". [`CapabilityFile`] owns the file and an
+//! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads on change and swaps
+//! the result in underneath the live mount.
 //!
 //! The three outcomes are deliberately not treated alike. A changed,
 //! parseable file swaps in — the point. A **gone** file binds an empty
-//! (deny-everything) ACL: removing the file is how the producer says
-//! "this identity holds nothing", so keeping the previous list would make
-//! a revocation ineffective (distinct from *never passing* `--acl`,
-//! which leaves the mount unenforced). An **unreadable or malformed**
-//! file keeps the previous list and logs — a capability file is rewritten
-//! in place rather than renamed over, so a reader can catch it truncated
-//! mid-write, and revoking every capability on the machine for that
-//! transient window would make the reloader itself the outage.
+//! (deny-everything) ACL: removing the file is the producer saying "this
+//! identity holds nothing" (distinct from never passing `--acl`, which
+//! leaves the mount unenforced). An **unreadable or malformed** file keeps
+//! the previous list and logs — the file is rewritten in place rather than
+//! renamed over, so a reader can catch it truncated mid-write, and denying
+//! everything for that transient window would make the reloader itself the outage.
 //!
-//! None of these can *widen* access beyond what some successfully-parsed
-//! file said.
+//! None of these can widen access beyond what some successfully-parsed file said.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -29,12 +25,7 @@ use collab_types::{CapOverride, Principal};
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 
-/// Identifies a version of the file, so an unchanged file costs one
-/// `stat` and no parse.
-///
-/// Includes the inode because a producer that writes a temporary file
-/// and renames it over the target can produce a new file with the same
-/// length and (at one-second granularity) the same mtime.
+/// Identifies a version of the file (so an unchanged file costs one `stat`), including the inode since a rename-over-target producer can collide on length + mtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Stamp {
     inode: u64,
@@ -53,7 +44,6 @@ impl Stamp {
     }
 }
 
-/// What a [`CapabilityFile::refresh`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refresh {
     /// The file is byte-identical to the last one loaded. Nothing swapped.
@@ -66,31 +56,22 @@ pub enum Refresh {
     Failed(String),
 }
 
-/// A capability list on disk, bound to a live mount.
-///
-/// Construct with [`CapabilityFile::load`] — which fails if the file
-/// cannot be read, so a mount is never brought up believing it is
-/// enforcing a list it never saw — then hand [`CapabilityFile::handle`]
-/// to [`crate::QuickFS::with_acl`] and call [`CapabilityFile::refresh`]
-/// periodically.
+/// A capability list on disk, bound to a live mount. Construct with
+/// [`CapabilityFile::load`] (fails if the file can't be read — a mount must
+/// never believe it's enforcing a list it never saw), then call [`CapabilityFile::refresh`] periodically.
 #[derive(Debug)]
 pub struct CapabilityFile {
     path: PathBuf,
     identity: IdentityKey,
     principals: Vec<Principal>,
     handle: AclHandle,
-    /// The version last successfully loaded. `None` once the file has
-    /// been observed missing, so its reappearance always reloads.
+    /// The version last successfully loaded. `None` once observed missing, so reappearance always reloads.
     seen: Mutex<Option<Stamp>>,
 }
 
 impl CapabilityFile {
-    /// Read `path` and bind its capabilities for `identity`.
-    ///
-    /// Fail-closed: a missing, unreadable or malformed file is an error
-    /// and the caller is expected to refuse the mount. Silently mounting
-    /// unenforced when enforcement was requested is how a typo in a unit
-    /// file becomes a wide-open workspace.
+    /// Read `path` and bind its capabilities for `identity`. Fail-closed: a
+    /// missing, unreadable or malformed file is an error the caller must refuse the mount on.
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -108,18 +89,15 @@ impl CapabilityFile {
         })
     }
 
-    /// The handle to give [`crate::QuickFS::with_acl`]. Cloning it is
-    /// cheap and every clone sees each swap.
+    /// The handle to give [`crate::QuickFS::with_acl`]. Cheap to clone; every clone sees each swap.
     pub fn handle(&self) -> AclHandle {
         self.handle.clone()
     }
 
-    /// The identity the bound capabilities answer for.
     pub fn identity(&self) -> IdentityKey {
         self.identity
     }
 
-    /// The file being watched.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -129,10 +107,7 @@ impl CapabilityFile {
         self.handle.snapshot().capability_count()
     }
 
-    /// Re-read the file if it has changed, and swap the result into the
-    /// live mount.
-    ///
-    /// Cheap to call often: an unchanged file costs a single `stat`.
+    /// Re-read the file if changed and swap the result into the live mount; cheap to call often (an unchanged file costs one `stat`).
     pub fn refresh(&self) -> Refresh {
         let meta = match std::fs::metadata(&self.path) {
             Ok(m) => m,
@@ -144,9 +119,7 @@ impl CapabilityFile {
                 }
                 *seen = None;
                 drop(seen);
-                // Deny everything. See the module docs: an absent file is
-                // the producer saying "nothing is granted", and is not
-                // the same as never having asked for enforcement.
+                // Deny everything: an absent file is the producer saying "nothing granted" — distinct from never having asked for enforcement.
                 self.handle.replace(WorkspaceAcl::new());
                 return Refresh::Revoked;
             }
@@ -169,18 +142,13 @@ impl CapabilityFile {
                 *self.seen.lock().expect("capability stamp poisoned") = Some(stamp);
                 Refresh::Reloaded(n)
             }
-            // Deliberately does **not** update `seen`, so the next tick
-            // retries rather than treating a half-written file as the
-            // current version forever.
+            // Deliberately doesn't update `seen`, so the next tick retries rather than treating a half-written file as current.
             Err(e) => Refresh::Failed(e.to_string()),
         }
     }
 }
 
-/// Build the ACL for one identity from a capability list.
-///
-/// `now: None` ⇒ every check reads the live clock, so a time-limited
-/// capability really does lapse during a long-lived mount.
+/// Build the ACL for one identity from a capability list. `now: None` ⇒ every check reads the live clock, so a time-limited capability actually lapses.
 fn build(identity: IdentityKey, caps: &[CapOverride], principals: &[Principal]) -> WorkspaceAcl {
     WorkspaceAcl::from_capabilities(identity, caps, principals, None)
 }
@@ -190,9 +158,7 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?;
-    // Stamp from the same open file, not a second `stat`: a rewrite
-    // between the two would otherwise record the new version's stamp
-    // against the old version's bytes and never reload.
+    // Stamp from the same open file, not a second `stat`: a rewrite in between could pair the new stamp with the old bytes.
     let stamp = Stamp::of(&file.metadata().map_err(|source| CapsError::Read {
         path: path.to_path_buf(),
         source,
@@ -207,7 +173,6 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
     Ok((caps, stamp))
 }
 
-/// Why a capability list could not be bound.
 #[derive(Debug, thiserror::Error)]
 pub enum CapsError {
     #[error("capability list {path} could not be read: {source}")]
@@ -243,10 +208,7 @@ mod tests {
 
     fn write_caps(path: &Path, caps: &[CapOverride]) {
         std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
-        // The stamp includes mtime at whatever resolution the filesystem
-        // reports; two writes inside one tick would otherwise be
-        // indistinguishable. Length differs in these tests, but make the
-        // ordering unambiguous rather than relying on that.
+        // The stamp includes mtime at filesystem resolution; don't rely on length differing within one tick.
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
@@ -347,8 +309,7 @@ mod tests {
             handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
             "a half-written file must not revoke every capability on the machine"
         );
-        // Not latched: the next tick tries again rather than treating the
-        // truncated bytes as the current version.
+        // Not latched: the next tick retries rather than treating truncated bytes as current.
         assert!(matches!(file.refresh(), Refresh::Failed(_)));
 
         write_caps(&path, &[read_grant("/w/plans")]);
@@ -373,8 +334,7 @@ mod tests {
         assert!(!file.handle().permits(&ALICE, "/", Access::Read));
     }
 
-    // An expiry must lapse *during* the mount, which is only true if the
-    // bound ACL reads the live clock rather than the load-time instant.
+    // An expiry must lapse during the mount, true only if the bound ACL reads the live clock, not the load-time instant.
     #[test]
     fn a_capability_that_expires_mid_mount_stops_permitting() {
         let now = std::time::SystemTime::now()

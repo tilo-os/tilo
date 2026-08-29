@@ -1,32 +1,22 @@
 //! Upstream connection to the legacy serde-JSON `CollabRequest` /
-//! `CollabEvent` broker — `shell::shell::collab_broker`, which the
-//! compositor runs for the session.
+//! `CollabEvent` broker (`shell::shell::collab_broker`). One connection per
+//! SDK connection: a writer half used by every `ChannelHandle` request, and
+//! a reader task that decodes `CollabEvent`s and routes them into
+//! per-stream queues.
 //!
-//! One upstream connection is opened per SDK connection: the
-//! bridge owns a writer half (used by every ChannelHandle method
-//! that emits a request) and a reader task that decodes
-//! `CollabEvent`s off the wire and routes them into per-stream
-//! queues.
-//!
-//! ## Backpressure
-//!
-//! - Signed CRDT ops (`SignedCRDTIncremental`) go through an
-//!   unbounded mpsc — they are the only path the CRDT convergence
-//!   guarantee relies on, so we NEVER drop them.
-//! - Legacy unsigned CRDT frames (`CRDTUpdate` / `CRDTIncremental`)
-//!   ride the same op queue — dropping them would silently break
-//!   apps that still use the pre-signed path.
-//! - Presence events (`RemotePresenceUpdate` + `RemoteCursorMoved`)
-//!   go through a bounded drop-oldest queue (see [`DropOldest`]) so
-//!   a slow SDK reader can't backpressure signed ops. Cursor
-//!   moves are the highest-volume presence variant; dropping the
-//!   oldest is the standard remote-cursor treatment.
-//! - Context snapshots (`Context`) go through an unbounded mpsc:
-//!   the shell emits one on roster change (rare), and dropping
-//!   would break the identity picker.
-//! - Scrollback batches (`ScrollbackBatch`) go through an unbounded
-//!   mpsc; the caller matches replies to outstanding
-//!   `FetchScrollback` requests FIFO.
+//! Backpressure differs per stream:
+//! - Signed CRDT ops (`SignedCRDTIncremental`): unbounded mpsc — the only
+//!   path the CRDT convergence guarantee relies on, so never dropped.
+//! - Legacy unsigned CRDT frames (`CRDTUpdate` / `CRDTIncremental`): ride
+//!   the same op queue, since dropping them would break apps still on the
+//!   pre-signed path.
+//! - Presence (`RemotePresenceUpdate` + `RemoteCursorMoved`): bounded
+//!   drop-oldest ([`DropOldest`]) so a slow SDK reader can't backpressure
+//!   signed ops — cursor moves are high-volume and drop-oldest is the
+//!   standard treatment for them.
+//! - Context snapshots and scrollback batches: unbounded mpsc — both are
+//!   rare/request-matched, so dropping would break the identity picker or
+//!   desync scrollback replies.
 
 use std::collections::VecDeque;
 use std::io::ErrorKind;
@@ -41,16 +31,14 @@ use tokio::sync::{Notify, mpsc};
 use crate::wire::{CollabEvent, CollabRequest, Collaborator, PresencePayload};
 use collab_types::{ArtifactId, SignedOp};
 
-/// Presence stream capacity — drop-oldest kicks in above this many
-/// unread events per subscriber. 128 events is roughly one second
-/// of a very active pointer stream (60 Hz cursor moves + other
-/// variants); sized so a burst survives a slow frame but a truly
-/// disconnected reader cannot pin memory.
+/// Presence stream capacity: drop-oldest kicks in above this many unread
+/// events per subscriber. 128 is roughly one second of a very active
+/// pointer stream (60 Hz cursor moves plus other variants), sized so a
+/// burst survives a slow frame without letting a disconnected reader pin memory.
 const PRESENCE_CAPACITY: usize = 128;
 
-/// Bounded FIFO with drop-oldest eviction. Async-friendly: readers
-/// await `pop()`; writers call synchronous `push()`. Tracks a
-/// dropped-count for telemetry / tests.
+/// Bounded FIFO with drop-oldest eviction; readers `await` `pop()`, writers
+/// call synchronous `push()`. Tracks a dropped-count for tests.
 pub struct DropOldest<T> {
     inner: Mutex<VecDeque<T>>,
     capacity: usize,
@@ -68,8 +56,7 @@ impl<T> DropOldest<T> {
         })
     }
 
-    /// Push an item. If the queue is at capacity, drop the oldest
-    /// before pushing and bump the dropped-counter.
+    /// Pushes an item, dropping the oldest and bumping the dropped-counter if at capacity.
     pub fn push(&self, item: T) {
         let evicted = {
             let mut q = self.inner.lock();
@@ -114,23 +101,19 @@ impl<T> DropOldest<T> {
     }
 }
 
-/// Envelope emitted by the reader task on the presence path.
-/// Merges `RemoteCursorMoved` and `RemotePresenceUpdate` into a
-/// single record so `subscribeAll` can dequeue every presence
-/// event in arrival order without having to peek across two
-/// queues.
+/// Envelope emitted by the reader task on the presence path, merging
+/// `RemoteCursorMoved` and `RemotePresenceUpdate` so `subscribeAll` can
+/// dequeue both in arrival order without peeking across two queues.
 #[derive(Debug, Clone)]
 pub enum PresenceEnvelope {
-    /// Legacy `RemoteCursorMoved` — no key, plus a synthetic
-    /// `PresenceKey` will be synthesised by the SDK-facing stream.
+    /// Legacy `RemoteCursorMoved` — no key; the SDK-facing stream synthesises one.
     Cursor {
         user_id: String,
         x: f32,
         y: f32,
     },
-    /// Full `RemotePresenceUpdate` — carries a postcard key blob
-    /// (the bridge does NOT decode it; it forwards the bytes so
-    /// SDK apps can postcard-decode into their own PresenceKey).
+    /// Full `RemotePresenceUpdate`, carrying a postcard key blob the bridge
+    /// forwards undecoded so SDK apps can decode into their own `PresenceKey`.
     Update {
         user_id: String,
         key_bytes: Vec<u8>,
@@ -138,12 +121,10 @@ pub enum PresenceEnvelope {
     },
 }
 
-/// What an [`OpEnvelope`]'s bytes are.
-///
-/// The op stream carries three kinds of frame and they are not
-/// interchangeable — a delta is applied incrementally, a whole
-/// document is merged, a signed envelope is decoded before either.
-/// Mirrors the wire's `OpKind`; see `schema/collab.capnp`.
+/// What an [`OpEnvelope`]'s bytes are. The op stream carries three
+/// non-interchangeable frame kinds — a delta applies incrementally, a whole
+/// document merges, a signed envelope decodes before either. Mirrors the
+/// wire's `OpKind`; see `schema/collab.capnp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpKind {
     /// A postcard-encoded `SignedOp`.
@@ -155,26 +136,21 @@ pub enum OpKind {
     UnsignedSnapshot,
 }
 
-/// Envelope for a CRDT op delivered on the op stream.
 #[derive(Debug, Clone)]
 pub struct OpEnvelope {
     pub op_bytes: Vec<u8>,
     pub from_user_id: String,
-    /// What `op_bytes` are. A reader that ignores this and assumes
-    /// a signed envelope drops every unsigned frame silently.
+    /// What `op_bytes` are; a reader that ignores this and assumes a signed envelope silently drops unsigned frames.
     pub kind: OpKind,
 }
 
-/// Full roster / context snapshot delivered by the upstream broker.
 #[derive(Debug, Clone)]
 pub struct ContextSnapshot {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
 }
 
-/// One `ScrollbackBatch` upstream frame. Matched FIFO against the
-/// caller's outstanding `fetch_scrollback` request queue keyed by
-/// artifact.
+/// One `ScrollbackBatch` upstream frame, matched FIFO against the caller's outstanding `fetch_scrollback` queue keyed by artifact.
 #[derive(Debug, Clone)]
 pub struct ScrollbackReply {
     pub artifact: ArtifactId,
@@ -182,9 +158,7 @@ pub struct ScrollbackReply {
     pub exhausted: bool,
 }
 
-/// Handles used by capnp server implementations to talk to the
-/// upstream broker. Cloned freely — the underlying `Arc`s are
-/// cheap.
+/// Handles used by capnp server implementations to talk to the upstream broker; cloned freely since the underlying `Arc`s are cheap.
 #[derive(Clone)]
 pub struct UpstreamHandle {
     writer: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<UnixStream>>>,
@@ -195,10 +169,8 @@ pub struct UpstreamHandle {
 }
 
 impl UpstreamHandle {
-    /// Test-only constructor for wiring a handle from a pre-built
-    /// writer + receivers instead of dialing a real Unix socket.
-    /// Kept `pub` (not `pub(crate)`) so integration tests in
-    /// `tests/*.rs` can inject a mock upstream.
+    /// Test-only constructor wiring a handle from a pre-built writer +
+    /// receivers; kept `pub` so integration tests can inject a mock upstream.
     #[doc(hidden)]
     pub fn new_for_test(
         writer: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<UnixStream>>>,
@@ -229,12 +201,10 @@ impl UpstreamHandle {
     }
 }
 
-/// Connect to `path` and start the reader task. Returns a handle
-/// callers can use to send requests + receive routed events.
-///
-/// The reader task drives itself off `stream.read()`; when the
-/// upstream socket closes it drops all channel senders which causes
-/// every SDK-side `.read()` to unblock with `NotAvailable`.
+/// Connects to `path` and starts the reader task, returning a handle for
+/// sending requests and receiving routed events. The reader task drives
+/// itself off `stream.read()`; a closed socket drops every sender, which
+/// surfaces to SDK-side reads as `NotAvailable`.
 pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
     let stream = UnixStream::connect(&path).await?;
     let (mut reader, writer) = tokio::io::split(stream);
@@ -247,10 +217,8 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
     let presence_task = Arc::clone(&presence);
 
     tokio::task::spawn_local(async move {
-        // Reader loop: length-prefixed serde-JSON frames. On any
-        // error (EOF, malformed frame) we exit and let the senders
-        // drop, which surfaces as NotAvailable to every capnp
-        // subscriber.
+        // Length-prefixed serde-JSON frames. Any error (EOF, malformed frame) exits
+        // the loop and drops the senders, surfacing as NotAvailable to subscribers.
         loop {
             let mut len_buf = [0u8; 4];
             match reader.read_exact(&mut len_buf).await {
@@ -261,9 +229,8 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                 }
             }
             let len = u32::from_le_bytes(len_buf) as usize;
-            // Guard against absurd frame sizes so a corrupt reader
-            // can't OOM the bridge. 32 MB is comfortably above any
-            // sane CRDT snapshot but bounded.
+            // Guard against absurd frame sizes so a corrupt reader can't OOM the
+            // bridge — 32 MB is comfortably above any sane CRDT snapshot.
             if len > 32 * 1024 * 1024 {
                 tracing::warn!(len, "upstream frame too large — closing");
                 break;
@@ -297,12 +264,9 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                     });
                 }
                 CollabEvent::CRDTIncremental { data } => {
-                    // Unsigned frames ride the op stream so an SDK app
-                    // that hasn't migrated to signed ops keeps seeing
-                    // peer changes — tagged, so the reader applies a
-                    // delta as a delta. The `from_user_id` is unknown
-                    // at this hop; the shell broker didn't tag it, so
-                    // we ship the conventional empty attribution.
+                    // Unsigned frames ride the op stream too, tagged, so an SDK app that
+                    // hasn't migrated to signed ops still sees peer changes. `from_user_id` is
+                    // unknown at this hop (the shell broker doesn't tag it), hence empty.
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: data,
                         from_user_id: String::new(),
@@ -310,9 +274,7 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                     });
                 }
                 CollabEvent::CRDTUpdate { data } => {
-                    // A whole document, not a delta. Merging it is the
-                    // only way a late arrival adopts what is already
-                    // there, and applying it as a delta does nothing.
+                    // A whole document, not a delta: merging it is the only way a late arrival adopts existing state.
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: data,
                         from_user_id: String::new(),

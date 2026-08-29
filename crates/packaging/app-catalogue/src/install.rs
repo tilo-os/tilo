@@ -1,18 +1,15 @@
 //! Fetching a package the machine does not have yet.
 //!
-//! Three steps, in one blocking call: find the entry in the
-//! catalogue, download the `.qpkg` to a staging file, hand the path to
+//! Three steps in one blocking call: find the entry in the catalogue,
+//! download the `.qpkg` to a staging file, hand the path to
 //! `qos-install`.
 //!
-//! The third step is where trust is decided, and it is deliberately
-//! not decided here. `qos-install` recomputes the content-addressed
-//! package id from the bytes and checks the publisher signature
-//! fail-closed before extracting anything, so a truncated, swapped or
-//! tampered download fails at the install step rather than becoming an
-//! installed app. Nothing in this module passes `--allow-self-signed`:
-//! an install the user started by typing a name into a search box is
-//! the last place to relax a signature check, and a caller that wants
-//! that has to run `qos-install` themselves and mean it.
+//! Trust is decided there, not here: `qos-install` recomputes the
+//! content-addressed package id and checks the publisher signature
+//! fail-closed before extracting, so a tampered download fails at
+//! install rather than becoming an installed app. Nothing in this
+//! module passes `--allow-self-signed` — an install started by typing
+//! a name into search is the last place to relax a signature check.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,8 +18,8 @@ use std::time::Duration;
 
 use crate::CatalogueApp;
 
-/// How long a `.qpkg` download may take before it is abandoned.
-/// Overridable via `QOS_CATALOGUE_DOWNLOAD_TIMEOUT` (seconds).
+/// How long a .qpkg download may take before it's abandoned;
+/// overridable via `QOS_CATALOGUE_DOWNLOAD_TIMEOUT` (seconds).
 const DEFAULT_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
 
 fn download_timeout() -> Duration {
@@ -33,8 +30,7 @@ fn download_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS))
 }
 
-/// Why an install did not happen. Every variant renders to something
-/// a person can act on — this text reaches a notification.
+/// Why an install did not happen; every variant renders to something a person can act on — reaches a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
     /// No configured registry offers this id (any more).
@@ -45,8 +41,7 @@ pub enum InstallError {
     Download { detail: String },
     /// `qos-install` could not be run at all.
     InstallerMissing { detail: String },
-    /// `qos-install` ran and refused. `detail` is its own output —
-    /// usually the signature or hash complaint.
+    /// `qos-install` ran and refused; `detail` is its own output — usually the signature or hash complaint.
     Refused { code: i32, detail: String },
 }
 
@@ -82,8 +77,7 @@ impl std::fmt::Display for InstallError {
     }
 }
 
-/// Where downloaded `.qpkg`s are staged before install. Under the
-/// cache dir, so a read-only home in a sandbox is not fatal.
+/// Where downloaded .qpkgs are staged before install, under the cache dir so a read-only home in a sandbox isn't fatal.
 pub fn staging_dir() -> Option<PathBuf> {
     let base = crate::config::cache_dir()?;
     let staged = base.join("staged-qpkg");
@@ -91,43 +85,35 @@ pub fn staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-/// The installer binary. `QOS_INSTALL_BIN` overrides, matching how the
-/// store app and the compositor's launcher resolution both work.
+/// The installer binary; `QOS_INSTALL_BIN` overrides, matching the store app and compositor launcher resolution.
 pub fn qos_install_bin() -> String {
     std::env::var("QOS_INSTALL_BIN").unwrap_or_else(|_| "qos-install".to_string())
 }
 
-/// The exact `qos-install` invocation [`install`] runs.
-///
-/// Split out so a test can assert on the argv without a network or a
-/// real installer — in particular, that `--allow-self-signed` is not
-/// in it.
+/// The exact `qos-install` invocation [`install`] runs. Split out so a
+/// test can assert on argv without a network or real installer — in
+/// particular, that --allow-self-signed is not in it.
 pub fn install_argv(staged_qpkg: &Path) -> Vec<String> {
     vec![
         "install".to_string(),
         staged_qpkg.display().to_string(),
-        // Replace an older copy of the same id rather than failing.
-        // Opening an app the user asked for should not stall on a
-        // stale install of it.
+        // Replace an older copy of the same id rather than failing — opening
+        // an app the user asked for shouldn't stall on a stale install of it.
         "--force".to_string(),
     ]
 }
 
-/// How much has to arrive before another progress report is made.
-///
-/// A report per read syscall would be thousands of lines for a few megabytes,
-/// all describing a bar that moved by less than a pixel. 64 KiB is around a
-/// percent of a small `.qpkg`.
+/// How much has to arrive before another progress report. A report
+/// per read syscall would be thousands of lines for a few MB; 64 KiB
+/// is about a percent of a small .qpkg.
 const PROGRESS_STEP_BYTES: u64 = 64 * 1024;
 
 /// Size of one read from the response body.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
-/// What a caller learns while a package is being fetched.
-///
-/// `total` is the server's `Content-Length` when it declared one. A registry
-/// that does not is not an error — the caller shows an indeterminate
-/// indication instead of a determinate one.
+/// What a caller learns while a package is fetched. `total` is the
+/// server's Content-Length when declared; otherwise the caller shows
+/// an indeterminate indication instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DownloadProgress {
     pub received: u64,
@@ -136,12 +122,10 @@ pub struct DownloadProgress {
 
 /// HTTP-download `url` to `dest`, reporting as the bytes arrive. Blocking.
 ///
-/// `on_progress` fires once when the response headers land — so a caller
-/// learns the size, and that the connection is up, before the first chunk —
-/// then at most once per [`PROGRESS_STEP_BYTES`], and once more when the last
-/// byte is written. The body is streamed rather than buffered whole, which is
-/// what makes those reports possible at all and keeps a large package off the
-/// heap.
+/// `on_progress` fires once when headers land, then at most once per
+/// [`PROGRESS_STEP_BYTES`], and once more on the last byte — possible
+/// because the body is streamed rather than buffered whole, which
+/// also keeps a large package off the heap.
 ///
 /// The bytes are not trusted here — see the module header.
 pub fn download_reporting(
@@ -202,19 +186,16 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
 }
 
 /// Download and install `app`, blocking until `qos-install` exits.
-///
 /// The staged file is removed either way: on success the bytes now
-/// live in the installed payload tree, and on failure a half-written
-/// download is not something to keep.
+/// live in the installed payload tree; on failure a half-written
+/// download isn't worth keeping.
 pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
     install_app_reporting(app, &mut |_| {})
 }
 
-/// [`install_app`], reporting the download's progress as it happens.
-///
-/// The reporting stops at the download: `qos-install` verifies and extracts as
-/// one opaque step, and inventing a fraction for it would be a bar that lies.
-/// A caller says what is happening instead.
+/// [`install_app`], reporting download progress. Reporting stops at
+/// the download — `qos-install` verifies+extracts as one opaque step,
+/// and inventing a fraction for it would be a bar that lies.
 pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -283,23 +264,16 @@ pub fn install_reporting(
 }
 
 /// How much of the installer's complaint survives into a
-/// notification. The toast that renders this is two lines tall; more
-/// than this is clipped mid-word, which reads worse than a short
-/// sentence.
+/// notification; the toast is two lines tall, so more than this
+/// clips mid-word, which reads worse than a short sentence.
 const DETAIL_MAX_CHARS: usize = 110;
 
 /// The installer's actual complaint, reduced to one readable line.
 ///
-/// Three things happen here, all learned from looking at the rendered
-/// toast rather than at the string:
-///
-/// * only the **last** non-empty line survives — that is the error
-///   itself; the lines above it are context the card has no room for;
-/// * a leading `qos-install:` is stripped, because the caller already
-///   says who refused it and "qos-install refused it: qos-install:
-///   ..." stutters;
-/// * anything still over [`DETAIL_MAX_CHARS`] is elided rather than
-///   left to be cut off mid-word by the card.
+/// Only the **last** non-empty line survives (the lines above are
+/// context the card has no room for); a leading `qos-install:` is
+/// stripped (the caller already says who refused it); anything still
+/// over [`DETAIL_MAX_CHARS`] is elided rather than cut off mid-word.
 fn installer_complaint(text: &str) -> String {
     let Some(line) = text.lines().map(str::trim).filter(|l| !l.is_empty()).next_back() else {
         return String::new();
@@ -375,8 +349,7 @@ mod tests {
         );
     }
 
-    /// An empty installer complaint must still say *something* —
-    /// "qos-install refused it" with a code beats a blank line.
+    /// An empty installer complaint must still say *something* — "qos-install refused it" with a code beats a blank line.
     #[test]
     fn a_silent_refusal_still_reports_the_exit_code() {
         let msg = InstallError::Refused {
@@ -395,10 +368,8 @@ mod tests {
         assert_eq!(installer_complaint("   \n\n  "), "");
     }
 
-    /// The rendered toast already says who refused it, so the
-    /// installer's own name prefix would stutter: "qos-install refused
-    /// it: qos-install: ...". Caught by looking at the real
-    /// notification, not at the string.
+    /// The rendered toast already says who refused it, so the installer's
+    /// own name prefix would stutter — caught by looking at the real notification.
     #[test]
     fn the_installers_own_name_prefix_is_stripped() {
         let msg = InstallError::Refused {
@@ -413,8 +384,8 @@ mod tests {
         );
     }
 
-    /// The notification card is two lines tall. A longer complaint is
-    /// elided here rather than being cut off mid-word by the renderer.
+    /// The notification card is two lines tall; a longer complaint is
+    /// elided here rather than cut off mid-word by the renderer.
     #[test]
     fn an_overlong_complaint_is_elided_rather_than_clipped() {
         let long = "x".repeat(400);

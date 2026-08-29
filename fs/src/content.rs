@@ -1,13 +1,9 @@
 //! Content-defined chunking + manifests.
 //!
-//! A file's bytes are split into content-defined chunks (a gear-hash rolling
-//! boundary, so an edit only shifts the boundaries *near* the edit). Each chunk
-//! is a content-addressed blob; the file is described by a [`Manifest`] (an
-//! ordered list of chunk hashes + lengths) which is itself stored as a blob. A
-//! file node's content hash points at its manifest.
-//!
-//! Win: editing part of a large file re-stores and re-transfers only the chunks
-//! that actually changed; peers hydrate only the chunks they're missing.
+//! A file's bytes are split into content-defined chunks (gear-hash rolling
+//! boundary, so an edit only shifts boundaries near the edit). Each chunk is
+//! a content-addressed blob, described by a [`Manifest`] (itself a blob) —
+//! so editing part of a large file only re-stores/re-transfers the changed chunks.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,14 +12,12 @@ const MAX_CHUNK: usize = 64 * 1024;
 /// ~8 KiB average chunk size (13 one-bits in the mask).
 const MASK: u64 = (1 << 13) - 1;
 
-/// A reference to one content-addressed chunk.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChunkRef {
     pub hash: [u8; 32],
     pub len: u32,
 }
 
-/// The chunk list describing a file's content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Manifest {
     pub chunks: Vec<ChunkRef>,
@@ -56,8 +50,7 @@ fn gear_table() -> [u64; 256] {
     t
 }
 
-/// Split `data` into content-defined chunks. Deterministic; empty input → no
-/// chunks.
+/// Split `data` into content-defined chunks. Deterministic; empty input → no chunks.
 pub fn split(data: &[u8]) -> Vec<&[u8]> {
     let table = gear_table();
     let mut chunks = Vec::new();
@@ -120,8 +113,7 @@ mod tests {
 
     #[test]
     fn edit_only_changes_local_chunks() {
-        // Content-defined chunking: editing one byte mid-file must leave most
-        // chunk hashes identical (that's the dedup property).
+        // Content-defined chunking: editing one byte mid-file must leave most chunk hashes identical (the dedup property).
         let data = pseudo(200_000, 99);
         let before: Vec<Vec<u8>> = split(&data).iter().map(|c| c.to_vec()).collect();
 

@@ -1,21 +1,11 @@
 //! Integration test: two libp2p peers exchange a gossipsub message
-//! through an in-process relay, without ever dialling each other
-//! directly.
+//! through an in-process relay, without ever dialling each other directly.
 //!
-//! Layout:
-//!
-//! - `relay` listens on an ephemeral TCP port. Its config sets
-//!   `topic_allowlist = ["qos.*"]` so the test topic `qos.test` is
-//!   forwarded.
-//! - Peers A and B build their own swarms with the same gossipsub
-//!   config the shell uses (1 s heartbeat, mesh 4/8/12, strict
-//!   signed). They dial *only* the relay. Both subscribe to
-//!   `qos.test`.
-//! - A publishes a payload; B observes it via gossipsub. The
-//!   forwarding hops are A → relay → B.
-//!
-//! This is the marquee test for the whole Phase 9 deliverable: if
-//! it passes, the relay actually does its job.
+//! `relay` listens on an ephemeral TCP port with
+//! `topic_allowlist = ["qos.*"]`; peers A and B build swarms with the
+//! shell's gossipsub config (1 s heartbeat, mesh 4/8/12, strict signed),
+//! dial *only* the relay, and both subscribe to `qos.test`. A publishes;
+//! B observes via gossipsub — forwarding hops are A → relay → B.
 
 use std::time::Duration;
 
@@ -60,8 +50,7 @@ fn build_peer_swarm() -> Swarm<PeerBehaviour> {
         .build()
 }
 
-/// Drive the swarm until at least one TCP listen address shows up,
-/// then return it. Bounded by 5 s.
+/// Drives the swarm until a TCP listen address appears, bounded by 5 s.
 async fn first_listen_addr<B: NetworkBehaviour>(swarm: &mut Swarm<B>) -> Multiaddr {
     timeout(Duration::from_secs(5), async {
         loop {
@@ -86,7 +75,7 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         )
         .try_init();
 
-    // ---- 1. Spin up the relay on a random port -----------------------
+    // 1. Spin up the relay on a random port.
     let dir = tempfile::tempdir().unwrap();
     let cfg = RelayConfig {
         listen: vec!["/ip4/127.0.0.1/tcp/0".parse().unwrap()],
@@ -118,21 +107,18 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         .parse()
         .expect("multiaddr");
 
-    // Spawn the relay's event loop in the background. Hold the
-    // join handle so we can abort at the end of the test.
+    // Spawn the relay's event loop in the background; keep the handle to abort at the end.
     let relay_task = tokio::spawn(async move {
         loop {
             relay.step().await;
         }
     });
 
-    // ---- 2. Build peer A and peer B ----------------------------------
+    // 2. Build peer A and peer B.
     let mut swarm_a = build_peer_swarm();
     let mut swarm_b = build_peer_swarm();
 
-    // Each listens on its own loopback port (so the test environment
-    // doesn't depend on anything else listening). They will *not*
-    // dial each other; both will dial only the relay.
+    // Each peer listens on its own loopback port; neither dials the other — both dial only the relay.
     swarm_a
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
         .unwrap();
@@ -146,7 +132,7 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
     let peer_id_b: PeerId = *swarm_b.local_peer_id();
     assert_ne!(peer_id_a, peer_id_b);
 
-    // ---- 3. Subscribe both to qos.test before dialling --------------
+    // 3. Subscribe both to qos.test before dialling.
     let topic = gossipsub::IdentTopic::new("qos.test");
     swarm_a
         .behaviour_mut()
@@ -159,15 +145,12 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         .subscribe(&topic)
         .expect("subscribe B");
 
-    // ---- 4. Dial the relay from both peers --------------------------
+    // 4. Dial the relay from both peers.
     swarm_a.dial(relay_full.clone()).expect("A dial relay");
     swarm_b.dial(relay_full.clone()).expect("B dial relay");
 
-    // ---- 5. Wait for the gossipsub mesh to form across the relay ----
-    // Each peer must see the other (or at least see *one* mesh peer
-    // — the relay itself) before publishing. We track that A has
-    // seen the relay subscribe to qos.test, which only happens once
-    // the relay learns about the topic from one of the peers.
+    // 5. Wait for the gossipsub mesh to form across the relay: each peer
+    // must see the relay subscribe to qos.test before publishing.
     let mesh_ready = async {
         let mut a_sees_relay = false;
         let mut b_sees_relay = false;
@@ -201,12 +184,11 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         .await
         .expect("mesh formed within 15s");
 
-    // Tiny settle so the relay's mesh slot graduates from fanout to
-    // mesh — gossipsub publishes via fanout if no mesh peers are
-    // known yet, which still works but is racier.
+    // Tiny settle so the relay's mesh slot graduates from fanout to mesh —
+    // publishing via fanout works but is racier.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ---- 6. Publish from A; B must receive via the relay ------------
+    // 6. Publish from A; B must receive via the relay.
     let payload = b"hello-via-relay";
     swarm_a
         .behaviour_mut()
@@ -214,8 +196,7 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         .publish(topic.clone(), payload.to_vec())
         .expect("publish A");
 
-    // Drain both swarms until B observes the message. A may emit
-    // its own published event; we only assert on B receiving.
+    // Drain both swarms until B observes the message; only B's receipt is asserted.
     let observed = timeout(Duration::from_secs(20), async {
         loop {
             tokio::select! {
@@ -235,8 +216,7 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
     .await
     .expect("B received the message within 20s");
 
-    // The propagation source should be the *relay*, not peer A —
-    // we never dialled A↔B directly.
+    // Propagation source must be the relay, not peer A — A and B were never dialled directly.
     assert_eq!(
         observed, relay_peer_id,
         "message must be forwarded via the relay (got source {observed}, \

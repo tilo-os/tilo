@@ -1,36 +1,23 @@
-//! Frame-loop instrumentation: per-tick phase timings, present pacing and
-//! input-to-present latency.
+//! Frame-loop instrumentation: per-tick phase timings, present pacing and input-to-present latency.
 //!
-//! One [`FrameSample`] per loop iteration: `period_us` (real presentation
-//! cadence — what a display would see), per-phase durations, `painted`
-//! (idle ticks do no paint work), and `input_latency_us` (time from
-//! consuming an input to the first painted frame's submit returning;
-//! `present_async` distinguishes input-to-present from input-to-queued).
+//! One [`FrameSample`] per loop iteration: `period_us` (real cadence), per-phase durations,
+//! `painted` (idle ticks do no paint work), `input_latency_us` (input-consumed to first painted
+//! submit; `present_async` distinguishes input-to-present from input-to-queued).
 //!
-//! Entirely env-var driven: `QOS_FRAME_TRACE=path.csv` streams one row per
-//! tick, `QOS_FRAME_SUMMARY=path.json` writes a percentile summary on
-//! clean shutdown, `QOS_FRAME_WARMUP_MS` excludes early samples (first-
-//! frame pipeline compilation) from the summary while still tracing them.
-//! With none set, [`FrameRecorder::disabled`] makes every method a `bool`
-//! branch — no allocation, no extra clock reads.
-//!
-//! [`summarize`] is pure (no I/O, no clock, no env) — the same function
-//! the live binary and the unit tests both call, so they cannot drift.
+//! Entirely env-var driven (`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`, `QOS_FRAME_WARMUP_MS`);
+//! disabled, every [`FrameRecorder`] method is a `bool` branch. [`summarize`] is pure — the same function the live binary and unit tests call, so they can't drift.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-/// One loop iteration's timings. All durations are microseconds; a
-/// `u32` covers 71 minutes, which is far past the point where any of
-/// these numbers are interesting.
+/// One loop iteration's timings, in microseconds; a `u32` covers 71 minutes, far past where these numbers are interesting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSample {
     /// Monotonic tick counter from loop start.
     pub seq: u64,
     /// Microseconds from the recorder's start to this tick's beginning.
     pub start_us: u64,
-    /// Microseconds since the previous tick began — the loop's actual
-    /// cadence. Zero for the first sample (no predecessor).
+    /// Microseconds since the previous tick began — the loop's actual cadence. Zero for the first sample.
     pub period_us: u32,
     /// Draining backend events and dispatching them into the widget tree.
     pub input_us: u32,
@@ -40,8 +27,7 @@ pub struct FrameSample {
     pub layout_us: u32,
     /// Building the `vello::Scene`. Zero on a tick that did not paint.
     pub scene_us: u32,
-    /// Handing the scene to the backend. On a synchronous backend this
-    /// includes the GPU wait; on a threaded presenter it is the enqueue.
+    /// Handing the scene to the backend; on a synchronous backend this includes the GPU wait, on a threaded presenter it's the enqueue.
     pub submit_us: u32,
     /// Test-control socket servicing.
     pub testctl_us: u32,
@@ -49,26 +35,17 @@ pub struct FrameSample {
     pub clients_us: u32,
     /// Time parked in the event loop waiting for work / the next deadline.
     pub sleep_us: u32,
-    /// Whether this tick built and submitted a frame.
     pub painted: bool,
-    /// Whether the submit handed off to another thread rather than
-    /// completing the present inline. Distinguishes "input to present"
-    /// from "input to queued" when reading `input_latency_us`.
+    /// Whether the submit handed off to another thread rather than completing inline — distinguishes input-to-present from input-to-queued in `input_latency_us`.
     pub present_async: bool,
-    /// Set on the first painted tick after an input was consumed:
-    /// microseconds from consuming that input to the submit returning.
-    /// `None` on every other tick.
+    /// Set on the first painted tick after an input was consumed: microseconds from consuming it to the submit returning. `None` on every other tick.
     pub input_latency_us: Option<u32>,
 }
 
 impl FrameSample {
-    /// Non-parked time in the interval this sample's `period_us` spans.
-    ///
-    /// `period_us` runs from the *previous* tick's start to this one's,
-    /// so the park it contains is the previous tick's, not this one's —
-    /// `prev_sleep_us` is that value. Subtracting this sample's own sleep
-    /// instead is an off-by-one that can go negative on a tick whose park
-    /// was longer than the preceding tick's.
+    /// Non-parked time in the interval this sample's `period_us` spans. `period_us` runs from the
+    /// *previous* tick's start to this one's, so the park it contains is the previous tick's
+    /// (`prev_sleep_us`); subtracting this sample's own sleep instead is an off-by-one that can go negative when this tick's park outlasts the previous one's.
     pub fn work_us(&self, prev_sleep_us: u32) -> u32 {
         self.period_us.saturating_sub(prev_sleep_us)
     }
@@ -98,8 +75,7 @@ impl FrameSample {
     }
 }
 
-/// Header line for the `QOS_FRAME_TRACE` CSV. Kept next to
-/// [`FrameSample::write_csv_row`] so the two cannot drift.
+/// Header line for the `QOS_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us";
 
@@ -115,17 +91,14 @@ pub struct Percentiles {
     pub mean: u32,
 }
 
-/// Compute percentiles over an unsorted slice. Empty input yields all
-/// zeroes with `count = 0` so callers don't have to special-case it.
+/// Compute percentiles over an unsorted slice; empty input yields all zeroes with `count = 0`.
 pub fn percentiles(values: &[u32]) -> Percentiles {
     if values.is_empty() {
         return Percentiles::default();
     }
     let mut v = values.to_vec();
     v.sort_unstable();
-    // Nearest-rank: the p-th percentile is the ceil(p/100 * n)-th value,
-    // 1-indexed. Chosen over interpolation because frame times are read
-    // as "a frame this long actually happened", not as a fitted curve.
+    // Nearest-rank: the p-th percentile is the ceil(p/100 * n)-th value, 1-indexed — chosen over interpolation since frame times are "a frame this long happened", not a fitted curve.
     let pick = |p: u64| -> u32 {
         let n = v.len() as u64;
         let rank = ((p * n).div_ceil(100)).max(1);
@@ -148,12 +121,10 @@ pub fn percentiles(values: &[u32]) -> Percentiles {
 pub struct FrameSummary {
     /// Ticks considered (post-warmup).
     pub ticks: u64,
-    /// Ticks that painted.
     pub painted: u64,
     /// Wall time spanned by the considered samples, microseconds.
     pub span_us: u64,
-    /// Painted frames per second over `span_us`. Zero when the span is
-    /// degenerate.
+    /// Painted frames per second over `span_us`; zero when the span is degenerate.
     pub fps: f64,
     /// Cadence of *every* tick.
     pub tick_period: Percentiles,
@@ -169,39 +140,27 @@ pub struct FrameSummary {
     pub testctl: Percentiles,
     pub clients: Percentiles,
     pub sleep: Percentiles,
-    /// Input-to-present (or input-to-queued, see
-    /// [`FrameSample::present_async`]).
+    /// Input-to-present (or input-to-queued, see [`FrameSample::present_async`]).
     pub input_latency: Percentiles,
-    /// Fraction of painted frames whose period was within
-    /// [`ON_CADENCE_TOLERANCE_US`] of `target_period_us`. Meaningless
-    /// (and reported as 0.0) when no target was supplied.
+    /// Fraction of painted frames whose period was within [`ON_CADENCE_TOLERANCE_US`] of `target_period_us`; meaningless (reported 0.0) when no target was supplied.
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
     pub target_period_us: u32,
 }
 
-/// How far a painted frame's period may stray from the target refresh
-/// interval and still count as "on cadence". 2 ms is roughly an eighth
-/// of a 60 Hz interval and a third of a 240 Hz one — tight enough that a
-/// loop pacing off a fixed 16 ms timer while the panel runs at 144 Hz
-/// cannot pass, loose enough to survive scheduler jitter.
+/// How far a painted frame's period may stray from the target refresh interval and still count
+/// as "on cadence". 2 ms is ~1/8 of a 60 Hz interval and ~1/3 of a 240 Hz one — tight enough that pacing off a fixed 16 ms timer against a 144 Hz panel fails, loose enough to survive scheduler jitter.
 pub const ON_CADENCE_TOLERANCE_US: u32 = 2_000;
 
-/// Reduce samples to a [`FrameSummary`]. Pure: no clock, no I/O, no env.
-///
-/// `target_period_us` is the refresh interval the loop was pacing to; 0
-/// disables the cadence ratio.
+/// Reduce samples to a [`FrameSummary`]. Pure: no clock, no I/O, no env. `target_period_us` is the refresh interval the loop was pacing to; 0 disables the cadence ratio.
 pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary {
     if samples.is_empty() {
         return FrameSummary::default();
     }
-    // The first sample has no predecessor, so its `period_us` is 0 and
-    // would drag every percentile down. Drop it from the cadence series
-    // (but not from the phase series, which are self-contained).
+    // The first sample has no predecessor, so its `period_us` is 0 and would drag every percentile down — drop it from the cadence series (not the phase series, which are self-contained).
     let cadence: Vec<u32> = samples.iter().filter(|s| s.period_us > 0).map(|s| s.period_us).collect();
     let paint_cadence: Vec<u32> = {
-        // Interval between consecutive *painted* frames, which is not the
-        // same as the tick period when the loop idles between paints.
+        // Interval between consecutive *painted* frames, not the tick period, since the loop idles between paints.
         let mut out = Vec::new();
         let mut prev: Option<u64> = None;
         for s in samples.iter().filter(|s| s.painted) {
@@ -277,35 +236,27 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
     }
 }
 
-/// Live recorder wired into the compositor loop.
-///
-/// Construct once with [`FrameRecorder::from_env`]; call
-/// [`FrameRecorder::begin_tick`] at the top of each iteration, the
-/// `mark_*` setters as phases complete, and [`FrameRecorder::end_tick`]
-/// at the bottom. When no env var enabled it, every one of those is a
-/// `bool` check.
+/// Live recorder wired into the compositor loop. Construct once with [`FrameRecorder::from_env`];
+/// call [`FrameRecorder::begin_tick`] at the top of each iteration, the `mark_*` setters as
+/// phases complete, and [`FrameRecorder::end_tick`] at the bottom — with no env var enabled, every call is a `bool` check.
 pub struct FrameRecorder {
     enabled: bool,
     start: Instant,
     seq: u64,
     prev_start_us: Option<u64>,
     cur: FrameSample,
-    /// Samples retained for the summary. Bounded: once
-    /// [`MAX_RETAINED`] is reached the recorder stops retaining (the
-    /// CSV trace, if enabled, keeps streaming). A run long enough to hit
-    /// the cap has already produced a statistically settled summary.
+    /// Samples retained for the summary. Bounded: once [`MAX_RETAINED`] is reached the recorder
+    /// stops retaining (the CSV trace, if enabled, keeps streaming) — a run that long has already produced a statistically settled summary.
     samples: Vec<FrameSample>,
     warmup_us: u64,
     trace: Option<std::io::BufWriter<std::fs::File>>,
     summary_path: Option<std::path::PathBuf>,
     target_period_us: u32,
-    /// When an input was consumed and no painted frame has closed the
-    /// loop on it yet.
+    /// When an input was consumed and no painted frame has closed the loop on it yet.
     pending_input: Option<Instant>,
 }
 
-/// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and
-/// ~7 MB of `FrameSample`.
+/// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
 const MAX_RETAINED: usize = 200_000;
 
 /// Env var naming the per-tick CSV trace path.
@@ -320,14 +271,8 @@ pub const DEFAULT_WARMUP_MS: u64 = 1_500;
 /// Env var asking the compositor to shut down cleanly after N seconds.
 pub const RUN_SECONDS_ENV: &str = "QOS_RUN_SECONDS";
 
-/// Parse a run duration from a raw env value. `None` means "run
-/// forever", which is what production always does.
-///
-/// Split out as a pure function so the parsing rules are testable
-/// without poking at the process environment: a bench harness that
-/// mis-specifies the duration must get "run forever" (visible as a hung
-/// run it can kill) rather than "exit immediately" (which would silently
-/// produce an empty trace that reads as a fast compositor).
+/// Parse a run duration from a raw env value. `None` means "run forever" (production default).
+/// Pure so parsing is testable without poking the process environment: a mis-specified duration must read as "run forever" (killable) rather than "exit immediately" (a silent empty trace).
 pub fn parse_run_seconds(raw: Option<&str>) -> Option<Duration> {
     let v: f64 = raw?.trim().parse().ok()?;
     if v.is_finite() && v > 0.0 {
@@ -343,8 +288,7 @@ pub fn run_seconds_from_env() -> Option<Duration> {
 }
 
 impl FrameRecorder {
-    /// A recorder that does nothing. Used when no env var asked for
-    /// instrumentation, and by tests that only exercise the summariser.
+    /// A recorder that does nothing; used when no env var asked for instrumentation, and by tests that only exercise the summariser.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -361,8 +305,7 @@ impl FrameRecorder {
         }
     }
 
-    /// Build from the process environment. Returns [`Self::disabled`]
-    /// unless `QOS_FRAME_TRACE` or `QOS_FRAME_SUMMARY` is set.
+    /// Build from the process environment. Returns [`Self::disabled`] unless `QOS_FRAME_TRACE` or `QOS_FRAME_SUMMARY` is set.
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
         let summary_path = std::env::var_os(SUMMARY_ENV);
@@ -404,14 +347,12 @@ impl FrameRecorder {
         self.enabled
     }
 
-    /// Record the refresh interval the loop is pacing to, so the summary
-    /// can report how many frames landed on it.
+    /// Record the refresh interval the loop is pacing to, so the summary can report how many frames landed on it.
     pub fn set_target_period(&mut self, period: Duration) {
         self.target_period_us = period.as_micros().min(u32::MAX as u128) as u32;
     }
 
-    /// Start a new tick. `now` is the loop's own tick-start instant so
-    /// the recorder doesn't take a second clock reading.
+    /// Start a new tick. `now` is the loop's own tick-start instant, so the recorder doesn't take a second clock reading.
     pub fn begin_tick(&mut self, now: Instant) {
         if !self.enabled {
             return;
@@ -431,10 +372,8 @@ impl FrameRecorder {
         self.seq += 1;
     }
 
-    /// Note that an input event was consumed this tick. The first
-    /// painted frame that follows closes the latency measurement.
-    /// Repeated calls before that frame keep the *earliest* input, which
-    /// is the pessimistic (and honest) reading.
+    /// Note that an input event was consumed this tick; the first painted frame that follows closes
+    /// the latency measurement. Repeated calls before that frame keep the *earliest* input (the pessimistic, honest reading).
     pub fn note_input(&mut self, at: Instant) {
         if !self.enabled {
             return;
@@ -444,9 +383,7 @@ impl FrameRecorder {
         }
     }
 
-    /// Cumulative phase marks. Each takes the duration *of that phase*,
-    /// not a cumulative offset, so callers can compute them however is
-    /// cheapest at the call site.
+    /// Cumulative phase marks: each takes the duration *of that phase*, not a cumulative offset, so callers can compute them however is cheapest at the call site.
     pub fn mark_input(&mut self, d: Duration) {
         self.cur.input_us = us(d);
     }
@@ -469,9 +406,7 @@ impl FrameRecorder {
         self.cur.sleep_us = us(d);
     }
 
-    /// Record the submit phase and close any outstanding input-latency
-    /// measurement. `async_present` records whether the submit merely
-    /// queued the frame for another thread.
+    /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(&mut self, d: Duration, async_present: bool, done: Instant) {
         if !self.enabled {
             return;
@@ -485,8 +420,7 @@ impl FrameRecorder {
         }
     }
 
-    /// Close the tick: stream it to the trace and retain it for the
-    /// summary.
+    /// Close the tick: stream it to the trace and retain it for the summary.
     pub fn end_tick(&mut self) {
         if !self.enabled {
             return;
@@ -513,9 +447,7 @@ impl FrameRecorder {
         summarize(&self.samples, self.target_period_us)
     }
 
-    /// Flush the trace and write the JSON summary. Called from `Drop`,
-    /// and directly by the loop's shutdown path (which `process::exit`s
-    /// past destructors).
+    /// Flush the trace and write the JSON summary. Called from `Drop`, and directly by the loop's shutdown path (which `process::exit`s past destructors).
     pub fn finish(&mut self) {
         if !self.enabled {
             return;
@@ -583,9 +515,7 @@ mod tests {
 
     #[test]
     fn percentiles_use_nearest_rank_not_interpolation() {
-        // 1..=100. Nearest-rank p50 is the 50th value = 50; p95 = 95;
-        // p99 = 99. An interpolating implementation would give 50.5 etc.,
-        // so this pins the definition.
+        // 1..=100. Nearest-rank p50 is the 50th value = 50; p95 = 95; p99 = 99 — an interpolating implementation would give 50.5 etc., so this pins the definition.
         let v: Vec<u32> = (1..=100).collect();
         let p = percentiles(&v);
         assert_eq!(p.count, 100);
@@ -609,9 +539,7 @@ mod tests {
 
     #[test]
     fn summarize_drops_the_first_sample_from_the_cadence_series() {
-        // The first tick has no predecessor, so its period is 0. Letting
-        // that into the series would report a bogus min of 0 and drag the
-        // p50 down.
+        // The first tick has no predecessor, so its period is 0 — letting it into the series would report a bogus min of 0 and drag the p50 down.
         let s = vec![
             sample(0, 0, 0, true),
             sample(1, 16_000, 16_000, true),
@@ -627,9 +555,7 @@ mod tests {
 
     #[test]
     fn summarize_paint_period_measures_gaps_between_painted_frames_only() {
-        // Ticks at 0/8/16/24 ms, painting only on the even ones. The
-        // paint period is 16 ms even though the tick period is 8 ms —
-        // this is the distinction that makes the redraw gating legible.
+        // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw gating relies on.
         let s = vec![
             sample(0, 0, 0, true),
             sample(1, 8_000, 8_000, false),
@@ -652,8 +578,7 @@ mod tests {
 
     #[test]
     fn summarize_on_cadence_ratio_rejects_a_loop_pacing_to_the_wrong_rate() {
-        // A loop pinned at 60 Hz (16.6 ms) driving a 144 Hz panel
-        // (6.94 ms) must score 0.0: every frame is ~10 ms late.
+        // A loop pinned at 60 Hz (16.6 ms) driving a 144 Hz panel (6.94 ms) must score 0.0: every frame is ~10 ms late.
         let mut s = Vec::new();
         for i in 0..50u64 {
             s.push(sample(i, i * 16_667, 16_667, true));
@@ -674,9 +599,7 @@ mod tests {
 
     #[test]
     fn summarize_fps_is_painted_frames_over_the_measured_span() {
-        // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. The
-        // span is last.start - first.start, so 61 samples 16.667 ms apart
-        // span 1.0 s and the count over that span is 61.
+        // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. Span is last.start - first.start, so 61 samples 16.667 ms apart span 1.0 s.
         let mut s = Vec::new();
         for i in 0..61u64 {
             s.push(sample(i, i * 16_667, 16_667, true));
@@ -692,13 +615,8 @@ mod tests {
 
     #[test]
     fn summarize_work_subtracts_the_park_that_actually_happened_in_the_period() {
-        // `period_us` spans the previous tick's start to this one's, so
-        // the park inside it belongs to the *previous* sample. Tick 0
-        // worked 4 ms then parked 12 ms; tick 1 starts 16 ms later and
-        // its period contains tick 0's 12 ms park. Subtracting the
-        // sample's *own* sleep instead reads tick 1's work as 16 - 2 =
-        // 14 ms, going negative on a tick that parked longer than its
-        // predecessor.
+        // `period_us` spans the previous tick's start to this one's, so the park inside it belongs to
+        // the *previous* sample: tick 0 works 4 ms then parks 12 ms, tick 1 starts 16 ms later and its period contains tick 0's park; subtracting the sample's *own* sleep instead goes negative when a tick parks longer than its predecessor.
         let mut a = sample(0, 0, 0, true);
         a.sleep_us = 12_000;
         let mut b = sample(1, 16_000, 16_000, true);
@@ -717,8 +635,7 @@ mod tests {
 
     #[test]
     fn work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor() {
-        // A tick parked 16 ms following one that parked 2 ms: `saturating_sub`
-        // on the wrong operand would report a nonsense-but-positive number.
+        // A tick parked 16 ms following one that parked 2 ms: `saturating_sub` on the wrong operand would report a nonsense-but-positive number.
         let mut a = sample(0, 0, 0, true);
         a.sleep_us = 2_000;
         let mut b = sample(1, 5_000, 5_000, true);
@@ -732,8 +649,7 @@ mod tests {
 
     #[test]
     fn summarize_layout_and_scene_ignore_ticks_that_did_not_paint() {
-        // An idle tick contributes layout=0/scene=0. Folding those into
-        // the percentiles would make a busy loop look cheap.
+        // An idle tick contributes layout=0/scene=0; folding those into the percentiles would make a busy loop look cheap.
         let mut painted = sample(0, 0, 0, true);
         painted.layout_us = 3_000;
         painted.scene_us = 5_000;
@@ -768,8 +684,7 @@ mod tests {
 
     #[test]
     fn recorder_measures_input_latency_from_input_to_submit_completion() {
-        // Drive the real recorder (not the summariser) so the
-        // note_input → mark_submit handshake is what's under test.
+        // Drive the real recorder (not the summariser) so the note_input → mark_submit handshake is what's under test.
         let mut r = FrameRecorder::disabled();
         r.enabled = true;
         let base = Instant::now();
@@ -799,9 +714,7 @@ mod tests {
 
     #[test]
     fn recorder_keeps_the_earliest_pending_input_across_idle_ticks() {
-        // Input arrives, then two ticks pass without painting. The
-        // latency must be measured from the *original* input, not from
-        // the tick that happened to paint.
+        // Input arrives, then two ticks pass without painting; latency must be measured from the *original* input, not the tick that happened to paint.
         let mut r = FrameRecorder::disabled();
         r.enabled = true;
         let base = Instant::now();
@@ -840,9 +753,7 @@ mod tests {
             Some(Duration::from_millis(2500))
         );
         assert_eq!(super::parse_run_seconds(Some(" 10 ")), Some(Duration::from_secs(10)));
-        // Anything that isn't a positive finite number means "run
-        // forever" — never "exit immediately", which would hand a
-        // harness an empty trace it could mistake for a real result.
+        // Anything that isn't a positive finite number means "run forever" — never "exit immediately", which would hand a harness an empty trace it could mistake for a real result.
         for bad in [None, Some(""), Some("0"), Some("-1"), Some("nan"), Some("inf"), Some("abc")] {
             assert_eq!(
                 super::parse_run_seconds(bad),

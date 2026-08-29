@@ -3,13 +3,10 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.Access.xml`.
 //! Camera reuses `Access.AccessDialog` rather than owning a separate
-//! `impl.portal.Camera` interface.
-//!
-//! When `xdg-desktop-portal-camera` receives an `AccessCamera()` call, it
-//! turns around and calls `org.freedesktop.impl.portal.Access.AccessDialog`
-//! on the configured backend with `subtitle="Allow access to your camera?"`
-//! (or similar localised text). The request is classified as a Camera
-//! capability from the title/subtitle/options dict — see [`classify`].
+//! `impl.portal.Camera` interface: `xdg-desktop-portal-camera` turns an
+//! `AccessCamera()` call into an `AccessDialog` call on the configured
+//! backend with `subtitle="Allow access to your camera?"` (or similar);
+//! the request is classified as a Camera capability from the title/subtitle/options dict — see [`classify`].
 
 use std::collections::HashMap;
 
@@ -34,8 +31,7 @@ impl AccessBackend {
 
 #[interface(name = "org.freedesktop.impl.portal.Access")]
 impl AccessBackend {
-    /// `AccessDialog` — generic consent prompt the host portal uses for
-    /// Camera, Background, and similar capability gates.
+    /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
     async fn access_dialog(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -64,13 +60,11 @@ impl AccessBackend {
 
 /// Pick a [`CapabilityKind`] + [`Capability`] template from the request
 /// metadata. Matches "microphone" / "audio" in the lowercased
-/// title+subtitle+body to route Microphone requests; matching on the
-/// substring rather than a fixed phrase keeps it working across locales
-/// the portal hasn't translated yet.
+/// title+subtitle+body to route Microphone requests — substring rather
+/// than a fixed phrase, to keep working across locales the portal hasn't translated yet.
 ///
 /// Falls back to `Camera` — the only consumer this backend's surface
-/// targets, since Microphone goes through Pipewire's own ACL and
-/// RemoteDesktop / Inhibit / Wallpaper aren't handled here.
+/// targets, since Microphone goes through Pipewire's own ACL and RemoteDesktop / Inhibit / Wallpaper aren't handled here.
 pub(super) fn classify(
     title: &str,
     subtitle: &str,
@@ -124,8 +118,7 @@ mod tests {
     #[test]
     fn classify_falls_back_to_camera_on_unknown_text() {
         let opts = HashMap::new();
-        // Anything that isn't microphone/audio is treated as Camera, so
-        // the prompt + grant model still mediates.
+        // Anything that isn't microphone/audio is treated as Camera, so the prompt + grant model still mediates.
         let (kind, _cap) = classify("Permission", "", "weird thing", &opts);
         assert_eq!(kind, CapabilityKind::Camera);
     }

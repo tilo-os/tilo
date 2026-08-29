@@ -1,24 +1,23 @@
 //! The permission broker.
 //!
 //! Starts with the session, runs on the host, outlives nothing. Every
-//! privileged request from inside the guest arrives here as a line of JSON on a
-//! Unix socket, is decided against [`crate::policy`], and is written to
-//! [`crate::audit`] whichever way it went.
+//! privileged request from inside the guest arrives here as a line of JSON
+//! on a Unix socket, is decided against [`crate::policy`], and is written
+//! to [`crate::audit`] whichever way it went.
 //!
 //! # Why a broker at all, when the guest is uid 0
 //!
-//! The guest is root *in its own user namespace*, so it can already write its
-//! own layer without asking. What it cannot do is reach the store: `policy.json`
-//! and `audit/` are not bound into the namespace at any path. So the broker is
-//! not a politeness layer over things the guest could do anyway — it is the
-//! only route to the two files that decide what the *next* session will be able
-//! to see, and the only writer of the record of what was asked for.
+//! The guest is root *in its own user namespace*, so it can already write
+//! its own layer without asking — what it cannot do is reach the store:
+//! `policy.json` and `audit/` are not bound into the namespace at any path.
+//! The broker is the only route to the two files that decide what the
+//! *next* session can see, and the only writer of the record of what was
+//! asked for.
 //!
-//! A decision here does not take effect in the running guest. A new bind needs
-//! a new mount namespace, so `perm trust-dir` answers with
-//! [`Response::NeedsRestart`] and the user runs `restart`. That is what the
-//! reference runtime's `restart` command is for, and pretending otherwise would
-//! mean a grant that appears to have been made and has not.
+//! A decision here does not take effect in the running guest: a new bind
+//! needs a new mount namespace, so `perm trust-dir` answers with
+//! [`Response::NeedsRestart`] and the user runs `restart` — pretending
+//! otherwise would mean a grant that appears made and has not.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -55,9 +54,8 @@ pub enum Request {
     /// `pkg diff` — what the layer changed relative to the base. Answered on
     /// the host: from inside the guest the two are one merged view.
     LayerDiff { limit: usize },
-    /// `pkg burn` — destroy the layer's files. Deferred to the end of the
-    /// session, because an overlay `upperdir` cannot be removed from under a
-    /// live mount.
+    /// `pkg burn` — destroy the layer's files, deferred to session end since an
+    /// overlay `upperdir` can't be removed from under a live mount.
     Burn,
     /// `guard status`.
     Status,
@@ -183,10 +181,9 @@ impl BrokerState {
     }
 
     fn trust_dir(&mut self, path: &Path) -> Response {
-        // Resolve first: a symlink under a directory the guest controls could
-        // otherwise name a path the user never saw. `canonicalize` fails on a
-        // path that does not exist, which is also the right answer — trusting a
-        // directory that is not there would silently do nothing.
+        // Resolve first: a symlink under a guest-controlled directory could name a
+        // path the user never saw. `canonicalize` failing on a missing path is
+        // also correct — trusting nothing there.
         let resolved = match path.canonicalize() {
             Ok(p) => p,
             Err(e) => {
@@ -444,9 +441,8 @@ impl Drop for Broker {
 
 fn restrict_socket(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    // Only the owner. The socket is the route to the policy file, and it lives
-    // in the store, which is 0700 — but a mode on the socket itself costs
-    // nothing and does not depend on the directory staying that way.
+    // Owner-only: the socket is the route to the policy file. It lives in the
+    // 0700 store already, but a mode on the socket itself costs nothing.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 

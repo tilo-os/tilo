@@ -1,89 +1,65 @@
 //! The compositor's presentation clock.
 //!
-//! [`FrameClock`] holds the interval the display actually runs at, and
-//! answers two questions: [`FrameClock::due`] — has the next presentation
-//! deadline arrived — and [`FrameClock::budget`] — how long may the loop
-//! park before it must be back for that deadline. The interval comes from
-//! the backend ([`super::backend::Backend::refresh_interval`]); the
-//! headless backend has no display and falls back to [`FALLBACK_INTERVAL`].
+//! [`FrameClock`] holds the interval the display actually runs at, and answers two questions:
+//! [`FrameClock::due`] (has the next deadline arrived) and [`FrameClock::budget`] (how long may
+//! the loop park before it must be back). The interval comes from the backend
+//! ([`super::backend::Backend::refresh_interval`]); headless falls back to [`FALLBACK_INTERVAL`].
 //!
-//! [`FrameClock::note_presented`] advances deadlines in whole intervals
-//! from the *previous* deadline rather than resetting to "now", so the
-//! series stays phase-locked to the display instead of drifting frame by
-//! frame; a frame that runs long skips the deadlines it missed instead of
-//! queueing a burst of zero-length budgets to catch up.
+//! [`FrameClock::note_presented`] advances deadlines in whole intervals from the *previous*
+//! deadline rather than resetting to "now", so the series stays phase-locked to the display
+//! instead of drifting frame by frame; a long-running frame skips missed deadlines rather than queueing a burst of zero-length budgets to catch up.
 
 use std::time::{Duration, Instant};
 
-/// Interval used when a backend cannot report a real refresh rate: the
-/// headless backend (no display), or hardware whose mode advertises
-/// something implausible. 60 Hz exactly.
+/// Interval used when a backend cannot report a real refresh rate (headless, or implausible mode timing): 60 Hz exactly.
 pub const FALLBACK_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
-/// Refresh rates outside this range are treated as bogus. Real panels run
-/// from ~24 Hz (cinema modes, some e-ink and VRR minimums) to 1000 Hz
-/// (nothing ships there yet, but the bound only has to exclude garbage).
-/// A connector advertising 0 Hz — which happens on virtual and headless
-/// KMS devices — would otherwise park the compositor forever.
+/// Refresh rates outside this range are treated as bogus. Real panels run from ~24 Hz (cinema
+/// modes, e-ink, VRR minimums) to 1000 Hz (nothing ships there yet, but the bound only needs to
+/// exclude garbage). A connector advertising 0 Hz (virtual/headless KMS) would otherwise park the compositor forever.
 pub const MIN_REFRESH_HZ: u32 = 20;
 pub const MAX_REFRESH_HZ: u32 = 1000;
 
-/// Convert a millihertz refresh rate (winit's monitor API, and the
-/// precision EDID modes are published at) into a frame interval.
-/// Returns `None` for rates outside [`MIN_REFRESH_HZ`]..=[`MAX_REFRESH_HZ`]
-/// so the caller falls back rather than adopting a nonsense cadence.
+/// Convert a millihertz refresh rate (winit's monitor API, and EDID's precision) into a frame
+/// interval. `None` outside [`MIN_REFRESH_HZ`]..=[`MAX_REFRESH_HZ`], so the caller falls back rather than adopting a nonsense cadence.
 pub fn interval_from_millihertz(mhz: u32) -> Option<Duration> {
     if mhz < MIN_REFRESH_HZ * 1000 || mhz > MAX_REFRESH_HZ * 1000 {
         return None;
     }
-    // nanos = 1e12 / mhz. Done in u64 to keep the sub-nanosecond error
-    // from compounding across a long deadline series.
+    // nanos = 1e12 / mhz, in u64 to keep sub-nanosecond error from compounding across a long deadline series.
     Some(Duration::from_nanos(1_000_000_000_000u64 / mhz as u64))
 }
 
-/// Convert a whole-hertz refresh rate (what DRM's `Mode::vrefresh`
-/// reports) into a frame interval.
+/// Convert a whole-hertz refresh rate (DRM's `Mode::vrefresh`) into a frame interval.
 pub fn interval_from_hz(hz: u32) -> Option<Duration> {
     interval_from_millihertz(hz.saturating_mul(1000))
 }
 
-/// Derive the interval from a DRM mode's raw timing rather than its
-/// rounded `vrefresh`: `pixel_clock / (htotal * vtotal)`. `clock_khz` is
-/// the mode's pixel clock in kHz. This matters for the modes that are not
-/// whole numbers — a 59.94 Hz panel reports `vrefresh = 60`, and pacing
-/// to 60.000 Hz against it drifts a full frame every ~16 s until
-/// [`FrameClock::note_presented`] pulls it back.
+/// Derive the interval from a DRM mode's raw timing rather than its rounded `vrefresh`:
+/// `pixel_clock / (htotal * vtotal)`, `clock_khz` in kHz. Matters for non-whole-number modes —
+/// a 59.94 Hz panel reports `vrefresh = 60`, and pacing at 60.000 Hz drifts a full frame every ~16s until [`FrameClock::note_presented`] pulls it back.
 pub fn interval_from_mode_timing(clock_khz: u32, htotal: u32, vtotal: u32) -> Option<Duration> {
     let denom = (htotal as u64).checked_mul(vtotal as u64)?;
     if denom == 0 || clock_khz == 0 {
         return None;
     }
-    // millihertz = clock_khz * 1000 (Hz per pixel-clock unit) * 1000
-    // (Hz→mHz) / (htotal * vtotal)
+    // millihertz = clock_khz * 1000 (Hz per pixel-clock unit) * 1000 (Hz→mHz) / (htotal * vtotal).
     let mhz = (clock_khz as u64)
         .checked_mul(1_000_000)?
         .checked_div(denom)?;
     interval_from_millihertz(u32::try_from(mhz).ok()?)
 }
 
-/// Env var forcing a refresh rate, in hertz, regardless of what the
-/// backend reports.
+/// Env var forcing a refresh rate, in hertz, regardless of what the backend reports.
 ///
-/// Exists because the rate the compositor paces to is otherwise only
-/// observable on hardware: the headless backend has no display, a nested
-/// parent may publish no mode, and a DRM run needs a free TTY. Without an
-/// override, "does the loop actually hold a 144 Hz cadence" can only be
-/// asserted, never measured. With it, `QOS_REFRESH_HZ=144` plus the frame
-/// trace answers the question on any machine.
+/// Exists because the paced rate is otherwise only observable on hardware (headless has no
+/// display, a nested parent may publish no mode, a DRM run needs a free TTY), so
+/// `QOS_REFRESH_HZ=144` plus the frame trace is the only way to measure the loop's actual cadence on any machine.
 ///
-/// Values outside the supported range are ignored (with a warning) rather
-/// than obeyed — this is a diagnostic knob, not a way to wedge the
-/// compositor.
+/// Values outside the supported range are ignored (with a warning), not obeyed — a diagnostic knob, not a way to wedge the compositor.
 pub const REFRESH_HZ_ENV: &str = "QOS_REFRESH_HZ";
 
-/// Parse [`REFRESH_HZ_ENV`]. Pure so the acceptance rules are testable
-/// without touching the process environment. Accepts fractional rates so
-/// a 59.94 Hz panel can be simulated.
+/// Parse [`REFRESH_HZ_ENV`]. Pure so acceptance rules are testable without touching the process environment; accepts fractional rates so a 59.94 Hz panel can be simulated.
 pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
     let hz: f64 = raw?.trim().parse().ok()?;
     if !hz.is_finite() || hz <= 0.0 {
@@ -96,10 +72,7 @@ pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
     interval_from_millihertz(mhz as u32)
 }
 
-/// [`parse_refresh_override`] against the process environment, warning
-/// when a value was set but rejected — a silently-ignored override would
-/// make a bench run report the fallback rate as if it were the requested
-/// one.
+/// [`parse_refresh_override`] against the process environment, warning when a value was set but rejected — a silently-ignored override would make a bench run report the fallback rate as the requested one.
 pub fn refresh_override_from_env() -> Option<Duration> {
     let raw = std::env::var(REFRESH_HZ_ENV).ok()?;
     match parse_refresh_override(Some(&raw)) {
@@ -122,21 +95,15 @@ pub struct FrameClock {
     next_deadline: Instant,
     /// Deadlines the series stepped over without presenting.
     ///
-    /// This counts *skips*, not failures. A compositor that sat idle for
-    /// a second and then painted skipped every deadline in between, and
-    /// that is correct behaviour — there was nothing to show. The clock
-    /// cannot tell an idle gap from a frame that ran long, so do not read
-    /// this as "the compositor can't keep up"; `PresentPipe::backpressured`
-    /// is the number that means that, because the loop only increments it
-    /// when it had content ready and no room to present it.
+    /// Counts *skips*, not failures: a compositor idle for a second then painting skipped every
+    /// deadline in between, which is correct — nothing to show. Don't read this as "can't keep up" — [`PresentPipe::backpressured`] is that number.
     skipped: u64,
     /// Frames presented through [`Self::note_presented`].
     presented: u64,
 }
 
 impl FrameClock {
-    /// A clock ticking at `interval`, with its first deadline at `now`
-    /// so the very first frame is not delayed.
+    /// A clock ticking at `interval`, with its first deadline at `now` so the first frame isn't delayed.
     pub fn new(interval: Duration, now: Instant) -> Self {
         Self {
             interval: sane(interval),
@@ -146,8 +113,7 @@ impl FrameClock {
         }
     }
 
-    /// A clock at the fallback rate. Used by the headless backend and as
-    /// the seed before the first output is known.
+    /// A clock at the fallback rate. Used by the headless backend and as the seed before the first output is known.
     pub fn fallback(now: Instant) -> Self {
         Self::new(FALLBACK_INTERVAL, now)
     }
@@ -156,8 +122,7 @@ impl FrameClock {
         self.interval
     }
 
-    /// Deadlines stepped over without presenting. See the field docs:
-    /// this is a skip count, not a failure count.
+    /// Deadlines stepped over without presenting — a skip count, not a failure count (see the field docs).
     pub fn skipped_deadlines(&self) -> u64 {
         self.skipped
     }
@@ -166,13 +131,9 @@ impl FrameClock {
         self.presented
     }
 
-    /// Adopt a new refresh interval — a mode change, a hotplug, or the
-    /// first real interval arriving after the fallback seed. The pending
-    /// deadline is left where it is: retargeting the rate should not skip
-    /// or double a frame.
-    ///
-    /// Returns `true` when the interval actually changed, so the caller
-    /// can log it once instead of every tick.
+    /// Adopt a new refresh interval (mode change, hotplug, or the first real interval after the
+    /// fallback seed). The pending deadline is left where it is — retargeting the rate shouldn't
+    /// skip or double a frame. Returns `true` when the interval actually changed, so the caller can log it once instead of every tick.
     pub fn set_interval(&mut self, interval: Duration) -> bool {
         let interval = sane(interval);
         if interval == self.interval {
@@ -186,10 +147,8 @@ impl FrameClock {
         now >= self.next_deadline
     }
 
-    /// How long the loop may park before it must be back for the next
-    /// deadline. Never longer than one interval — a deadline far in the
-    /// future would mean the clock had been advanced past it, and parking
-    /// that long would stop servicing input.
+    /// How long the loop may park before it must be back for the next deadline. Never longer than
+    /// one interval — a deadline far in the future would mean the clock had been advanced past it, and parking that long would stop servicing input.
     pub fn budget(&self, now: Instant) -> Duration {
         self.next_deadline
             .saturating_duration_since(now)
@@ -198,16 +157,10 @@ impl FrameClock {
 
     /// How long the loop should park at the bottom of a tick.
     ///
-    /// This is about the *deadline*, not whether this tick painted:
-    ///
-    /// * Deadline still ahead — park the remainder of the interval, so
-    ///   the next tick starts on it. Covers both a tick that just
-    ///   presented and one that woke early and declined to paint.
-    /// * Deadline already behind — nothing was presented for it, because
-    ///   there was nothing to show or no room in the pipe. Parking on a
-    ///   stale deadline would return a zero budget and spin the loop at
-    ///   100% CPU, so this parks a whole interval instead: the loop still
-    ///   wakes at display rate to poll input, it just doesn't render.
+    /// About the *deadline*, not whether this tick painted: if it's still ahead, park the remainder
+    /// of the interval so the next tick starts on it. If it's already behind — nothing presented for
+    /// it, because there was nothing to show or no room in the pipe — parking on it would return a
+    /// zero budget and spin the loop at 100% CPU, so this parks a whole interval instead: the loop still wakes at display rate to poll input, it just doesn't render.
     pub fn park(&self, now: Instant) -> Duration {
         if self.due(now) {
             self.interval
@@ -216,15 +169,10 @@ impl FrameClock {
         }
     }
 
-    /// Record that a frame reached the display at `at`, and advance the
-    /// deadline series.
+    /// Record that a frame reached the display at `at`, and advance the deadline series.
     ///
-    /// Advances in whole intervals from the *previous deadline*, so the
-    /// series stays phase-locked to the display rather than drifting by
-    /// however long each frame happened to take. Deadlines already in the
-    /// past are stepped over (and counted in [`Self::skipped_deadlines`])
-    /// instead of producing a backlog of zero-length budgets that would
-    /// make the loop spin.
+    /// Advances in whole intervals from the *previous deadline*, so the series stays phase-locked to
+    /// the display rather than drifting by however long each frame took. Deadlines already in the past are stepped over (counted in [`Self::skipped_deadlines`]) instead of producing a backlog of zero-length budgets that would spin the loop.
     pub fn note_presented(&mut self, at: Instant) {
         self.presented += 1;
         let mut next = self.next_deadline + self.interval;
@@ -235,16 +183,13 @@ impl FrameClock {
         self.next_deadline = next;
     }
 
-    /// The deadline currently being aimed at. Exposed for tests and
-    /// diagnostics.
+    /// The deadline currently being aimed at. Exposed for tests and diagnostics.
     pub fn next_deadline(&self) -> Instant {
         self.next_deadline
     }
 }
 
-/// Clamp an interval into the range the refresh bounds imply, so a
-/// caller that constructs a clock directly from a bad duration cannot
-/// park the compositor.
+/// Clamp an interval into the range the refresh bounds imply, so a caller constructing a clock directly from a bad duration can't park the compositor.
 fn sane(interval: Duration) -> Duration {
     let min = Duration::from_nanos(1_000_000_000 / MAX_REFRESH_HZ as u64);
     let max = Duration::from_nanos(1_000_000_000 / MIN_REFRESH_HZ as u64);
@@ -279,9 +224,7 @@ mod tests {
 
     #[test]
     fn interval_rejects_rates_no_display_runs_at() {
-        // 0 Hz is what a virtual / disconnected KMS connector reports.
-        // Adopting it would set an infinite interval and freeze the
-        // compositor, so it must fall through to the caller's fallback.
+        // 0 Hz is what a virtual/disconnected KMS connector reports; adopting it would set an infinite interval and freeze the compositor, so it falls through to the caller's fallback.
         assert_eq!(interval_from_millihertz(0), None);
         assert_eq!(interval_from_hz(0), None);
         assert_eq!(interval_from_hz(1), None, "1 Hz is not a display mode");
@@ -291,8 +234,7 @@ mod tests {
 
     #[test]
     fn interval_from_mode_timing_recovers_the_fractional_rate() {
-        // A real 1920x1080@59.94 mode: 148.5 MHz pixel clock, htotal
-        // 2200, vtotal 1125 → 148500000/(2200*1125) = 60.0 Hz exactly.
+        // A real 1920x1080@59.94 mode: 148.5 MHz clock, htotal 2200, vtotal 1125 → 148500000/(2200*1125) = 60.0 Hz exactly.
         assert_eq!(
             interval_from_mode_timing(148_500, 2200, 1125),
             Some(Duration::from_nanos(16_666_666))
@@ -340,9 +282,7 @@ mod tests {
 
     #[test]
     fn deadlines_stay_phase_locked_across_a_late_frame() {
-        // Present on time, then present 4 ms late. The next deadline must
-        // land on the original grid (2 * interval from the start), not
-        // 4 ms after the late presentation.
+        // Present on time, then present 4 ms late. The next deadline must land on the original grid (2 * interval from the start), not 4 ms after the late presentation.
         let t0 = Instant::now();
         let interval = Duration::from_micros(10_000);
         let mut clock = FrameClock::new(interval, t0);
@@ -359,9 +299,7 @@ mod tests {
 
     #[test]
     fn a_frame_that_overruns_several_intervals_skips_them_instead_of_bursting() {
-        // A 50 ms stall on a 10 ms clock: must resume at the next future
-        // deadline and report 4 missed ones, not hand out five consecutive
-        // zero-length budgets.
+        // A 50 ms stall on a 10 ms clock: must resume at the next future deadline and report 4 missed ones, not hand out five consecutive zero-length budgets.
         let t0 = Instant::now();
         let interval = Duration::from_micros(10_000);
         let mut clock = FrameClock::new(interval, t0);
@@ -387,8 +325,7 @@ mod tests {
 
     #[test]
     fn due_gates_presentation_between_deadlines() {
-        // Protocol traffic wakes the loop mid-interval; the paint gate
-        // must decline.
+        // Protocol traffic wakes the loop mid-interval; the paint gate must decline.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -402,9 +339,7 @@ mod tests {
 
     #[test]
     fn set_interval_retargets_without_skipping_or_doubling_a_frame() {
-        // Mode change 60 Hz → 144 Hz. The pending deadline must survive:
-        // moving it would either drop the frame in flight or present two
-        // frames back to back.
+        // Mode change 60 Hz → 144 Hz. The pending deadline must survive — moving it would either drop the frame in flight or present two frames back to back.
         let t0 = Instant::now();
         let mut clock = FrameClock::new(Duration::from_micros(16_667), t0);
         clock.note_presented(t0);
@@ -426,9 +361,7 @@ mod tests {
 
     #[test]
     fn a_clock_built_from_a_nonsense_interval_is_clamped_not_obeyed() {
-        // Belt and braces for callers that bypass `interval_from_*`: a
-        // zero interval would spin the loop at 100% CPU, and an hour-long
-        // one would freeze it.
+        // Belt and braces for callers that bypass `interval_from_*`: a zero interval would spin the loop at 100% CPU, an hour-long one would freeze it.
         let t0 = Instant::now();
         let spin = FrameClock::new(Duration::ZERO, t0);
         assert_eq!(
@@ -446,9 +379,7 @@ mod tests {
 
     #[test]
     fn a_wakeup_that_does_not_paint_must_not_push_the_deadline_out() {
-        // Something wakes the loop at T + 2ms — on the threaded path, the
-        // render thread retiring a frame — and it declines to paint
-        // because it isn't due yet.
+        // Something wakes the loop at T + 2ms (on the threaded path, the render thread retiring a frame), and it declines to paint because it isn't due yet.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -474,10 +405,8 @@ mod tests {
 
     #[test]
     fn park_falls_back_to_a_whole_interval_only_once_the_deadline_is_stale() {
-        // The other half: when the deadline has passed and nothing was
-        // presented for it (nothing to show, or no room in the pipe),
-        // `budget` is zero and parking on it would spin the loop at 100%
-        // CPU. That case — and only that case — parks an interval.
+        // The other half: when the deadline has passed and nothing was presented for it (nothing to
+        // show, or no room in the pipe), `budget` is zero and parking on it would spin the loop at 100% CPU — that case, and only that case, parks a whole interval.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -498,8 +427,7 @@ mod tests {
 
     #[test]
     fn repeated_early_wakeups_do_not_accumulate_drift() {
-        // Every interval gets one paint plus a spurious wakeup partway
-        // through. The presentation instants must stay exactly on the grid.
+        // Every interval gets one paint plus a spurious wakeup partway through; presentation instants must stay exactly on the grid.
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
@@ -511,7 +439,6 @@ mod tests {
             presents.push(now);
             clock.note_presented(now);
             now += clock.park(now);
-            // Vary the offset so this isn't tuned to one phase.
             let offset = Duration::from_micros(500 + (i as u64 % 7) * 1_500);
             let spurious = now.min(clock.next_deadline() - Duration::from_micros(1)) + offset;
             if spurious < clock.next_deadline() {
@@ -551,9 +478,7 @@ mod tests {
 
     #[test]
     fn a_steady_loop_holds_the_target_cadence_over_many_frames() {
-        // End-to-end on the production type: simulate 600 ticks of a
-        // 5 ms workload on a 144 Hz clock and assert the presentation
-        // instants stay on the 6.944 ms grid.
+        // End-to-end on the production type: simulate 600 ticks of a 5 ms workload on a 144 Hz clock and assert presentation instants stay on the 6.944 ms grid.
         let t0 = Instant::now();
         let interval = Duration::from_micros(6_944);
         let mut clock = FrameClock::new(interval, t0);

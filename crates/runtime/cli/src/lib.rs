@@ -1,14 +1,10 @@
 //! `cli` — SDK for qOS CLI apps.
 //!
-//! qOS apps come in two flavours: GUI (talks Wayland, uses the
-//! `ui` toolkit) and CLI (owns stdio, prints text, may be piped).
-//! Both flavours run inside the same launcher-managed sandbox,
-//! and both talk to the same underlying services (workspace fs,
-//! collab broker, portal). This crate bundles the CLI-side
-//! ergonomics into a single dependency so a new terminal app is
-//! a few dozen lines.
-//!
-//! ## Entry point
+//! qOS apps come in two flavours: GUI (talks Wayland, uses the `ui`
+//! toolkit) and CLI (owns stdio, prints text, may be piped). Both run
+//! inside the same launcher-managed sandbox and talk to the same
+//! underlying services (workspace fs, collab broker, portal); this crate
+//! bundles the CLI-side ergonomics so a new terminal app is a few dozen lines.
 //!
 //! ```ignore
 //! use cli::{run_main, resolve_workspace_path};
@@ -22,45 +18,26 @@
 //! }
 //! ```
 //!
-//! [`run_main`] wraps the closure with:
+//! [`run_main`] wraps the closure with `anyhow::Error` → stderr + non-zero
+//! exit, silent `SIGPIPE` handling (e.g. `| head`), and a `QOS_CLI_COMMAND`
+//! lookup exposed via [`invoked_command`].
 //!
-//! - `anyhow::Error` → stderr + non-zero exit code.
-//! - Silent handling of `SIGPIPE` (e.g. `| head`).
-//! - A `QOS_CLI_COMMAND` env var lookup, exposed via
-//!   [`invoked_command`].
+//! [`resolve_workspace_path`] returns a path a CLI can `open()` today: under
+//! `/var/workspace/` inside qOS ([`is_qos_native`]), or under
+//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak) —
+//! deliberately unrelated to `runtime-fs` so the CLI keeps working when the
+//! FUSE driver is offline.
 //!
-//! ## Workspace paths & graceful degradation
+//! This SDK exposes **no** grant API. Access control for a CLI app is the
+//! launcher's sandbox (one writable directory, a fixed system read profile,
+//! `sandbox.net`) plus the capability model in `collab-types::caps`, all
+//! enforced outside the app — a `request_grant` helper that always returned
+//! `Ok(())` used to live here, and a permission call that always succeeds is
+//! worse than none, so it's gone. Add the real thing when the compositor
+//! grows a text/dbus portal.
 //!
-//! [`resolve_workspace_path`] returns a filesystem path a CLI
-//! can `open()` today. Two cases:
-//!
-//! 1. Inside qOS ([`is_qos_native`]): under `/var/workspace/`.
-//! 2. Standalone (stock Linux, Flatpak, etc.): under
-//!    `~/.local/share/notes.qos.dev/` (or whatever the current
-//!    process's package id is; falls back to
-//!    `~/.local/share/qos-standalone/`). Deliberately unrelated
-//!    to `runtime-fs` so the CLI keeps working when the FUSE
-//!    driver is offline.
-//!
-//! ## Portal grants
-//!
-//! This SDK exposes **no** grant API. Access control for a CLI
-//! app is the launcher's sandbox — one writable directory the
-//! launcher picks, a fixed system read profile, and `sandbox.net`
-//! — plus the capability model in `collab-types::caps`, all
-//! enforced outside the app. The app names none of it. A
-//! `request_grant` helper that returned `Ok(())` without asking
-//! anyone used to live here; a permission call that always
-//! succeeds is worse than no permission call, so it is gone. When
-//! the compositor grows a text/dbus portal, add the real request
-//! here — one that can actually say no.
-//!
-//! ## Output helpers
-//!
-//! [`output`] builds a terminal-aware writer that emits ANSI OSC
-//! 8 hyperlinks when the destination is an interactive terminal
-//! (matches how gnome-terminal / iTerm2 / kitty render clickable
-//! paths), degrading to plain text on pipes.
+//! [`output`] builds a terminal-aware writer that emits ANSI OSC 8
+//! hyperlinks on an interactive terminal, degrading to plain text on pipes.
 
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -79,22 +56,15 @@ pub use workspace::{
     WorkspaceHandle, act, is_workspace_available, resolve_workspace_path, workspace_root,
 };
 
-/// The name of the CLI command the shim invoked us as. `None`
-/// when we're running outside the launcher (or the launcher is
-/// older than the `run-installed` subcommand).
+/// The CLI command name the shim invoked us as; `None` outside the launcher.
 pub fn invoked_command() -> Option<String> {
     std::env::var("QOS_CLI_COMMAND").ok()
 }
 
-/// Run a fallible closure as `main` — mirrors the ergonomics of
-/// `main() -> ExitCode` while allowing `?` on any `anyhow::Error`.
-///
-/// Behavioural details:
-/// - Ignores `SIGPIPE` on Unix so `notes | head` doesn't panic
-///   the CLI when the reader closes the pipe.
-/// - Prints the anyhow chain to stderr via `{:#}` for a
-///   compact one-line message including all causes.
-/// - Exits with `1` on error, `0` on `Ok`.
+/// Run a fallible closure as `main`, mirroring `main() -> ExitCode` while
+/// allowing `?` on any `anyhow::Error`: ignores `SIGPIPE` so `notes | head`
+/// doesn't panic on a closed pipe, prints the anyhow chain to stderr via
+/// `{:#}`, and exits `1` on error, `0` on `Ok`.
 pub fn run_main<F: FnOnce() -> Result<()>>(f: F) -> ExitCode {
     #[cfg(unix)]
     // SAFETY: signal handler install is one-shot per process;
@@ -113,11 +83,8 @@ pub fn run_main<F: FnOnce() -> Result<()>>(f: F) -> ExitCode {
 
 #[cfg(unix)]
 unsafe fn libc_signal_ignore_sigpipe() {
-    // Avoid pulling in a full libc dependency here — the SDK is
-    // deliberately minimal — via a raw sigaction syscall through
-    // libc's C ABI. If the SIG_IGN install fails we silently
-    // continue; the CLI just returns a panic-y error on broken
-    // pipes, which is what the pre-SDK behaviour was.
+    // A raw sigaction syscall through libc's C ABI, to avoid a full libc dep.
+    // A failed SIG_IGN install is silently ignored — broken pipes just panic.
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
     }
@@ -126,39 +93,29 @@ unsafe fn libc_signal_ignore_sigpipe() {
     let _ = unsafe { signal(SIGPIPE, SIG_IGN) };
 }
 
-/// Convenience wrapper: pick the process's package id from
-/// `QOS_PACKAGE_ID` (set by the launcher). Falls back to a
-/// well-known default for local dev / testing.
+/// The process's package id from `QOS_PACKAGE_ID`, falling back to a dev default.
 pub fn package_id() -> String {
     std::env::var("QOS_PACKAGE_ID").unwrap_or_else(|_| "qos-standalone".to_string())
 }
 
-/// Print a value to stdout if it's a terminal, else write it
-/// unstyled. Small enough to skip the `output` module for
-/// simple hello-world code paths.
+/// Print to stdout if it's a terminal, else write unstyled — small enough
+/// to skip the `output` module for simple hello-world code paths.
 pub fn println_terminal_aware(text: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     let _ = out.is_terminal(); // ensure the trait is imported at call sites
     writeln!(out, "{text}")
 }
 
-/// Ensure the given directory exists — mirrors `fs::create_dir_all`
-/// but returns an `anyhow::Error` with the offending path in the
-/// error chain, which makes CLI errors much friendlier.
+/// Like `fs::create_dir_all`, but the error names the offending path.
 pub fn ensure_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("creating directory {}: {e}", dir.display()))
 }
 
-/// The directory every package's state directory is a child of.
-///
-/// Split out of [`standalone_state_dir`] because two questions are asked
-/// of it and they are not the same one: "where does *this* package keep
-/// its state" and "which packages have any". The second is what lets a
-/// surface enumerate what is stored — a compositor's search over the
-/// records apps wrote, for one — and deriving it by taking a `.parent()`
-/// off a package path is the kind of thing that silently answers `/` when
-/// the fallback branch changes.
+/// The directory every package's state directory is a child of, split out
+/// of [`standalone_state_dir`] because "where does this package keep its
+/// state" and "which packages have any" are different questions — the
+/// second is what lets a surface enumerate everything stored.
 pub fn data_home() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
         return PathBuf::from(xdg);
@@ -166,14 +123,12 @@ pub fn data_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return Path::new(&home).join(".local/share");
     }
-    // Last-ditch: /tmp. Not persistent, but keeps the CLI alive
-    // rather than crashing on `HOME unset`.
+    // Last-ditch /tmp: not persistent, but keeps the CLI alive over HOME unset.
     PathBuf::from("/tmp")
 }
 
-/// The XDG data dir helper the SDK uses to place fallback state
-/// when running outside qOS. Public so an app can point its
-/// own storage at the same spot.
+/// The XDG data dir fallback for state outside qOS; public so an app can
+/// point its own storage at the same spot.
 pub fn standalone_state_dir(pkg_id: &str) -> PathBuf {
     data_home().join(pkg_id)
 }
