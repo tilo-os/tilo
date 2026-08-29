@@ -26,13 +26,10 @@ qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 # Decode whatever the chooser hands back; encode what Save and the clipboard
 # export. Default features are off workspace-wide, so name the formats.
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
