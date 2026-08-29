@@ -192,11 +192,18 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
 
 // ---- PNG / JPEG dimensions ------------------------------------------------
 
-fn be_u32(d: &[u8]) -> u32 {
-    u32::from_be_bytes([d[0], d[1], d[2], d[3]])
+/// Big-endian `u32` at `at`, or `None` if the buffer is too short.
+///
+/// These take an offset rather than a pre-sliced buffer because `&d[a..b]` is
+/// itself a panic on a short read, and every caller here is parsing a file the
+/// user opened. One bounds check inside beats a hundred at the call sites.
+fn be_u32(d: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    Some(u32::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
-fn be_u16(d: &[u8]) -> u16 {
-    u16::from_be_bytes([d[0], d[1]])
+fn be_u16(d: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
 fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
@@ -205,7 +212,7 @@ fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     if d.len() < 24 || &d[12..16] != b"IHDR" {
         return None;
     }
-    Some((be_u32(&d[16..20]), be_u32(&d[20..24])))
+    Some((be_u32(d, 16)?, be_u32(d, 20)?))
 }
 
 fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
@@ -223,13 +230,13 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
             i += 2;
             continue;
         }
-        let seg_len = be_u16(&d[i + 2..i + 4]) as usize;
+        let seg_len = be_u16(d, i + 2)? as usize;
         let is_sof =
             (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
             // SOF payload: precision(1) height(2) width(2) ...
-            let h = u32::from(be_u16(&d[i + 5..i + 7]));
-            let w = u32::from(be_u16(&d[i + 7..i + 9]));
+            let h = u32::from(be_u16(d, i + 5)?);
+            let w = u32::from(be_u16(d, i + 7)?);
             return Some((w, h));
         }
         i += 2 + seg_len;
@@ -239,11 +246,13 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
 
 // ---- WAV ------------------------------------------------------------------
 
-fn le_u16(d: &[u8]) -> u16 {
-    u16::from_le_bytes([d[0], d[1]])
+fn le_u16(d: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
-fn le_u32(d: &[u8]) -> u32 {
-    u32::from_le_bytes([d[0], d[1], d[2], d[3]])
+fn le_u32(d: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    Some(u32::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
 fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
@@ -253,12 +262,12 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     let mut data_len = 0u32;
     while i + 8 <= d.len() {
         let id = &d[i..i + 4];
-        let size = le_u32(&d[i + 4..i + 8]) as usize;
+        let size = le_u32(d, i + 4)? as usize;
         let body = i + 8;
         match id {
             b"fmt " if body + 16 <= d.len() => {
-                audio_format = le_u16(&d[body..body + 2]);
-                byte_rate = le_u32(&d[body + 8..body + 12]);
+                audio_format = le_u16(d, body)?;
+                byte_rate = le_u32(d, body + 8)?;
             }
             b"data" => {
                 data_len = size as u32;
@@ -300,44 +309,49 @@ struct BoxRef<'a> {
 fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
     let mut out = Vec::new();
     let mut i = 0usize;
-    while i + 8 <= data.len() {
-        let size32 = u64::from(be_u32(&data[i..i + 4]));
-        let typ = [data[i + 4], data[i + 5], data[i + 6], data[i + 7]];
+    // Every read is checked and the cursor only moves forward, so a box header
+    // claiming a bogus size ends the walk instead of indexing past the buffer.
+    while i.saturating_add(8) <= data.len() {
+        let Some(size32) = be_u32(data, i).map(u64::from) else {
+            break;
+        };
+        let Some(typ) = data
+            .get(i.saturating_add(4)..i.saturating_add(8))
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        else {
+            break;
+        };
         let (header, total) = if size32 == 1 {
-            if i + 16 > data.len() {
+            let Some(large) = data
+                .get(i.saturating_add(8)..i.saturating_add(16))
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map(u64::from_be_bytes)
+            else {
                 break;
-            }
-            let large = u64::from_be_bytes([
-                data[i + 8],
-                data[i + 9],
-                data[i + 10],
-                data[i + 11],
-                data[i + 12],
-                data[i + 13],
-                data[i + 14],
-                data[i + 15],
-            ]);
+            };
             (16usize, large)
         } else if size32 == 0 {
-            (8usize, (data.len() - i) as u64)
+            (8usize, (data.len().saturating_sub(i)) as u64)
         } else {
             (8usize, size32)
         };
         let total = total as usize;
-        if total < header || i + total > data.len() {
+        if total < header || i.saturating_add(total) > data.len() {
             // Truncated / bad size — take the rest as this box's body and stop.
-            let body_start = (i + header).min(data.len());
+            let body_start = i.saturating_add(header).min(data.len());
             out.push(BoxRef {
                 typ,
-                body: &data[body_start..],
+                body: data.get(body_start..).unwrap_or_default(),
             });
             break;
         }
-        out.push(BoxRef {
-            typ,
-            body: &data[i + header..i + total],
-        });
-        i += total;
+        let Some(body) = data.get(i.saturating_add(header)..i.saturating_add(total)) else {
+            break;
+        };
+        out.push(BoxRef { typ, body });
+        // `total >= header >= 8`, so the cursor always advances and the loop
+        // terminates even on a file that claims overlapping boxes.
+        i = i.saturating_add(total);
     }
     out
 }
@@ -445,7 +459,7 @@ fn mvhd_time(body: &[u8]) -> Option<(u32, u64)> {
         if body.len() < 32 {
             return None;
         }
-        let ts = be_u32(&body[20..24]);
+        let ts = be_u32(body, 20)?;
         let dur = u64::from_be_bytes([
             body[24], body[25], body[26], body[27], body[28], body[29], body[30], body[31],
         ]);
@@ -455,8 +469,8 @@ fn mvhd_time(body: &[u8]) -> Option<(u32, u64)> {
         if body.len() < 20 {
             return None;
         }
-        let ts = be_u32(&body[12..16]);
-        let dur = u64::from(be_u32(&body[16..20]));
+        let ts = be_u32(body, 12)?;
+        let dur = u64::from(be_u32(body, 16)?);
         Some((ts, dur))
     }
 }
@@ -468,8 +482,8 @@ fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
     let n = body.len();
-    let w = be_u32(&body[n - 8..n - 4]) >> 16;
-    let h = be_u32(&body[n - 4..n]) >> 16;
+    let w = be_u32(body, n - 8)? >> 16;
+    let h = be_u32(body, n - 4)? >> 16;
     Some((w, h))
 }
 
@@ -496,7 +510,7 @@ fn stsz_count(body: &[u8]) -> Option<u32> {
     if body.len() < 12 {
         return None;
     }
-    Some(be_u32(&body[8..12]))
+    Some(be_u32(body, 8)?)
 }
 
 // ---- Matroska / WebM (EBML) ----------------------------------------------
@@ -524,16 +538,26 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         return None; // lengths beyond 8 bytes are not needed here
     }
     let len = first.leading_zeros() as usize + 1; // 1..=8
-    if len > 8 || i + len > d.len() {
+    let Some(end) = i.checked_add(len) else {
+        return None;
+    };
+    if len > 8 || end > d.len() {
         return None;
     }
     let mut value: u64 = if keep_marker {
         u64::from(first)
     } else {
-        u64::from(first & (0xFFu8 >> len))
+        // `len == 8` when the first byte is 0x01, and `0xFFu8 >> 8` is a shift
+        // overflow rather than 0. At that length the first byte carries only
+        // the marker, so no value bits survive the mask.
+        let mask = if len >= 8 { 0 } else { 0xFFu8 >> len };
+        u64::from(first & mask)
     };
     for k in 1..len {
-        value = (value << 8) | u64::from(d[i + k]);
+        let Some(&byte) = d.get(i.saturating_add(k)) else {
+            return None;
+        };
+        value = (value << 8) | u64::from(byte);
     }
     Some((value, len))
 }
@@ -754,9 +778,9 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     if xing_at + 12 <= d.len()
         && (&d[xing_at..xing_at + 4] == b"Xing" || &d[xing_at..xing_at + 4] == b"Info")
     {
-        let flags = be_u32(&d[xing_at + 4..xing_at + 8]);
+        let flags = be_u32(d, xing_at + 4)?;
         if flags & 0x1 != 0 {
-            let frames = f64::from(be_u32(&d[xing_at + 8..xing_at + 12]));
+            let frames = f64::from(be_u32(d, xing_at + 8)?);
             let duration = frames * f64::from(h.samples_per_frame) / f64::from(h.sample_rate);
             return Some(mp3_probe(duration));
         }
@@ -1022,5 +1046,55 @@ mod tests {
             p.duration,
             expected
         );
+    }
+
+    /// Media files come from the user, so a malformed one must not crash the
+    /// editor. Every parser here reads container headers that carry their own
+    /// lengths, which is the shape that indexes past a truncated buffer.
+    #[test]
+    fn no_input_makes_the_probe_panic() {
+        let path = std::path::Path::new("probe.mp4");
+
+        // Every truncation of each container's magic prefix.
+        let seeds: [&[u8]; 6] = [
+            b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
+            b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1f",
+            b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00",
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00",
+            b"\xff\xfb\x90\x00",
+        ];
+        for seed in seeds {
+            for n in 0..=seed.len() {
+                let _ = probe_bytes(seed.get(..n).unwrap_or_default(), path);
+            }
+        }
+
+        // Length fields claiming more than the buffer holds — an ISOBMFF box
+        // size of 0xFFFF_FFFF, and the 64-bit large-size form with nothing
+        // behind it.
+        let mut huge = b"\x00\x00\x00\x18ftypmp42".to_vec();
+        huge.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        huge.extend_from_slice(b"moov");
+        let _ = probe_bytes(&huge, path);
+
+        let mut large = b"\x00\x00\x00\x18ftypmp42".to_vec();
+        large.extend_from_slice(&[0, 0, 0, 1]);
+        large.extend_from_slice(b"moov");
+        let _ = probe_bytes(&large, path);
+
+        // Random bytes at a spread of lengths.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for len in [0usize, 1, 4, 8, 16, 64, 128, 512, 4096] {
+            let blob: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    (seed >> 32) as u8
+                })
+                .collect();
+            let _ = probe_bytes(&blob, path);
+        }
     }
 }
