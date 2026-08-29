@@ -89,7 +89,7 @@ impl<'a> DocStore<'a> {
                 .await?;
             change_hashes.push(*h.as_bytes());
         }
-        let heads: Vec<String> = doc.get_heads().iter().map(|h| h.to_string()).collect();
+        let heads: Vec<String> = doc.get_heads().iter().map(std::string::ToString::to_string).collect();
         let parent = self.latest().map(|v| *v.manifest_hash.as_bytes());
         let version = self.history.len() as u64;
         let time_ms = now_ms();
@@ -218,8 +218,7 @@ impl<'a> DocStore<'a> {
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 #[cfg(test)]
@@ -484,9 +483,9 @@ mod tests {
         let vb = ds.commit_document(&mut peer_b, "bob").await.unwrap();
         let mb = ds.load_manifest(vb.manifest_hash).await.unwrap();
         let mut a_set = ma.change_hashes.clone();
-        let mut b_set = mb.change_hashes.clone();
-        a_set.sort();
-        b_set.sort();
+        let mut b_set = mb.change_hashes;
+        a_set.sort_unstable();
+        b_set.sort_unstable();
         assert_eq!(
             a_set, b_set,
             "converged replicas store an identical set of content-addressed changes"

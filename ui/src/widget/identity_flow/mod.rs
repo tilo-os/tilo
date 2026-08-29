@@ -263,7 +263,7 @@ impl PairingPayload {
     }
 }
 
-/// `SHA512("qos-pair-code-v1" || nonce)` truncated mod 1_000_000.
+/// `SHA512("qos-pair-code-v1" || nonce)` truncated mod `1_000_000`.
 /// ~16M collision space is fine for a short-lived pairing window: the
 /// code is the seed, not the authentication — a wrong code just fails
 /// the downstream MAC check.
@@ -369,12 +369,12 @@ pub enum InviteExpiry {
 impl InviteExpiry {
     pub fn resolve(self, now: SystemTime) -> SystemTime {
         match self {
-            InviteExpiry::OneHour => now + Duration::from_secs(3600),
-            InviteExpiry::OneDay => now + Duration::from_secs(86400),
-            InviteExpiry::OneWeek => now + Duration::from_secs(7 * 86400),
+            InviteExpiry::OneHour => now + Duration::from_hours(1),
+            InviteExpiry::OneDay => now + Duration::from_hours(24),
+            InviteExpiry::OneWeek => now + Duration::from_hours(168),
             // `Never` is encoded as +100 years; downstream verifiers
             // treat that as "no practical expiry".
-            InviteExpiry::Never => now + Duration::from_secs(100 * 365 * 86400),
+            InviteExpiry::Never => now + Duration::from_hours(876000),
         }
     }
 
@@ -447,8 +447,7 @@ impl InviteEnvelope {
     pub fn is_expired(&self, now: SystemTime) -> bool {
         let now_unix = now
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         now_unix >= self.expires_unix
     }
 
@@ -456,7 +455,7 @@ impl InviteEnvelope {
         let bytes = postcard::to_allocvec(self)
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
         let encoded = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes);
-        Ok(format!("qos://invite/{}", encoded))
+        Ok(format!("qos://invite/{encoded}"))
     }
 
     pub fn from_url(url: &str) -> Result<Self, IdentityFlowError> {
@@ -491,8 +490,7 @@ pub fn mint_invite(
         role,
         expires_unix: expires_at
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX),
+            .map_or(u64::MAX, |d| d.as_secs()),
         delegation_pubkey,
         // Store raw bytes so the recipient can rebuild a DalekSigningKey.
         delegation_secret: delegation_secret_full.to_bytes().to_vec(),
@@ -530,7 +528,7 @@ pub fn build_attestation_from_invite(
         subject: invitee_pubkey,
         claims: vec![Claim::ClearedAt(Clearance::PUBLIC)],
         valid_from: now,
-        valid_until: now + Duration::from_secs(365 * 86400),
+        valid_until: now + Duration::from_hours(8760),
         signature: Signature::from_bytes([0; 64]),
     };
     let bytes = attestation
@@ -933,7 +931,7 @@ fn draw_done_card(
         &initial,
         28.0,
         Color::from_rgb8(255, 255, 255),
-        transform * Affine::translate((avatar_cx - iw as f64 / 2.0, avatar_cy - 16.0)),
+        transform * Affine::translate((avatar_cx - f64::from(iw) / 2.0, avatar_cy - 16.0)),
         None,
     );
     text_renderer.draw_text(
@@ -1163,28 +1161,28 @@ impl Widget for IdentityFlow {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         match self.current {
             IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.apply_layout(taffy, node, origin)
+                self.create_identity.apply_layout(taffy, node, origin);
             }
             IdentityFlowScreen::RecoveryShare => {
-                self.recovery_share.apply_layout(taffy, node, origin)
+                self.recovery_share.apply_layout(taffy, node, origin);
             }
             IdentityFlowScreen::RecoveryVerify => {
-                self.recovery_verify.apply_layout(taffy, node, origin)
+                self.recovery_verify.apply_layout(taffy, node, origin);
             }
             IdentityFlowScreen::AddDeviceHost => {
-                self.add_device_host.apply_layout(taffy, node, origin)
+                self.add_device_host.apply_layout(taffy, node, origin);
             }
             IdentityFlowScreen::PairDevice => self.pair_device.apply_layout(taffy, node, origin),
             IdentityFlowScreen::InviteMint => self.invite_mint.apply_layout(taffy, node, origin),
             IdentityFlowScreen::InviteAccept => {
-                self.invite_accept.apply_layout(taffy, node, origin)
+                self.invite_accept.apply_layout(taffy, node, origin);
             }
             IdentityFlowScreen::Done => {
                 // No inner screen; self.rect already set above.
@@ -1203,31 +1201,31 @@ impl Widget for IdentityFlow {
         match self.current {
             IdentityFlowScreen::CreateIdentity => {
                 self.create_identity
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::RecoveryShare => {
                 self.recovery_share
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::RecoveryVerify => {
                 self.recovery_verify
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::AddDeviceHost => {
                 self.add_device_host
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::PairDevice => {
                 self.pair_device
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::InviteMint => {
                 self.invite_mint
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::InviteAccept => {
                 self.invite_accept
-                    .draw(scene, transform, text_renderer, theme, presence)
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
             IdentityFlowScreen::Done => {
                 draw_done_card(
@@ -1347,7 +1345,7 @@ impl Widget for IdentityFlow {
         self.advance(outcome);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "IdentityFlow"
     }
 

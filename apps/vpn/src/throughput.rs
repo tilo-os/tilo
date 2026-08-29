@@ -27,7 +27,7 @@ pub fn draw_chart(
     up: &[f64],
     connected: bool,
 ) {
-    let radius = theme.tokens.radii.lg as f64;
+    let radius = f64::from(theme.tokens.radii.lg);
     let card = RoundedRect::from_rect(rect, radius);
     scene.fill(
         Fill::NonZero,
@@ -54,7 +54,7 @@ pub fn draw_chart(
     // Horizontal gridlines (3 divisions).
     let grid_color = theme.tokens.colors.border_white_10.multiply_alpha(0.6);
     for k in 0..=3 {
-        let y = plot.y0 + plot.height() * (k as f64 / 3.0);
+        let y = plot.y0 + plot.height() * (f64::from(k) / 3.0);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -72,7 +72,7 @@ pub fn draw_chart(
     let peak = down
         .iter()
         .chain(up.iter())
-        .cloned()
+        .copied()
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let scale = peak * 1.15;

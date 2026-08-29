@@ -11,8 +11,8 @@
 //!
 //! | Gesture                  | Same as                    |
 //! |--------------------------|----------------------------|
-//! | 3-finger swipe up / down | Super+ArrowUp / ArrowDown — switch workspace |
-//! | 3-finger swipe left/right| Super+ArrowLeft / ArrowRight — step along the strip |
+//! | 3-finger swipe up / down | Super+ArrowUp / `ArrowDown` — switch workspace |
+//! | 3-finger swipe left/right| Super+ArrowLeft / `ArrowRight` — step along the strip |
 //! | 4-finger swipe up / down | Ctrl+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
 //!

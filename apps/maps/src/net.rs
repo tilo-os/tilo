@@ -169,9 +169,7 @@ pub fn region_from_json(item: &Value) -> Option<RegionHit> {
     // A short locality subtitle: the display name minus the leading name.
     let context = place
         .address
-        .split_once(',')
-        .map(|(_, rest)| rest.trim().to_string())
-        .unwrap_or_else(|| place.address.clone());
+        .split_once(',').map_or_else(|| place.address.clone(), |(_, rest)| rest.trim().to_string());
     Some(RegionHit {
         name: place.name,
         context,
@@ -366,7 +364,7 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
     tags[key]
         .as_str()
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Route between two coordinates with the OSRM public demo server.
@@ -479,7 +477,7 @@ pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
         return Ok(name.to_string());
     }
     if let Some(display) = v["display_name"].as_str().filter(|s| !s.is_empty()) {
-        let short: Vec<&str> = display.split(',').take(2).map(|s| s.trim()).collect();
+        let short: Vec<&str> = display.split(',').take(2).map(str::trim).collect();
         return Ok(short.join(", "));
     }
     Err("no address for this location".to_string())
@@ -557,8 +555,7 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                     duration_min,
                     num_stops: leg["intermediateStops"]
                         .as_array()
-                        .map(|a| a.len() as u32)
-                        .unwrap_or(0),
+                        .map_or(0, |a| a.len() as u32),
                     geometry: leg_geometry(leg),
                     // Authentic GTFS line colours from the feed.
                     color: hex("routeColor"),
@@ -612,7 +609,7 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
             if *i >= bytes.len() {
                 return None;
             }
-            let b = bytes[*i] as i64 - 63;
+            let b = i64::from(bytes[*i]) - 63;
             *i += 1;
             result |= (b & 0x1f) << shift;
             shift += 5;
@@ -654,7 +651,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),

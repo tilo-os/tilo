@@ -9,7 +9,7 @@
 //!
 //! ## Licensing
 //!
-//! Grayjay's app code is FUTO Source-First (non-commercial) and the YouTube
+//! Grayjay's app code is FUTO Source-First (non-commercial) and the `YouTube`
 //! plugin is AGPL-3.0. What lives here is our own Rust: the *facts* of an
 //! interoperable wire protocol (opcode integers, Noise pattern strings, framing
 //! layout, JSON field names). None of Grayjay's source is copied.

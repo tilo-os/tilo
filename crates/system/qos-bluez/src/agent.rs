@@ -1,9 +1,9 @@
 //! The `org.bluez.Agent1` pairing agent.
 //!
-//! BlueZ does not *tell* a desktop how pairing is going — it **asks**: `bluetoothd` makes a
+//! `BlueZ` does not *tell* a desktop how pairing is going — it **asks**: `bluetoothd` makes a
 //! blocking D-Bus call into a registered object and waits for the pairing decision, so this
 //! cannot be a `bluetoothctl` wrapper (there's no CLI shape for "the daemon calls you and
-//! waits"). This object does no deciding itself — it translates each BlueZ question into a
+//! waits"). This object does no deciding itself — it translates each `BlueZ` question into a
 //! [`PairingRequest`], sends it to whoever owns the screen, and turns the [`PairingReply`]
 //! back into a return value or D-Bus error. The compositor draws the prompt; this is the wire.
 
@@ -30,18 +30,18 @@ const BLUEZ_DEST: &str = "org.bluez";
 const AGENT_MANAGER_PATH: &str = "/org/bluez";
 const AGENT_MANAGER_IFACE: &str = "org.bluez.AgentManager1";
 
-/// How long the user has to answer before we tell BlueZ the request expired. `bluetoothd`
+/// How long the user has to answer before we tell `BlueZ` the request expired. `bluetoothd`
 /// gives an agent 60s (`REQUEST_TIMEOUT` in its `src/agent.c`) before abandoning the call
 /// itself; answering just inside that window lets the daemon learn *why* pairing stopped.
 pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(55);
 
-/// Errors this agent returns to BlueZ. The names matter: `bluetoothd` branches on
+/// Errors this agent returns to `BlueZ`. The names matter: `bluetoothd` branches on
 /// `org.bluez.Error.Rejected` (user said no) vs `org.bluez.Error.Canceled` (nobody
 /// answered), reporting them differently to the device.
 #[derive(Debug, DBusError)]
 #[zbus(prefix = "org.bluez.Error")]
 pub enum AgentError {
-    /// Transport-level failures, carried through rather than dressed up as a BlueZ error name.
+    /// Transport-level failures, carried through rather than dressed up as a `BlueZ` error name.
     #[zbus(error)]
     ZBus(zbus::Error),
     /// The user declined.
@@ -53,16 +53,16 @@ pub enum AgentError {
 /// What the agent emits towards the UI.
 #[derive(Debug)]
 pub enum AgentEvent {
-    /// BlueZ is asking. Send a [`PairingReply`] on `reply` to unblock it. Dropping the sender
+    /// `BlueZ` is asking. Send a [`PairingReply`] on `reply` to unblock it. Dropping the sender
     /// is read as [`PairingReply::Reject`].
     Ask {
         request: PairingRequest,
         reply: oneshot::Sender<PairingReply>,
     },
-    /// BlueZ withdrew the pending request (the remote gave up, or pairing failed elsewhere).
+    /// `BlueZ` withdrew the pending request (the remote gave up, or pairing failed elsewhere).
     /// Any prompt on screen should be dismissed.
     Cancelled,
-    /// BlueZ released the agent — it is no longer registered.
+    /// `BlueZ` released the agent — it is no longer registered.
     Released,
 }
 
@@ -94,16 +94,15 @@ impl DeviceNames {
     /// Best-effort display name: the cached alias, else the address decoded from the object
     /// path, else the path itself — never empty, so a prompt always has something to name.
     pub fn get(&self, path: &str) -> String {
-        if let Ok(m) = self.0.lock() {
-            if let Some(n) = m.get(path).filter(|n| !n.is_empty()) {
+        if let Ok(m) = self.0.lock()
+            && let Some(n) = m.get(path).filter(|n| !n.is_empty()) {
                 return n.clone();
             }
-        }
         address_from_path(path).unwrap_or_else(|| path.to_string())
     }
 }
 
-/// The D-Bus object BlueZ calls into.
+/// The D-Bus object `BlueZ` calls into.
 pub struct PairingAgent {
     tx: mpsc::UnboundedSender<AgentEvent>,
     names: DeviceNames,
@@ -190,7 +189,7 @@ impl PairingAgent {
 
 #[interface(name = "org.bluez.Agent1")]
 impl PairingAgent {
-    /// BlueZ is done with us.
+    /// `BlueZ` is done with us.
     async fn release(&self) {
         debug!(target: "qos::bluez", "agent released by bluez");
         let _ = self.tx.send(AgentEvent::Released);
@@ -248,7 +247,7 @@ impl PairingAgent {
     }
 
     /// An already-paired device wants a profile it has not been authorised for. Trusted devices
-    /// never reach here — BlueZ answers for them.
+    /// never reach here — `BlueZ` answers for them.
     async fn authorize_service(
         &self,
         device: ObjectPath<'_>,
@@ -275,7 +274,7 @@ pub struct AgentRegistration {
 }
 
 impl AgentRegistration {
-    /// Serve `agent` at [`AGENT_PATH`] on `connection`, register it with BlueZ, and ask to
+    /// Serve `agent` at [`AGENT_PATH`] on `connection`, register it with `BlueZ`, and ask to
     /// become the default agent — which routes prompts for pairings the user starts from
     /// anywhere (including `bluetoothctl` or the remote device) to this desktop.
     pub async fn register(connection: &Connection, agent: PairingAgent) -> zbus::Result<Self> {
@@ -316,7 +315,7 @@ impl AgentRegistration {
         })
     }
 
-    /// Unregister from BlueZ and drop the object.
+    /// Unregister from `BlueZ` and drop the object.
     pub async fn unregister(self) -> zbus::Result<()> {
         let object_path = ObjectPath::try_from(self.path.clone())?;
         let manager = zbus::Proxy::new(

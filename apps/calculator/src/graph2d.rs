@@ -274,7 +274,11 @@ impl Graph2dScreen {
     /// field per row and feed it the row's current expression. Local edits are
     /// preserved because `set_source` is a no-op when the string is unchanged.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        if self.fields.len() != model.funcs.len() {
+        if self.fields.len() == model.funcs.len() {
+            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
+                field.set_source(&f.expr);
+            }
+        } else {
             self.fields = model
                 .funcs
                 .iter()
@@ -292,10 +296,6 @@ impl Graph2dScreen {
                 } else {
                     field.park_caret_in_structure();
                 }
-            }
-        } else {
-            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
-                field.set_source(&f.expr);
             }
         }
     }
@@ -583,8 +583,8 @@ impl Graph2dScreen {
         );
         if let Some(p) = trace {
             let wx = self.to_world(p, view).x;
-            if let Some(expr) = model.active_expr() {
-                if let Ok(comp) = engine::compile(expr, model.deg, false) {
+            if let Some(expr) = model.active_expr()
+                && let Ok(comp) = engine::compile(expr, model.deg, false) {
                     let wy = comp.eval1(wx);
                     draw::text_in(
                         scene,
@@ -602,7 +602,6 @@ impl Graph2dScreen {
                         TextWeight::Semibold,
                     );
                 }
-            }
         } else {
             draw::text_in(
                 scene,
@@ -705,7 +704,7 @@ impl Graph2dScreen {
     /// Center of function row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.vis_rects.get(i).map(|r| r.center())
+        self.vis_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     // ----- canvas internals -------------------------------------------------
@@ -1016,7 +1015,7 @@ impl Graph2dScreen {
             let chip = Rect::new(
                 sx + 8.0,
                 self.canvas.y0 + 10.0,
-                sx + 8.0 + w as f64 + 20.0,
+                sx + 8.0 + f64::from(w) + 20.0,
                 self.canvas.y0 + 36.0,
             );
             let chip = clamp_rect_x(chip, self.canvas);

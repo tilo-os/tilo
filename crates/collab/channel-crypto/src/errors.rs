@@ -1,6 +1,6 @@
 //! Error types for `channel-crypto`.
 //!
-//! OpenMLS defines a thicket of error enums parameterised over the
+//! `OpenMLS` defines a thicket of error enums parameterised over the
 //! storage backend's error type; propagating those verbatim would
 //! couple our surface to openmls's internal plumbing, so they collapse
 //! into a single [`Error::OpenMls`] carrying a `{:?}`-rendered string.
@@ -48,7 +48,7 @@ pub enum Error {
     /// `MlsGroup::process_message` returned a non-application variant
     /// (proposal, external join, commit) — this surface only handles
     /// application payloads; governance commits arrive via the broker's
-    /// ChannelEvent log, not in-band.
+    /// `ChannelEvent` log, not in-band.
     #[error("processed message was not an application message")]
     NotApplicationMessage,
 }

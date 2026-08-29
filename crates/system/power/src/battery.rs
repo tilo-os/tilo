@@ -141,12 +141,11 @@ impl BatteryMonitor {
                 self.warned_low = true;
                 out.push(BatteryEvent::Critical(snap.percent));
             }
-        } else if snap.percent <= policy.low_battery_percent {
-            if !self.warned_low {
+        } else if snap.percent <= policy.low_battery_percent
+            && !self.warned_low {
                 self.warned_low = true;
                 out.push(BatteryEvent::Low(snap.percent));
             }
-        }
 
         out
     }

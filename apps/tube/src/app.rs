@@ -111,7 +111,7 @@ pub struct TubeApp {
     /// frame). Cleared implicitly by opening a *different* video.
     playing_id: Option<String>,
     /// The shared, persistent video player for the watch page — a real
-    /// [`ui::widget::VideoPlayer`] backed by a [`media::MediaEngine`] (GStreamer
+    /// [`ui::widget::VideoPlayer`] backed by a [`media::MediaEngine`] (`GStreamer`
     /// decode + audio out with `--features media`, a synthesized frame otherwise).
     /// It lives here, behind an `Rc<RefCell<_>>`, so it survives the whole-tree
     /// rebuilds Tube does on every structural change — each rebuilt watch screen
@@ -130,7 +130,7 @@ pub struct TubeApp {
     /// `None` and the procedural gradient/initials fallback shows.
     images: Option<ui::ImageStore>,
 
-    /// End (seconds) of the show-mode SponsorBlock segment the playhead is
+    /// End (seconds) of the show-mode `SponsorBlock` segment the playhead is
     /// currently inside, if any. The on-video "Skip" overlay is shown for it.
     /// Tracked here so a *transition* (playhead entering/leaving the segment)
     /// dirties the tree — the advancing playhead alone doesn't rebuild it.
@@ -323,9 +323,7 @@ impl TubeApp {
         let id = self
             .model
             .videos
-            .first()
-            .map(|v| v.id.clone())
-            .unwrap_or_else(|| "vid_donut".to_string());
+            .first().map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
         self.model.route = Route::Watch(id.clone());
         {
             let mut p = self.player.borrow_mut();
@@ -408,7 +406,7 @@ impl TubeApp {
                 pump(
                     &mut p,
                     &mut doc,
-                    &|p| p.engine().map(|e| e.position_ms()).unwrap_or(0) >= 30_000,
+                    &|p| p.engine().map_or(0, media::MediaEngine::position_ms) >= 30_000,
                     Duration::from_secs(15),
                 );
             }
@@ -687,8 +685,7 @@ impl TubeApp {
     fn images_pending(&self) -> bool {
         self.images
             .as_ref()
-            .map(|s| s.pending() > 0)
-            .unwrap_or(false)
+            .is_some_and(|s| s.pending() > 0)
     }
 
     /// If the current route is a watch page we haven't started playing yet, ask
@@ -725,7 +722,7 @@ impl TubeApp {
     }
 
     /// Per-frame playback bookkeeping: mirror the engine's playhead onto the
-    /// model (so SponsorBlock auto-skip + autoplay-next key off the real
+    /// model (so `SponsorBlock` auto-skip + autoplay-next key off the real
     /// position), auto-skip enabled segments by seeking the engine, and advance
     /// to the next recommendation when the stream ends. Returns `true` only when
     /// something *visible* changed (a skip notice or an autoplay navigation) so
@@ -842,14 +839,14 @@ impl TubeApp {
     /// Resolve the current watch video's duration, if any.
     fn current_duration(&self) -> Option<f64> {
         match &self.model.route {
-            Route::Watch(id) => self.model.video(id).map(|v| v.duration as f64),
+            Route::Watch(id) => self.model.video(id).map(|v| f64::from(v.duration)),
             _ => None,
         }
     }
 
-    /// The end (seconds) of the show-mode SponsorBlock segment the playhead is
+    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead is
     /// currently inside, if any — what the on-video "Skip" overlay offers.
-    /// `None` off the watch route, when SponsorBlock is off, or when no show-mode
+    /// `None` off the watch route, when `SponsorBlock` is off, or when no show-mode
     /// segment contains the playhead.
     fn current_show_skip_end(&self) -> Option<f64> {
         if !self.model.settings.sponsorblock_enabled {
@@ -867,7 +864,7 @@ impl TubeApp {
             .map(|s| s.end)
     }
 
-    /// If the playhead sits inside an enabled SponsorBlock segment, jump the
+    /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
     /// engine (and the model) to its end and log the skip. Returns `true` when a
     /// skip actually happened. Runs both as the user scrubs and each frame from
     /// [`Self::tick_playback`] against the real engine playhead.
@@ -944,8 +941,7 @@ impl TubeApp {
         let stub = self
             .model
             .channel(channel_id)
-            .map(|c| c.avatar_url.is_empty() || c.subscribers == 0)
-            .unwrap_or(true);
+            .map_or(true, |c| c.avatar_url.is_empty() || c.subscribers == 0);
         if stub {
             self.requested_channels.insert(channel_id.to_string());
             self.request_live(Request::Channel(channel_id.to_string()));
@@ -965,7 +961,7 @@ impl TubeApp {
         let Route::Watch(id) = self.model.route.clone() else {
             return false;
         };
-        let Some(dur) = self.model.video(&id).map(|v| v.duration as f64) else {
+        let Some(dur) = self.model.video(&id).map(|v| f64::from(v.duration)) else {
             return false;
         };
         if self.model.playhead < dur - 0.001 {
@@ -1065,7 +1061,7 @@ impl TubeApp {
                     SettingFlag::DeArrowTitles => s.dearrow_titles = !s.dearrow_titles,
                     SettingFlag::DeArrowThumbnails => s.dearrow_thumbnails = !s.dearrow_thumbnails,
                     SettingFlag::ReturnDislike => {
-                        s.return_dislike_enabled = !s.return_dislike_enabled
+                        s.return_dislike_enabled = !s.return_dislike_enabled;
                     }
                     SettingFlag::Autoplay => s.autoplay = !s.autoplay,
                     SettingFlag::ShowComments => s.show_comments = !s.show_comments,
@@ -1148,7 +1144,7 @@ impl TubeApp {
         }
     }
 
-    /// Request live InnerTube data (feed / video detail / channel), but only
+    /// Request live `InnerTube` data (feed / video detail / channel), but only
     /// when this instance is online. The offline `--shots` and test paths call
     /// through the same navigation code, so gating here keeps them from ever
     /// spawning the worker or reaching the network.
@@ -1294,8 +1290,7 @@ impl TubeApp {
                                 && self
                                     .model
                                     .channel(cid)
-                                    .map(|c| c.avatar_url.is_empty())
-                                    .unwrap_or(true)
+                                    .map_or(true, |c| c.avatar_url.is_empty())
                         })
                         .take(6)
                         .collect();
@@ -1340,8 +1335,7 @@ impl TubeApp {
                         && self
                             .model
                             .channel(&channel_id)
-                            .map(|c| c.avatar_url.is_empty() || c.subscribers == 0)
-                            .unwrap_or(true)
+                            .map_or(true, |c| c.avatar_url.is_empty() || c.subscribers == 0)
                     {
                         fetch_channels.push(channel_id);
                     }
@@ -1571,10 +1565,10 @@ impl Widget for TubeApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if let Some(c) = &mut self.root_child {
             c.apply_layout(taffy, node, origin);
@@ -1846,8 +1840,7 @@ impl Widget for TubeApp {
             || self
                 .root_child
                 .as_ref()
-                .map(|c| c.needs_redraw())
-                .unwrap_or(true)
+                .map_or(true, |c| c.needs_redraw())
     }
 
     fn mark_drawn(&mut self) {
@@ -1859,8 +1852,7 @@ impl Widget for TubeApp {
     fn is_layout_dirty(&self) -> bool {
         self.root_child
             .as_ref()
-            .map(|c| c.is_layout_dirty())
-            .unwrap_or(true)
+            .map_or(true, |c| c.is_layout_dirty())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1890,8 +1882,7 @@ impl Widget for TubeApp {
             || self
                 .root_child
                 .as_ref()
-                .map(|c| c.needs_animation_frame())
-                .unwrap_or(false)
+                .is_some_and(|c| c.needs_animation_frame())
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1910,7 +1901,7 @@ impl Widget for TubeApp {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TubeApp"
     }
 

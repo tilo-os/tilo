@@ -65,12 +65,9 @@ pub fn send(cmd: Command) -> Option<Outcome> {
         tracing::warn!(target: "qos::mpris", error = %e, "could not spawn mpris worker");
         return None;
     }
-    match rx.recv_timeout(DEADLINE) {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            tracing::debug!(target: "qos::mpris", "no player answered within the deadline");
-            None
-        }
+    if let Ok(outcome) = rx.recv_timeout(DEADLINE) { outcome } else {
+        tracing::debug!(target: "qos::mpris", "no player answered within the deadline");
+        None
     }
 }
 

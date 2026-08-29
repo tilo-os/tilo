@@ -1,14 +1,14 @@
 //! `SeekBar` — the SponsorBlock-aware scrubber.
 //!
 //! This is the differentiating widget of the whole app: the seek bar is
-//! painted with the community SponsorBlock segments inline, each in its
+//! painted with the community `SponsorBlock` segments inline, each in its
 //! canonical category colour, so before you even press play you can see
 //! "there's a 90-second sponsor read at the 24-minute mark". Click or drag
 //! anywhere to seek; the root auto-skips enabled categories as the
 //! playhead crosses them.
 //!
 //! Track / played / knob colours come from the OS [`Theme`]; only the
-//! segment bands use SponsorBlock's brand colours (documented in
+//! segment bands use `SponsorBlock`'s brand colours (documented in
 //! [`crate::model::Category::rgb`]), because matching what users already
 //! recognise is the whole point.
 
@@ -96,17 +96,17 @@ impl Widget for SeekBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -275,7 +275,7 @@ impl Widget for SeekBar {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SeekBar"
     }
     fn is_layout_dirty(&self) -> bool {

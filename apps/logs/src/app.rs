@@ -56,7 +56,7 @@ const ROW_H: f64 = 30.0;
 const LIST_HEADER_H: f64 = 26.0;
 const CONTROL_H: f64 = 34.0;
 const DROPDOWN_ITEM_H: f64 = 30.0;
-const POLL_INTERVAL: Duration = Duration::from_millis(1000);
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Which transient popup is open, if any.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -96,7 +96,7 @@ pub struct LogsApp {
     entries: Vec<LogEntry>,
     /// Distinct units present, in first-seen order (for the dropdown).
     units: Vec<String>,
-    /// Distinct boots: (boot_id, human label).
+    /// Distinct boots: (`boot_id`, human label).
     boots: Vec<(String, String)>,
 
     // ---- per-frame caches, refreshed from the doc on sync ----
@@ -329,7 +329,7 @@ impl LogsApp {
         let chips_x0 = (x0 + w - PAD - chips_total).max(boot_trigger.x1 + 16.0);
         let chips: Vec<Rect> = (0..8)
             .map(|i| {
-                let cx = chips_x0 + i as f64 * (chip_w + chip_gap);
+                let cx = chips_x0 + f64::from(i) * (chip_w + chip_gap);
                 Rect::new(cx, fy, cx + chip_w, fy + CONTROL_H)
             })
             .collect();
@@ -339,12 +339,12 @@ impl LogsApp {
         // it and is only laid out (non-zero) while a filter is active.
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
-        let clear_btn = if !self.filter.is_clear() {
+        let clear_btn = if self.filter.is_clear() {
+            Rect::ZERO
+        } else {
             let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
             let x1 = live_pill.x0 - 12.0;
             Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
-        } else {
-            Rect::ZERO
         };
 
         // Content area between the filter bar and the window bottom.
@@ -492,7 +492,7 @@ fn text_at(
 
 /// Vertically-centred Y for a single line of `size` inside `rect`.
 fn vcenter(rect: Rect, size: f32) -> f64 {
-    rect.y0 + (rect.height() - size as f64 * 1.25) / 2.0
+    rect.y0 + (rect.height() - f64::from(size) * 1.25) / 2.0
 }
 
 /// Trim `s` with a trailing ellipsis until it fits `max_w` px at `size`.
@@ -508,18 +508,18 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> S
             tr.measure(t, size, None).0
         }
     };
-    if (measure(tr, s) as f64) <= max_w {
+    if f64::from(measure(tr, s)) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
-    let full = measure(tr, s) as f64;
+    let full = f64::from(measure(tr, s));
     let mut keep = (((max_w / full) * chars.len() as f64) as usize).min(chars.len());
     loop {
         if keep == 0 {
             return "…".to_string();
         }
         let cand: String = chars[..keep].iter().collect::<String>() + "…";
-        if (measure(tr, &cand) as f64) <= max_w {
+        if f64::from(measure(tr, &cand)) <= max_w {
             return cand;
         }
         keep -= 1;
@@ -581,7 +581,7 @@ impl LogsApp {
                 label,
                 bsz,
                 theme.accent_primary,
-                reg.clear_btn.center().x - bw as f64 / 2.0,
+                reg.clear_btn.center().x - f64::from(bw) / 2.0,
                 vcenter(reg.clear_btn, bsz),
                 TextWeight::Semibold,
                 false,
@@ -607,7 +607,7 @@ impl LogsApp {
             &counts,
             theme.tokens.typography.scale.sm,
             theme.text_dim,
-            counts_anchor - 14.0 - cw as f64,
+            counts_anchor - 14.0 - f64::from(cw),
             vcenter(reg.header, theme.tokens.typography.scale.sm),
             TextWeight::Medium,
             false,
@@ -764,7 +764,7 @@ impl LogsApp {
             // caret
             if focused {
                 let (sw, _) = tr.measure(&shown, sz, None);
-                let cx = text_x + sw as f64 + 1.0;
+                let cx = text_x + f64::from(sw) + 1.0;
                 line(
                     scene,
                     t,
@@ -801,9 +801,7 @@ impl LogsApp {
         } else {
             self.boots
                 .iter()
-                .find(|(id, _)| id == &self.filter.boot)
-                .map(|(_, l)| l.clone())
-                .unwrap_or_else(|| self.filter.boot.chars().take(8).collect())
+                .find(|(id, _)| id == &self.filter.boot).map_or_else(|| self.filter.boot.chars().take(8).collect(), |(_, l)| l.clone())
         };
         self.draw_dropdown_trigger(
             scene,
@@ -843,7 +841,7 @@ impl LogsApp {
                 tag,
                 sz,
                 label_c,
-                chip.center().x - lw as f64 / 2.0,
+                chip.center().x - f64::from(lw) / 2.0,
                 vcenter(*chip, sz),
                 TextWeight::Bold,
                 false,
@@ -1058,7 +1056,7 @@ impl LogsApp {
                     title,
                     tsz,
                     c.text_primary,
-                    cx - tw as f64 / 2.0,
+                    cx - f64::from(tw) / 2.0,
                     cy - 24.0,
                     TextWeight::Semibold,
                     false,
@@ -1072,7 +1070,7 @@ impl LogsApp {
                     subtitle,
                     ssz,
                     theme.text_dim,
-                    cx - sw as f64 / 2.0,
+                    cx - f64::from(sw) / 2.0,
                     cy + 2.0,
                     TextWeight::Regular,
                     false,
@@ -1088,7 +1086,7 @@ impl LogsApp {
                     msg,
                     sz,
                     theme.text_dim,
-                    cx - mw as f64 / 2.0,
+                    cx - f64::from(mw) / 2.0,
                     cy - 10.0,
                     TextWeight::Regular,
                     false,
@@ -1100,12 +1098,12 @@ impl LogsApp {
         // Clip + draw rows.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
         let body = reg.list_body;
-        let first = (self.scroll as f64 / ROW_H).floor().max(0.0) as usize;
+        let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
         let visible = (body.height() / ROW_H).ceil() as usize + 2;
         for pos in first..(first + visible).min(self.filtered.len()) {
             let abs = self.filtered[pos];
             let e = &self.entries[abs];
-            let row_y0 = body.y0 + pos as f64 * ROW_H - self.scroll as f64;
+            let row_y0 = body.y0 + pos as f64 * ROW_H - f64::from(self.scroll);
             let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + ROW_H);
             if row.y1 < body.y0 || row.y0 > body.y1 {
                 continue;
@@ -1200,7 +1198,7 @@ impl LogsApp {
             let frac_v = body.height() / content;
             let thumb_h = (frac_v * body.height()).max(28.0);
             let max_scroll = (content - body.height()).max(1.0);
-            let ty0 = body.y0 + (self.scroll as f64 / max_scroll) * (body.height() - thumb_h);
+            let ty0 = body.y0 + (f64::from(self.scroll) / max_scroll) * (body.height() - thumb_h);
             fill_round(
                 scene,
                 t,
@@ -1262,7 +1260,7 @@ impl LogsApp {
         let badge_label = e.priority.long().to_uppercase();
         let bsz = theme.tokens.typography.scale.xs;
         let (blw, _) = tr.measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
-        let badge = Rect::new(inner_x, y, inner_x + blw as f64 + 24.0, y + 22.0);
+        let badge = Rect::new(inner_x, y, inner_x + f64::from(blw) + 24.0, y + 22.0);
         fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
         text_at(
             tr,
@@ -1308,7 +1306,7 @@ impl LogsApp {
             TextWeight::Semibold,
             false,
         );
-        y += title_sz as f64 * 1.5;
+        y += f64::from(title_sz) * 1.5;
 
         // Timestamp.
         let tssz = theme.tokens.typography.scale.sm;
@@ -1324,7 +1322,7 @@ impl LogsApp {
             TextWeight::Regular,
             true,
         );
-        y += tssz as f64 * 1.6 + 6.0;
+        y += f64::from(tssz) * 1.6 + 6.0;
 
         // Message (wrapped).
         let msz = theme.tokens.typography.scale.base;
@@ -1337,7 +1335,7 @@ impl LogsApp {
             t * Affine::translate((inner_x, y)),
             Some(inner_w as f32),
         );
-        y += mh as f64 + 14.0;
+        y += f64::from(mh) + 14.0;
 
         // Divider.
         line(
@@ -1362,7 +1360,7 @@ impl LogsApp {
             ("IDENTIFIER".into(), e.identifier.clone()),
             (
                 "PID".into(),
-                e.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                e.pid.map_or_else(|| "—".into(), |p| p.to_string()),
             ),
             ("HOSTNAME".into(), e.hostname.clone()),
             ("TRANSPORT".into(), e.transport.clone()),
@@ -1527,7 +1525,7 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
 /// Pick a readable foreground for text sitting on a saturated severity
 /// fill: white over the dark dangers, near-black over amber.
 fn contrast_on(bg: Color) -> Color {
-    let lum = 0.299 * bg.r() as f64 + 0.587 * bg.g() as f64 + 0.114 * bg.b() as f64;
+    let lum = 0.299 * f64::from(bg.r()) + 0.587 * f64::from(bg.g()) + 0.114 * f64::from(bg.b());
     if lum > 150.0 {
         Color::from_rgb8(20, 20, 25)
     } else {
@@ -1592,7 +1590,7 @@ impl Widget for LogsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -1600,15 +1598,15 @@ impl Widget for LogsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.clamp_scroll();
         // Seed the shot's scroll so the auto-selected entry is visible.
-        if let Some(abs) = self.effective_selected() {
-            if let Some(pos) = self.filtered_pos(abs) {
+        if let Some(abs) = self.effective_selected()
+            && let Some(pos) = self.filtered_pos(abs) {
                 // Only auto-center on the very first layout (scroll == 0
                 // and nothing has been interacted with yet).
                 if self.scroll == 0.0 {
@@ -1620,7 +1618,6 @@ impl Widget for LogsApp {
                     }
                 }
             }
-        }
     }
 
     fn draw(
@@ -1824,16 +1821,15 @@ impl Widget for LogsApp {
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } => {
-                if key_event.state == ElementState::Pressed {
+            }
+                if key_event.state == ElementState::Pressed => {
                     self.on_key(key_event, modifiers, doc, root, handled);
                 }
-            }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LogsApp"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1880,7 +1876,7 @@ impl LogsApp {
         if !reg.list_body.contains(pt) {
             return None;
         }
-        let rel = pt.y - reg.list_body.y0 + self.scroll as f64;
+        let rel = pt.y - reg.list_body.y0 + f64::from(self.scroll);
         let pos = (rel / ROW_H).floor();
         if pos < 0.0 {
             return None;
@@ -1933,7 +1929,7 @@ impl LogsApp {
         if reg.live_pill.contains(pt) {
             let v = !self.live_tail;
             LogsDoc::set_live_tail(doc, root, v);
-            self.last_poll = Instant::now() - POLL_INTERVAL; // force an immediate poll
+            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap(); // force an immediate poll
             self.dirty = true;
             *handled = true;
             return;
@@ -2066,7 +2062,7 @@ impl LogsApp {
                         "l" | "L" => {
                             let v = !self.live_tail;
                             LogsDoc::set_live_tail(doc, root, v);
-                            self.last_poll = Instant::now() - POLL_INTERVAL;
+                            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap();
                             *handled = true;
                         }
                         "r" | "R" => {

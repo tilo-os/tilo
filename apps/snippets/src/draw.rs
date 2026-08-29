@@ -93,8 +93,8 @@ pub fn mono(
 
 /// Measure the advance width of a monospace string at `size`.
 pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
-        .0 as f64
+    f64::from(tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
+        .0)
 }
 
 /// Draw a small filled pill (rounded capsule) with a centred label.
@@ -113,11 +113,11 @@ pub fn pill(
     bg: Color,
 ) -> Rect {
     let pad_x = 8.0;
-    let text_w = tr.measure(label, size, None).0 as f64;
+    let text_w = f64::from(tr.measure(label, size, None).0);
     let w = text_w + pad_x * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
     fill_round(scene, t, rect, height / 2.0, bg);
-    let ty = y + (height - size as f64 * 1.0) / 2.0 - 1.0;
+    let ty = y + (height - f64::from(size) * 1.0) / 2.0 - 1.0;
     text(
         scene,
         tr,

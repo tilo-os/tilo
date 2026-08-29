@@ -228,11 +228,10 @@ pub fn stream_command<F: FnMut(String)>(
                 }
                 Ok(())
             };
-            if let Err(e) = feed() {
-                if e.kind() != std::io::ErrorKind::BrokenPipe {
+            if let Err(e) = feed()
+                && e.kind() != std::io::ErrorKind::BrokenPipe {
                     return Err(e);
                 }
-            }
         }
     }
 
@@ -245,8 +244,8 @@ pub fn stream_command<F: FnMut(String)>(
 
     let status = child.wait()?;
 
-    if !status.success() {
-        if let Some(stderr) = child.stderr.take() {
+    if !status.success()
+        && let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
                 if !line.trim().is_empty() {
@@ -254,7 +253,6 @@ pub fn stream_command<F: FnMut(String)>(
                 }
             }
         }
-    }
 
     Ok(status.success())
 }

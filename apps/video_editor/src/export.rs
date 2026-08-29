@@ -1,6 +1,6 @@
 //! Export settings + the (gated) render pipeline.
 //!
-//! Real encode/decode runs through GStreamer, which is only linked when
+//! Real encode/decode runs through `GStreamer`, which is only linked when
 //! the crate is built with `--features gst`. The default build — the one
 //! the fleet's `qos-build` invokes — keeps the pipeline a stub so the app
 //! compiles and screenshots without the gstreamer-1.0 dev headers being
@@ -143,13 +143,13 @@ pub enum ExportStatus {
     Failed { reason: String },
 }
 
-/// The GStreamer element chain that encodes the export, per container: the
+/// The `GStreamer` element chain that encodes the export, per container: the
 /// (encoder, optional parser, muxer) triple. Kept pure + shared so the pipeline
 /// **construction** is verifiable without a gstreamer stack (see tests).
 ///
 /// The encoders/muxers are the real elements the runner plugs:
 ///   * MP4 / MOV — `openh264enc ! h264parse ! (mp4mux|qtmux)` (H.264).
-///   * WebM — `vp8enc ! webmmux` (VP8, WebM's baseline codec).
+///   * `WebM` — `vp8enc ! webmmux` (VP8, `WebM`'s baseline codec).
 pub fn encode_chain(container: Container) -> (&'static str, Option<&'static str>, &'static str) {
     match container {
         Container::Mp4 => ("openh264enc", Some("h264parse"), "mp4mux"),
@@ -179,12 +179,12 @@ pub fn pipeline_desc(settings: &ExportSettings, w: u32, h: u32, out: &str) -> St
 pub fn output_dims(settings: &ExportSettings, project: &Project) -> (u32, u32) {
     let (_pw, ph) = settings.resolution.dims();
     let aspect = if project.height > 0 {
-        project.width as f64 / project.height as f64
+        f64::from(project.width) / f64::from(project.height)
     } else {
         16.0 / 9.0
     };
     let h = ph.max(2);
-    let mut w = (h as f64 * aspect).round() as u32;
+    let mut w = (f64::from(h) * aspect).round() as u32;
     w += w & 1; // make even
     (w.max(2), h)
 }
@@ -196,15 +196,13 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     if let Some(full) = std::env::var_os("QOS_VE_EXPORT_OUT") {
         return std::path::PathBuf::from(full);
     }
-    let dir = std::env::var_os("QOS_VE_EXPORT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let dir = std::env::var_os("QOS_VE_EXPORT_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     dir.join(settings.suggested_filename(&project.name))
 }
 
 /// Kick off an export. Returns the status the dialog should show next.
 ///
-/// With `--features gst` this runs a real GStreamer pipeline — a raw-RGBA
+/// With `--features gst` this runs a real `GStreamer` pipeline — a raw-RGBA
 /// `appsrc` fed the composited timeline frames (the same grade/fade math the
 /// preview shows), encoded and muxed to a real file on disk. The default build
 /// has no encoder linked, so it is honest — an "unavailable" status, never a

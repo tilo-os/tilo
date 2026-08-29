@@ -132,7 +132,7 @@ fn network_demo_pane() -> Box<dyn Widget> {
     Box::new(pane)
 }
 
-/// An `AudioPane` seeded with a deterministic PipeWire graph: two output
+/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
 /// devices (Speakers + Headphones), and per-application streams — the music app
 /// routed to the Headphones while the browser stays on the Speakers, plus a
 /// meeting app on the microphone — so the still proves the per-application

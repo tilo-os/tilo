@@ -270,17 +270,17 @@ impl Widget for CreateIdentityScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 520.0;
         let card_h = 440.0;
@@ -408,9 +408,9 @@ impl Widget for CreateIdentityScreen {
                 sel_color,
                 None,
                 &Rect::new(
-                    text_origin_x + pre_w as f64,
+                    text_origin_x + f64::from(pre_w),
                     text_origin_y - 2.0,
-                    text_origin_x + pre_w as f64 + mid_w as f64,
+                    text_origin_x + f64::from(pre_w) + f64::from(mid_w),
                     text_origin_y + 18.0,
                 ),
             );
@@ -427,7 +427,7 @@ impl Widget for CreateIdentityScreen {
         let cursor_byte = self.editor.cursor.min(name.len());
         let prefix = &name[..cursor_byte];
         let (prefix_w, _) = text_renderer.measure(prefix, 15.0, None);
-        let caret_x = text_origin_x + prefix_w as f64;
+        let caret_x = text_origin_x + f64::from(prefix_w);
         let caret_top = text_origin_y - 2.0;
         let caret_bottom = text_origin_y + 18.0;
         let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
@@ -489,7 +489,7 @@ impl Widget for CreateIdentityScreen {
         );
         let label = "Create my identity";
         let (label_w, _) = text_renderer.measure(label, 14.0, None);
-        let label_x = self.submit_rect.x0 + (self.submit_rect.width() - label_w as f64) / 2.0;
+        let label_x = self.submit_rect.x0 + (self.submit_rect.width() - f64::from(label_w)) / 2.0;
         text_renderer.draw_text(
             scene,
             label,
@@ -530,7 +530,7 @@ impl Widget for CreateIdentityScreen {
         // container calls with the IdentityStore; this path is unused.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CreateIdentityScreen"
     }
 

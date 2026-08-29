@@ -176,8 +176,8 @@ impl SnippetsApp {
             .copied()
             .max_by_key(|id| {
                 let s = app.library.get(*id);
-                let lines = s.map(|s| s.body.lines().count()).unwrap_or(0);
-                let templated = s.map(|s| s.has_placeholders()).unwrap_or(false) as usize;
+                let lines = s.map_or(0, |s| s.body.lines().count());
+                let templated = usize::from(s.is_some_and(super::model::Snippet::has_placeholders));
                 (templated, lines)
             })
             .or_else(|| app.visible.first().copied());
@@ -294,8 +294,7 @@ impl SnippetsApp {
         let needs_expand = self
             .library
             .get(id)
-            .map(|s| s.has_placeholders())
-            .unwrap_or(false);
+            .is_some_and(super::model::Snippet::has_placeholders);
         if needs_expand {
             self.start_expand(id);
             return;
@@ -322,7 +321,7 @@ impl SnippetsApp {
     }
 
     fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        let cur = self.library.get(id).map(|s| s.favorite).unwrap_or(false);
+        let cur = self.library.get(id).is_some_and(|s| s.favorite);
         self.perform_action(doc, actions::set_favorite_action(id, !cur));
         self.recompute_visible();
     }
@@ -556,7 +555,7 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
-        self.library.get(id).map(|s| s.uses).unwrap_or(0)
+        self.library.get(id).map_or(0, |s| s.uses)
     }
 
     #[doc(hidden)]
@@ -689,11 +688,9 @@ impl ui::widget::Widget for SnippetsApp {
     /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id)
-        {
-            if self.library.get(id).is_some() {
+            && self.library.get(id).is_some() {
                 self.open_snippet(id);
             }
-        }
     }
 
     fn build_layout(
@@ -712,17 +709,17 @@ impl ui::widget::Widget for SnippetsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn ui::widget::Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Crossing a breakpoint (a window resize) drops any stale user
         // preference so the sidebar adopts the new layout's natural default.
@@ -865,7 +862,7 @@ impl ui::widget::Widget for SnippetsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64 * BODY_LINE,
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * BODY_LINE,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll = (self.scroll - dy).max(0.0);
@@ -883,8 +880,8 @@ impl ui::widget::Widget for SnippetsApp {
                 let mods = modifiers.state();
                 // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
                 // Cmd/Ctrl-C copies the open snippet.
-                if mods.control_key() || mods.super_key() {
-                    if let Key::Character(ch) = logical_key {
+                if (mods.control_key() || mods.super_key())
+                    && let Key::Character(ch) = logical_key {
                         match ch.to_lowercase().as_str() {
                             "f" => {
                                 self.search_focused = true;
@@ -906,7 +903,6 @@ impl ui::widget::Widget for SnippetsApp {
                             _ => {}
                         }
                     }
-                }
 
                 if self.search_focused {
                     self.handle_search_key(logical_key, handled);
@@ -960,7 +956,7 @@ impl ui::widget::Widget for SnippetsApp {
         false
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SnippetsApp"
     }
 
@@ -1121,7 +1117,7 @@ impl SnippetsApp {
             // Three-line hamburger to summon the sidebar.
             let half = 7.0;
             for i in 0..3 {
-                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
+                let ly = btn.y0 + 11.0 + f64::from(i) * 6.0;
                 draw::stroke_line(
                     scene,
                     t,
@@ -1272,12 +1268,12 @@ impl SnippetsApp {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
         }
         let fg = if active { c.text_primary } else { c.neutral[7] };
-        let x = row.x0 + pad + indent as f64 * 12.0;
+        let x = row.x0 + pad + f64::from(indent) * 12.0;
         let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
         draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
         if let Some(n) = count {
             let s = n.to_string();
-            let w = tr.measure(&s, 12.0, None).0 as f64;
+            let w = f64::from(tr.measure(&s, 12.0, None).0);
             let cfg = if active { c.accent[8] } else { c.text_dim };
             draw::text(
                 scene,
@@ -1351,7 +1347,7 @@ impl SnippetsApp {
             let tw = if placeholder {
                 0.0
             } else {
-                tr.measure(&self.search, 14.0, None).0 as f64
+                f64::from(tr.measure(&self.search, 14.0, None).0)
             };
             let cx = search_rect.x0 + 12.0 + tw + 1.0;
             draw::fill_rect(
@@ -1399,7 +1395,7 @@ impl SnippetsApp {
             TextWeight::Medium,
         );
         let new_label = "+ New";
-        let nw = tr.measure(new_label, 13.0, None).0 as f64 + 20.0;
+        let nw = f64::from(tr.measure(new_label, 13.0, None).0) + 20.0;
         let new_rect = Rect::new(
             area.x1 - pad - nw,
             header_y - 4.0,
@@ -1479,7 +1475,7 @@ impl SnippetsApp {
             c.border_standard,
         );
         let glyph = "{ }";
-        let gw = tr.measure(glyph, 22.0, None).0 as f64;
+        let gw = f64::from(tr.measure(glyph, 22.0, None).0);
         draw::text(
             scene,
             tr,
@@ -1505,7 +1501,7 @@ impl SnippetsApp {
                 "Try a different search, or clear the filter.",
             )
         };
-        let hw = tr.measure(headline, 17.0, None).0 as f64;
+        let hw = f64::from(tr.measure(headline, 17.0, None).0);
         draw::text(
             scene,
             tr,
@@ -1520,7 +1516,7 @@ impl SnippetsApp {
         y += 26.0;
         // Sub-copy, wrapped to the available width so it never clips.
         for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
-            let lw = tr.measure(&line, 13.0, None).0 as f64;
+            let lw = f64::from(tr.measure(&line, 13.0, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1539,7 +1535,7 @@ impl SnippetsApp {
         if library_empty {
             // Primary call to action, centred.
             let label = "New snippet";
-            let lw = tr.measure(label, 13.5, None).0 as f64;
+            let lw = f64::from(tr.measure(label, 13.5, None).0);
             let bw = lw + 34.0;
             let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
             let hovered = btn.contains(self.last_mouse);
@@ -1565,7 +1561,7 @@ impl SnippetsApp {
             // A quiet hint at the search grammar.
             y = btn.y1 + 22.0;
             let hint = "Tip: filter with  language:rust  or  tag:k8s";
-            let hw2 = tr.measure(hint, 11.5, None).0 as f64;
+            let hw2 = f64::from(tr.measure(hint, 11.5, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1579,7 +1575,7 @@ impl SnippetsApp {
             );
         } else {
             let label = "Clear search";
-            let lw = tr.measure(label, 13.0, None).0 as f64;
+            let lw = f64::from(tr.measure(label, 13.0, None).0);
             let bw = lw + 30.0;
             let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
             let hovered = btn.contains(self.last_mouse);
@@ -1637,7 +1633,7 @@ impl SnippetsApp {
         );
         draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
         let sig = s.language.sigil();
-        let sw = tr.measure(sig, 11.0, None).0 as f64;
+        let sw = f64::from(tr.measure(sig, 11.0, None).0);
         draw::text(
             scene,
             tr,
@@ -1698,7 +1694,7 @@ impl SnippetsApp {
             String::new()
         };
         if !hint.is_empty() {
-            let hw = tr.measure(&hint, 11.0, None).0 as f64;
+            let hw = f64::from(tr.measure(&hint, 11.0, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1731,7 +1727,7 @@ impl SnippetsApp {
             } else {
                 "Select a snippet to preview it."
             };
-            let mw = tr.measure(msg, 15.0, None).0 as f64;
+            let mw = f64::from(tr.measure(msg, 15.0, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1934,7 +1930,7 @@ impl SnippetsApp {
         primary: bool,
         action: Action,
     ) -> f64 {
-        let tw = tr.measure(label, 13.0, None).0 as f64;
+        let tw = f64::from(tr.measure(label, 13.0, None).0);
         let w = tw + 24.0;
         let rect = Rect::new(x, y, x + w, y + 32.0);
         let hovered = rect.contains(self.last_mouse);
@@ -2072,7 +2068,7 @@ fn draw_toast(
     message: &str,
 ) {
     let c = &theme.tokens.colors;
-    let w = tr.measure(message, 14.0, None).0 as f64 + 40.0;
+    let w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
     let h = 40.0;
     let x = area.x1 - w - 24.0;
     let y = area.y1 - h - 24.0;
@@ -2105,7 +2101,7 @@ fn wrap_center(s: &str, tr: &mut TextRenderer, size: f32, max_w: f64) -> Vec<Str
         } else {
             format!("{cur} {word}")
         };
-        if tr.measure(&trial, size, None).0 as f64 > max_w && !cur.is_empty() {
+        if f64::from(tr.measure(&trial, size, None).0) > max_w && !cur.is_empty() {
             lines.push(std::mem::take(&mut cur));
             cur.push_str(word);
         } else {
@@ -2134,7 +2130,7 @@ trait Radii {
 }
 impl Radii for Theme {
     fn radii_md(&self) -> f64 {
-        self.tokens.radii.md as f64
+        f64::from(self.tokens.radii.md)
     }
 }
 

@@ -154,7 +154,7 @@ impl BlobStore for FsBlobStore {
     }
 
     fn has(&self, hash: &str) -> bool {
-        self.path_for(hash).map(|p| p.exists()).unwrap_or(false)
+        self.path_for(hash).is_some_and(|p| p.exists())
     }
 }
 
@@ -246,7 +246,7 @@ pub fn transport() -> Option<Arc<dyn BlobTransport>> {
 }
 
 /// How long to wait before asking again for the same content. A renderer calls [`get`] every frame, so without this one missing image would flood the room's topic.
-const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_millis(1000);
+const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
 static ASKED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
 
@@ -416,8 +416,8 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
     }
     // GIF: logical screen descriptor at offset 6, little-endian u16s.
     if b.len() >= 10 && (b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a")) {
-        let w = u16::from_le_bytes([b[6], b[7]]) as u32;
-        let h = u16::from_le_bytes([b[8], b[9]]) as u32;
+        let w = u32::from(u16::from_le_bytes([b[6], b[7]]));
+        let h = u32::from(u16::from_le_bytes([b[8], b[9]]));
         return Some(("image/gif", w, h));
     }
     // WebP: a RIFF container whose lossy/lossless/extended chunks each state the
@@ -425,13 +425,13 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
     if b.len() >= 30 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
         match &b[12..16] {
             b"VP8X" => {
-                let w = 1 + (b[24] as u32 | (b[25] as u32) << 8 | (b[26] as u32) << 16);
-                let h = 1 + (b[27] as u32 | (b[28] as u32) << 8 | (b[29] as u32) << 16);
+                let w = 1 + (u32::from(b[24]) | u32::from(b[25]) << 8 | u32::from(b[26]) << 16);
+                let h = 1 + (u32::from(b[27]) | u32::from(b[28]) << 8 | u32::from(b[29]) << 16);
                 return Some(("image/webp", w, h));
             }
             b"VP8 " => {
-                let w = (u16::from_le_bytes([b[26], b[27]]) & 0x3FFF) as u32;
-                let h = (u16::from_le_bytes([b[28], b[29]]) & 0x3FFF) as u32;
+                let w = u32::from(u16::from_le_bytes([b[26], b[27]]) & 0x3FFF);
+                let h = u32::from(u16::from_le_bytes([b[28], b[29]]) & 0x3FFF);
                 return Some(("image/webp", w, h));
             }
             b"VP8L" => {
@@ -469,8 +469,8 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
             let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
             let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
             if is_sof && i + 9 < b.len() {
-                let h = u16::from_be_bytes([b[i + 5], b[i + 6]]) as u32;
-                let w = u16::from_be_bytes([b[i + 7], b[i + 8]]) as u32;
+                let h = u32::from(u16::from_be_bytes([b[i + 5], b[i + 6]]));
+                let w = u32::from(u16::from_be_bytes([b[i + 7], b[i + 8]]));
                 return Some(("image/jpeg", w, h));
             }
             if len < 2 {

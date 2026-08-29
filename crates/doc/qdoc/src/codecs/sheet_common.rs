@@ -116,7 +116,7 @@ pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Opt
             None => raw,
         };
         if lname == local {
-            return a.unescape_value().ok().map(|v| v.into_owned());
+            return a.unescape_value().ok().map(std::borrow::Cow::into_owned);
         }
     }
     None

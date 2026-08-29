@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
 use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
-use crate::shell::{build_nirios_overlay_host_with_handle, persist, sync_tab_presence_from_tree};
+use crate::shell::{persist, sync_tab_presence_from_tree};
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 use ui::widget::Widget;
@@ -23,7 +23,7 @@ pub fn run() {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostedOptions {
     pub enable_peer_sync: bool,
-    /// Spin up the `xdg-desktop-portal` D-Bus backend (FileChooser / ScreenCast / Access). Off by default; portal lifetime is tied to the shell's tokio runtime.
+    /// Spin up the `xdg-desktop-portal` D-Bus backend (`FileChooser` / `ScreenCast` / Access). Off by default; portal lifetime is tied to the shell's tokio runtime.
     pub enable_portals: bool,
 }
 
@@ -84,7 +84,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // was refused — declining to *read* a state file and then writing a bootstrapped tree over it
     // would announce the workspaces are safe on disk while destroying them, so a refused session runs without persistence.
     tree.persist_path = if state_notice.is_none() {
-        Some(path.clone())
+        Some(path)
     } else {
         None
     };
@@ -221,7 +221,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             // Encode the structured `PresenceKey` to JSON so the wire format stays opaque to the
             // shell-side bridge; receivers either round-trip back into `PresenceKey` or use the string as an attribution-only id.
             let key_str = serde_json::to_string(key).unwrap_or_default();
-            send_net.publish_presence(key_str, (*x as f64, *y as f64));
+            send_net.publish_presence(key_str, (f64::from(*x), f64::from(*y)));
         });
         let recv_net = Arc::clone(net);
         let inbound = recv_net.inbound_presence_handle();
@@ -268,39 +268,33 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let _portal_runtime: Option<tokio::runtime::Runtime>;
     let _portal_handle: Option<crate::portal::ServerHandle>;
     if enable_portals {
-        let (rt_handle, runtime_owned) = match tokio::runtime::Handle::try_current() {
-            Ok(h) => (h, None),
-            Err(_) => {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("nirios-portal")
-                    .build()
-                    .ok();
-                match rt {
-                    Some(rt) => (rt.handle().clone(), Some(rt)),
-                    None => {
-                        tracing::warn!("portal: tokio runtime build failed; portal stays off");
-                        _portal_runtime = None;
-                        _portal_handle = None;
-                        app.run();
-                        return;
-                    }
-                }
+        let (rt_handle, runtime_owned) = if let Ok(h) = tokio::runtime::Handle::try_current() { (h, None) } else {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("nirios-portal")
+                .build()
+                .ok();
+            if let Some(rt) = rt { (rt.handle().clone(), Some(rt)) } else {
+                tracing::warn!("portal: tokio runtime build failed; portal stays off");
+                _portal_runtime = None;
+                _portal_handle = None;
+                app.run();
+                return;
             }
         };
         // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
         // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
-        let grants = crate::portal::GrantStoreHandle::new(tree_handle.clone());
+        let grants = crate::portal::GrantStoreHandle::new(tree_handle);
         // The same queues the host is already draining — fresh ones here would leave the portal filling a queue nobody watches.
-        let prompts = portal_prompts.clone();
-        let pickers = portal_pickers.clone();
+        let prompts = portal_prompts;
+        let pickers = portal_pickers;
         let ctx = crate::portal::PortalContext {
             grants,
-            prompts: prompts.clone(),
+            prompts,
             caller_map: crate::portal::CallerMap::new(),
             // The real dialog, not the null spawner: hosted mode has a chrome to render it in, so there's no reason to cancel every request.
             file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(
-                pickers.clone(),
+                pickers,
             )),
             screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(
                 std::sync::Arc::new(crate::portal::MockScreenCastProvisioner::new_with_node(
@@ -358,9 +352,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
                         "collab_broker: bound {} (json) + {} (capnp) — peer_sync={}",
                         socket_path.display(),
                         capnp_socket_path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "<none>".to_string()),
+                            .as_ref().map_or_else(|| "<none>".to_string(), |p| p.display().to_string()),
                         peer_sync.is_some()
                     );
                     Some(handle)

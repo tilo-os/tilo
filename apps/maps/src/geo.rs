@@ -191,7 +191,7 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
         min_lon = min_lon.min(p.lon);
         max_lon = max_lon.max(p.lon);
     }
-    let center = LatLon::new((min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0);
+    let center = LatLon::new(f64::midpoint(min_lat, max_lat), f64::midpoint(min_lon, max_lon));
     let avail_w = (w - 2.0 * pad).max(64.0);
     let avail_h = (h - 2.0 * pad).max(64.0);
 

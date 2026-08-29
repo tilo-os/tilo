@@ -1,7 +1,7 @@
 //! App-local widgets + small composition helpers.
 //!
 //! `ui` owns the canonical toolkit; these are Tube-specific primitives we
-//! either can't express with the stock widgets (a SponsorBlock seek bar, a
+//! either can't express with the stock widgets (a `SponsorBlock` seek bar, a
 //! gradient thumbnail, vector icons) or want clickable in our own
 //! [`ActionBus`] dialect (`Flex`, `Switch`). The free helpers at the bottom
 //! cut the boilerplate of wrapping `ui::Text` and building spacers.
@@ -66,7 +66,7 @@ pub fn divider(theme: &Theme) -> Flex {
 pub fn card_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(theme.tokens.colors.surfaces.raised),
-        radius: theme.tokens.radii.lg as f64,
+        radius: f64::from(theme.tokens.radii.lg),
         border: Some((1.0, theme.border_standard)),
     }
 }
@@ -76,7 +76,7 @@ pub fn chip_surface(theme: &Theme, active: bool) -> Surface {
     if active {
         Surface {
             fill: Some(theme.accent_primary),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         }
     } else {
@@ -108,7 +108,7 @@ pub fn hover_fill(theme: &Theme) -> Color {
 pub fn subtle_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(subtle_fill(theme)),
-        radius: theme.tokens.radii.full as f64,
+        radius: f64::from(theme.tokens.radii.full),
         border: None,
     }
 }
@@ -117,7 +117,7 @@ pub fn subtle_surface(theme: &Theme) -> Surface {
 pub fn hover_pill_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(hover_fill(theme)),
-        radius: theme.tokens.radii.full as f64,
+        radius: f64::from(theme.tokens.radii.full),
         border: None,
     }
 }

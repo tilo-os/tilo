@@ -114,12 +114,12 @@ impl OutputRegistry {
             let output = Output {
                 id,
                 position: (next_x, 0),
-                size: (mode.width as u32, mode.height as u32),
+                size: (u32::from(mode.width), u32::from(mode.height)),
                 // HiDPI policy lives at the compositor layer, not the
                 // backend, so scale defaults to 1.0 here.
                 scale: 1.0,
             };
-            next_x += mode.width as i32;
+            next_x += i32::from(mode.width);
             out.push((id, output));
         }
         out

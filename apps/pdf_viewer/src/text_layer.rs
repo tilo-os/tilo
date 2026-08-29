@@ -143,7 +143,7 @@ impl PageText {
             if y >= c.rect.y - 2.0 && y <= c.rect.y + c.rect.h + 2.0 {
                 let cx = c.rect.x + c.rect.w / 2.0;
                 let d = (cx - x).abs();
-                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                if best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((i, d));
                 }
             }
@@ -162,7 +162,7 @@ impl PageText {
             }
             let (cx, cy) = c.rect.center();
             let d = (cx - x).hypot(cy - y);
-            if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            if best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((i, d));
             }
         }

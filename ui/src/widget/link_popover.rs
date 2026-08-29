@@ -258,7 +258,7 @@ impl LinkPopover {
 
         let font_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
-            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - font_size as f64) / 2.0;
+            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -283,7 +283,7 @@ impl LinkPopover {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -306,7 +306,7 @@ impl Widget for LinkPopover {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -332,7 +332,7 @@ impl Widget for LinkPopover {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LinkPopover"
     }
     fn test_id(&self) -> Option<&str> {

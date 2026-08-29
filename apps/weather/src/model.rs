@@ -95,7 +95,7 @@ impl HourPoint {
         // "YYYY-MM-DDTHH:MM" → "HH"
         self.time
             .get(11..13)
-            .map(|h| h.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default()
     }
 }
@@ -283,12 +283,11 @@ impl WeatherModel {
     /// Restore `selected` to point at the place with `id` after the list
     /// was mutated, clamping if it's gone.
     fn reselect_by_id(&mut self, id: Option<LocationId>) {
-        if let Some(id) = id {
-            if let Some(pos) = self.locations.iter().position(|l| l.id == id) {
+        if let Some(id) = id
+            && let Some(pos) = self.locations.iter().position(|l| l.id == id) {
                 self.selected = pos;
                 return;
             }
-        }
         if self.locations.is_empty() {
             self.selected = 0;
         } else if self.selected >= self.locations.len() {

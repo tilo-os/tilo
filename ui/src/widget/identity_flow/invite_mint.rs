@@ -241,17 +241,17 @@ impl Widget for InviteMintScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 600.0;
         let card_h = 480.0;
@@ -263,7 +263,7 @@ impl Widget for InviteMintScreen {
         let seg_y = card_y + 130.0;
         self.expiry_rects.clear();
         for i in 0..4 {
-            let x = card_x + pad + i as f64 * seg_w;
+            let x = card_x + pad + f64::from(i) * seg_w;
             self.expiry_rects
                 .push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
         }
@@ -385,7 +385,7 @@ impl Widget for InviteMintScreen {
                 text_color,
                 transform
                     * Affine::translate((
-                        r.x0 + (r.width() - lw as f64) / 2.0,
+                        r.x0 + (r.width() - f64::from(lw)) / 2.0,
                         r.y0 + (r.height() - 13.0) / 2.0,
                     )),
                 None,
@@ -406,7 +406,7 @@ impl Widget for InviteMintScreen {
             Color::from_rgb8(255, 255, 255),
             transform
                 * Affine::translate((
-                    self.generate_rect.x0 + (self.generate_rect.width() - gw as f64) / 2.0,
+                    self.generate_rect.x0 + (self.generate_rect.width() - f64::from(gw)) / 2.0,
                     self.generate_rect.y0 + (self.generate_rect.height() - 13.0) / 2.0,
                 )),
             None,
@@ -502,7 +502,7 @@ impl Widget for InviteMintScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InviteMintScreen"
     }
 

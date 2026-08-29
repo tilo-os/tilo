@@ -539,7 +539,7 @@ impl Core {
         // Enter while still loading: arm an immediate geocode so the field
         // resolves to real matches rather than doing nothing.
         if !self.search_query.trim().is_empty() {
-            self.pending_query_at = Some(Instant::now() - GEOCODE_DEBOUNCE);
+            self.pending_query_at = Some(Instant::now().checked_sub(GEOCODE_DEBOUNCE).unwrap());
         }
         false
     }
@@ -578,8 +578,7 @@ impl Core {
     fn is_day(&self) -> bool {
         self.model
             .selected_snapshot()
-            .map(|s| s.current.is_day)
-            .unwrap_or(true)
+            .map_or(true, |s| s.current.is_day)
     }
 
     // =================================================================
@@ -633,7 +632,7 @@ impl Core {
             let cy = sy + (sh - cb) / 2.0;
             let chip = Rect::new(x + w - cb, cy, x + w, cy + cb);
             let hovered = chip.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -779,7 +778,7 @@ impl Core {
         // The rail has no search field; drop any stale rect so a press can't
         // land on a phantom field from the previous (wide) layout.
         self.search_field_rect = Rect::ZERO;
-        let cx = (rect.x0 + rect.x1) / 2.0;
+        let cx = f64::midpoint(rect.x0, rect.x1);
 
         // Expand chip.
         let cs = 36.0;
@@ -790,7 +789,7 @@ impl Core {
             rect.y0 + 12.0 + cs,
         );
         let hovered = chip.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             t,
@@ -978,17 +977,16 @@ impl Core {
 
         // The dragged chip floats free as a ghost at its grab offset under the
         // cursor, drawn last so it rides above the reflowing list.
-        if let Some(i) = dragging {
-            if let (Some(loc), Some(chip)) = (
+        if let Some(i) = dragging
+            && let (Some(loc), Some(chip)) = (
                 self.model.locations.get(i),
                 self.reorder.ghost_rect(x, x + w, &metrics),
             ) {
                 let sh =
-                    RoundedRect::from_rect(chip.inset(-2.0), theme.tokens.radii.md as f64 + 2.0);
+                    RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
                 scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
                 self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
             }
-        }
     }
 
     /// The reorderable saved-place list's geometry this frame, for the
@@ -1025,7 +1023,7 @@ impl Core {
         } else {
             c.surfaces.raised
         };
-        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, bg, None, &shape);
         if selected {
             scene.stroke(&Stroke::new(1.5), t, self.accent(theme), None, &shape);
@@ -1112,7 +1110,7 @@ impl Core {
 
     fn draw_swipe_backing(&self, scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
         let c = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
         let icon_r = Rect::new(
             chip.x1 - 42.0,
@@ -1135,7 +1133,7 @@ impl Core {
         let zone = self.delete_zone_rect();
         let w = (rect.width() - 2.0 * RP).max(80.0);
         let armed = self.is_reorder_active() && zone.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(zone, theme.tokens.radii.lg as f64);
+        let shape = RoundedRect::from_rect(zone, f64::from(theme.tokens.radii.lg));
         let fill = if armed {
             c.semantic.danger
         } else {
@@ -1193,13 +1191,13 @@ impl Core {
         let mx = menu.anchor.x.min(area.x1 - mw - 4.0).max(area.x0 + 4.0);
         let my = menu.anchor.y.min(area.y1 - mh - 4.0).max(area.y0 + 4.0);
         let panel = Rect::new(mx, my, mx + mw, my + mh);
-        let shape = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             t,
             Color::from_rgba8(0, 0, 0, 80),
             None,
-            &RoundedRect::from_rect(panel.inset(-3.0), theme.tokens.radii.md as f64 + 3.0),
+            &RoundedRect::from_rect(panel.inset(-3.0), f64::from(theme.tokens.radii.md) + 3.0),
         );
         scene.fill(
             Fill::NonZero,
@@ -1336,12 +1334,10 @@ impl Core {
             button: MouseButton::Left,
             ..
         } = event
-        {
-            if !self.search.is_editing() && self.search_field_rect.contains(self.last_mouse) {
+            && !self.search.is_editing() && self.search_field_rect.contains(self.last_mouse) {
                 self.begin_search();
                 return true;
             }
-        }
 
         // While editing, the shared Autocomplete owns typing + arrow/Enter/Esc
         // navigation of the geocoded matches.
@@ -1421,7 +1417,7 @@ impl Core {
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.over_rect.contains(self.last_mouse) && self.over_max_scroll > 0.0 {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                         MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                     };
                     self.over_scroll = (self.over_scroll - dy).clamp(0.0, self.over_max_scroll);
@@ -1686,7 +1682,7 @@ impl Core {
         // Refresh button (top-right) — re-fetches this city's forecast.
         let rb = 34.0;
         let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
-        let rshape = RoundedRect::from_rect(refresh, theme.tokens.radii.md as f64);
+        let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
         let rhover = refresh.contains(self.last_mouse);
         scene.fill(
             Fill::NonZero,
@@ -1822,7 +1818,7 @@ impl Core {
             scene,
             tr,
             units.degree_glyph(),
-            temp_x + tnw as f64 + 4.0,
+            temp_x + f64::from(tnw) + 4.0,
             hero.y0 + 40.0,
             32.0,
             TextWeight::Regular,
@@ -2071,8 +2067,8 @@ impl Core {
         let hmetrics = ScrollMetrics::new(content_w, band.width(), self.hourly_scroll_x);
         let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
         self.hourly_track = track;
-        if hmetrics.overflows() {
-            if let Some(thumb) = self.hourly_bar.thumb_rect(track, hmetrics) {
+        if hmetrics.overflows()
+            && let Some(thumb) = self.hourly_bar.thumb_rect(track, hmetrics) {
                 scene.fill(
                     Fill::NonZero,
                     t,
@@ -2093,7 +2089,6 @@ impl Core {
                     &RoundedRect::from_rect(thumb, 3.0),
                 );
             }
-        }
 
         y += HOURLY_CARD_H + SECTION_GAP;
 
@@ -2382,7 +2377,7 @@ impl Core {
         is_day: bool,
     ) {
         let c = &theme.tokens.colors;
-        let cx = (area.x0 + area.x1) / 2.0;
+        let cx = f64::midpoint(area.x0, area.x1);
         let baseline = area.y1 - 24.0;
         let radius = (area.width() / 2.0 - 16.0).min(70.0);
         scene.fill(
@@ -2395,7 +2390,7 @@ impl Core {
         let mut arc = BezPath::new();
         let steps = 28;
         for i in 0..=steps {
-            let frac = i as f64 / steps as f64;
+            let frac = f64::from(i) / f64::from(steps);
             let ang = std::f64::consts::PI * frac;
             let px = cx - radius * ang.cos();
             let py = baseline - radius * ang.sin();
@@ -2523,7 +2518,7 @@ impl Core {
             let sev = aqi_band_color(aqi, theme);
             let chip = RoundedRect::from_rect(
                 Rect::new(hero.x0, hero.y0, hero.x0 + 116.0, hero.y1),
-                theme.tokens.radii.lg as f64,
+                f64::from(theme.tokens.radii.lg),
             );
             scene.fill(Fill::NonZero, t, sev.with_alpha_factor(0.16), None, &chip);
             scene.stroke(
@@ -2548,7 +2543,7 @@ impl Core {
                 scene,
                 tr,
                 "AQI",
-                hero.x0 + 24.0 + nw as f64,
+                hero.x0 + 24.0 + f64::from(nw),
                 hero.y0 + 30.0,
                 12.0,
                 TextWeight::Semibold,
@@ -2692,7 +2687,7 @@ impl Core {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 48.0, *y as f64 * 48.0),
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 48.0, f64::from(*y) * 48.0),
                     MouseScrollDelta::PixelDelta(p) => (p.x / scale_factor, p.y / scale_factor),
                 };
                 // Over the strip: scroll it horizontally. A horizontal delta
@@ -2939,7 +2934,7 @@ fn balanced_tile_columns(mw: f64, n: usize) -> usize {
 
 fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
     let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
     scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
     scene.stroke(
         &Stroke::new(1.0),
@@ -2989,7 +2984,7 @@ fn text_right(
         s,
         size,
         color,
-        Affine::translate((x_right - w as f64, y_top)),
+        Affine::translate((x_right - f64::from(w), y_top)),
         None,
         weight,
     );
@@ -3012,7 +3007,7 @@ fn text_center(
         s,
         size,
         color,
-        Affine::translate((x_center - w as f64 / 2.0, y_top)),
+        Affine::translate((x_center - f64::from(w) / 2.0, y_top)),
         None,
         weight,
     );
@@ -3022,7 +3017,7 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let a = a.to_rgba8();
     let b = b.to_rgba8();
-    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t) as u8;
     Color::from_rgba8(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a))
 }
 
@@ -3070,17 +3065,13 @@ fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (S
 
 fn weekday(date: &str) -> String {
     use chrono::NaiveDate;
-    NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map(|d| d.format("%a").to_string())
-        .unwrap_or_else(|_| date.to_string())
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").map_or_else(|_| date.to_string(), |d| d.format("%a").to_string())
 }
 
 fn fmt_date(iso: &str) -> String {
     use chrono::NaiveDate;
     let date_part = iso.get(0..10).unwrap_or(iso);
-    NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
-        .map(|d| d.format("%a, %b %d").to_string())
-        .unwrap_or_else(|_| date_part.to_string())
+    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").map_or_else(|_| date_part.to_string(), |d| d.format("%a, %b %d").to_string())
 }
 
 fn uv_word(uv: f64) -> &'static str {

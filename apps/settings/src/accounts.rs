@@ -5,13 +5,13 @@
 //! # Why Settings owns these
 //!
 //! Account *management* in qOS lives in one place: this app's External
-//! Accounts panel. Adding an IMAP mailbox, a CalDAV calendar, a WebDAV
+//! Accounts panel. Adding an IMAP mailbox, a `CalDAV` calendar, a `WebDAV`
 //! share, or a Nextcloud sign-in all happen here. The individual apps only
 //! *consume* the resulting lists.
 //!
-//! # Where email + CalDAV live: the shared `accounts` crate
+//! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
-//! Email and CalDAV accounts are persisted through the shared
+//! Email and `CalDAV` accounts are persisted through the shared
 //! [`accounts::AccountStore`] — one canonical JSON document at
 //! `~/.config/qos/accounts/store.json` — the **same** store Mail and Calendar
 //! read. Settings owns the write lifecycle (add / edit / remove); those apps
@@ -28,7 +28,7 @@
 //!
 //! # The still-separate file stores (format contracts)
 //!
-//! WebDAV (files) and Nextcloud accounts keep their own JSON documents at
+//! `WebDAV` (files) and Nextcloud accounts keep their own JSON documents at
 //! fixed per-user paths for now; each app reads the same file with the same
 //! shape:
 //!
@@ -110,17 +110,14 @@ impl AccountConfig {
             "icloud.com" | "me.com" => Some(("imap.mail.me.com", "smtp.mail.me.com")),
             _ => None,
         };
-        match known {
-            Some((imap, smtp)) => {
-                self.imap_host = imap.to_string();
-                self.smtp_host = smtp.to_string();
-                true
-            }
-            None => {
-                self.imap_host = format!("imap.{domain}");
-                self.smtp_host = format!("smtp.{domain}");
-                false
-            }
+        if let Some((imap, smtp)) = known {
+            self.imap_host = imap.to_string();
+            self.smtp_host = smtp.to_string();
+            true
+        } else {
+            self.imap_host = format!("imap.{domain}");
+            self.smtp_host = format!("smtp.{domain}");
+            false
         }
     }
 }
@@ -216,7 +213,7 @@ impl MailStore {
 // DAV store — CalDAV (calendar) and WebDAV (files), parallel files.
 // ---------------------------------------------------------------------------
 
-/// A CalDAV / WebDAV account. Both speak HTTP(S) to a base URL with a
+/// A `CalDAV` / `WebDAV` account. Both speak HTTP(S) to a base URL with a
 /// username, so they share one shape. Credentials are never serialised.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DavAccount {
@@ -263,12 +260,12 @@ pub struct DavStore {
 }
 
 impl DavStore {
-    /// The CalDAV (calendar) store path.
+    /// The `CalDAV` (calendar) store path.
     pub fn calendar_path() -> Option<PathBuf> {
         config_root().map(|r| r.join("calendar").join("accounts.json"))
     }
 
-    /// The WebDAV (files) store path.
+    /// The `WebDAV` (files) store path.
     pub fn files_path() -> Option<PathBuf> {
         config_root().map(|r| r.join("files").join("accounts.json"))
     }
@@ -450,9 +447,9 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// Load every store. Email and CalDAV accounts come from the shared
+    /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. WebDAV (files)
+    /// Calendar read, so the shapes can no longer drift apart. `WebDAV` (files)
     /// and Nextcloud keep their own stores for now. Missing stores are empty.
     pub fn load() -> Self {
         let shared = accounts::AccountStore::load();
@@ -568,7 +565,7 @@ fn default_version() -> u32 {
 
 /// The shared-store type id for email accounts (Mail contributes these).
 const MAIL_TYPE: &str = "email";
-/// The shared-store type id for CalDAV accounts (Calendar contributes these).
+/// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
 const CALDAV_TYPE: &str = "caldav";
 
 /// Project the shared store's email accounts into a [`MailStore`].
@@ -597,7 +594,7 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
     MailStore { accounts, active }
 }
 
-/// Project the shared store's CalDAV accounts into a [`DavStore`] (the shape
+/// Project the shared store's `CalDAV` accounts into a [`DavStore`] (the shape
 /// the pane renders for the Calendar kind).
 fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
     let ty = accounts::AccountTypeId::from(CALDAV_TYPE);

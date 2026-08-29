@@ -25,7 +25,6 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`. Wide enough to show the
 /// toolbar row + a sizeable page area.

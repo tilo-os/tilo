@@ -1,9 +1,9 @@
-//! CalDAV sync — the real protocol edge of the Calendar app.
+//! `CalDAV` sync — the real protocol edge of the Calendar app.
 //!
 //! ## The offline / online split (important for `--shots`)
 //!
 //! `--shots` runs one headless frame with no event loop and no live account, so
-//! it cannot talk to a CalDAV server. To still render a fully populated client
+//! it cannot talk to a `CalDAV` server. To still render a fully populated client
 //! we bundle a representative remote calendar as a real iCalendar payload and
 //! **parse it through [`crate::ics::parse`]** here, exactly as a `calendar-data`
 //! REPORT response would be parsed in the live app. So the screenshot exercises
@@ -14,7 +14,7 @@
 //!
 //! Sync is **pull-only** today. The live binary (no `--shots`) drives, on a
 //! background worker thread (mirroring the notes `Saver` pattern — the `ui`
-//! event loop is synchronous and must not block), a CalDAV read against each
+//! event loop is synchronous and must not block), a `CalDAV` read against each
 //! configured collection, built on the `reqwest` stack:
 //!
 //! * **Pull** — a `calendar-query` REPORT (falling back to a plain `GET` for
@@ -31,7 +31,7 @@
 //! That HTTP + TLS stack is deliberately kept out of the headless build so it
 //! stays small and green; the seam is this module, and the data types
 //! ([`crate::account::CalDavConfig`], [`Event`], [`Task`]) are already the exact
-//! shapes a CalDAV client consumes and produces.
+//! shapes a `CalDAV` client consumes and produces.
 
 use chrono::NaiveDate;
 
@@ -65,9 +65,9 @@ pub enum SyncOutcome {
     Failed(String),
 }
 
-/// The concrete CalDAV `PUT` a queued local event turns into: the resource URL
+/// The concrete `CalDAV` `PUT` a queued local event turns into: the resource URL
 /// under the target collection and the `text/calendar` body to upload. This is
-/// what "queue the event for the chosen CalDAV calendar" produces — a real
+/// what "queue the event for the chosen `CalDAV` calendar" produces — a real
 /// request the `live` push path (or a test) can inspect and send. Building it
 /// runs the event through [`ics::export`], so the body is the exact iCalendar a
 /// server would store.
@@ -79,7 +79,7 @@ pub struct PutRequest {
     pub body: String,
 }
 
-/// Build the CalDAV `PUT` that uploads `event` to `calendar` under `config`.
+/// Build the `CalDAV` `PUT` that uploads `event` to `calendar` under `config`.
 /// The resource name is the event's UID with a `.ics` suffix, joined onto the
 /// collection URL exactly as the pull path resolves it, and the body is a
 /// single-event `VCALENDAR` produced by the in-tree exporter.
@@ -101,7 +101,7 @@ pub fn build_put_request(
     }
 }
 
-/// The concrete CalDAV `DELETE` a queued deletion turns into: the URL of the
+/// The concrete `CalDAV` `DELETE` a queued deletion turns into: the URL of the
 /// event resource to remove from its collection. Mirrors [`PutRequest`] but
 /// carries no body — a `DELETE` is addressed by URL alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,7 +110,7 @@ pub struct DeleteRequest {
     pub url: String,
 }
 
-/// Build the CalDAV `DELETE` that removes `uid` from `calendar` under
+/// Build the `CalDAV` `DELETE` that removes `uid` from `calendar` under
 /// `config`. The resource name matches the one [`build_put_request`] uploads
 /// to, so a synced event round-trips to the same URL for create and delete.
 pub fn build_delete_request(
@@ -123,7 +123,7 @@ pub fn build_delete_request(
     DeleteRequest { url }
 }
 
-/// Remove every queued event from its target CalDAV collection, returning the
+/// Remove every queued event from its target `CalDAV` collection, returning the
 /// uids the server confirmed gone (so the caller can clear them from the delete
 /// outbox). Each job is a `(config, calendar, uid)` triple. Compiled with
 /// `live` this sends an HTTP `DELETE`; without the feature it removes nothing
@@ -184,7 +184,7 @@ pub fn pull_calendar(
 
 /// Synchronise every visible calendar for the **live** app.
 ///
-/// Compiled with the `live` feature this performs real CalDAV requests
+/// Compiled with the `live` feature this performs real `CalDAV` requests
 /// (`REPORT` calendar-query, falling back to a plain `GET`) against each
 /// account's server and parses the returned `calendar-data` through
 /// [`ics::parse`]. Without that feature there is no transport, so it returns
@@ -205,7 +205,7 @@ pub fn sync_all(
     }
 }
 
-/// Upload every queued local event to its target CalDAV collection.
+/// Upload every queued local event to its target `CalDAV` collection.
 ///
 /// Each job is a `(config, calendar, event)` triple — the event and the remote
 /// calendar it was created on. Compiled with `live` this sends an `ETag`-free
@@ -337,7 +337,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
     ics::export(&model)
 }
 
-/// Real CalDAV transport, compiled only with the `live` feature. Kept behind a
+/// Real `CalDAV` transport, compiled only with the `live` feature. Kept behind a
 /// module so its `reqwest` dependency never touches the default (headless)
 /// build. This talks HTTP to a configured server; there is no synthesised data
 /// here.

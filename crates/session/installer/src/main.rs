@@ -60,7 +60,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ...and re-focus the first field of each step after the per-step
     // rebuild (opt-in; leaves shell/greeter behaviour untouched).
     app.autofocus_on_structure_change = true;
-    let slot = proxy_slot.clone();
+    let slot = proxy_slot;
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = slot.lock() {
             *g = Some(proxy);
@@ -147,7 +147,7 @@ fn parse_step_arg(args: &[String]) -> Option<String> {
 /// `seed_creds` pre-populates the username/password CRDT objects so the
 /// User/Confirm/Install screens render representative text. Because the
 /// composed children are only created *inside* `build_layout`, we sync a
-/// second time afterwards so those children (the TextInputs) pull their
+/// second time afterwards so those children (the `TextInputs`) pull their
 /// values from the document — the live App achieves the same via its
 /// per-frame sync.
 fn render_shot_to_png(

@@ -501,7 +501,7 @@ impl StatSummary {
         let mut v = values.to_vec();
         v.sort_unstable();
         let count = v.len();
-        let sum: u128 = v.iter().map(|&x| x as u128).sum();
+        let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
         let mean_us = (sum / count as u128) as u64;
         Self {
             count,

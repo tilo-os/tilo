@@ -98,7 +98,7 @@ fn main() {
         versions: vec![RegistryVersion {
             // What the package says it is, not a number chosen here —
             // the entry and the manifest have to agree.
-            version: version.clone(),
+            version: version,
             qpkg_url: format!("{base_url}/app.qpkg"),
             qpkg_root_hash_hex: hex::encode([0u8; 32]),
             qpkg_size_bytes: advertised_len as u64,
@@ -160,7 +160,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8], delay_ms: u64) {
     if delay_ms > 0 && path.ends_with(".qpkg") {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
-    eprintln!("[registry] {} -> {status}", path);
+    eprintln!("[registry] {path} -> {status}");
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()

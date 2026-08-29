@@ -150,7 +150,7 @@ pub fn color_index_for(bytes: &[u8]) -> usize {
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for &b in bytes {
-        h ^= b as u64;
+        h ^= u64::from(b);
         h = h.wrapping_mul(0x00000100000001B3);
     }
     h
@@ -166,7 +166,7 @@ fn user_display() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "You".to_string());
     let display: String = raw
-        .split(|c: char| c == '.' || c == '_' || c == '-' || c == ' ')
+        .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
         .map(capitalise)
         .collect::<Vec<_>>()

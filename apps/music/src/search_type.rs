@@ -17,7 +17,7 @@
 //!   or a procedural seed (offline), plus the deep link that opens it.
 //! * [`MusicSearchProvider`] — turns a query into [`SearchHit`]s by delegating
 //!   to whichever [`crate::backend::MusicBackend`] the build selected (offline
-//!   sample by default, real YouTube Music under `--features live`).
+//!   sample by default, real `YouTube` Music under `--features live`).
 //! * [`library_hits`] — contributes the user's **own library** (synced across
 //!   their devices) to OS search, so a saved album or a personal playlist is
 //!   findable even on the hermetic/offline build.
@@ -111,7 +111,7 @@ pub struct SearchHit {
     /// Secondary line: the artist, the owner, "N songs", a duration — whatever
     /// disambiguates the hit at a glance.
     pub subtitle: String,
-    /// Real cover-art URL (YouTube image CDN) when the live backend provides
+    /// Real cover-art URL (`YouTube` image CDN) when the live backend provides
     /// one. Empty for own-library / offline hits — the palette then renders the
     /// procedural tile keyed by [`Self::thumbnail_seed`], so no image bytes
     /// need cross the boundary.
@@ -383,7 +383,7 @@ fn song_subtitle(artist: &str, duration_s: u32) -> String {
     } else {
         format!(
             "Song · {artist} · {}",
-            ui::format::timecode(duration_s as u64)
+            ui::format::timecode(u64::from(duration_s))
         )
     }
 }
@@ -410,9 +410,9 @@ fn artist_subtitle(subscribers: u64) -> String {
 fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     match (owner.is_empty(), tracks) {
         (true, 0) => "Playlist".into(),
-        (true, n) => format!("Playlist · {} songs", n),
+        (true, n) => format!("Playlist · {n} songs"),
         (false, 0) => format!("Playlist · {owner}"),
-        (false, n) => format!("Playlist · {owner} · {} songs", n),
+        (false, n) => format!("Playlist · {owner} · {n} songs"),
     }
 }
 
@@ -496,7 +496,7 @@ impl LibrarySearchProvider {
 }
 
 impl SearchProvider for LibrarySearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         // Default group label / diagnostic name; individual rows carry their own
         // per-type kind ("Songs", "Albums", …) so the overlay sections them.
         "Music"

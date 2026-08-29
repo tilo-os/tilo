@@ -234,11 +234,11 @@ impl<Row> DataTable<Row> {
         if pt.y < body_top {
             return None;
         }
-        let rel = pt.y - body_top + self.scroll_y as f64;
+        let rel = pt.y - body_top + f64::from(self.scroll_y);
         if rel < 0.0 {
             return None;
         }
-        let idx = (rel / self.row_height as f64) as usize;
+        let idx = (rel / f64::from(self.row_height)) as usize;
         if idx < self.view.len() {
             Some(idx)
         } else {
@@ -375,14 +375,14 @@ impl<Row> DataTable<Row> {
 
     fn body_viewport_h(&self) -> f64 {
         if self.viewport_h > 0.0 {
-            self.viewport_h as f64
+            f64::from(self.viewport_h)
         } else {
             (self.rect.height() - HEADER_HEIGHT).max(0.0)
         }
     }
 
     fn content_body_h(&self) -> f64 {
-        self.row_height as f64 * self.view.len() as f64
+        f64::from(self.row_height) * self.view.len() as f64
     }
 
     /// `content - viewport`, floored at 0.
@@ -394,7 +394,7 @@ impl<Row> DataTable<Row> {
         ScrollMetrics::new(
             self.content_body_h(),
             self.body_viewport_h(),
-            self.scroll_y as f64,
+            f64::from(self.scroll_y),
         )
     }
 
@@ -452,7 +452,7 @@ impl<Row> DataTable<Row> {
     fn resize_handle_rect_for(&self, index: usize) -> Option<Rect> {
         let col = self.columns.get(index)?;
         let cr = self.col_rects.get(index)?;
-        let w = col.resize_handle_px as f64;
+        let w = f64::from(col.resize_handle_px);
         Some(Rect::new(
             cr.x1 - w,
             self.rect.y0,
@@ -509,17 +509,17 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
         self.col_rects = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
@@ -571,7 +571,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
-            let label_y = header_rect.y0 + (HEADER_HEIGHT - text_size as f64) / 2.0;
+            let label_y = header_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &col.header,
@@ -596,7 +596,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
 
         let (vis_start, vis_end) = self.visible_row_range();
-        let row_h = self.row_height as f64;
+        let row_h = f64::from(self.row_height);
         for ri in vis_start..vis_end {
             let Some(&row_idx) = self.view.get(ri) else {
                 break;
@@ -604,7 +604,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             // Internal virtualization subtracts scroll_y; when driven by an
             // outer Scrollable, scroll_y stays 0 and the whole rect is
             // translated instead — both paths render correctly.
-            let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * row_h - self.scroll_y as f64;
+            let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * row_h - f64::from(self.scroll_y);
             let y1 = y0 + row_h;
             if y1 <= self.rect.y0 + HEADER_HEIGHT {
                 continue;
@@ -744,7 +744,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         .col_rects
                         .iter()
                         .position(|c| pt.x >= c.x0 && pt.x < c.x1)
-                        && self.columns.get(i).map(|c| c.sortable).unwrap_or(false)
+                        && self.columns.get(i).is_some_and(|c| c.sortable)
                     {
                         if let Some(cb) = &mut self.on_header_click {
                             cb(i);
@@ -827,12 +827,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 let cur = self.selection.primary();
                 match &ke.logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
-                        let next = cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0);
+                        let next = cur.map_or(0, |c| (c + 1).min(len - 1));
                         self.selection.move_to(next, shift);
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        let next = cur.map(|c| c.saturating_sub(1)).unwrap_or(0);
+                        let next = cur.map_or(0, |c| c.saturating_sub(1));
                         self.selection.move_to(next, shift);
                         *handled = true;
                     }
@@ -861,7 +861,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.resize.is_some() || self.vbar.is_dragging()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DataTable"
     }
     fn test_id(&self) -> Option<&str> {
@@ -889,8 +889,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .columns
                 .iter()
                 .find(|c| c.key == key)
-                .map(|c| c.header.as_str())
-                .unwrap_or(key);
+                .map_or(key, |c| c.header.as_str());
             let dir = if ascending { "ascending" } else { "descending" };
             format!("sorted by {header} {dir}")
         });
@@ -982,7 +981,7 @@ fn compute_column_rects<Row>(
                 }
             }
         };
-        let next = x + w as f64;
+        let next = x + f64::from(w);
         rects.push(Rect::new(x, y0, next, y1));
         x = next;
     }

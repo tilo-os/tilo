@@ -10,9 +10,9 @@
 //!
 //! heading → bold paragraph at a larger font size keyed to level;
 //! paragraph → `\par`-terminated run; quote/blockquote → indented
-//! paragraph (`\li`); list_item → bulleted (`\bullet`) or numbered run
+//! paragraph (`\li`); `list_item` → bulleted (`\bullet`) or numbered run
 //! with hanging indent; table → `\trowd \cellx… <cell>\cell …\row` rows;
-//! code/code_block → monospace paragraph, marks not applied.
+//! `code/code_block` → monospace paragraph, marks not applied.
 //!
 //! ## Inline marks
 //!
@@ -140,11 +140,10 @@ impl ColorTable {
 fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
     for b in blocks {
         for m in &b.marks {
-            if m.name == "color" {
-                if let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color) {
+            if m.name == "color"
+                && let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color) {
                     colors.intern(hex);
                 }
-            }
         }
         collect_colors(&b.children, colors);
     }
@@ -276,13 +275,13 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
 fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
     // Pixel embedding is out of scope; fall back to alt text so the
     // block isn't lost, or skip if there's no alt text.
-    let alt = if !block.text.is_empty() {
-        block.text.clone()
-    } else {
+    let alt = if block.text.is_empty() {
         match block.attrs.get("alt") {
             Some(AttrVal::Str(s)) => s.clone(),
             _ => String::new(),
         }
+    } else {
+        block.text.clone()
     };
     if alt.is_empty() {
         return;
@@ -325,7 +324,7 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     }
 
     // Equal-width columns across the page width (≈ 9000 twips of usable width).
-    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let max_cols = rows.iter().map(std::vec::Vec::len).max().unwrap_or(1).max(1);
     let total_twips: i64 = 9000;
     let col_w = total_twips / max_cols as i64;
 
@@ -362,8 +361,7 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
 fn strip_pars(s: &str) -> String {
     s.replace("\\pard", "")
         .replace("\\par}", "")
-        .replace('}', "")
-        .replace('{', "")
+        .replace(['}', '{'], "")
 }
 
 // ---- block-level formatting helpers -----------------------------------------
@@ -528,7 +526,7 @@ fn font_index(f: &str) -> usize {
 
 /// The string payload of a valued mark (link href, color hex, font family).
 fn mark_str(m: &MarkSpan) -> Option<String> {
-    m.value.as_str().map(|s| s.to_string())
+    m.value.as_str().map(std::string::ToString::to_string)
 }
 
 /// Parse a `#rrggbb` / `rrggbb` (or `#rgb`) hex color into `(r, g, b)`.
@@ -540,7 +538,7 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
         3 => {
             // #abc → #aabbcc
             let d = |i: usize| {
-                let c = u8::from_str_radix(&h[i..i + 1], 16).ok()?;
+                let c = u8::from_str_radix(&h[i..=i], 16).ok()?;
                 Some(c * 16 + c)
             };
             Some((d(0)?, d(1)?, d(2)?))

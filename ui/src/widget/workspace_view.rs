@@ -78,11 +78,11 @@ impl WorkspaceView {
 impl Widget for WorkspaceView {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
-        if !self.slide.is_settled() {
+        if self.slide.is_settled() {
+            false
+        } else {
             self.tick_animation(1.0 / 60.0);
             true
-        } else {
-            false
         }
     }
     fn build_layout(
@@ -103,16 +103,16 @@ impl Widget for WorkspaceView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(n, self as *mut dyn Widget);
+        node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
         let l = taffy.layout(n).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
     fn draw(
@@ -127,7 +127,7 @@ impl Widget for WorkspaceView {
         // to re-paint it.
         let offset = self.slide.value();
         if offset.abs() > f32::EPSILON {
-            let t = transform * Affine::translate((0.0, offset as f64));
+            let t = transform * Affine::translate((0.0, f64::from(offset)));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 t,
@@ -175,7 +175,7 @@ impl Widget for WorkspaceView {
             }
         }
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WorkspaceView"
     }
     fn get_rect(&self) -> Rect {

@@ -34,7 +34,7 @@ pub struct BridgeSocket {
     /// [`Self::shutdown`] / [`Drop`]; the loop bails on the next
     /// iteration.
     shutdown: Arc<AtomicBool>,
-    /// JoinHandle for the accept-loop thread. Joined in Drop with a
+    /// `JoinHandle` for the accept-loop thread. Joined in Drop with a
     /// short timeout so workspace deletion doesn't block on a hung
     /// upstream.
     accept_thread: Option<thread::JoinHandle<()>>,
@@ -53,7 +53,7 @@ impl BridgeSocket {
         runtime_dir: &Path,
         upstream_wayland_socket: &Path,
     ) -> io::Result<Self> {
-        let bridge_path = runtime_dir.join(format!("nirios-ws-{}", workspace_id));
+        let bridge_path = runtime_dir.join(format!("nirios-ws-{workspace_id}"));
         // Best-effort cleanup of stale.
         let _ = std::fs::remove_file(&bridge_path);
         let listener = UnixListener::bind(&bridge_path)?;

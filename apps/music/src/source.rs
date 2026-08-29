@@ -100,8 +100,8 @@ impl Source {
     pub fn resolve_best(&self, video_id: &str) -> Result<AudioStream, String> {
         let url = self.streams_url(video_id);
         let body = reqwest::blocking::get(&url)
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::text)
             .map_err(|e| e.to_string())?;
         let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
         let streams = parse_audio_streams(self.backend, &json);
@@ -155,7 +155,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),

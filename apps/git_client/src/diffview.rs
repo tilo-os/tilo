@@ -285,7 +285,7 @@ impl DiffView {
         settings: &Settings,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
-        let mid = (viewport.x0 + viewport.x1) / 2.0;
+        let mid = f64::midpoint(viewport.x0, viewport.x1);
         draw::vline(scene, t, mid, viewport.y0, viewport.y1, c.border_standard);
 
         let top = viewport.y0 - scroll;
@@ -342,7 +342,7 @@ impl DiffView {
         };
         if let Some(n) = no {
             let s = n.to_string();
-            let w = draw::mono_width(tr, &s, FONT) as f64;
+            let w = f64::from(draw::mono_width(tr, &s, FONT));
             draw::mono(scene, tr, t, &s, FONT, c.text_dim, x0 + 44.0 - w, y + 2.0);
         }
         let text_x = x0 + 54.0;
@@ -398,8 +398,8 @@ impl DiffView {
         let old = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
         let new = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
         // Right-align both columns within the gutter.
-        let ow = draw::mono_width(tr, &old, FONT) as f64;
-        let nw = draw::mono_width(tr, &new, FONT) as f64;
+        let ow = f64::from(draw::mono_width(tr, &old, FONT));
+        let nw = f64::from(draw::mono_width(tr, &new, FONT));
         draw::mono(
             scene,
             tr,
@@ -451,7 +451,7 @@ impl DiffView {
         for tok in tokenize(content, language) {
             let color = token_color(theme, tok.class);
             draw::mono(scene, tr, t, &tok.text, FONT, color, cx, y);
-            cx += draw::mono_width(tr, &tok.text, FONT) as f64;
+            cx += f64::from(draw::mono_width(tr, &tok.text, FONT));
         }
     }
 
@@ -473,7 +473,7 @@ impl DiffView {
     ) -> HunkButton {
         let c = &theme.tokens.colors;
         let size = 11.0f32;
-        let tw = tr.measure_weighted(label, size, None, TextWeight::Medium).0 as f64;
+        let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
         let bw = tw + 20.0;
         let bx = right_x - bw;
         let by = row.y0 + 2.0;
@@ -493,7 +493,7 @@ impl DiffView {
             size,
             fg,
             bx + (bw - tw) / 2.0,
-            by + (ROW_H - 4.0 - size as f64) / 2.0,
+            by + (ROW_H - 4.0 - f64::from(size)) / 2.0,
             None,
             TextWeight::Medium,
         );

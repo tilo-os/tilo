@@ -204,7 +204,7 @@ impl RichTextLayout {
                 .iter()
                 .filter(|r| !r.text.is_empty())
                 .map(|r| {
-                    let run_fam = r.family.map(|f| f.to_cosmic()).unwrap_or(fam);
+                    let run_fam = r.family.map_or(fam, FontFamily::to_cosmic);
                     let base_run_size = r.size.unwrap_or(size);
                     // Super/subscript runs shape smaller so they advance narrower.
                     let run_size = if r.baseline.is_shifted() {
@@ -266,14 +266,14 @@ impl RichTextLayout {
 
     /// Map a local point to a byte offset (click → caret).
     pub fn hit(&self, x: f32, y: f32) -> usize {
-        self.buffer.hit(x, y).map(|c| c.index).unwrap_or(0)
+        self.buffer.hit(x, y).map_or(0, |c| c.index)
     }
 
     /// Caret geometry for a byte offset: `(x, top_y, height)`.
     pub fn caret_geometry(&self, byte: usize) -> (f32, f32, f32) {
         let mut last: Option<(f32, f32, f32)> = None;
         for run in self.buffer.layout_runs() {
-            for g in run.glyphs.iter() {
+            for g in run.glyphs {
                 if byte <= g.start {
                     return (g.x, run.line_top, run.line_height);
                 }
@@ -306,7 +306,7 @@ impl RichTextLayout {
         for run in self.buffer.layout_runs() {
             let mut x0: Option<f32> = None;
             let mut x1 = 0.0f32;
-            for g in run.glyphs.iter() {
+            for g in run.glyphs {
                 if g.end > start && g.start < end {
                     if x0.is_none() {
                         x0 = Some(g.x);

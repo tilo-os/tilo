@@ -79,8 +79,7 @@ pub fn engine_available() -> bool {
         .arg("--format")
         .arg("{{.Host.Arch}}")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Collect a full snapshot from the live engine, or an honest empty snapshot
@@ -128,9 +127,7 @@ fn podman_connection_label() -> String {
         .args(["version", "--format", "{{.Client.Version}}"])
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into());
+        .filter(|o| o.status.success()).map_or_else(|| "unknown".into(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     format!("podman {version} · rootless")
 }
 
@@ -180,10 +177,10 @@ fn list_containers() -> Option<Vec<Container>> {
         .into_iter()
         .map(|e| {
             let name = e.names.first().cloned().unwrap_or_else(|| e.id.clone());
-            let status = ContainerStatus::parse(if !e.state.is_empty() {
-                &e.state
-            } else {
+            let status = ContainerStatus::parse(if e.state.is_empty() {
                 &e.status
+            } else {
+                &e.state
             });
             let ports = e
                 .ports
@@ -281,8 +278,8 @@ fn parse_percent(s: &str) -> f32 {
 /// `(used_bytes, limit_bytes)`.
 fn parse_mem_usage(s: &str) -> (u64, u64) {
     let mut parts = s.split('/');
-    let used = parts.next().map(parse_size).unwrap_or(0);
-    let limit = parts.next().map(parse_size).unwrap_or(0);
+    let used = parts.next().map_or(0, parse_size);
+    let limit = parts.next().map_or(0, parse_size);
     (used, limit)
 }
 
@@ -336,9 +333,7 @@ fn list_images() -> Option<Vec<Image>> {
         .map(|e| {
             let (repository, tag) = e
                 .names
-                .first()
-                .map(|n| split_reference(n))
-                .unwrap_or_else(|| ("<none>".into(), "<none>".into()));
+                .first().map_or_else(|| ("<none>".into(), "<none>".into()), |n| split_reference(n));
             Image {
                 id: e.id,
                 repository,
@@ -349,7 +344,7 @@ fn list_images() -> Option<Vec<Image>> {
             }
         })
         .collect();
-    images.sort_by(|a, b| a.reference().cmp(&b.reference()));
+    images.sort_by_key(|a| a.reference());
     Some(images)
 }
 
@@ -420,10 +415,10 @@ fn volume_usage() -> Vec<String> {
     // `{{.Mounts}}` prints comma-separated mount sources; named volumes show
     // as their bare name (no leading slash).
     String::from_utf8_lossy(&out.stdout)
-        .split(|c| c == ',' || c == '\n' || c == ' ')
-        .map(|s| s.trim())
+        .split([',', '\n', ' '])
+        .map(str::trim)
         .filter(|s| !s.is_empty() && !s.starts_with('/'))
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -444,7 +439,7 @@ fn list_distroboxes() -> Vec<DistroBox> {
     let mut boxes = Vec::new();
     // distrobox list is a `|`-delimited table: ID | NAME | STATUS | IMAGE
     for line in text.lines().skip(1) {
-        let cols: Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        let cols: Vec<&str> = line.split('|').map(str::trim).collect();
         if cols.len() < 4 {
             continue;
         }
@@ -494,7 +489,7 @@ pub fn fetch_logs(container_id: &str, tail: usize) -> Vec<String> {
             let mut lines: Vec<String> = String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .chain(String::from_utf8_lossy(&o.stderr).lines())
-                .map(|l| l.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             if lines.len() > tail {
                 lines = lines.split_off(lines.len() - tail);
@@ -547,7 +542,7 @@ pub fn inspect_into(container: &mut Container) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
-                read_only: !m.get("RW").and_then(|v| v.as_bool()).unwrap_or(true),
+                read_only: !m.get("RW").and_then(serde_json::Value::as_bool).unwrap_or(true),
             })
             .collect();
     }

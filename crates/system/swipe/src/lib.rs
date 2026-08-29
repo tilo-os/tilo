@@ -2,7 +2,7 @@
 //! C-ABI shim (`csrc/swipe_ffi.cpp`).
 //!
 //! Real ML swipe-typing: the FUTO encoder (universal) + an optional paired
-//! decoder + an optional context LM run on ExecuTorch, scored against a
+//! decoder + an optional context LM run on `ExecuTorch`, scored against a
 //! dictionary trie. See [`FutoSwipe`].
 //!
 //! When the crate is built WITHOUT the FUTO static libs (env `QOS_SWIPE_LIB`

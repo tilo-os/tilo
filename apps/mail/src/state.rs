@@ -237,13 +237,7 @@ impl MailState {
     /// Rows to show in the list: `(message_id, thread_len)`. Search results are
     /// flat (one row per hit); otherwise one row per thread (its newest msg).
     pub fn list_rows(&self) -> Vec<(MessageId, usize)> {
-        if !self.search.trim().is_empty() {
-            self.mailbox
-                .search(&self.search, None)
-                .into_iter()
-                .map(|m| (m.id, 1))
-                .collect()
-        } else {
+        if self.search.trim().is_empty() {
             self.current_threads()
                 .into_iter()
                 .filter_map(|t| {
@@ -252,6 +246,12 @@ impl MailState {
                         .copied()
                         .map(|id| (id, t.message_ids.len()))
                 })
+                .collect()
+        } else {
+            self.mailbox
+                .search(&self.search, None)
+                .into_iter()
+                .map(|m| (m.id, 1))
                 .collect()
         }
     }
@@ -280,7 +280,7 @@ impl MailState {
     }
 
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
-        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
+        let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
@@ -373,8 +373,7 @@ impl MailState {
         let in_inbox = self
             .mailbox
             .get(id)
-            .map(|m| m.folder == Folder::Inbox)
-            .unwrap_or(true);
+            .is_none_or(|m| m.folder == Folder::Inbox);
         let mut items = vec![
             CtxAction::Reply,
             CtxAction::ReplyAll,
@@ -439,7 +438,7 @@ impl MailState {
             CtxAction::ReplyAll => self.push_intent(Intent::ReplyAll(id)),
             CtxAction::Forward => self.push_intent(Intent::Forward(id)),
             CtxAction::ToggleRead => {
-                let now = self.mailbox.get(id).map(|m| m.read).unwrap_or(false);
+                let now = self.mailbox.get(id).is_some_and(|m| m.read);
                 self.set_read(doc, id, !now);
             }
             CtxAction::ToggleStar => {
@@ -500,8 +499,8 @@ impl MailState {
             .and_then(|sel| {
                 rows.iter().position(|(id, _)| {
                     *id == sel
-                        || self.mailbox.get(sel).map(|m| m.thread_subject())
-                            == self.mailbox.get(*id).map(|x| x.thread_subject())
+                        || self.mailbox.get(sel).map(super::model::Message::thread_subject)
+                            == self.mailbox.get(*id).map(super::model::Message::thread_subject)
                 })
             })
             .unwrap_or(0) as i32;
@@ -509,7 +508,7 @@ impl MailState {
         let id = rows[next].0;
         // Browsing the list with the arrows updates the reader but does not
         // push the narrow detail (that's a tap).
-        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
+        let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
@@ -525,8 +524,7 @@ impl MailState {
 pub fn now_minutes() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 60) as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| (d.as_secs() / 60) as i64)
 }
 
 #[cfg(test)]

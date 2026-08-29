@@ -429,7 +429,7 @@ impl Build<'_> {
     fn visit_widget(&mut self, w: &dyn Widget, parent_children: &mut Vec<SemanticId>) {
         let taffy_id = self
             .ptr_to_taffy
-            .get(&(w as *const dyn Widget as *const ()))
+            .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())
             .copied();
         match w.accessibility() {
             Some(access) => {

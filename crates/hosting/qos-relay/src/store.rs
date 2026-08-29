@@ -131,7 +131,7 @@ impl WorkspaceStore {
             .append(true)
             .open(path)?;
         let line = serde_json::to_string(entry).map_err(|e| StoreError::Json(e.to_string()))?;
-        writeln!(file, "{}", line)?;
+        writeln!(file, "{line}")?;
         Ok(())
     }
 
@@ -147,7 +147,7 @@ impl WorkspaceStore {
     ) -> Result<PathBuf, StoreError> {
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
-        let filename = format!("{:016x}.delta", seq);
+        let filename = format!("{seq:016x}.delta");
         let path = pending_dir.join(filename);
         // A crash mid-write must not leave a truncated delta for the peer to
         // receive. The temp file is process-scoped, so two writers filling the
@@ -169,7 +169,7 @@ impl WorkspaceStore {
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .collect();
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let mut out = Vec::with_capacity(entries.len());
         for e in entries {
             let bytes = fs::read(e.path())?;

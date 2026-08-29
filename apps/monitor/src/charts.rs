@@ -54,7 +54,7 @@ pub fn stroke_rrect(
 
 /// Draw a raised, bordered card and return the padded inner content rect.
 pub fn panel(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, pad: f64) -> Rect {
-    let radius = theme.tokens.radii.md as f64 + 2.0;
+    let radius = f64::from(theme.tokens.radii.md) + 2.0;
     fill_rrect(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
     stroke_rrect(
         scene,
@@ -108,7 +108,7 @@ pub fn area_chart(
     let mut lx = inner.x1;
     for s in series.iter().rev() {
         let (lw, _) = tr.measure(&s.legend, theme.tokens.typography.scale.xs, None);
-        lx -= lw as f64;
+        lx -= f64::from(lw);
         tr.draw_text(
             scene,
             &s.legend,
@@ -128,7 +128,7 @@ pub fn area_chart(
     // Grid: four horizontal rules.
     let grid = with_alpha(colors.border_standard, 90);
     for i in 0..=4 {
-        let y = plot.y0 + plot.height() * (i as f64 / 4.0);
+        let y = plot.y0 + plot.height() * (f64::from(i) / 4.0);
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -164,7 +164,7 @@ pub fn area_chart(
         let dx = plot.width() / (n as f64 - 1.0);
         let map = |i: usize, v: f32| -> Point {
             let x = plot.x0 + dx * i as f64;
-            let frac = (v / ceil).clamp(0.0, 1.0) as f64;
+            let frac = f64::from((v / ceil).clamp(0.0, 1.0));
             let y = plot.y1 - frac * plot.height();
             Point::new(x, y)
         };
@@ -215,7 +215,7 @@ pub fn ring_gauge(
     );
     // Value arc — start at top, sweep clockwise (positive sweep is
     // clockwise under y-down screen coords).
-    let frac = frac.clamp(0.0, 1.0) as f64;
+    let frac = f64::from(frac.clamp(0.0, 1.0));
     if frac > 0.0 {
         let arc = Arc::new(
             center,
@@ -238,7 +238,7 @@ pub fn ring_gauge(
         big,
         big_size,
         colors.text_primary,
-        t * Affine::translate((center.x - bw as f64 / 2.0, center.y - bh as f64 / 2.0 - 4.0)),
+        t * Affine::translate((center.x - f64::from(bw) / 2.0, center.y - f64::from(bh) / 2.0 - 4.0)),
         None,
         TextWeight::Bold,
     );
@@ -249,7 +249,7 @@ pub fn ring_gauge(
         small,
         small_size,
         colors.text_dim,
-        t * Affine::translate((center.x - sw as f64 / 2.0, center.y + bh as f64 / 2.0 - 2.0)),
+        t * Affine::translate((center.x - f64::from(sw) / 2.0, center.y + f64::from(bh) / 2.0 - 2.0)),
         None,
     );
 }
@@ -286,7 +286,7 @@ pub fn bar_gauge(
         value,
         fs,
         colors.text_dim,
-        t * Affine::translate((rect.x1 - vw as f64, rect.y0)),
+        t * Affine::translate((rect.x1 - f64::from(vw), rect.y0)),
         None,
     );
     let bar_h = 8.0;
@@ -298,7 +298,7 @@ pub fn bar_gauge(
         bar_h / 2.0,
         with_alpha(colors.border_standard, 150),
     );
-    let frac = frac.clamp(0.0, 1.0) as f64;
+    let frac = f64::from(frac.clamp(0.0, 1.0));
     if frac > 0.0 {
         let fill = Rect::new(
             track.x0,
@@ -319,7 +319,7 @@ pub fn sparkline(scene: &mut Scene, t: Affine, rect: Rect, data: &[f32], max: f3
     let n = data.len();
     let dx = rect.width() / (n as f64 - 1.0);
     let map = |i: usize, v: f32| -> Point {
-        let frac = (v / ceil).clamp(0.0, 1.0) as f64;
+        let frac = f64::from((v / ceil).clamp(0.0, 1.0));
         Point::new(rect.x0 + dx * i as f64, rect.y1 - frac * rect.height())
     };
     let mut area = BezPath::new();

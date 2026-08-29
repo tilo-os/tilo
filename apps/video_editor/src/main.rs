@@ -200,7 +200,7 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
 /// `state` carries the document: a fresh one for the seeded/demo scenarios, or
 /// a **warmed** one (already synced through the import + decode warm-up) so the

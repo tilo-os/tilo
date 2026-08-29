@@ -450,7 +450,7 @@ impl PageSidebar {
                 self.pending.push(PageSidebarEvent::Reorder {
                     from: index,
                     to: index + 1,
-                })
+                });
             }
             MenuAction::Delete => self.pending.push(PageSidebarEvent::Delete(index)),
             _ => {}
@@ -622,8 +622,8 @@ impl PageSidebar {
         let label = format!("{}", i + 1);
         let size = 11.0f32;
         let (lw, lh) = tr.measure(&label, size, None);
-        let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - lw as f64;
-        let ly = rect.y0 + (rect.height() - lh as f64) / 2.0;
+        let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - f64::from(lw);
+        let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
             theme.accent_primary
         } else {
@@ -665,8 +665,8 @@ impl PageSidebar {
         let label = format!("+  {}", self.add_label);
         let size = 12.0f32;
         let (tw, th) = tr.measure(&label, size, None);
-        let tx = r.x0 + (r.width() - tw as f64) / 2.0;
-        let ty = r.y0 + (r.height() - th as f64) / 2.0;
+        let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
+        let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
         tr.draw_text_weighted(
             scene,
             &label,
@@ -715,7 +715,7 @@ impl PageSidebar {
             };
             let size = 12.5f32;
             let (_, th) = tr.measure(label, size, None);
-            let ty = row.y0 + (row.height() - th as f64) / 2.0;
+            let ty = row.y0 + (row.height() - f64::from(th)) / 2.0;
             tr.draw_text(
                 scene,
                 label,
@@ -737,7 +737,7 @@ impl Widget for PageSidebar {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -763,7 +763,7 @@ impl Widget for PageSidebar {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PageSidebar"
     }
     fn test_id(&self) -> Option<&str> {

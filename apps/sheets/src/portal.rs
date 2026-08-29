@@ -24,7 +24,7 @@ pub enum Interchange {
     Csv,
     /// Microsoft Excel workbook.
     Xlsx,
-    /// LibreOffice Calc spreadsheet.
+    /// `LibreOffice` Calc spreadsheet.
     Ods,
 }
 

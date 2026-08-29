@@ -104,13 +104,13 @@ impl Default for Durations {
 
 impl Durations {
     pub fn fast(self) -> Duration {
-        Duration::from_millis(self.fast_ms as u64)
+        Duration::from_millis(u64::from(self.fast_ms))
     }
     pub fn base(self) -> Duration {
-        Duration::from_millis(self.base_ms as u64)
+        Duration::from_millis(u64::from(self.base_ms))
     }
     pub fn slow(self) -> Duration {
-        Duration::from_millis(self.slow_ms as u64)
+        Duration::from_millis(u64::from(self.slow_ms))
     }
 }
 
@@ -175,7 +175,7 @@ pub struct Motion {
 /// surface approaches it and never arrives.
 ///
 /// `L·d / (d + L)` is the algebraic simplification of the form usually
-/// quoted for UIScrollView, `(1 − 1/(d·c/D + 1))·D/c` with `L = D/c`. Two
+/// quoted for `UIScrollView`, `(1 − 1/(d·c/D + 1))·D/c` with `L = D/c`. Two
 /// properties matter, both visible here: slope at `d = 0` is exactly 1 (the
 /// first pixel past the end tracks the finger, the edge is never a wall),
 /// and slope decays monotonically toward zero (resistance builds the whole

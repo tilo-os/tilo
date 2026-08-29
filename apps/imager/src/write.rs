@@ -323,7 +323,7 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
     let rate = 180_000_000u64; // 180 MB/s — a plausible USB3 figure for the ETA.
     let steps = 40;
     for i in 1..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         if tx
             .send(Progress {
                 phase: JobPhase::Writing,
@@ -338,7 +338,7 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
         std::thread::sleep(Duration::from_millis(30));
     }
     for i in 1..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         if tx
             .send(Progress {
                 phase: JobPhase::Verifying,

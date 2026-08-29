@@ -60,7 +60,7 @@ impl FavBand {
         ListMetrics::uniform(self.origin_y, self.row_h, 0.0, self.count)
     }
     pub fn center_x(&self) -> f64 {
-        (self.x0 + self.x1) / 2.0
+        f64::midpoint(self.x0, self.x1)
     }
     /// Vertical centre of favourite row `i`.
     pub fn row_center_y(&self, i: usize) -> f64 {
@@ -258,7 +258,7 @@ impl PlacesSidebar {
                 transform,
                 a,
                 None,
-                &RoundedRect::from_rect(pill, tokens.radii.md as f64),
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
             );
         } else if active {
             scene.fill(
@@ -266,7 +266,7 @@ impl PlacesSidebar {
                 transform,
                 accent,
                 None,
-                &RoundedRect::from_rect(pill, tokens.radii.md as f64),
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
             );
         } else if hovered {
             scene.fill(
@@ -274,7 +274,7 @@ impl PlacesSidebar {
                 transform,
                 tokens.colors.surface_white_10,
                 None,
-                &RoundedRect::from_rect(pill, tokens.radii.md as f64),
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
             );
         }
 
@@ -329,7 +329,7 @@ impl PlacesSidebar {
             size,
             theme.tokens.colors.text_dim,
             transform
-                * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - size as f64) / 2.0)),
+                * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - f64::from(size)) / 2.0)),
             None,
         );
         let _ = scene;
@@ -358,17 +358,17 @@ impl Widget for PlacesSidebar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Publish the favourites band so the app / demo can drive a drag in the
         // same coordinate space the reflow uses.
@@ -472,8 +472,8 @@ impl Widget for PlacesSidebar {
             if let (Some(fi), Some(ghost)) = (
                 from_idx,
                 favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
-            ) {
-                if let Some(fav) = favs.favorites.get(fi) {
+            )
+                && let Some(fav) = favs.favorites.get(fi) {
                     self.draw_row(
                         scene,
                         transform,
@@ -487,7 +487,6 @@ impl Widget for PlacesSidebar {
                         true,
                     );
                 }
-            }
         }
     }
 
@@ -565,23 +564,19 @@ impl Widget for PlacesSidebar {
                 let pressed = favs.pressed.take();
                 let commit = favs.drag.commit();
                 drop(favs);
-                match commit {
-                    Some((from, to)) => {
-                        push(&self.sink, FileCommand::ReorderFavorite { from, to });
-                        *handled = true;
-                    }
-                    None => {
-                        if !was_active {
-                            if let Some(i) = pressed {
-                                let path =
-                                    self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
-                                if let Some(p) = path {
-                                    push(&self.sink, FileCommand::Navigate(p));
-                                }
+                if let Some((from, to)) = commit {
+                    push(&self.sink, FileCommand::ReorderFavorite { from, to });
+                    *handled = true;
+                } else {
+                    if !was_active
+                        && let Some(i) = pressed {
+                            let path =
+                                self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
+                            if let Some(p) = path {
+                                push(&self.sink, FileCommand::Navigate(p));
                             }
                         }
-                        *handled = true;
-                    }
+                    *handled = true;
                 }
             }
             _ => {}
@@ -594,7 +589,7 @@ impl Widget for PlacesSidebar {
         self.favs.borrow().drag.is_pending()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PlacesSidebar"
     }
     fn test_id(&self) -> Option<&str> {

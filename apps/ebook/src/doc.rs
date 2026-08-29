@@ -31,7 +31,7 @@ use crate::model::{
 
 /// Pack an sRGB triple into a single int for the CRDT.
 fn pack_rgb(c: [u8; 3]) -> i64 {
-    ((c[0] as i64) << 16) | ((c[1] as i64) << 8) | (c[2] as i64)
+    (i64::from(c[0]) << 16) | (i64::from(c[1]) << 8) | i64::from(c[2])
 }
 fn unpack_rgb(v: i64) -> [u8; 3] {
     [
@@ -116,8 +116,8 @@ impl BooksDoc {
 
     pub fn write_settings(doc: &mut AutoCommit, s: &Settings) {
         let m = Self::root_map(doc, "settings");
-        let _ = doc.put(&m, "font_scale", s.font_scale as f64);
-        let _ = doc.put(&m, "line_spacing", s.line_spacing as f64);
+        let _ = doc.put(&m, "font_scale", f64::from(s.font_scale));
+        let _ = doc.put(&m, "line_spacing", f64::from(s.line_spacing));
         let _ = doc.put(&m, "font_id", s.font_id.as_str());
         let _ = doc.put(&m, "theme", s.theme.as_str());
         let _ = doc.put(&m, "scheme_id", s.scheme_id.as_str());
@@ -176,8 +176,7 @@ impl BooksDoc {
                 ),
                 name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
                 size_mult: Self::scalar_f64(doc, &e, "size_mult")
-                    .map(|v| (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX))
-                    .unwrap_or(1.0),
+                    .map_or(1.0, |v| (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)),
                 shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
                 id,
             });
@@ -197,7 +196,7 @@ impl BooksDoc {
             let _ = doc.put(&e, "id", f.id.as_str());
             let _ = doc.put(&e, "kind", f.kind.as_code());
             let _ = doc.put(&e, "name", f.name.as_str());
-            let _ = doc.put(&e, "size_mult", f.size_mult as f64);
+            let _ = doc.put(&e, "size_mult", f64::from(f.size_mult));
             let _ = doc.put(&e, "shown", f.shown);
         }
     }
@@ -400,7 +399,7 @@ impl BooksDoc {
         let entry = Self::get_or_make_map(doc, &progress, book_id);
         let _ = doc.put(&entry, "chapter", p.chapter as i64);
         let _ = doc.put(&entry, "page", p.page as i64);
-        let _ = doc.put(&entry, "fraction", p.fraction as f64);
+        let _ = doc.put(&entry, "fraction", f64::from(p.fraction));
         // Preserve a previously recorded open time; only advance it (0 = never).
         if p.opened > 0 {
             let _ = doc.put(&entry, "opened", p.opened as i64);

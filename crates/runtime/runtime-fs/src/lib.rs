@@ -39,7 +39,7 @@ use capnp_rpc::rpc_twoparty_capnp;
 
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 
-/// Byte cap the server-side FileHandle applies to a single `read`; larger
+/// Byte cap the server-side `FileHandle` applies to a single `read`; larger
 /// requests are truncated. Mirrors the FUSE driver's 1 MiB readahead.
 pub const MAX_READ_CHUNK: u32 = 1 << 20;
 
@@ -172,7 +172,7 @@ impl FsClient {
         let reader = reply.get()?;
         let entries = reader.get_entries()?;
         let mut out = Vec::with_capacity(entries.len() as usize);
-        for entry in entries.iter() {
+        for entry in entries {
             let name = entry
                 .get_name()?
                 .to_str()

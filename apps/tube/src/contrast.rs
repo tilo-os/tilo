@@ -26,7 +26,7 @@ use vello::peniko::Color;
 /// WCAG 2.x relative luminance of an opaque sRGB colour (alpha ignored).
 pub fn relative_luminance(c: Color) -> f64 {
     fn chan(srgb: u8) -> f64 {
-        let cs = srgb as f64 / 255.0;
+        let cs = f64::from(srgb) / 255.0;
         if cs <= 0.03928 {
             cs / 12.92
         } else {
@@ -49,8 +49,8 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
 /// alpha wash over a base surface (e.g. the status pills); contrast has to be
 /// measured against the *composited* result, not the wash in isolation.
 pub fn composite_over(fg: Color, bg: Color) -> Color {
-    let a = fg.a() as f64 / 255.0;
-    let mix = |f: u8, b: u8| (f as f64 * a + b as f64 * (1.0 - a)).round() as u8;
+    let a = f64::from(fg.a()) / 255.0;
+    let mix = |f: u8, b: u8| (f64::from(f) * a + f64::from(b) * (1.0 - a)).round() as u8;
     Color::from_rgb8(
         mix(fg.r(), bg.r()),
         mix(fg.g(), bg.g()),

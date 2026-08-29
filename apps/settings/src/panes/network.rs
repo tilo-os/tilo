@@ -102,7 +102,7 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 /// (or only thread-safe state).
 type NetworkLister = Arc<dyn Fn() -> Result<Vec<WifiNetworkInfo>, String> + Send + Sync>;
 
-/// A configured VPN / WireGuard connection and whether it is currently up.
+/// A configured VPN / `WireGuard` connection and whether it is currently up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnInfo {
     pub name: String,
@@ -112,7 +112,7 @@ pub struct VpnInfo {
 /// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
 type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
 
-/// Read the configured VPN connections from NetworkManager. Two `nmcli`
+/// Read the configured VPN connections from `NetworkManager`. Two `nmcli`
 /// calls: every connection (to find the VPN/WireGuard ones) and the active
 /// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
 /// missing.
@@ -137,7 +137,7 @@ fn read_vpn_connections() -> Vec<VpnInfo> {
 pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
     let active_names: Vec<&str> = active
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
     let mut out = Vec::new();
@@ -297,7 +297,7 @@ impl NetworkPane {
     }
 
     /// Rows for the VPN card — a read-only status list of configured
-    /// profiles. Connecting/disconnecting needs a privileged NetworkManager
+    /// profiles. Connecting/disconnecting needs a privileged `NetworkManager`
     /// action seam that isn't in this app yet, so the card reports status
     /// truthfully rather than offering a button that can't act.
     fn vpn_rows(&self) -> Vec<El> {
@@ -560,7 +560,7 @@ impl Widget for NetworkPane {
             match (self.lister)() {
                 Ok(nets) => self.networks = nets,
                 Err(e) => {
-                    warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed")
+                    warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
                 }
             }
             self.vpns = (self.vpn_lister)();
@@ -644,17 +644,17 @@ impl Widget for NetworkPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -723,7 +723,7 @@ impl Widget for NetworkPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NetworkPane"
     }
 
@@ -739,8 +739,7 @@ impl Widget for NetworkPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -804,9 +803,9 @@ mod tests {
         let rec = Arc::new(RecordingDispatcher::default());
         let nets = sample_networks();
         let pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
-            nets.clone(),
+            nets,
         );
         assert_eq!(pane.networks().len(), 3);
         let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
@@ -861,7 +860,7 @@ mod tests {
     fn refresh_button_replaces_network_list() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_networks(),
         );
@@ -976,7 +975,7 @@ mod tests {
     fn second_connect_press_collapses_prompt() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_networks(),
         );

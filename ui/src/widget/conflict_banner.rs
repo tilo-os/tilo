@@ -127,7 +127,7 @@ impl ConflictBanner {
             return None;
         }
         let chip_h = (self.rect.height() - 8.0).max(20.0);
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         // Right-anchored cluster: Dismiss is rightmost, Review sits
         // immediately to its left with a CHIP_GAP between.
         let x_dismiss_x1 = self.rect.x1 - PADDING;
@@ -147,7 +147,7 @@ impl ConflictBanner {
             return None;
         }
         let chip_h = (self.rect.height() - 8.0).max(20.0);
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let x_dismiss_x1 = self.rect.x1 - PADDING;
         Some(Rect::new(
             x_dismiss_x1 - CHIP_DISMISS_W,
@@ -182,7 +182,7 @@ impl ConflictBanner {
         label: &str,
         hovered: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         let body = if hovered {
             theme.tokens.colors.surface_white_20
         } else {
@@ -205,8 +205,8 @@ impl ConflictBanner {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    rect.x0 + (rect.width() - lw as f64) / 2.0,
-                    rect.y0 + (rect.height() - lh as f64) / 2.0,
+                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
                 )),
             None,
         );
@@ -241,7 +241,7 @@ impl Widget for ConflictBanner {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -249,10 +249,10 @@ impl Widget for ConflictBanner {
         let layout = taffy.layout(node).unwrap();
         let prev = self.rect;
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if prev != self.rect {
             self.dirty = true;
@@ -274,7 +274,7 @@ impl Widget for ConflictBanner {
         let warn = theme.tokens.colors.semantic.warning;
         let warn_rgba = warn.to_rgba8();
         let bg_color = Color::from_rgba8(warn_rgba.r, warn_rgba.g, warn_rgba.b, BANNER_BG_ALPHA);
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -285,17 +285,17 @@ impl Widget for ConflictBanner {
         scene.stroke(&Stroke::new(1.0), transform, warn, None, &shape);
 
         let text_size = theme.tokens.typography.scale.sm;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
 
         let glyph = "!";
         let (gw, gh) = text_renderer.measure(glyph, text_size + 2.0, None);
-        let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - gw as f64) / 2.0;
+        let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - f64::from(gw)) / 2.0;
         text_renderer.draw_text(
             scene,
             glyph,
             text_size + 2.0,
             warn,
-            transform * Affine::translate((glyph_x, cy - gh as f64 / 2.0)),
+            transform * Affine::translate((glyph_x, cy - f64::from(gh) / 2.0)),
             None,
         );
 
@@ -307,7 +307,7 @@ impl Widget for ConflictBanner {
             &label,
             text_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((label_x, cy - lh as f64 / 2.0)),
+            transform * Affine::translate((label_x, cy - f64::from(lh) / 2.0)),
             None,
         );
 
@@ -358,12 +358,10 @@ impl Widget for ConflictBanner {
                 self.last_cursor = p;
                 let new_review = self
                     .review_chip_rect()
-                    .map(|r| r.contains(p))
-                    .unwrap_or(false);
+                    .is_some_and(|r| r.contains(p));
                 let new_dismiss = self
                     .dismiss_chip_rect()
-                    .map(|r| r.contains(p))
-                    .unwrap_or(false);
+                    .is_some_and(|r| r.contains(p));
                 if new_review != self.review_hovered || new_dismiss != self.dismiss_hovered {
                     self.review_hovered = new_review;
                     self.dismiss_hovered = new_dismiss;
@@ -398,7 +396,7 @@ impl Widget for ConflictBanner {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ConflictBanner"
     }
 

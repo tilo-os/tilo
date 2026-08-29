@@ -42,7 +42,7 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
             // FNV-1a 64-bit: cheap, deterministic, no RNG state.
             let mut h: u64 = 0xcbf29ce484222325;
             for b in user_id.as_bytes() {
-                h ^= *b as u64;
+                h ^= u64::from(*b);
                 h = h.wrapping_mul(0x100000001b3);
             }
             PEER_PALETTE[(h % PEER_PALETTE.len() as u64) as usize]
@@ -131,10 +131,10 @@ pub fn assign_peer_colors(
 /// How far apart two colours are, weighted the way an eye weights them (the
 /// "redmean" approximation).
 pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
-    let rm = (a.0 as f32 + b.0 as f32) / 2.0;
-    let dr = a.0 as f32 - b.0 as f32;
-    let dg = a.1 as f32 - b.1 as f32;
-    let db = a.2 as f32 - b.2 as f32;
+    let rm = f32::midpoint(f32::from(a.0), f32::from(b.0));
+    let dr = f32::from(a.0) - f32::from(b.0);
+    let dg = f32::from(a.1) - f32::from(b.1);
+    let db = f32::from(a.2) - f32::from(b.2);
     ((2.0 + rm / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - rm) / 256.0) * db * db).sqrt()
 }
 
@@ -323,9 +323,9 @@ impl PresenceUser {
 
     pub fn color_rgba(&self, alpha: f32) -> [f32; 4] {
         [
-            self.color.0 as f32 / 255.0,
-            self.color.1 as f32 / 255.0,
-            self.color.2 as f32 / 255.0,
+            f32::from(self.color.0) / 255.0,
+            f32::from(self.color.1) / 255.0,
+            f32::from(self.color.2) / 255.0,
             alpha,
         ]
     }
@@ -596,7 +596,7 @@ impl PresenceCtx {
             self.register_presence(target, user);
             return;
         }
-        for (k, list) in self.here.iter_mut() {
+        for (k, list) in &mut self.here {
             if matches!(k, PresenceKey::Tab { .. }) && k != target {
                 list.retain(|u| u != &user);
             }
@@ -623,7 +623,7 @@ impl PresenceCtx {
     ) {
         // Off every other scope first, so a pointer that changed scope leaves
         // nothing painted where it used to be.
-        for (k, list) in self.pointers.iter_mut() {
+        for (k, list) in &mut self.pointers {
             if k != key {
                 list.retain(|(u, _)| u != &user);
             }
@@ -684,7 +684,7 @@ impl PresenceCtx {
         // A caret is single-location: a peer has at most one. Clear them
         // from every OTHER key first so moving the caret (and the
         // caret-driven focus outline) doesn't leave a stale one behind.
-        for (k, list) in self.carets.iter_mut() {
+        for (k, list) in &mut self.carets {
             if k != key {
                 list.retain(|(u, _)| u != &user);
             }
@@ -700,7 +700,7 @@ impl PresenceCtx {
     pub fn set_selection(&mut self, key: &PresenceKey, user: UserId, range: SelectionRange) {
         // Single-location, same as the caret: drop this peer's selection
         // from every other key so a moved selection doesn't persist.
-        for (k, list) in self.selections.iter_mut() {
+        for (k, list) in &mut self.selections {
             if k != key {
                 list.retain(|(u, _)| u != &user);
             }
@@ -930,7 +930,7 @@ impl PresenceCtx {
                 continue;
             }
             let target =
-                vello::kurbo::Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
+                vello::kurbo::Point::new(f64::from(cursor.position[0]), f64::from(cursor.position[1]));
             let Some(mist) = edge_mist_for(viewport, target) else {
                 continue;
             };
@@ -990,14 +990,12 @@ impl PresenceCtx {
         let uid = UserId(user_id.clone());
         let (r, g, b) = self.color_for(&uid);
         let color = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
-        let label = display_name
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| self.display_name(&uid));
+        let label = display_name.map_or_else(|| self.display_name(&uid), std::string::ToString::to_string);
         if let Some(existing) = self
             .remote_cursors
             .iter_mut()
@@ -1063,7 +1061,7 @@ impl PresenceCtx {
         key: PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
-        use crate::collaboration::PresencePayload::*;
+        use crate::collaboration::PresencePayload::{Arrived, Pointer, Caret, Selection, Typing, Left};
 
         // A frame this session published, handed back: another app the same
         // person has open. Nothing about it is painted, but `Arrived` still

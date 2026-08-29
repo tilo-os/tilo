@@ -31,7 +31,7 @@ pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
 /// the shell (re)builds the widget tree. The binding travels with the
 /// tile, so a tab dragged into another group keeps its document.
 pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
-    group.bind_tab_records(store, |tab_id| scratch_tab_record(tab_id));
+    group.bind_tab_records(store, scratch_tab_record);
 }
 
 /// The body a tab's app wrote, read out of that tab's own document — the

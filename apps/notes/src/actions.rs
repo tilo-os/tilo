@@ -135,7 +135,7 @@ impl Action for NotesAction {
                 // parent of each removed page that is not itself removed.
                 let mut affected: HashSet<Option<PageId>> = HashSet::new();
                 for p in all.iter().filter(|p| removed.contains(&p.id)) {
-                    if p.parent.map(|pp| !removed.contains(&pp)).unwrap_or(true) {
+                    if p.parent.is_none_or(|pp| !removed.contains(&pp)) {
                         affected.insert(p.parent);
                     }
                 }
@@ -261,8 +261,7 @@ fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
         .filter(|p| p.parent == parent)
         .map(|p| p.order)
         .max()
-        .map(|o| o + 1)
-        .unwrap_or(0)
+        .map_or(0, |o| o + 1)
 }
 
 /// Build one page resource and, recursively, its child pages.

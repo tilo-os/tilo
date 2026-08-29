@@ -350,10 +350,7 @@ fn classify(
                         None => removable.push(at),
                     }
                 }
-                if !blocked {
-                    structural += 1;
-                    writable.push(p);
-                } else {
+                if blocked {
                     // Each surviving removal is anchored on its own element, so
                     // splitting the run does not disturb the others.
                     for at in removable {
@@ -367,6 +364,9 @@ fn classify(
                             },
                         });
                     }
+                } else {
+                    structural += 1;
+                    writable.push(p);
                 }
                 continue;
             }
@@ -387,26 +387,20 @@ fn classify(
             _ => {}
         }
 
-        match slot_of(doc, &p) {
-            Some(s) => match later.get(&s) {
-                Some(actor) => {
-                    if kept_seen.insert(s.clone()) {
-                        kept.push(KeptSlot {
-                            by: authors.resolve(actor),
-                            slot: s,
-                            actor_hex: actor.clone(),
-                        });
-                    }
-                }
-                None => {
-                    reverted_slots.insert(s);
-                    writable.push(p);
-                }
-            },
-            None => {
-                structural += 1;
-                writable.push(p);
+        if let Some(s) = slot_of(doc, &p) { if let Some(actor) = later.get(&s) {
+            if kept_seen.insert(s.clone()) {
+                kept.push(KeptSlot {
+                    by: authors.resolve(actor),
+                    slot: s,
+                    actor_hex: actor.clone(),
+                });
             }
+        } else {
+            reverted_slots.insert(s);
+            writable.push(p);
+        } } else {
+            structural += 1;
+            writable.push(p);
         }
     }
 

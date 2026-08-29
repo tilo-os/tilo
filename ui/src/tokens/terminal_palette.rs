@@ -16,13 +16,13 @@ pub struct TerminalPalette {
 /// Mix two colours in straight (non-premultiplied) 8-bit sRGB. `t = 0` → `a`.
 fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 /// Perceptual luminance in 0..=1 (Rec. 709 coefficients).
 fn luma(c: Color) -> f32 {
-    (0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32) / 255.0
+    (0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())) / 255.0
 }
 
 impl TerminalPalette {

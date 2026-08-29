@@ -191,8 +191,8 @@ pub fn paint_image_cover(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let iw = img.width as f64;
-    let ih = img.height as f64;
+    let iw = f64::from(img.width);
+    let ih = f64::from(img.height);
     if iw <= 0.0 || ih <= 0.0 {
         return;
     }

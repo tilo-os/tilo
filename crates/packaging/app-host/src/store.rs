@@ -217,7 +217,7 @@ impl Store {
         f(&mut inner.blobs)
     }
 
-    /// (total_bytes, by_pinning) reported from on-disk reality: blob-store occupancy + payload-tree occupancy.
+    /// (`total_bytes`, `by_pinning`) reported from on-disk reality: blob-store occupancy + payload-tree occupancy.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
         let inner = self.inner.lock();
         let payloads_root = inner.root.join("payloads");

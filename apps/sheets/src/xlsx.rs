@@ -114,7 +114,7 @@ where
     R::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut tables = Vec::new();
-    let names = wb.sheet_names().to_vec();
+    let names = wb.sheet_names();
     for name in names {
         let range = wb.worksheet_range(&name)?;
         // Formulas are optional: a value-only workbook (or a reader hiccup)

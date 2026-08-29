@@ -88,11 +88,10 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
     for c in children {
         let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let size = c.get("size").and_then(as_u64).unwrap_or(0);
-        if let Some(mp) = str_field(c, "mountpoint") {
-            if mp == "/" || mp == "/boot" || mp == "/boot/efi" || mp.starts_with("/var") {
+        if let Some(mp) = str_field(c, "mountpoint")
+            && (mp == "/" || mp == "/boot" || mp == "/boot/efi" || mp.starts_with("/var")) {
                 *is_system = true;
             }
-        }
         if ty == "part" || ty == "crypt" || ty == "lvm" {
             out.push(TargetPartition {
                 name: str_field(c, "name").unwrap_or_default(),
@@ -200,7 +199,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// `lsblk -b` emits sizes as JSON numbers, but older versions emit
@@ -219,8 +218,8 @@ fn as_bool(v: &Value) -> Option<bool> {
         return Some(b);
     }
     match v.as_str() {
-        Some("1") | Some("true") => Some(true),
-        Some("0") | Some("false") => Some(false),
+        Some("1" | "true") => Some(true),
+        Some("0" | "false") => Some(false),
         _ => None,
     }
 }

@@ -66,7 +66,7 @@ const INHERITED_ENV: &[&str] = &[
 ];
 
 /// Variables that are always cleared, whatever the parent had. `DISPLAY` because there's no
-/// XWayland (a toolkit that sees one tries X11, fails to connect, and errors instead of
+/// `XWayland` (a toolkit that sees one tries X11, fails to connect, and errors instead of
 /// falling back); `QOS_*` because they describe a confinement this process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
@@ -215,11 +215,10 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
 fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in INHERITED_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            if !value.is_empty() {
+        if let Some(value) = std::env::var_os(key)
+            && !value.is_empty() {
                 env.insert((*key).to_string(), value.to_string_lossy().to_string());
             }
-        }
     }
     // The compositor's socket wins over anything inherited. Both halves must move together:
     // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an

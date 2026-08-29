@@ -80,7 +80,7 @@ impl PairDeviceScreen {
 
     /// Inject the 6-digit code (used by tests + the QR-scanner shim).
     pub fn set_code(&mut self, code: &str) {
-        let digits: Vec<char> = code.chars().filter(|c| c.is_ascii_digit()).collect();
+        let digits: Vec<char> = code.chars().filter(char::is_ascii_digit).collect();
         for i in 0..6 {
             self.code_digits[i] = digits.get(i).copied().unwrap_or('_');
         }
@@ -342,17 +342,17 @@ impl Widget for PairDeviceScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 560.0;
         let card_h = 460.0;
@@ -465,7 +465,7 @@ impl Widget for PairDeviceScreen {
                 theme.tokens.colors.text_primary,
                 transform
                     * Affine::translate((
-                        r.x0 + (r.width() - w as f64) / 2.0,
+                        r.x0 + (r.width() - f64::from(w)) / 2.0,
                         r.y0 + (r.height() - 26.0) / 2.0,
                     )),
                 None,
@@ -529,7 +529,7 @@ impl Widget for PairDeviceScreen {
             Color::from_rgb8(255, 255, 255),
             transform
                 * Affine::translate((
-                    self.submit_rect.x0 + (self.submit_rect.width() - lw as f64) / 2.0,
+                    self.submit_rect.x0 + (self.submit_rect.width() - f64::from(lw)) / 2.0,
                     self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -560,7 +560,7 @@ impl Widget for PairDeviceScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PairDeviceScreen"
     }
 

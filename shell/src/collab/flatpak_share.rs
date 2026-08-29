@@ -288,7 +288,7 @@ impl SharedFlatpakSession {
             m.set_chosen_encoder(chosen);
         }
 
-        let interval = std::time::Duration::from_micros((1_000_000 / effective_fps as u64).max(1));
+        let interval = std::time::Duration::from_micros((1_000_000 / u64::from(effective_fps)).max(1));
 
         Ok(Self {
             host_user_id,
@@ -334,7 +334,7 @@ impl SharedFlatpakSession {
 
     /// Currently-active colorimetry override.
     pub fn current_color_override(&self) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
-        self.color_override.lock().ok().and_then(|g| g.clone())
+        self.color_override.lock().ok().and_then(|g| *g)
     }
 
     /// Runtime-selected encoder; distinct from `config.encoder` (the
@@ -485,10 +485,7 @@ impl SharedFlatpakSession {
         }
         // Drain staged frame before taking the encoder lock — avoid holding both.
         let staged = self.staged_frame.lock().expect("staged").take();
-        let staged = match staged {
-            Some(s) => s,
-            None => return None,
-        };
+        let staged = staged?;
         let carried_ts = staged.capture_ts_ns;
 
         let mut encoder = self.encoder.lock().expect("encoder");
@@ -513,7 +510,7 @@ impl SharedFlatpakSession {
                     .enumerate()
                 {
                     plane_fds[i] = fd.as_raw_fd();
-                    plane_offsets[i] = offset as u64;
+                    plane_offsets[i] = u64::from(offset);
                     plane_strides[i] = stride;
                     num_planes = num_planes.saturating_add(1);
                 }
@@ -544,7 +541,7 @@ impl SharedFlatpakSession {
                     }
                     // Rough bitrate sample: bytes-per-frame * fps.
                     let bytes_per_sec =
-                        (stats.bytes as u64).saturating_mul(self.config.target_fps as u64);
+                        (stats.bytes as u64).saturating_mul(u64::from(self.config.target_fps));
                     m.record_bitrate(bytes_per_sec);
                 }
                 let keyframe = is_h264_keyframe(&nalus);
@@ -683,8 +680,7 @@ fn log_probe_outcomes(outcomes: &[ProbeOutcome], chosen: EncoderKind) {
     let reason = outcomes
         .iter()
         .find(|o| o.kind == chosen)
-        .map(|o| o.reason.as_str())
-        .unwrap_or("");
+        .map_or("", |o| o.reason.as_str());
     tracing::info!(
         chosen = chosen.as_str(),
         reason,

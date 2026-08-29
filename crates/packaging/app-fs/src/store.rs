@@ -95,7 +95,7 @@ impl BlobStore for MemoryBlobStore {
             .get(hash)
             .ok_or_else(|| BlobError::Missing(hex(hash)))?;
         let start = offset.min(blob.len() as u64) as usize;
-        let end = (offset.saturating_add(len as u64)).min(blob.len() as u64) as usize;
+        let end = (offset.saturating_add(u64::from(len))).min(blob.len() as u64) as usize;
         Ok(blob[start..end].to_vec())
     }
 
@@ -166,7 +166,7 @@ impl BlobStore for DiskBlobStore {
         if offset >= file_len {
             return Ok(Vec::new());
         }
-        let want = ((file_len - offset).min(len as u64)) as usize;
+        let want = ((file_len - offset).min(u64::from(len))) as usize;
         let mut buf = vec![0u8; want];
         let mut filled = 0usize;
         while filled < want {
@@ -245,7 +245,7 @@ pub struct CounterSnapshot {
 impl<S: BlobStore> BlobStore for CountingStore<S> {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
         self.range_calls.fetch_add(1, Ordering::SeqCst);
-        self.bytes_requested.fetch_add(len as u64, Ordering::SeqCst);
+        self.bytes_requested.fetch_add(u64::from(len), Ordering::SeqCst);
         self.inner.get_range(hash, offset, len)
     }
 
@@ -260,7 +260,7 @@ impl<S: BlobStore> BlobStore for CountingStore<S> {
     }
 }
 
-/// Implement BlobStore for `Arc<T>` so the mount can hold one shared
+/// Implement `BlobStore` for `Arc<T>` so the mount can hold one shared
 /// handle across FUSE workers without every call site derefing.
 impl<T: BlobStore + ?Sized> BlobStore for Arc<T> {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
@@ -308,7 +308,7 @@ fn nibble(b: u8) -> Option<u8> {
     }
 }
 
-/// Convenience: read a whole blob via repeated get_range calls; not
+/// Convenience: read a whole blob via repeated `get_range` calls; not
 /// on the FUSE hot path — used by the mount loader for the (tiny) Collection blob.
 pub fn read_all<S: BlobStore + ?Sized>(store: &S, hash: &[u8; 32]) -> Result<Vec<u8>, BlobError> {
     let total = store.size(hash)?;
@@ -316,7 +316,7 @@ pub fn read_all<S: BlobStore + ?Sized>(store: &S, hash: &[u8; 32]) -> Result<Vec
     let mut offset = 0u64;
     const CHUNK: u32 = 64 * 1024;
     while offset < total {
-        let want = ((total - offset).min(CHUNK as u64)) as u32;
+        let want = ((total - offset).min(u64::from(CHUNK))) as u32;
         let part = store.get_range(hash, offset, want)?;
         if part.is_empty() {
             break;

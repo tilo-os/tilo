@@ -142,9 +142,7 @@ impl Session {
         // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
         // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
         // `/var/home/you` is real, and the base's link still resolves to it too.
-        let home_mountpoint = dirs::home_dir()
-            .map(|h| h.canonicalize().unwrap_or(h))
-            .unwrap_or_else(|| PathBuf::from("/root"));
+        let home_mountpoint = dirs::home_dir().map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
 
         Ok(GuestPlan {
             profile: self.opts.profile,
@@ -540,7 +538,7 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
     use std::os::fd::FromRawFd;
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
-    let mut size = libc::winsize {
+    let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
         ws_xpixel: 0,
@@ -550,11 +548,11 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
     // properly initialised `winsize`.
     let rc = unsafe {
         libc::openpty(
-            &mut master,
-            &mut slave,
+            &raw mut master,
+            &raw mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            &raw const size,
         )
     };
     if rc != 0 {
@@ -599,18 +597,18 @@ fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
     // pointer it holds refers to a local that outlives the `sendmsg` call.
     unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &mut iov;
+        msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
         msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as _;
 
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
         (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
-        std::ptr::copy_nonoverlapping(&fd as *const RawFd, libc::CMSG_DATA(cmsg) as *mut RawFd, 1);
+        std::ptr::copy_nonoverlapping(&raw const fd, libc::CMSG_DATA(cmsg).cast::<RawFd>(), 1);
 
-        if libc::sendmsg(sock, &msg, 0) < 0 {
+        if libc::sendmsg(sock, &raw const msg, 0) < 0 {
             return Err(std::io::Error::last_os_error());
         }
     }
@@ -622,7 +620,7 @@ fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
 pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
     let mut buf = [0u8; 4096];
     let mut iov = libc::iovec {
-        iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+        iov_base: buf.as_mut_ptr().cast::<libc::c_void>(),
         iov_len: buf.len(),
     };
     let mut control = [0u8; 32];
@@ -630,23 +628,23 @@ pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
     // the call, and the control buffer is large enough for one `SCM_RIGHTS`.
     unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &mut iov;
+        msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
         msg.msg_controllen = control.len() as _;
 
-        let n = libc::recvmsg(sock, &mut msg, 0);
+        let n = libc::recvmsg(sock, &raw mut msg, 0);
         if n < 0 {
             return Err(std::io::Error::last_os_error());
         }
         let mut fd = None;
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
         if !cmsg.is_null()
             && (*cmsg).cmsg_level == libc::SOL_SOCKET
             && (*cmsg).cmsg_type == libc::SCM_RIGHTS
         {
             let mut got: RawFd = -1;
-            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg) as *const RawFd, &mut got, 1);
+            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg) as *const RawFd, &raw mut got, 1);
             fd = Some(got);
         }
         Ok((buf[..n as usize].to_vec(), fd))

@@ -50,9 +50,9 @@ impl FrameBuf {
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
         let a = a.clamp(0.0, 1.0);
         let inv = 1.0 - a;
-        self.rgba[i] = (self.rgba[i] as f32 * inv + r as f32 * a) as u8;
-        self.rgba[i + 1] = (self.rgba[i + 1] as f32 * inv + g as f32 * a) as u8;
-        self.rgba[i + 2] = (self.rgba[i + 2] as f32 * inv + b as f32 * a) as u8;
+        self.rgba[i] = (f32::from(self.rgba[i]) * inv + f32::from(r) * a) as u8;
+        self.rgba[i + 1] = (f32::from(self.rgba[i + 1]) * inv + f32::from(g) * a) as u8;
+        self.rgba[i + 2] = (f32::from(self.rgba[i + 2]) * inv + f32::from(b) * a) as u8;
         self.rgba[i + 3] = 255;
     }
 
@@ -70,9 +70,9 @@ type Rgb = (u8, u8, u8);
 fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
     (
-        (a.0 as f32 + (b.0 as f32 - a.0 as f32) * t) as u8,
-        (a.1 as f32 + (b.1 as f32 - a.1 as f32) * t) as u8,
-        (a.2 as f32 + (b.2 as f32 - a.2 as f32) * t) as u8,
+        (f32::from(a.0) + (f32::from(b.0) - f32::from(a.0)) * t) as u8,
+        (f32::from(a.1) + (f32::from(b.1) - f32::from(a.1)) * t) as u8,
+        (f32::from(a.2) + (f32::from(b.2) - f32::from(a.2)) * t) as u8,
     )
 }
 
@@ -208,7 +208,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             let mut x = 0;
             let mut col = 0u32;
             while x < w {
-                let bw = 24 + (hash01(col * 7 + seed as u32 * 31) * 46.0) as i32;
+                let bw = 24 + (hash01(col * 7 + u32::from(seed) * 31) * 46.0) as i32;
                 let bh = (h as f32 * (0.18 + hash01(col * 13 + 3) * 0.34)) as i32;
                 let top = horizon - bh;
                 let shade = lerp(pal.ridge, (12, 14, 22), hash01(col * 5) * 0.6);
@@ -234,7 +234,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
         3 => {
             // Portrait: soft bokeh circles in the upper area.
             for i in 0..26u32 {
-                let bx = (hash01(i * 17 + seed as u32) * w as f32) as i32;
+                let bx = (hash01(i * 17 + u32::from(seed)) * w as f32) as i32;
                 let by = (hash01(i * 31 + 7) * horizon as f32) as i32;
                 let br = 10.0 + hash01(i * 13 + 3) * 34.0;
                 let tint = lerp(pal.accent, pal.sky_top, hash01(i * 5));
@@ -253,12 +253,12 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             // Layered mountain ridges.
             for layer in 0..3 {
                 let base = horizon - (3 - layer) * (h / 18);
-                let amp = (h as f32 * (0.05 + layer as f32 * 0.02)) as f32;
+                let amp = (h as f32 * (0.05 + layer as f32 * 0.02));
                 let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
                 for x in 0..w {
                     let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
                     let ridge =
-                        base as f32 - (t + seed as f32).sin() * amp - (t * 1.7).cos() * amp * 0.4;
+                        base as f32 - (t + f32::from(seed)).sin() * amp - (t * 1.7).cos() * amp * 0.4;
                     for y in (ridge as i32)..horizon {
                         buf.put(x, y, shade.0, shade.1, shade.2);
                     }
@@ -270,7 +270,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
     // Subtle film grain + corner vignette so it reads as a photo.
     for y in 0..h {
         for x in 0..w {
-            let n = hash01((x * 374761 + y * 668265 + seed as i32 * 9176) as u32);
+            let n = hash01((x * 374761 + y * 668265 + i32::from(seed) * 9176) as u32);
             if n > 0.93 {
                 buf.blend(x, y, 255, 255, 255, 0.04);
             }
@@ -397,9 +397,9 @@ fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;
     let mut out = vec![0u8; n];
     for i in 0..n {
-        let r = buf.rgba[i * 4] as f32;
-        let g = buf.rgba[i * 4 + 1] as f32;
-        let b = buf.rgba[i * 4 + 2] as f32;
+        let r = f32::from(buf.rgba[i * 4]);
+        let g = f32::from(buf.rgba[i * 4 + 1]);
+        let b = f32::from(buf.rgba[i * 4 + 2]);
         out[i] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
     out

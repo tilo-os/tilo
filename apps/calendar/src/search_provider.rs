@@ -9,7 +9,7 @@
 //!
 //! The provider is deliberately **library-scoped and synchronous**: it matches
 //! the in-memory `Model::events` the views already render, never touching the
-//! network (CalDAV pulls run on their own worker), so a Ctrl+K query never
+//! network (`CalDAV` pulls run on their own worker), so a Ctrl+K query never
 //! blocks on a sync.
 
 use ui::icons::Icon;

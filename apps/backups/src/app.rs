@@ -394,7 +394,7 @@ impl BackupsApp {
             );
             paint::text(scene, tr, t, &sub, 13.0, c.text_dim, lx, cy - 7.0);
             let (tw, _) = tr.measure(&sub, 13.0, None);
-            lx += tw as f64;
+            lx += f64::from(tw);
         }
         let brand_right = lx;
 
@@ -718,7 +718,7 @@ impl BackupsApp {
             &scope,
             12.5,
             theme.accent_primary,
-            main.x0 + title_w as f64 + 14.0,
+            main.x0 + f64::from(title_w) + 14.0,
             hy + 1.0,
         );
         paint::text_right(
@@ -1053,9 +1053,7 @@ impl BackupsApp {
             .ui
             .sel_source
             .as_ref()
-            .and_then(|id| self.catalog.source(id))
-            .map(|s| s.next_run.clone())
-            .unwrap_or_else(|| "In 38 min".to_string());
+            .and_then(|id| self.catalog.source(id)).map_or_else(|| "In 38 min".to_string(), |s| s.next_run.clone());
         let failed = self
             .catalog
             .snapshots
@@ -1330,7 +1328,7 @@ impl BackupsApp {
         paint::fill_rrect(scene, t, det, 10.0, c.neutral[0].with_alpha_factor(0.5));
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|d| d.name.clone()).unwrap_or_default();
-        let dest_kind = dest.map(|d| d.kind.label()).unwrap_or("");
+        let dest_kind = dest.map_or("", |d| d.kind.label());
         paint::text(
             scene,
             tr,
@@ -1341,7 +1339,7 @@ impl BackupsApp {
             det.x0 + 16.0,
             det.y0 + 12.0,
         );
-        let enc = if dest.map(|d| d.encrypted).unwrap_or(false) {
+        let enc = if dest.is_some_and(|d| d.encrypted) {
             "encrypted"
         } else {
             "plaintext"
@@ -1377,7 +1375,7 @@ impl BackupsApp {
         let by = det.y0 + (det.height() - bh) / 2.0;
         for (label, hit, fill) in btns.iter().rev() {
             let (tw, _) = tr.measure(label, 12.5, None);
-            let bw = tw as f64 + 28.0;
+            let bw = f64::from(tw) + 28.0;
             let b = Rect::new(bx - bw, by, bx, by + bh);
             let hovered = self.hover.as_ref() == Some(hit);
             let f = if hovered {
@@ -2144,7 +2142,7 @@ impl BackupsApp {
         // Trailing chips, laid right-to-left.
         let sync = format!("sync {}", d.last_sync);
         let (sw, _) = tr.measure(&sync, 10.0, None);
-        chx -= sw as f64 + 20.0;
+        chx -= f64::from(sw) + 20.0;
         paint::tag_pill(
             scene,
             tr,
@@ -2157,7 +2155,7 @@ impl BackupsApp {
         );
         if d.encrypted {
             let (ew, _) = tr.measure("encrypted", 10.0, None);
-            chx -= ew as f64 + 26.0;
+            chx -= f64::from(ew) + 26.0;
             paint::tag_pill(
                 scene,
                 tr,
@@ -2226,7 +2224,7 @@ impl BackupsApp {
         for (id, name, n) in &counts {
             let label = format!("{name}  ·  {n} snapshots");
             let (w, _) = tr.measure(&label, 12.0, None);
-            let item_w = 16.0 + w as f64 + 28.0;
+            let item_w = 16.0 + f64::from(w) + 28.0;
             if lx + item_w > content.x1 && lx > content.x0 + 0.5 {
                 lx = content.x0;
                 ly += 24.0;
@@ -2523,10 +2521,10 @@ impl BackupsApp {
             // Lay out `count` dots across the lane, capped so they always fit.
             let n = (*count).max(1);
             let span = dots_x1 - dots_x0;
-            let step = (span / n as f64).min(20.0);
+            let step = (span / f64::from(n)).min(20.0);
             let r = (step * 0.32).clamp(2.5, 5.0);
             for k in 0..n {
-                let dx = dots_x0 + r + k as f64 * step;
+                let dx = dots_x0 + r + f64::from(k) * step;
                 if dx > dots_x1 {
                     break;
                 }
@@ -2917,7 +2915,7 @@ impl BackupsApp {
             1.0
         };
         let (tw, _) = tr.measure(&msg, 13.0, None);
-        let w = tw as f64 + 56.0;
+        let w = f64::from(tw) + 56.0;
         let toast = Rect::new(
             self.rect.center().x - w / 2.0,
             self.rect.y1 - 56.0,
@@ -3004,7 +3002,7 @@ impl BackupsApp {
                     &vello::kurbo::Circle::new(center, r * 0.55),
                 );
                 for k in 0..8 {
-                    let a = k as f64 * std::f64::consts::TAU / 8.0;
+                    let a = f64::from(k) * std::f64::consts::TAU / 8.0;
                     let (dx, dy) = (a.cos(), a.sin());
                     paint::poly(
                         scene,
@@ -3063,7 +3061,7 @@ impl BackupsApp {
         match kind {
             DestKind::LocalBtrfs => {
                 for k in 0..3 {
-                    let yy = y - r + k as f64 * r;
+                    let yy = y - r + f64::from(k) * r;
                     paint::stroke_rrect(
                         scene,
                         t,
@@ -3196,8 +3194,8 @@ impl BackupsApp {
         self.catalog.snapshots.insert(
             0,
             Snapshot {
-                id: id.clone(),
-                source_id: job.source.clone(),
+                id: id,
+                source_id: job.source,
                 dest_id: dest,
                 day: 0,
                 time: "now".into(),
@@ -3319,7 +3317,7 @@ impl Widget for BackupsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -3329,10 +3327,10 @@ impl Widget for BackupsApp {
         // miss would mean the frame cycle called these out of order.
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -3405,7 +3403,7 @@ impl Widget for BackupsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.ui.view == View::Timeline && self.timeline_view.contains(self.last_mouse) {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 48.0,
+                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
                         MouseScrollDelta::PixelDelta(p) => -p.y,
                     };
                     let max = (self.timeline_content_h - self.timeline_view.height()).max(0.0);
@@ -3425,7 +3423,7 @@ impl Widget for BackupsApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BackupsApp"
     }
 

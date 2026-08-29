@@ -230,11 +230,10 @@ async fn handle_conn(
             Err(_) => break, // client disconnected
         };
         let (resp, delta) = apply(req, &namespace, &enforcement);
-        if !delta.is_empty() {
-            if let Some(s) = &sync {
+        if !delta.is_empty()
+            && let Some(s) = &sync {
                 s.broadcast_delta(delta); // propagate the edit to P2P peers
             }
-        }
         // Backpressure: awaits if the client is slow (bounds memory).
         if tx.send(resp).await.is_err() {
             break;

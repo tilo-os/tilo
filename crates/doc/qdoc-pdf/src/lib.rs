@@ -11,11 +11,11 @@
 //! and image embedding. Text uses the base-14 Helvetica/Helvetica-Bold
 //! fonts (viewer-shipped); AFM advance widths ([`metrics`]) drive
 //! accurate word-wrap. Images are decoded with the `image` crate and
-//! embedded as `/DeviceRGB` `Image` XObjects.
+//! embedded as `/DeviceRGB` `Image` `XObjects`.
 //!
 //! ## Known limitations
 //!
-//! Fonts: base-14 Helvetica only — glyphs outside WinAnsiEncoding (CJK,
+//! Fonts: base-14 Helvetica only — glyphs outside `WinAnsiEncoding` (CJK,
 //! most non-Latin) render as `?`; italic isn't distinguished from
 //! regular, only bold is. Images: re-encoded to raw RGB and
 //! Flate-compressed (fine for export, not size-optimal); failures fall
@@ -84,7 +84,7 @@ enum Op {
     Line { x1: f32, y1: f32, x2: f32, y2: f32 },
     /// Stroke a rectangle outline at `(x,y)` (lower-left) sized `w`×`h`.
     Rect { x: f32, y: f32, w: f32, h: f32 },
-    /// Paint image XObject `name` into the box `(x,y,w,h)` (lower-left origin).
+    /// Paint image `XObject` `name` into the box `(x,y,w,h)` (lower-left origin).
     Image {
         name: String,
         x: f32,
@@ -98,7 +98,7 @@ enum Op {
 /// and the list of ops drawn so far.
 struct Page {
     ops: Vec<Op>,
-    /// Image XObjects referenced on this page: `(resource_name, obj_id)`.
+    /// Image `XObjects` referenced on this page: `(resource_name, obj_id)`.
     images: Vec<(String, ObjId)>,
 }
 
@@ -112,7 +112,7 @@ impl Page {
 }
 
 /// The pagination/rendering cursor. Owns the writer (so images can be
-/// added as XObjects on demand) and the running list of pages.
+/// added as `XObjects` on demand) and the running list of pages.
 struct Layout {
     writer: PdfWriter,
     pages: Vec<Page>,
@@ -272,7 +272,7 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     layout.ensure(BODY_LEADING);
     let first_y_top = layout.y;
     layout.line(
-        lines.first().map(String::as_str).unwrap_or(""),
+        lines.first().map_or("", String::as_str),
         text_indent,
         BODY_SIZE,
         BODY_LEADING,
@@ -293,19 +293,13 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
 }
 
 fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
-    let hash = match block.attrs.get("blob") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => {
-            placeholder(layout, "image (no blob)");
-            return;
-        }
+    let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") { s.clone() } else {
+        placeholder(layout, "image (no blob)");
+        return;
     };
-    let bytes = match snap.blobs.get(&hash) {
-        Some(b) => b,
-        None => {
-            placeholder(layout, "image (missing blob)");
-            return;
-        }
+    let bytes = if let Some(b) = snap.blobs.get(&hash) { b } else {
+        placeholder(layout, "image (missing blob)");
+        return;
     };
     match decode_image(bytes) {
         Ok(img) => place_image(layout, img),
@@ -338,7 +332,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     if rows.is_empty() {
         return;
     }
-    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let ncols = rows.iter().map(std::vec::Vec::len).max().unwrap_or(1).max(1);
     let col_w = TEXT_W / ncols as f32;
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 
@@ -656,19 +650,19 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
                 text,
             } => {
                 let font = if *bold { "F2" } else { "F1" };
-                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (",);
+                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (");
                 s.extend_from_slice(&escape_pdf_text(text));
-                let _ = write!(s, ") Tj ET\n");
+                let _ = writeln!(s, ") Tj ET");
             }
             Op::Line { x1, y1, x2, y2 } => {
-                let _ = write!(s, "{x1:.2} {y1:.2} m {x2:.2} {y2:.2} l S\n");
+                let _ = writeln!(s, "{x1:.2} {y1:.2} m {x2:.2} {y2:.2} l S");
             }
             Op::Rect { x, y, w, h } => {
-                let _ = write!(s, "{x:.2} {y:.2} {w:.2} {h:.2} re S\n");
+                let _ = writeln!(s, "{x:.2} {y:.2} {w:.2} {h:.2} re S");
             }
             Op::Image { name, x, y, w, h } => {
                 // Image space is a unit square mapped by the CTM; q/Q isolates it.
-                let _ = write!(s, "q {w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm /{name} Do Q\n");
+                let _ = writeln!(s, "q {w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm /{name} Do Q");
             }
         }
     }

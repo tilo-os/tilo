@@ -35,12 +35,11 @@ pub fn qos_to_store_item(
     let installed = installed_index
         .iter()
         .find(|e| e.id == entry.package_id)
-        .map(|e| InstalledState::Installed {
+        .map_or(InstalledState::Not, |e| InstalledState::Installed {
             version: e.version.clone(),
             available: latest.clone(),
             pinned: e.pinned,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     let _ = verified.trust; // TrustLevel surfaces on the detail sheet;
     // not part of the item shape yet.
     StoreItem {
@@ -83,12 +82,11 @@ pub fn flathub_placeholder_to_item(
     let installed = installed_flatpaks
         .iter()
         .find(|(id, _)| id == &p.app_id)
-        .map(|(_, v)| InstalledState::Installed {
+        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
             version: v.clone(),
-            available: "".to_string(),
+            available: String::new(),
             pinned: false,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     StoreItem {
         id: p.app_id.clone(),
         name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
@@ -126,12 +124,11 @@ pub fn flathub_record_to_item(
     let installed = installed_flatpaks
         .iter()
         .find(|(id, _)| id == &r.app_id)
-        .map(|(_, v)| InstalledState::Installed {
+        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
             version: v.clone(),
             available: latest.clone(),
             pinned: false,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     let homepage_url = r
         .homepage
         .clone()
@@ -143,10 +140,10 @@ pub fn flathub_record_to_item(
         } else {
             r.name.clone()
         },
-        description: if !r.summary.is_empty() {
-            r.summary.clone()
-        } else {
+        description: if r.summary.is_empty() {
             r.description.clone()
+        } else {
+            r.summary.clone()
         },
         categories,
         icon_url: r.icon.clone(),
@@ -207,7 +204,7 @@ mod tests {
         let mut e = RegistryEntry {
             package_id: id.into(),
             name: name.into(),
-            description: format!("Description of {}", name),
+            description: format!("Description of {name}"),
             categories: vec!["Productivity".into()],
             icon_url: None,
             source_url: None,
@@ -215,7 +212,7 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher),
             versions: vec![RegistryVersion {
                 version: version.into(),
-                qpkg_url: format!("https://apps.qos.dev/{}/{}.qpkg", id, version),
+                qpkg_url: format!("https://apps.qos.dev/{id}/{version}.qpkg"),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 100,
                 released_at_unix: 200,
@@ -280,7 +277,7 @@ mod tests {
             name: Some("Notes".into()),
         };
         let fh_item = flathub_placeholder_to_item(&fh, &[]);
-        let merged = merge(vec![qos.clone()], vec![fh_item]);
+        let merged = merge(vec![qos], vec![fh_item]);
         assert_eq!(merged.len(), 1);
         assert!(matches!(merged[0].source, StoreSource::Qos { .. }));
     }

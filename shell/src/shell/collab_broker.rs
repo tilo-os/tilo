@@ -197,7 +197,7 @@ impl LocalIdentity {
     /// network. Without one, every local participant falls back to
     /// `local_user_id`.
     pub fn from_network(net: Option<Arc<ShellNetwork>>) -> Arc<Self> {
-        let local_handle = net.as_ref().map(|n| n.local_peer_id_hash()).unwrap_or(0);
+        let local_handle = net.as_ref().map_or(0, |n| n.local_peer_id_hash());
         Arc::new(Self {
             labels: Box::new(move |cluster| {
                 net.as_ref()
@@ -528,11 +528,10 @@ impl PeerTable {
     /// Attach the capnp fanout sink. Called at most once, at
     /// broker-spawn time; repeat calls are silently ignored.
     pub(crate) fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
-        if let Ok(mut g) = self.capnp.lock() {
-            if g.is_none() {
+        if let Ok(mut g) = self.capnp.lock()
+            && g.is_none() {
                 *g = Some(state);
             }
-        }
     }
 
     /// Read the capnp fanout sink if one has been attached.
@@ -954,7 +953,7 @@ fn reader_loop(
     peer: Arc<Peer>,
     mut stream: UnixStream,
     table: Arc<PeerTable>,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    _peer_sync: Option<Arc<ShellNetwork>>,
     identity: Arc<LocalIdentity>,
     publisher: Arc<PeerPublisher>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1121,7 +1120,7 @@ pub struct BrokerHandle {
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
     /// `None` when the capnp interface is not bound; runs a tokio
-    /// LocalSet driving capnp-rpc futures.
+    /// `LocalSet` driving capnp-rpc futures.
     capnp_thread: Option<JoinHandle<()>>,
     capnp_quit: Arc<AtomicBool>,
     /// Shared with reader threads so external callers (the libp2p
@@ -1133,7 +1132,7 @@ pub struct BrokerHandle {
 impl BrokerHandle {
     /// Snapshot of currently-connected peers.
     pub fn peer_count(&self) -> usize {
-        self.peers.peers.lock().map(|g| g.len()).unwrap_or(0)
+        self.peers.peers.lock().map_or(0, |g| g.len())
     }
 
     /// Connected peers that have said `Hello`. Strictly ≤
@@ -1142,8 +1141,7 @@ impl BrokerHandle {
         self.peers
             .peers
             .lock()
-            .map(|g| g.iter().filter(|p| p.route().is_some()).count())
-            .unwrap_or(0)
+            .map_or(0, |g| g.iter().filter(|p| p.route().is_some()).count())
     }
 
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
@@ -1541,13 +1539,12 @@ fn spawn_inner(
                                     if let Ok(mut ch) = drain_channels.lock() {
                                         let state = ch.state_for(artifact);
                                         state.record_validated_op(envelope.clone());
-                                        if envelope.op_class == OpClass::Compaction {
-                                            if let Ok(cp) =
+                                        if envelope.op_class == OpClass::Compaction
+                                            && let Ok(cp) =
                                                 collab_types::parse_compaction_payload(&envelope)
                                             {
                                                 let _ = state.apply_compaction(&cp);
                                             }
-                                        }
                                     }
                                     if envelope.op_class == OpClass::Redact {
                                         apply_redaction_from_envelope(

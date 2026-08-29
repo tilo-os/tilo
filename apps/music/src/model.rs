@@ -62,7 +62,7 @@ pub struct Track {
 
 impl Track {
     pub fn duration_ms(&self) -> u64 {
-        self.duration_s as u64 * 1000
+        u64::from(self.duration_s) * 1000
     }
 }
 
@@ -201,14 +201,12 @@ impl Library {
     pub fn artist_name(&self, id: &str) -> &str {
         self.artists
             .get(id)
-            .map(|a| a.name.as_str())
-            .unwrap_or("Unknown Artist")
+            .map_or("Unknown Artist", |a| a.name.as_str())
     }
     pub fn album_title(&self, id: &str) -> &str {
         self.albums
             .get(id)
-            .map(|a| a.title.as_str())
-            .unwrap_or("Unknown Album")
+            .map_or("Unknown Album", |a| a.title.as_str())
     }
     pub fn cache_state(&self, id: &str) -> CacheState {
         self.cache.get(id).copied().unwrap_or_default()
@@ -314,7 +312,7 @@ impl Library {
             })
             .map(|t| t.id.clone())
             .collect();
-        tracks.sort_by_key(|id| self.tracks.get(id).map(|t| u64::MAX - t.plays).unwrap_or(0));
+        tracks.sort_by_key(|id| self.tracks.get(id).map_or(0, |t| u64::MAX - t.plays));
         let albums: Vec<AlbumId> = self
             .albums
             .values()

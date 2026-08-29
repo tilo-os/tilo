@@ -5,7 +5,7 @@
 //! merges real `flatpak list` / podman results over the install snapshot
 //! (see `probe.rs`) — but the *catalog* (names, summaries, screenshots,
 //! permissions) is always this curated set, because we have no offline
-//! AppStream mirror.
+//! `AppStream` mirror.
 
 use crate::model::{AppEntry, Category, Compat, Permission, Review, Shot, Source};
 

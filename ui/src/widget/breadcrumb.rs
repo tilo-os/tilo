@@ -95,13 +95,13 @@ impl Breadcrumb {
         }
         let full_width = self.measure_total_width(&self.segments, theme, tr);
         if full_width <= available_width {
-            return self.segments.to_vec();
+            return self.segments.clone();
         }
 
         // The truncated form is no shorter than the full form here, so
         // truncating would only make the render worse.
         if self.segments.len() <= 4 {
-            return self.segments.to_vec();
+            return self.segments.clone();
         }
 
         let n = self.segments.len();
@@ -118,13 +118,13 @@ impl Breadcrumb {
     /// `visible_segments` to decide whether the full path fits.
     fn measure_total_width(&self, labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_block = sep_w as f64 + sep_pad * 2.0;
+        let sep_block = f64::from(sep_w) + sep_pad * 2.0;
         let mut total = 0.0_f64;
         for (i, label) in labels.iter().enumerate() {
             let (w, _) = tr.measure(label, size, None);
-            total += w as f64;
+            total += f64::from(w);
             if i + 1 < labels.len() {
                 total += sep_block;
             }
@@ -159,16 +159,16 @@ impl Breadcrumb {
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = sep_w as f64;
+        let sep_w = f64::from(sep_w);
         let mut rects = Vec::with_capacity(labels.len());
         let mut cursor_x = self.rect.x0;
         let pill_y0 = self.rect.y0;
         let pill_y1 = self.rect.y1;
         for (i, label) in labels.iter().enumerate() {
             let (w, _h) = tr.measure(label, size, None);
-            let w = w as f64;
+            let w = f64::from(w);
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
             cursor_x += w;
@@ -217,17 +217,17 @@ impl Widget for Breadcrumb {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Per-segment rects need text measurements, which need a
         // `TextRenderer` we don't have here — deferred to `draw`. Stale
@@ -247,9 +247,9 @@ impl Widget for Breadcrumb {
         self.rebuild_rects(theme, text_renderer);
 
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = sep_w as f64;
+        let sep_w = f64::from(sep_w);
 
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
@@ -267,7 +267,7 @@ impl Widget for Breadcrumb {
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            let text_y = r.y0 + (r.height() - size as f64) / 2.0;
+            let text_y = r.y0 + (r.height() - f64::from(size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -347,7 +347,7 @@ impl Widget for Breadcrumb {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Breadcrumb"
     }
 

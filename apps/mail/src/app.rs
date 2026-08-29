@@ -322,7 +322,7 @@ impl MailApp {
     }
 
     /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed WebView (HTML-mail shot). Also demonstrates the filled-star
+    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
     /// action (the newsletter is starred).
     pub fn prime_html_mail_shot(&mut self) {
         let id = {
@@ -638,7 +638,7 @@ impl MailApp {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
             (
-                Addr::new(acct.display_name.clone(), acct.email.clone()),
+                Addr::new(acct.display_name.clone(), acct.email),
                 st.now_min,
             )
         };
@@ -856,11 +856,10 @@ impl MailApp {
         if cfg.username.trim().is_empty() {
             cfg.username = email.clone();
         }
-        if cfg.display_name.trim().is_empty() {
-            if let Some((local, _)) = email.split_once('@') {
+        if cfg.display_name.trim().is_empty()
+            && let Some((local, _)) = email.split_once('@') {
                 cfg.display_name = local.to_string();
             }
-        }
 
         if imap_blank {
             self.setup_inputs[4].set_text(&cfg.imap_host);
@@ -1033,7 +1032,7 @@ impl MailApp {
         // The first-run welcome is shorter than the taller account form.
         let target_h: f64 = if self.setup_open { 500.0 } else { 440.0 };
         let h = target_h.min(r.height() - 48.0);
-        let cx = (r.x0 + r.x1) / 2.0;
+        let cx = f64::midpoint(r.x0, r.x1);
         let y0 = r.y0 + (r.height() - h) / 2.0;
         Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h)
     }
@@ -1043,7 +1042,7 @@ impl MailApp {
         if self.is_first_run() {
             let p = self.overlay_panel_rect();
             let bw = 200.0;
-            let cx = (p.x0 + p.x1) / 2.0;
+            let cx = f64::midpoint(p.x0, p.x1);
             let by = p.y0 + p.height() * 0.66;
             self.overlay_hits.push((
                 Rect::new(cx - bw / 2.0, by, cx + bw / 2.0, by + 44.0),
@@ -1216,15 +1215,14 @@ impl MailApp {
             self.toast_text = current.clone();
             self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
         }
-        if let Some(deadline) = self.toast_deadline {
-            if now >= deadline {
+        if let Some(deadline) = self.toast_deadline
+            && now >= deadline {
                 let mut st = self.shared.borrow_mut();
                 st.status = None;
                 st.dirty = true;
                 self.toast_text = None;
                 self.toast_deadline = None;
             }
-        }
     }
 
     /// Whether a toast is currently on screen and still counting down — used to
@@ -1333,13 +1331,11 @@ impl MailApp {
         }
         // If the on-disk store had no accounts but the document carries a
         // synced account config, adopt it.
-        if self.shared.borrow().accounts.is_empty() {
-            if let Some(cfg) = MailDoc::load_account(doc) {
-                if !cfg.email.is_empty() {
+        if self.shared.borrow().accounts.is_empty()
+            && let Some(cfg) = MailDoc::load_account(doc)
+                && !cfg.email.is_empty() {
                     self.shared.borrow_mut().accounts.upsert(Account::new(cfg));
                 }
-            }
-        }
         // Compose body format preference.
         if let Some(fmt) = MailDoc::get_compose_format(doc) {
             self.compose.set_format(ComposeFormat::from_key(&fmt));
@@ -1440,8 +1436,7 @@ impl MailApp {
             .borrow()
             .mailbox
             .get(menu.target)
-            .map(|m| (m.read, m.starred))
-            .unwrap_or((false, false));
+            .map_or((false, false), |m| (m.read, m.starred));
         let last_mouse = self.shared.borrow().last_mouse;
         let mut y = mr.y0 + 6.0;
         for a in &menu.items {
@@ -1654,7 +1649,7 @@ impl MailApp {
                 label,
                 12.5,
                 col,
-                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 9.0)),
+                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 9.0)),
                 None,
                 TextWeight::Medium,
             );
@@ -1667,8 +1662,7 @@ impl MailApp {
             }
             let prov = self
                 .setup_provider
-                .map(|pr| pr.label())
-                .unwrap_or("your provider");
+                .map_or("your provider", super::oauth::OAuthProvider::label);
             let hov = rect.contains(last_mouse);
             fill_round(
                 scene,
@@ -1688,14 +1682,13 @@ impl MailApp {
                 TextWeight::Semibold,
             );
             // Note whether a registered client id is provisioned.
-            let has_client = self.setup_provider.and_then(|pr| pr.client_id()).is_some();
+            let has_client = self.setup_provider.and_then(super::oauth::OAuthProvider::client_id).is_some();
             let note = if has_client {
                 "Opens your browser to authorize (OAuth2 + PKCE).".to_string()
             } else {
                 let env = self
                     .setup_provider
-                    .map(|pr| pr.client_id_env())
-                    .unwrap_or("QOS_MAIL_*_CLIENT_ID");
+                    .map_or("QOS_MAIL_*_CLIENT_ID", super::oauth::OAuthProvider::client_id_env);
                 format!("Set {env} to enable sign-in.")
             };
             tr.draw_text(
@@ -1744,39 +1737,36 @@ impl MailApp {
         // Autoconfig hint + validation message, between the server rows and the
         // button row.
         let hint_y = smtp_row_bottom + 18.0;
-        match &self.setup_error {
-            Some(msg) => {
-                Icon::Ban.draw(
-                    scene,
-                    t,
-                    Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
-                    c.semantic.danger,
-                );
-                tr.draw_text(
-                    scene,
-                    msg,
-                    11.5,
-                    c.semantic.danger,
-                    t * Affine::translate((lx + 22.0, hint_y + 1.0)),
-                    None,
-                );
-            }
-            None => {
-                Icon::Check.draw(
-                    scene,
-                    t,
-                    Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
-                    c.semantic.success,
-                );
-                tr.draw_text(
-                    scene,
-                    "Credentials are verified before the account is saved.",
-                    11.5,
-                    c.text_dim,
-                    t * Affine::translate((lx + 22.0, hint_y + 1.0)),
-                    None,
-                );
-            }
+        if let Some(msg) = &self.setup_error {
+            Icon::Ban.draw(
+                scene,
+                t,
+                Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
+                c.semantic.danger,
+            );
+            tr.draw_text(
+                scene,
+                msg,
+                11.5,
+                c.semantic.danger,
+                t * Affine::translate((lx + 22.0, hint_y + 1.0)),
+                None,
+            );
+        } else {
+            Icon::Check.draw(
+                scene,
+                t,
+                Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
+                c.semantic.success,
+            );
+            tr.draw_text(
+                scene,
+                "Credentials are verified before the account is saved.",
+                11.5,
+                c.text_dim,
+                t * Affine::translate((lx + 22.0, hint_y + 1.0)),
+                None,
+            );
         }
 
         // Save / Cancel.
@@ -1799,7 +1789,7 @@ impl MailApp {
                         13.5,
                         Color::WHITE,
                         t * Affine::translate((
-                            (rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0,
+                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
                             rect.y0 + 11.0,
                         )),
                         None,
@@ -1826,7 +1816,7 @@ impl MailApp {
                         13.0,
                         c.neutral[8],
                         t * Affine::translate((
-                            (rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0,
+                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
                             rect.y0 + 11.0,
                         )),
                         None,
@@ -1860,7 +1850,7 @@ impl MailApp {
                         13.0,
                         c.semantic.danger,
                         t * Affine::translate((
-                            (rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0,
+                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
                             rect.y0 + 11.0,
                         )),
                         None,
@@ -1884,7 +1874,7 @@ impl MailApp {
         let p = self.overlay_panel_rect();
         fill_round(scene, t, p, 18.0, c.surfaces.raised);
         stroke_round(scene, t, p, 18.0, 1.0, c.border_white_10);
-        let cx = (p.x0 + p.x1) / 2.0;
+        let cx = f64::midpoint(p.x0, p.x1);
 
         // Hero mail glyph in an accent disc.
         let disc_r = 34.0;
@@ -1915,7 +1905,7 @@ impl MailApp {
             title,
             22.0,
             c.text_primary,
-            t * Affine::translate((cx - tw as f64 / 2.0, disc_c.y + disc_r + 18.0)),
+            t * Affine::translate((cx - f64::from(tw) / 2.0, disc_c.y + disc_r + 18.0)),
             None,
             TextWeight::Bold,
         );
@@ -1926,7 +1916,7 @@ impl MailApp {
             sub,
             13.0,
             c.text_dim,
-            t * Affine::translate((cx - sw as f64 / 2.0, disc_c.y + disc_r + 50.0)),
+            t * Affine::translate((cx - f64::from(sw) / 2.0, disc_c.y + disc_r + 50.0)),
             None,
         );
 
@@ -1946,8 +1936,8 @@ impl MailApp {
             );
             let label = "Add account";
             let (w, _) = tr.measure_weighted(label, 14.5, None, TextWeight::Semibold);
-            let group_w = 18.0 + 8.0 + w as f64;
-            let gx = (rect.x0 + rect.x1) / 2.0 - group_w / 2.0;
+            let group_w = 18.0 + 8.0 + f64::from(w);
+            let gx = f64::midpoint(rect.x0, rect.x1) - group_w / 2.0;
             Icon::Plus.draw(
                 scene,
                 t,
@@ -1972,7 +1962,7 @@ impl MailApp {
         let c = &theme.tokens.colors;
         let (w, _) = tr.measure(msg, 12.5, None);
         let toast = Rect::new(
-            self.rect.x1 - w as f64 - 64.0,
+            self.rect.x1 - f64::from(w) - 64.0,
             self.rect.y1 - 52.0,
             self.rect.x1 - 24.0,
             self.rect.y1 - 16.0,
@@ -2064,7 +2054,7 @@ fn context_menu_rect(menu: &ContextMenu, bounds: Rect) -> Rect {
 fn attachment_meta(path: &str) -> Attachment {
     let name = crate::model::attachment_display_name(path).to_string();
     let mime = crate::transport::mime_from_filename(&name).to_string();
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let size = std::fs::metadata(path).map_or(0, |m| m.len());
     Attachment::projected(name, mime, size)
 }
 
@@ -2073,7 +2063,7 @@ fn draft_from_message(m: &Message) -> Draft {
     let join = |addrs: &[Addr]| {
         addrs
             .iter()
-            .map(|a| a.rfc5322())
+            .map(super::model::Addr::rfc5322)
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -2187,7 +2177,10 @@ impl Widget for MailApp {
         self.expire_toast_at(std::time::Instant::now());
 
         let mem_seeded = self.shared.borrow().seeded;
-        if !mem_seeded {
+        if mem_seeded {
+            let mut st = self.shared.borrow_mut();
+            MailDoc::apply_flags(state, &mut st.mailbox);
+        } else {
             if MailDoc::is_seeded(state) {
                 // Reopening an already-persisted document: restore the saved
                 // session (folder / selection / active account / compose format /
@@ -2206,7 +2199,7 @@ impl Widget for MailApp {
                         account: cfg.clone(),
                     });
                     let _ = h.tx.send(EngineRequest::Fetch {
-                        account: cfg.clone(),
+                        account: cfg,
                         folder: Folder::Inbox,
                     });
                     self.awaiting_engine = true;
@@ -2215,9 +2208,6 @@ impl Widget for MailApp {
                 self.connect_requested = true;
             }
             self.shared.borrow_mut().seeded = true;
-        } else {
-            let mut st = self.shared.borrow_mut();
-            MailDoc::apply_flags(state, &mut st.mailbox);
         }
         // Live app: advance the wall clock (relative timestamps + the periodic
         // refresh cadence read it) and fire a periodic refresh when due. The
@@ -2290,17 +2280,17 @@ impl Widget for MailApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout_nav();
     }
@@ -2396,8 +2386,8 @@ impl Widget for MailApp {
 
         // 1.5) First-run onboarding is modal until an account exists: the only
         // action is "Add account", which opens the setup sheet.
-        if self.is_first_run() {
-            if let WindowEvent::MouseInput {
+        if self.is_first_run()
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
@@ -2416,7 +2406,6 @@ impl Widget for MailApp {
                 self.dirty = true;
                 return;
             }
-        }
 
         // 2) Esc dismisses app-owned overlays first.
         if let WindowEvent::KeyboardInput {
@@ -2442,8 +2431,8 @@ impl Widget for MailApp {
         }
 
         // 3) Context menu is modal: a click hits an item or dismisses.
-        if self.context_menu.is_some() {
-            if let WindowEvent::MouseInput {
+        if self.context_menu.is_some()
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
@@ -2458,8 +2447,8 @@ impl Widget for MailApp {
                     .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
                     .cloned();
                 if let Some((_, OverlayHit::CtxItem(i))) = item {
-                    if let Some(menu) = self.context_menu.take() {
-                        if let Some(action) = menu.items.get(i).copied() {
+                    if let Some(menu) = self.context_menu.take()
+                        && let Some(action) = menu.items.get(i).copied() {
                             self.shared.borrow_mut().apply_message_action(
                                 state,
                                 menu.target,
@@ -2467,14 +2456,12 @@ impl Widget for MailApp {
                             );
                             self.process_intents();
                         }
-                    }
                 } else {
                     self.context_menu = None;
                 }
                 *handled = true;
                 return;
             }
-        }
 
         // 4) Setup sheet is modal while open.
         if self.setup_open {
@@ -2518,7 +2505,7 @@ impl Widget for MailApp {
         self.dirty = true;
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MailApp"
     }
 
@@ -2543,7 +2530,7 @@ impl Widget for MailApp {
             || self.shared.borrow().dirty
             || self.nav.needs_redraw()
             || self.compose.needs_redraw()
-            || self.setup_inputs.iter().any(|i| i.needs_redraw())
+            || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2611,8 +2598,7 @@ impl MailApp {
                     let order = self.setup_tab_order();
                     let is_last = self
                         .setup_focus
-                        .map(|f| order.last() == Some(&f))
-                        .unwrap_or(false);
+                        .is_some_and(|f| order.last() == Some(&f));
                     if is_last {
                         self.save_setup(state);
                     } else {
@@ -2777,7 +2763,7 @@ impl MailApp {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if let Some(id) = selected {
                     self.shared
                         .borrow_mut()

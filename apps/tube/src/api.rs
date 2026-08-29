@@ -1,5 +1,5 @@
-//! Live data sources: Invidious (search + metadata), SponsorBlock
-//! (segments) and DeArrow (de-clickbait titles/thumbnails).
+//! Live data sources: Invidious (search + metadata), `SponsorBlock`
+//! (segments) and `DeArrow` (de-clickbait titles/thumbnails).
 //!
 //! Everything here runs on a background [`Worker`] thread driven by a
 //! blocking `reqwest` client — the `--shots` path never spawns it, so the
@@ -10,8 +10,8 @@
 //! Endpoints (researched, current as of 2026):
 //! - Invidious: `GET {instance}/api/v1/search?q=&type=video`,
 //!   `GET {instance}/api/v1/videos/{id}`
-//! - SponsorBlock: `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
-//! - DeArrow: `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
+//! - `SponsorBlock`: `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
+//! - `DeArrow`: `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
 //! - Dislikes: `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
 //!
 //! Real video playback resolves to a **fully-rangeable** proxied stream URL that
@@ -22,7 +22,7 @@
 //! backend's direct [`crate::backend::YtBackend::resolve_playback_source`] when
 //! no instance answers. The resolved URL comes back as [`Update::StreamResolved`]
 //! and is opened into the watch page's `ui::widget::VideoPlayer` engine — which
-//! does the actual GStreamer decode + audio out, so no decoder lives here.
+//! does the actual `GStreamer` decode + audio out, so no decoder lives here.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -33,7 +33,7 @@ use crate::model::{Category, Channel, Comment, Playlist, Segment, Video};
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum Request {
-    /// Fetch SponsorBlock + DeArrow data for a video being opened.
+    /// Fetch `SponsorBlock` + `DeArrow` data for a video being opened.
     Branding(String),
     /// Run a search through the data-source backend.
     Search { query: String },
@@ -68,7 +68,7 @@ pub enum Update {
         /// when one exists.
         thumbnail_url: Option<String>,
     },
-    /// Crowdsourced dislike count for a video (Return YouTube Dislike).
+    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike).
     Dislikes {
         video: String,
         count: u64,
@@ -132,7 +132,7 @@ fn client() -> reqwest::blocking::Client {
         .expect("reqwest client builder cannot fail with these fixed options")
 }
 
-/// Fetch SponsorBlock segments for a video via the direct
+/// Fetch `SponsorBlock` segments for a video via the direct
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
@@ -152,7 +152,7 @@ pub fn fetch_sponsor(
     Ok(parse_skip_segments(&val))
 }
 
-/// Parse a SponsorBlock `/api/skipSegments?videoID=<id>` response (a flat JSON
+/// Parse a `SponsorBlock` `/api/skipSegments?videoID=<id>` response (a flat JSON
 /// array of segment objects) into sorted [`Segment`]s. Pure (no I/O) so it is
 /// unit-tested directly. Unknown categories and malformed rows are skipped.
 pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
@@ -162,9 +162,9 @@ pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
             let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
             let times = s.get("segment").and_then(|t| t.as_array());
             if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
-                let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
-                let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
-                let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
+                let start = times.first().and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                let end = times.get(1).and_then(serde_json::Value::as_f64).unwrap_or(start);
+                let votes = s.get("votes").and_then(serde_json::Value::as_i64).unwrap_or(0);
                 out.push(Segment {
                     category: cat,
                     start,
@@ -187,7 +187,7 @@ fn category_json() -> String {
     serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Fetch DeArrow branding for a video: the top-voted crowdsourced title (when it
+/// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
 /// outranks the original) and a community thumbnail URL (a frame rendered at the
 /// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
 pub fn fetch_dearrow(
@@ -203,20 +203,20 @@ pub fn fetch_dearrow(
     Ok(parse_dearrow(&resp, video_id))
 }
 
-/// Parse a DeArrow `/api/branding?videoID=<id>` response into `(title,
+/// Parse a `DeArrow` `/api/branding?videoID=<id>` response into `(title,
 /// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
-/// wins over vote count, matching DeArrow's own precedence), and skips entries
+/// wins over vote count, matching `DeArrow`'s own precedence), and skips entries
 /// the community has voted down. Pure (no I/O) so it is unit-tested directly.
 pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String>, Option<String>) {
     // Score an entry: locked entries win outright; otherwise by vote count.
     // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
     let score = |e: &serde_json::Value| -> Option<i64> {
-        let original = e.get("original").and_then(|o| o.as_bool()).unwrap_or(false);
+        let original = e.get("original").and_then(serde_json::Value::as_bool).unwrap_or(false);
         if original {
             return None;
         }
-        let votes = e.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-        let locked = e.get("locked").and_then(|l| l.as_bool()).unwrap_or(false);
+        let votes = e.get("votes").and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let locked = e.get("locked").and_then(serde_json::Value::as_bool).unwrap_or(false);
         if votes < 0 && !locked {
             return None;
         }
@@ -231,7 +231,7 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
                 .filter_map(|e| Some((score(e)?, e)))
                 .max_by_key(|(s, _)| *s)
                 .and_then(|(_, e)| e.get("title").and_then(|s| s.as_str()))
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
         });
 
     let thumbnail_url = resp
@@ -241,7 +241,7 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
             arr.iter()
                 .filter_map(|e| {
                     let s = score(e)?;
-                    let ts = e.get("timestamp").and_then(|v| v.as_f64())?;
+                    let ts = e.get("timestamp").and_then(serde_json::Value::as_f64)?;
                     Some((s, ts))
                 })
                 .max_by_key(|(s, _)| *s)
@@ -255,7 +255,7 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
     (title, thumbnail_url)
 }
 
-/// Fetch the crowdsourced dislike count for a video via Return YouTube Dislike
+/// Fetch the crowdsourced dislike count for a video via Return `YouTube` Dislike
 /// (`GET /votes?videoId=<id>`).
 pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
     let resp: serde_json::Value = client
@@ -267,10 +267,10 @@ pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> any
     parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
-/// Parse a Return YouTube Dislike `/votes` response's dislike count. Pure (no
+/// Parse a Return `YouTube` Dislike `/votes` response's dislike count. Pure (no
 /// I/O) so it is unit-tested directly.
 pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
-    resp.get("dislikes").and_then(|v| v.as_u64())
+    resp.get("dislikes").and_then(serde_json::Value::as_u64)
 }
 
 /// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
@@ -313,10 +313,10 @@ pub fn search(
                 .get("authorId")
                 .and_then(|v| v.as_str())
                 .unwrap_or(author);
-            let views = item.get("viewCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let views = item.get("viewCount").and_then(serde_json::Value::as_u64).unwrap_or(0);
             let duration = item
                 .get("lengthSeconds")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0) as u32;
             let published = item
                 .get("publishedText")
@@ -336,7 +336,7 @@ pub fn search(
                     .and_then(|a| a.last())
                     .and_then(|t| t.get("url"))
                     .and_then(|u| u.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .unwrap_or_default(),
                 views,
                 published,
@@ -354,7 +354,7 @@ pub fn search(
                     .and_then(|a| a.first())
                     .and_then(|t| t.get("url"))
                     .and_then(|u| u.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .unwrap_or_default(),
                 category: "Search".to_string(),
                 dearrow_thumb: false,
@@ -362,7 +362,7 @@ pub fn search(
                 comments: vec![],
                 live: item
                     .get("liveNow")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false),
             });
         }
@@ -750,7 +750,7 @@ fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
-/// Construct the shared **rustypipe** enrichment backend. rustypipe's InnerTube
+/// Construct the shared **rustypipe** enrichment backend. rustypipe's `InnerTube`
 /// search returns creator avatars, playlists and creator rows the primary yt-dlp
 /// path lacks, its `next`/comments continuation yields real top comments, and
 /// `playlist()` resolves playlist pages — so one backend serves comments, search
@@ -838,7 +838,7 @@ fn fetch(
 }
 
 /// Resolve the Home/Trending catalogue from real data, returning the videos and
-/// the honest status-pill label. Tries YouTube's dedicated trending browse
+/// the honest status-pill label. Tries `YouTube`'s dedicated trending browse
 /// first; on failure (the endpoint has been retired) composes a real "popular
 /// right now" feed. Returns `None` only when there is no live data at all
 /// (offline / default build) so the caller keeps the bundled sample.
@@ -860,14 +860,14 @@ fn feed_trending(
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
     let search_backend: Option<&dyn YtBackend> =
-        enrich.or_else(|| live.as_ref().map(|b| b.as_ref()));
+        enrich.or_else(|| live.as_ref().map(std::convert::AsRef::as_ref));
     live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
 }
 
 /// Compose a real "popular right now" home feed: for each broad topic, ask the
 /// backend for the most-viewed videos uploaded in the last week, then
 /// round-robin interleave for variety and de-duplicate. Every video is genuine
-/// YouTube data (view-count-sorted search), not the offline sample. Returns
+/// `YouTube` data (view-count-sorted search), not the offline sample. Returns
 /// `None` when there is no live backend so the caller keeps the sample.
 fn live_popular_feed(
     backend: Option<&dyn YtBackend>,

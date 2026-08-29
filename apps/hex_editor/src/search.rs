@@ -33,7 +33,7 @@ pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_whitespace() && !matches!(c, '-' | ':' | ',' | '_'))
         .collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(cleaned.len() / 2);

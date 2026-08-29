@@ -159,7 +159,7 @@ impl ProbeTransport for LiveProbe {
 mod live_probe {
     use std::sync::Arc;
 
-    use super::*;
+    use super::{AccountConfig, classify_conn_failure};
     use crate::model::AuthMethod;
 
     /// Run `fut` to completion on a short-lived current-thread runtime. The

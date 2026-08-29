@@ -16,7 +16,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 pub fn hash_str(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
-        h ^= b as u64;
+        h ^= u64::from(b);
         h = h.wrapping_mul(0x100000001b3);
     }
     h
@@ -127,8 +127,8 @@ pub fn draw_album_art(
     let text = initials(label);
     let size = (h * 0.32) as f32;
     let (tw, th) = text_renderer.measure_weighted(&text, size, None, TextWeight::Bold);
-    let tx = rect.x0 + (w - tw as f64) / 2.0;
-    let ty = rect.y0 + (h - th as f64) / 2.0;
+    let tx = rect.x0 + (w - f64::from(tw)) / 2.0;
+    let ty = rect.y0 + (h - f64::from(th)) / 2.0;
     text_renderer.draw_text_weighted(
         scene,
         &text,

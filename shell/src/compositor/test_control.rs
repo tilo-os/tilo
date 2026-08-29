@@ -466,13 +466,13 @@ pub fn dispatch_command<S: ControlState>(
                 y: *y_from,
             });
             actions.push(PlannedAction::MouseLeftButton { pressed: true });
-            let n = steps as f64;
+            let n = f64::from(steps);
             for s in 0..steps {
                 // steps==1 lands a single motion at x_from, avoiding divide-by-zero.
                 let t = if steps == 1 {
                     0.0
                 } else {
-                    s as f64 / (n - 1.0)
+                    f64::from(s) / (n - 1.0)
                 };
                 let x = x_from + (x_to - x_from) * t;
                 let y = y_from + (y_to - y_from) * t;

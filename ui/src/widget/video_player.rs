@@ -1,4 +1,4 @@
-//! VideoPlayer — a reusable video surface with a full playback-controls overlay.
+//! `VideoPlayer` — a reusable video surface with a full playback-controls overlay.
 //!
 //! Two frame sources feed the same `latest_frame`: **engine mode** pumps an
 //! attached [`media::MediaEngine`] each [`Widget::sync`] (used by the local
@@ -203,7 +203,7 @@ pub struct VideoPlayer {
     dirty: bool,
     test_id: Option<&'static str>,
     /// Duration-fraction bands painted on the scrub track — e.g. Tube's
-    /// SponsorBlock. Empty by default, so other consumers are unaffected.
+    /// `SponsorBlock`. Empty by default, so other consumers are unaffected.
     scrub_marks: Vec<(f32, f32, Color)>,
     /// Rendered as priority icons on the bar and/or under the settings gear.
     settings: Vec<PlayerSetting>,
@@ -429,7 +429,7 @@ impl VideoPlayer {
             art_url: self.now_playing.art_url.clone(),
             length_us: self.duration_ms as i64 * 1000,
             position_us: self.position_ms as i64 * 1000,
-            volume: self.effective_volume() as f64,
+            volume: f64::from(self.effective_volume()),
             can_next: false,
             can_prev: false,
             can_play: true,
@@ -627,7 +627,7 @@ impl VideoPlayer {
     /// Used by the headless `--shots` path so a captured frame shows the full
     /// controls bar (which otherwise auto-hides when no cursor is moving).
     pub fn reveal_controls(&mut self) {
-        self.controls_visible_until = Some(Instant::now() + Duration::from_secs(3600));
+        self.controls_visible_until = Some(Instant::now() + Duration::from_hours(1));
         self.dirty = true;
     }
 
@@ -751,8 +751,8 @@ impl VideoPlayer {
 
         // Latest frame, contain-fit — or a placeholder when nothing is loaded.
         if let Some(img) = self.latest_frame.clone() {
-            let iw = img.width as f64;
-            let ih = img.height as f64;
+            let iw = f64::from(img.width);
+            let ih = f64::from(img.height);
             let rw = self.rect.width();
             let rh = self.rect.height();
             if iw > 0.0 && ih > 0.0 && rw > 0.0 && rh > 0.0 {
@@ -815,7 +815,7 @@ impl VideoPlayer {
             &bar,
         );
 
-        let pad = theme.tokens.spacing.s2 as f64;
+        let pad = f64::from(theme.tokens.spacing.s2);
         let mid_y = bar.y0 + bar.height() * 0.5;
 
         let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0).max(0.0);
@@ -867,7 +867,7 @@ impl VideoPlayer {
         );
 
         let left_reserve =
-            play_btn.x1 + pad + MIN_SCRUB_WIDTH + pad + tw as f64 + pad + VOLUME_WIDTH + pad;
+            play_btn.x1 + pad + MIN_SCRUB_WIDTH + pad + f64::from(tw) + pad + VOLUME_WIDTH + pad;
         let slot = btn + gap;
         let avail = (fs_btn.x0 - gap - left_reserve).max(0.0);
         let max_fit = if slot > 0.0 {
@@ -930,8 +930,7 @@ impl VideoPlayer {
         let cluster_x0 = self
             .setting_icon_rects
             .last()
-            .map(|(_, r)| r.x0)
-            .unwrap_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 });
+            .map_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 }, |(_, r)| r.x0);
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
@@ -962,7 +961,7 @@ impl VideoPlayer {
             let filled = Rect::new(
                 vtrack.x0,
                 vtrack.y0,
-                vtrack.x0 + vtrack.width() * self.effective_volume() as f64,
+                vtrack.x0 + vtrack.width() * f64::from(self.effective_volume()),
                 vtrack.y1,
             );
             scene.fill(
@@ -977,13 +976,13 @@ impl VideoPlayer {
         }
 
         let time_x1 = vol_x0 - pad;
-        let time_x0 = (time_x1 - tw as f64).max(play_btn.x1 + pad);
+        let time_x0 = (time_x1 - f64::from(tw)).max(play_btn.x1 + pad);
         text_renderer.draw_text(
             scene,
             &time_text,
             time_size,
             colors.text_dim,
-            transform * Affine::translate((time_x0, mid_y - time_size as f64 * 0.5)),
+            transform * Affine::translate((time_x0, mid_y - f64::from(time_size) * 0.5)),
             None,
         );
 
@@ -1004,7 +1003,7 @@ impl VideoPlayer {
                 None,
                 &RoundedRect::from_rect(track, SCRUB_TRACK_HEIGHT * 0.5),
             );
-            let buf_frac = (self.buffering as f64 / 100.0).clamp(0.0, 1.0);
+            let buf_frac = (f64::from(self.buffering) / 100.0).clamp(0.0, 1.0);
             if buf_frac > 0.0 {
                 let buffered = Rect::new(
                     track.x0,
@@ -1039,8 +1038,8 @@ impl VideoPlayer {
             let mid_y = track.center().y;
             let band_h = SCRUB_TRACK_HEIGHT + 3.0;
             for (s, e, color) in &self.scrub_marks {
-                let s = (*s).clamp(0.0, 1.0) as f64;
-                let e = (*e).clamp(0.0, 1.0) as f64;
+                let s = f64::from((*s).clamp(0.0, 1.0));
+                let e = f64::from((*e).clamp(0.0, 1.0));
                 if e <= s {
                     continue;
                 }
@@ -1124,8 +1123,7 @@ impl VideoPlayer {
                         .setting_icon_rects
                         .iter()
                         .find(|(i, _)| *i == idx)
-                        .map(|(_, r)| *r)
-                        .unwrap_or(self.gear_button_rect);
+                        .map_or(self.gear_button_rect, |(_, r)| *r);
                     (anchor, Some(s.name.clone()))
                 } else {
                     return;
@@ -1137,7 +1135,7 @@ impl VideoPlayer {
         }
 
         let row_h = MENU_ROW_H;
-        let pad = theme.tokens.spacing.s2 as f64;
+        let pad = f64::from(theme.tokens.spacing.s2);
         let title_h = if title.is_some() { row_h } else { 0.0 };
         let panel_h = title_h + rows.len() as f64 * row_h + pad;
         let width = MENU_WIDTH.min(self.rect.width() - 8.0).max(80.0);
@@ -1148,7 +1146,7 @@ impl VideoPlayer {
         let y0 = y1 - panel_h;
         let panel = Rect::new(x0, y0, x1, y1);
 
-        let bg = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+        let bg = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &bg);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1215,7 +1213,7 @@ impl VideoPlayer {
                             12.0,
                             tint,
                             transform
-                                * Affine::translate((x1 - pad - vw as f64, y + row_h * 0.5 - 7.0)),
+                                * Affine::translate((x1 - pad - f64::from(vw), y + row_h * 0.5 - 7.0)),
                             None,
                         );
                     }
@@ -1273,7 +1271,7 @@ impl VideoPlayer {
                                 accent,
                                 transform
                                     * Affine::translate((
-                                        x1 - pad - cw as f64,
+                                        x1 - pad - f64::from(cw),
                                         y + row_h * 0.5 - 8.0,
                                     )),
                                 None,
@@ -1481,17 +1479,17 @@ impl Widget for VideoPlayer {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1595,7 +1593,7 @@ impl Widget for VideoPlayer {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "VideoPlayer"
     }
 

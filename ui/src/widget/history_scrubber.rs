@@ -634,7 +634,7 @@ impl HistoryScrubber {
                     return false;
                 }
                 let req = GroupNameRequest {
-                    record_id: g.record_id.clone(),
+                    record_id: g.record_id,
                     start: first.id,
                     end: last.id,
                     label,
@@ -664,7 +664,7 @@ impl HistoryScrubber {
         let Some(g) = self.open_group().cloned() else {
             return false;
         };
-        let Some(record_id) = g.record_id.clone() else {
+        let Some(record_id) = g.record_id else {
             return false;
         };
         let Some(last) = self.entries.last() else {
@@ -771,7 +771,7 @@ impl HistoryScrubber {
             let budget = seg.width() - 8.0;
             let shown = fit(tr, label, size, budget);
             let (lw, lh) = tr.measure(&shown, size, None);
-            if !shown.is_empty() && lw as f64 <= budget && shown.chars().count() > 2 {
+            if !shown.is_empty() && f64::from(lw) <= budget && shown.chars().count() > 2 {
                 tr.draw_text(
                     scene,
                     &shown,
@@ -779,8 +779,8 @@ impl HistoryScrubber {
                     ink,
                     transform
                         * Affine::translate((
-                            seg.x0 + (seg.width() - lw as f64) / 2.0,
-                            seg.center().y - lh as f64 / 2.0,
+                            seg.x0 + (seg.width() - f64::from(lw)) / 2.0,
+                            seg.center().y - f64::from(lh) / 2.0,
                         )),
                     None,
                 );
@@ -830,7 +830,7 @@ impl HistoryScrubber {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         let (fill, border, text_color) = if primary {
             let fill = if hovered {
                 theme.tokens.colors.accent[4]
@@ -867,8 +867,8 @@ impl HistoryScrubber {
             text_color,
             transform
                 * Affine::translate((
-                    rect.x0 + (rect.width() - w as f64) / 2.0,
-                    rect.y0 + (rect.height() - h as f64) / 2.0,
+                    rect.x0 + (rect.width() - f64::from(w)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(h)) / 2.0,
                 )),
             None,
         );
@@ -894,7 +894,7 @@ impl Widget for HistoryScrubber {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -902,10 +902,10 @@ impl Widget for HistoryScrubber {
         let layout = taffy.layout(node).unwrap();
         let prev = self.rect;
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if prev != self.rect {
             self.dirty = true;
@@ -920,7 +920,7 @@ impl Widget for HistoryScrubber {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -947,8 +947,8 @@ impl Widget for HistoryScrubber {
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        (self.rect.x0 + self.rect.x1) / 2.0 - w as f64 / 2.0,
-                        (self.rect.y0 + self.rect.y1) / 2.0 - h as f64 / 2.0,
+                        f64::midpoint(self.rect.x0, self.rect.x1) - f64::from(w) / 2.0,
+                        f64::midpoint(self.rect.y0, self.rect.y1) - f64::from(h) / 2.0,
                     )),
                 None,
             );
@@ -1015,7 +1015,7 @@ impl Widget for HistoryScrubber {
         );
 
         let pop = self.popover_rect();
-        let pop_shape = RoundedRect::from_rect(pop, theme.tokens.radii.sm as f64);
+        let pop_shape = RoundedRect::from_rect(pop, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1052,56 +1052,53 @@ impl Widget for HistoryScrubber {
                 Some(s)
             });
             let budget = pop.width() - 12.0;
-            match group_line {
-                Some(head) => {
-                    let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-                    let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
-                    let head = fit(text_renderer, &head, head_size, budget);
-                    let (hw, _) = text_renderer.measure(&head, head_size, None);
-                    text_renderer.draw_text(
-                        scene,
-                        &head,
-                        head_size,
-                        theme.tokens.colors.text_primary,
-                        transform
-                            * Affine::translate((
-                                pop.x0 + (pop.width() - hw as f64) / 2.0,
-                                pop.y0 + 5.0,
-                            )),
-                        None,
-                    );
-                    let detail = fit(text_renderer, &detail, sub_size, budget);
-                    let (dw, _) = text_renderer.measure(&detail, sub_size, None);
-                    text_renderer.draw_text(
-                        scene,
-                        &detail,
-                        sub_size,
-                        theme.tokens.colors.text_dim,
-                        transform
-                            * Affine::translate((
-                                pop.x0 + (pop.width() - dw as f64) / 2.0,
-                                pop.y0 + 21.0,
-                            )),
-                        None,
-                    );
-                }
-                None => {
-                    let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-                    let drawn = fit(text_renderer, &detail, size, budget);
-                    let (lw, lh) = text_renderer.measure(&drawn, size, None);
-                    text_renderer.draw_text(
-                        scene,
-                        &drawn,
-                        size,
-                        theme.tokens.colors.text_primary,
-                        transform
-                            * Affine::translate((
-                                pop.x0 + (pop.width() - lw as f64) / 2.0,
-                                pop.y0 + (pop.height() - lh as f64) / 2.0,
-                            )),
-                        None,
-                    );
-                }
+            if let Some(head) = group_line {
+                let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+                let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+                let head = fit(text_renderer, &head, head_size, budget);
+                let (hw, _) = text_renderer.measure(&head, head_size, None);
+                text_renderer.draw_text(
+                    scene,
+                    &head,
+                    head_size,
+                    theme.tokens.colors.text_primary,
+                    transform
+                        * Affine::translate((
+                            pop.x0 + (pop.width() - f64::from(hw)) / 2.0,
+                            pop.y0 + 5.0,
+                        )),
+                    None,
+                );
+                let detail = fit(text_renderer, &detail, sub_size, budget);
+                let (dw, _) = text_renderer.measure(&detail, sub_size, None);
+                text_renderer.draw_text(
+                    scene,
+                    &detail,
+                    sub_size,
+                    theme.tokens.colors.text_dim,
+                    transform
+                        * Affine::translate((
+                            pop.x0 + (pop.width() - f64::from(dw)) / 2.0,
+                            pop.y0 + 21.0,
+                        )),
+                    None,
+                );
+            } else {
+                let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+                let drawn = fit(text_renderer, &detail, size, budget);
+                let (lw, lh) = text_renderer.measure(&drawn, size, None);
+                text_renderer.draw_text(
+                    scene,
+                    &drawn,
+                    size,
+                    theme.tokens.colors.text_primary,
+                    transform
+                        * Affine::translate((
+                            pop.x0 + (pop.width() - f64::from(lw)) / 2.0,
+                            pop.y0 + (pop.height() - f64::from(lh)) / 2.0,
+                        )),
+                    None,
+                );
             }
         }
 
@@ -1120,7 +1117,7 @@ impl Widget for HistoryScrubber {
             let hint = "Enter to save \u{00b7} Esc to cancel";
             let hint_size = (size - 2.0).max(9.0);
             let (hw, hh) = text_renderer.measure(hint, hint_size, None);
-            if box_rect.x1 + 10.0 + hw as f64 <= last {
+            if box_rect.x1 + 10.0 + f64::from(hw) <= last {
                 text_renderer.draw_text(
                     scene,
                     hint,
@@ -1129,7 +1126,7 @@ impl Widget for HistoryScrubber {
                     transform
                         * Affine::translate((
                             box_rect.x1 + 10.0,
-                            box_rect.center().y - hh as f64 / 2.0,
+                            box_rect.center().y - f64::from(hh) / 2.0,
                         )),
                     None,
                 );
@@ -1174,8 +1171,7 @@ impl Widget for HistoryScrubber {
             let outcome = self
                 .naming
                 .as_mut()
-                .map(|(_, f)| f.handle_event(event, modifiers))
-                .unwrap_or(NameFieldOutcome::Ignored);
+                .map_or(NameFieldOutcome::Ignored, |(_, f)| f.handle_event(event, modifiers));
             match outcome {
                 NameFieldOutcome::Commit(_) => {
                     self.commit_naming();
@@ -1313,9 +1309,7 @@ impl Widget for HistoryScrubber {
                             };
                             self.groups
                                 .iter()
-                                .find(|g| raw >= g.start && raw <= g.end)
-                                .map(|g| g.end)
-                                .unwrap_or_else(|| self.tick_at_x(self.last_cursor.x))
+                                .find(|g| raw >= g.start && raw <= g.end).map_or_else(|| self.tick_at_x(self.last_cursor.x), |g| g.end)
                         } else {
                             self.tick_at_x(self.last_cursor.x)
                         };
@@ -1341,7 +1335,7 @@ impl Widget for HistoryScrubber {
         self.is_dragging
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "HistoryScrubber"
     }
 

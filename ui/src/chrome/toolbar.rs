@@ -115,7 +115,7 @@ pub fn draw(
             theme.text_primary
         };
         let (lw, _) = tr.measure(&item.label, 15.0, None);
-        let lx = x + (item.width - lw as f64) / 2.0;
+        let lx = x + (item.width - f64::from(lw)) / 2.0;
         let ly = cy - 9.0;
         if item.cue == LabelCue::Bold {
             tr.draw_text_weighted(
@@ -145,7 +145,7 @@ pub fn draw(
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, uy, lx + lw as f64, uy + 1.5),
+                    &Rect::new(lx, uy, lx + f64::from(lw), uy + 1.5),
                 );
             }
             LabelCue::Strike => {
@@ -155,7 +155,7 @@ pub fn draw(
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, sy, lx + lw as f64, sy + 1.5),
+                    &Rect::new(lx, sy, lx + f64::from(lw), sy + 1.5),
                 );
             }
             _ => {}

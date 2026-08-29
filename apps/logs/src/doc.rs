@@ -30,7 +30,7 @@ pub const K_SEARCH: &str = "search";
 pub const K_SELECTED: &str = "selected";
 pub const K_LIVE: &str = "live_tail";
 
-/// Stateless helpers over the app's shared `State::doc`. The `root` ObjId
+/// Stateless helpers over the app's shared `State::doc`. The `root` `ObjId`
 /// passed in is the document root the toolkit hands to `sync`.
 pub struct LogsDoc;
 

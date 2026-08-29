@@ -32,7 +32,6 @@ fn install_1mb_qpkg_timing() {
     let min = samples.iter().min().unwrap();
     let max = samples.iter().max().unwrap();
     eprintln!(
-        "install(1 MB) x{iters}: avg {:?}, min {:?}, max {:?}",
-        avg, min, max
+        "install(1 MB) x{iters}: avg {avg:?}, min {min:?}, max {max:?}"
     );
 }

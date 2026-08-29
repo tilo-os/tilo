@@ -1,7 +1,7 @@
 //! About / qOS Identity pane — device identity and transfer.
 //!
 //! Reads real system facts where they're cheap: `/etc/os-release`
-//! (PRETTY_NAME), `/proc/sys/kernel/osrelease` (kernel),
+//! (`PRETTY_NAME`), `/proc/sys/kernel/osrelease` (kernel),
 //! `/proc/uptime` (uptime), and the hostname. Every read is best-effort —
 //! a missing file degrades to `"unknown"` so the pane renders cleanly
 //! under `--shots` on minimal containers.
@@ -63,9 +63,7 @@ impl AboutInfo {
             .unwrap_or_else(|| "unknown".to_string());
         let uptime = fs::read_to_string(uptime_path)
             .ok()
-            .and_then(|s| parse_uptime_seconds(&s))
-            .map(format_uptime)
-            .unwrap_or_else(|| "unknown".to_string());
+            .and_then(|s| parse_uptime_seconds(&s)).map_or_else(|| "unknown".to_string(), format_uptime);
         let hostname = fs::read_to_string(hostname_path)
             .ok()
             .map(|s| s.trim().to_string())
@@ -77,9 +75,7 @@ impl AboutInfo {
             .unwrap_or_else(|| "unknown".to_string());
         let memory = fs::read_to_string(meminfo_path)
             .ok()
-            .and_then(|s| parse_mem_total_kb(&s))
-            .map(format_memory)
-            .unwrap_or_else(|| "unknown".to_string());
+            .and_then(|s| parse_mem_total_kb(&s)).map_or_else(|| "unknown".to_string(), format_memory);
         // Compile-time target arch equals the running machine's arch — an
         // honest fact that needs no syscall.
         let arch = std::env::consts::ARCH.to_string();
@@ -100,7 +96,7 @@ impl AboutInfo {
     pub fn fingerprint(&self) -> String {
         let mut hash: u64 = 1469598103934665603;
         for b in self.hostname.bytes() {
-            hash ^= b as u64;
+            hash ^= u64::from(b);
             hash = hash.wrapping_mul(1099511628211);
         }
         let hex = format!("{hash:016x}");
@@ -203,7 +199,7 @@ pub(crate) fn format_memory(kb: u64) -> String {
     if mb >= 1024.0 {
         format!("{:.1} GB", mb / 1024.0)
     } else {
-        format!("{:.0} MB", mb)
+        format!("{mb:.0} MB")
     }
 }
 

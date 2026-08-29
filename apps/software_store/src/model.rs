@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 /// Stable identifier for a catalog entry. We use the reverse-DNS app id
-/// (the Flatpak / AppStream convention, e.g. `org.gimp.GIMP`) so the
+/// (the Flatpak / `AppStream` convention, e.g. `org.gimp.GIMP`) so the
 /// sample catalog lines up with what a real `flatpak list` would report
 /// and the live probe can merge by the same key.
 pub type AppId = String;
@@ -233,7 +233,7 @@ pub struct AppEntry {
 }
 
 impl AppEntry {
-    /// A minimal Flathub-sourced entry built from a search hit / AppStream
+    /// A minimal Flathub-sourced entry built from a search hit / `AppStream`
     /// record, with neutral defaults the caller fills in. Used by the
     /// async worker (`flatpak.rs`) to construct live catalog entries.
     pub fn flathub_stub(
@@ -310,9 +310,9 @@ impl AppEntry {
     pub fn rating_count_label(&self) -> String {
         let n = self.rating_count;
         if n >= 1000 {
-            format!("{:.1}k ratings", n as f64 / 1000.0)
+            format!("{:.1}k ratings", f64::from(n) / 1000.0)
         } else {
-            format!("{} ratings", n)
+            format!("{n} ratings")
         }
     }
 
@@ -536,7 +536,7 @@ impl Catalog {
         let q = query.to_lowercase();
         self.apps
             .iter()
-            .filter(|a| cat.map_or(true, |c| a.category == c))
+            .filter(|a| cat.is_none_or(|c| a.category == c))
             .filter(|a| a.matches(&q))
             .collect()
     }

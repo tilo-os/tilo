@@ -143,7 +143,7 @@ impl Birthday {
 
         // vCard truncated "year unknown" forms: --MMDD or --MM-DD.
         if let Some(rest) = s.strip_prefix("--") {
-            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+            let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
             if digits.len() == 4 {
                 let m = digits[0..2].parse().ok()?;
                 let d = digits[2..4].parse().ok()?;
@@ -273,9 +273,7 @@ impl Contact {
                 .org
                 .trim()
                 .chars()
-                .next()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "?".to_string()),
+                .next().map_or_else(|| "?".to_string(), |c| c.to_string()),
         }
         .to_uppercase()
     }
@@ -491,7 +489,7 @@ pub fn sample_contacts() -> Vec<Contact> {
             phones: phones.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
             emails: emails.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
             addresses,
-            groups: groups.iter().map(|s| s.to_string()).collect(),
+            groups: groups.iter().map(std::string::ToString::to_string).collect(),
             favorite,
         }
     };
@@ -511,7 +509,7 @@ pub fn sample_contacts() -> Vec<Contact> {
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
-                region: "".into(),
+                region: String::new(),
                 postal: "SW1Y 4LE".into(),
                 country: "United Kingdom".into(),
             }],

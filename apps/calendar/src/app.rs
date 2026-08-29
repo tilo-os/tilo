@@ -182,7 +182,7 @@ enum Action {
     ToggleCalendarVisible(String),
     /// Collapse/expand one account's calendar list in the sidebar.
     ToggleAccountCollapsed(String),
-    /// Pull events from the configured CalDAV calendars.
+    /// Pull events from the configured `CalDAV` calendars.
     Sync,
     /// Flip the selected event's all-day flag.
     ToggleAllDay,
@@ -190,14 +190,14 @@ enum Action {
     /// calendar list) over the currently-edited event.
     OpenPopover(FormPopover),
     /// Assign the selected event to a target calendar (local or a remote
-    /// CalDAV collection), and close the calendar popover.
+    /// `CalDAV` collection), and close the calendar popover.
     PickCalendar(CalTarget),
     /// Focus one of the form's text fields (used by the title/location field
     /// click targets so a press lands the caret).
     FocusField(FormField),
     /// Dismiss any open form popover (scrim / outside click).
     ClosePopover,
-    /// Delete an event from the model + CRDT (and queue a CalDAV delete for a
+    /// Delete an event from the model + CRDT (and queue a `CalDAV` delete for a
     /// synced event). Fired by the editor's trash button and the Delete key.
     DeleteEvent(Id),
     /// Delete a task (and its subtasks) from the model + CRDT.
@@ -228,7 +228,7 @@ enum FormField {
 }
 
 /// A calendar an event can be filed under: the on-device local calendar, or a
-/// specific remote CalDAV collection (identified by its stable id, matching
+/// specific remote `CalDAV` collection (identified by its stable id, matching
 /// [`Event::calendar_id`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CalTarget {
@@ -329,7 +329,7 @@ impl TimelineDrag {
     fn set_current(&mut self, p: Point) {
         match self {
             TimelineDrag::Create { current, .. } | TimelineDrag::Move { current, .. } => {
-                *current = p
+                *current = p;
             }
         }
     }
@@ -349,7 +349,7 @@ pub struct CalendarApp {
     selection: Option<Sel>,
     detail_open: bool,
 
-    /// CalDAV accounts + their calendars, as configured by OS Settings (the
+    /// `CalDAV` accounts + their calendars, as configured by OS Settings (the
     /// shared [`AccountStore`]). Read-only here; Settings owns the lifecycle.
     accounts: AccountStore,
 
@@ -381,7 +381,7 @@ pub struct CalendarApp {
     shots_pending_popover: Option<FormPopover>,
 
     /// True for the hermetic `--shots` / test build: it seeds sample content
-    /// and drives the offline (synthesised) CalDAV path. The live app leaves
+    /// and drives the offline (synthesised) `CalDAV` path. The live app leaves
     /// this `false` and never fabricates data.
     demo: bool,
     /// Where the calendar document is persisted (live app only; `None` in
@@ -458,7 +458,7 @@ pub struct CalendarApp {
     /// An in-progress drag on the week/day timeline (create or move).
     timeline_drag: Option<TimelineDrag>,
 
-    /// Receiver for an in-flight background CalDAV pull. The live sync runs on a
+    /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
     /// A finished background pass delivers `(pull result, outcome, pushed ids)`
@@ -651,7 +651,7 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Kick off a CalDAV pull from the configured calendars. The live pull
+    /// Kick off a `CalDAV` pull from the configured calendars. The live pull
     /// touches the network, so it runs on a worker thread and its result is
     /// drained in [`Self::poll_sync`]; the UI stays responsive throughout. The
     /// hermetic demo/test build stays fully synchronous (it synthesises each
@@ -855,11 +855,9 @@ impl CalendarApp {
                 .events
                 .iter()
                 .find(|e| e.title.starts_with(needle))
-            {
-                if let Some(list) = CalDoc::event_notes(doc, e.id) {
+                && let Some(list) = CalDoc::event_notes(doc, e.id) {
                     CalDoc::seed_notes_if_empty(doc, &list, lines);
                 }
-            }
         }
     }
 
@@ -1018,7 +1016,7 @@ impl CalendarApp {
         self.actions.last_dispatched()
     }
 
-    /// The source calendar id to queue a CalDAV delete for when an event is
+    /// The source calendar id to queue a `CalDAV` delete for when an event is
     /// removed: `Some` only for a synced event whose calendar is still
     /// configured (otherwise there is nothing real to address). Shared by the
     /// trash-button handler and the Ctrl+K "Delete event" spec so both build the
@@ -1121,7 +1119,7 @@ impl CalendarApp {
 
     /// Delete an event: drop it from the model + CRDT, clear any pending upload,
     /// and — for an event synced from a configured remote calendar — queue a
-    /// CalDAV delete so the server copy is removed on the next sync. Closes the
+    /// `CalDAV` delete so the server copy is removed on the next sync. Closes the
     /// editor if the deleted event was the one on screen.
     fn delete_event(&mut self, id: Id, doc: &mut AutoCommit) {
         // Resolve the CalDAV delete target (a synced event on a still-configured
@@ -1160,7 +1158,7 @@ impl CalendarApp {
             doc,
             crate::actions::delete_task_action(
                 id.to_string(),
-                subtasks.iter().map(|s| s.to_string()).collect(),
+                subtasks.iter().map(std::string::ToString::to_string).collect(),
             ),
         );
         if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
@@ -1190,7 +1188,7 @@ impl CalendarApp {
         self.blur_editor();
     }
 
-    /// Resolve the delete outbox into concrete CalDAV delete jobs: each queued
+    /// Resolve the delete outbox into concrete `CalDAV` delete jobs: each queued
     /// `(calendar_id, uid)` paired with the account config + remote calendar it
     /// targets. Entries whose calendar is no longer configured are skipped and
     /// left queued for a later attempt.
@@ -1627,7 +1625,7 @@ impl CalendarApp {
     // --- event form model edits -----------------------------------------
 
     /// Every calendar an event can be filed under: the local on-device
-    /// calendar plus each remote CalDAV collection configured in Settings
+    /// calendar plus each remote `CalDAV` collection configured in Settings
     /// (the shared [`AccountStore`]). This is the selector's option list —
     /// sourced from real configured accounts, never fabricated.
     fn calendar_options(&self) -> Vec<(CalTarget, String)> {
@@ -1652,11 +1650,7 @@ impl CalendarApp {
                 .accounts
                 .iter()
                 .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
-                .find(|(_, c)| &c.id == id)
-                .map(|(a, c)| format!("{} · {}", a.label(), c.name))
-                // A synced calendar that is no longer configured: show its raw
-                // id rather than pretending it is local.
-                .unwrap_or_else(|| id.clone()),
+                .find(|(_, c)| &c.id == id).map_or_else(|| id.clone(), |(a, c)| format!("{} · {}", a.label(), c.name)),
         }
     }
 
@@ -1676,7 +1670,7 @@ impl CalendarApp {
                 .iter()
                 .flat_map(|a| a.calendars.iter())
                 .find(|c| &c.id == cid)
-                .map(|c| c.palette()),
+                .map(super::account::RemoteCalendar::palette),
             CalTarget::Local => None,
         };
         let snap = if let Some(e) = self.model.event_mut(id) {
@@ -1840,13 +1834,11 @@ impl CalendarApp {
         let is_enter = matches!(
             event,
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
+event: KeyEvent {
+    logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+    state: ElementState::Pressed,
+    ..
+    }, .. }
         );
         let is_click = matches!(
             event,
@@ -1953,7 +1945,7 @@ impl CalendarApp {
 
     /// Apply a clock spinner's current value to the start or end time.
     fn set_event_time(&mut self, which: FormPopover, h: u8, m: u8, doc: &mut AutoCommit) {
-        let time = NaiveTime::from_hms_opt(h as u32, m as u32, 0)
+        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0)
             .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
         self.cycle_event(doc, |e| match which {
             FormPopover::StartTime => {
@@ -1985,7 +1977,7 @@ impl CalendarApp {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::write(&path, ics) {
-            Ok(_) => {
+            Ok(()) => {
                 self.status = Some(format!(
                     "Exported {} events to {}",
                     self.model.events.len(),
@@ -2083,9 +2075,9 @@ impl CalendarApp {
     fn step_period(&mut self, dir: i32) {
         self.anchor = match self.view {
             View::Month => date::add_months(self.anchor, dir),
-            View::Week => self.anchor + Duration::days(7 * dir as i64),
-            View::Day => self.anchor + Duration::days(dir as i64),
-            View::Agenda => self.anchor + Duration::days(7 * dir as i64),
+            View::Week => self.anchor + Duration::days(7 * i64::from(dir)),
+            View::Day => self.anchor + Duration::days(i64::from(dir)),
+            View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
         };
         self.dirty = true;
     }
@@ -2150,15 +2142,12 @@ impl CalendarApp {
                 // Single-pane: calendar OR the pushed detail page fills the
                 // content width, never both.
                 let full = Rect::new(content_x0, r.y0, r.x1, r.y1);
-                match (self.detail_open, self.narrow_screen) {
-                    (true, NarrowScreen::Detail) => {
-                        self.content_rect = Rect::ZERO;
-                        self.detail_rect = full;
-                    }
-                    _ => {
-                        self.content_rect = full;
-                        self.detail_rect = Rect::ZERO;
-                    }
+                if let (true, NarrowScreen::Detail) = (self.detail_open, self.narrow_screen) {
+                    self.content_rect = Rect::ZERO;
+                    self.detail_rect = full;
+                } else {
+                    self.content_rect = full;
+                    self.detail_rect = Rect::ZERO;
                 }
             }
         }
@@ -2240,7 +2229,7 @@ impl CalendarApp {
             let days = self.timeline_days();
             let focus_hour = if days.contains(&self.today) {
                 let now = Local::now().naive_local();
-                (now.hour() as f64 + now.minute() as f64 / 60.0 - 1.0).max(0.0)
+                (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
             } else {
                 TIMELINE_INITIAL_HOUR
             };
@@ -2323,7 +2312,7 @@ impl CalendarApp {
             return f;
         }
         let all_day = match self.selection {
-            Some(Sel::Event(id)) => self.model.event(id).map(|e| e.all_day).unwrap_or(false),
+            Some(Sel::Event(id)) => self.model.event(id).is_some_and(|e| e.all_day),
             _ => false,
         };
         let x = r.x0 + DETAIL_PAD;
@@ -2967,7 +2956,7 @@ impl CalendarApp {
                     t * Affine::translate((label_x0, row.center().y - 7.0)),
                     None,
                 );
-                let label_w = tr.measure(&label, 13.0, None).0 as f64;
+                let label_w = f64::from(tr.measure(&label, 13.0, None).0);
                 if tk.done {
                     stroke_line(
                         scene,
@@ -3291,7 +3280,7 @@ impl CalendarApp {
         let variants = self.period_title_variants();
         let title = variants
             .iter()
-            .find(|v| tr.measure(v, 19.0, None).0 as f64 <= avail)
+            .find(|v| f64::from(tr.measure(v, 19.0, None).0) <= avail)
             .unwrap_or_else(|| variants.last().expect("at least one title variant"));
         let title_clip = Rect::new(title_x - 2.0, r.y0, title_right, r.y1);
         scene.push_layer(
@@ -3340,7 +3329,7 @@ impl CalendarApp {
         let rows = 6;
         let cell_w = area.width() / cols as f64;
         let grid_top = area.y0 + header_h;
-        let cell_h = (area.height() - header_h) / rows as f64;
+        let cell_h = (area.height() - header_h) / f64::from(rows);
 
         // Weekday header.
         for (i, lbl) in date::WEEKDAY_SHORT.iter().enumerate() {
@@ -3553,7 +3542,7 @@ impl CalendarApp {
     /// Minute-of-day (0..=1440) for a screen y, honouring the scroll offset and
     /// clamped to the content — so a drag past the body edge still resolves.
     fn timeline_minute_at(&self, g: &TimelineGeom, y: f64) -> i64 {
-        let offset = self.timeline_scroll.offset_y() as f64;
+        let offset = f64::from(self.timeline_scroll.offset_y());
         let content_y = (y - g.body_top + offset).clamp(0.0, g.content_h);
         (((content_y / g.hour_h) * 60.0).round() as i64).clamp(0, 24 * 60)
     }
@@ -3572,7 +3561,7 @@ impl CalendarApp {
         let col_w = self.timeline_col_w(area, days_len, g);
         let grid_x0 = area.x0 + g.gutter;
         let x0 = grid_x0 + col_w * col as f64;
-        let offset = self.timeline_scroll.offset_y() as f64;
+        let offset = f64::from(self.timeline_scroll.offset_y());
         let top = g.body_top + (start_min as f64 / 60.0) * g.hour_h - offset;
         let bottom = g.body_top + (end_min as f64 / 60.0) * g.hour_h - offset;
         Rect::new(x0 + 3.0, top, x0 + col_w - 3.0, bottom.max(top + 16.0))
@@ -3599,8 +3588,8 @@ impl CalendarApp {
             .iter()
             .filter(|e| !e.all_day)
             .map(|e| {
-                let s = e.start.hour() as i64 * 60 + e.start.minute() as i64;
-                let en = e.end.hour() as i64 * 60 + e.end.minute() as i64;
+                let s = i64::from(e.start.hour()) * 60 + i64::from(e.start.minute());
+                let en = i64::from(e.end.hour()) * 60 + i64::from(e.end.minute());
                 (e.id, s, en.max(s + TIMELINE_SNAP_MIN))
             })
             .collect();
@@ -3685,7 +3674,7 @@ impl CalendarApp {
         let g = self.timeline_geom(area);
         let grid_x0 = area.x0 + g.gutter;
         let col_w = self.timeline_col_w(area, days.len(), &g);
-        let offset = self.timeline_scroll.offset_y() as f64;
+        let offset = f64::from(self.timeline_scroll.offset_y());
         // content minute-of-day → screen y.
         let y_at = |min: f64| g.body_top + (min / 60.0) * g.hour_h - offset;
 
@@ -3768,7 +3757,7 @@ impl CalendarApp {
 
         // Hour gridlines + gutter labels (00:00 … 24:00).
         for h in 0..=24 {
-            let y = y_at(h as f64 * 60.0);
+            let y = y_at(f64::from(h) * 60.0);
             stroke_line(
                 scene,
                 t,
@@ -3804,7 +3793,7 @@ impl CalendarApp {
         // "now" line if today is in range.
         let now = Local::now().naive_local();
         if let Some(i) = days.iter().position(|d| *d == self.today) {
-            let y = y_at(now.hour() as f64 * 60.0 + now.minute() as f64);
+            let y = y_at(f64::from(now.hour()) * 60.0 + f64::from(now.minute()));
             let x0 = grid_x0 + col_w * i as f64;
             stroke_line(
                 scene,
@@ -3852,9 +3841,9 @@ impl CalendarApp {
                 if Some(id) == moving_id {
                     continue;
                 }
-                let s_min = start.hour() as i64 * 60 + start.minute() as i64;
+                let s_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
                 let e_min =
-                    (end.hour() as i64 * 60 + end.minute() as i64).max(s_min + TIMELINE_SNAP_MIN);
+                    (i64::from(end.hour()) * 60 + i64::from(end.minute())).max(s_min + TIMELINE_SNAP_MIN);
                 let block = self.timeline_block_rect(area, days.len(), &g, i, s_min, e_min);
                 let col = color.color(theme);
                 fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
@@ -4051,7 +4040,7 @@ impl CalendarApp {
         // Wide enough to give the location its own right-hand column; below it
         // the row keeps time + title and drops the location so nothing overlaps.
         let show_loc = area.width() >= 520.0;
-        let offset = self.agenda_scroll.offset_y() as f64;
+        let offset = f64::from(self.agenda_scroll.offset_y());
         // Content-space cursor, mapped to the screen through the scroll offset.
         let mut y = area.y0 + 18.0 - offset;
         let mut drew_any = false;
@@ -4188,7 +4177,7 @@ impl CalendarApp {
                         t * Affine::translate((label_x0, y + 7.0)),
                         Some((row.width() - 160.0).max(40.0) as f32),
                     );
-                    let label_w = tr.measure(&tk.title, 13.0, None).0 as f64;
+                    let label_w = f64::from(tr.measure(&tk.title, 13.0, None).0);
                     if tk.done {
                         stroke_line(
                             scene,
@@ -4811,7 +4800,7 @@ impl CalendarApp {
     ) {
         if let Some(msg) = &self.status {
             let c = &theme.tokens.colors;
-            let wmeas = tr.measure(msg, 12.0, None).0 as f64;
+            let wmeas = f64::from(tr.measure(msg, 12.0, None).0);
             let pill = Rect::new(
                 content_x0 + 20.0,
                 self.rect.y1 - 44.0,
@@ -4858,9 +4847,9 @@ impl CalendarApp {
         let title_size = 20.0_f32;
         let hint_size = 14.0_f32;
         let gap = 10.0_f64;
-        let title_w = tr.measure(title, title_size, None).0 as f64;
-        let hint_w = tr.measure(hint, hint_size, None).0 as f64;
-        let block_h = title_size as f64 + gap + hint_size as f64;
+        let title_w = f64::from(tr.measure(title, title_size, None).0);
+        let hint_w = f64::from(tr.measure(hint, hint_size, None).0);
+        let block_h = f64::from(title_size) + gap + f64::from(hint_size);
         let cx = area.center().x;
         let top = area.center().y - block_h / 2.0;
         tr.draw_text(
@@ -4876,7 +4865,7 @@ impl CalendarApp {
             hint,
             hint_size,
             c.text_dim,
-            t * Affine::translate((cx - hint_w / 2.0, top + title_size as f64 + gap)),
+            t * Affine::translate((cx - hint_w / 2.0, top + f64::from(title_size) + gap)),
             None,
         );
     }
@@ -4918,23 +4907,21 @@ impl Widget for CalendarApp {
     /// presentation (per-peer, never in the shared doc), so the doc args are
     /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::EventSearchProvider::parse_action_id(action_id) {
-            if let Some(ev) = self.model.event(id) {
+        if let Some(id) = crate::search_provider::EventSearchProvider::parse_action_id(action_id)
+            && let Some(ev) = self.model.event(id) {
                 self.anchor = ev.start.date();
                 self.select_event(id);
             }
-        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
             // Live app: adopt the user's persisted calendar (empty on a fresh
             // machine). Demo/test builds pass no path and stay in-memory.
-            if let Some(p) = &self.data_path {
-                if let Some(mut loaded) = crate::store::load(p) {
+            if let Some(p) = &self.data_path
+                && let Some(mut loaded) = crate::store::load(p) {
                     let _ = state.merge(&mut loaded);
                 }
-            }
             // Seed sample content ONLY in the demo build, and only when the
             // document is still empty.
             if self.demo && CalDoc::is_empty(state) {
@@ -4942,10 +4929,10 @@ impl Widget for CalendarApp {
                 self.seed_demo_notes(state);
             }
             // Whatever the document holds is now authoritative for the UI.
-            if !CalDoc::is_empty(state) {
-                self.model = CalDoc::read_model(state);
-            } else {
+            if CalDoc::is_empty(state) {
                 self.model = Model::default();
+            } else {
+                self.model = CalDoc::read_model(state);
             }
             self.revalidate_selection();
             self.saved_heads = state.get_heads();
@@ -5006,8 +4993,8 @@ impl Widget for CalendarApp {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(0.0),
-                        top: length(0.0),
+                        left: length(0.0_f32),
+                        top: length(0.0_f32),
                         right: taffy::LengthPercentageAuto::auto(),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
@@ -5029,17 +5016,17 @@ impl Widget for CalendarApp {
                 &[editor_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
@@ -5090,11 +5077,10 @@ impl Widget for CalendarApp {
             // First-run onboarding: over an otherwise-blank Month/Week/Day view
             // with no events, show a friendly prompt instead of an empty grid.
             // Agenda carries its own inline empty-state.
-            if !matches!(self.view, View::Agenda) {
-                if let Some((title, hint)) = self.empty_onboarding_prompt() {
+            if !matches!(self.view, View::Agenda)
+                && let Some((title, hint)) = self.empty_onboarding_prompt() {
                     self.draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
                 }
-            }
             self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
         }
 
@@ -5194,12 +5180,10 @@ impl Widget for CalendarApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some(a) = self.hit_action_at(self.last_mouse) {
+                && let Some(a) = self.hit_action_at(self.last_mouse) {
                     self.apply_action(a, state);
                     *handled = true;
                 }
-            }
             self.dirty = true;
             return;
         }
@@ -5466,8 +5450,8 @@ impl Widget for CalendarApp {
 
         // Forward remaining events (key typing, mouse move) to the editor
         // when the notes panel is active so editing works.
-        if editor_active {
-            if let Some(n) = self.editor_node {
+        if editor_active
+            && let Some(n) = self.editor_node {
                 self.notes_editor.handle_event(
                     event,
                     scale_factor,
@@ -5480,11 +5464,10 @@ impl Widget for CalendarApp {
                     taffy,
                 );
             }
-        }
         self.dirty = true;
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CalendarApp"
     }
 
@@ -5608,9 +5591,9 @@ fn center_text(
     r: Rect,
     t: Affine,
 ) {
-    let w = tr.measure(text, size, None).0 as f64;
+    let w = f64::from(tr.measure(text, size, None).0);
     let x = r.center().x - w / 2.0;
-    let y = r.center().y - size as f64 / 2.0;
+    let y = r.center().y - f64::from(size) / 2.0;
     tr.draw_text(
         scene,
         text,
@@ -5865,7 +5848,7 @@ fn draw_count_badge(
 ) {
     let c = &theme.tokens.colors;
     let s = format!("{n}");
-    let w = (tr.measure(&s, 11.0, None).0 as f64 + 12.0).max(20.0);
+    let w = (f64::from(tr.measure(&s, 11.0, None).0) + 12.0).max(20.0);
     let r = Rect::new(cx - w / 2.0, cy - 9.0, cx + w / 2.0, cy + 9.0);
     fill_round(scene, t, c.neutral[3], r, 9.0);
     center_text(scene, tr, &s, 11.0, c.neutral[9], r, t);
@@ -6035,7 +6018,7 @@ fn chip(
     filled: bool,
 ) -> Rect {
     let c = &theme.tokens.colors;
-    let tw = tr.measure(label, 12.0, None).0 as f64;
+    let tw = f64::from(tr.measure(label, 12.0, None).0);
     let r = Rect::new(x, y, x + tw + 24.0, y + 28.0);
     if filled {
         fill_round(scene, t, c.accent[5], r, 8.0);
@@ -6074,7 +6057,7 @@ fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> 
     if max_px <= 0.0 {
         return String::new();
     }
-    if tr.measure(text, size, None).0 as f64 <= max_px {
+    if f64::from(tr.measure(text, size, None).0) <= max_px {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -6084,7 +6067,7 @@ fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> 
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         let candidate: String = chars[..mid].iter().chain(std::iter::once(&'…')).collect();
-        if tr.measure(&candidate, size, None).0 as f64 <= max_px {
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_px {
             lo = mid;
         } else {
             hi = mid - 1;

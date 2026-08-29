@@ -1,7 +1,7 @@
 //! Video decoders for peer-sync surface streaming.
 //!
 //! [`H264Decoder`] — pure-software openh264 for the SDR pipeline, producing
-//! 8-bit RGBA the PeerView blit path consumes directly. [`HevcDecoder`] —
+//! 8-bit RGBA the `PeerView` blit path consumes directly. [`HevcDecoder`] —
 //! libavcodec software HEVC Main10 for the HDR pipeline, producing P010
 //! planes for the receiver's tone-map compute shader without downcasting
 //! to 8-bit.
@@ -224,7 +224,7 @@ impl Default for H264Decoder {
 #[cfg(feature = "hdr-decode")]
 pub struct HevcDecoder {
     ctx: ffmpeg_next::codec::decoder::Video,
-    /// Sticky colorimetry read off the AVFrame's `color_*` fields on the last successful decode.
+    /// Sticky colorimetry read off the `AVFrame`'s `color_*` fields on the last successful decode.
     last_colorimetry: Option<Colorimetry>,
 }
 
@@ -321,7 +321,7 @@ impl HevcDecoder {
                 }
                 // Same upper-bit shift for the Y plane.
                 let mut y_shifted = y_plane;
-                for sample in y_shifted.iter_mut() {
+                for sample in &mut y_shifted {
                     *sample <<= 6;
                 }
                 let uv_stride_u16 = (uv_width * 2) as u32;
@@ -363,7 +363,7 @@ fn plane_u16_from_bytes(bytes: &[u8], stride_bytes: usize) -> Vec<u16> {
     }
     // Handle odd-length tail (shouldn't happen for a well-formed P010 buffer, but be defensive).
     if bytes.len() % 2 == 1 {
-        out.push(bytes[bytes.len() - 1] as u16);
+        out.push(u16::from(bytes[bytes.len() - 1]));
     }
     out
 }

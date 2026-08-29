@@ -36,9 +36,9 @@ pub const INVIDIOUS_INSTANCES: &[&str] = &[
     "https://iv.melmac.space",
 ];
 
-/// Progressive **muxed** YouTube itags (video *and* audio in one MP4), best
+/// Progressive **muxed** `YouTube` itags (video *and* audio in one MP4), best
 /// first. itag 22 is 720p H.264+AAC, itag 18 is 360p H.264+AAC — both decode on
-/// any stock GStreamer (avc1 + aac) and, crucially, are a single file so one
+/// any stock `GStreamer` (avc1 + aac) and, crucially, are a single file so one
 /// rangeable URL carries picture *and* sound. Adaptive (video-only / audio-only)
 /// formats would need two synchronized URLs `playbin` can't take at once, so we
 /// deliberately stick to muxed here for a reliable "audio+video plays" result.
@@ -57,7 +57,7 @@ pub struct ResolvedVideo {
     /// Directly-playable, fully-rangeable media URL (an Invidious `local=true`
     /// proxy of a progressive muxed format).
     pub url: String,
-    /// YouTube stream format id (itag).
+    /// `YouTube` stream format id (itag).
     pub itag: u32,
     /// Full MIME (e.g. `video/mp4; codecs="avc1.42001E, mp4a.40.2"`).
     pub mime: String,
@@ -83,7 +83,7 @@ pub struct MuxedFormat {
 }
 
 impl MuxedFormat {
-    /// Whether this is an MP4/H.264 muxed format stock GStreamer decodes.
+    /// Whether this is an MP4/H.264 muxed format stock `GStreamer` decodes.
     pub fn is_mp4(&self) -> bool {
         let m = self.mime.to_ascii_lowercase();
         m.contains("mp4") && (m.contains("avc1") || m.contains("h264") || m.contains("mp4v"))
@@ -161,7 +161,7 @@ fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
 }
 
 /// Pick the best muxed MP4 format to play: highest resolution among the
-/// H.264/MP4 muxed streams (stock GStreamer decodes them everywhere), else the
+/// H.264/MP4 muxed streams (stock `GStreamer` decodes them everywhere), else the
 /// highest-resolution muxed stream of any container.
 pub fn best_muxed(list: &[MuxedFormat]) -> Option<&MuxedFormat> {
     list.iter()
@@ -182,7 +182,7 @@ pub fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(|s| s.to_string()));
+    out.extend(INVIDIOUS_INSTANCES.iter().map(std::string::ToString::to_string));
     out
 }
 
@@ -241,7 +241,7 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
         .send()
     {
         Ok(resp) => {
-            resp.status().is_success() && resp.bytes().map(|b| !b.is_empty()).unwrap_or(false)
+            resp.status().is_success() && resp.bytes().is_ok_and(|b| !b.is_empty())
         }
         Err(_) => false,
     }

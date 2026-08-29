@@ -59,20 +59,20 @@ pub enum BackendKind {
 /// [`parse_mode`] so callers don't materialise a `Vec<String>`; tests should drive [`parse_mode`] directly since `std::env::args` can't be monkey-patched.
 pub fn parse_mode_from_args() -> Mode {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_mode(&borrowed)
 }
 
 /// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF — callers opt in via `--enable-peer-sync` to spin up the libp2p stack.
 pub fn parse_peer_sync_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_peer_sync(&borrowed)
 }
 
 /// Pure, testable `--enable-peer-sync` flag parser: `true` iff the flag is present anywhere in `args`, so tests can drive it with a fixture slice without touching `std::env`.
 pub fn parse_peer_sync(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--enable-peer-sync")
+    args.contains(&"--enable-peer-sync")
 }
 
 /// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
@@ -99,7 +99,7 @@ impl XdgConfigMarkerSource {
 
 impl MarkerSource for XdgConfigMarkerSource {
     fn peer_sync_marker_exists(&self) -> bool {
-        Self::marker_path().map(|p| p.exists()).unwrap_or(false)
+        Self::marker_path().is_some_and(|p| p.exists())
     }
 }
 
@@ -134,7 +134,7 @@ pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool
 /// `std::env::args` and the marker via [`XdgConfigMarkerSource`] — what makes the systemd unit opt-in path (`os/docs/peer-sync.md`) actually toggle peer-sync at boot.
 pub fn peer_sync_enabled_from_env_or_marker() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     peer_sync_enabled_with(&borrowed, &XdgConfigMarkerSource)
 }
 
@@ -142,32 +142,32 @@ pub fn peer_sync_enabled_from_env_or_marker() -> bool {
 /// full compositor boot and runs the xdg-desktop-portal D-Bus backend stand-alone — the shape `quick-desktop-portal.service` expects.
 pub fn parse_portal_server_only_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_portal_server_only(&borrowed)
 }
 
 /// Pure, testable `--portal-server-only` flag parser (mirrors [`parse_peer_sync`]). When set,
 /// `main` runs only `portal::serve` and skips the compositor, so the portal unit doesn't race for `wayland-N`.
 pub fn parse_portal_server_only(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--portal-server-only")
+    args.contains(&"--portal-server-only")
 }
 
 /// Process-global wrapper around [`parse_firstboot`]: when true, `main` runs first-boot setup (creating `$XDG_CONFIG_HOME/quick-desktop/` etc.) before the normal boot.
 pub fn parse_firstboot_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_firstboot(&borrowed)
 }
 
 /// Pure, testable `--firstboot` flag parser (mirrors [`parse_peer_sync`]) — a "make sure dirs exist before we proceed" hook, not a separate entry point.
 pub fn parse_firstboot(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--firstboot")
+    args.contains(&"--firstboot")
 }
 
 /// Process-global wrapper around [`parse_provision_identity`].
 pub fn parse_provision_identity_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_provision_identity(&borrowed)
 }
 
@@ -176,19 +176,19 @@ pub fn parse_provision_identity_from_args() -> bool {
 /// Unlike `--firstboot`, this is a *separate entry point*: runs the identity ceremony and exits
 /// without starting a compositor. The `qos-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
 pub fn parse_provision_identity(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--provision-identity")
+    args.contains(&"--provision-identity")
 }
 
 /// Process-global wrapper around [`parse_portals`]: opt in via `--enable-portals` for the `xdg-desktop-portal` D-Bus backend. v1 default OFF, same shape as `parse_peer_sync`.
 pub fn parse_portals_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_portals(&borrowed)
 }
 
 /// Pure, testable `--enable-portals` flag parser, mirroring [`parse_peer_sync`] so the hosted boot path treats both flags identically.
 pub fn parse_portals(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--enable-portals")
+    args.contains(&"--enable-portals")
 }
 
 /// Pure, testable mode parser. Accepts `--mode <value>` and `--mode=<value>`; unknown/missing values default to [`Mode::Native`] so a typo never refuses to start the compositor.
@@ -198,12 +198,11 @@ pub fn parse_mode(args: &[&str]) -> Mode {
         if let Some(value) = arg.strip_prefix("--mode=") {
             return value_to_mode(value);
         }
-        if arg == "--mode" {
-            if let Some(value) = iter.next() {
+        if arg == "--mode"
+            && let Some(value) = iter.next() {
                 return value_to_mode(value);
             }
             // Trailing `--mode` with no value: fall through to default.
-        }
     }
     Mode::Native
 }
@@ -218,7 +217,7 @@ fn value_to_mode(value: &str) -> Mode {
 /// Process-global wrapper around [`parse_backend`], used by [`native::run`] to decide which [`backend::Backend`] impl `--mode native` instantiates.
 pub fn parse_backend_from_args() -> BackendKind {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_backend(&borrowed)
 }
 
@@ -229,12 +228,11 @@ pub fn parse_backend(args: &[&str]) -> BackendKind {
         if let Some(value) = arg.strip_prefix("--backend=") {
             return value_to_backend(value);
         }
-        if arg == "--backend" {
-            if let Some(value) = iter.next() {
+        if arg == "--backend"
+            && let Some(value) = iter.next() {
                 return value_to_backend(value);
             }
             // Trailing `--backend` with no value: fall through to default.
-        }
     }
     BackendKind::Winit
 }

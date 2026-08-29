@@ -57,11 +57,10 @@ impl TransferHistory {
 
     fn push(&mut self, xfer: Transfer) {
         let now = Instant::now();
-        if let Some(last) = self.samples.last() {
-            if now.duration_since(last.at).as_secs_f64() < Self::MIN_DT {
+        if let Some(last) = self.samples.last()
+            && now.duration_since(last.at).as_secs_f64() < Self::MIN_DT {
                 return;
             }
-        }
         self.samples.push(RateSample { at: now, xfer });
         // Keep enough points to fill the chart, plus one for the leading edge.
         let cap = throughput::SAMPLES + 1;
@@ -192,17 +191,17 @@ impl Widget for ConfirmBody {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -235,14 +234,14 @@ impl Widget for ConfirmBody {
             scene,
             t,
             cmd_box,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.neutral[0],
         );
         stroke_round(
             scene,
             t,
             cmd_box,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.border_white_10,
             1.0,
         );
@@ -284,7 +283,7 @@ impl Widget for ConfirmBody {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ConfirmBody"
     }
 
@@ -393,16 +392,15 @@ impl VpnApp {
         }
         self.vault = VpnDoc::read_vault(doc);
         self.reconcile_real_status(doc);
-        if self.vault.selected.is_none() {
-            if let Some(first) = self.vault.connections.first().map(|c| c.id) {
+        if self.vault.selected.is_none()
+            && let Some(first) = self.vault.connections.first().map(|c| c.id) {
                 self.vault.selected = Some(first);
                 VpnDoc::set_selected(doc, Some(first));
             }
-        }
     }
 
     /// Reconcile each tunnel's stored status against the REAL kernel/process
-    /// state (`ip link` for WireGuard, `pgrep` for OpenVPN). The stored toggle
+    /// state (`ip link` for `WireGuard`, `pgrep` for `OpenVPN`). The stored toggle
     /// never overrides reality: a tunnel that dropped out-of-band flips back to
     /// Disconnected, and one brought up elsewhere shows Connected. Gated on
     /// `QOS_VPN_ALLOW_EXEC` (so hermetic tests spawn no probes) and throttled
@@ -413,11 +411,10 @@ impl VpnApp {
             return;
         }
         let now = Instant::now();
-        if let Some(prev) = self.last_reconcile {
-            if now.duration_since(prev).as_secs_f64() < 1.0 {
+        if let Some(prev) = self.last_reconcile
+            && now.duration_since(prev).as_secs_f64() < 1.0 {
                 return;
             }
-        }
         self.last_reconcile = Some(now);
 
         let mut changes: Vec<(ConnId, ConnStatus)> = Vec::new();
@@ -462,11 +459,10 @@ impl VpnApp {
         // Forget history for tunnels that are no longer up.
         self.throughput.retain(|id, _| connected.contains(id));
         for id in connected {
-            if let Some(c) = self.vault.get(id) {
-                if let Some(xfer) = net::read_transfer(c) {
+            if let Some(c) = self.vault.get(id)
+                && let Some(xfer) = net::read_transfer(c) {
                     self.throughput.entry(id).or_default().push(xfer);
                 }
-            }
         }
     }
 
@@ -631,11 +627,10 @@ impl VpnApp {
                         .unwrap_or("Imported")
                         .to_string();
                     let kind = config::kind_from_filename(
-                        &path
+                        path
                             .file_name()
                             .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_string(),
+                            .unwrap_or(""),
                     )
                     .unwrap_or(self.import_hint);
                     let mut conn = config::parse_config(&stem, kind, &text);
@@ -692,7 +687,7 @@ impl VpnApp {
     }
 
     pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
-        let next = self.vault.get(id).map(|c| !c.tor).unwrap_or(true);
+        let next = self.vault.get(id).is_none_or(|c| !c.tor);
         self.actions.dispatch(
             doc,
             VPN_ACTION_TYPE,
@@ -916,7 +911,7 @@ fn text_vc(
     box_h: f64,
     weight: TextWeight,
 ) {
-    let top = box_y0 + (box_h - size as f64) / 2.0;
+    let top = box_y0 + (box_h - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -932,8 +927,8 @@ fn text_center(
     weight: TextWeight,
 ) {
     let (w, _) = tr.measure_weighted(s, size, None, weight);
-    let x = r.center().x - w as f64 / 2.0;
-    let top = r.y0 + (r.height() - size as f64) / 2.0;
+    let x = r.center().x - f64::from(w) / 2.0;
+    let top = r.y0 + (r.height() - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -969,7 +964,7 @@ impl VpnApp {
         let label = kind.badge();
         let (w, _) = tr.measure_weighted(label, 11.0, None, TextWeight::Bold);
         let pad = 8.0;
-        let bw = w as f64 + pad * 2.0;
+        let bw = f64::from(w) + pad * 2.0;
         let r = Rect::new(x, cy - 9.0, x + bw, cy + 9.0);
         let bg = match kind {
             ConnKind::WireGuard => theme.tokens.colors.accent[5].multiply_alpha(0.22),
@@ -1049,7 +1044,7 @@ impl VpnApp {
         } else {
             theme.tokens.colors.accent[5]
         };
-        fill_round(scene, t, lay.add_btn, theme.tokens.radii.md as f64, bg);
+        fill_round(scene, t, lay.add_btn, f64::from(theme.tokens.radii.md), bg);
         text_center(
             tr,
             scene,
@@ -1078,12 +1073,12 @@ impl VpnApp {
         } else {
             theme.tokens.colors.surfaces.base
         };
-        fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
+        fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
         stroke_round(
             scene,
             t,
             r,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.border_standard,
             1.0,
         );
@@ -1114,12 +1109,12 @@ impl VpnApp {
         } else {
             theme.tokens.colors.surfaces.base
         };
-        fill_round(scene, t, r, theme.tokens.radii.full as f64, bg);
+        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), bg);
         stroke_round(
             scene,
             t,
             r,
-            theme.tokens.radii.full as f64,
+            f64::from(theme.tokens.radii.full),
             if on {
                 theme.tokens.colors.accent[5]
             } else {
@@ -1192,7 +1187,7 @@ impl VpnApp {
             };
             let selected = self.vault.selected == Some(*id);
             let hovered = self.hovered_row == Some(*id);
-            let radius = theme.tokens.radii.lg as f64;
+            let radius = f64::from(theme.tokens.radii.lg);
             if selected {
                 fill_round(
                     scene,
@@ -1251,7 +1246,7 @@ impl VpnApp {
                 tr,
                 t,
                 theme,
-                row.x0 + 38.0 + nw as f64 + 10.0,
+                row.x0 + 38.0 + f64::from(nw) + 10.0,
                 row.y0 + 24.0,
                 c.kind,
             );
@@ -1296,7 +1291,7 @@ impl VpnApp {
         } else {
             theme.tokens.colors.neutral[3]
         };
-        fill_round(scene, t, r, theme.tokens.radii.full as f64, track);
+        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), track);
         let kr = 9.0;
         let kx = if on { r.x1 - kr - 3.0 } else { r.x0 + kr + 3.0 };
         scene.fill(
@@ -1366,20 +1361,20 @@ impl VpnApp {
         let (tw, _) = tr.measure_weighted(&c.name, 24.0, None, TextWeight::Bold);
         // status pill
         let sc = Self::status_color(theme, c.status);
-        let pill_x = dinner.x0 + tw as f64 + 14.0;
+        let pill_x = dinner.x0 + f64::from(tw) + 14.0;
         let plabel = c.status.label();
         let (pw, _) = tr.measure_weighted(plabel, 12.0, None, TextWeight::Semibold);
         let pill = Rect::new(
             pill_x,
             dinner.y0 + 2.0,
-            pill_x + pw as f64 + 28.0,
+            pill_x + f64::from(pw) + 28.0,
             dinner.y0 + 26.0,
         );
         fill_round(
             scene,
             t,
             pill,
-            theme.tokens.radii.full as f64,
+            f64::from(theme.tokens.radii.full),
             sc.multiply_alpha(0.18),
         );
         scene.fill(
@@ -1439,7 +1434,7 @@ impl VpnApp {
                 "Connect",
             )
         };
-        fill_round(scene, t, lay.connect_btn, theme.tokens.radii.md as f64, bg);
+        fill_round(scene, t, lay.connect_btn, f64::from(theme.tokens.radii.md), bg);
         text_center(
             tr,
             scene,
@@ -1459,14 +1454,14 @@ impl VpnApp {
                     scene,
                     t,
                     *r,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.surfaces.raised,
                 );
                 stroke_round(
                     scene,
                     t,
                     *r,
-                    theme.tokens.radii.md as f64,
+                    f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.border_white_10,
                     1.0,
                 );
@@ -1514,9 +1509,9 @@ impl VpnApp {
         // for this tunnel. `None`/empty until at least two real samples exist;
         // no value is ever synthesized.
         let hist = self.throughput.get(&c.id);
-        let (down_series, up_series) = hist.map(|h| h.rate_series()).unwrap_or_default();
-        let has_rate = hist.map(|h| h.has_rate()).unwrap_or(false) && c.is_connected();
-        let latest = hist.and_then(|h| h.latest());
+        let (down_series, up_series) = hist.map(TransferHistory::rate_series).unwrap_or_default();
+        let has_rate = hist.is_some_and(TransferHistory::has_rate) && c.is_connected();
+        let latest = hist.and_then(TransferHistory::latest);
         let down_now = down_series.last().copied();
         let up_now = up_series.last().copied();
 
@@ -1556,14 +1551,14 @@ impl VpnApp {
                 scene,
                 t,
                 r,
-                theme.tokens.radii.lg as f64,
+                f64::from(theme.tokens.radii.lg),
                 theme.tokens.colors.surfaces.raised,
             );
             stroke_round(
                 scene,
                 t,
                 r,
-                theme.tokens.radii.lg as f64,
+                f64::from(theme.tokens.radii.lg),
                 theme.tokens.colors.border_white_10,
                 1.0,
             );
@@ -1627,7 +1622,7 @@ impl VpnApp {
                 &legend,
                 11.0,
                 theme.text_dim,
-                chart.x1 - 12.0 - lw as f64,
+                chart.x1 - 12.0 - f64::from(lw),
                 chart.y0 + 10.0,
                 TextWeight::Regular,
             );
@@ -1650,7 +1645,7 @@ impl VpnApp {
                 note,
                 12.0,
                 theme.text_dim,
-                chart.center().x - nw as f64 / 2.0,
+                chart.center().x - f64::from(nw) / 2.0,
                 chart.center().y - 8.0,
                 TextWeight::Regular,
             );
@@ -1735,14 +1730,14 @@ impl VpnApp {
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.neutral[0],
         );
         stroke_round(
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.border_white_10,
             1.0,
         );
@@ -1794,18 +1789,18 @@ impl VpnApp {
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.neutral[0],
         );
         stroke_round(
             scene,
             t,
             card,
-            theme.tokens.radii.lg as f64,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.border_white_10,
             1.0,
         );
-        let xfer = self.throughput.get(&c.id).and_then(|h| h.latest());
+        let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
         let lines = synth_logs(c, &self.activity, xfer);
         let mut y = card.y0 + 14.0;
         for line in &lines {
@@ -1861,14 +1856,14 @@ impl VpnApp {
             scene,
             t,
             card,
-            theme.tokens.radii.xl as f64,
+            f64::from(theme.tokens.radii.xl),
             theme.tokens.colors.surfaces.raised,
         );
         stroke_round(
             scene,
             t,
             card,
-            theme.tokens.radii.xl as f64,
+            f64::from(theme.tokens.radii.xl),
             theme.tokens.colors.border_white_20,
             1.0,
         );
@@ -1920,12 +1915,12 @@ impl VpnApp {
             } else {
                 theme.tokens.colors.surfaces.base
             };
-            fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
+            fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
             stroke_round(
                 scene,
                 t,
                 r,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if active {
                     theme.tokens.colors.accent[5]
                 } else {
@@ -1987,14 +1982,14 @@ impl VpnApp {
             scene,
             t,
             cancel,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.base,
         );
         stroke_round(
             scene,
             t,
             cancel,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.border_standard,
             1.0,
         );
@@ -2012,7 +2007,7 @@ impl VpnApp {
             scene,
             t,
             save,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.accent[5],
         );
         text_center(
@@ -2068,14 +2063,14 @@ impl VpnApp {
             scene,
             t,
             r,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.base,
         );
         stroke_round(
             scene,
             t,
             r,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             if focused {
                 theme.border_focus
             } else {
@@ -2100,7 +2095,7 @@ impl VpnApp {
         if focused {
             // caret
             let (vw, _) = tr.measure(shown, 13.0, None);
-            let cx = r.x0 + 12.0 + vw as f64 + 1.0;
+            let cx = r.x0 + 12.0 + f64::from(vw) + 1.0;
             scene.stroke(
                 &Stroke::new(1.5),
                 t,
@@ -2213,8 +2208,8 @@ impl VpnApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-            if ke.state == ElementState::Pressed {
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed {
                 match &ke.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.confirm_pending(doc);
@@ -2238,7 +2233,6 @@ impl VpnApp {
                     _ => {}
                 }
             }
-        }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
         let root = automerge::ROOT;
@@ -2392,12 +2386,11 @@ fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Ve
         }
         if c.tor {
             out.push(format!(
-                "[{}] traffic chained over Tor SOCKS 127.0.0.1:9050",
-                iface
+                "[{iface}] traffic chained over Tor SOCKS 127.0.0.1:9050"
             ));
         }
     } else {
-        out.push(format!("[{}] interface down", iface));
+        out.push(format!("[{iface}] interface down"));
     }
     // append global activity newest-last
     for a in activity.iter().rev().take(8) {
@@ -2430,7 +2423,7 @@ impl Widget for VpnApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -2438,10 +2431,10 @@ impl Widget for VpnApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -2612,7 +2605,7 @@ impl Widget for VpnApp {
                         _ => {
                             if let Some(txt) = text {
                                 let s = txt.as_str();
-                                if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
+                                if !s.is_empty() && !s.chars().any(char::is_control) {
                                     let f = match self.add_focus {
                                         AddField::Name => &mut self.add_name,
                                         AddField::Endpoint => &mut self.add_endpoint,
@@ -2674,7 +2667,7 @@ impl Widget for VpnApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "VpnApp"
     }
 
@@ -2715,7 +2708,7 @@ impl Widget for VpnApp {
         // counters keep refreshing. The rates shown are measured, never
         // fabricated — with execution disabled nothing polls at all.
         self.import_rx.is_some()
-            || (config::exec_allowed() && self.vault.connections.iter().any(|c| c.is_connected()))
+            || (config::exec_allowed() && self.vault.connections.iter().any(super::model::Connection::is_connected))
     }
 
     fn draw_with_presence(

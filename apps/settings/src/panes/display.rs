@@ -10,7 +10,7 @@
 //! - **Automatic brightness / Night light** are durable preferences
 //!   persisted to the shared store ([`crate::prefs::SystemPrefs`]); the
 //!   compositor's output layer reads them.
-//! - **Scale** is the HiDPI display-scale factor. Unlike resolution/mode
+//! - **Scale** is the `HiDPI` display-scale factor. Unlike resolution/mode
 //!   setting (which stays the compositor's to own), scale is a shared
 //!   preference: the compositor reads `display.scale` from the settings
 //!   file at session start and advertises it to clients as the preferred
@@ -54,7 +54,7 @@ pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
 /// CRDT key the display-scale dropdown writes into.
 pub const DISPLAY_SCALE_KEY: &str = "display.scale";
 
-/// Offered HiDPI display scales as `(display label, factor)`. The label is
+/// Offered `HiDPI` display scales as `(display label, factor)`. The label is
 /// what the dropdown shows and stores in the CRDT; the factor is what
 /// [`DisplayPrefs::scale`] persists and the compositor advertises as the
 /// preferred `wp_fractional_scale`.
@@ -74,8 +74,7 @@ fn scale_label(scale: f64) -> &'static str {
     DISPLAY_SCALES
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map(|(label, _)| *label)
-        .unwrap_or("100%")
+        .map_or("100%", |(label, _)| *label)
 }
 
 /// Map a scale label back to its factor, if recognised.
@@ -101,7 +100,7 @@ pub struct DisplayOutput {
 pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
     // Strip the leading `cardN-` so we're left with the connector, e.g.
     // `eDP-1`, `HDMI-A-1`, `DP-2`.
-    let name = conn.split_once('-').map(|(_, rest)| rest).unwrap_or(conn);
+    let name = conn.split_once('-').map_or(conn, |(_, rest)| rest);
     let upper = name.to_ascii_uppercase();
     let builtin = upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
     let label = if builtin {
@@ -341,7 +340,7 @@ impl Widget for DisplayPane {
             let _ = state.put(
                 root,
                 BRIGHTNESS_KEY,
-                automerge::ScalarValue::F64(self.initial_brightness as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_brightness)),
             );
             let _ = state.put(
                 root,
@@ -427,17 +426,17 @@ impl Widget for DisplayPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -506,7 +505,7 @@ impl Widget for DisplayPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DisplayPane"
     }
 
@@ -573,7 +572,7 @@ mod tests {
         let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {:?}", calls);
+        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
         assert!(calls[0].starts_with("set_brightness("));
         assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
     }
@@ -597,7 +596,7 @@ mod tests {
     fn seed_writes_initial_brightness_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane =
-            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.42);
+            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);

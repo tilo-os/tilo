@@ -12,7 +12,7 @@ use relay::{Relay, RelayConfig};
 /// Standalone libp2p gossipsub relay for the qOS collaboration mesh.
 ///
 /// Forwards gossipsub messages on the configured topics (default
-/// `qos.*`) and provides Kademlia DHT bootstrap so NATed peers can find
+/// `qos.*`) and provides Kademlia DHT bootstrap so `NATed` peers can find
 /// each other. The relay is a forwarding intermediary, not a channel
 /// member; once MLS encryption ships it will see only ciphertext + metadata.
 #[derive(Debug, Parser)]

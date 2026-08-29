@@ -166,7 +166,7 @@ pub fn basemap() -> Basemap {
     let mut river = Vec::new();
     let base_x = 8.5;
     for i in -NY..=NY {
-        let t = i as f64;
+        let t = f64::from(i);
         let wobble = (t * 0.55).sin() * 1.4 + (t * 0.21).cos() * 0.6;
         river.push(cell(base_x + wobble, t));
     }
@@ -207,8 +207,8 @@ pub fn basemap() -> Basemap {
     // --- Building fills: a subset of grid cells get a raised block.
     for ix in -NX..NX {
         for iy in -NY..NY {
-            let cx = ix as f64 + 0.5;
-            let cy = iy as f64 + 0.5;
+            let cx = f64::from(ix) + 0.5;
+            let cy = f64::from(iy) + 0.5;
             if near_park(cx, cy) || near_river(cx, cy) {
                 continue;
             }
@@ -218,10 +218,10 @@ pub fn basemap() -> Basemap {
             let inset = rng.range(0.16, 0.30);
             let jx = rng.range(-0.05, 0.05);
             let jy = rng.range(-0.05, 0.05);
-            let x0 = ix as f64 + inset + jx;
-            let x1 = (ix as f64 + 1.0) - inset + jx;
-            let y0 = iy as f64 + inset + jy;
-            let y1 = (iy as f64 + 1.0) - inset + jy;
+            let x0 = f64::from(ix) + inset + jx;
+            let x1 = (f64::from(ix) + 1.0) - inset + jx;
+            let y0 = f64::from(iy) + inset + jy;
+            let y1 = (f64::from(iy) + 1.0) - inset + jy;
             areas.push(Area {
                 kind: AreaKind::Building,
                 ring: vec![cell(x0, y0), cell(x1, y0), cell(x1, y1), cell(x0, y1)],
@@ -231,11 +231,11 @@ pub fn basemap() -> Basemap {
 
     // --- Street grid: residential roads on every grid line.
     for ix in -NX..=NX {
-        let x = ix as f64;
+        let x = f64::from(ix);
         let mut pts = Vec::new();
         for iy in -NY..=NY {
             let j = rng.range(-0.04, 0.04);
-            pts.push(cell(x + j, iy as f64));
+            pts.push(cell(x + j, f64::from(iy)));
         }
         roads.push(Road {
             class: RoadClass::Residential,
@@ -243,11 +243,11 @@ pub fn basemap() -> Basemap {
         });
     }
     for iy in -NY..=NY {
-        let y = iy as f64;
+        let y = f64::from(iy);
         let mut pts = Vec::new();
         for ix in -NX..=NX {
             let j = rng.range(-0.04, 0.04);
-            pts.push(cell(ix as f64, y + j));
+            pts.push(cell(f64::from(ix), y + j));
         }
         roads.push(Road {
             class: RoadClass::Residential,
@@ -258,17 +258,17 @@ pub fn basemap() -> Basemap {
     // --- A few primary avenues (thicker) crossing the grid.
     roads.push(Road {
         class: RoadClass::Primary,
-        pts: (-NX..=NX).map(|ix| cell(ix as f64, 0.0)).collect(),
+        pts: (-NX..=NX).map(|ix| cell(f64::from(ix), 0.0)).collect(),
     });
     roads.push(Road {
         class: RoadClass::Primary,
-        pts: (-NY..=NY).map(|iy| cell(0.0, iy as f64)).collect(),
+        pts: (-NY..=NY).map(|iy| cell(0.0, f64::from(iy))).collect(),
     });
     // A diagonal secondary boulevard.
     roads.push(Road {
         class: RoadClass::Secondary,
         pts: (-NY..=NY)
-            .map(|iy| cell(iy as f64 * 0.8 - 3.0, iy as f64))
+            .map(|iy| cell(f64::from(iy) * 0.8 - 3.0, f64::from(iy)))
             .collect(),
     });
     // A ring-ish secondary.

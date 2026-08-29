@@ -165,7 +165,7 @@ enum Hit {
     PickOrigin(usize),
     /// Choose the Nth geocoded result for the destination field.
     PickDest(usize),
-    /// Fetch the device's real location (portal / GeoClue) and use it as origin.
+    /// Fetch the device's real location (portal / `GeoClue`) and use it as origin.
     UseMyLocation,
     /// Set the Transit depart/arrive anchor.
     TransitTimeMode(TransitTimeMode),
@@ -692,8 +692,8 @@ impl MapsApp {
     // --- geometry helpers --------------------------------------------------
     fn view_center(&self) -> Point {
         Point::new(
-            (self.rect.x0 + self.rect.x1) / 2.0,
-            (self.rect.y0 + self.rect.y1) / 2.0,
+            f64::midpoint(self.rect.x0, self.rect.x1),
+            f64::midpoint(self.rect.y0, self.rect.y1),
         )
     }
 
@@ -802,11 +802,10 @@ impl MapsApp {
                 return Some((r, label));
             }
         }
-        if let Some(mr) = self.menu_rect() {
-            if mr.contains(p) {
+        if let Some(mr) = self.menu_rect()
+            && mr.contains(p) {
                 return Some((mr, "Menu"));
             }
-        }
         let of = self.overflow_rect();
         if of.contains(p) {
             return Some((of, "More"));
@@ -841,8 +840,8 @@ impl MapsApp {
         {
             return p.name.clone();
         }
-        let lat = (bounds.min.lat + bounds.max.lat) / 2.0;
-        let lon = (bounds.min.lon + bounds.max.lon) / 2.0;
+        let lat = f64::midpoint(bounds.min.lat, bounds.max.lat);
+        let lon = f64::midpoint(bounds.min.lon, bounds.max.lon);
         format!("{lat:.3}, {lon:.3}")
     }
 
@@ -862,8 +861,7 @@ impl MapsApp {
             self.rect.height().max(300.0),
             40.0,
         )
-        .map(|(_, z)| z)
-        .unwrap_or(12.0);
+        .map_or(12.0, |(_, z)| z);
         TileLayer::tile_zoom(z)
     }
 
@@ -888,8 +886,7 @@ impl MapsApp {
             "region-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_micros())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_micros())
         );
         let region = crate::model::DownloadedRegion {
             id,
@@ -1005,11 +1002,9 @@ impl MapsApp {
             },
             Some(fr),
         ) = (event, self.download_field_rect)
-        {
-            if fr.contains(self.last_mouse) && !self.download_input.is_editing() {
+            && fr.contains(self.last_mouse) && !self.download_input.is_editing() {
                 self.download_input.begin_edit();
             }
-        }
         let mut doc = AutoCommit::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -1129,10 +1124,10 @@ impl MapsApp {
     /// of this app's offline data already uses. Nothing is fabricated on the
     /// live path.
     fn refresh_traffic(&mut self) {
-        if !self.basemap.is_empty() {
-            self.traffic = TrafficData::sample(&self.basemap);
-        } else {
+        if self.basemap.is_empty() {
             self.traffic = TrafficData::default();
+        } else {
+            self.traffic = TrafficData::sample(&self.basemap);
         }
     }
 
@@ -1203,12 +1198,9 @@ impl MapsApp {
     /// otherwise the current map centre (an honest "from here"), labelled as
     /// such — we never invent a specific "your location" without a real fix.
     fn resolve_origin(&mut self) -> crate::model::LatLon {
-        match self.model.origin {
-            Some(o) => o,
-            None => {
-                self.model.origin_name = "Map centre".to_string();
-                self.model.center
-            }
+        if let Some(o) = self.model.origin { o } else {
+            self.model.origin_name = "Map centre".to_string();
+            self.model.center
         }
     }
 
@@ -1542,7 +1534,7 @@ impl MapsApp {
         self.mark_dirty();
     }
 
-    /// Kick off a real device-location fix via the location portal (GeoClue2
+    /// Kick off a real device-location fix via the location portal (`GeoClue2`
     /// behind it), off the UI thread. Honest states only: "Locating…" now, then
     /// either a real origin or a clear unavailable/denied message on drain.
     fn use_my_location(&mut self) {
@@ -1578,7 +1570,7 @@ impl MapsApp {
         let time = if tt.is_now() {
             None
         } else {
-            let when = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
+            let when = self.clock_anchor() + chrono::Duration::minutes(i64::from(tt.offset_min));
             Some(when.to_rfc3339())
         };
         net::TransitQuery {
@@ -1708,7 +1700,7 @@ impl MapsApp {
             // Resolve the target state here (authoring time) so the action carries
             // an explicit `saved`, never a read-and-toggle that could diverge on
             // replay.
-            let now_saved = self.model.place(&id).map(|p| p.saved).unwrap_or(false);
+            let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
             self.perform(
                 doc,
                 MapsAction::SetPlaceSaved {
@@ -1765,12 +1757,11 @@ impl MapsApp {
     /// use so "fit" works in Transit mode (which has no road route), not only
     /// for road routes.
     fn fit_current(&mut self) {
-        if let Some(route) = self.model.route.clone() {
-            if route.geometry.len() >= 2 {
+        if let Some(route) = self.model.route.clone()
+            && route.geometry.len() >= 2 {
                 self.fit_points(&route.geometry);
                 return;
             }
-        }
         let journey = self.selected_journey_geometry();
         if journey.len() >= 2 {
             self.fit_points(&journey);
@@ -1880,11 +1871,10 @@ impl MapsApp {
             return;
         }
         let view = self.viewport_bounds();
-        if let Some(prev) = self.poi_fetched_bounds {
-            if bounds_contains(prev, view) {
+        if let Some(prev) = self.poi_fetched_bounds
+            && bounds_contains(prev, view) {
                 return; // still inside the last fetch — reuse the cache
             }
-        }
         let bounds = self.padded_viewport_bounds();
         self.poi_fetched_bounds = Some(bounds);
         self.poi_generation += 1;
@@ -1942,7 +1932,7 @@ impl MapsApp {
             let base = if icons { 9.0 } else { 4.5 };
             let r = if selected { base + 4.0 } else { base };
             let d = c.distance(p);
-            if d <= r + 6.0 && best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+            if d <= r + 6.0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, poi.id.clone()));
             }
         }
@@ -1965,14 +1955,12 @@ impl MapsApp {
             geo::haversine_m(a.pos, anchor).total_cmp(&geo::haversine_m(b.pos, anchor))
         });
         v.truncate(NEARBY_MAX);
-        if let Some(sel) = self.selected_poi.clone() {
-            if !v.iter().any(|p| p.id == sel) {
-                if let Some(p) = self.pois.iter().find(|p| p.id == sel).cloned() {
+        if let Some(sel) = self.selected_poi.clone()
+            && !v.iter().any(|p| p.id == sel)
+                && let Some(p) = self.pois.iter().find(|p| p.id == sel).cloned() {
                     v.pop();
                     v.insert(0, p);
                 }
-            }
-        }
         v
     }
 
@@ -2007,7 +1995,7 @@ impl MapsApp {
         ));
         self.model.selected = Some(poi.id.clone());
         self.model.dest = Some(poi.pos);
-        self.model.dest_name = poi.name.clone();
+        self.model.dest_name = poi.name;
         self.model.panel = Panel::Directions;
         self.selected_poi = None;
         if self.model.mode.is_transit() {
@@ -2028,11 +2016,10 @@ impl MapsApp {
             let r = if selected { 13.0 } else { 9.0 };
             let center = Point::new(anchor.x, anchor.y - h);
             let d = center.distance(p);
-            if d <= r + 5.0 {
-                if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+            if d <= r + 5.0
+                && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                     best = Some((d, place.id.clone()));
                 }
-            }
         }
         best.map(|(_, id)| id)
     }
@@ -2093,12 +2080,11 @@ impl MapsApp {
                     Err(e) => self.model.status = format!("Search failed: {e}"),
                 },
                 NetMsg::ReverseGeocode(r) => {
-                    if let Ok(label) = r {
-                        if !label.is_empty() {
+                    if let Ok(label) = r
+                        && !label.is_empty() {
                             // Refine the device-location origin's label in place.
                             self.model.origin_name = label;
                         }
-                    }
                 }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
@@ -2107,7 +2093,7 @@ impl MapsApp {
                         self.model.status = "Route updated".to_string();
                     }
                     Err(e) => {
-                        self.model.status = format!("Routing failed (offline estimate shown): {e}")
+                        self.model.status = format!("Routing failed (offline estimate shown): {e}");
                     }
                 },
                 NetMsg::Transit(t) => match t {
@@ -2130,11 +2116,10 @@ impl MapsApp {
                                 let n = found.len();
                                 self.pois = found;
                                 // Drop the open card if its POI is gone.
-                                if let Some(sel) = &self.selected_poi {
-                                    if !self.pois.iter().any(|p| &p.id == sel) {
+                                if let Some(sel) = &self.selected_poi
+                                    && !self.pois.iter().any(|p| &p.id == sel) {
                                         self.selected_poi = None;
                                     }
-                                }
                                 if self.model.status.contains("Loading places") {
                                     self.model.status = format!("{n} places nearby");
                                 }
@@ -2147,16 +2132,13 @@ impl MapsApp {
                     // Only adopt a reply that still matches the current query and
                     // while the download dialog is open.
                     if self.offline_open && query.trim() == self.download_query.trim() {
-                        match results {
-                            Ok(hits) => {
-                                self.download_results = hits.clone();
-                                self.download_input
-                                    .set_suggestions_open(Self::region_suggestions(&hits));
-                            }
-                            Err(_) => {
-                                self.download_results.clear();
-                                self.download_input.set_suggestions_open(Vec::new());
-                            }
+                        if let Ok(hits) = results {
+                            self.download_results = hits.clone();
+                            self.download_input
+                                .set_suggestions_open(Self::region_suggestions(&hits));
+                        } else {
+                            self.download_results.clear();
+                            self.download_input.set_suggestions_open(Vec::new());
                         }
                     }
                 }
@@ -2329,7 +2311,7 @@ impl MapsApp {
             Hit::OfflineOpen => self.open_offline(),
             Hit::OfflineClose => self.close_offline(),
             Hit::OfflineZoomDelta(d) => {
-                let v = self.offline_zoom_extra as i16 + *d as i16;
+                let v = i16::from(self.offline_zoom_extra) + i16::from(*d);
                 self.offline_zoom_extra = v.clamp(0, 6) as u8;
             }
             Hit::OfflineDownload => {
@@ -2403,7 +2385,7 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
 }
 
 fn vmid(y: f64, h: f64, size: f32) -> f64 {
-    y + (h - size as f64 * 1.25) / 2.0
+    y + (h - f64::from(size) * 1.25) / 2.0
 }
 
 /// Human-readable byte count for the cache-size readouts.
@@ -2485,11 +2467,10 @@ impl MapsApp {
         // Public-transport itinerary: the selected journey's legs draw on the
         // map (mode-coloured lines + transfer pucks) when Transit is the active
         // mode. Only the highlighted option is drawn to keep the map legible.
-        if self.model.mode.is_transit() {
-            if let Some(j) = self.model.transit.get(self.model.transit_choice) {
+        if self.model.mode.is_transit()
+            && let Some(j) = self.model.transit.get(self.model.transit_choice) {
                 canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
             }
-        }
         // Live POI marker layer (Overpass) — our own themed category markers
         // over the basemap, decluttered and under the user's saved/selected
         // pins.
@@ -2650,8 +2631,8 @@ impl MapsApp {
         let w = 440.0_f64.min(self.rect.width() - 40.0);
         let row_h = 26.0;
         let h = 64.0 + lines.len() as f64 * row_h + 16.0;
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
         draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
         self.click_targets.push((card, Hit::Consume));
@@ -3072,7 +3053,7 @@ impl MapsApp {
         let w = 360.0_f64.min((area_x1 - area_x0).max(200.0));
         let row_h = 24.0;
         let card_h = 118.0 + rows.len() as f64 * row_h;
-        let cx = (area_x0 + area_x1) / 2.0;
+        let cx = f64::midpoint(area_x0, area_x1);
         let x0 = (cx - w / 2.0).max(area_x0);
         let y1 = self.rect.y1 - 54.0; // above the scale bar + attribution
         let y0 = y1 - card_h;
@@ -3451,8 +3432,8 @@ impl MapsApp {
         let content_h = 350.0 + list_body_h;
         let h = content_h.min(self.rect.height() - 24.0);
         let w = 440.0_f64.min(self.rect.width() - 40.0);
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
         draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
         // Swallow clicks on the card itself.
@@ -3634,7 +3615,7 @@ impl MapsApp {
             };
             format!("Downloaded {} tiles{failed}", prog.total)
         } else {
-            format!("≈ {est} tiles ({})", fmt_bytes(est as u64 * 18_000))
+            format!("≈ {est} tiles ({})", fmt_bytes(u64::from(est) * 18_000))
         };
         draw::text(scene, tr, t, &readout, x, y, 12.0, theme.text_dim);
         y += 22.0;
@@ -3855,7 +3836,7 @@ impl MapsApp {
         }
         let size = 12.0_f32;
         let w = draw::measure_w(tr, label, size) + 36.0;
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         // Sit below the top search row so it never overlaps the search field
         // (which spans most of the top edge in the narrow layout).
         let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
@@ -3905,8 +3886,8 @@ impl MapsApp {
         } else {
             self.rect.x0
         };
-        let cx = (area_x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cx = f64::midpoint(area_x0, self.rect.x1);
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let size = 13.0_f32;
         let w = draw::measure_w(tr, msg, size) + 44.0;
         let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
@@ -4866,7 +4847,7 @@ impl MapsApp {
     fn road_trip_clock(&self, duration_s: f64) -> (String, String) {
         let tt = self.model.transit_time;
         let dur = chrono::Duration::seconds(duration_s.max(0.0) as i64);
-        let anchor = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
+        let anchor = self.clock_anchor() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let (dep, arr) = if tt.arrive_by() {
             (anchor - dur, anchor)
         } else {
@@ -4962,7 +4943,7 @@ impl MapsApp {
             18.0,
             theme.text_primary,
         );
-        let target = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
+        let target = self.clock_anchor() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             "Now".to_string()
         } else {
@@ -5026,13 +5007,11 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
-        let to = if !self.model.dest_name.is_empty() {
-            self.model.dest_name.clone()
-        } else {
+        let to = if self.model.dest_name.is_empty() {
             self.model
-                .selected_place()
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "destination".to_string())
+                .selected_place().map_or_else(|| "destination".to_string(), |p| p.name.clone())
+        } else {
+            self.model.dest_name.clone()
         };
         draw::text_w(
             scene,
@@ -5341,8 +5320,7 @@ impl Widget for MapsApp {
         } else if self.dirty
             && self
                 .persist_deadline
-                .map(|d| Instant::now() >= d)
-                .unwrap_or(true)
+                .is_none_or(|d| Instant::now() >= d)
         {
             // The view has settled (or a non-gesture change had no deadline):
             // flush the whole model once. Coalescing lives in `mark_dirty`.
@@ -5367,7 +5345,7 @@ impl Widget for MapsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -5375,10 +5353,10 @@ impl Widget for MapsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
@@ -5558,7 +5536,7 @@ impl Widget for MapsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
                 let over_panel = self.panel_visible()
@@ -5615,7 +5593,7 @@ impl Widget for MapsApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MapsApp"
     }
 

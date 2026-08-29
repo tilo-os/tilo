@@ -143,7 +143,7 @@ pub fn draw_hourly_strip(
             &val,
             13.0,
             c.text_primary,
-            t * Affine::translate((cx - vw as f64 / 2.0, value_y)),
+            t * Affine::translate((cx - f64::from(vw) / 2.0, value_y)),
             None,
             TextWeight::Semibold,
         );
@@ -189,7 +189,7 @@ pub fn draw_hourly_strip(
                 &txt,
                 11.0,
                 c.semantic.info,
-                t * Affine::translate((cx - pw as f64 / 2.0 + 4.0, precip_y - 2.0)),
+                t * Affine::translate((cx - f64::from(pw) / 2.0 + 4.0, precip_y - 2.0)),
                 None,
             );
         }
@@ -206,7 +206,7 @@ pub fn draw_hourly_strip(
             &label,
             11.0,
             color,
-            t * Affine::translate((cx - lw as f64 / 2.0, label_y)),
+            t * Affine::translate((cx - f64::from(lw) / 2.0, label_y)),
             None,
             weight,
         );

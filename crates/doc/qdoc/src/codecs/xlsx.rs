@@ -1,4 +1,4 @@
-//! `.xlsx` (OOXML SpreadsheetML) codec. Parses the OPC package's workbook +
+//! `.xlsx` (OOXML `SpreadsheetML`) codec. Parses the OPC package's workbook +
 //! worksheet parts into the CRDT [`Workbook`] model — sheets, cells, cell types,
 //! and **formulas** (preserved, never flattened to their cached result) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
@@ -64,11 +64,10 @@ impl SheetProvider for XlsxCodec {
         }
         // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for name in pkg.names() {
-            if is_preserved_part(name) {
-                if let Some(b) = pkg.get(name) {
+            if is_preserved_part(name)
+                && let Some(b) = pkg.get(name) {
                     wb.set_preserved(&format!("xlsx/part/{name}"), b);
                 }
-            }
         }
         Ok(())
     }
@@ -370,18 +369,16 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
                 buf.clear();
             }
             Event::Text(t) => {
-                if cur.is_some() {
-                    if let Ok(txt) = t.xml10_content() {
+                if cur.is_some()
+                    && let Ok(txt) = t.xml10_content() {
                         buf.push_str(&txt);
                     }
-                }
             }
             Event::End(_) => {
-                if let Some(key) = cur.take() {
-                    if !buf.is_empty() {
+                if let Some(key) = cur.take()
+                    && !buf.is_empty() {
                         wb.set_prop(key, &buf);
                     }
-                }
             }
             Event::Eof => break,
             _ => {}

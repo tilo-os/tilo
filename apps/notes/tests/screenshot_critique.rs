@@ -1,5 +1,5 @@
 //! Self-critique screenshot harness: render the live app in N
-//! states + dump PNGs. Not a CI test — gated on NOTES_CRITIQUE_DIR
+//! states + dump PNGs. Not a CI test — gated on `NOTES_CRITIQUE_DIR`
 //! env var.
 
 use std::collections::HashMap;

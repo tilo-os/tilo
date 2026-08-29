@@ -206,7 +206,7 @@ impl DBusProxyGuard {
     /// PID of the proxy child, or `None` if already reaped — used by tests
     /// to assert the process is gone after Drop.
     pub fn pid(&self) -> Option<u32> {
-        self.child.as_ref().map(|c| c.id())
+        self.child.as_ref().map(std::process::Child::id)
     }
 
     /// SIGTERM the proxy, wait up to 500ms, then SIGKILL if it hasn't

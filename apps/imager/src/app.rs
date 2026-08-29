@@ -245,7 +245,7 @@ impl ImagerApp {
 
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
-        self.source.as_ref().map(|s| s.installable).unwrap_or(false)
+        self.source.as_ref().is_some_and(|s| s.installable)
     }
 
     /// Writing to a **removable** drive is a plain image write ([`Action::Flash`],
@@ -270,9 +270,7 @@ impl ImagerApp {
         }
         Some(
             self.source
-                .as_ref()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "qOS image".into()),
+                .as_ref().map_or_else(|| "qOS image".into(), |s| s.name.clone()),
         )
     }
 
@@ -376,7 +374,7 @@ impl ImagerApp {
             s,
             size,
             color,
-            right - w as f64,
+            right - f64::from(w),
             top,
             None,
             weight,
@@ -402,7 +400,7 @@ impl ImagerApp {
             s,
             size,
             color,
-            cx - w as f64 / 2.0,
+            cx - f64::from(w) / 2.0,
             top,
             None,
             weight,
@@ -701,7 +699,7 @@ impl ImagerApp {
                 Self::stroke_rr(scene, t, *r, 10.0, c.accent[5], 1.4);
             }
             // Number disc / check.
-            let disc_c = Point::new(r.x0 + 22.0, (r.y0 + r.y1) / 2.0);
+            let disc_c = Point::new(r.x0 + 22.0, f64::midpoint(r.y0, r.y1));
             if done {
                 Self::check_disc(scene, t, disc_c, 11.0, c.semantic.success, Color::WHITE);
             } else {
@@ -730,7 +728,7 @@ impl ImagerApp {
                 13.5,
                 label_c,
                 r.x0 + 40.0,
-                (r.y0 + r.y1) / 2.0 - 9.0,
+                f64::midpoint(r.y0, r.y1) - 9.0,
                 None,
                 if current {
                     TextWeight::Semibold
@@ -741,7 +739,7 @@ impl ImagerApp {
             // Connector to the next pill.
             if i + 1 < lay.crumbs.len() {
                 let nx0 = lay.crumbs[i + 1].0.x0;
-                let midy = (r.y0 + r.y1) / 2.0;
+                let midy = f64::midpoint(r.y0, r.y1);
                 let cc = if s.index() < self.step.index() {
                     c.semantic.success
                 } else {
@@ -794,7 +792,7 @@ impl ImagerApp {
                 "‹  Back",
                 14.0,
                 c.text_primary,
-                (r.x0 + r.x1) / 2.0,
+                f64::midpoint(r.x0, r.x1),
                 r.y0 + 12.0,
                 TextWeight::Medium,
             );
@@ -813,7 +811,7 @@ impl ImagerApp {
                 &hint,
                 12.0,
                 c.text_dim,
-                (v.x0 + v.x1) / 2.0,
+                f64::midpoint(v.x0, v.x1),
                 fy + FOOTER_H / 2.0 - 8.0,
                 TextWeight::Regular,
             );
@@ -855,7 +853,7 @@ impl ImagerApp {
             ),
             Step::Customize => ("Continue  ›".to_string(), true, false),
             Step::Confirm => {
-                let dev = self.target().map(|d| d.dev_path()).unwrap_or_default();
+                let dev = self.target().map(super::model::TargetDrive::dev_path).unwrap_or_default();
                 // "Erase & write /dev/sdb" for a stick; "Erase & install
                 // /dev/nvme0n1" for a disk install — the verb reads plainly.
                 (
@@ -893,7 +891,7 @@ impl ImagerApp {
             &label,
             14.0,
             fg,
-            (r.x0 + r.x1) / 2.0,
+            f64::midpoint(r.x0, r.x1),
             r.y0 + 13.0,
             TextWeight::Bold,
         );
@@ -984,7 +982,7 @@ impl ImagerApp {
         );
         // Download/arrow glyph.
         let gx = browse.x0 + 46.0;
-        let gy = (browse.y0 + browse.y1) / 2.0;
+        let gy = f64::midpoint(browse.y0, browse.y1);
         let mut arr = BezPath::new();
         arr.move_to((gx, gy - 14.0));
         arr.line_to((gx, gy + 8.0));
@@ -1043,7 +1041,7 @@ impl ImagerApp {
             Self::check_disc(
                 scene,
                 t,
-                Point::new(card.x0 + 28.0, (card.y0 + card.y1) / 2.0),
+                Point::new(card.x0 + 28.0, f64::midpoint(card.y0, card.y1)),
                 13.0,
                 c.semantic.success,
                 Color::WHITE,
@@ -1061,7 +1059,7 @@ impl ImagerApp {
                 src.kind.tag(),
                 12.0,
                 Color::WHITE,
-                (badge.x0 + badge.x1) / 2.0,
+                f64::midpoint(badge.x0, badge.x1),
                 badge.y0 + 4.0,
                 TextWeight::Bold,
             );
@@ -1132,7 +1130,7 @@ impl ImagerApp {
             let card = Rect::new(content.x0, y, content.x1, y + RELEASE_ZERO_H);
             Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
             Self::dashed_rr(scene, t, card, 12.0, c.border_standard, 1.2);
-            let cx = (card.x0 + card.x1) / 2.0;
+            let cx = f64::midpoint(card.x0, card.x1);
             self.txt_center(
                 scene,
                 tr,
@@ -1155,16 +1153,15 @@ impl ImagerApp {
             );
             y = card.y1 + 10.0;
         }
-        for rel in self.releases().iter() {
+        for rel in self.releases() {
             let r = Rect::new(content.x0, y, content.x1, y + 54.0);
             let selected = self
                 .source
                 .as_ref()
-                .map(|s| {
+                .is_some_and(|s| {
                     s.kind == SourceKind::QosImage
                         && s.name == format!("{} {}", rel.name, rel.version)
-                })
-                .unwrap_or(false);
+                });
             let hov = r.contains(self.last_mouse);
             Self::fill_rr(
                 scene,
@@ -1204,7 +1201,7 @@ impl ImagerApp {
                 "qOS",
                 11.0,
                 Color::WHITE,
-                (badge.x0 + badge.x1) / 2.0,
+                f64::midpoint(badge.x0, badge.x1),
                 badge.y0 + 5.0,
                 TextWeight::Bold,
             );
@@ -1357,7 +1354,7 @@ impl ImagerApp {
             "⟳ Rescan",
             12.5,
             c.text_primary,
-            (rescan.x0 + rescan.x1) / 2.0,
+            f64::midpoint(rescan.x0, rescan.x1),
             rescan.y0 + 7.0,
             TextWeight::Medium,
         );
@@ -1469,7 +1466,7 @@ impl ImagerApp {
             Self::check_disc(
                 scene,
                 t,
-                Point::new((box_r.x0 + box_r.x1) / 2.0, (box_r.y0 + box_r.y1) / 2.0),
+                Point::new(f64::midpoint(box_r.x0, box_r.x1), f64::midpoint(box_r.y0, box_r.y1)),
                 8.0,
                 accent,
                 Color::WHITE,
@@ -1505,7 +1502,7 @@ impl ImagerApp {
         );
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::dashed_rr(scene, t, card, 16.0, c.border_standard, 1.4);
-        let cx = (card.x0 + card.x1) / 2.0;
+        let cx = f64::midpoint(card.x0, card.x1);
         // A simple USB-stick glyph.
         let gy = card.y0 + 66.0;
         let body = Rect::new(cx - 16.0, gy, cx + 16.0, gy + 54.0);
@@ -1586,7 +1583,7 @@ impl ImagerApp {
             Self::check_disc(
                 scene,
                 t,
-                Point::new(r.x0 + 28.0, (r.y0 + r.y1) / 2.0),
+                Point::new(r.x0 + 28.0, f64::midpoint(r.y0, r.y1)),
                 13.0,
                 c.accent[5],
                 Color::WHITE,
@@ -1603,7 +1600,7 @@ impl ImagerApp {
             drive.kind.tag(),
             12.0,
             Color::WHITE,
-            (badge.x0 + badge.x1) / 2.0,
+            f64::midpoint(badge.x0, badge.x1),
             badge.y0 + 5.0,
             TextWeight::Bold,
         );
@@ -1618,7 +1615,7 @@ impl ImagerApp {
         };
         let (cw, _) = tr.measure_weighted(chip_label, 10.5, None, TextWeight::Bold);
         let chip = Rect::new(
-            r.x1 - 16.0 - cw as f64 - 18.0,
+            r.x1 - 16.0 - f64::from(cw) - 18.0,
             r.y0 + 18.0,
             r.x1 - 16.0,
             r.y0 + 18.0 + 24.0,
@@ -1630,7 +1627,7 @@ impl ImagerApp {
             chip_label,
             10.5,
             chip_c,
-            (chip.x0 + chip.x1) / 2.0,
+            f64::midpoint(chip.x0, chip.x1),
             chip.y0 + 6.0,
             TextWeight::Bold,
         );
@@ -1712,7 +1709,7 @@ impl ImagerApp {
                 "This image is written unchanged",
                 16.0,
                 c.text_primary,
-                (card.x0 + card.x1) / 2.0,
+                f64::midpoint(card.x0, card.x1),
                 card.y0 + 46.0,
                 TextWeight::Semibold,
             );
@@ -1722,7 +1719,7 @@ impl ImagerApp {
                 "Pre-configuration (hostname, user, region) is available for qOS",
                 13.0,
                 c.text_dim,
-                (card.x0 + card.x1) / 2.0,
+                f64::midpoint(card.x0, card.x1),
                 card.y0 + 76.0,
                 TextWeight::Regular,
             );
@@ -1732,7 +1729,7 @@ impl ImagerApp {
                 "images. Press Continue to write it as-is.",
                 13.0,
                 c.text_dim,
-                (card.x0 + card.x1) / 2.0,
+                f64::midpoint(card.x0, card.x1),
                 card.y0 + 96.0,
                 TextWeight::Regular,
             );
@@ -1747,7 +1744,7 @@ impl ImagerApp {
         self.draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
 
         // The whole form is the shared guided-customization panel.
-        let removable = self.target().map(|d| d.removable).unwrap_or(false);
+        let removable = self.target().is_some_and(|d| d.removable);
         self.customize.draw(
             scene,
             t,
@@ -1828,9 +1825,7 @@ impl ImagerApp {
         };
         let src_v = self
             .source
-            .as_ref()
-            .map(|s| format!("{}   ({})", s.name, fmt_size(s.size)))
-            .unwrap_or_else(|| "—".into());
+            .as_ref().map_or_else(|| "—".into(), |s| format!("{}   ({})", s.name, fmt_size(s.size)));
         row(
             self,
             scene,
@@ -1841,9 +1836,7 @@ impl ImagerApp {
             self.source.is_some(),
         );
         let tgt_v = self
-            .target()
-            .map(|d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)))
-            .unwrap_or_else(|| "—".into());
+            .target().map_or_else(|| "—".into(), |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)));
         row(
             self,
             scene,
@@ -1925,8 +1918,8 @@ impl ImagerApp {
         );
 
         // Danger banner — louder for a fixed/internal (install) target.
-        let internal = self.target().map(|d| !d.removable).unwrap_or(false);
-        let system = self.target().map(|d| d.is_system).unwrap_or(false);
+        let internal = self.target().is_some_and(|d| !d.removable);
+        let system = self.target().is_some_and(|d| d.is_system);
         let banner = Rect::new(
             content.x0,
             card.y1 + 16.0,
@@ -2081,7 +2074,7 @@ impl ImagerApp {
         self.draw_step_title(scene, tr, theme, content, &title, "");
 
         // Big overall ring.
-        let cxp = (content.x0 + content.x1) / 2.0;
+        let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 150.0;
         let radius = 76.0;
         let overall = p.overall();
@@ -2220,7 +2213,7 @@ impl ImagerApp {
     ) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        let cxp = (content.x0 + content.x1) / 2.0;
+        let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 120.0;
         let install = self.action == Action::Install;
         if ok {
@@ -2438,7 +2431,7 @@ impl ImagerApp {
             },
             PortalOutcome::Cancelled => self.set_status(state, "File selection cancelled."),
             PortalOutcome::Failed(reason) => {
-                self.set_status(state, &format!("File picker unavailable: {reason}"))
+                self.set_status(state, &format!("File picker unavailable: {reason}"));
             }
         }
         self.dirty = true;
@@ -2562,13 +2555,13 @@ impl ImagerApp {
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                self.set_status(state, "Confirmation does not match — write refused.")
+                self.set_status(state, "Confirmation does not match — write refused.");
             }
             crate::write::JobStart::TooSmall => {
-                self.set_status(state, "Image is larger than the drive — write refused.")
+                self.set_status(state, "Image is larger than the drive — write refused.");
             }
             crate::write::JobStart::Incomplete => {
-                self.set_status(state, "Select a source and drive before writing.")
+                self.set_status(state, "Select a source and drive before writing.");
             }
         }
         self.dirty = true;
@@ -2690,7 +2683,7 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => self.open_file_picker(state),
             Hit::Release(i) => {
-                if let Some(src) = self.releases.get(i).map(|r| r.to_source()) {
+                if let Some(src) = self.releases.get(i).map(super::model::QosRelease::to_source) {
                     self.select_source(state, src);
                 }
             }
@@ -2714,7 +2707,7 @@ impl ImagerApp {
                 self.system_ack = !self.system_ack;
                 if !self.system_ack {
                     // Withdrawing consent deselects the system disk if it was chosen.
-                    if self.target().map(|d| d.is_system).unwrap_or(false) {
+                    if self.target().is_some_and(|d| d.is_system) {
                         self.selected = None;
                         ImagerDoc::set_selected(state, None);
                     }
@@ -2803,17 +2796,17 @@ impl Widget for ImagerApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -2835,7 +2828,7 @@ impl Widget for ImagerApp {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
             Step::Customize => {
-                self.draw_customize_step(scene, tr, theme, transform, &lay, presence)
+                self.draw_customize_step(scene, tr, theme, transform, &lay, presence);
             }
             Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
             Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
@@ -2877,7 +2870,7 @@ impl Widget for ImagerApp {
         // events it does not consume (footer clicks, global keys) fall through
         // to the wizard chrome below.
         if self.step == Step::Customize && self.customizable() && self.export_text.is_none() {
-            let removable = self.target().map(|d| d.removable).unwrap_or(false);
+            let removable = self.target().is_some_and(|d| d.removable);
             let profile = self.profile.clone();
             let resp = self.customize.handle_event(
                 event,
@@ -3031,7 +3024,7 @@ impl Widget for ImagerApp {
         self.actions.take_committed()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ImagerApp"
     }
 
@@ -3080,8 +3073,8 @@ impl ImagerApp {
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
         let w = (self.rect.width() * 0.62).min(640.0);
         let h = (self.rect.height() * 0.8).min(620.0);
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);

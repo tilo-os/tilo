@@ -47,7 +47,7 @@ impl Verb {
     /// `Comment`/`Read`, `Invite` confers only `Read` besides itself. Lets a
     /// `Grant`/`Restrict` phrased in a coarse verb answer a finer required verb.
     pub fn implies(self, other: Verb) -> bool {
-        use Verb::*;
+        use Verb::{Admin, Write, Comment, Read, Invite};
         match self {
             Admin => true,
             Write => matches!(other, Write | Comment | Read),
@@ -90,7 +90,7 @@ impl Principal {
     /// keeping `Subject::User` and `Principal::Person` interchangeable.
     pub fn person_from_key(key: Ed25519PublicKey) -> Self {
         let mut s = String::with_capacity(64);
-        for b in key.0.iter() {
+        for b in &key.0 {
             use std::fmt::Write as _;
             let _ = write!(s, "{b:02x}");
         }

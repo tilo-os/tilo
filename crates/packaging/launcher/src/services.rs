@@ -1,4 +1,4 @@
-//! Service-socket discovery + SCM_RIGHTS handoff.
+//! Service-socket discovery + `SCM_RIGHTS` handoff.
 //!
 //! Each declared service maps to a Unix socket at
 //! `$XDG_RUNTIME_DIR/qos/services/<name>.sock`. The launcher:
@@ -29,7 +29,7 @@
 //!
 //! Three plausible mediation points: inherited descriptors (this
 //! module's choice — simplest, no broker, fd at a known number), a
-//! dedicated broker over SCM_RIGHTS (richer — revoke/audit/hot-swap —
+//! dedicated broker over `SCM_RIGHTS` (richer — revoke/audit/hot-swap —
 //! but adds latency and a daemon dependency), or the compositor itself
 //! handing fds to an inherited launcher (tightest coupling, hardest to
 //! test).
@@ -107,12 +107,10 @@ pub enum ServiceError {
 
 /// Discover `$XDG_RUNTIME_DIR/qos/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
             let uid = unsafe { libc::geteuid() };
             PathBuf::from(format!("/run/user/{uid}"))
-        });
+        }, PathBuf::from);
     runtime.join("qos/services")
 }
 

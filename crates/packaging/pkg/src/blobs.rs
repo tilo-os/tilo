@@ -70,7 +70,7 @@ pub trait BlobStore {
 }
 
 /// Errors from a `BlobStore`; the in-memory impl is infallible but
-/// disk-backed impls (FsStore in the loader) can surface I/O errors here.
+/// disk-backed impls (`FsStore` in the loader) can surface I/O errors here.
 #[derive(Debug, Error)]
 pub enum BlobStoreError {
     #[error("I/O error: {0}")]
@@ -127,7 +127,7 @@ impl BlobStore for MemoryBlobStore {
 /// The payload "collection": payload-relative path → blob hash.
 ///
 /// Stands in for iroh-blobs' `Collection` at the wire-stable layer.
-/// Deterministic on-disk encoding (BTreeMap, so the hash is
+/// Deterministic on-disk encoding (`BTreeMap`, so the hash is
 /// reproducible) as a length-prefixed `Vec<(String, [u8;32])>` blob —
 /// hand-encoded rather than via serde, so the format doesn't depend
 /// on a framework choice at the canonical layer.

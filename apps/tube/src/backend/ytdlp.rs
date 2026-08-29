@@ -213,7 +213,7 @@ fn video_from_json(v: &Value, category: &str) -> Video {
         dearrow_thumb: false,
         sponsor: Vec::new(),
         comments: Vec::new(),
-        live: v.get("is_live").and_then(|b| b.as_bool()).unwrap_or(false),
+        live: v.get("is_live").and_then(serde_json::Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -232,7 +232,7 @@ fn channel_from_json(v: &Value) -> Channel {
         subscribers: u64_field(v, "channel_follower_count"),
         verified: v
             .get("channel_is_verified")
-            .and_then(|b| b.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
         description: str_field(v, "description"),
         seed: id,
@@ -253,8 +253,8 @@ fn pick_channel_images(v: &Value) -> (String, String) {
     let url_of = |t: &Value| str_field(t, "url");
     let dims = |t: &Value| {
         (
-            t.get("width").and_then(|w| w.as_u64()).unwrap_or(0),
-            t.get("height").and_then(|h| h.as_u64()).unwrap_or(0),
+            t.get("width").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            t.get("height").and_then(serde_json::Value::as_u64).unwrap_or(0),
         )
     };
 
@@ -306,10 +306,10 @@ fn best_thumbnail(v: &Value, id: &str) -> String {
             arr.iter()
                 .filter(|t| !str_field(t, "url").is_empty())
                 .max_by_key(|t| {
-                    let w = t.get("width").and_then(|w| w.as_u64()).unwrap_or(0);
-                    let h = t.get("height").and_then(|h| h.as_u64()).unwrap_or(0);
+                    let w = t.get("width").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                    let h = t.get("height").and_then(serde_json::Value::as_u64).unwrap_or(0);
                     // Prefer a real preference index when present, else area.
-                    w * h + t.get("preference").and_then(|p| p.as_u64()).unwrap_or(0)
+                    w * h + t.get("preference").and_then(serde_json::Value::as_u64).unwrap_or(0)
                 })
                 .map(|t| str_field(t, "url"))
         })
@@ -369,11 +369,11 @@ fn str_field_any(v: &Value, keys: &[&str]) -> String {
 }
 
 fn u64_field(v: &Value, key: &str) -> u64 {
-    v.get(key).and_then(|n| n.as_u64()).unwrap_or(0)
+    v.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0)
 }
 
 fn f64_field(v: &Value, key: &str) -> f64 {
-    v.get(key).and_then(|n| n.as_f64()).unwrap_or(0.0)
+    v.get(key).and_then(serde_json::Value::as_f64).unwrap_or(0.0)
 }
 
 /// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian date.
@@ -391,8 +391,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 fn today_days() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 86_400) as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| (d.as_secs() / 86_400) as i64)
 }
 
 const MONTHS: [&str; 12] = [
@@ -601,7 +600,7 @@ impl YtBackend for YtDlpBackend {
                 &end,
                 &url,
             ],
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         )?;
         let videos = videos_from_entries(&v, "Playlist");
         let pl_id = {
@@ -614,7 +613,7 @@ impl YtBackend for YtDlpBackend {
             .unwrap_or_default();
         let video_count = v
             .get("playlist_count")
-            .and_then(|c| c.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(videos.len() as u64);
         let playlist = crate::model::Playlist {
             id: pl_id.clone(),

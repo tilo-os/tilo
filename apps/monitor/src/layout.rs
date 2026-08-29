@@ -272,7 +272,7 @@ pub fn process_columns(avail_w: f64) -> Vec<Column> {
 /// content width. When this exceeds the table's inner width the table needs
 /// a horizontal scrollbar.
 pub fn process_columns_total_w(cols: &[Column]) -> f64 {
-    cols.last().map(Column::x1).unwrap_or(0.0)
+    cols.last().map_or(0.0, Column::x1)
 }
 
 /// Inset the rail-card / panel rectangle by its padding, matching

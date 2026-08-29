@@ -452,7 +452,7 @@ impl Project {
             .iter()
             .filter(|t| t.kind == TrackKind::Audio)
             .collect();
-        audio.sort_by(|a, b| a.index.cmp(&b.index));
+        audio.sort_by_key(|a| a.index);
         video.into_iter().chain(audio).collect()
     }
 
@@ -472,7 +472,7 @@ impl Project {
     pub fn duration(&self) -> f64 {
         self.clips
             .iter()
-            .map(|c| c.end())
+            .map(Clip::end)
             .fold(0.0_f64, f64::max)
             .max(1.0)
     }
@@ -492,7 +492,7 @@ impl Project {
             if !c.covers(t) {
                 continue;
             }
-            if best.map(|(_, idx)| track.index > idx).unwrap_or(true) {
+            if best.map_or(true, |(_, idx)| track.index > idx) {
                 best = Some((c, track.index));
             }
         }
@@ -534,7 +534,7 @@ impl Project {
         }
         let offset = at - clip.start; // seconds into the clip == seconds into source
         let split_src = clip.in_point + offset;
-        let mut right = clip.clone();
+        let mut right = clip;
         right.id = Uuid::new_v4();
         right.start = at;
         right.in_point = split_src;
@@ -608,7 +608,7 @@ impl Project {
         let after = clip.start;
         self.clips.retain(|c| c.id != id);
         let mut moved = Vec::new();
-        for c in self.clips.iter_mut() {
+        for c in &mut self.clips {
             if c.track == track && c.start >= after - 1e-9 {
                 c.start = (c.start - gap).max(0.0);
                 moved.push(c.id);
@@ -639,11 +639,11 @@ impl Project {
         let mut best: Option<(f64, f64)> = None; // (candidate, distance)
         for &c in candidates {
             let d = (c - t).abs();
-            if d <= tol && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            if d <= tol && best.map_or(true, |(_, bd)| d < bd) {
                 best = Some((c, d));
             }
         }
-        best.map(|(c, _)| c).unwrap_or(t)
+        best.map_or(t, |(c, _)| c)
     }
 
     /// Paste `clip` as a new independent clip starting at `start` on

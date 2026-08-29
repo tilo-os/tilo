@@ -120,7 +120,7 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
                 severity: Severity::Info,
                 line: line_no,
                 col: max_len + 1,
-                message: format!("Line exceeds {} characters ({})", max_len, char_len),
+                message: format!("Line exceeds {max_len} characters ({char_len})"),
             });
         }
 
@@ -136,7 +136,7 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
                 severity: Severity::Info,
                 line: line_no,
                 col,
-                message: format!("Unresolved {} marker", marker),
+                message: format!("Unresolved {marker} marker"),
             });
         }
 
@@ -151,12 +151,11 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
         let mut string_delim = '"';
         while let Some((bi, ch)) = chars.next() {
             if in_block_comment {
-                if ch == '*' {
-                    if let Some(&(_, '/')) = chars.peek() {
+                if ch == '*'
+                    && let Some(&(_, '/')) = chars.peek() {
                         in_block_comment = false;
                         chars.next();
                     }
-                }
                 continue;
             }
             if in_string {
@@ -216,7 +215,7 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
                                 severity: Severity::Warning,
                                 line: line_no,
                                 col,
-                                message: format!("Unmatched closing '{}'", ch),
+                                message: format!("Unmatched closing '{ch}'"),
                             });
                         }
                     }
@@ -232,11 +231,11 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
             severity: Severity::Warning,
             line,
             col,
-            message: format!("Unclosed '{}'", open),
+            message: format!("Unclosed '{open}'"),
         });
     }
 
-    out.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
+    out.sort_by_key(|a| (a.line, a.col));
     out
 }
 

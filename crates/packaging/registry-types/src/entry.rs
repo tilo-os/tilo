@@ -24,7 +24,7 @@ pub const INDEX_DOMAIN: &[u8] = b"qos-registry-index-v1\0";
 /// One version of a .qpkg, with the download URL and the BLAKE3 root the client verifies after fetching.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryVersion {
-    /// Semver string, or CalVer YYYY.MM as some publishers use; treated
+    /// Semver string, or `CalVer` YYYY.MM as some publishers use; treated
     /// as opaque text — client picks a "latest".
     pub version: String,
     /// HTTPS URL of the `.qpkg` file.

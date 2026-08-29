@@ -129,10 +129,10 @@ impl Default for FilesProvider {
 }
 
 impl SearchProvider for FilesProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "files"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Files"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -183,17 +183,14 @@ impl SearchProvider for FilesProvider {
                     }
                     ranked.push((score, path_depth(&entry.facts.lower), i));
                 };
-                match reuse {
-                    Some(c) => {
-                        self.last_scanned
-                            .store(c.candidates.len(), Ordering::Relaxed);
-                        c.candidates.iter().for_each(|&i| consider(i));
-                    }
-                    None => {
-                        self.last_scanned
-                            .store(guard.entries.len(), Ordering::Relaxed);
-                        (0..guard.entries.len()).for_each(&mut consider);
-                    }
+                if let Some(c) = reuse {
+                    self.last_scanned
+                        .store(c.candidates.len(), Ordering::Relaxed);
+                    c.candidates.iter().for_each(|&i| consider(i));
+                } else {
+                    self.last_scanned
+                        .store(guard.entries.len(), Ordering::Relaxed);
+                    (0..guard.entries.len()).for_each(&mut consider);
                 }
             }
             if let Some(slot) = cache.as_mut() {
@@ -222,7 +219,7 @@ impl SearchProvider for FilesProvider {
                 ranked.truncate(k);
             }
             ranked.sort_by(cmp);
-            for (score, _, i) in ranked.into_iter() {
+            for (score, _, i) in ranked {
                 let entry = &guard.entries[i];
                 seen.insert(entry.path.clone());
                 out.push(make_result(entry, score, None));
@@ -231,9 +228,9 @@ impl SearchProvider for FilesProvider {
 
         // Content hits from tantivy, deduped against name hits so a file
         // matching both only shows once (the higher score wins).
-        if want_file {
-            if let Some(idx) = self.tantivy.as_ref() {
-                let content_hits = idx.query(&ctx.needle.to_string(), MAX_RESULTS);
+        if want_file
+            && let Some(idx) = self.tantivy.as_ref() {
+                let content_hits = idx.query(ctx.needle, MAX_RESULTS);
                 for hit in content_hits {
                     if seen.contains(&hit.path) {
                         continue;
@@ -243,9 +240,7 @@ impl SearchProvider for FilesProvider {
                     }
                     let display = hit
                         .path
-                        .strip_prefix(&self.home)
-                        .map(|p| format!("~/{}", p.display()))
-                        .unwrap_or_else(|_| hit.path.display().to_string());
+                        .strip_prefix(&self.home).map_or_else(|_| hit.path.display().to_string(), |p| format!("~/{}", p.display()));
                     let entry = NameEntry {
                         path: hit.path.clone(),
                         facts: NameFacts::new(&display, None),
@@ -257,7 +252,6 @@ impl SearchProvider for FilesProvider {
                     out.push(make_result(&entry, content, hit.snippet));
                 }
             }
-        }
 
         // Final ordering across both backends: score, then shallower path.
         // Content hits clamp into a narrow band, so ties are common.
@@ -299,9 +293,7 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
 }
 
 fn file_title(path: &Path) -> String {
-    path.file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string())
 }
 
 /// Bounds for a content hit, at the level of a path-only name hit
@@ -531,7 +523,7 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
     // `HTTPServer` — the last capital of a run that starts a new word.
     if cur.is_ascii_uppercase()
         && prev.is_ascii_uppercase()
-        && b.get(i + 1).is_some_and(|n| n.is_ascii_lowercase())
+        && b.get(i + 1).is_some_and(u8::is_ascii_lowercase)
     {
         return true;
     }
@@ -544,19 +536,17 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
 /// [`PENALTY_MAX`]; a match never disappears, it only sinks.
 fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
     let mut p = 0;
-    if let Some(ext) = extension_of(leaf_lower, stem_len) {
-        if ASSET_EXTS.contains(&ext) {
+    if let Some(ext) = extension_of(leaf_lower, stem_len)
+        && ASSET_EXTS.contains(&ext) {
             p += PENALTY_ASSET_EXT;
         }
-    }
     if is_generated_leaf(leaf_lower) {
         p += PENALTY_GENERATED_LEAF;
     }
     // Parent components only — a directory *named* `vendor` is a fine answer.
     let parent = lower_path
         .rsplit_once('/')
-        .map(|(head, _)| head)
-        .unwrap_or("");
+        .map_or("", |(head, _)| head);
     if parent.split('/').any(|c| VENDOR_DIRS.contains(&c)) {
         p += PENALTY_VENDOR_DIR;
     }
@@ -657,8 +647,7 @@ fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -
 fn path_tier(needle: &str, lower_path: &str) -> (i32, usize) {
     let parent = lower_path
         .rsplit_once('/')
-        .map(|(head, _)| head)
-        .unwrap_or("");
+        .map_or("", |(head, _)| head);
     let mut best = (STRUCT_PATH_SUBSTRING, lower_path.len());
     for comp in parent.split('/') {
         if comp == needle {
@@ -767,7 +756,7 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
         };
         // Sorted so a re-scan of an unchanged tree produces the same index.
         let mut children: Vec<std::fs::DirEntry> = rd.filter_map(Result::ok).collect();
-        children.sort_by_key(|c| c.file_name());
+        children.sort_by_key(std::fs::DirEntry::file_name);
         for child in children {
             let path = child.path();
             if should_skip(&path, home) {
@@ -775,7 +764,7 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
             }
             // `file_type` is free on Linux (from readdir's `d_type`);
             // `metadata` is the one stat, taken here off the UI thread.
-            let is_dir = child.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = child.file_type().is_ok_and(|t| t.is_dir());
             let modified = child.metadata().ok().and_then(|m| m.modified().ok());
             if is_dir && depth + 1 < MAX_DEPTH {
                 frontier.push_back((path.clone(), depth + 1));
@@ -791,7 +780,7 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
                 break 'walk;
             }
             // Yield periodically so the walker doesn't pin a core.
-            if entries.len() % 2_000 == 0 {
+            if entries.len().is_multiple_of(2_000) {
                 thread::sleep(Duration::from_millis(2));
             }
         }
@@ -827,9 +816,7 @@ fn should_skip(path: &Path, home: &Path) -> bool {
 }
 
 fn display_path(home: &Path, path: &Path) -> String {
-    path.strip_prefix(home)
-        .map(|rel| format!("~/{}", rel.display()))
-        .unwrap_or_else(|_| path.display().to_string())
+    path.strip_prefix(home).map_or_else(|_| path.display().to_string(), |rel| format!("~/{}", rel.display()))
 }
 
 #[cfg(test)]

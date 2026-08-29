@@ -73,9 +73,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // page-layout properties, preserving the rest. No-op for a single-column document.
     {
         let base = c
-            .get("styles.xml")
-            .map(|b| b.to_vec())
-            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+            .get("styles.xml").map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
         if let Some(styles_xml) = super::columns::export_page_layout_columns(&doc, &base) {
             let is_new = !had_styles;
             c.set("styles.xml", styles_xml);
@@ -88,9 +86,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
     {
         let base = c
-            .get("styles.xml")
-            .map(|b| b.to_vec())
-            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+            .get("styles.xml").map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
         if let Some(styles_xml) = super::language::export_default_language(&doc, &base) {
             let is_new = !had_styles;
             c.set("styles.xml", styles_xml);
@@ -128,8 +124,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if b.kind != "image" {
             continue;
         }
-        if let Some(AttrVal::Str(hash)) = b.attrs.get("blob") {
-            if let Some(bytes) = snap.blobs.get(hash) {
+        if let Some(AttrVal::Str(hash)) = b.attrs.get("blob")
+            && let Some(bytes) = snap.blobs.get(hash) {
                 let (ext, media) = image_ext_and_media(bytes);
                 let path = format!("Pictures/{hash}.{ext}");
                 c.set(&path, bytes.clone());
@@ -137,13 +133,10 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
                     pic_entries.push((path, media));
                 }
             }
-        }
     }
     if !pic_entries.is_empty() {
         let manifest = c
-            .get("META-INF/manifest.xml")
-            .map(|b| b.to_vec())
-            .unwrap_or_else(|| MANIFEST.to_vec());
+            .get("META-INF/manifest.xml").map_or_else(|| MANIFEST.to_vec(), <[u8]>::to_vec);
         c.set(
             "META-INF/manifest.xml",
             inject_manifest_entries(&manifest, &pic_entries),
@@ -235,13 +228,13 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "color" => m.value.as_str().map(|c| {
             (
                 format!("qdoc-color-{}", color_token(c)),
-                format!(r#"fo:color="{}""#, c),
+                format!(r#"fo:color="{c}""#),
             )
         }),
         "highlight" => m.value.as_str().map(|c| {
             (
                 format!("qdoc-hl-{}", color_token(c)),
-                format!(r#"fo:background-color="{}""#, c),
+                format!(r#"fo:background-color="{c}""#),
             )
         }),
         // Vertical alignment: ODF `style:text-position` (keyword + 58% font height, matching what LibreOffice writes for menu super/subscript).
@@ -262,12 +255,12 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
 
 /// A style-name-safe token for a colour value (`#rrggbb` → `rrggbb`); keeps the generated automatic-style name a valid XML name.
 fn color_token(c: &str) -> String {
-    c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+    c.chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 /// A style-name-safe token for a BCP-47 tag (`de-DE` → `deDE`); keeps the generated automatic-style name a valid XML name.
 fn lang_token(c: &str) -> String {
-    c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+    c.chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 /// The ODF `style:text-properties` attribute string for a BCP-47 tag: `xx-YY` splits into
@@ -306,7 +299,7 @@ fn link_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     marks
         .iter()
         .find(|m| m.name == "link" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -336,7 +329,7 @@ fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     marks
         .iter()
         .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
-        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
 /// The comment ids whose anchoring `comment` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
@@ -344,7 +337,7 @@ fn comment_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -354,7 +347,7 @@ fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -365,7 +358,7 @@ fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -375,7 +368,7 @@ fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
         .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -388,7 +381,7 @@ fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
         .filter(|m| {
             (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i
         })
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -400,7 +393,7 @@ fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
         .filter(|m| {
             (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i
         })
-        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
         .collect();
     v.sort();
     v
@@ -536,15 +529,14 @@ fn render_inline(
                 open.push(name.clone());
             }
         }
-        if chars[i] == crate::schema::FIELD_PLACEHOLDER {
-            if let Some(note_id) = note_ref_at(marks, i) {
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER
+            && let Some(note_id) = note_ref_at(marks, i) {
                 if let Some(note) = notes.get(&note_id) {
                     *note_ctr += 1;
                     out.push_str(&super::notes::render_inline_note(note, *note_ctr));
                 }
                 continue;
             }
-        }
         push_escaped(&mut out, chars[i]);
     }
     close_spans(&mut out, &mut open);
@@ -591,11 +583,10 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
         }
     }
     // Line spacing → `fo:line-height` percent (1.5 → "150%").
-    if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing") {
-        if *ls > 0.0 {
+    if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing")
+        && *ls > 0.0 {
             pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
         }
-    }
     if pp.is_empty() {
         None
     } else {
@@ -649,26 +640,23 @@ fn image_frame_xml(
         ));
         frame.push_str(&format!(r#" draw:style-name="{gname}""#));
     }
-    if let Some(AttrVal::Int(w)) = b.attrs.get("width") {
-        if *w > 0 {
+    if let Some(AttrVal::Int(w)) = b.attrs.get("width")
+        && *w > 0 {
             frame.push_str(&format!(r#" svg:width="{w}px""#));
         }
-    }
-    if let Some(AttrVal::Int(h)) = b.attrs.get("height") {
-        if *h > 0 {
+    if let Some(AttrVal::Int(h)) = b.attrs.get("height")
+        && *h > 0 {
             frame.push_str(&format!(r#" svg:height="{h}px""#));
         }
-    }
     frame.push('>');
     frame.push_str(&format!(
         r#"<draw:image xlink:href="{}"/>"#,
         escape_attr(&href)
     ));
-    if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
-        if !alt.is_empty() {
+    if let Some(AttrVal::Str(alt)) = b.attrs.get("alt")
+        && !alt.is_empty() {
             frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
         }
-    }
     frame.push_str("</draw:frame>");
     Some(frame)
 }
@@ -717,10 +705,10 @@ fn odf_num_format(fmt: &str) -> &'static str {
 /// ordered list re-imports with its numbering intact; `name` is the generated automatic-style name.
 fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
     let nf = odf_num_format(fmt);
-    let sv = if start != 1 {
-        format!(r#" text:start-value="{start}""#)
-    } else {
+    let sv = if start == 1 {
         String::new()
+    } else {
+        format!(r#" text:start-value="{start}""#)
     };
     format!(
         r#"<text:list-style style:name="{name}"><text:list-level-style-number text:level="1" style:num-format="{nf}"{sv}/></text:list-style>"#
@@ -748,18 +736,15 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
         return "<text:list>".to_string();
     }
     let key = (fmt.to_string(), start);
-    let name = match list_styles.iter().find(|s| s.key == key) {
-        Some(s) => s.name.clone(),
-        None => {
-            let name = format!("Lqdoc{}", list_styles.len() + 1);
-            let xml = list_style_def_xml(&name, fmt, start);
-            list_styles.push(ListStyle {
-                name: name.clone(),
-                key,
-                xml,
-            });
-            name
-        }
+    let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) { s.name.clone() } else {
+        let name = format!("Lqdoc{}", list_styles.len() + 1);
+        let xml = list_style_def_xml(&name, fmt, start);
+        list_styles.push(ListStyle {
+            name: name.clone(),
+            key,
+            xml,
+        });
+        name
     };
     let mut tag = format!(r#"<text:list text:style-name="{name}""#);
     if start != 1 && snap_num_restart(li) {
@@ -857,7 +842,7 @@ fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     out
 }
 
-/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container style, so LibreOffice renders the document's named styles.
+/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container style, so `LibreOffice` renders the document's named styles.
 fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let name = super::styles::encode_style_name(id);
     let getf = |k: &str| match props.get(k) {
@@ -900,21 +885,18 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
             pp.push_str(&format!(r#" fo:text-align="{v}""#));
         }
     }
-    if let Some(v) = getf(STYLE_SPACE_BEFORE) {
-        if v != 0.0 {
+    if let Some(v) = getf(STYLE_SPACE_BEFORE)
+        && v != 0.0 {
             pp.push_str(&format!(r#" fo:margin-top="{}px""#, fmt_num(v)));
         }
-    }
-    if let Some(v) = getf(STYLE_SPACE_AFTER) {
-        if v != 0.0 {
+    if let Some(v) = getf(STYLE_SPACE_AFTER)
+        && v != 0.0 {
             pp.push_str(&format!(r#" fo:margin-bottom="{}px""#, fmt_num(v)));
         }
-    }
-    if let Some(v) = getf(STYLE_INDENT) {
-        if v != 0.0 {
+    if let Some(v) = getf(STYLE_INDENT)
+        && v != 0.0 {
             pp.push_str(&format!(r#" fo:margin-left="{}px""#, fmt_num(v)));
         }
-    }
     let display = gets(STYLE_NAME)
         .map(|n| format!(r#" style:display-name="{}""#, escape_attr(n)))
         .unwrap_or_default();
@@ -994,7 +976,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     }
                     let sa = style_attr(li);
                     body.push_str(&format!(
-                        r#"<text:list-item><text:p{sa}>{}</text:p>"#,
+                        r"<text:list-item><text:p{sa}>{}</text:p>",
                         render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)
                     ));
                     item_open = true;
@@ -1045,7 +1027,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     body.push_str("<table:table-row>");
                     for c in 0..ncols {
                         let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
-                        let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
+                        let sa = cell.map(&mut style_attr).unwrap_or_default();
                         let inner = cell
                             .map(|cl| {
                                 render_inline(
@@ -1054,7 +1036,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                             })
                             .unwrap_or_default();
                         body.push_str(&format!(
-                            r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#
+                            r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
                         ));
                     }
                     body.push_str("</table:table-row>");
@@ -1064,7 +1046,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             _ => {
                 let sa = style_attr(b);
                 body.push_str(&format!(
-                    r#"<text:p{sa}>{}</text:p>"#,
+                    r"<text:p{sa}>{}</text:p>",
                     render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
                 ));
                 i += 1;
@@ -1385,8 +1367,7 @@ mod tests {
         assert_eq!(
             (bm.range.1, bm.range.2),
             (4, 9),
-            "bookmark range over 'intro': {:?}",
-            bm
+            "bookmark range over 'intro': {bm:?}"
         );
         let tb = snap
             .blocks
@@ -1678,7 +1659,7 @@ mod tests {
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
-            content.contains(r#"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>"#),
+            content.contains(r"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>"),
             "nested list emitted inside its parent item: {content}"
         );
 
@@ -2092,7 +2073,7 @@ mod tests {
         assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
         assert_eq!(
             footer[0].text,
-            format!("Page {}", FIELD_PLACEHOLDER),
+            format!("Page {FIELD_PLACEHOLDER}"),
             "placeholder kept: {:?}",
             footer[0].text
         );
@@ -2174,7 +2155,7 @@ mod tests {
         let p = &snap.blocks[0];
         assert_eq!(
             p.text,
-            format!("see {}ref", FIELD_PLACEHOLDER),
+            format!("see {FIELD_PLACEHOLDER}ref"),
             "placeholder spliced inline: {:?}",
             p.text
         );

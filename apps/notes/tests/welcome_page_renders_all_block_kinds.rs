@@ -49,9 +49,7 @@ fn welcome_body_contains_every_block_kind() {
     ] {
         assert!(
             seen.contains(kind),
-            "welcome page seed must include a {} block (got kinds: {:?})",
-            kind,
-            seen,
+            "welcome page seed must include a {kind} block (got kinds: {seen:?})",
         );
     }
 }

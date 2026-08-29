@@ -1,4 +1,4 @@
-//! ResizableSplit — a two-pane container with a draggable divider.
+//! `ResizableSplit` — a two-pane container with a draggable divider.
 //!
 //! Splits its rect between a `left` and a `right` child. Dragging the
 //! divider re-balances the panes, clamped to [`SPLIT_MIN`]..=[`SPLIT_MAX`]
@@ -93,7 +93,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// call it after mutating `split_position` without a taffy pass.
     fn recompute_divider_rect(&mut self) {
         let r = self.rect;
-        let s = self.split_position as f64;
+        let s = f64::from(self.split_position);
         let half = DIVIDER_PX / 2.0;
         self.divider_rect = match self.orientation {
             SplitOrientation::Horizontal => {
@@ -112,7 +112,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// Used by both the draw pass and the event router.
     fn child_rects(&self) -> (Rect, Rect) {
         let r = self.rect;
-        let s = self.split_position as f64;
+        let s = f64::from(self.split_position);
         let half = DIVIDER_PX / 2.0;
         match self.orientation {
             SplitOrientation::Horizontal => {
@@ -226,17 +226,17 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 &[left_node, divider_node, right_node],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap();
@@ -474,7 +474,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         None
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ResizableSplit"
     }
 

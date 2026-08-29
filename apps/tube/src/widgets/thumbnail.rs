@@ -4,8 +4,8 @@
 //! so we paint a deterministic two-stop gradient derived from the video's
 //! seed (so every tile is distinct but the wall stays harmonious), plus
 //! the chrome a real thumbnail carries: a duration pill, an optional
-//! watched-progress bar, an optional LIVE badge, and — when DeArrow is on
-//! and has data — a small "DeArrow" marker noting the frame was swapped
+//! watched-progress bar, an optional LIVE badge, and — when `DeArrow` is on
+//! and has data — a small "`DeArrow`" marker noting the frame was swapped
 //! for a community-chosen, non-clickbait one.
 
 use std::collections::HashMap;
@@ -129,8 +129,8 @@ impl Thumbnail {
         let (tw, _) = text_renderer.measure(text, size, None);
         let padx = 6.0;
         let pad_y = 3.0;
-        let w = tw as f64 + padx * 2.0;
-        let h = size as f64 + pad_y * 2.0;
+        let w = f64::from(tw) + padx * 2.0;
+        let h = f64::from(size) + pad_y * 2.0;
         let x0 = if right_align { anchor.x - w } else { anchor.x };
         let pill = RoundedRect::new(x0, anchor.y, x0 + w, anchor.y + h, 4.0);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
@@ -266,7 +266,7 @@ impl Thumbnail {
             let fill = Rect::new(
                 self.rect.x0,
                 self.rect.y1 - 4.0,
-                self.rect.x0 + self.rect.width() * p as f64,
+                self.rect.x0 + self.rect.width() * f64::from(p),
                 self.rect.y1,
             );
             scene.fill(
@@ -320,17 +320,17 @@ impl Widget for Thumbnail {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         let new = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if new != self.rect {
             self.dirty = true;
@@ -363,7 +363,7 @@ impl Widget for Thumbnail {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Thumbnail"
     }
     /// Fixed intrinsic size (percent width, fixed height) — never changes

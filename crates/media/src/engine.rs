@@ -1,10 +1,10 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
-//! * **Real decode** (`--features decode`) drives a GStreamer `playbin` whose
+//! * **Real decode** (`--features decode`) drives a `GStreamer` `playbin` whose
 //!   video is diverted through `videoconvert ! appsink(RGBA)` for decoded
 //!   frames and whose audio is routed to a real system sink (`autoaudiosink`) —
 //!   the audible + visible path, mirroring `apps/music`'s real sink chain and
-//!   `apps/tube`'s appsink. This decodes **any** codec GStreamer can plug
+//!   `apps/tube`'s appsink. This decodes **any** codec `GStreamer` can plug
 //!   (H.264 / VP9 / AV1) from a local file, the FUSE workspace, or a stream URL.
 //! * **Synthesized fallback** (default) produces a deterministic RGBA test
 //!   pattern driven by a real playhead clock, plus genuine buffering progress
@@ -57,7 +57,7 @@ enum Backend {
 
 impl MediaEngine {
     /// Build an engine. With `--features decode` this stands up a real
-    /// GStreamer pipeline; if GStreamer can't initialise (or the feature is
+    /// `GStreamer` pipeline; if `GStreamer` can't initialise (or the feature is
     /// off) it transparently falls back to the synthesized backend. Never
     /// fails.
     pub fn new() -> Self {
@@ -89,7 +89,7 @@ impl MediaEngine {
         }
     }
 
-    /// Whether this engine is decoding through a real GStreamer pipeline (vs.
+    /// Whether this engine is decoding through a real `GStreamer` pipeline (vs.
     /// the synthesized fallback).
     pub fn is_real_decode(&self) -> bool {
         match &self.backend {
@@ -337,8 +337,7 @@ impl SynthState {
         // this entirely. Remote / unknown sources get the default.
         self.duration = source
             .byte_len()
-            .map(|b| (b / 125).clamp(3_000, 3_600_000))
-            .unwrap_or(DEFAULT_SYNTH_DURATION_MS);
+            .map_or(DEFAULT_SYNTH_DURATION_MS, |b| (b / 125).clamp(3_000, 3_600_000));
         // Prefetch a file source through the ring so buffering is real
         // hydration progress. Remote sources have no local reader here.
         self.prefetch = match source.open_reader() {
@@ -372,7 +371,7 @@ impl SynthState {
     }
 
     fn buffering_percent(&self) -> u8 {
-        self.prefetch.as_ref().map(|p| p.percent()).unwrap_or(100)
+        self.prefetch.as_ref().map_or(100, super::ring::PrefetchProgress::percent)
     }
 
     fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
@@ -445,7 +444,7 @@ impl SynthState {
                 let g = ((y * 255) / h) as u8;
                 let b = (((x + y + hue_shift) * 255) / (w + h)) as u8;
                 // Diagonal content stripes for texture.
-                let stripe = if ((x + y + hue_shift) / 24) % 2 == 0 {
+                let stripe = if ((x + y + hue_shift) / 24).is_multiple_of(2) {
                     24
                 } else {
                     0
@@ -473,7 +472,7 @@ impl SynthState {
 
 #[cfg(feature = "decode")]
 mod gst_backend {
-    use super::*;
+    use super::{VideoFrame, MediaEvent, Source};
     use gstreamer as gst;
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
@@ -494,7 +493,7 @@ mod gst_backend {
     }
 
     impl GstState {
-        /// Build the pipeline with no source yet. Returns `None` if GStreamer
+        /// Build the pipeline with no source yet. Returns `None` if `GStreamer`
         /// can't initialise or the `playbin` / sink chain can't be built, so
         /// the engine falls back to the synthesized backend.
         pub fn new() -> Option<Self> {
@@ -552,7 +551,7 @@ mod gst_backend {
             self.pending.clear();
             self.playbin.set_property("uri", source.to_uri());
             self.playbin.set_property("mute", false);
-            self.playbin.set_property("volume", volume as f64);
+            self.playbin.set_property("volume", f64::from(volume));
             // Preroll so a first frame + the duration become available before
             // the user presses play.
             let _ = self.playbin.set_state(gst::State::Paused);
@@ -580,13 +579,13 @@ mod gst_backend {
         }
 
         pub fn set_volume(&mut self, v: f32) {
-            self.playbin.set_property("volume", v as f64);
+            self.playbin.set_property("volume", f64::from(v));
         }
 
         pub fn position_ms(&self) -> u64 {
             self.playbin
                 .query_position::<gst::ClockTime>()
-                .map(|p| p.mseconds())
+                .map(gstreamer::ClockTime::mseconds)
                 .or(self.last_position)
                 .or_else(|| self.latest.as_ref().map(|f| f.pts_ms))
                 .unwrap_or(0)
@@ -595,7 +594,7 @@ mod gst_backend {
         pub fn duration_ms(&self) -> Option<u64> {
             self.playbin
                 .query_duration::<gst::ClockTime>()
-                .map(|d| d.mseconds())
+                .map(gstreamer::ClockTime::mseconds)
         }
 
         pub fn buffering_percent(&self) -> u8 {
@@ -610,12 +609,11 @@ mod gst_backend {
             let mut events: Vec<MediaEvent> = self.pending.drain(..).collect();
 
             // Duration, announced once as soon as it is known.
-            if !self.duration_announced {
-                if let Some(ms) = self.duration_ms() {
+            if !self.duration_announced
+                && let Some(ms) = self.duration_ms() {
                     events.push(MediaEvent::DurationKnown { ms });
                     self.duration_announced = true;
                 }
-            }
 
             // Drain bus messages (buffering / eos / error).
             while let Some(msg) = self.bus.pop() {
@@ -667,12 +665,12 @@ mod gst_backend {
     }
 
     /// Copy one RGBA appsink sample into an owned, tightly-packed [`VideoFrame`],
-    /// honouring GStreamer's row stride (which may pad past `width * 4`).
+    /// honouring `GStreamer`'s row stride (which may pad past `width * 4`).
     fn frame_from_sample(sample: &gst::Sample) -> Option<VideoFrame> {
         let caps = sample.caps()?;
         let info = gst_video::VideoInfo::from_caps(caps).ok()?;
         let buffer = sample.buffer()?;
-        let pts_ms = buffer.pts().map(|p| p.mseconds()).unwrap_or(0);
+        let pts_ms = buffer.pts().map_or(0, gstreamer::ClockTime::mseconds);
         let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).ok()?;
 
         let w = info.width() as usize;

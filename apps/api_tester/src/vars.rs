@@ -22,8 +22,8 @@ pub fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            if let Some(close) = input[i + 2..].find("}}") {
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{'
+            && let Some(close) = input[i + 2..].find("}}") {
                 let raw = &input[i + 2..i + 2 + close];
                 let name = raw.trim();
                 if let Some(val) = vars.get(name) {
@@ -35,7 +35,6 @@ pub fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
                 i = i + 2 + close + 2;
                 continue;
             }
-        }
         // Push the next char (UTF-8 safe).
         let ch_len = utf8_len(bytes[i]);
         out.push_str(&input[i..i + ch_len]);
@@ -135,7 +134,7 @@ pub struct JsonLine {
 /// The input is expected to already be pretty-printed (see
 /// [`pretty_json`]); each physical line becomes one [`JsonLine`].
 pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
-    let mut lines: Vec<JsonLine> = pretty.lines().map(|raw| tokenize_line(raw)).collect();
+    let mut lines: Vec<JsonLine> = pretty.lines().map(tokenize_line).collect();
 
     // Second pass: match each opener line to its closer using a stack of
     // line indices, so the viewer can collapse a block to its first line.
@@ -144,13 +143,11 @@ pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
         if lines[idx].opens_block {
             stack.push(idx);
         }
-        if line_closes_block(&lines[idx]) {
-            if let Some(open_idx) = stack.pop() {
-                if open_idx != idx {
+        if line_closes_block(&lines[idx])
+            && let Some(open_idx) = stack.pop()
+                && open_idx != idx {
                     lines[open_idx].close_line = Some(idx);
                 }
-            }
-        }
     }
     lines
 }

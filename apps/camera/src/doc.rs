@@ -82,8 +82,7 @@ pub fn write_screen(doc: &mut AutoCommit, root: &ObjId, screen: Screen) {
 
 pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
     get_str(doc, root, "mode")
-        .map(|s| CaptureMode::from_str(&s))
-        .unwrap_or(CaptureMode::Photo)
+        .map_or(CaptureMode::Photo, |s| CaptureMode::from_str(&s))
 }
 
 pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
@@ -92,8 +91,7 @@ pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
 
 pub fn read_facing(doc: &AutoCommit, root: &ObjId) -> Facing {
     get_str(doc, root, "facing")
-        .map(|s| Facing::from_str(&s))
-        .unwrap_or(Facing::Back)
+        .map_or(Facing::Back, |s| Facing::from_str(&s))
 }
 
 pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
@@ -226,11 +224,10 @@ pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
     // Drop any existing entry with the same payload.
     let n = doc.length(&list);
     for i in (0..n).rev() {
-        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-            if get_str(doc, &m, "raw").as_deref() == Some(raw) {
+        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+            && get_str(doc, &m, "raw").as_deref() == Some(raw) {
                 let _ = doc.delete(&list, i);
             }
-        }
     }
     let m = doc
         .insert_object(&list, 0, ObjType::Map)

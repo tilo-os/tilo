@@ -1,4 +1,4 @@
-//! Rendering for the conferencing layers: the docked call "huddle" PiP, the
+//! Rendering for the conferencing layers: the docked call "huddle" `PiP`, the
 //! expanded call overlay (a responsive participant grid, or — while someone is
 //! screen-sharing — a featured screen tile above a participant filmstrip), and
 //! the two floating popovers (emoji picker + edit history). The host tile is a
@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use crate::app::{ChatApp, Hit};
 use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
-use crate::paint::*;
+use crate::paint::{fill_round, label, stroke_round, fill_circle, stroke_circle, fill_rect, text, hline};
 use crate::render_chat::draw_avatar;
 
 /// One person to render in the call, derived from the shared CRDT voice
@@ -103,9 +103,7 @@ impl ChatApp {
         let radius = if self.call.expanded { 14.0 } else { 10.0 };
         fill_round(scene, tf, rect, radius, c.neutral[2]);
         let (initials, cidx) = self
-            .user(&self.me.id)
-            .map(|u| (u.initials.clone(), u.color_idx))
-            .unwrap_or_else(|| ("Y".into(), 0));
+            .user(&self.me.id).map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
         let r = (rect.height() * 0.20).clamp(22.0, 52.0);
         let cx = rect.center().x;
         let cy = rect.center().y - r * 0.35;
@@ -129,7 +127,7 @@ impl ChatApp {
             s,
             12.0,
             c.text_dim,
-            cx - sw as f64 / 2.0,
+            cx - f64::from(sw) / 2.0,
             cy + r + 8.0,
         );
     }
@@ -171,9 +169,7 @@ impl ChatApp {
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
         let name = self
-            .channel(&self.call.channel)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "Call".into());
+            .channel(&self.call.channel).map_or_else(|| "Call".into(), |c| c.name.clone());
         label(
             scene,
             tr,
@@ -380,9 +376,7 @@ impl ChatApp {
 
         // title + participant count
         let title = self
-            .channel(&self.call.channel)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "Call".into());
+            .channel(&self.call.channel).map_or_else(|| "Call".into(), |c| c.name.clone());
         let (tw, _) = tr.measure(&title, 20.0, None);
         text(
             scene,
@@ -391,7 +385,7 @@ impl ChatApp {
             &title,
             20.0,
             c.text_primary,
-            self.rect.center().x - tw as f64 / 2.0,
+            self.rect.center().x - f64::from(tw) / 2.0,
             self.rect.y0 + 28.0,
             TextWeight::Bold,
             None,
@@ -420,16 +414,16 @@ impl ChatApp {
             &sub,
             12.0,
             c.text_dim,
-            self.rect.center().x - sw as f64 / 2.0,
+            self.rect.center().x - f64::from(sw) / 2.0,
             self.rect.y0 + 56.0,
         );
 
         // The host active-speaker treatment is shared by both layouts: a bright
         // ring while transmitting, a hairline otherwise.
-        let (ring_col, ring_w) = if !self.call.muted {
-            (c.semantic.success, 2.5)
-        } else {
+        let (ring_col, ring_w) = if self.call.muted {
             (c.border_white_20, 1.5)
+        } else {
+            (c.semantic.success, 2.5)
         };
         match self.overlay_stage() {
             // No share: host + remotes share one responsive grid that fills the
@@ -477,9 +471,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let name = self
-            .user(sharer)
-            .map(|u| u.name.clone())
-            .unwrap_or_else(|| sharer.to_string());
+            .user(sharer).map_or_else(|| sharer.to_string(), |u| u.name.clone());
         let is_me = sharer == self.me.id;
         let radius = 16.0;
 
@@ -547,7 +539,7 @@ impl ChatApp {
             &head,
             15.0,
             c.text_primary,
-            gcx - hw as f64 / 2.0,
+            gcx - f64::from(hw) / 2.0,
             base.y1 + 18.0,
             TextWeight::Bold,
             None,
@@ -568,7 +560,7 @@ impl ChatApp {
             sub,
             12.0,
             c.text_dim,
-            gcx - subw as f64 / 2.0,
+            gcx - f64::from(subw) / 2.0,
             base.y1 + 40.0,
         );
 
@@ -599,7 +591,7 @@ impl ChatApp {
         let pill = Rect::new(
             rect.x0 + 12.0,
             rect.y0 + 12.0,
-            rect.x0 + 12.0 + lw as f64 + 34.0,
+            rect.x0 + 12.0 + f64::from(lw) + 34.0,
             rect.y0 + 12.0 + 24.0,
         );
         fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
@@ -905,7 +897,7 @@ impl ChatApp {
                 s,
                 11.5,
                 c.text_dim,
-                cx - sw as f64 / 2.0,
+                cx - f64::from(sw) / 2.0,
                 cy + r + 8.0,
             );
         }
@@ -959,7 +951,7 @@ impl ChatApp {
         let plate = Rect::new(
             tile.x0 + 8.0,
             tile.y1 - 30.0,
-            tile.x0 + 8.0 + lw as f64 + 20.0,
+            tile.x0 + 8.0 + f64::from(lw) + 20.0,
             tile.y1 - 8.0,
         );
         fill_round(scene, tf, plate, 8.0, Color::from_rgba8(0, 0, 0, 150));
@@ -1010,7 +1002,7 @@ impl ChatApp {
             label_txt,
             13.0,
             fg,
-            rect.center().x - lw as f64 / 2.0,
+            rect.center().x - f64::from(lw) / 2.0,
             rect.center().y - 8.0,
         );
     }
@@ -1034,7 +1026,7 @@ impl ChatApp {
         // height: quick row + categories
         let mut rows_total = 1; // quick row
         for cat in emoji::CATEGORIES {
-            rows_total += 1 + (cat.emoji.len() + cols - 1) / cols; // label + grid rows
+            rows_total += 1 + cat.emoji.len().div_ceil(cols); // label + grid rows
         }
         let h = 56.0 + rows_total as f64 * cell + 12.0;
         let mut x0 = self.emoji_anchor.x;
@@ -1152,14 +1144,14 @@ impl ChatApp {
                 e,
                 19.0,
                 c.text_primary,
-                cellr.center().x - ew as f64 / 2.0,
-                cellr.center().y - eh as f64 / 2.0,
+                cellr.center().x - f64::from(ew) / 2.0,
+                cellr.center().y - f64::from(eh) / 2.0,
                 TextWeight::Regular,
                 None,
             );
             ChatApp::push_hit(hits, cellr, Hit::EmojiChoice((*e).to_string()));
         }
-        let rows = (set.len() + cols - 1) / cols;
+        let rows = set.len().div_ceil(cols);
         *y += rows as f64 * cell + 6.0;
     }
 
@@ -1195,7 +1187,7 @@ impl ChatApp {
         let mut total = 44.0;
         let mut heights = Vec::new();
         for (_, body) in &entries {
-            let bh = tr.measure(body, 13.0, Some(tw)).1 as f64 + 22.0 + 14.0;
+            let bh = f64::from(tr.measure(body, 13.0, Some(tw)).1) + 22.0 + 14.0;
             heights.push(bh);
             total += bh;
         }

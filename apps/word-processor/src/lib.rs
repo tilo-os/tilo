@@ -90,13 +90,13 @@ impl WpFormat {
         match path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .as_deref()
         {
             Some("odt") => WpFormat::Odt,
             Some("docx") => WpFormat::Docx,
             Some("pdf") => WpFormat::Pdf,
-            Some("html") | Some("htm") => WpFormat::Html,
+            Some("html" | "htm") => WpFormat::Html,
             Some("rtf") => WpFormat::Rtf,
             Some("epub") => WpFormat::Epub,
             _ => WpFormat::Markdown,
@@ -349,7 +349,7 @@ pub mod recovery {
     fn fnv1a(bytes: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for &b in bytes {
-            h ^= b as u64;
+            h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01B3);
         }
         h
@@ -371,9 +371,7 @@ pub mod recovery {
                     if p.is_absolute() {
                         p.to_path_buf()
                     } else {
-                        std::env::current_dir()
-                            .map(|d| d.join(p))
-                            .unwrap_or_else(|_| p.to_path_buf())
+                        std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
                     }
                 });
                 abs.to_string_lossy().into_owned()
@@ -393,7 +391,7 @@ pub mod recovery {
         {
             return None;
         }
-        std::fs::write(&path, markdown).ok().map(|_| path)
+        std::fs::write(&path, markdown).ok().map(|()| path)
     }
 
     /// Read back a recovery copy's Markdown bytes for `doc_path`, if one exists.

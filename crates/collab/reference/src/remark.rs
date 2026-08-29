@@ -124,7 +124,7 @@ impl Remark {
         let delivery = self.delivery();
         let Delivery::Private { to } = &delivery else {
             return Err(Undeliverable::NotPrivate {
-                delivery: delivery.clone(),
+                delivery: delivery,
             });
         };
         let author = author.into();

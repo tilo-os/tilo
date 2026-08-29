@@ -180,9 +180,8 @@ impl RecoveryVerifyScreen {
                     *handled = true;
                     if self.is_correct() {
                         return ScreenOutcome::Advance;
-                    } else {
-                        self.last_attempt_failed = true;
                     }
+                    self.last_attempt_failed = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -218,9 +217,8 @@ impl RecoveryVerifyScreen {
                         *handled = true;
                         if self.is_correct() {
                             return ScreenOutcome::Advance;
-                        } else {
-                            self.last_attempt_failed = true;
                         }
+                        self.last_attempt_failed = true;
                     }
                     _ => {
                         let editor = &mut self.editors[slot];
@@ -299,17 +297,17 @@ impl Widget for RecoveryVerifyScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Matches recovery_share's card dimensions so the two screens feel
         // like the same surface — only the blanks differ.
@@ -413,8 +411,7 @@ impl Widget for RecoveryVerifyScreen {
         let challenge_positions: [usize; 3] = self
             .challenge
             .as_ref()
-            .map(|c| c.positions)
-            .unwrap_or([0, 0, 0]);
+            .map_or([0, 0, 0], |c| c.positions);
         let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
         let grid_x = card.x0 + pad;
         let grid_y = card.y0 + 110.0;
@@ -427,7 +424,7 @@ impl Widget for RecoveryVerifyScreen {
             let x = grid_x + col as f64 * col_w;
             let y = grid_y + row as f64 * row_h;
 
-            let num = format!("{:>2}.", pos1);
+            let num = format!("{pos1:>2}.");
             text_renderer.draw_text(
                 scene,
                 &num,
@@ -480,9 +477,9 @@ impl Widget for RecoveryVerifyScreen {
                         sel_color,
                         None,
                         &Rect::new(
-                            r.x0 + 8.0 + pre_w as f64,
+                            r.x0 + 8.0 + f64::from(pre_w),
                             r.y0 + 5.0,
-                            r.x0 + 8.0 + pre_w as f64 + mid_w as f64,
+                            r.x0 + 8.0 + f64::from(pre_w) + f64::from(mid_w),
                             r.y0 + r.height() - 5.0,
                         ),
                     );
@@ -500,7 +497,7 @@ impl Widget for RecoveryVerifyScreen {
                     let cursor_byte = self.editors[slot_i].cursor.min(answer_text.len());
                     let prefix = &answer_text[..cursor_byte];
                     let (prefix_w, _) = text_renderer.measure(prefix, 14.0, None);
-                    let caret_x = r.x0 + 8.0 + prefix_w as f64;
+                    let caret_x = r.x0 + 8.0 + f64::from(prefix_w);
                     let caret_top = r.y0 + 5.0;
                     let caret_bottom = r.y0 + r.height() - 5.0;
                     let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
@@ -549,7 +546,7 @@ impl Widget for RecoveryVerifyScreen {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    self.reseed_rect.x0 + (self.reseed_rect.width() - rw as f64) / 2.0,
+                    self.reseed_rect.x0 + (self.reseed_rect.width() - f64::from(rw)) / 2.0,
                     self.reseed_rect.y0 + (self.reseed_rect.height() - 13.0) / 2.0,
                 )),
             None,
@@ -581,7 +578,7 @@ impl Widget for RecoveryVerifyScreen {
             text_color,
             transform
                 * Affine::translate((
-                    self.continue_rect.x0 + (self.continue_rect.width() - lw as f64) / 2.0,
+                    self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
                     self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -613,7 +610,7 @@ impl Widget for RecoveryVerifyScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RecoveryVerifyScreen"
     }
 

@@ -233,7 +233,7 @@ impl Popover {
         let fs = theme.tokens.typography.scale.sm;
         let mut w = MIN_W.max(self.anchor.width());
         for label in &self.items {
-            let tw = tr.measure(label, fs, None).0 as f64;
+            let tw = f64::from(tr.measure(label, fs, None).0);
             w = w.max(tw + CHECK_W + PAD_X * 2.0);
         }
         let n = self.items.len().max(1);
@@ -301,7 +301,7 @@ impl Widget for Popover {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -330,7 +330,7 @@ impl Widget for Popover {
         }
         self.place(text_renderer, theme);
         let c = &theme.tokens.colors;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
 
         // Drop shadow rings (themed black at low alpha) so the menu reads as
         // floating above the content — the same 4-ring pattern the toolkit's
@@ -378,7 +378,7 @@ impl Widget for Popover {
                     transform,
                     c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
-                    &RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64),
+                    &RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm)),
                 );
             }
             let text_color = if is_hl {
@@ -397,7 +397,7 @@ impl Widget for Popover {
                 Self::draw_check(scene, transform, row, check_color);
             }
             let (_lw, lh) = text_renderer.measure_weighted(label, fs, None, TextWeight::Medium);
-            let ty = row.center().y - lh as f64 / 2.0;
+            let ty = row.center().y - f64::from(lh) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -472,7 +472,7 @@ impl Widget for Popover {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Popover"
     }
 

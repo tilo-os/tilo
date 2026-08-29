@@ -1,4 +1,4 @@
-//! File-picker dialog widget — used by the FileChooser xdg-portal backend
+//! File-picker dialog widget — used by the `FileChooser` xdg-portal backend
 //! and any "open / save file from app menu" flow. Self-contained: it draws
 //! and hit-tests itself, and the host just positions it as a modal overlay
 //! and drains [`FilePicker::take_outcome`].
@@ -140,7 +140,7 @@ pub struct FilePicker {
     /// `(ancestor_path, rect)` for each clickable breadcrumb segment.
     crumb_rects: Vec<(PathBuf, Rect)>,
 
-    /// MouseInput carries no position payload, so this tracks the cursor
+    /// `MouseInput` carries no position payload, so this tracks the cursor
     /// for click resolution.
     last_cursor: Point,
     /// Last entry pressed + when, for double-click open detection.
@@ -312,8 +312,7 @@ impl FilePicker {
     pub fn can_go_up(&self) -> bool {
         self.current_dir
             .parent()
-            .map(|p| self.can_navigate_to(p))
-            .unwrap_or(false)
+            .is_some_and(|p| self.can_navigate_to(p))
     }
 
     /// No-op when rejected by the roots.
@@ -329,7 +328,7 @@ impl FilePicker {
     }
 
     pub fn go_up(&mut self) {
-        if let Some(parent) = self.current_dir.parent().map(|p| p.to_path_buf()) {
+        if let Some(parent) = self.current_dir.parent().map(std::path::Path::to_path_buf) {
             self.navigate_to(parent);
         }
     }
@@ -349,7 +348,7 @@ impl FilePicker {
         if let Ok(read) = std::fs::read_dir(&self.current_dir) {
             for entry in read.flatten() {
                 let path = entry.path();
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
                 // Directories are always shown; files honour the filter.
                 if !is_dir && !filter.matches(&path) {
                     continue;
@@ -550,7 +549,7 @@ impl FilePicker {
         if len == 0 {
             return;
         }
-        let cur = self.selection.primary().map(|i| i as isize).unwrap_or(-1);
+        let cur = self.selection.primary().map_or(-1, |i| i as isize);
         let next = (cur + delta).clamp(0, len as isize - 1) as usize;
         self.selection.move_to(next, shift);
         self.scroll_to(next);
@@ -558,7 +557,7 @@ impl FilePicker {
 
     fn type_ahead(&mut self, ch: char) {
         let lower = ch.to_ascii_lowercase();
-        let start = self.selection.primary().map(|i| i + 1).unwrap_or(0);
+        let start = self.selection.primary().map_or(0, |i| i + 1);
         let n = self.entries.len();
         for off in 0..n {
             let i = (start + off) % n;
@@ -566,8 +565,7 @@ impl FilePicker {
                 .name
                 .chars()
                 .next()
-                .map(|c| c.to_ascii_lowercase() == lower)
-                .unwrap_or(false)
+                .is_some_and(|c| c.to_ascii_lowercase() == lower)
             {
                 self.selection.select_only(i);
                 self.scroll_to(i);
@@ -596,17 +594,17 @@ impl Widget for FilePicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.apply_layout_helper();
     }
@@ -621,7 +619,7 @@ impl Widget for FilePicker {
     ) {
         self.apply_layout_helper();
         let tokens = &theme.tokens;
-        let radius = tokens.radii.md as f64;
+        let radius = f64::from(tokens.radii.md);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -650,7 +648,7 @@ impl Widget for FilePicker {
         if self.can_go_up() {
             let up_hovered = self.up_rect.contains(self.last_cursor);
             if up_hovered {
-                let s = RoundedRect::from_rect(self.up_rect, tokens.radii.sm as f64);
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
                 scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
             }
             let ix = self.up_rect.x0 + (self.up_rect.width() - HEADER_ICON_PX) / 2.0;
@@ -697,7 +695,7 @@ impl Widget for FilePicker {
         }
 
         let row_size = tokens.typography.scale.sm;
-        for (i, rect) in self.entry_rows.iter() {
+        for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
             let is_hover = self.hover_entry == Some(i) && !is_selected;
@@ -708,7 +706,7 @@ impl Widget for FilePicker {
             } else {
                 tokens.colors.surfaces.raised
             };
-            let row_shape = RoundedRect::from_rect(*rect, tokens.radii.sm as f64);
+            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
 
             if let Some(entry) = self.entries.get(i) {
@@ -742,7 +740,7 @@ impl Widget for FilePicker {
                     transform
                         * Affine::translate((
                             rect.x0 + 8.0 + ROW_ICON_PX + 8.0,
-                            rect.y0 + (ROW_HEIGHT - row_size as f64) / 2.0,
+                            rect.y0 + (ROW_HEIGHT - f64::from(row_size)) / 2.0,
                         )),
                     None,
                 );
@@ -757,7 +755,7 @@ impl Widget for FilePicker {
                 self.rect.x1 - PADDING,
                 field_top + FILENAME_HEIGHT - 4.0,
             );
-            let s = RoundedRect::from_rect(field, tokens.radii.sm as f64);
+            let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -790,7 +788,7 @@ impl Widget for FilePicker {
                 transform
                     * Affine::translate((
                         field.x0 + 8.0,
-                        field.y0 + (field.height() - row_size as f64) / 2.0,
+                        field.y0 + (field.height() - f64::from(row_size)) / 2.0,
                     )),
                 None,
             );
@@ -798,7 +796,7 @@ impl Widget for FilePicker {
 
         if self.filters.len() > 1 {
             let hovered = self.filter_rect.contains(self.last_cursor);
-            let s = RoundedRect::from_rect(self.filter_rect, tokens.radii.sm as f64);
+            let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -825,7 +823,7 @@ impl Widget for FilePicker {
                 transform
                     * Affine::translate((
                         self.filter_rect.x0 + 8.0,
-                        self.filter_rect.y0 + (self.filter_rect.height() - row_size as f64) / 2.0,
+                        self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
                     )),
                 None,
             );
@@ -893,7 +891,7 @@ impl Widget for FilePicker {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / ROW_HEIGHT,
                 };
                 // Wheel-up scrolls the list up (toward the start).
@@ -969,7 +967,7 @@ impl Widget for FilePicker {
                     }
                     Key::Named(NamedKey::Enter) => {
                         if let Some(i) = self.selection.primary() {
-                            if self.entries.get(i).map(|e| e.is_dir).unwrap_or(false) {
+                            if self.entries.get(i).is_some_and(|e| e.is_dir) {
                                 let p = self.entries[i].path.clone();
                                 self.navigate_to(&p);
                             } else {
@@ -1008,7 +1006,7 @@ impl Widget for FilePicker {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FilePicker"
     }
 
@@ -1041,9 +1039,7 @@ impl FilePicker {
     fn crumb_label_for(&self, idx: usize) -> Option<String> {
         let (target, _) = self.crumb_rects.get(idx)?;
         let label = target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string());
+            .file_name().map_or_else(|| "/".to_string(), |n| n.to_string_lossy().into_owned());
         Some(label)
     }
 }
@@ -1065,7 +1061,7 @@ fn draw_button(
     // Share the canonical immediate-mode button face so the picker footer
     // stays visually locked to the retained widget and every converted app.
     let face = crate::widget::ButtonFace::new(rect, label)
-        .radius(theme.tokens.radii.md as f64)
+        .radius(f64::from(theme.tokens.radii.md))
         .text_size(theme.tokens.typography.scale.sm)
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)

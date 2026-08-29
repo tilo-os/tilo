@@ -327,7 +327,7 @@ impl HexModel {
     /// selection is cleared.
     pub fn move_to(&mut self, offset: usize, extend: bool) {
         let max = self.bytes.len().saturating_sub(1);
-        let target = offset.min(max.max(0));
+        let target = offset.min(max);
         if extend {
             if self.anchor.is_none() {
                 self.anchor = Some(self.cursor);

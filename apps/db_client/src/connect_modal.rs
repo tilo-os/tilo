@@ -1,9 +1,9 @@
 //! The "New connection" modal: an engine selector plus the host/port/db/user
-//! fields (or a SQLite file path), with Cancel / Save actions. Captures a
+//! fields (or a `SQLite` file path), with Cancel / Save actions. Captures a
 //! [`ConnectionProfile`] the app appends to the connection list.
 //!
 //! Keeping this app-local (rather than the toolkit `ModalDialog`) lets the
-//! field set switch dynamically with the selected engine — SQLite shows a
+//! field set switch dynamically with the selected engine — `SQLite` shows a
 //! file path; the network engines show host/port/db/user. It is a focused
 //! form widget that paints over a scrim.
 
@@ -50,6 +50,12 @@ pub struct ConnectModal {
     field_rects: Vec<(Field, Rect)>,
     cancel_btn: Rect,
     save_btn: Rect,
+}
+
+impl Default for ConnectModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConnectModal {
@@ -223,11 +229,10 @@ impl ConnectModal {
                         }
                     }
                     _ => {
-                        if let (Some(f), Some(t)) = (self.focus, text) {
-                            if !ctrl {
+                        if let (Some(f), Some(t)) = (self.focus, text)
+                            && !ctrl {
                                 self.field_mut(f).push_str(t.as_str());
                             }
-                        }
                     }
                 }
             }
@@ -347,7 +352,7 @@ impl ConnectModal {
                 e.label(),
                 12.5,
                 fg,
-                t * Affine::translate((seg.x0 + (seg.width() - lw as f64) / 2.0, y + 8.0)),
+                t * Affine::translate((seg.x0 + (seg.width() - f64::from(lw)) / 2.0, y + 8.0)),
                 None,
             );
             sx += seg_w;
@@ -372,7 +377,7 @@ impl ConnectModal {
         } else {
             y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
             // Host + Port on one row.
-            let (hx, _) = self.field_pair(
+            let (hx, ()) = self.field_pair(
                 scene,
                 t,
                 tr,
@@ -387,7 +392,7 @@ impl ConnectModal {
             );
             y = hx;
             y = self.field(scene, t, tr, theme, px, pw, y, "Database", Field::Database);
-            let (ux, _) = self.field_pair(
+            let (ux, ()) = self.field_pair(
                 scene,
                 t,
                 tr,
@@ -573,7 +578,7 @@ impl ConnectModal {
         );
         if focused {
             let (vw, _) = tr.measure(val, 13.0, None);
-            let cx = (r.x0 + 10.0 + vw as f64).min(r.x1 - 6.0);
+            let cx = (r.x0 + 10.0 + f64::from(vw)).min(r.x1 - 6.0);
             scene.stroke(
                 &Stroke::new(1.5),
                 t,

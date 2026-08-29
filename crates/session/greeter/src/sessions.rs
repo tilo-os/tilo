@@ -48,16 +48,15 @@ pub fn parse_desktop_entry(contents: &str) -> Option<Session> {
             if name.is_none() {
                 name = Some(rest.trim().to_string());
             }
-        } else if let Some(rest) = line.strip_prefix("Exec=") {
-            if exec.is_none() {
+        } else if let Some(rest) = line.strip_prefix("Exec=")
+            && exec.is_none() {
                 exec = Some(rest.trim().to_string());
             }
-        }
         // Localized `Name[de]=` etc. fall through (don't match `Name=`).
     }
 
     let exec = exec?;
-    let argv: Vec<String> = exec.split_whitespace().map(|s| s.to_string()).collect();
+    let argv: Vec<String> = exec.split_whitespace().map(std::string::ToString::to_string).collect();
     if argv.is_empty() {
         return None;
     }
@@ -87,11 +86,10 @@ pub fn read_sessions(dir: &Path) -> Vec<Session> {
         if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
             continue;
         }
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Some(session) = parse_desktop_entry(&contents) {
+        if let Ok(contents) = std::fs::read_to_string(&path)
+            && let Some(session) = parse_desktop_entry(&contents) {
                 sessions.push(session);
             }
-        }
     }
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     sessions

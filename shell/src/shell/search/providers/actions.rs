@@ -358,10 +358,10 @@ impl Default for ActionsProvider {
 }
 
 impl SearchProvider for ActionsProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "actions"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Actions"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {

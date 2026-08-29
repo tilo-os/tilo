@@ -1,4 +1,4 @@
-//! MySQL / MariaDB execution engine: opens a real TCP connection through the
+//! `MySQL` / `MariaDB` execution engine: opens a real TCP connection through the
 //! sync `mysql` crate, introspects `information_schema` and runs arbitrary SQL
 //! returning a [`QueryResult`]. Mirrors [`crate::engine::SqliteEngine`] and
 //! [`crate::engine_pg::PostgresEngine`] so the session can hold any engine
@@ -15,7 +15,7 @@ use crate::model::{
     TableInfo, TypeClass,
 };
 
-/// A live MySQL connection. Owns the connection for the session lifetime.
+/// A live `MySQL` connection. Owns the connection for the session lifetime.
 pub struct MySqlEngine {
     conn: Conn,
 }
@@ -58,7 +58,7 @@ impl MySqlEngine {
     }
 
     /// Introspect the connection's current database into the shared
-    /// [`DatabaseSchema`] shape. MySQL's schema namespace is the database, so
+    /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
     /// this yields a single [`SchemaInfo`] named after it.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
@@ -302,13 +302,13 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
         Value::NULL => Cell::Null,
         Value::Int(i) => Cell::Integer(i),
         Value::UInt(u) => {
-            if u <= i64::MAX as u64 {
+            if i64::try_from(u).is_ok() {
                 Cell::Integer(u as i64)
             } else {
                 Cell::Text(u.to_string())
             }
         }
-        Value::Float(f) => Cell::Real(f as f64),
+        Value::Float(f) => Cell::Real(f64::from(f)),
         Value::Double(d) => Cell::Real(d),
         Value::Bytes(b) => match String::from_utf8(b) {
             Ok(s) => Cell::Text(s),
@@ -327,7 +327,7 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
         }
         Value::Time(neg, days, h, mi, s, us) => {
             let sign = if neg { "-" } else { "" };
-            let hours = days * 24 + h as u32;
+            let hours = days * 24 + u32::from(h);
             if us == 0 {
                 Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}"))
             } else {

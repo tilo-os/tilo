@@ -6,7 +6,7 @@
 //!     The v2 API paginates so `/1` is the first page (~30 apps); we may
 //!     walk further pages later. `~200` is the ceiling the task asks for,
 //!     which the caller enforces via `max_apps`.
-//!   * `GET /appstream/<app-id>`             — full AppStream record for
+//!   * `GET /appstream/<app-id>`             — full `AppStream` record for
 //!     the detail sheet (categories, screenshots, descriptions).
 //!
 //! Every request runs on the worker thread with a bounded timeout so a
@@ -27,9 +27,7 @@ pub fn api_base() -> String {
 fn http_timeout() -> Duration {
     std::env::var("QOS_STORE_HTTP_TIMEOUT")
         .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .and_then(|s| s.parse::<u64>().ok()).map_or_else(|| Duration::from_secs(DEFAULT_TIMEOUT_SECS), Duration::from_secs)
 }
 
 #[derive(Debug, Error)]
@@ -51,7 +49,7 @@ pub struct PopularEntry {
     pub name: Option<String>,
 }
 
-/// Trimmed AppStream record — only the fields the store surfaces.
+/// Trimmed `AppStream` record — only the fields the store surfaces.
 ///
 /// The real response has ~30 fields; declaring only the ones we
 /// need keeps this stable against Flathub's ongoing shape changes
@@ -125,12 +123,12 @@ pub fn fetch_popular(max_apps: usize) -> Result<Vec<PopularEntry>, FlathubError>
         if out.len() >= max_apps {
             break;
         }
-        let url = format!("{}/collection/popular/last-week/{}", base, page);
+        let url = format!("{base}/collection/popular/last-week/{page}");
         let text = c
             .get(&url)
             .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::text)
             .map_err(|e| FlathubError::Http(e.to_string()))?;
         // Flathub sometimes wraps in `{ "hits": [...] }`, sometimes
         // returns a bare array. Accept both.
@@ -151,8 +149,8 @@ pub fn fetch_appstream(app_id: &str) -> Result<AppStreamRecord, FlathubError> {
     let text = c
         .get(&url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
         .map_err(|e| FlathubError::Http(e.to_string()))?;
     serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))
 }
@@ -220,8 +218,7 @@ pub fn flatpak_available() -> bool {
     std::process::Command::new("flatpak")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 #[cfg(test)]

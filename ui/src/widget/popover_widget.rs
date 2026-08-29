@@ -145,12 +145,12 @@ impl<C: Widget> PopoverWidget<C> {
             text_renderer,
         );
         let w = if measured.width > 0.0 {
-            measured.width as f64
+            f64::from(measured.width)
         } else {
             FALLBACK_BODY_W
         };
         let h = if measured.height > 0.0 {
-            measured.height as f64
+            f64::from(measured.height)
         } else {
             FALLBACK_BODY_H
         };
@@ -213,7 +213,7 @@ impl<C: Widget> PopoverWidget<C> {
         if body.width() <= 0.0 || body.height() <= 0.0 {
             return;
         }
-        let pad = theme.tokens.spacing.s2 as f64;
+        let pad = f64::from(theme.tokens.spacing.s2);
         let inner = Rect::new(
             body.x0 + pad,
             body.y0 + pad,
@@ -247,7 +247,7 @@ impl<C: Widget> PopoverWidget<C> {
     /// content size and viewport. Also exposed for tests that want to
     /// drive layout without a full taffy compute.
     fn recompute_layout(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
-        let gap = theme.tokens.spacing.s2 as f64;
+        let gap = f64::from(theme.tokens.spacing.s2);
         let (body_w, body_h) = self.body_size(text_renderer);
         let preferred = self.position_on(self.side, body_w, body_h, gap);
         if self.fits_on(preferred, self.side) {
@@ -338,7 +338,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -369,7 +369,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         self.recompute_layout(theme, text_renderer);
         self.place_content(theme, text_renderer);
 
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let body = self.rect;
         let shape = RoundedRect::from_rect(body, radius);
 
@@ -449,7 +449,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PopoverWidget"
     }
 

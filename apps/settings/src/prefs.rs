@@ -92,7 +92,7 @@ impl Default for AudioPrefs {
 pub struct DisplayPrefs {
     pub auto_brightness: bool,
     pub night_light: bool,
-    /// HiDPI display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
+    /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
     /// preferred `wp_fractional_scale`, so a `ui` app renders crisp at a
@@ -460,8 +460,7 @@ impl AccessibilityPrefs {
         Self::CURSOR_SIZES
             .iter()
             .min_by_key(|(_, s)| s.abs_diff(size))
-            .map(|(l, _)| *l)
-            .unwrap_or("Default")
+            .map_or("Default", |(l, _)| *l)
     }
 
     /// Map a cursor-size label back to its pixel size, if recognised.
@@ -616,7 +615,7 @@ pub(crate) mod test_env {
     impl ConfigGuard {
         /// Redirect `XDG_CONFIG_HOME` to a fresh, unique temp dir for this test.
         pub(crate) fn new(name: &str) -> Self {
-            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = std::env::temp_dir().join(format!(
                 "qos-settings-libtest-{}-{}",
                 std::process::id(),

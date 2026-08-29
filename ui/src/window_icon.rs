@@ -12,7 +12,7 @@
 //! dependency. Vector icons (SVG) are not decoded here — ship a PNG.
 //!
 //! On Wayland, most compositors ignore a client-set toplevel icon (sourced
-//! from the app_id + a `.desktop` file instead), so this is a no-op there
+//! from the `app_id` + a `.desktop` file instead), so this is a no-op there
 //! today; it is correct on X11 and forward-compatible with the
 //! xdg-toplevel-icon protocol.
 
@@ -97,7 +97,7 @@ fn render_default(size: u32) -> Vec<u8> {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t)
+    (f32::from(a) + (f32::from(b) - f32::from(a)) * t)
         .round()
         .clamp(0.0, 255.0) as u8
 }

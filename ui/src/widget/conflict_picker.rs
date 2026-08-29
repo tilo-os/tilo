@@ -167,7 +167,7 @@ impl ConflictPicker {
     pub fn card_rects(&self) -> Vec<Rect> {
         let mut rects = Vec::new();
         let alt_count = self.alternatives().len();
-        let total_cards = alt_count + if self.has_merged_card() { 1 } else { 0 };
+        let total_cards = alt_count + usize::from(self.has_merged_card());
         if total_cards == 0 {
             return rects;
         }
@@ -216,7 +216,7 @@ impl ConflictPicker {
     pub fn keep_current_rect(&self) -> Rect {
         let inner = self.inner_rect();
         let w = 240.0_f64.min(inner.width() - 2.0 * PADDING);
-        let cx = (inner.x0 + inner.x1) / 2.0;
+        let cx = f64::midpoint(inner.x0, inner.x1);
         let y1 = inner.y1;
         Rect::new(cx - w / 2.0, y1 - BUTTON_H, cx + w / 2.0, y1)
     }
@@ -278,7 +278,7 @@ impl ConflictPicker {
         pick_button: Rect,
     ) {
         // Hovered cards lift via accent border.
-        let body = RoundedRect::from_rect(card, theme.tokens.radii.md as f64);
+        let body = RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -317,7 +317,7 @@ impl ConflictPicker {
             transform * Affine::translate((inner.x0, inner.y0)),
             None,
         );
-        let ts_y = inner.y0 + text_size_md as f64 + 4.0;
+        let ts_y = inner.y0 + f64::from(text_size_md) + 4.0;
         text_renderer.draw_text(
             scene,
             timestamp_label,
@@ -327,7 +327,7 @@ impl ConflictPicker {
             None,
         );
 
-        let label_y = ts_y + text_size_sm as f64 + 8.0;
+        let label_y = ts_y + f64::from(text_size_sm) + 8.0;
         text_renderer.draw_text(
             scene,
             label,
@@ -338,7 +338,7 @@ impl ConflictPicker {
         );
 
         // Single-line, not wrapped — matches the picker's compact shape.
-        let summary_y = label_y + text_size_md as f64 + 6.0;
+        let summary_y = label_y + f64::from(text_size_md) + 6.0;
         text_renderer.draw_text(
             scene,
             summary,
@@ -348,7 +348,7 @@ impl ConflictPicker {
             None,
         );
 
-        let btn_shape = RoundedRect::from_rect(pick_button, theme.tokens.radii.sm as f64);
+        let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -365,8 +365,8 @@ impl ConflictPicker {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    pick_button.x0 + (pick_button.width() - bw as f64) / 2.0,
-                    pick_button.y0 + (pick_button.height() - bh as f64) / 2.0,
+                    pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,
+                    pick_button.y0 + (pick_button.height() - f64::from(bh)) / 2.0,
                 )),
             None,
         );
@@ -393,7 +393,7 @@ impl Widget for ConflictPicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -401,10 +401,10 @@ impl Widget for ConflictPicker {
         let layout = taffy.layout(node).unwrap();
         let prev = self.rect;
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if prev != self.rect {
             self.dirty = true;
@@ -438,7 +438,7 @@ impl Widget for ConflictPicker {
             &scrim_rect,
         );
 
-        let body = RoundedRect::from_rect(self.rect, theme.tokens.radii.lg as f64);
+        let body = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -464,7 +464,7 @@ impl Widget for ConflictPicker {
             title_size,
             theme.tokens.colors.text_primary,
             transform
-                * Affine::translate((title.x0, title.y0 + (title.height() - th as f64) / 2.0)),
+                * Affine::translate((title.x0, title.y0 + (title.height() - f64::from(th)) / 2.0)),
             None,
         );
 
@@ -513,7 +513,7 @@ impl Widget for ConflictPicker {
                     hovered,
                     pick_btn,
                 );
-                let btn_shape = RoundedRect::from_rect(pick_btn, theme.tokens.radii.sm as f64);
+                let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -531,8 +531,8 @@ impl Widget for ConflictPicker {
                     theme.tokens.colors.text_primary,
                     transform
                         * Affine::translate((
-                            pick_btn.x0 + (pick_btn.width() - bw as f64) / 2.0,
-                            pick_btn.y0 + (pick_btn.height() - bh as f64) / 2.0,
+                            pick_btn.x0 + (pick_btn.width() - f64::from(bw)) / 2.0,
+                            pick_btn.y0 + (pick_btn.height() - f64::from(bh)) / 2.0,
                         )),
                     None,
                 );
@@ -540,7 +540,7 @@ impl Widget for ConflictPicker {
         }
 
         let keep = self.keep_current_rect();
-        let keep_shape = RoundedRect::from_rect(keep, theme.tokens.radii.sm as f64);
+        let keep_shape = RoundedRect::from_rect(keep, f64::from(theme.tokens.radii.sm));
         let keep_body = if self.hover_keep {
             theme.tokens.colors.surface_white_20
         } else {
@@ -570,8 +570,8 @@ impl Widget for ConflictPicker {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    keep.x0 + (keep.width() - kw as f64) / 2.0,
-                    keep.y0 + (keep.height() - kh as f64) / 2.0,
+                    keep.x0 + (keep.width() - f64::from(kw)) / 2.0,
+                    keep.y0 + (keep.height() - f64::from(kh)) / 2.0,
                 )),
             None,
         );
@@ -621,7 +621,7 @@ impl Widget for ConflictPicker {
             } => {
                 // Buttons sit *inside* the card rect, so a click on a button
                 // is also a click on the card — test buttons first.
-                let total = alt_count + if self.has_merged_card() { 1 } else { 0 };
+                let total = alt_count + usize::from(self.has_merged_card());
                 for i in 0..total {
                     if let Some(btn) = self.pick_button_rect(i)
                         && btn.contains(self.last_cursor)
@@ -667,7 +667,7 @@ impl Widget for ConflictPicker {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ConflictPicker"
     }
 

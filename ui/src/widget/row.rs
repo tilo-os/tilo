@@ -19,7 +19,7 @@ pub struct Row {
     /// the right choice for a toolbar of fixed-size buttons.
     no_wrap: bool,
     /// When set, the row grows to fill the remaining main-axis space of
-    /// its parent (flex_grow:1) and stretches its children to its height —
+    /// its parent (`flex_grow:1`) and stretches its children to its height —
     /// the right choice for a sidebar|content body row.
     fill_height: bool,
     /// Subtree cache — same pattern as `Column::subtree_cache`.
@@ -139,7 +139,7 @@ impl Widget for Row {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -148,13 +148,13 @@ impl Widget for Row {
         // See `Column::apply_layout` for why we max() against
         // content_size — covers taffy under-reporting under a
         // constrained-height parent.
-        let w = layout.size.width.max(layout.content_size.width) as f64;
-        let h = layout.size.height.max(layout.content_size.height) as f64;
+        let w = f64::from(layout.size.width.max(layout.content_size.width));
+        let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = vello::kurbo::Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + w,
-            origin.y + layout.location.y as f64 + h,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + w,
+            origin.y + f64::from(layout.location.y) + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
@@ -245,7 +245,7 @@ impl Widget for Row {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -259,7 +259,7 @@ impl Widget for Row {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Row"
     }
 
@@ -319,14 +319,7 @@ impl Widget for Row {
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
         let needs_rebuild =
             self.cache_rect == vello::kurbo::Rect::ZERO || size_changed || any_child_dirty;
-        if !needs_rebuild {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(
-                &self.subtree_cache,
-                Some(transform * Affine::translate((dx, dy))),
-            );
-        } else {
+        if needs_rebuild {
             // Drop the active viewport for the recursion — see
             // `Column::draw_with_presence` for why.
             let prev_vp = presence.viewport.replace(None);
@@ -346,6 +339,13 @@ impl Widget for Row {
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             presence.viewport.set(prev_vp);
+        } else {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            scene.append(
+                &self.subtree_cache,
+                Some(transform * Affine::translate((dx, dy))),
+            );
         }
 
         if let Some(scope) = self.permission_scope()

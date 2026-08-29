@@ -1,7 +1,7 @@
 //! Optional `yt-dlp`-backed **full-track** stream resolver.
 //!
-//! rustypipe resolves audio through the iOS/TV player clients (no PoToken),
-//! but since YouTube's SABR rollout those googlevideo URLs are **range-gated
+//! rustypipe resolves audio through the iOS/TV player clients (no `PoToken`),
+//! but since `YouTube`'s SABR rollout those googlevideo URLs are **range-gated
 //! to their first ~1-minute segment** — playback stalls at ~1 MB (HTTP
 //! 403/416). The Invidious `local` proxy fallback ([`crate::backend::proxy`])
 //! only helps while a public instance is up, and that network has largely
@@ -35,9 +35,7 @@ pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
     let size_bytes: u64 = field("clen").and_then(|v| v.parse().ok()).unwrap_or(0);
     // The `mime` param is a media type, not form data: a `+` in it is literal
     // (`image/svg+xml`), so this decodes per RFC 3986.
-    let mime = field("mime")
-        .map(ui::uri::decode)
-        .unwrap_or_else(|| "audio/mp4".to_string());
+    let mime = field("mime").map_or_else(|| "audio/mp4".to_string(), ui::uri::decode);
     // Sniff codec/container off the (decoded or raw) mime — both carry the words.
     let m = mime.to_ascii_lowercase();
     let (codec, format) = if m.contains("webm") || m.contains("opus") {

@@ -1,4 +1,4 @@
-//! Live backend — real YouTube Music via the pure-Rust `rustypipe` InnerTube
+//! Live backend — real `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`MusicBackend`] trait is sync because it
@@ -10,11 +10,11 @@
 //! ## API surface used (rustypipe 0.11.x — verified against the crate source)
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
 //! * `query.music_search_tracks(q).await` → `MusicSearchResult<TrackItem>`
-//!   (real YouTube Music song search — titles, artists, album, duration, id)
+//!   (real `YouTube` Music song search — titles, artists, album, duration, id)
 //! * `query.player(id).await` → `VideoPlayer` whose `audio_streams` carry
-//!   directly-playable googlevideo URLs. With no BotGuard configured rustypipe
+//!   directly-playable googlevideo URLs. With no `BotGuard` configured rustypipe
 //!   uses the iOS/TV player clients, which return real stream URLs **without a
-//!   PoToken** (see [`crate::backend::potoken`]).
+//!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Pure Rust: rustypipe embeds `rquickjs` for signature deobfuscation; no
 //! ffmpeg / yt-dlp / external JS binary.
@@ -43,14 +43,14 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// Construct with the default (null) PoToken provider — audio resolves via
+    /// Construct with the default (null) `PoToken` provider — audio resolves via
     /// the iOS/TV player clients, no token needed.
     pub fn new() -> Result<Self, BackendError> {
         Self::with_potoken(Box::new(NullPoToken))
     }
 
-    /// Construct with an explicit PoToken provider. A provider that cannot
-    /// stream keeps rustypipe's BotGuard path disabled (`no_botguard`).
+    /// Construct with an explicit `PoToken` provider. A provider that cannot
+    /// stream keeps rustypipe's `BotGuard` path disabled (`no_botguard`).
     pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -99,7 +99,7 @@ fn cache_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Map a rustypipe [`TrackItem`] (a YouTube Music search row) onto Music's
+/// Map a rustypipe [`TrackItem`] (a `YouTube` Music search row) onto Music's
 /// toolkit-free [`TrackHit`].
 fn map_track_item(it: TrackItem) -> TrackHit {
     let (artist, artist_id) = if let Some(a) = it.artists.into_iter().next() {
@@ -145,7 +145,7 @@ fn map_album_hit(a: AlbumItem) -> AlbumHit {
         title: a.name,
         artist,
         artist_id: a.artist_id,
-        year: a.year.unwrap_or(0) as u32,
+        year: u32::from(a.year.unwrap_or(0)),
         kind: map_album_kind(a.album_type),
         cover_url: cover_url(&a.cover, 300),
     }
@@ -197,7 +197,7 @@ fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
     resize_google_thumb(&t.url, px)
 }
 
-/// YouTube's image CDN encodes the requested size in a trailing `=w{W}-h{H}-…`
+/// `YouTube`'s image CDN encodes the requested size in a trailing `=w{W}-h{H}-…`
 /// segment (lh3/yt3/googleusercontent hosts). Rewriting it fetches a
 /// right-sized JPEG (`-rj`) instead of a 60px avatar or a 1200px original —
 /// smaller downloads, sharp tiles. URLs without that segment (e.g.
@@ -294,7 +294,7 @@ fn format_str(f: AudioFormat) -> &'static str {
 /// Preference order:
 ///   1. Non-DRM streams only (DRM tracks aren't playable without a license).
 ///   2. Prefer the M4A/AAC container — the most broadly decodable by a stock
-///      GStreamer install; Opus/WebM is the fallback.
+///      `GStreamer` install; Opus/WebM is the fallback.
 ///   3. Within the chosen container, the highest average bitrate.
 ///
 /// Returns `None` only if there are no non-DRM audio streams at all.
@@ -318,7 +318,7 @@ fn map_stream(video_id: &str, s: &AudioStream) -> ResolvedStream {
         bitrate: s.average_bitrate,
         itag: s.itag,
         size_bytes: s.size,
-        duration_ms: s.duration_ms.unwrap_or(0) as u64,
+        duration_ms: u64::from(s.duration_ms.unwrap_or(0)),
         fallback_url: None,
     }
 }
@@ -547,7 +547,7 @@ impl MusicBackend for RustyPipeBackend {
             .into_iter()
             .map(|al| ArtistAlbum {
                 title: al.name,
-                year: al.year.unwrap_or(0) as u32,
+                year: u32::from(al.year.unwrap_or(0)),
                 kind: map_album_kind(al.album_type),
                 cover_url: cover_url(&al.cover, 300),
                 id: al.id,
@@ -580,7 +580,7 @@ impl MusicBackend for RustyPipeBackend {
             title: al.name,
             artist_id: al.artist_id.unwrap_or_default(),
             artist_name,
-            year: al.year.unwrap_or(0) as u32,
+            year: u32::from(al.year.unwrap_or(0)),
             cover_url: cover,
             tracks,
         })
@@ -593,21 +593,19 @@ impl MusicBackend for RustyPipeBackend {
             .map_err(|e| BackendError(format!("music playlist: {e}")))?;
         let owner = pl
             .channel
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| {
+            .as_ref().map_or_else(|| {
                 if pl.from_ytm {
                     "YouTube Music".into()
                 } else {
                     "Playlist".into()
                 }
-            });
+            }, |c| c.name.clone());
         let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
         let subtitle = format!("{owner} \u{00b7} {count} songs");
         let description = pl
             .description
             .as_ref()
-            .map(|d| d.to_plaintext())
+            .map(rustypipe::model::richtext::ToPlaintext::to_plaintext)
             .unwrap_or_default();
         let cover = cover_url(&pl.thumbnail, 400);
         let tracks = pl.tracks.items.into_iter().map(map_track_item).collect();

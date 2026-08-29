@@ -2,9 +2,9 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.RemoteDesktop.xml`.
 //!
-//! RemoteDesktop lets an app (a remote-control / collaboration client)
+//! `RemoteDesktop` lets an app (a remote-control / collaboration client)
 //! drive the seat — inject pointer + keyboard events — after the user
-//! consents. The handshake mirrors ScreenCast:
+//! consents. The handshake mirrors `ScreenCast`:
 //!
 //! 1. `CreateSession` — register the session.
 //! 2. `SelectDevices` — the app asks for `pointer | keyboard | touchscreen`
@@ -52,7 +52,7 @@ fn state_pressed(state: u32) -> bool {
     state == 1
 }
 
-/// Sink for decoded RemoteDesktop `Notify*` actions.
+/// Sink for decoded `RemoteDesktop` `Notify*` actions.
 ///
 /// The portal backend runs on the D-Bus executor; the seat lives on the
 /// compositor thread. Production wires a [`ChannelInjector`] whose
@@ -177,8 +177,7 @@ impl RemoteDesktopBackend {
             .lock()
             .ok()
             .and_then(|s| s.get(&session_handle.to_string()).cloned())
-            .map(|sess| sess.started && (sess.devices & need != 0))
-            .unwrap_or(false)
+            .is_some_and(|sess| sess.started && (sess.devices & need != 0))
     }
 
     /// Decode + route one action if the gate allows it.
@@ -199,7 +198,7 @@ impl RemoteDesktopBackend {
         device_type::ALL
     }
 
-    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         REMOTE_DESKTOP_VERSION

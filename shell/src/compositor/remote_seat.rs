@@ -40,7 +40,7 @@ impl RemoteSeat {
     /// focused surface, if any — the compositor uses that to decide
     /// whether it needs to flip the physical seat's keyboard focus.
     pub fn enter(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
-        std::mem::replace(&mut self.focused_surface, Some(surface))
+        self.focused_surface.replace(surface)
     }
 
     /// Record a `PointerLeave` for the peer. Returns the previously
@@ -70,7 +70,7 @@ impl RemoteSeats {
     /// mutable borrow so they can flip `focused_surface` without a
     /// second lookup.
     pub fn seat_mut(&mut self, peer: PeerId) -> &mut RemoteSeat {
-        self.seats.entry(peer).or_insert_with(RemoteSeat::new)
+        self.seats.entry(peer).or_default()
     }
 
     /// Read-only borrow. Returns `None` if the peer has never emitted

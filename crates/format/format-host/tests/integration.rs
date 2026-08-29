@@ -82,7 +82,7 @@ impl HostHarness {
                 }
             }
         }
-        Err(anyhow::anyhow!("connect failed: {:?}", last))
+        Err(anyhow::anyhow!("connect failed: {last:?}"))
     }
 }
 
@@ -285,7 +285,7 @@ priority = "builtin"
             let _ = list.get();
             let response = list.send().promise.await.unwrap();
             let providers = response.get().unwrap().get_providers().unwrap();
-            if providers.len() >= 1 {
+            if !providers.is_empty() {
                 let name = providers.get(0).unwrap().to_string().unwrap();
                 assert_eq!(name, "dev.qos.qdoc-md");
                 return;

@@ -126,8 +126,7 @@ impl Autosave {
         }
         self.sent = doc.get_heads();
         self.base = std::fs::metadata(&self.document)
-            .map(|m| m.len() as usize)
-            .unwrap_or(0);
+            .map_or(0, |m| m.len() as usize);
         self.appended = 0;
     }
 
@@ -235,7 +234,7 @@ fn writer_loop(
     loop {
         let timeout = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
-            None => Duration::from_secs(3600),
+            None => Duration::from_hours(1),
         };
         match rx.recv_timeout(timeout) {
             Ok(Msg::Full(bytes)) => {

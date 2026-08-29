@@ -48,11 +48,7 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
         let mut row_min = curr[0];
 
         for j in 1..=lb {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
 
             let deletion = prev[j] + 1;
             let insertion = curr[j - 1] + 1;

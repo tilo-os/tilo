@@ -226,8 +226,8 @@ impl Frame {
     fn bounds(&self, region: Rect) -> (u32, u32, u32, u32) {
         let x0 = region.x0.max(0.0) as u32;
         let y0 = region.y0.max(0.0) as u32;
-        let x1 = (region.x1.min(self.width as f64) as u32).max(x0 + 1);
-        let y1 = (region.y1.min(self.height as f64) as u32).max(y0 + 1);
+        let x1 = (region.x1.min(f64::from(self.width)) as u32).max(x0 + 1);
+        let y1 = (region.y1.min(f64::from(self.height)) as u32).max(y0 + 1);
         (x0, y0, x1, y1)
     }
 

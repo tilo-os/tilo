@@ -2,9 +2,9 @@
 //! affordance used by the notes app.
 //!
 //! Conceptually a thinner cousin of [`crate::widget::CommandPalette`]
-//! — the CommandPalette has a concept-locked filter strip + footer
+//! — the `CommandPalette` has a concept-locked filter strip + footer
 //! row that doesn't fit the notes app's "just jump to a page" mental
-//! model. PageJumpPalette ships only the input row + the filtered
+//! model. `PageJumpPalette` ships only the input row + the filtered
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
@@ -238,7 +238,7 @@ impl PageJumpPalette {
             rect.x1 - PADDING,
             rect.y0 + PADDING + INPUT_HEIGHT,
         );
-        let input_shape = RoundedRect::from_rect(input_rect, theme.tokens.radii.md as f64);
+        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -266,7 +266,7 @@ impl PageJumpPalette {
         } else {
             tokens.colors.text_primary
         };
-        let ty = input_rect.y0 + (input_rect.height() - text_size as f64) / 2.0;
+        let ty = input_rect.y0 + (input_rect.height() - f64::from(text_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             display,
@@ -280,7 +280,7 @@ impl PageJumpPalette {
         let row_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
             let label = "No pages match";
-            let y = list_top + (ROW_HEIGHT - row_size as f64) / 2.0;
+            let y = list_top + (ROW_HEIGHT - f64::from(row_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -297,7 +297,7 @@ impl PageJumpPalette {
             let y0 = list_top + i as f64 * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + PADDING, y0, rect.x1 - PADDING, y0 + ROW_HEIGHT);
             if i == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
+                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -306,7 +306,7 @@ impl PageJumpPalette {
                     &hl,
                 );
             }
-            let ty = row_rect.y0 + (row_rect.height() - row_size as f64) / 2.0;
+            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -334,7 +334,7 @@ impl Widget for PageJumpPalette {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -360,7 +360,7 @@ impl Widget for PageJumpPalette {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PageJumpPalette"
     }
     fn test_id(&self) -> Option<&str> {

@@ -386,7 +386,7 @@ impl AppShell {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         if self.back_press {
             let pill = RoundedRect::from_rect(self.back_rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_active, None, &pill);
@@ -395,8 +395,8 @@ impl AppShell {
             scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &pill);
         }
         let (gw, _gh) = tr.measure(BACK_GLYPH, BACK_GLYPH_SIZE, None);
-        let gx = self.back_rect.x0 + (self.back_rect.width() - gw as f64) / 2.0;
-        let line_box = BACK_GLYPH_SIZE as f64 * 1.25;
+        let gx = self.back_rect.x0 + (self.back_rect.width() - f64::from(gw)) / 2.0;
+        let line_box = f64::from(BACK_GLYPH_SIZE) * 1.25;
         let gy = self.back_rect.y0 + (self.back_rect.height() - line_box) / 2.0;
         tr.draw_text(
             scene,
@@ -576,17 +576,17 @@ impl Widget for AppShell {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
 
         // A breakpoint cross since this tree was built needs a rebuild so the
@@ -810,7 +810,7 @@ impl Widget for AppShell {
         out
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AppShell"
     }
 
@@ -823,8 +823,7 @@ impl Widget for AppShell {
         let search = self
             .search
             .as_mut()
-            .map(|s| s.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|s| s.take_structure_dirty());
         let nav = self.nav.take_structure_dirty();
         let content = self.content.take_structure_dirty();
         own || search || nav || content

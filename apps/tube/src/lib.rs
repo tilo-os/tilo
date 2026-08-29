@@ -1,8 +1,8 @@
-//! Tube — a privacy-respecting YouTube client for qOS.
+//! Tube — a privacy-respecting `YouTube` client for qOS.
 //!
 //! No ads, no tracking, no Google player. Video search + metadata come from
-//! public Invidious instances; SponsorBlock marks and auto-skips sponsor /
-//! intro / outro segments; DeArrow swaps clickbait titles and thumbnails
+//! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
+//! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
 //! native `ui` toolkit, so subscriptions, settings and watch history live
 //! in the Automerge document and replicate / undo for free.

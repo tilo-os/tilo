@@ -41,7 +41,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Default queue ceiling — matches the receive-side PeerView's pending
+/// Default queue ceiling — matches the receive-side `PeerView`'s pending
 /// ceiling. A shim backed up beyond this many frames represents a
 /// real-world "the wire can't keep up" — the fix is drop, not buffering.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 8;
@@ -188,12 +188,12 @@ impl<T> FrameLink<T> {
         let bytes_per_sec = if cfg.throughput_kbps == 0 {
             0
         } else {
-            (cfg.throughput_kbps as u64) * 1000 / 8
+            cfg.throughput_kbps * 1000 / 8
         };
         let token_bucket_bytes = cfg.token_bucket_bytes.max(1);
         Self {
-            latency: Duration::from_millis(cfg.latency_ms as u64),
-            jitter: Duration::from_millis(cfg.jitter_ms as u64),
+            latency: Duration::from_millis(u64::from(cfg.latency_ms)),
+            jitter: Duration::from_millis(u64::from(cfg.jitter_ms)),
             bytes_per_sec,
             token_bucket_bytes,
             queue_capacity: cfg.queue_capacity.max(1),
@@ -339,7 +339,7 @@ impl<T> FrameLink<T> {
         self.rng_state = x;
         // Map into [-jitter_ns, +jitter_ns].
         let range = self.jitter.as_nanos() as i128 * 2 + 1;
-        let raw = (x % range as u64) as i128 - self.jitter.as_nanos() as i128;
+        let raw = i128::from(x % range as u64) - self.jitter.as_nanos() as i128;
         if raw >= 0 {
             Duration::from_nanos(raw as u64)
         } else {
@@ -384,7 +384,7 @@ pub fn spawn_channel<T: Send + 'static>(
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Flush anything the shim still holds, then exit.
-                    let now = Instant::now() + Duration::from_secs(3600);
+                    let now = Instant::now() + Duration::from_hours(1);
                     for payload in link.drain_ready(now) {
                         if out_tx.send(payload).is_err() {
                             break;

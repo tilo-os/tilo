@@ -70,7 +70,7 @@ pub struct PipewireStreamInfo {
     /// `(width, height)` of the stream's video frames.
     pub size: (u32, u32),
     /// `(x, y)` position in the compositor coordinate space; per the
-    /// ScreenCast spec **only** meaningful for monitor sources — [`Self::into_stream_tuple`] omits it otherwise.
+    /// `ScreenCast` spec **only** meaningful for monitor sources — [`Self::into_stream_tuple`] omits it otherwise.
     pub position: (i32, i32),
 }
 
@@ -125,7 +125,7 @@ pub trait ScreenCastStreamProvisioner: Send + Sync {
         req: &PipewireStreamRequest,
     ) -> Result<PipewireStreamInfo, ProvisioningError>;
 
-    /// Open a PipeWire remote connection and hand back its fd.
+    /// Open a `PipeWire` remote connection and hand back its fd.
     ///
     /// This is what `ScreenCast.OpenPipeWireRemote` returns to the app: a fd
     /// passed to `pw_context_connect_fd` to attach to the nodes provisioned
@@ -153,7 +153,7 @@ impl ScreenCastStreamProvisionerHandle {
         self.inner.provision_stream(req)
     }
 
-    /// Open a PipeWire remote fd for `ScreenCast.OpenPipeWireRemote`.
+    /// Open a `PipeWire` remote fd for `ScreenCast.OpenPipeWireRemote`.
     pub fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
         self.inner.open_remote_fd()
     }

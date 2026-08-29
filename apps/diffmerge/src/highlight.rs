@@ -172,7 +172,7 @@ pub fn classify(line: &str) -> Vec<Span> {
 }
 
 /// Slice the original line into `(text, color)` segments using the theme.
-pub fn segments<'a>(line: &'a str, theme: &Theme) -> Vec<(String, Color)> {
+pub fn segments(line: &str, theme: &Theme) -> Vec<(String, Color)> {
     let chars: Vec<char> = line.chars().collect();
     classify(line)
         .into_iter()

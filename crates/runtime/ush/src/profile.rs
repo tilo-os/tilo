@@ -149,17 +149,17 @@ fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in ALWAYS_DENIES {
-        rules.insert(*nr as i64, Vec::new());
+        rules.insert(*nr, Vec::new());
     }
     if profile.confines_namespaces() {
         for nr in NAMESPACE_DENIES {
-            rules.insert(*nr as i64, Vec::new());
+            rules.insert(*nr, Vec::new());
         }
     }
 
     // socket(AF_PACKET, ...) — a raw link-layer socket, in every profile.
     rules.insert(
-        libc::SYS_socket as i64,
+        libc::SYS_socket,
         vec![SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,

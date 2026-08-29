@@ -177,7 +177,7 @@ pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> St
 /// every other hunk keeping its current resolution. Backs the per-hunk
 /// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
-    let custom: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+    let custom: Vec<String> = text.lines().map(std::string::ToString::to_string).collect();
     let mut out = String::new();
     for (i, h) in model.hunks.iter().enumerate() {
         let lines = if i == hunk {
@@ -494,7 +494,7 @@ mod tests {
 
     /// Single source of truth: the palette's immediate take-theirs spec encodes
     /// byte-identically to the action a chip builds via the shared builder +
-    /// composer. And the prompted custom-resolve spec matches the SetMerged the
+    /// composer. And the prompted custom-resolve spec matches the `SetMerged` the
     /// builder produces for the same text.
     #[test]
     fn palette_and_builder_encode_identically() {

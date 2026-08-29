@@ -199,7 +199,7 @@ fn find_tag_start(s: &str, name: &str) -> Option<usize> {
         let at = from + rel;
         let after = at + needle.len();
         match s.as_bytes().get(after) {
-            Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') | Some(b'>') | Some(b'/') => {
+            Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/') => {
                 return Some(at);
             }
             _ => from = after,
@@ -271,18 +271,15 @@ fn inject_section(s: &str, section: &str) -> String {
     if at.is_none() {
         at = s.rfind("</office:document-styles>");
     }
-    match at {
-        Some(pos) => {
-            let mut out = String::with_capacity(s.len() + section.len());
-            out.push_str(&s[..pos]);
-            out.push_str(section);
-            out.push_str(&s[pos..]);
-            out
-        }
-        None => {
-            let mut out = s.to_string();
-            out.push_str(section);
-            out
-        }
+    if let Some(pos) = at {
+        let mut out = String::with_capacity(s.len() + section.len());
+        out.push_str(&s[..pos]);
+        out.push_str(section);
+        out.push_str(&s[pos..]);
+        out
+    } else {
+        let mut out = s.to_string();
+        out.push_str(section);
+        out
     }
 }

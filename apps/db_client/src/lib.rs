@@ -1,16 +1,16 @@
 //! Database — a qOS native database client built on the `ui` toolkit.
 //!
-//! Connects to PostgreSQL, MySQL and SQLite over real drivers. SQLite runs
+//! Connects to `PostgreSQL`, `MySQL` and `SQLite` over real drivers. `SQLite` runs
 //! fully locally (and ships a bundled sample catalog for the offline `--shots`
-//! path); PostgreSQL and MySQL open real TCP connections, introspect the live
+//! path); `PostgreSQL` and `MySQL` open real TCP connections, introspect the live
 //! catalog and run real queries — a refused socket or a bad password surfaces
 //! as an honest error, never a fabricated success.
 //!
 //! Layers:
 //! - [`model`]        — connection profiles, schema types, query results.
-//! - [`engine`]       — the SQLite driver, the [`engine::LiveEngine`] enum that
+//! - [`engine`]       — the `SQLite` driver, the [`engine::LiveEngine`] enum that
 //!                      unifies all three engines, and [`engine::open_engine`].
-//! - [`engine_pg`]    — the PostgreSQL driver: introspection + query execution.
+//! - [`engine_pg`]    — the `PostgreSQL` driver: introspection + query execution.
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`worker`]    — the background thread that owns the live engine and runs
 //!                   every blocking connect/introspect/query off the UI thread.

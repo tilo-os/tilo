@@ -59,16 +59,13 @@ impl Opts {
             match a.as_str() {
                 "--fullscreen" => o.fullscreen = true,
                 "--size" => {
-                    if let Some(v) = it.next() {
-                        if let Some((w, h)) = v.split_once(|c| c == 'x' || c == 'X') {
-                            if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
-                                if w > 0 && h > 0 {
+                    if let Some(v) = it.next()
+                        && let Some((w, h)) = v.split_once(['x', 'X'])
+                            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
+                                && w > 0 && h > 0 {
                                     o.width = w;
                                     o.height = h;
                                 }
-                            }
-                        }
-                    }
                 }
                 "--app-id" => {
                     if let Some(v) = it.next() {
@@ -76,13 +73,11 @@ impl Opts {
                     }
                 }
                 "--seconds" => {
-                    if let Some(v) = it.next() {
-                        if let Ok(s) = v.trim().parse::<f64>() {
-                            if s > 0.0 {
+                    if let Some(v) = it.next()
+                        && let Ok(s) = v.trim().parse::<f64>()
+                            && s > 0.0 {
                                 o.seconds = s;
                             }
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -326,7 +321,7 @@ mod tests {
     use super::Opts;
 
     fn v(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| s.to_string()).collect()
+        args.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

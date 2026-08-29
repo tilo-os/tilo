@@ -1,6 +1,6 @@
 //! The non-blocking streaming worker.
 //!
-//! All network + extraction work — real YouTube Music search and audio-stream
+//! All network + extraction work — real `YouTube` Music search and audio-stream
 //! resolution — runs on a background thread so the UI thread never blocks. The
 //! app talks to it with two plain channels: it *sends* [`StreamRequest`]s
 //! (fire-and-forget) and *drains* [`StreamUpdate`]s once per frame via
@@ -34,11 +34,11 @@ pub enum StreamRequest {
     Resolve { track_id: String, video_id: String },
     /// Fetch the real Home page (charts / new releases / top artists).
     Home,
-    /// Fetch a real artist page by YouTube channel id.
+    /// Fetch a real artist page by `YouTube` channel id.
     Artist(String),
-    /// Fetch a real album's track list by YouTube album id.
+    /// Fetch a real album's track list by `YouTube` album id.
     Album(String),
-    /// Fetch a real playlist's track list by YouTube playlist id.
+    /// Fetch a real playlist's track list by `YouTube` playlist id.
     Playlist(String),
 }
 

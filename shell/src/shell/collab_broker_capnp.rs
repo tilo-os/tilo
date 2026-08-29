@@ -186,8 +186,7 @@ impl CapnpBrokerState {
         // placeholder id; the caller drops it on the next tokio yield.
         self.peer_table
             .upgrade()
-            .map(|t| t.next_peer_id())
-            .unwrap_or(u64::MAX)
+            .map_or(u64::MAX, |t| t.next_peer_id())
     }
 
     /// Drive an event onto the subscribed queues `route` addresses,
@@ -453,7 +452,7 @@ impl collab_service::Server for CapnpCollabService {
 
             let handle = CapnpChannelHandle {
                 state: state.clone(),
-                channel_id: channel_id.clone(),
+                channel_id,
                 peer_id,
             };
             let client: channel_handle::Client = capnp_rpc::new_client(handle);
@@ -464,7 +463,7 @@ impl collab_service::Server for CapnpCollabService {
 }
 
 /// Per-channel handle established by `join_channel`; every subsequent
-/// method call inherits its (channel_id, peer_id, identity) context.
+/// method call inherits its (`channel_id`, `peer_id`, identity) context.
 struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
     channel_id: String,
@@ -649,11 +648,10 @@ fn handle_signed_op_send(
             if let Ok(mut ch) = state.broker_channels.lock() {
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == OpClass::Compaction {
-                    if let Ok(cp) = collab_types::parse_compaction_payload(&envelope) {
+                if envelope.op_class == OpClass::Compaction
+                    && let Ok(cp) = collab_types::parse_compaction_payload(&envelope) {
                         let _ = ch_state.apply_compaction(&cp);
                     }
-                }
             }
             if envelope.op_class == OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -1196,7 +1194,7 @@ pub fn spawn(
                     }
                     let stream = tokio::select! {
                         biased;
-                        _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                        () = tokio::time::sleep(Duration::from_millis(100)) => continue,
                         conn = listener.accept() => conn,
                     };
                     let (stream, _) = match stream {
