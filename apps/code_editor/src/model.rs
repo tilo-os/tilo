@@ -787,6 +787,27 @@ impl Session {
         }
     }
 
+    /// Move the open tab at `from` to `to` — a drag-reorder in the tab bar
+    /// must never change which buffer is showing, only where its tab sits.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from >= self.open.len() || to >= self.open.len() || from == to {
+            return;
+        }
+        let buf = self.open.remove(from);
+        self.open.insert(to, buf);
+        self.active = self.active.map(|a| {
+            if a == from {
+                to
+            } else if from < to && a > from && a <= to {
+                a - 1
+            } else if to < from && a >= to && a < from {
+                a + 1
+            } else {
+                a
+            }
+        });
+    }
+
     pub fn active_buffer(&self) -> Option<&OpenBuffer> {
         self.active.and_then(|i| self.open.get(i))
     }
@@ -1046,5 +1067,40 @@ mod tests {
         // Active shifts down by one to still point at "c".
         assert_eq!(s.active, Some(1));
         assert_eq!(s.open.len(), 2);
+    }
+
+    #[test]
+    fn reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it() {
+        let mut p = Project::new("proj");
+        let a = p.add_file(p.root, "a.rs", "");
+        let b = p.add_file(p.root, "b.rs", "");
+        let c = p.add_file(p.root, "c.rs", "");
+        let mut s = Session::new(p);
+        s.open_file(a);
+        s.open_file(b);
+        s.open_file(c);
+        s.active = Some(1); // "b" is active
+
+        s.reorder_tab(0, 2); // drag "a" to the end: [b, c, a]
+        let names: Vec<&str> = s.open.iter().map(|buf| buf.name.as_str()).collect();
+        assert_eq!(names, vec!["b.rs", "c.rs", "a.rs"]);
+        assert_eq!(
+            s.active,
+            Some(0),
+            "reordering a buffer other than the active one must still \
+             follow the active buffer to its new index"
+        );
+
+        s.reorder_tab(0, 2); // drag "b" (still active) to the end too.
+        assert_eq!(
+            s.active,
+            Some(2),
+            "reordering the active buffer itself must follow it exactly"
+        );
+
+        // Out-of-range and no-op reorders must not panic or move anything.
+        s.reorder_tab(0, 0);
+        s.reorder_tab(0, 99);
+        assert_eq!(s.open.len(), 3);
     }
 }
