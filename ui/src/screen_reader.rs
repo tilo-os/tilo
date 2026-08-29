@@ -175,10 +175,10 @@ mod phrase {
 pub fn describe(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(name) = node.name.as_deref() {
-        if !name.is_empty() {
-            parts.push(name.to_string());
-        }
+    if let Some(name) = node.name.as_deref()
+        && !name.is_empty()
+    {
+        parts.push(name.to_string());
     }
 
     match node.role {
@@ -193,10 +193,10 @@ pub fn describe(node: &AccessNode) -> String {
 
     if node.state.protected {
         parts.push(phrase::protected());
-    } else if let Some(value) = node.value.as_deref() {
-        if !value.is_empty() {
-            parts.push(value.to_string());
-        }
+    } else if let Some(value) = node.value.as_deref()
+        && !value.is_empty()
+    {
+        parts.push(value.to_string());
     }
 
     push_state_words(node, &mut parts);
@@ -218,10 +218,10 @@ pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
     if node.state.protected {
         parts.push(phrase::protected());
-    } else if let Some(value) = node.value.as_deref() {
-        if !value.is_empty() {
-            parts.push(value.to_string());
-        }
+    } else if let Some(value) = node.value.as_deref()
+        && !value.is_empty()
+    {
+        parts.push(value.to_string());
     }
     push_state_words(node, &mut parts);
     parts.join(", ")
@@ -566,24 +566,24 @@ impl ScreenReader {
 
     /// Jump to the next heading and speak it ("Insert + H").
     pub fn read_next_heading(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.read_next_matching(root, |n| is_heading(n))
+        self.read_next_matching(root, is_heading)
     }
 
     /// Jump to the previous heading and speak it ("Insert + Shift + H").
     pub fn read_prev_heading(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.read_prev_matching(root, |n| is_heading(n))
+        self.read_prev_matching(root, is_heading)
     }
 
     /// Jump to the next form field / interactive control and speak it
     /// ("Insert + F").
     pub fn read_next_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.read_next_matching(root, |n| is_form_field(n))
+        self.read_next_matching(root, is_form_field)
     }
 
     /// Jump to the previous form field / interactive control and speak it
     /// ("Insert + Shift + F").
     pub fn read_prev_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.read_prev_matching(root, |n| is_form_field(n))
+        self.read_prev_matching(root, is_form_field)
     }
 }
 

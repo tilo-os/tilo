@@ -161,14 +161,14 @@ impl Slider {
 
 impl Widget for Slider {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => self.value = *f,
-                    automerge::ScalarValue::Int(i) => self.value = *i as f64,
-                    automerge::ScalarValue::Uint(u) => self.value = *u as f64,
-                    _ => {}
-                }
+        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
+            && let Value::Scalar(s) = val
+        {
+            match s.as_ref() {
+                automerge::ScalarValue::F64(f) => self.value = *f,
+                automerge::ScalarValue::Int(i) => self.value = *i as f64,
+                automerge::ScalarValue::Uint(u) => self.value = *u as f64,
+                _ => {}
             }
         }
     }
@@ -188,10 +188,10 @@ impl Widget for Slider {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
     }
 
@@ -304,11 +304,11 @@ impl Widget for Slider {
                     *handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
                     self.commit_value(new_value, state, root);
-                } else if *element_state == ElementState::Released {
-                    if self.is_dragging {
-                        self.is_dragging = false;
-                        *handled = true;
-                    }
+                } else if *element_state == ElementState::Released
+                    && self.is_dragging
+                {
+                    self.is_dragging = false;
+                    *handled = true;
                 }
             }
             _ => {}
@@ -389,9 +389,16 @@ impl Widget for Slider {
                 self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
             }
             Action::SetValue(v) => {
+                // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
+                // which would otherwise slip a non-finite value into the
+                // CRDT and any serialiser downstream that (rightly) refuses
+                // non-finite floats.
                 let Ok(parsed) = v.trim().trim_end_matches('%').parse::<f64>() else {
                     return false;
                 };
+                if !parsed.is_finite() {
+                    return false;
+                }
                 // Accept either a 0..1 fraction or a 0..100 percentage.
                 let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
                 self.commit_value(frac.clamp(0.0, 1.0), state, path)
@@ -424,19 +431,18 @@ impl Widget for Slider {
         if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

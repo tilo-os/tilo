@@ -466,10 +466,10 @@ impl Widget for Button {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
@@ -581,7 +581,7 @@ impl Widget for Button {
                     );
                 }
                 let text_x = start_x + icon_w + gap;
-                let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+                let text_y = self.rect.y0 + (self.rect.height() - text_size) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     &label,
@@ -792,19 +792,18 @@ impl Widget for Button {
         if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

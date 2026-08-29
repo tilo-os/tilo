@@ -148,17 +148,17 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
         return false;
     }
     let mut offers: Vec<(String, Vec<u8>)> = Vec::new();
-    if let [single] = paths {
-        if let Some(mime) = mime_for_path(single) {
-            match std::fs::read(single) {
-                Ok(bytes) => offers.push((mime.to_string(), bytes)),
-                Err(e) => tracing::warn!(
-                    target: "ui::dnd",
-                    path = %single.display(),
-                    error = %e,
-                    "could not read the dragged file; offering only its name"
-                ),
-            }
+    if let [single] = paths
+        && let Some(mime) = mime_for_path(single)
+    {
+        match std::fs::read(single) {
+            Ok(bytes) => offers.push((mime.to_string(), bytes)),
+            Err(e) => tracing::warn!(
+                target: "ui::dnd",
+                path = %single.display(),
+                error = %e,
+                "could not read the dragged file; offering only its name"
+            ),
         }
     }
     offers.push((URI_LIST_MIME.to_string(), uri_list(paths).into_bytes()));

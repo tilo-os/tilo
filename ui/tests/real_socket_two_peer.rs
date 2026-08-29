@@ -121,10 +121,10 @@ fn real_socket_fans_out_incremental_and_presence() {
             };
 
             let dst_idx = 1 - src_idx;
-            if let Ok(mut guard) = streams.lock() {
-                if let Some(stream) = guard.get_mut(dst_idx) {
-                    write_frame(stream, &bytes);
-                }
+            if let Ok(mut guard) = streams.lock()
+                && let Some(stream) = guard.get_mut(dst_idx)
+            {
+                write_frame(stream, &bytes);
             }
         }
 

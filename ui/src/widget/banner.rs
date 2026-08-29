@@ -276,7 +276,7 @@ impl Widget for Banner {
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
-                size: taffy::Size { width: percent(1.0), height: length(h) },
+                size: taffy::Size { width: percent(1.0_f32), height: length(h) },
                 ..Default::default()
             })
             .unwrap();
@@ -352,12 +352,12 @@ impl Widget for Banner {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.dismissible && !self.dismissed && self.dismiss_rect.contains(self.last_cursor) {
-                    self.dismissed = true;
-                    self.dismiss_fired = true;
-                    *handled = true;
-                }
+            }
+                if self.dismissible && !self.dismissed && self.dismiss_rect.contains(self.last_cursor) =>
+            {
+                self.dismissed = true;
+                self.dismiss_fired = true;
+                *handled = true;
             }
             _ => {}
         }

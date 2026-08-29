@@ -3529,9 +3529,15 @@ impl BooksApp {
         let Some((field, buf)) = self.num_edit.take() else {
             return;
         };
+        // `f32::from_str` accepts "nan"/"inf"/"-inf" as valid text, which would
+        // otherwise slip a non-finite value into the CRDT and any serialiser
+        // downstream that (rightly) refuses non-finite floats.
         let Ok(v) = buf.trim().parse::<f32>() else {
             return;
         };
+        if !v.is_finite() {
+            return;
+        }
         match field {
             NumField::FontScale => {
                 let scale = (v / 100.0).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
@@ -4926,7 +4932,18 @@ impl BooksApp {
         } else {
             theme.accent_primary.with_alpha_factor(0.55)
         };
-        dashed_round_border(scene, t, tile, 12.0, border, 1.6, 7.0, 5.0);
+        dashed_round_border(
+            scene,
+            t,
+            tile,
+            12.0,
+            border,
+            DashStyle {
+                width: 1.6,
+                dash: 7.0,
+                gap: 5.0,
+            },
+        );
 
         // Plus mark inside a soft accent disc.
         let cx = x + w / 2.0;
@@ -5662,34 +5679,32 @@ impl BooksApp {
                         paint::fill_rect(scene, t, bar, palette.rule);
                     }
                 }
-                LayoutKind::Separator => {
-                    if pane.shows(b.top, b.line_height) {
-                        let cy = pane.screen_y(b.top) + b.line_height as f64 / 2.0;
-                        let cx = content_x + content_w as f64 / 2.0;
-                        paint::line(
-                            scene,
-                            t,
-                            Point::new(cx - 28.0, cy),
-                            Point::new(cx + 28.0, cy),
-                            palette.rule,
-                            1.4,
-                        );
-                    }
+                LayoutKind::Separator if pane.shows(b.top, b.line_height) => {
+                    let cy = pane.screen_y(b.top) + b.line_height as f64 / 2.0;
+                    let cx = content_x + content_w as f64 / 2.0;
+                    paint::line(
+                        scene,
+                        t,
+                        Point::new(cx - 28.0, cy),
+                        Point::new(cx + 28.0, cy),
+                        palette.rule,
+                        1.4,
+                    );
                 }
                 _ => {}
             }
-            if let Some(bullet) = &b.bullet {
-                if let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height)) {
-                    let ly = pane.screen_y(first.y);
-                    tr.draw_text(
-                        scene,
-                        bullet,
-                        b.size,
-                        palette.ink_dim,
-                        t * Affine::translate((content_x + b.indent as f64 - 20.0, ly)),
-                        None,
-                    );
-                }
+            if let Some(bullet) = &b.bullet
+                && let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height))
+            {
+                let ly = pane.screen_y(first.y);
+                tr.draw_text(
+                    scene,
+                    bullet,
+                    b.size,
+                    palette.ink_dim,
+                    t * Affine::translate((content_x + b.indent as f64 - 20.0, ly)),
+                    None,
+                );
             }
             for l in &b.lines {
                 if !pane.shows(l.y, b.line_height) {
@@ -6479,10 +6494,10 @@ impl BooksApp {
         // observation only records the position, so opening a book doesn't
         // poke it open.
         let pos = (self.chapter, self.page);
-        if let Some(prev) = self.bubble_shown {
-            if prev != pos {
-                self.page_bubble.poke(now);
-            }
+        if let Some(prev) = self.bubble_shown
+            && prev != pos
+        {
+            self.page_bubble.poke(now);
         }
         self.bubble_shown = Some(pos);
 
@@ -6520,7 +6535,7 @@ impl BooksApp {
             self.shots_reader_bubble || zone.contains(self.cursor) || rect.contains(self.cursor);
         self.page_bubble.set_hover(over, now);
 
-        let alpha = self.page_bubble.alpha(now) as f32;
+        let alpha = self.page_bubble.alpha(now);
         if alpha <= 0.0 {
             return;
         }
@@ -7392,7 +7407,7 @@ impl BooksApp {
         let content_top = tabs_y + tab_h + 18.0;
         let body = Rect::new(r.x0, content_top, r.x1, r.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
-        let col_w = (r.width() - 96.0).min(760.0).max(280.0);
+        let col_w = (r.width() - 96.0).clamp(280.0, 760.0);
         let col_x = r.x0 + (r.width() - col_w) / 2.0;
         let start_y = content_top - self.settings_scroll;
         let end_y = match self.settings_tab {
@@ -8556,7 +8571,7 @@ impl BooksApp {
         self.push_hit(r, Action::CloseFontPicker);
 
         let pw = 380.0_f64.min(r.width() - 40.0);
-        let ph = (r.height() - 120.0).min(520.0).max(200.0);
+        let ph = (r.height() - 120.0).clamp(200.0, 520.0);
         let px0 = r.x0 + (r.width() - pw) / 2.0;
         let py0 = r.y0 + (r.height() - ph) / 2.0;
         let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
@@ -8707,7 +8722,7 @@ fn ellipsize(
     let mut best = String::from("…");
     let mut lo = 0;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         let candidate: String = chars[..mid].iter().collect::<String>() + "…";
         if tr.measure_weighted(&candidate, size, None, weight).0 as f64 <= max_w {
             best = candidate;
@@ -8744,29 +8759,35 @@ fn blit_cover(scene: &mut Scene, t: Affine, img: PenikoImage, rect: Rect, radius
 
 /// Stroke a dashed border along the straight edges of a rounded rectangle (the
 /// rounded corners are left as small gaps). Reads as a drop-zone outline.
+/// Stroke parameters for [`dashed_round_border`], grouped so the border
+/// drawer stays under clippy's argument-count lint.
+struct DashStyle {
+    width: f64,
+    dash: f64,
+    gap: f64,
+}
+
 fn dashed_round_border(
     scene: &mut Scene,
     t: Affine,
     rect: Rect,
     radius: f64,
     color: Color,
-    width: f64,
-    dash: f64,
-    gap: f64,
+    style: DashStyle,
 ) {
-    let step = dash + gap;
+    let step = style.dash + style.gap;
     // Top + bottom edges, between the corner radii.
     let (hx0, hx1) = (rect.x0 + radius, rect.x1 - radius);
     let mut x = hx0;
     while x < hx1 {
-        let xe = (x + dash).min(hx1);
+        let xe = (x + style.dash).min(hx1);
         paint::line(
             scene,
             t,
             Point::new(x, rect.y0),
             Point::new(xe, rect.y0),
             color,
-            width,
+            style.width,
         );
         paint::line(
             scene,
@@ -8774,7 +8795,7 @@ fn dashed_round_border(
             Point::new(x, rect.y1),
             Point::new(xe, rect.y1),
             color,
-            width,
+            style.width,
         );
         x += step;
     }
@@ -8782,14 +8803,14 @@ fn dashed_round_border(
     let (vy0, vy1) = (rect.y0 + radius, rect.y1 - radius);
     let mut y = vy0;
     while y < vy1 {
-        let ye = (y + dash).min(vy1);
+        let ye = (y + style.dash).min(vy1);
         paint::line(
             scene,
             t,
             Point::new(rect.x0, y),
             Point::new(rect.x0, ye),
             color,
-            width,
+            style.width,
         );
         paint::line(
             scene,
@@ -8797,7 +8818,7 @@ fn dashed_round_border(
             Point::new(rect.x1, y),
             Point::new(rect.x1, ye),
             color,
-            width,
+            style.width,
         );
         y += step;
     }
@@ -9913,8 +9934,7 @@ mod interaction_tests {
         let end_run = app
             .sel_runs
             .iter()
-            .filter(|r| r.block == r0.block)
-            .last()
+            .rfind(|r| r.block == r0.block)
             .cloned()
             .unwrap();
         ptr_move(
@@ -10025,8 +10045,7 @@ mod interaction_tests {
         let end_run = app
             .sel_runs
             .iter()
-            .filter(|r| r.block == r0.block)
-            .last()
+            .rfind(|r| r.block == r0.block)
             .cloned()
             .unwrap();
         ptr_move(
@@ -11374,8 +11393,7 @@ mod interaction_tests {
         let end_run = app
             .sel_runs
             .iter()
-            .filter(|r| r.block == r0.block)
-            .last()
+            .rfind(|r| r.block == r0.block)
             .cloned()
             .unwrap();
         let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);

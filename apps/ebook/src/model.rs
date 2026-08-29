@@ -13,6 +13,15 @@
 //!    is an **anchor** (which document, where) plus a **payload** (what kind,
 //!    what colour, what note). See [`Annotation`] for the anchoring contract.
 
+// This module's several `from_str(s: &str) -> Self` methods are deliberately
+// infallible tag parsers with a default fallback (unknown/legacy tags map to
+// a sensible variant rather than erroring) -- a different contract from
+// `std::str::FromStr::from_str`, which returns `Result`. Implementing the
+// trait would force a `Result` return and ripple `.parse()`/`?` handling
+// through every call site for no behavioural benefit, so the name collision
+// is accepted here rather than exempted call-by-call.
+#![allow(clippy::should_implement_trait)]
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -647,6 +656,10 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
     ]
 }
 
+/// The derived palette parts returned by [`ColorScheme::palette_parts`]:
+/// `(page, page_edge, ink, ink_dim, rule, code_bg)`.
+pub type PaletteParts = ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]);
+
 /// A reader colour scheme: a page (paper) colour, body ink, and an accent, plus
 /// a dark flag. The rest of the palette (faint edges, dim ink, rules, code
 /// chips) is **derived**, so a scheme stays coherent from just these three
@@ -711,7 +724,7 @@ impl ColorScheme {
     }
 
     /// The derived palette parts `(page, page_edge, ink, ink_dim, rule, code_bg)`.
-    pub fn palette_parts(&self) -> ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]) {
+    pub fn palette_parts(&self) -> PaletteParts {
         let page = self.page;
         let ink = self.ink;
         (
@@ -1027,8 +1040,10 @@ mod tests {
 
     #[test]
     fn settings_body_size_scales() {
-        let mut s = Settings::default();
-        s.font_scale = 1.5;
+        let s = Settings {
+            font_scale: 1.5,
+            ..Default::default()
+        };
         assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
     }
 

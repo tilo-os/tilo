@@ -215,12 +215,12 @@ struct Binding {
 
 impl Binding {
     fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
-        if let Some(want) = want {
-            if want.id != self.live {
-                self.store.open_record(&want);
-                self.live = want.id;
-                self.established = false;
-            }
+        if let Some(want) = want
+            && want.id != self.live
+        {
+            self.store.open_record(&want);
+            self.live = want.id;
+            self.established = false;
         }
         self.live.clone()
     }
@@ -315,10 +315,10 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        if let Some(b) = &self.binding {
-            if b.tab.id == tab.id {
-                return;
-            }
+        if let Some(b) = &self.binding
+            && b.tab.id == tab.id
+        {
+            return;
         }
         store.open_record(&tab);
         let live = tab.id.clone();
@@ -479,10 +479,10 @@ impl Widget for TileHost {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
-        if let Some(t) = self.spawned_at {
-            if t.elapsed().as_millis() >= SPAWN_FADE_MS as u128 {
-                self.spawned_at = None;
-            }
+        if let Some(t) = self.spawned_at
+            && t.elapsed().as_millis() >= SPAWN_FADE_MS as u128
+        {
+            self.spawned_at = None;
         }
         if theme.reduce_motion {
             self.spawned_at = None;
@@ -827,6 +827,10 @@ impl TileHost {
 /// the only two things someone waiting for a window needs. Paints its own
 /// ground because it is also the top half of the dissolve that retires
 /// it, covering the arrived window underneath while still fading.
+// Standard immediate-mode paint-helper signature for this vello renderer
+// (scene + transform + text_renderer + theme, plus this draw's own
+// content); every parameter is independently load-bearing.
+#[allow(clippy::too_many_arguments)]
 fn draw_opening_card(
     scene: &mut Scene,
     transform: Affine,
@@ -916,7 +920,7 @@ mod tests {
     use std::time::Duration;
 
     fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
-        let bytes: &[u8] = sprite.data.data().as_ref();
+        let bytes: &[u8] = sprite.data.data();
         let idx = ((y * sprite.width + x) * 4 + 3) as usize;
         bytes[idx]
     }
@@ -1477,7 +1481,7 @@ mod tests {
                 (c.r, c.g, c.b)
             };
 
-            let mut shot = |focused: bool| {
+            let shot = |focused: bool| {
                 let mut host = TileHost::new(TileContent::Stub {
                     kind: AppKind::Editor,
                     label: String::new(),

@@ -488,7 +488,7 @@ impl GroupRow {
     /// pass (uses the group's live rect). Cancels any in-flight wheel-snap
     /// so this isn't immediately overridden by a snap-back.
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
-        let Some(sx) = self.into_view_target(group_id) else {
+        let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
         self.scroll_x = sx;
@@ -502,7 +502,7 @@ impl GroupRow {
     /// wheel-snap curve instead of teleporting, so a focus jump reads as
     /// motion rather than a cut.
     pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
-        let Some(sx) = self.into_view_target(group_id) else {
+        let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
         self.snap_anim = Some(SnapAnim {
@@ -515,7 +515,7 @@ impl GroupRow {
         true
     }
 
-    fn into_view_target(&self, group_id: u64) -> Option<f64> {
+    fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
         let g = self.groups.iter().find(|g| g.id == group_id)?;
         let gr = g.get_rect();
         // Degenerate rect → layout hasn't run for this group yet.
@@ -723,32 +723,32 @@ impl GroupRow {
         // Kicking a fresh snap off here, before the curve-advance branch
         // below, lets this same call both start it and apply its first
         // eased frame.
-        if self.snap_anim.is_none() {
-            if let Some(last_wheel) = self.last_wheel_at {
-                let idle = now.saturating_duration_since(last_wheel);
-                if idle >= Duration::from_millis(SNAP_IDLE_MS) {
-                    if self.is_aligned_to_group() {
+        if self.snap_anim.is_none()
+            && let Some(last_wheel) = self.last_wheel_at
+        {
+            let idle = now.saturating_duration_since(last_wheel);
+            if idle >= Duration::from_millis(SNAP_IDLE_MS) {
+                if self.is_aligned_to_group() {
+                    self.last_wheel_at = None;
+                } else if let Some(target) = self.nearest_group_edge() {
+                    if (target - self.scroll_x).abs() < 0.5 {
+                        self.scroll_x = target;
                         self.last_wheel_at = None;
-                    } else if let Some(target) = self.nearest_group_edge() {
-                        if (target - self.scroll_x).abs() < 0.5 {
-                            self.scroll_x = target;
-                            self.last_wheel_at = None;
-                        } else {
-                            // Anchor `started` at the moment the idle
-                            // gate was met, not `now` — so the very tick
-                            // that detects idle already applies the
-                            // curve's first eased frame.
-                            let started = last_wheel
-                                + Duration::from_millis(SNAP_IDLE_MS);
-                            self.snap_anim = Some(SnapAnim {
-                                from: self.scroll_x,
-                                to: target,
-                                started,
-                            });
-                        }
                     } else {
-                        self.last_wheel_at = None;
+                        // Anchor `started` at the moment the idle
+                        // gate was met, not `now` — so the very tick
+                        // that detects idle already applies the
+                        // curve's first eased frame.
+                        let started = last_wheel
+                            + Duration::from_millis(SNAP_IDLE_MS);
+                        self.snap_anim = Some(SnapAnim {
+                            from: self.scroll_x,
+                            to: target,
+                            started,
+                        });
                     }
+                } else {
+                    self.last_wheel_at = None;
                 }
             }
         }
@@ -785,6 +785,7 @@ impl GroupRow {
         &self.group_left_edges
     }
 
+    #[cfg(test)]
     pub(crate) fn set_last_wheel_at_for_test(&mut self, t: Instant) {
         self.last_wheel_at = Some(t);
     }
@@ -1014,14 +1015,14 @@ impl GroupRow {
                     return false;
                 };
                 let claimed = drag.moved;
-                if drag.moved {
-                    if let Some(insert_at) = self.group_reorder_target.take() {
-                        self.commit_group_reorder(
-                            drag.src_idx,
-                            drag.group_id,
-                            insert_at,
-                        );
-                    }
+                if drag.moved
+                    && let Some(insert_at) = self.group_reorder_target.take()
+                {
+                    self.commit_group_reorder(
+                        drag.src_idx,
+                        drag.group_id,
+                        insert_at,
+                    );
                 }
                 self.group_reorder_target = None;
                 claimed
@@ -1288,12 +1289,12 @@ impl Widget for GroupRow {
             let steady = self.snap_anim.is_none()
                 && !self.group_drag_active()
                 && !self.handles.iter().any(|h| h.is_dragging());
-            if geometry_moved && steady {
-                if let Some(target) = self.strip_frame_target(&self.laid_spans) {
-                    self.scroll_x = target;
-                    self.scroll_dirty = true;
-                    self.last_wheel_at = None;
-                }
+            if geometry_moved && steady
+                && let Some(target) = self.strip_frame_target(&self.laid_spans)
+            {
+                self.scroll_x = target;
+                self.scroll_dirty = true;
+                self.last_wheel_at = None;
             }
         }
         // Done AFTER the clamp so a structural mutation that snapped
@@ -1438,38 +1439,38 @@ impl Widget for GroupRow {
         if let (Some(_), Some(ins)) = (
             self.group_drag.filter(|d| d.moved),
             self.group_reorder_target,
-        ) {
-            if !self.groups.is_empty() {
-                let gap_x = if ins == 0 {
-                    self.groups[0].get_rect().x0 - 5.0
-                } else if ins >= self.groups.len() {
-                    self.groups.last().unwrap().get_rect().x1 + 5.0
-                } else {
-                    (self.groups[ins - 1].get_rect().x1
-                        + self.groups[ins].get_rect().x0)
-                        / 2.0
-                };
-                let y0 = self.rect.y0;
-                let y1 = self.rect.y1;
-                if y1 > y0 {
-                    let thickness = 4.0;
-                    let capsule = RoundedRect::from_rect(
-                        Rect::new(
-                            gap_x - thickness / 2.0,
-                            y0,
-                            gap_x + thickness / 2.0,
-                            y1,
-                        ),
-                        thickness / 2.0,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.accent[6],
-                        None,
-                        &capsule,
-                    );
-                }
+        )
+            && !self.groups.is_empty()
+        {
+            let gap_x = if ins == 0 {
+                self.groups[0].get_rect().x0 - 5.0
+            } else if ins >= self.groups.len() {
+                self.groups.last().unwrap().get_rect().x1 + 5.0
+            } else {
+                (self.groups[ins - 1].get_rect().x1
+                    + self.groups[ins].get_rect().x0)
+                    / 2.0
+            };
+            let y0 = self.rect.y0;
+            let y1 = self.rect.y1;
+            if y1 > y0 {
+                let thickness = 4.0;
+                let capsule = RoundedRect::from_rect(
+                    Rect::new(
+                        gap_x - thickness / 2.0,
+                        y0,
+                        gap_x + thickness / 2.0,
+                        y1,
+                    ),
+                    thickness / 2.0,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &capsule,
+                );
             }
         }
 
@@ -1884,6 +1885,7 @@ impl Widget for GroupRow {
         // `fold` rather than `any`: must not short-circuit, every child
         // has to clear its own flag too.
         let own = std::mem::take(&mut self.structure_dirty);
+        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
         let children = self
             .groups
             .iter_mut()
@@ -1893,6 +1895,24 @@ impl Widget for GroupRow {
         // (where `tick_snap_at` lives) otherwise only runs on events.
         let snap = self.snap_in_flight();
         own || children || snap
+    }
+}
+
+/// Zero-area rects are skipped — a name means "on screen now".
+fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
+    if let Some(id) = w.test_id() {
+        let r = w.get_rect();
+        if r.area() > 0.0 {
+            out.push((id.to_string(), r));
+        }
+    }
+    for (name, rect) in w.test_rects() {
+        if rect.area() > 0.0 {
+            out.push((name, rect));
+        }
+    }
+    for child in w.children() {
+        collect_named_rects(child, out);
     }
 }
 
@@ -3473,7 +3493,7 @@ mod tests {
         use taffy::AvailableSpace;
         // One 4-tab group, matching the live shell's bootstrap_default
         // Home workspace.
-        let (mut row, mut taffy, root) =
+        let (mut row, taffy, root) =
             make_row_with_groups_with_taffy(&[&[1, 2, 3, 4]]);
 
         // DROP #1: tab 4 dropped right of the only group's bar → 2nd group.
@@ -3913,7 +3933,7 @@ mod tests {
         let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
         row.groups[1].maximized = true;
         let theme = Theme::dark();
-        let mut relayout = |row: &mut GroupRow| -> TaffyTree<()> {
+        let relayout = |row: &mut GroupRow| -> TaffyTree<()> {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let root = row.build_layout(&mut taffy, &theme, &mut node_map);
@@ -4212,23 +4232,5 @@ mod tests {
             row.needs_animation_frame(),
             "a strip making room must keep redrawing until it settles",
         );
-    }
-}
-
-/// Zero-area rects are skipped — a name means "on screen now".
-fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
-    if let Some(id) = w.test_id() {
-        let r = w.get_rect();
-        if r.area() > 0.0 {
-            out.push((id.to_string(), r));
-        }
-    }
-    for (name, rect) in w.test_rects() {
-        if rect.area() > 0.0 {
-            out.push((name, rect));
-        }
-    }
-    for child in w.children() {
-        collect_named_rects(child, out);
     }
 }

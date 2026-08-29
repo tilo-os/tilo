@@ -279,13 +279,13 @@ impl VideoPlayer {
     /// Syncs a choice's selected index from the host (e.g. after the backend
     /// confirms a resolution switch) without emitting an event.
     pub fn set_choice_selection(&mut self, id: &str, index: usize) {
-        if let Some(s) = self.settings.iter_mut().find(|s| s.id == id) {
-            if let PlayerSettingControl::Choice { options, selected } = &mut s.control {
-                let idx = index.min(options.len().saturating_sub(1));
-                if *selected != idx {
-                    *selected = idx;
-                    self.dirty = true;
-                }
+        if let Some(s) = self.settings.iter_mut().find(|s| s.id == id)
+            && let PlayerSettingControl::Choice { options, selected } = &mut s.control
+        {
+            let idx = index.min(options.len().saturating_sub(1));
+            if *selected != idx {
+                *selected = idx;
+                self.dirty = true;
             }
         }
     }
@@ -662,11 +662,11 @@ impl VideoPlayer {
             self.position_ms = pos;
             self.dirty = true;
         }
-        if let Some(d) = dur {
-            if d > 0 && self.duration_ms != d {
-                self.duration_ms = d;
-                self.dirty = true;
-            }
+        if let Some(d) = dur
+            && d > 0 && self.duration_ms != d
+        {
+            self.duration_ms = d;
+            self.dirty = true;
         }
         if self.buffering != buffering {
             self.buffering = buffering;
@@ -677,12 +677,12 @@ impl VideoPlayer {
             self.state = new_state;
             self.dirty = true;
         }
-        if let Some((w, h, rgba, pts)) = frame {
-            if self.last_frame_pts != Some(pts) || self.latest_frame.is_none() {
-                self.last_frame_pts = Some(pts);
-                self.latest_frame = Some(rgba_image(w, h, rgba));
-                self.dirty = true;
-            }
+        if let Some((w, h, rgba, pts)) = frame
+            && (self.last_frame_pts != Some(pts) || self.latest_frame.is_none())
+        {
+            self.last_frame_pts = Some(pts);
+            self.latest_frame = Some(rgba_image(w, h, rgba));
+            self.dirty = true;
         }
         // `publish` dedups sub-second position jitter, so this is quiet on the bus.
         if self.mpris.is_active() {
@@ -991,11 +991,11 @@ impl VideoPlayer {
                     rows.push(Row::Setting(idx));
                     // Options appear indented only while this is the expanded
                     // entry, so the gear reads as a tidy list until drilled in.
-                    if self.gear_expanded == Some(idx) {
-                        if let PlayerSettingControl::Choice { options, .. } = &self.settings[idx].control {
-                            for oi in 0..options.len() {
-                                rows.push(Row::Option(idx, oi));
-                            }
+                    if self.gear_expanded == Some(idx)
+                        && let PlayerSettingControl::Choice { options, .. } = &self.settings[idx].control
+                    {
+                        for oi in 0..options.len() {
+                            rows.push(Row::Option(idx, oi));
                         }
                     }
                 }

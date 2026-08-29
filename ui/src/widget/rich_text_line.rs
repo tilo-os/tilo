@@ -517,9 +517,7 @@ impl Widget for RichTextLine {
                 continue;
             }
 
-            let color = if seg.link.is_some() {
-                tokens.colors.accent[5]
-            } else if seg.code {
+            let color = if seg.link.is_some() || seg.code {
                 tokens.colors.accent[5]
             } else {
                 tokens.colors.text_primary
@@ -569,84 +567,83 @@ impl Widget for RichTextLine {
                 },
             ..
         } = event
+            && self.inner.is_focused()
         {
-            if self.inner.is_focused() {
-                // Intercepted so the character doesn't get inserted via the
-                // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
-                if modifiers.state().control_key() {
-                    if let Key::Character(c) = logical_key {
-                        match c.to_lowercase().as_str() {
-                            "b" => {
-                                self.toggle_mark(Mark::Bold);
-                                *handled = true;
-                                return;
-                            }
-                            "i" => {
-                                self.toggle_mark(Mark::Italic);
-                                *handled = true;
-                                return;
-                            }
-                            "e" => {
-                                self.toggle_mark(Mark::Code);
-                                *handled = true;
-                                return;
-                            }
-                            "u" => {
-                                self.toggle_mark(Mark::Underline);
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                match logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        // Shift+Enter is a soft-break; plain Enter splits.
-                        let split_at = self.inner.cursor_pos();
-                        self.signal = if modifiers.state().shift_key() {
-                            Some(LineSignal::SoftNewline { split_at })
-                        } else {
-                            Some(LineSignal::Enter { split_at })
-                        };
+            // Intercepted so the character doesn't get inserted via the
+            // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
+            if modifiers.state().control_key()
+                && let Key::Character(c) = logical_key
+            {
+                match c.to_lowercase().as_str() {
+                    "b" => {
+                        self.toggle_mark(Mark::Bold);
                         *handled = true;
                         return;
                     }
-                    Key::Named(NamedKey::Backspace) => {
-                        // Otherwise the inner input handles the delete.
-                        if self.inner.cursor_pos() == 0 {
-                            self.signal = Some(LineSignal::BackspaceAtStart);
-                            *handled = true;
-                            return;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let m = modifiers.state();
-                        self.signal = if m.control_key() && m.shift_key() {
-                            Some(LineSignal::SelectBlockUp {
-                                caret: self.inner.cursor_pos(),
-                            })
-                        } else {
-                            Some(LineSignal::ArrowUp)
-                        };
+                    "i" => {
+                        self.toggle_mark(Mark::Italic);
                         *handled = true;
                         return;
                     }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let m = modifiers.state();
-                        self.signal = if m.control_key() && m.shift_key() {
-                            Some(LineSignal::SelectBlockDown {
-                                caret: self.inner.cursor_pos(),
-                            })
-                        } else {
-                            Some(LineSignal::ArrowDown)
-                        };
+                    "e" => {
+                        self.toggle_mark(Mark::Code);
+                        *handled = true;
+                        return;
+                    }
+                    "u" => {
+                        self.toggle_mark(Mark::Underline);
                         *handled = true;
                         return;
                     }
                     _ => {}
                 }
+            }
+
+            match logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    // Shift+Enter is a soft-break; plain Enter splits.
+                    let split_at = self.inner.cursor_pos();
+                    self.signal = if modifiers.state().shift_key() {
+                        Some(LineSignal::SoftNewline { split_at })
+                    } else {
+                        Some(LineSignal::Enter { split_at })
+                    };
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    // Otherwise the inner input handles the delete.
+                    if self.inner.cursor_pos() == 0 {
+                        self.signal = Some(LineSignal::BackspaceAtStart);
+                        *handled = true;
+                        return;
+                    }
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let m = modifiers.state();
+                    self.signal = if m.control_key() && m.shift_key() {
+                        Some(LineSignal::SelectBlockUp {
+                            caret: self.inner.cursor_pos(),
+                        })
+                    } else {
+                        Some(LineSignal::ArrowUp)
+                    };
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    let m = modifiers.state();
+                    self.signal = if m.control_key() && m.shift_key() {
+                        Some(LineSignal::SelectBlockDown {
+                            caret: self.inner.cursor_pos(),
+                        })
+                    } else {
+                        Some(LineSignal::ArrowDown)
+                    };
+                    *handled = true;
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -795,10 +792,10 @@ pub fn chip_mono_width(
 /// the page-navigation handler.
 pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
     for s in marks_list {
-        if let Mark::Link(id) = &s.mark {
-            if s.range.start <= byte && byte < s.range.end {
-                return Some(*id);
-            }
+        if let Mark::Link(id) = &s.mark
+            && s.range.start <= byte && byte < s.range.end
+        {
+            return Some(*id);
         }
     }
     None
@@ -846,11 +843,6 @@ mod tests {
         }
     }
 
-    fn ctrl_modifiers() -> Modifiers {
-        // Modifiers fields are pub(crate) in winit 0.30; Ctrl paths are
-        // tested through the public API (toggle_mark) instead.
-        Modifiers::default()
-    }
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
         dispatch_with_mods(line, event, &Modifiers::default());
@@ -1220,8 +1212,5 @@ mod tests {
     }
     fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
         ModifiersKeyState::Unknown
-    }
-    fn _placeholder_for_ctrl_modifiers() -> Modifiers {
-        ctrl_modifiers()
     }
 }

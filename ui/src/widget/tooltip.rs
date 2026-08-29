@@ -273,10 +273,10 @@ impl Widget for Tooltip {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(since) = self.hover_since {
-            if !self.is_visible && since.elapsed() >= self.delay {
-                self.is_visible = true;
-            }
+        if let Some(since) = self.hover_since
+            && !self.is_visible && since.elapsed() >= self.delay
+        {
+            self.is_visible = true;
         }
         if !self.is_visible { return; }
 
@@ -327,11 +327,11 @@ impl Widget for Tooltip {
             // has moved on to acting, and a lingering chip would obscure it.
             WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
-            | WindowEvent::KeyboardInput { .. } => {
-                if self.hover_since.is_some() {
-                    self.on_hover_leave();
-                    self.hover_since = None;
-                }
+            | WindowEvent::KeyboardInput { .. }
+                if self.hover_since.is_some() =>
+            {
+                self.on_hover_leave();
+                self.hover_since = None;
             }
             _ => {}
         }
@@ -409,12 +409,11 @@ impl TooltipHost {
     }
 
     fn recompute_visible(&mut self, now: Instant) {
-        if !self.visible {
-            if let Some(t) = &self.target {
-                if now.saturating_duration_since(t.since) >= self.dwell {
-                    self.visible = true;
-                }
-            }
+        if !self.visible
+            && let Some(t) = &self.target
+            && now.saturating_duration_since(t.since) >= self.dwell
+        {
+            self.visible = true;
         }
     }
 

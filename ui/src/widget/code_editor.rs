@@ -644,11 +644,11 @@ impl Highlighter for GenericHighlighter {
         let n = line.len();
         let mut i = 0usize;
         while i < n {
-            if let Some(lc) = &self.line_comment {
-                if line[i..].starts_with(lc.as_str()) {
-                    spans.push(Span::new(i..n, TokenKind::Comment));
-                    break;
-                }
+            if let Some(lc) = &self.line_comment
+                && line[i..].starts_with(lc.as_str())
+            {
+                spans.push(Span::new(i..n, TokenKind::Comment));
+                break;
             }
             let c = bytes[i] as char;
             if c == '"' || c == '\'' {
@@ -966,23 +966,21 @@ impl Highlighter for TypstHighlighter {
                 i = end;
                 continue;
             }
-            if c == '*' {
-                if let Some(close) = find_from(line, i + 1, '*') {
-                    if close > i + 1 {
-                        spans.push(Span::new(i..close + 1, TokenKind::Strong));
-                        i = close + 1;
-                        continue;
-                    }
-                }
+            if c == '*'
+                && let Some(close) = find_from(line, i + 1, '*')
+                && close > i + 1
+            {
+                spans.push(Span::new(i..close + 1, TokenKind::Strong));
+                i = close + 1;
+                continue;
             }
-            if c == '_' {
-                if let Some(close) = find_from(line, i + 1, '_') {
-                    if close > i + 1 {
-                        spans.push(Span::new(i..close + 1, TokenKind::Emphasis));
-                        i = close + 1;
-                        continue;
-                    }
-                }
+            if c == '_'
+                && let Some(close) = find_from(line, i + 1, '_')
+                && close > i + 1
+            {
+                spans.push(Span::new(i..close + 1, TokenKind::Emphasis));
+                i = close + 1;
+                continue;
             }
             // Number with optional unit suffix (12pt, 1.5cm, 80%).
             if c.is_ascii_digit() {
@@ -1292,7 +1290,8 @@ mod tests {
         ed.set_focused(true);
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         let mut doc = AutoCommit::new();
-        for ch in ["a"] {
+        {
+            let ch = "a";
             drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false));
         }
         drive(&mut ed, &mut doc, &named_event(NamedKey::Enter), &mods(false, false));

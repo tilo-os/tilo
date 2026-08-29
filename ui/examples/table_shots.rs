@@ -3,15 +3,15 @@
 //! Renders four frames through the widget's real five-pass pipeline and its
 //! real event handler (no private-field pokes):
 //!   1. `table-base.png`          — a seeded 3-column table with a header band
-//!                                   and the always-on insert ticks in the
-//!                                   gutters.
+//!      and the always-on insert ticks in the
+//!      gutters.
 //!   2. `table-insert-col.png`    — hovering a *middle* column boundary shows
-//!                                   the accent insert pill + full-height guide.
+//!      the accent insert pill + full-height guide.
 //!   3. `table-delete-row.png`    — hovering a row's delete handle tints the
-//!                                   row danger-red and shows the "×" handle.
+//!      row danger-red and shows the "×" handle.
 //!   4. `table-after-insert.png`  — after clicking that middle boundary, a new
-//!                                   empty column has appeared between the
-//!                                   originals (asserted on the model too).
+//!      empty column has appeared between the
+//!      originals (asserted on the model too).
 //!
 //! Run:  cargo run -p ui --example table_shots
 //! Out:  $TABLE_SHOTS_OUT (default /tmp/table_shots)

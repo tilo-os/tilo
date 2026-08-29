@@ -330,6 +330,12 @@ pub struct State {
     undo: UndoLog,
 }
 
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl State {
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
@@ -674,8 +680,8 @@ pub fn write_patches(
                 PatchAction::Insert { index, values } => {
                     // Re-inserting elements the local action deleted; the
                     // boundary is expressed in `before` coordinates.
-                    let mut li = live_insert_boundary(doc, &target, index, entry_before);
-                    for (val, old_id, _) in values.into_iter() {
+                    let start = live_insert_boundary(doc, &target, index, entry_before);
+                    for (li, (val, old_id, _)) in (start..).zip(&values) {
                         match val {
                             Value::Scalar(s) => {
                                 let _ = doc.insert(&target, li, s.clone().into_owned());
@@ -686,7 +692,6 @@ pub fn write_patches(
                                 }
                             }
                         }
-                        li += 1;
                     }
                 }
                 PatchAction::SpliceText { index, value, .. } => {

@@ -138,21 +138,13 @@ impl Default for Gesture {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(Default)]
 pub struct Motion {
     pub springs: SpringPresets,
     pub durations: Durations,
     pub gesture: Gesture,
 }
 
-impl Default for Motion {
-    fn default() -> Self {
-        Self {
-            springs: SpringPresets::default(),
-            durations: Durations::default(),
-            gesture: Gesture::default(),
-        }
-    }
-}
 
 /// iOS-style overscroll resistance.
 ///

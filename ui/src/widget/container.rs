@@ -34,6 +34,12 @@ pub struct Container {
     flex_grow: bool,
 }
 
+impl Default for Container {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Container {
     pub fn new() -> Self {
         Self {
@@ -142,11 +148,11 @@ impl Widget for Container {
             // `auto` so the basis is zero (the wrap decision ignores it);
             // flex_grow below fills the leftover line width.
             None if self.flex_grow => taffy::Dimension::auto(),
-            None => percent(1.0),
+            None => percent(1.0_f32),
         };
         let height = match self.fixed_height {
             Some(px) => length(px),
-            None if self.fill_height => percent(1.0),
+            None if self.fill_height => percent(1.0_f32),
             None => taffy::Dimension::auto(),
         };
         let style = Style {
@@ -156,7 +162,7 @@ impl Widget for Container {
             // auto` lets `size.width` resolve the basis instead.
             flex_grow: if self.flex_grow { 1.0 } else { 0.0 },
             flex_basis: if self.flex_grow {
-                length(0.0)
+                length(0.0_f32)
             } else {
                 taffy::Dimension::auto()
             },
@@ -278,19 +284,18 @@ impl Widget for Container {
             child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

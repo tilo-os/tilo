@@ -411,11 +411,11 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
                 button: MouseButton::Left,
                 ..
             } => {
-                if !self.rect.contains(self.last_cursor) {
-                    if let Some(cb) = self.on_dismiss.as_mut() {
-                        cb();
-                        *handled = true;
-                    }
+                if !self.rect.contains(self.last_cursor)
+                    && let Some(cb) = self.on_dismiss.as_mut()
+                {
+                    cb();
+                    *handled = true;
                 }
             }
             _ => {}

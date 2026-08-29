@@ -130,6 +130,7 @@ enum PickKind {
 #[derive(Debug, Clone)]
 pub struct PickRequest {
     title: String,
+    #[cfg_attr(not(feature = "portal"), allow(dead_code))] // read by the ashpd request in `run`, gated behind the `portal` feature
     accept_label: String,
     thread_name: String,
     filters: Vec<FileFilter>,
@@ -492,7 +493,7 @@ mod tests {
 
         assert_eq!(to_local_path(&uri), None, "a foreign host is not a local path");
         assert!(
-            matches!(map_uri(&[uri.clone()]), PortalOutcome::Failed(_)),
+            matches!(map_uri(std::slice::from_ref(&uri)), PortalOutcome::Failed(_)),
             "a foreign-host URI must not become an openable path"
         );
         assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));

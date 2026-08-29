@@ -56,7 +56,7 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
     let rgba = renderer.render(&scene, bg);
 
     let is_fill = |x: u32, y: u32| -> bool {
-        let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, phys, x, y);
+        let (r, _g, b, _a) = OffscreenRenderer::sample(&rgba, phys, x, y);
         // Indigo-dominant = inside the square; slate bg is blue-ish but dark.
         b >= 200 && r < 150
     };

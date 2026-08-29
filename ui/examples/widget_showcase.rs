@@ -24,14 +24,13 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::popover_widget::PopoverSide;
-use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation as ToolbarOrientation;
 use ui::widget::tree_view::TreeNode;
 use ui::widget::{
-    Avatar, Badge, Breadcrumb, Button, Column, ColorPicker, DatePicker, ImageViewer,
-    ModalDialog, PopoverWidget, ProgressBar, ResizableSplit, Row, Scrollable,
-    ScrollAxis, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, VideoPlayer,
+    Avatar, Badge, Breadcrumb, Column, ColorPicker, DatePicker,
+    ModalDialog, PopoverWidget, ProgressBar, Row, Scrollable,
+    ScrollAxis, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView,
     Widget,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -81,7 +80,7 @@ impl Widget for LabelTile {
         tr: &mut TextRenderer,
     ) -> Size<f32> {
         let (w, h) = tr.measure(&self.text, 14.0, None);
-        Size { width: w as f32 + 16.0, height: h as f32 + 12.0 }
+        Size { width: w + 16.0, height: h + 12.0 }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();

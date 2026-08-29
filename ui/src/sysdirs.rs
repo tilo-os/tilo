@@ -130,7 +130,7 @@ impl UserDirs {
 
     /// Home wins over Desktop wins over the content dirs when paths coincide.
     pub fn classify(&self, path: &Path) -> Option<UserDir> {
-        for kind in [
+        [
             UserDir::Home,
             UserDir::Desktop,
             UserDir::Documents,
@@ -138,12 +138,7 @@ impl UserDirs {
             UserDir::Music,
             UserDir::Pictures,
             UserDir::Videos,
-        ] {
-            if self.path(kind) == Some(path) {
-                return Some(kind);
-            }
-        }
-        None
+        ].into_iter().find(|&kind| self.path(kind) == Some(path))
     }
 
     /// `(kind, localized label, path)`, falling back to `home/<English>` so the

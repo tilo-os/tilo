@@ -26,6 +26,9 @@ fn os_open(url: &str) {
     }
 }
 
+/// Test/host hook overriding [`os_open`] on activation; see `opener` below.
+type Opener = Box<dyn FnMut(&str)>;
+
 pub struct Link {
     url: String,
     /// Defaults to the URL; a caller can show a friendlier label via
@@ -39,7 +42,7 @@ pub struct Link {
     enabled: bool,
     /// When set, activation calls this instead of [`open::that`] — tests
     /// record the URL, hosts route through a portal.
-    opener: Option<Box<dyn FnMut(&str)>>,
+    opener: Option<Opener>,
     /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
     dirty: bool,
